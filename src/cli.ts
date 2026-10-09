@@ -35,6 +35,7 @@ import { run as execRun } from "./exec.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
 import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "./session-cli.js";
 import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
+import { deprecationWarning } from "./deprecations.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
 import { runHealthCommand } from "./health-cli.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
@@ -117,13 +118,8 @@ Usage
   toolroll status           running, queued, ready results, release check and plan windows
   toolroll health           recent server latency, write waits and live streams
   toolroll integrations     which integrations work, and what to do about the ones that don't (--json)
-  toolroll session          native coding sessions through the running service
-  toolroll connect          save a private connection to your central service
-  toolroll lead             named leads on the connected service
   toolroll lead token       mint your lead agent's credential: its own work pings nobody
   toolroll lead say "<text>"  (the lead) one short message in its person's chat
-  toolroll conversation     shared and private conversations on that service
-  toolroll chat --lead <id> --conversation <id>  central chat (use --local for local chat)
 
 Operating the queue — \`toolroll task\` prints the whole surface,
 and any queue command + --help prints it too
@@ -145,7 +141,7 @@ and any queue command + --help prints it too
   toolroll flows list | show <id> | create | edit | trigger | script | card | archive
                                set up and inspect flows (writes preview until --yes)
   toolroll chat --as <you> --token <t>
-                               talk to the mate: one conversation across every
+                               talk to your lead: one conversation across every
                                project; it proposes, you confirm (--say "…" for one turn)
   toolroll serve --repo <path>  advanced: run only the console
                                (--editor vscode with --runner: file links
@@ -486,7 +482,11 @@ async function dispatch(
   }
   if (first === "update") return runUpdateCommand(rest, write, mainOptions.update);
   if (first === "contract") return runContractCommand(rest, write);
-  if (first === "session") return runSessionCommand(rest, write, mainOptions.session);
+  if (first === "session") {
+    // D5: native coding sessions are deprecated. They still run this release; each use says so once, on stderr.
+    (mainOptions.session?.stderr ?? (line => process.stderr.write(`${line}\n`)))(deprecationWarning(`session ${rest.find(arg => !arg.startsWith("-")) ?? ""}`.trim(), "session"));
+    return runSessionCommand(rest, write, mainOptions.session);
+  }
   if (first === "demo") return runDemoCommand(rest, write);
   if (first === "skills") return runSkillsCommand(rest, write);
   if (first === "repos") return runReposCommand(rest, write, mainOptions.onboard);

@@ -10,7 +10,7 @@ export const EXPORT_CSS = `.data-export{max-width:720px;min-width:0}.data-export
 export function dataExportHtml(csrf: string, notice: { problem?: string | null }): string {
   const note = notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : "";
   return `<section class="data-export">${note}` +
-    `<p>Everything Toolroll knows, as one .zip: projects, tasks, runs and cost, the action ledger, evidence packs, chats, flows, teammates and settings. ` +
+    `<p>Everything Toolroll knows, as one .zip: projects, tasks, runs and cost, the action ledger, evidence packs, chats, flows, subagents and settings. ` +
     `Passwords, keys and tokens are never included.</p>` +
     `<form method="post" action="/settings/data"><input type="hidden" name="csrf" value="${e(csrf)}">` +
     `<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>` +

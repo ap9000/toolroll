@@ -24,7 +24,7 @@ import { addFlowTriggerTo, describeTrigger, HOOK_PATH, readHooksBase, triggerCon
 import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWords, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { readVersioned } from "./contracts/contract.js";
-import { FLOW_ALIASES, FLOW_FILE_FORMAT, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
+import { FLOW_ALIASES, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
 import { parseSchedule } from "./flow-schedule.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -44,7 +44,7 @@ function stepOf(stage: FlowStage, ask: (parameter: FlowFileParameter) => string)
   const step: Record<string, unknown> = { id: stage.id, title: stage.title, kind: stage.kind };
   const words = (minutes: number) => durationMinutes(durationWords(minutes)) === minutes ? durationWords(minutes) : minutes;
   // Only what the step's kind says: words a zone kept from a kind it was before stay behind.
-  if (stage.instructions !== null && (stage.kind === "task" || stage.kind === "report" || stage.kind === "draft" || stage.kind === "teammate")) step["instructions"] = stage.instructions;
+  if (stage.instructions !== null && (stage.kind === "task" || stage.kind === "report" || stage.kind === "draft" || stage.kind === "subagent")) step["instructions"] = stage.instructions;
   if (stage.kind === "task") step["planning"] = stage.planning;
   if (stage.kind === "approval") step["decider"] = stage.toOwner === true ? "owner" : stage.approver === null ? "anyone"
     : ask({ id: `decider-${stage.id}`.slice(0, 40), about: `Who decides at ${stage.title}: a person's sign-in name, owner (the flow's owner) or anyone`, default: "owner" });
@@ -72,7 +72,7 @@ function stepOf(stage: FlowStage, ask: (parameter: FlowFileParameter) => string)
   if (stage.wait !== undefined) Object.assign(step, { waitFor: stage.wait.for,
     ...(stage.wait.for === "hours" ? { from: stage.wait.from, until: stage.wait.to, ...(stage.wait.timeZone === undefined ? {} : { timeZone: stage.wait.timeZone }) } : { wait: words(stage.wait.minutes) }) });
   if (stage.merge !== undefined) step["merge"] = stage.merge;
-  if (stage.teammate !== undefined) step["teammate"] = stage.teammate;
+  if (stage.subagent !== undefined) step["subagent"] = stage.subagent;
   if (stage.reply === true) step["reply"] = true;
   // A choice's buttons; "end" ignores the card. A build in another project names a path on this computer, so it stays here.
   if (stage.options !== undefined) step["options"] = stage.options.map(one => ({ label: one.label, goesTo: one.to }));
@@ -120,7 +120,7 @@ function needsOf(definition: FlowDefinition, triggers: readonly Record<string, u
     if (stage.kind === "sort") needs.add("openrouter");
     if (stage.kind === "email" || (stage.kind === "wait" && stage.wait?.for === "reply")) needs.add("email");
     if (stage.tool !== undefined) needs.add(`tool:${stage.tool.server}`);
-    if (stage.teammate !== undefined) needs.add(`teammate:${stage.teammate}`);
+    if (stage.subagent !== undefined) needs.add(`subagent:${stage.subagent}`);
     for (const name of stage.secrets ?? []) needs.add(`secret:${name}`);
     for (const value of Object.values(stage.request?.headers ?? {})) for (const match of value.matchAll(/\{\{\s*secret\.([A-Z][A-Z0-9_]{0,39})\s*\}\}/g)) needs.add(`secret:${match[1]}`);
   }
@@ -257,7 +257,7 @@ function stageInputOf(step: Record<string, unknown>, index: number, find: (ref: 
     ...(kind === "email" ? { email: { to: step["to"], subject: step["subject"], body: step["body"] } } : {}),
     ...(kind === "tool" ? { tool: { server: step["server"], name: step["tool"], args: typeof step["args"] === "object" && step["args"] !== null ? JSON.stringify(step["args"]) : step["args"] } } : {}),
     ...(kind === "wait" ? { wait: step["waitFor"] === "hours" ? { for: "hours", from: step["from"], to: step["until"], timeZone: step["timeZone"] } : { for: step["waitFor"] ?? "reply", minutes: minutes(step["wait"] ?? "3 days", "wait") } } : {}),
-    merge: step["merge"], teammate: step["teammate"], reply: step["reply"],
+    merge: step["merge"], subagent: step["subagent"], reply: step["reply"],
     ...(kind === "choose" ? { options: (list("options") ?? []).map((one, n) => ({ label: one["label"], to: one["goesTo"] === "end" ? "end" : find(one["goesTo"], `${at}.options[${n}].goesTo`) })) } : {}),
     ...(step["remindAfter"] === undefined ? {} : { limit: { minutes: minutes(step["remindAfter"], "remindAfter"), to: find(step["thenMoveTo"], `${at}.thenMoveTo`) } }),
     next: find(step["next"], `${at}.next`), onFail: find(fail, `${at}.${failKey}`),
@@ -314,6 +314,9 @@ export function parseFlowFile(text: string): FlowFile {
     if (kind === "chat") refuse(`triggers[${index}].kind: a chat channel trigger can't come from a file; connect the channel from the channel itself`);
     if (kind === "flow") refuse(`triggers[${index}].kind: a trigger from another flow can't come from a file; it names a flow on the installation it was made on`);
   });
+  // D5: a file written before subagents were named so (a "teammate" zone, a "teammate:" need) reads as one written since.
+  if (Array.isArray(input["zones"])) input["zones"] = (input["zones"] as unknown[]).map(legacySubagentStep);
+  if (Array.isArray(input["needs"])) input["needs"] = (input["needs"] as unknown[]).map(legacyFlowNeed);
   const read = readVersioned(flowFileSchema, input, {}, FLOW_ALIASES);
   if (!read.ok) return refuse(read.issues.map(one => one.line).join("\n"));
   const file = read.value;
@@ -369,7 +372,7 @@ const NEED_WORDS: Record<string, string> = {
 };
 export function needWords(need: string): string {
   const [kind, name] = need.includes(":") ? [need.slice(0, need.indexOf(":")), need.slice(need.indexOf(":") + 1)] : [need, ""];
-  return NEED_WORDS[need] ?? (kind === "secret" ? `A saved secret called ${name}` : kind === "tool" ? `The ${name} tool (Settings → Tools)` : kind === "teammate" ? `An AI teammate called ${name}` : kind === "script" ? `The ${name} script` : need);
+  return NEED_WORDS[need] ?? (kind === "secret" ? `A saved secret called ${name}` : kind === "tool" ? `The ${name} tool (Settings → Tools)` : kind === "subagent" ? `A subagent called ${name}` : kind === "script" ? `The ${name} script` : need);
 }
 
 export type FlowImportPlan = {

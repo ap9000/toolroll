@@ -1303,8 +1303,8 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     expect(settings?.[2]).toContain("<summary>Settings");
     const toolRows = /<nav class="nav-group-items">(.*?)<\/nav>/s.exec(tools?.[2] ?? "")?.[1] ?? "";
     const settingsRows = /<nav class="nav-group-items">(.*?)<\/nav>/s.exec(settings?.[2] ?? "")?.[1] ?? "";
+    // D5: coding sessions are deprecated, so Work tools no longer links /code.
     expect([...toolRows.matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map(m => `${m[2]} ${m[1]}`)).toEqual([
-      "Coding sessions /code",
       "Inbox /inbox",
       "Board /board",
       "Task list /tasks",
@@ -1345,7 +1345,7 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     expect(menu).toContain('<h2 class="menu-group-label">Work tools</h2>');
     expect(menu).toContain('<h2 class="menu-group-label">Settings</h2>');
     const rows = [...menu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1]);
-    expect(rows).toEqual(["/code", "/inbox", "/board", "/tasks", "/recipes", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
+    expect(rows).toEqual(["/inbox", "/board", "/tasks", "/recipes", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
   });
 
   test("every retired destination still answers: the queue redirects to the board's order view; done, review, and activity are views of builds", async () => {

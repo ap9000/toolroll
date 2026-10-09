@@ -1,5 +1,5 @@
 import { runOperate, EXIT, OPERATE_HELP, OPERATE_BOOLEAN_FLAGS, OPERATE_VALUE_FLAGS, TASK_ACTIONS } from "./operate.js";
-import { executeMateTool, MATE_TOOLS } from "./mate-tools.js";
+import { executeLeadTool, LEAD_TOOLS } from "./lead-tools.js";
 import { applyChatTaskAction, CHAT_TASK_ACTIONS } from "./chat-task-actions.js";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import { createDecisionServer } from "./serve.js";
@@ -324,7 +324,7 @@ describe("inherited review context (v51)", () => {
   test("retired refresh: after one successful first review, CLI, shared chat, result, task, cockpit and work pages expose no manual Refresh review action and the review stays final", async () => {
     // Deployed schema 60 on a reviewed run: exactly one root reviewer, no
     // open request. Every surface below is the real one (operate.ts, the
-    // mate tools, the decision server), not a grep over source text.
+    // lead tools, the decision server), not a grep over source text.
     const f = await firstReady();
     const asked = f.ask(); if (!asked.ok) throw new Error(asked.reason);
     const admitted = f.store.admitReview(asked.id, { runner: "builder-1", token: "tok-builder-1", provider: "claude", model: "sonnet" }, T0);
@@ -362,11 +362,11 @@ describe("inherited review context (v51)", () => {
     // Chat: no refresh action, control or proposal; the confirmed-action path refuses an unknown operation.
     expect(Object.keys(CHAT_TASK_ACTIONS).filter(one => /refresh/.test(one))).toEqual([]);
     expect(Object.keys(CHAT_CONTROLS).filter(one => /refresh/.test(one))).toEqual([]);
-    expect(JSON.stringify(MATE_TOOLS.map(one => ({ name: one.name, description: one.description, inputSchema: one.inputSchema })))).not.toMatch(NO_REFRESH);
+    expect(JSON.stringify(LEAD_TOOLS.map(one => ({ name: one.name, description: one.description, inputSchema: one.inputSchema })))).not.toMatch(NO_REFRESH);
     const ctx = { store: f.store, who: f.who, now: T0, evidenceRoot: f.evidenceRoot, draft: () => { throw new Error("No refresh card may be created"); } };
-    expect(JSON.stringify(executeMateTool(ctx, "get_controls", {}))).not.toMatch(NO_REFRESH);
-    expect(executeMateTool(ctx, "propose_task_action", { task: "feat", operation: "refresh_review", run: f.sourceRun }).ok).toBe(false);
-    expect(executeMateTool(ctx, "show_control", { control: "refresh_review", task: "feat" }).ok).toBe(false);
+    expect(JSON.stringify(executeLeadTool(ctx, "get_controls", {}))).not.toMatch(NO_REFRESH);
+    expect(executeLeadTool(ctx, "propose_task_action", { task: "feat", operation: "refresh_review", run: f.sourceRun }).ok).toBe(false);
+    expect(executeLeadTool(ctx, "show_control", { control: "refresh_review", task: "feat" }).ok).toBe(false);
     expect(applyChatTaskAction(f.store, f.who, { task: "feat", operation: "refresh_review", run: f.sourceRun, stamp: "x" }, T0, true)).toMatchObject({ ok: false });
 
     // Web: the result, task, chat result view, review cockpit and work pages carry no refresh control; no route serves one.
@@ -455,10 +455,10 @@ describe("inherited review context (v51)", () => {
     const padding = "// existing café 🔎\n".repeat(Math.ceil(REVIEW_CONTEXT_LIMITS.itemBytes / Buffer.byteLength("// existing café 🔎\n")));
     const redacted = variant === "unrelated redaction";
     const f = await seed({
-      baseFiles: { "src/guard.ts": padding + GUARD_TS.replace("n < 3", "n < 9"), "src/serve.ts": padding + ".button { color: red; }\n", "src/store.ts": padding + "const retries = 9;\n", ...(redacted ? { "src/mate.test.ts": padding + "// old fixture\n" } : {}) },
+      baseFiles: { "src/guard.ts": padding + GUARD_TS.replace("n < 3", "n < 9"), "src/serve.ts": padding + ".button { color: red; }\n", "src/store.ts": padding + "const retries = 9;\n", ...(redacted ? { "src/lead.test.ts": padding + "// old fixture\n" } : {}) },
       guardSource: padding + GUARD_TS,
-      extraSourceFiles: { "src/serve.ts": padding + ".button { color: blue; }\n", "src/store.ts": padding + "const retries = 3;\n", ...(redacted ? { "src/mate.test.ts": padding + "// AKIAABCDEFGHIJKLMNOP\n" } : {}) },
-      revisionFiles: { "src/report.ts": REPORT_TS_V2, "src/serve.ts": padding + ".button { color: green; }\n", ...(redacted ? { "src/mate.test.ts": padding + "// revised fixture\n" } : {}) },
+      extraSourceFiles: { "src/serve.ts": padding + ".button { color: blue; }\n", "src/store.ts": padding + "const retries = 3;\n", ...(redacted ? { "src/lead.test.ts": padding + "// AKIAABCDEFGHIJKLMNOP\n" } : {}) },
+      revisionFiles: { "src/report.ts": REPORT_TS_V2, "src/serve.ts": padding + ".button { color: green; }\n", ...(redacted ? { "src/lead.test.ts": padding + "// revised fixture\n" } : {}) },
       shortenedLog: true,
     });
     const inventory = (await capture(f))!.inventory;
@@ -483,8 +483,8 @@ describe("inherited review context (v51)", () => {
     expect(css.content).toContain("-.button { color: red; }");
     expect(css.content).toContain("+.button { color: green; }");
     if (redacted) {
-      expect(inventory.items.some(one => one.path === "src/mate.test.ts")).toBe(false);
-      expect(inventory.gaps).toContainEqual(expect.objectContaining({ path: "src/mate.test.ts", reason: "secret-redacted" }));
+      expect(inventory.items.some(one => one.path === "src/lead.test.ts")).toBe(false);
+      expect(inventory.gaps).toContainEqual(expect.objectContaining({ path: "src/lead.test.ts", reason: "secret-redacted" }));
       expect(inventory.coverage.find(one => one.id === "c4")?.state).toBe("gap");
       expect(inventory.items.every(one => !one.content.includes("[redacted:") && !one.content.includes("AKIAABCDEFGHIJKLMNOP"))).toBe(true);
     }
@@ -589,7 +589,7 @@ describe("inherited review context (v51)", () => {
     const f = await seed({
       baseFiles: { "src/guard.ts": padding + "old\n" },
       guardSource: padding + GUARD_TS,
-      extraSourceFiles: { "src/mate.test.ts": "// AKIAABCDEFGHIJKLMNOP\n" },
+      extraSourceFiles: { "src/lead.test.ts": "// AKIAABCDEFGHIJKLMNOP\n" },
       sourcePatch: patch => {
         const start = patch.indexOf("diff --git a/src/guard.ts b/src/guard.ts\n");
         const end = patch.indexOf("diff --git ", start + 1);

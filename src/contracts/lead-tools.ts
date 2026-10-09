@@ -19,7 +19,7 @@ import { CHECK_RESULTS, RUN_OUTCOMES, TASK_STATES } from "../lead-commitments.js
 import { PERSON_ID } from "../lead-people.js";
 import { TASK_SIZES } from "../phase-routing.js";
 import { ACCEPTANCE_LIMITS } from "../scope.js";
-import { TEAMMATE_TEMPLATES } from "../teammates.js";
+import { SUBAGENT_TEMPLATES } from "../subagents.js";
 import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
 import { parseContract, type ContractOptions } from "./contract.js";
 import { FLOW_ALIASES } from "./flow.js";
@@ -53,8 +53,8 @@ const note = z.string().max(LIMITS.note, { error: issue => overBy(LIMITS.note, i
 /** Task states a list filters by. */
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
-/** The shared actions the lead proposes with propose_action; flows and teammates have their own tools. */
-const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("teammate_"));
+/** The shared actions the lead proposes with propose_action; flows and subagents have their own tools. */
+const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_"));
 
 export const LEAD_TOOL_INPUTS = {
   get_brief: z.strictObject({ repo: repoId.optional() }),
@@ -90,15 +90,15 @@ export const LEAD_TOOL_INPUTS = {
   get_flows: z.strictObject({ repo: repoId.optional(), flow: id.optional(), card: id.optional() }),
   // The flow contract's own schema (src/contracts/flow-propose.ts), never a second one here.
   propose_flow: proposeFlowInputSchema,
-  get_teammates: z.strictObject({ repo: repoId.optional(), teammate: id.optional() }),
-  propose_teammate: z.strictObject({
-    operation: z.enum(["create", "edit_section", "edit_soul", "pause", "resume", "remove", "note", "answer", "use_tool", "stop_tool", "tool_rule", "forget", "edit_memory", "add_routine", "stop_routine", "undo"]),
-    section: text("teammateSection").optional(), schedule: text("teammateSchedule").optional(), routine: id.optional(), memory: id.optional(),
-    tool: text("teammateTool").optional(), action: text("teammateAction").optional(), undoWith: text("teammateAction").optional(), call: id.optional(),
-    use: z.enum(["free", "ask", "never"]).optional(), limitField: text("teammateAction").optional(), limitOver: z.number().min(0).optional(),
-    repo: repoId.optional(), teammate: id.optional(), template: enumOf(TEAMMATE_TEMPLATES.map(one => one.id)).optional(),
-    name: text("teammateName").optional(), soul: text("teammateSoul").optional(), note: text("teammateNote").optional(),
-    question: id.optional(), choice: text("teammateChoice").optional(), text: text("teammateText").optional(),
+  get_subagents: z.strictObject({ repo: repoId.optional(), subagent: id.optional() }),
+  propose_subagent: z.strictObject({
+    operation: z.enum(["ask", "create", "edit_section", "edit_soul", "pause", "resume", "remove", "note", "answer", "use_tool", "stop_tool", "tool_rule", "forget", "edit_memory", "add_routine", "stop_routine", "undo"]),
+    section: text("subagentSection").optional(), schedule: text("subagentSchedule").optional(), routine: id.optional(), memory: id.optional(),
+    tool: text("subagentTool").optional(), action: text("subagentAction").optional(), undoWith: text("subagentAction").optional(), call: id.optional(),
+    use: z.enum(["free", "ask", "never"]).optional(), limitField: text("subagentAction").optional(), limitOver: z.number().min(0).optional(),
+    repo: repoId.optional(), subagent: id.optional(), template: enumOf(SUBAGENT_TEMPLATES.map(one => one.id)).optional(),
+    name: text("subagentName").optional(), soul: text("subagentSoul").optional(), note: text("subagentNote").optional(),
+    question: id.optional(), choice: text("subagentChoice").optional(), text: text("subagentText").optional(),
   }),
   get_flow_insights: z.strictObject({ repo: repoId.optional(), flow: id.optional(), days: z.int().min(1).max(90).optional(), card: id.optional(), entry: id.optional() }),
   get_skills: z.strictObject({ repo: repoId, version: z.string().regex(/^[a-f0-9]{20}$/).optional(), offset: offset.optional() }),
@@ -180,7 +180,7 @@ const list = z.array(z.unknown());
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullable();
 const rows = <S extends z.ZodRawShape>(shape: S) => z.array(z.looseObject(shape));
 
-/** A proposal drafted as a card the operator confirms (propose_action, propose_flow, propose_teammate). */
+/** A proposal drafted as a card the operator confirms (propose_action, propose_flow, propose_subagent). */
 const cardDrafted = z.looseObject({ proposal: int, label: str, awaiting: str, executed: z.literal(false) });
 /** A proposal row drafted by one of the queue, hold, scope and answer tools. */
 const proposed = <K extends string>(kind: K, shape: z.ZodRawShape = {}) => z.looseObject({ proposal: int, kind: z.literal(kind), awaiting: str, ...shape });
@@ -228,8 +228,8 @@ export const LEAD_TOOL_OUTPUTS = {
     z.looseObject({ flows: rows({ flow: int, name: str, cards: int, needYou: int, triggers: int }), templates: list, scripts: list, rule: str }),
   ]),
   propose_flow: cardDrafted,
-  get_teammates: z.looseObject({ teammates: rows({ teammate: int, name: str, working: z.boolean(), soul: str }), templates: list, rule: str }),
-  propose_teammate: cardDrafted,
+  get_subagents: z.looseObject({ subagents: rows({ subagent: int, name: str, working: z.boolean(), soul: str }), templates: list, rule: str }),
+  propose_subagent: cardDrafted,
   get_flow_insights: z.union([
     z.looseObject({ days: int, flows: rows({ flow: int, name: str }) }),
     z.looseObject({ card: int, entry: int, state: str, log: str }),

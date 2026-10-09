@@ -39,7 +39,7 @@ import {
 import { Client } from "discord.js";
 import { followDiscord, discordReadyMatches } from "./discord.js";
 import { knowledgeView } from "./project-knowledge.js";
-import { resolveChannelMate } from "./chat-channel.js";
+import { resolveChannelLead } from "./chat-channel.js";
 import { prepareSharedAction } from "./chat-actions.js";
 import { verifyApproverStanding } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
@@ -230,9 +230,9 @@ function plan(parts: ChatContent[]) {
 }
 function draft(
   payload: Record<string, unknown>,
-  kind: Parameters<Store["draftMateProposal"]>[0]["kind"] = "action",
+  kind: Parameters<Store["draftLeadProposal"]>[0]["kind"] = "action",
 ) {
-  const resolved = resolveChannelMate(
+  const resolved = resolveChannelLead(
     store,
     {
       approver: "alex",
@@ -242,7 +242,7 @@ function draft(
     now,
   );
   if (!resolved.ok) throw Error("session");
-  const opened = store.openMateTurn(
+  const opened = store.openLeadTurn(
     {
       approver: "alex",
       session: resolved.session.id,
@@ -256,9 +256,9 @@ function draft(
     now,
   );
   if (!opened.ok) throw Error("turn");
-  const started = store.startMateTurn(opened.id, now);
+  const started = store.startLeadTurn(opened.id, now);
   if (!started.ok) throw Error("start");
-  const proposal = store.draftMateProposal(
+  const proposal = store.draftLeadProposal(
     {
       thread: resolved.thread.id,
       turn: opened.id,
@@ -268,7 +268,7 @@ function draft(
     },
     now,
   );
-  store.finalizeMateTurn(
+  store.finalizeLeadTurn(
     opened.id,
     started.generation,
     { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 },
@@ -512,7 +512,7 @@ test("knowledge proposals confirm once and edit the same message with Discord au
   expect(knowledgeView(store, repo, "alex").knowledge.instructions).toBe(
     "Keep updates concise.",
   );
-  expect(store.getMateProposal(c.proposal)?.outcome).toMatchObject({
+  expect(store.getLeadProposal(c.proposal)?.outcome).toMatchObject({
     via: "discord",
     ok: true,
   });
@@ -571,11 +571,11 @@ test("a button Toolroll didn't make is answered with why and does nothing; a sta
   await tap(c.token, c.message, { message: { id: c.message, channel_id: CHANNEL, author: { id: snow() } }, data: { custom_id: "nope" } });
   expect(sends()).toHaveLength(sent);
   expect(store.activeHolds(ref, now)).toHaveLength(0);
-  expect(store.getMateProposal(c.proposal)?.state).toBe("pending");
+  expect(store.getLeadProposal(c.proposal)?.state).toBe("pending");
 });
 test("protected actions retain the existing exact review link even for a forged token", async () => {
   source();
-  const resolved = resolveChannelMate(
+  const resolved = resolveChannelLead(
     store,
     {
       approver: "alex",
@@ -1062,7 +1062,7 @@ test("mark complete confirms behind a second tap in Discord and records the assi
   expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });
   expect(store.proofAcceptance(run)).toBeNull();
   expect(sentText()).toContain("Accepted and finished.");
-  expect(store.getMateProposal(c.proposal)?.outcome).toMatchObject({ ok: true, via: "discord" });
+  expect(store.getLeadProposal(c.proposal)?.outcome).toMatchObject({ ok: true, via: "discord" });
 });
 
 test("a Discord guild channel follows a team conversation: a manager binds it with team 1, paired members' messages enter the shared queue, and replies come back to the channel", async () => {
@@ -1097,7 +1097,7 @@ test("a Discord guild channel follows a team conversation: a manager binds it wi
   expect(state.room(ID.installation, ROOM)).toMatchObject({ kind: "group", conversation, boundBy: "alex" });
   expect(inRoom("Add a criterion for the footer", SAM)).toBe(true);
   await processDiscordEvent(options); await drain();
-  const queued = store.handle.prepare("SELECT q.author, q.request_id, m.text FROM team_message q JOIN mate_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
+  const queued = store.handle.prepare("SELECT q.author, q.request_id, m.text FROM team_message q JOIN lead_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
   expect(queued).toEqual([{ author: "sam", request_id: expect.stringMatching(new RegExp(`^discord:${ROOM}:`)), text: "Add a criterion for the footer" }]);
   expect(options.subscriptionRunner).not.toHaveBeenCalled();
   const claim = domain.claimNext("fixture-runner", now)!;

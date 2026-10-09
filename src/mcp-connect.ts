@@ -8,7 +8,7 @@
  * with this console's callback, and sends the person to the service to sign
  * in. The callback trades the code for tokens, which live in the tool's own
  * secrets file (never the database, never a log), and the tool joins the
- * project like any other: tested, listed, and given to teammates under rules.
+ * project like any other: tested, listed, and given to subagents under rules.
  * The worker refreshes tokens before they expire.
  */
 import { createHash, randomBytes } from "node:crypto";
@@ -376,11 +376,11 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
   const to = basename(visit.repo);
   if (options.test === false) return { ok: true, said: `${service.label} is connected to ${to}.` };
   const tested = await testToolOf(store, visit.repo, spec.name, now, { home, ...(options.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) });
-  return tested?.ok ? { ok: true, said: `${service.label} is connected to ${to}: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}. Let a teammate use it from its page.` }
+  return tested?.ok ? { ok: true, said: `${service.label} is connected to ${to}: ${tested.tools.length} action${tested.tools.length === 1 ? "" : "s"}. Let a subagent use it from its page.` }
     : { ok: true, said: `${service.label} is signed in for ${to}, but its test didn't pass yet: ${tested?.problem ?? "no answer"}.` };
 }
 
-/** Keep connected services signed in: any token expiring within ten minutes is refreshed (the worker's pass, and before a teammate's call). */
+/** Keep connected services signed in: any token expiring within ten minutes is refreshed (the worker's pass, and before a subagent's call). */
 export async function refreshConnections(store: Store, repos: readonly string[], now: Date, options: { fetcher?: Fetch; home?: string } = {}): Promise<{ refreshed: number; problems: string[] }> {
   const fetcher = options.fetcher ?? fetch, home = options.home ?? homedir();
   const report = { refreshed: 0, problems: [] as string[] };

@@ -1,7 +1,7 @@
 /** Scripted Slack API and membership runner. No live Slack acceptance is claimed. */
 import { notifyPeople } from "./flow-people.js";
-import { TEAMMATE_TEMPLATES } from "./teammates.js";
-import { addressedTo as messageTeammateWords, replyToAsker } from "./teammate-desk.js";
+import { SUBAGENT_TEMPLATES } from "./subagents.js";
+import { askSubagent, replyToAsker } from "./subagent-desk.js";
 import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 import {
   mkdtempSync,
@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { MATE_ASK_TTL_MS, openStore, type Store } from "./store.js";
+import { LEAD_ASK_TTL_MS, openStore, type Store } from "./store.js";
 import { applyChatAskTap, chatAskButtons } from "./chat-ask.js";
 import { addApprover, propose, approve } from "./scope.js";
 import { ChatState, chatHash, type ChatContent } from "./chat-delivery-state.js";
@@ -38,7 +38,7 @@ import {
   planSlackRooms,
 } from "./slack-chat.js";
 import { knowledgeView } from "./project-knowledge.js";
-import { resolveChannelMate, parityGaps } from "./chat-channel.js";
+import { resolveChannelLead, parityGaps } from "./chat-channel.js";
 import { prepareSharedAction } from "./chat-actions.js";
 import { verifyApproverStanding } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
@@ -240,17 +240,17 @@ describe("Slack shared chat", () => {
   }
   function draft(
     payload: Record<string, unknown>,
-    kind: Parameters<Store["draftMateProposal"]>[0]["kind"] = "action",
+    kind: Parameters<Store["draftLeadProposal"]>[0]["kind"] = "action",
   ) {
     const binding = state.binding(ID.installation)!;
-    const resolved = resolveChannelMate(
+    const resolved = resolveChannelLead(
       store,
       { approver: binding.approver, approverGeneration: binding.generation },
       projects,
       now,
     );
     if (!resolved.ok) throw Error("session");
-    const opened = store.openMateTurn(
+    const opened = store.openLeadTurn(
       {
         approver: "alex",
         session: resolved.session.id,
@@ -264,9 +264,9 @@ describe("Slack shared chat", () => {
       now,
     );
     if (!opened.ok) throw Error("turn");
-    const started = store.startMateTurn(opened.id, now);
+    const started = store.startLeadTurn(opened.id, now);
     if (!started.ok) throw Error("start");
-    const id = store.draftMateProposal(
+    const id = store.draftLeadProposal(
       {
         thread: resolved.thread.id,
         turn: opened.id,
@@ -276,7 +276,7 @@ describe("Slack shared chat", () => {
       },
       now,
     );
-    store.finalizeMateTurn(
+    store.finalizeLeadTurn(
       opened.id,
       started.generation,
       { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 },
@@ -554,7 +554,7 @@ describe("Slack shared chat", () => {
     expect(knowledgeView(store, repo, "alex").knowledge.instructions).toBe(
       "Keep updates concise.",
     );
-    expect(store.getMateProposal(card.proposal)?.outcome).toMatchObject({
+    expect(store.getLeadProposal(card.proposal)?.outcome).toMatchObject({
       via: "slack",
       ok: true,
     });
@@ -566,7 +566,7 @@ describe("Slack shared chat", () => {
   test("protected changes always use the existing secure review link, including forged callbacks", async () => {
     source();
     const binding = state.binding(ID.installation)!;
-    const resolved = resolveChannelMate(
+    const resolved = resolveChannelLead(
       store,
       { approver: "alex", approverGeneration: binding.generation },
       projects,
@@ -634,7 +634,7 @@ describe("Slack shared chat", () => {
     await tap(card.token, card.ts, { actions: [{ action_id: "toolroll_link_2", action_ts: "1789700000.900002" }] });
     expect(sends()).toHaveLength(sent);
     expect(store.activeHolds(ref, now)).toHaveLength(0);
-    expect(store.getMateProposal(card.proposal)?.state).toBe("pending");
+    expect(store.getLeadProposal(card.proposal)?.state).toBe("pending");
   });
   test("revocation during a provider wait suppresses tools, proposals and outbound data", async () => {
     answers.push({
@@ -1053,7 +1053,7 @@ describe("Slack shared chat", () => {
     expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });
     expect(store.proofAcceptance(run)).toBeNull();
     expect(String(sends().at(-1)?.args["text"])).toContain("Accepted and finished.");
-    expect(store.getMateProposal(c.proposal)?.outcome).toMatchObject({ ok: true, via: "slack" });
+    expect(store.getLeadProposal(c.proposal)?.outcome).toMatchObject({ ok: true, via: "slack" });
   });
 
 
@@ -1094,7 +1094,7 @@ describe("Slack shared chat", () => {
     // sam's message in the channel is saved to the conversation as sam, once.
     expect(inRoom("Add a criterion for the footer", "USAM", "1789700000.000777")).toBe(true);
     await processSlackEvent(options); await drain();
-    const queued = () => store.handle.prepare("SELECT q.author, q.request_id, m.text FROM team_message q JOIN mate_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
+    const queued = () => store.handle.prepare("SELECT q.author, q.request_id, m.text FROM team_message q JOIN lead_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
     expect(queued()).toEqual([{ author: "sam", request_id: expect.stringMatching(/^slack:CROOM:/), text: "Add a criterion for the footer" }]);
     expect(runner).not.toHaveBeenCalled();
     // The lead answers (the runtime's job, simulated); the next cycle carries the reply to the channel.
@@ -1249,13 +1249,13 @@ describe("Slack shared chat", () => {
     expect(store.getFlowCard(third)).toMatchObject({ stage: "ship" });
   });
 
-  test("a teammate's question arrives with its options and Answer in words; a tap answers it once, a stale tap changes nothing, and Answer in words takes the next message (v93)", async () => {
+  test("a subagent's question arrives with its options and Answer in words; a tap answers it once, a stale tap changes nothing, and Answer in words takes the next message (v93)", async () => {
     now = new Date(now.getTime() + 30_000);
     const flow = store.createFlow({ repo, name: "Support", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, now);
-    const mate = store.createTeammate({ repo, handle: "maya", soul: TEAMMATE_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
+    const mate = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     const ask = (title: string) => {
       const card = store.addFlowCard({ flow, title, description: null, stage: "inbox", by: "alex" }, now);
-      const id = store.openTeammateQuestion({ teammate: mate, card, entry: 1, question: `Refund all of ${title}?`, options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, now)!;
+      const id = store.openSubagentQuestion({ subagent: mate, card, entry: 1, question: `Refund all of ${title}?`, options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, now)!;
       notifyPeople(store, store.getFlowCard(card)!, ["alex"], null, { key: `teammate-q:${id}`, attention: true, subject: `Maya · Support asks about “${title}”`, body: "Over my $50 limit." }, now);
       return id;
     };
@@ -1277,15 +1277,15 @@ describe("Slack shared chat", () => {
     const firstTs = partTs();
     // A tap on the wrong message changes nothing; the right one answers, once, and the notice says so without buttons.
     await press("standing_orders_question_choice", buttons[1]!.value!, "1789700999.000001");
-    expect(store.teammateQuestion(first)!.state).toBe("open");
+    expect(store.subagentQuestion(first)!.state).toBe("open");
     await press("standing_orders_question_choice", buttons[1]!.value!, firstTs);
-    expect(store.teammateQuestion(first)).toMatchObject({ state: "answered", choice: "o2", answeredBy: "alex", answeredVia: "slack" });
+    expect(store.subagentQuestion(first)).toMatchObject({ state: "answered", choice: "o2", answeredBy: "alex", answeredVia: "slack" });
     const repainted = sends().at(-1)!;
     expect(repainted).toMatchObject({ method: "chat.update", args: { ts: firstTs } });
     expect(String(repainted.args.text)).toContain("✅ You answered: Half.");
     expect(buttonsOf(repainted).map(one => one.text.text)).toEqual(["Open"]);
     await press("standing_orders_question_choice", buttons[0]!.value!, firstTs);
-    expect(store.teammateQuestion(first)!.choice).toBe("o2");
+    expect(store.subagentQuestion(first)!.choice).toBe("o2");
     // In words: the next message is the answer.
     const second = ask("order 43");
     await planSlackNotifications(options);
@@ -1297,7 +1297,7 @@ describe("Slack shared chat", () => {
     receive("Refund $50 and send a coupon for the rest.");
     await processSlackEvent(options);
     await drain();
-    expect(store.teammateQuestion(second)).toMatchObject({ state: "answered", choice: null, answer: "Refund $50 and send a coupon for the rest.", answeredVia: "slack" });
+    expect(store.subagentQuestion(second)).toMatchObject({ state: "answered", choice: null, answer: "Refund $50 and send a coupon for the rest.", answeredVia: "slack" });
     expect(String(sends().at(-1)!.args.text)).toContain("It picks the card up again now.");
   });
 
@@ -1416,7 +1416,7 @@ describe("Slack shared chat", () => {
     const third = askPart();
     const safari = buttonsOf(sends().at(-1)!)[0]!.value!;
     const before = (runner as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
-    now = new Date(now.getTime() + MATE_ASK_TTL_MS);
+    now = new Date(now.getTime() + LEAD_ASK_TTL_MS);
     state.lease(ID.installation, "test", now);
     sent = sends().length;
     await press(safari, String(third.message));
@@ -1444,25 +1444,26 @@ describe("Slack shared chat", () => {
     expect(chatAskButtons(state, own, now).map(one => one.label)).toEqual(["Login", "Signup", "Something else"]);
   });
 
-  test("a message to a teammate by name lands on its desk instead of the lead, and its answer comes back in Slack (v96)", async () => {
+  test("a message naming a subagent goes to the lead (D5), and what the subagent answers when asked comes back in Slack", async () => {
     now = new Date(now.getTime() + 30_000);
-    store.createTeammate({ repo, handle: "maya", soul: TEAMMATE_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
+    store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     const turnsBefore = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()!.n);
     receive("@maya where's order 2201?");
     await processSlackEvent(options);
     await drain();
-    expect(String(sends().at(-1)!.args.text)).toContain("Maya has it. The answer comes here when it's done.");
+    // The transport passes nothing on by itself: the lead reads it, and asks Maya with a card its person confirms.
+    expect(store.listFlows([repo]).some(one => one.name === "Maya's desk")).toBe(false);
+    expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()!.n)).toBeGreaterThan(turnsBefore);
+    // Once asked (the confirmed card), Maya's answer reaches whoever asked, here in Slack.
+    const asked = askSubagent(store, store.subagentByHandle(repo, "maya")!, { who: "alex", via: "the lead" }, "where's order 2201?", now);
+    expect(asked).toMatchObject({ ok: true });
     const desk = store.listFlows([repo]).find(one => one.name === "Maya's desk")!;
     const [card] = store.flowCards(desk.id, false);
-    expect(card).toMatchObject({ title: "where's order 2201?", createdBy: "alex", source: { kind: "message", label: "Slack message" } });
-    expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()!.n)).toBe(turnsBefore);
-    replyToAsker(store, desk, card!, store.teammateByHandle(repo, "maya")!, "Order 2201 shipped yesterday.", now);
+    replyToAsker(store, desk, card!, store.subagentByHandle(repo, "maya")!, "Order 2201 shipped yesterday.", now);
     await planSlackNotifications(options);
     await drain();
     expect(String(sends().at(-1)!.args.text)).toContain("Maya · Support: where's order 2201?");
     expect(String(sends().at(-1)!.args.text)).toContain("Order 2201 shipped yesterday.");
-    // Not addressed to a teammate ("Maya can …"), it still goes to the lead.
-    expect(messageTeammateWords("Maya can refund up to $100 now")).toBeNull();
   });
 
   test("a Slack channel feeds a flow: 'flow N' from a paired approver connects it, anyone's message is a card, a thread reply joins it, and an Update zone answers in the thread (v89)", async () => {

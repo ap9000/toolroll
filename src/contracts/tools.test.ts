@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { mintCoordinator } from "../coordinator.js";
-import { MATE_TOOL_SCHEMAS, MATE_TOOLS } from "../mate-tools.js";
+import { LEAD_TOOL_SCHEMAS, LEAD_TOOLS } from "../lead-tools.js";
 import { MODERN, serveMcp } from "../mcp.js";
 import { openStore } from "../store.js";
 import { parseContract, toModelSchema } from "./contract.js";
@@ -114,7 +114,7 @@ function gatewayToolsList(): { name: string; inputSchema: Json }[] {
 describe("the lead and gateway tool registries", () => {
   it("cover every tool the model and tools/list are shown, each with an input and an output schema", () => {
     expect(NAMES.lead).toHaveLength(52);
-    expect(MATE_TOOL_SCHEMAS.map(one => one.name)).toEqual(NAMES.lead);
+    expect(LEAD_TOOL_SCHEMAS.map(one => one.name)).toEqual(NAMES.lead);
     expect(Object.keys(LEAD_TOOL_OUTPUTS)).toEqual(NAMES.lead);
     expect(NAMES.gateway).toHaveLength(25);
     const listed = gatewayToolsList();
@@ -128,8 +128,8 @@ describe("the lead and gateway tool registries", () => {
   });
 
   it("show the model and coordinators exactly the derived schemas, under unchanged names and descriptions", () => {
-    for (const tool of MATE_TOOL_SCHEMAS) expect(tool.inputSchema, tool.name).toEqual(toModelSchema(LEAD_TOOL_INPUTS[tool.name as keyof typeof LEAD_TOOL_INPUTS]));
-    expect(Object.fromEntries(MATE_TOOL_SCHEMAS.map(one => [one.name, one.description]))).toEqual(OLD.leadDescriptions);
+    for (const tool of LEAD_TOOL_SCHEMAS) expect(tool.inputSchema, tool.name).toEqual(toModelSchema(LEAD_TOOL_INPUTS[tool.name as keyof typeof LEAD_TOOL_INPUTS]));
+    expect(Object.fromEntries(LEAD_TOOL_SCHEMAS.map(one => [one.name, one.description]))).toEqual(OLD.leadDescriptions);
     for (const tool of gatewayToolsList()) expect(tool.inputSchema, tool.name).toEqual(toModelSchema(GATEWAY_TOOL_INPUTS[tool.name as keyof typeof GATEWAY_TOOL_INPUTS]));
   });
 });
@@ -140,7 +140,7 @@ describe.each(TABLE)("$surface tool $tool", ({ surface, tool }) => {
   const calls = CALLS[surface][tool]!;
   const read = (value: unknown): SampleVerdict => {
     if (surface === "gateway") return verdict(input, value);
-    const parsed = MATE_TOOLS.find(one => one.name === tool)!.read({} as never, value as Json);
+    const parsed = LEAD_TOOLS.find(one => one.name === tool)!.read({} as never, value as Json);
     return parsed.ok ? { ok: true } : { ok: false, lines: parsed.issues.map(issue => issue.line) };
   };
 
@@ -162,7 +162,7 @@ describe.each(TABLE)("$surface tool $tool", ({ surface, tool }) => {
     assertContract({ schema: input, read, valid: [...valid, ...loose], invalid: runtimeInvalid });
     if (stripsKeys) {
       for (const call of calls) {
-        const reader = MATE_TOOLS.find(one => one.name === tool)!.read;
+        const reader = LEAD_TOOLS.find(one => one.name === tool)!.read;
         expect(reader({} as never, { ...call, zz_unknown: 1 })).toEqual(reader({} as never, call));
       }
       for (const call of LOOSE[tool] ?? []) expect(input.safeParse(call).success).toBe(false);
@@ -198,7 +198,7 @@ describe.each(TABLE)("$surface tool $tool", ({ surface, tool }) => {
 describe("a call's refusal", () => {
   it("names every invalid field at once, ignores extra lead keys, and keeps nested flow validation", () => {
     const lead = (tool: string, call: Json) => {
-      const read = MATE_TOOLS.find(one => one.name === tool)!.read({} as never, call);
+      const read = LEAD_TOOLS.find(one => one.name === tool)!.read({} as never, call);
       return read.ok ? [] : read.issues.map(issue => issue.line);
     };
     expect(lead("propose_task", { repo: "r1", title: "t", goal: "g".repeat(8_001), acceptance: [{ id: "c1", statement: "s", evidence: [] }], planing: "auto" })).toEqual([
@@ -206,10 +206,10 @@ describe("a call's refusal", () => {
       "acceptance[0].evidence: at least 1 item",
     ]);
     expect(lead("propose_agents", { task: "t-42", agent: { provider: "claude" } })).toEqual(["agent.model: required"]);
-    expect(MATE_TOOLS.find(one => one.name === "propose_agents")!.read({} as never, {
+    expect(LEAD_TOOLS.find(one => one.name === "propose_agents")!.read({} as never, {
       task: "t-42", role: "builder", agent: { provider: "claude", model: "opus", zz_unknown: 1 },
     })).toEqual({ ok: true, value: { task: "t-42", role: "builder", agent: { provider: "claude", model: "opus" } } });
-    expect(MATE_TOOLS.find(one => one.name === "propose_action")!.read({} as never, { operation: "knowledge_instructions", repo: "r1", instructions: "x", password: "bad" }))
+    expect(LEAD_TOOLS.find(one => one.name === "propose_action")!.read({} as never, { operation: "knowledge_instructions", repo: "r1", instructions: "x", password: "bad" }))
       .toEqual({ ok: true, value: { operation: "knowledge_instructions", repo: "r1", instructions: "x", password: "bad" } });
     expect(LEAD_TOOL_OPTIONS.propose_flow).toBeDefined();
     expect(lead("propose_flow", { operation: "create", repo: "r1", steps: [{ kind: "inbox", title: "Inbox", onFail: "x" }] })).toEqual(["steps[0]: unknown key 'onFail' (did you mean ifFails?)"]);

@@ -332,7 +332,7 @@ ${AUTHORITY_LINE}
   transcripts following.
 - **projects** (\`/projects\`): enrol, open, or switch repositories; the
   project name in the header is the one-tap switcher on every screen.
-- **chat** (\`/chat\`): the mate — a conversation across every project
+- **chat** (\`/chat\`): the lead — a conversation across every project
   that only PROPOSES (file, reorder, reserve, hold, rewrite a scope,
   cancel, answer a decision); each proposal is a card the person
   confirms. Coordinators over the MCP gateway propose the same way, and
@@ -354,7 +354,7 @@ ${AUTHORITY_LINE}
 - \`toolroll peek\`: one pane per live agent (digits focus, \`q\`
   leaves); \`peek <run>\` follows one; \`peek --tmux\` opens a tmux window
   per run.
-- \`toolroll chat\`: the mate in the terminal (\`--say "…"\` for one
+- \`toolroll chat\`: the lead in the terminal (\`--say "…"\` for one
   turn); \`toolroll proposals\` lists and confirms coordinator
   proposals.
 - \`toolroll task add "<title>" --report\`: a SCOUT task — a
@@ -373,7 +373,8 @@ needs you · queued · waiting · building · done · failed; a *scope* is the
 contract a person approves; a *decision* is a typed question an agent
 parked; a *hold* pauses the next attempt; a *stale approval* means the
 approval no longer matches how builds are routed — approving again fixes
-it; a *scout* delivers a report; the *mate* proposes and never acts.
+it; a *scout* delivers a report; the *lead* proposes and never acts, and
+its *subagents* work within the rules you write for them.
 `,
 };
 

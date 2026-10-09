@@ -4,7 +4,7 @@
  * own behaviour (approvals, results, flows moving cards, chat buttons, storage) runs against the real CLI, console,
  * worker, git and browser; only the model is scripted. Toolroll finds the stand-in on the world's PATH and talks to it
  * exactly as it talks to the real CLIs (src/provider.ts, src/invoke.ts, src/exec.ts, src/subscription-chat.ts,
- * src/teammates.ts, src/flow-draft.ts, src/task-sizing.ts):
+ * src/subagents.ts, src/flow-draft.ts, src/task-sizing.ts):
  *
  *   claude  -p … --output-format json | stream-json [--json-schema …] [--resume <id>]
  *   codex   exec [resume <id>] --json … [--output-schema <file>] <brief | ->
@@ -18,7 +18,7 @@
  *   lead      { steps: [{ text, calls: [{ name, arguments }] }, …] } — one step per process; a step's calls are the
  *             lead's tool calls (Toolroll runs them and starts the next step with their results); the last step's
  *             calls are []. `when` matches the operator's last message.
- *   teammate  the TURN_SCHEMA answer ({ action, answer, text, note, question, options, reason, tool, input, remember });
+ *   subagent  the TURN_SCHEMA answer ({ action, answer, text, note, question, options, reason, tool, input, remember });
  *             unset fields are "" ([] for options), and an object `input` is written as JSON.
  *   draft     { text }                       sizing { size, risky, reason }      reviewer { findings }
  *   memory    { positive, negative, gaps }   scout  { report } or { decision }
@@ -124,7 +124,7 @@ export function turnsOf(entries) {
 
 // ------------------------------------------------------------------ the stand-in
 
-export const ROLES = ["lead", "teammate", "draft", "sizing", "reviewer", "memory", "scout", "planner", "builder"];
+export const ROLES = ["lead", "subagent", "draft", "sizing", "reviewer", "memory", "scout", "planner", "builder"];
 const DONE_FILE = /write ONE file named exactly (STANDING-ORDERS-DONE-[0-9a-f]{16}\.json)/;
 const PLAN_FILE = /`(STANDING-ORDERS-PLAN-[0-9a-f]{16}\.json)`/;
 const PARK_FILE = /(STANDING-ORDERS-PARK-[0-9a-f]{16}\.json)/;
@@ -167,7 +167,7 @@ export function readCall(provider, argv) {
 /** Which kind of turn this is, from its schema and its words. */
 export function roleOf(call, prompt) {
   const props = call.schema?.properties ?? {};
-  if (props.action && props.remember) return "teammate";
+  if (props.action && props.remember) return "subagent";
   if (props.size && props.risky) return "sizing";
   if (props.findings) return "reviewer";
   if (props.calls && props.text) return /You are auditing one past session/.test(prompt) ? "memory" : "lead";
@@ -296,7 +296,7 @@ async function perform(role, answer, { prompt, call, cwd, step }) {
       const calls = step >= steps.length ? [] : (one.calls ?? []).map((each, at) => ({ id: `call-${step + 1}-${at + 1}`, name: each.name, argumentsJson: JSON.stringify(each.arguments ?? {}) }));
       return { value: { text: one.text ?? "", calls }, mcp };
     }
-    case "teammate": {
+    case "subagent": {
       const value = { action: "route", answer: "", text: "", note: "", question: "", options: [], reason: "Scripted for this journey.", tool: "", input: "", remember: "", ...answer };
       for (const key of ["delayMs", "fail", "mcp"]) delete value[key];
       if (typeof value.input !== "string") value.input = JSON.stringify(value.input);

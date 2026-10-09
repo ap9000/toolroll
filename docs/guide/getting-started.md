@@ -51,11 +51,11 @@ you approve it, and every result waits for you to accept it.
 
 ## Start from a kit
 
-**Starter kits** (linked from an empty chat, Flows and Teammates) set up a
-working team in one click: an AI teammate, the flow it works, and its
+**Starter kits** (linked from an empty chat, Flows and Settings → Lead) set up a
+working team in one click: a subagent, the flow it works, and its
 buttons. Each kit's page is a checklist of what's left, with the next step on
-each line: connect email, connect the tools the teammate uses, and **Try it**,
-which puts a sample card in front of the teammate so you see it work.
+each line: connect email, connect the tools the subagent uses, and **Try it**,
+which puts a sample card in front of the subagent so you see it work.
 
 - **Support desk:** Maya drafts a reply to each customer email and you approve
   it before it goes out; anything it can't answer comes to you.

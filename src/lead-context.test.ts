@@ -12,8 +12,8 @@ import { register } from "./runner.js";
 import { acquire, finalize } from "./claim.js";
 import { leadClaim } from "./lead-voice.js";
 import { checkLeadIdentity, DEFAULT_LEAD_NAME, DEFAULT_LEAD_PERSONA, leadIdentityOf } from "./lead-identity.js";
-import { MATE_CONTRACT, MATE_CONTRACT_VERSION } from "./mate-contract.js";
-import { MATE_TOOL_SCHEMAS, projectLabelForMate, redactForMate } from "./mate-tools.js";
+import { LEAD_CONTRACT, LEAD_CONTRACT_VERSION } from "./lead-contract.js";
+import { LEAD_TOOL_SCHEMAS, projectLabelForLead, redactForLead } from "./lead-tools.js";
 
 const T0 = new Date("2026-10-02T13:05:00.000Z");
 const WEB = "/repo/web-shop", API = "/repo/payments-api";
@@ -95,7 +95,7 @@ describe("the lead's bundle", () => {
     decide(WEB, "Keep web-shop on Node", "alex.pelletier wants one runtime.", T0);
     store.setLeadConfig("alex.pelletier", "Alex", "Answer alex.pelletier briefly.", T0);
     const view = { repos: [WEB, API], names: ["alex.pelletier", "alex"] };
-    const data = bundle({ redact: text => redactForMate(text, view), projectName: (path, index) => projectLabelForMate(path, index, view.names) });
+    const data = bundle({ redact: text => redactForLead(text, view), projectName: (path, index) => projectLabelForLead(path, index, view.names) });
     const document = JSON.stringify(data);
     // Titles, decisions, the persona and the omission notes are all scrubbed; the lead's own name is the owner's choice...
     expect(data.needsYou[0].title).toBe("Ask [approver] about [path]");
@@ -164,17 +164,21 @@ describe("the lead's bundle", () => {
     expect(["Slack", "Discord", "Teams", "Telegram"].map(leadChannelOf)).toEqual(["slack", "discord", "teams", "telegram"]);
     expect(leadChannelOf("Mattermost")).toBeUndefined();
     expect(bundle({ channel: undefined }).channel).toBeNull();
-    expect(MATE_CONTRACT_VERSION).toBe(47);
-    expect(MATE_CONTRACT).toContain("channel: where this conversation is; fit your replies to it");
+    expect(LEAD_CONTRACT_VERSION).toBe(48);
+    expect(LEAD_CONTRACT).toContain("channel: where this conversation is; fit your replies to it");
     // The contract names the flow tools and no longer carries their detail.
-    expect(MATE_CONTRACT).toContain("Read get_flows");
-    for (const detail of ["Jev", "soul file", "goto: <answer>", "Issues to PRs", "Holding, Build and Research"]) expect(MATE_CONTRACT).not.toContain(detail);
-    const description = (name: string) => MATE_TOOL_SCHEMAS.find(one => one.name === name)!.description;
+    expect(LEAD_CONTRACT).toContain("Read get_flows");
+    for (const detail of ["Jev", "soul file", "goto: <answer>", "Issues to PRs", "Holding, Build and Research"]) expect(LEAD_CONTRACT).not.toContain(detail);
+    const description = (name: string) => LEAD_TOOL_SCHEMAS.find(one => one.name === name)!.description;
     expect(description("get_flows")).toContain("Holding, Build and Research (each files an ordinary task), Person decides, Message, Done");
     expect(description("get_flows")).toContain("soul file");
     expect(description("get_flows")).toContain("'flow <the flow's number>'");
     expect(description("propose_flow")).toContain("use decider 'me' when they decide");
     expect(description("propose_flow")).toContain("The Issues to PRs template");
-    expect(description("propose_flow")).toContain("propose_teammate use_tool, stop_tool and tool_rule");
+    expect(description("propose_flow")).toContain("propose_subagent use_tool, stop_tool and tool_rule");
+    // D5: the lead delegates to its named subagents; a message naming one is the lead's to pass on, with a card.
+    expect(LEAD_CONTRACT).toContain("When the operator says 'ask Rosa to …' or writes to one by name ('@rosa, …'), delegate with propose_subagent ask");
+    expect(description("propose_subagent")).toContain("ask: delegate to a subagent");
+    expect(description("get_flows")).toContain("propose_subagent ask puts it on its desk once they confirm");
   });
 });

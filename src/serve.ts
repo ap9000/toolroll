@@ -98,7 +98,7 @@ import { firstRunSteps,signInCommandFor,type FirstRunStep,type FirstTaskSuggesti
 import { installMethod } from "./install-method.js";
 import { createIntegrationMonitor } from "./integrations.js";
 import { logEvent } from "./log.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { type CatalogSeams } from "./model-catalog.js";
 import { modeTermsFromJson } from "./modes.js";
 import { envValue } from "./names.js";
@@ -140,16 +140,16 @@ import { createPeopleHandlers } from './server/people-tokens.js';
 import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
-import { BODY_CAP,chromeScript,decisionsFor,DEMO_BANNER,DEMO_BANNER_SHORT,escape,focusDocument,form,KBD_HELP,LEAD_BY_DEFAULT_FACT,loginHref,matchTaskPath,mateBrowserMessages,mateChatVersion,NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,page,PersistentSessions,pinnedTheme,projectChatHref,QUEUE_VIEW,redactedPath,redirect,refuse,requestContext,respond,safeReturn,screen,SENSITIVE_INPUT,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,shell,SHUTDOWN_WAIT_MS,sidebarScript,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,ssoStepUps,TASK_FORM_BODY_CAP,taskChatHref,teamProposalCardParts,wrongHostPage,type ApprovalNonce,type ChatEnablement,type Chrome,type DecisionServer,type LiveTurn,type ProjectPeek,type ReplacedThread,type Screen,type ServeOptions,type SsoIntent,type TaskChatFocus,type Who } from "./server/shared.js";
+import { BODY_CAP,chromeScript,decisionsFor,DEMO_BANNER,DEMO_BANNER_SHORT,escape,focusDocument,form,KBD_HELP,LEAD_BY_DEFAULT_FACT,loginHref,matchTaskPath,leadBrowserMessages,leadChatVersion,NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,page,PersistentSessions,pinnedTheme,projectChatHref,QUEUE_VIEW,redactedPath,redirect,refuse,requestContext,respond,safeReturn,screen,SENSITIVE_INPUT,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,shell,SHUTDOWN_WAIT_MS,sidebarScript,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,ssoStepUps,TASK_FORM_BODY_CAP,taskChatHref,teamProposalCardParts,wrongHostPage,type ApprovalNonce,type ChatEnablement,type Chrome,type DecisionServer,type LiveTurn,type ProjectPeek,type ReplacedThread,type Screen,type ServeOptions,type SsoIntent,type TaskChatFocus,type Who } from "./server/shared.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
 import { readSsoSettings } from "./sso-settings.js";
-import type { ChatConfig,CoordinatorProposal,DirectChatProviderId,MateMessage,MateProposal,MateTurn,SubscriptionChatProviderId } from "./store.js";
+import type { ChatConfig,CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadTurn,SubscriptionChatProviderId } from "./store.js";
 import {
 LEAD_THREAD,
 type Decision,
-type MateAsk,type MateThreadScope
+type LeadAsk,type LeadThreadScope
 } from "./store.js";
 import { waitingUpdate } from "./toolroll-update.js";
 import { PACKAGE_VERSION } from "./version.js";
@@ -461,7 +461,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const snapshot = reply.snapshot;
     if (!snapshot?.selected || !snapshot.proposals) return reply;
     return { ...reply, snapshot: { ...snapshot, proposals: snapshot.proposals.map(summary => {
-      const proposal = store.getMateProposal(summary.id);
+      const proposal = store.getLeadProposal(summary.id);
       if (!proposal || proposal.thread !== snapshot.selected!.threadId) return summary;
       const decision = proposal.kind === 'answer' && typeof proposal.payload['decision'] === 'number' ? store.getDecision(proposal.payload['decision']) : null;
       return { ...summary, card: teamProposalCardParts(store, actor, proposal, snapshot, csrf, decision, clock(), teamChatProvider).card };
@@ -772,10 +772,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const shared=/^\/chat\/(?:action\/([0-9]{1,15})|proposal\/([0-9]{1,15})\/(?:confirm|dismiss))$/.exec(url.pathname);
     if (shared) {
-      const proposal = store.getMateProposal(Number(shared[1] ?? shared[2]));
+      const proposal = store.getLeadProposal(Number(shared[1] ?? shared[2]));
       const action = proposal?.kind === 'action' ? sharedActionPayload(proposal.payload) : null;
       const room = proposal ? store.handle.prepare('SELECT id FROM team_conversation WHERE thread=?').get(proposal.thread) : null;
-      let admitted = proposal && store.getMateThread(proposal.thread)?.approver === who.name;
+      let admitted = proposal && store.getLeadThread(proposal.thread)?.approver === who.name;
       if (room && who.via === 'cookie') {
         try { team.domain.access({ name: who.name, generation: who.session.generation }, String(room['id']), 'contributor'); admitted = true; }
         catch { admitted = false; }
@@ -961,39 +961,39 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   const chatFetcher = options.chatFetcher ?? fetch;
   const chatEnv = options.chatEnv ?? process.env;
-  /** The mate's last non-answer per BROWSER session (keyed by its csrf —
+  /** The lead's last non-answer per BROWSER session (keyed by its csrf —
    * never by name, so two browsers on one account do not read each other's
-   * notes), bound to the mate turn it came from so a note from a session
+   * notes), bound to the lead turn it came from so a note from a session
    * that has since ended never shows; bounded; read once. */
-  const mateSaid = new Map<string, { turn: number | null; message: string }>();
+  const leadSaid = new Map<string, { turn: number | null; message: string }>();
   /** The unified conversation's rows for one reader (package 2): the SAME
    * rows the page renders and the status poll's fragments re-render, so a
    * live update can never show a card the page would not. A task lens
-   * keeps only that task's coordinator cards; the mate's own thread is one
+   * keeps only that task's coordinator cards; the lead's own thread is one
    * thread regardless of lens. */
-  function mateConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
-    messages: MateMessage[]; proposals: MateProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: MateTurn | null; recent: MateTurn[]; ask: MateAsk | null; asks: Map<number, MateAsk>;
+  function leadConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
+    messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; asks: Map<number, LeadAsk>;
     previous: ReplacedThread | null;
   } {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
     const coordinatorProposals = focusTask !== null ? allCoordinatorRows.filter(one => focusTask.family.versions.some(version => version.id === one.payload["task"]))
       : chatProject !== null ? allCoordinatorRows.filter(one => one.repo === chatProject) : allCoordinatorRows;
-    const opened = store.openMateThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
-    const proposals = store.listMateProposals(opened.thread.id);
+    const opened = store.openLeadThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
+    const proposals = store.listLeadProposals(opened.thread.id);
     // One reply runs at a time per person; this thread shows it only when
     // the reply is its own.
-    const live = store.liveMateTurnFor(who.name);
-    const messages = store.listMateMessages(opened.thread.id, 40);
+    const live = store.liveLeadTurnFor(who.name);
+    const messages = store.listLeadMessages(opened.thread.id, 40);
     // The lead's question with buttons, while its reply is the last word in the thread.
     const last = messages.at(-1);
-    const ask = last?.role === "assistant" && last.turn !== null && store.getMateTurn(last.turn)?.approver === who.name ? store.mateAskOpen(last.turn, now) : null;
+    const ask = last?.role === "assistant" && last.turn !== null && store.getLeadTurn(last.turn)?.approver === who.name ? store.leadAskOpen(last.turn, now) : null;
     // Answered questions stay readable above the answer; only their buttons go.
-    const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.mateAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
+    const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.leadAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
     // The thread a ceiling change replaced (ruling 9): read after the open, display only.
     const replaced = store.replacedLeadThread(opened.thread);
-    const previousProposals = replaced === null ? [] : store.listMateProposals(replaced.id);
+    const previousProposals = replaced === null ? [] : store.listLeadProposals(replaced.id);
     return {
-      previous: replaced === null ? null : { messages: store.listMateMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
+      previous: replaced === null ? null : { messages: store.listLeadMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
       messages,
       ask,
       asks,
@@ -1001,12 +1001,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       decisions: decisionsFor(store, [...proposals, ...coordinatorProposals]),
       coordinatorProposals,
       pending: live !== null && live.thread === opened.thread.id ? live : null,
-      recent: store.recentMateTurns(who.name, 5),
+      recent: store.recentLeadTurns(who.name, 5),
     };
   }
   /** The thread a chat surface speaks in (v77): the task's own thread, the
    * project's, or the lead conversation across every project. */
-  function chatScopeOf(focusTask: TaskChatFocus | null, chatProject: string | null): MateThreadScope {
+  function chatScopeOf(focusTask: TaskChatFocus | null, chatProject: string | null): LeadThreadScope {
     return focusTask !== null ? { kind: "task", key: focusTask.id } : chatProject !== null ? { kind: "project", key: chatProject } : LEAD_THREAD;
   }
   const liveTurns = new Map<number, LiveTurn>();
@@ -1018,19 +1018,19 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function dockedConversation(who: Who, focusTask: TaskChatFocus | null, chatProject: string | null, now: Date, back: string, resultRunId: number | null = null): import("./browser-workspace.js").BrowserConversation | null {
     if (who.via !== "cookie" || who.role !== "approver" || (focusTask === null && chatProject === null)) return null;
     const enabled = chatEnablement();
-    const principal = enabled.ok ? matePrincipal(who) : null;
+    const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    let session = store.activeMateSession(who.name);
+    let session = store.activeLeadSession(who.name);
     if ((session === null || session.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription" && !requestContext.getStore()?.workspaceRead) {
-      startMateConversation(who, principal, enabled, 0, false, now);
-      session = store.activeMateSession(who.name);
+      startLeadConversation(who, principal, enabled, 0, false, now);
+      session = store.activeLeadSession(who.name);
     }
     if (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation) return null;
-    const rows = mateConversationRows(who, principal, focusTask, now, chatProject);
+    const rows = leadConversationRows(who, principal, focusTask, now, chatProject);
     return {
-      sessionId: session.id, user: session.approver, version: mateChatVersion({ ...rows, focusTask }),
-      messages: mateBrowserMessages(rows, who.session.csrf, back, { task: focusTask?.id ?? null, project: chatProject }),
-      pendingTurnId: rows.pending?.id ?? null, requestId: randomBytes(16).toString("hex"), maxChars: MATE_MESSAGE_MAX_CHARS,
+      sessionId: session.id, user: session.approver, version: leadChatVersion({ ...rows, focusTask }),
+      messages: leadBrowserMessages(rows, who.session.csrf, back, { task: focusTask?.id ?? null, project: chatProject }),
+      pendingTurnId: rows.pending?.id ?? null, requestId: randomBytes(16).toString("hex"), maxChars: LEAD_MESSAGE_MAX_CHARS,
       taskId: focusTask?.id ?? null, resultRunId, project: focusTask === null ? chatProject : null,
     };
   }
@@ -1039,19 +1039,19 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** Start the person's lead conversation: the session every later turn
    * debits (a membership spends nothing; direct API gets a per-conversation
    * ceiling) and its thread. Starting ends any older session. */
-  function startMateConversation(who: Who & { via: "cookie" }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true }>, ceilingUsd: number, follow: boolean, now: Date): number {
+  function startLeadConversation(who: Who & { via: "cookie" }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true }>, ceilingUsd: number, follow: boolean, now: Date): number {
     const ceilingMicrousd = enabled.billing === "subscription" ? 0 : Math.round(ceilingUsd * 1_000_000);
     const termsDigest = createHash("sha256").update(`${ceilingMicrousd}\n${principal.ceilingDigest}`).digest("hex");
-    const sessionId = store.mintMateSession(
+    const sessionId = store.mintLeadSession(
       { approver: who.name, approverGeneration: principal.generation, credentialKey: enabled.credentialKey, ceilingMicrousd, ceilingDigest: principal.ceilingDigest, termsDigest },
       now,
     );
-    const thread = store.openMateThread(who.name, principal.ceilingDigest, now).thread;
-    if (follow) configureLeadFollow(store, principal, store.getMateSession(sessionId)!, thread, true, now);
-    mateSaid.delete(who.session.csrf);
+    const thread = store.openLeadThread(who.name, principal.ceilingDigest, now).thread;
+    if (follow) configureLeadFollow(store, principal, store.getLeadSession(sessionId)!, thread, true, now);
+    leadSaid.delete(who.session.csrf);
     return sessionId;
   }
-  function matePrincipal(who: Who & { via: "cookie" }): VerifiedApprover | null {
+  function leadPrincipal(who: Who & { via: "cookie" }): VerifiedApprover | null {
     const verified = verifyApproverStanding(store, who.name, who.session.generation, managedRepos());
     return verified.ok ? verified.who : null;
   }
@@ -1216,11 +1216,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       s = { ...s, body: ssoStepUps(s.body, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: ssoStepUps(s.workspace.pageHtml, ssoFacts, back) } }) };
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
-    const teamEntry = requestContext.getStore()?.returnTo;
-    if (teamEntry?.startsWith('/chat') && !s.workspace?.team && !teamEntry.includes('task=') && !teamEntry.includes('proposal=') && demoLeadHere() === null) {
-      s.body = '<p class="team-entry"><a href="/chat?team=1">Open team chat</a></p>' + s.body;
-      if (s.workspace?.conversation) s.workspace.controlsHtml = '<p><a href="/chat?team=1">Open team chat</a></p>' + (s.workspace.controlsHtml ?? '');
-    }
+    // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive =
       s.forceSensitive === true ||
       SENSITIVE_INPUT.test(s.body) ||
@@ -1266,7 +1262,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       try {
         const actor = requestFacts.actor ?? '';
         if (actor !== '') {
-          chats = store.listMateThreads(actor, 16).flatMap((thread): Omit<BrowserChatLink, 'active'>[] => {
+          chats = store.listLeadThreads(actor, 16).flatMap((thread): Omit<BrowserChatLink, 'active'>[] => {
             if (thread.scope.kind === 'project') {
               const repo = thread.scope.key;
               return visible(repo) && managedRepos().includes(repo) ? [{ kind: 'project', title: projectName(repo), href: projectChatHref(repo), at: thread.lastMessageAt }] : [];
@@ -1286,7 +1282,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),
         refreshUrl: path.pathname + path.search,
         receipt: conversation !== null && request && REQUEST_TOKEN.test(request)
-          ? { request, received: store.mateRequestReceipt(conversation.sessionId, request) !== null } : null,
+          ? { request, received: store.leadRequestReceipt(conversation.sessionId, request) !== null } : null,
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
         conversation, ...(extras.team ? { team: extras.team } : {}), focus: extras.focus ?? null, result: extras.result ?? null,
         catchUpHtml: extras.catchUpHtml ?? '', controlsHtml: extras.controlsHtml ?? '', notices, view: extras.view ?? null,
@@ -1560,7 +1556,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     });
   });
   // Keep native process custody until shutdown has verified agent/tool exit.
-  // Coding custody does not depend on teammates or the lead's follow pass, so
+  // Coding custody does not depend on subagents or the lead's follow pass, so
   // it closes at once and never waits behind a model turn: a stop must release
   // the owner record well inside the service's exit window (Oct 2: deploys
   // over 0.9.11 found it still held by a killed process).
@@ -1640,18 +1636,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get flowRooms(): ServerRuntime['flowRooms'] { return flowRooms; },
     get providerHome(): ServerRuntime['providerHome'] { return providerHome; },
     get toolHome(): ServerRuntime['toolHome'] { return toolHome; },
-    get matePrincipal(): ServerRuntime['matePrincipal'] { return matePrincipal; },
+    get leadPrincipal(): ServerRuntime['leadPrincipal'] { return leadPrincipal; },
     get chatScopeOf(): ServerRuntime['chatScopeOf'] { return chatScopeOf; },
     get liveTurns(): ServerRuntime['liveTurns'] { return liveTurns; },
     get chatStreams(): ServerRuntime['chatStreams'] { return chatStreams; },
-    get mateConversationRows(): ServerRuntime['mateConversationRows'] { return mateConversationRows; },
+    get leadConversationRows(): ServerRuntime['leadConversationRows'] { return leadConversationRows; },
     get demoLeadHere(): ServerRuntime['demoLeadHere'] { return demoLeadHere; },
     get teamBrowserReply(): ServerRuntime['teamBrowserReply'] { return teamBrowserReply; },
     get team(): ServerRuntime['team'] { return team; },
     get teamChatProvider(): ServerRuntime['teamChatProvider'] { return teamChatProvider; },
     get pullRequestTargetOf(): ServerRuntime['pullRequestTargetOf'] { return pullRequestTargetOf; },
     get chatEnablement(): ServerRuntime['chatEnablement'] { return chatEnablement; },
-    get startMateConversation(): ServerRuntime['startMateConversation'] { return startMateConversation; },
+    get startLeadConversation(): ServerRuntime['startLeadConversation'] { return startLeadConversation; },
     get projectFamilyPeek(): ServerRuntime['projectFamilyPeek'] { return projectFamilyPeek; },
     get needsYouBadge(): ServerRuntime['needsYouBadge'] { return needsYouBadge; },
     get liveRefreshSeconds(): ServerRuntime['liveRefreshSeconds'] { return liveRefreshSeconds; },
@@ -1684,7 +1680,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get deletedRepos(): ServerRuntime['deletedRepos'] { return deletedRepos; },
     get lookupSession(): ServerRuntime['lookupSession'] { return lookupSession; },
     get authorizeMutation(): ServerRuntime['authorizeMutation'] { return authorizeMutation; },
-    get mateSaid(): ServerRuntime['mateSaid'] { return mateSaid; },
+    get leadSaid(): ServerRuntime['leadSaid'] { return leadSaid; },
     get armTaskResume(): ServerRuntime['armTaskResume'] { return armTaskResume; },
     get chatFetcher(): ServerRuntime['chatFetcher'] { return chatFetcher; },
     get chatCeilingDigest(): ServerRuntime['chatCeilingDigest'] { return chatCeilingDigest; },

@@ -3,7 +3,7 @@
  *
  * The bundle is ordered by importance and built fresh each turn: who the lead
  * is (name, persona), who it is talking to (first name, time zone, today), what
- * it knows about them (their confirmed lines), the people, AI teammates and team
+ * it knows about them (their confirmed lines), the people, subagents and team
  * chats it works with (one line each), the channel, what needs them now,
  * projects by name with their active decisions, then the rest. Over 8 KB, the
  * least important goes first: the rest, then people, then decisions. */
@@ -24,9 +24,9 @@ const REMEMBERED = new Set(['decision_record', 'knowledge_instructions', 'lead_a
 function followThrough(store: Store, owner: string, thread: number) {
   const commitments = openCommitments(store, owner, LEAD_CONTEXT_COUNTS.promises).map(one => ({ id: one.id, what: one.what.slice(0, TEXT_LIMITS.leadPromise), when: conditionWords(store, one.condition), expires: one.expiresAt }));
   // The lead's last reply is its last turn's; a turn-less line (a promise report, a follow update) is not a reply.
-  const last = store.handle.prepare("SELECT MAX(created_at) AS at FROM mate_message WHERE thread=? AND role='assistant' AND turn IS NOT NULL").get(thread)?.['at'];
+  const last = store.handle.prepare("SELECT MAX(created_at) AS at FROM lead_message WHERE thread=? AND role='assistant' AND turn IS NOT NULL").get(thread)?.['at'];
   const corrections: { proposal: number; change: string }[] = [];
-  for (const row of store.handle.prepare("SELECT id,payload_json FROM mate_proposal WHERE thread=? AND kind='action' AND state='confirmed' AND resolved_at>? ORDER BY id DESC LIMIT 20").all(thread, String(last ?? ''))) {
+  for (const row of store.handle.prepare("SELECT id,payload_json FROM lead_proposal WHERE thread=? AND kind='action' AND state='confirmed' AND resolved_at>? ORDER BY id DESC LIMIT 20").all(thread, String(last ?? ''))) {
     try {
       const payload = JSON.parse(String(row['payload_json']));
       // A changed instruction is added at the end, so that is the part to show.
@@ -39,7 +39,7 @@ function followThrough(store: Store, owner: string, thread: number) {
     } catch { /* an unreadable card is not a correction */ }
     if (corrections.length === LEAD_CONTEXT_COUNTS.corrections) break;
   }
-  const openProposals = corrections.length === 0 ? [] : store.listMateProposals(thread, ['pending']).slice(-LEAD_CONTEXT_COUNTS.proposals).map(one => {
+  const openProposals = corrections.length === 0 ? [] : store.listLeadProposals(thread, ['pending']).slice(-LEAD_CONTEXT_COUNTS.proposals).map(one => {
     const payload = one.payload as Record<string, unknown>;
     const title = [payload['title'], payload['taskTitle'], payload['task']].find(value => typeof value === 'string');
     return { proposal: one.id, kind: one.kind, about: typeof title === 'string' ? title.slice(0, TEXT_LIMITS.leadProposalAbout) : null };
@@ -144,7 +144,7 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
   const room = teamRoomOf(store, options.thread);
   const aboutYou = options.leadName === undefined && room === null ? aboutYouOf(store, options.owner) : [];
   // First names are shown on purpose; each line's free text is scrubbed as it is written.
-  const people = options.owner === undefined ? { people: [], teammates: [], teams: [] } : peopleLines(peopleIndexOf(store, options.owner, repos, room), redact);
+  const people = options.owner === undefined ? { people: [], subagents: [], teams: [] } : peopleLines(peopleIndexOf(store, options.owner, repos, room), redact);
   // The bundle is checked against its schema as built; then the whole of it is scrubbed (titles, notes, next labels,
   // the lead's name and persona), and the names it carries on purpose are put back: the lead's own name, the person's
   // first name, the lines they confirmed about themselves, the people index (first names) and each project's label.
@@ -153,7 +153,7 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
     me: { name: options.leadName ?? identity.name, persona: identity.persona },
     you: { firstName, ...localNow(now, options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) },
     aboutYou,
-    people: { people: [] as string[], teammates: [] as string[], teams: [] as string[] },
+    people: { people: [] as string[], subagents: [] as string[], teams: [] as string[] },
     channel: options.channel === undefined ? null : { id: options.channel, fit: CHANNEL_WORDS[options.channel], replyLimit: LEAD_REPLY_LIMITS[options.channel] },
     needsYou: brief.assignments.filter(needs).map(task),
     ...(options.owner === undefined || options.thread === undefined ? {} : followThrough(store, options.owner, options.thread)),
@@ -172,13 +172,13 @@ export function leadContext(store: Store, repos: readonly string[], now: Date, o
   // The name the owner gave their lead is theirs to say, even when it matches an account name.
   data.me.name = options.leadName ?? identity.name;
   data.projects.forEach((one, index) => { one.name = projects[index]!.name; });
-  // Least important first: the rest's knowledge, then its tasks, then the people index (team chats, AI teammates,
+  // Least important first: the rest's knowledge, then its tasks, then the people index (team chats, subagents,
   // then people), then each project's oldest decision, then the last Needs you. Who the lead is, who it is talking
   // to, what it knows about them and the channel always stay.
   const drop = (): boolean => {
     if (data.rest.knowledge.pop() !== undefined) { data.omissions.projects++; return true; }
     if (data.rest.tasks.pop() !== undefined) { data.omissions.assignments++; return true; }
-    if ((data.people.teams.pop() ?? data.people.teammates.pop() ?? data.people.people.pop()) !== undefined) { data.omissions.people++; return true; }
+    if ((data.people.teams.pop() ?? data.people.subagents.pop() ?? data.people.people.pop()) !== undefined) { data.omissions.people++; return true; }
     const decided = [...data.projects].reverse().find(one => one.decisions.length > 0);
     if (decided !== undefined) { decided.decisions.pop(); return true; }
     if (data.needsYou.pop() !== undefined) { data.omissions.assignments++; return true; }
@@ -222,4 +222,4 @@ export function leadBriefHtml(brief: AssignmentCatchUp): string {
   return `<section class="lead-brief" aria-label="Project catch-up"><h2>Catch up</h2>${sections.length ? sections.join('') : '<p class="meta">Nothing needs you right now.</p>'}${brief.assignments.length > 3 || brief.omissions.candidateScanLimited || brief.omissions.assignments > 0 ? '<a href="/work">See all tasks</a>' : ''}</section>`;
 }
 
-export const LEAD_CONTEXT_CSS = '.lead-promise-list{list-style:none;margin:0;padding:0}.lead-promise-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;padding:.5rem 0;border-bottom:1px solid var(--border);min-width:0}.lead-promise-list li:last-child{border-bottom:0}.lead-promise-list p{margin:0;overflow-wrap:anywhere}.lead-promise-list form{grid-column:2;grid-row:1/span 2;margin:0}.lead-promise-list button{min-height:44px;width:auto;white-space:nowrap}.lead-promise-list .nowrap{white-space:nowrap}.lead-brief{margin:1rem 0;min-width:0}.lead-brief h2{font-size:1.1rem;margin:0 0 .8rem}.repository-context input[name=q]{display:block;box-sizing:border-box;min-height:44px;width:100%;margin:.4rem 0 .75rem;padding:.6rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:inherit;font:inherit}.repository-context form{margin:.5rem 0 1rem}.repository-context summary{min-height:44px;padding:.75rem 0;overflow-wrap:anywhere}.lead-brief h3{font-size:.85rem;margin:1rem 0 .4rem;color:var(--muted-foreground)}.lead-brief ul{list-style:none;margin:0;padding:0}.lead-brief li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;padding:.35rem 0;border-bottom:1px solid var(--border);min-width:0}.lead-brief li a{display:flex;min-height:44px;align-items:center;font-weight:500;overflow-wrap:anywhere;text-decoration:none}.lead-brief li a:hover{text-decoration:underline}.lead-brief-state{font-size:.75rem;font-weight:600;padding:.15rem .5rem;border-radius:.375rem;background:var(--so-neutral-soft);color:var(--so-neutral-ink);white-space:nowrap}.lead-brief-state--needs-decision,.lead-brief-state--ready-to-check{background:var(--so-attention-soft);color:var(--so-attention)}.lead-brief-state--working,.lead-brief-state--checking{background:var(--so-info-soft);color:var(--so-info)}.lead-brief-state--complete{background:var(--so-success-soft);color:var(--so-success)}.lead-brief li a.lead-brief-act{grid-column:1/-1;justify-self:start;display:inline-flex;min-height:40px;margin:.15rem 0 .4rem;font-weight:600}@media(max-width:760px){.lead-brief li a.lead-brief-act{justify-self:stretch;justify-content:center;min-height:44px}}.lead-brief-detail{grid-column:1/-1;font-size:.85rem;color:var(--muted-foreground);overflow-wrap:anywhere;padding-bottom:.35rem}@media(max-width:760px){.lead-brief{margin:.5rem 0}.lead-brief h2{margin:0 0 .25rem}.lead-brief h3{margin:.5rem 0 0}.lead-brief li{padding:0 0 .375rem}.lead-brief-detail{margin-top:-.375rem;padding-bottom:0;line-height:1.35;pointer-events:none}}';
+export const LEAD_CONTEXT_CSS = '.lead-subagent-list{list-style:none;margin:0 0 .5rem;padding:0}.lead-subagent-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;border-bottom:1px solid var(--border);min-width:0}.lead-subagent-list li:last-child{border-bottom:0}.lead-subagent-list a{display:flex;min-height:44px;align-items:center;font-weight:500;overflow-wrap:anywhere;min-width:0}.lead-subagent-list .meta{text-align:right;overflow-wrap:anywhere}@media(max-width:600px){.lead-subagent-list li{grid-template-columns:minmax(0,1fr)}.lead-subagent-list .meta{text-align:left;padding-bottom:.4rem}}.lead-subagents .button-link{min-height:44px;display:inline-flex;align-items:center}.lead-promise-list{list-style:none;margin:0;padding:0}.lead-promise-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;padding:.5rem 0;border-bottom:1px solid var(--border);min-width:0}.lead-promise-list li:last-child{border-bottom:0}.lead-promise-list p{margin:0;overflow-wrap:anywhere}.lead-promise-list form{grid-column:2;grid-row:1/span 2;margin:0}.lead-promise-list button{min-height:44px;width:auto;white-space:nowrap}.lead-promise-list .nowrap{white-space:nowrap}.lead-brief{margin:1rem 0;min-width:0}.lead-brief h2{font-size:1.1rem;margin:0 0 .8rem}.repository-context input[name=q]{display:block;box-sizing:border-box;min-height:44px;width:100%;margin:.4rem 0 .75rem;padding:.6rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:inherit;font:inherit}.repository-context form{margin:.5rem 0 1rem}.repository-context summary{min-height:44px;padding:.75rem 0;overflow-wrap:anywhere}.lead-brief h3{font-size:.85rem;margin:1rem 0 .4rem;color:var(--muted-foreground)}.lead-brief ul{list-style:none;margin:0;padding:0}.lead-brief li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;align-items:center;padding:.35rem 0;border-bottom:1px solid var(--border);min-width:0}.lead-brief li a{display:flex;min-height:44px;align-items:center;font-weight:500;overflow-wrap:anywhere;text-decoration:none}.lead-brief li a:hover{text-decoration:underline}.lead-brief-state{font-size:.75rem;font-weight:600;padding:.15rem .5rem;border-radius:.375rem;background:var(--so-neutral-soft);color:var(--so-neutral-ink);white-space:nowrap}.lead-brief-state--needs-decision,.lead-brief-state--ready-to-check{background:var(--so-attention-soft);color:var(--so-attention)}.lead-brief-state--working,.lead-brief-state--checking{background:var(--so-info-soft);color:var(--so-info)}.lead-brief-state--complete{background:var(--so-success-soft);color:var(--so-success)}.lead-brief li a.lead-brief-act{grid-column:1/-1;justify-self:start;display:inline-flex;min-height:40px;margin:.15rem 0 .4rem;font-weight:600}@media(max-width:760px){.lead-brief li a.lead-brief-act{justify-self:stretch;justify-content:center;min-height:44px}}.lead-brief-detail{grid-column:1/-1;font-size:.85rem;color:var(--muted-foreground);overflow-wrap:anywhere;padding-bottom:.35rem}@media(max-width:760px){.lead-brief{margin:.5rem 0}.lead-brief h2{margin:0 0 .25rem}.lead-brief h3{margin:.5rem 0 0}.lead-brief li{padding:0 0 .375rem}.lead-brief-detail{margin-top:-.375rem;padding-bottom:0;line-height:1.35;pointer-events:none}}';

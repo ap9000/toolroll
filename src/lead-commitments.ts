@@ -113,7 +113,7 @@ export function getCommitment(store: Store, id: number): Commitment | null {
 /** The reply that made a promise was shown: its turn is over, and it was answered or its text reached the conversation
  * before it failed. A turn still running has shown nothing yet, whatever it has written so far. */
 const SHOWN = (turn: string) => `EXISTS (SELECT 1 FROM mate_turn t WHERE t.id = ${turn} AND (t.state = 'answered'
-  OR t.state = 'failed' AND EXISTS (SELECT 1 FROM mate_message m WHERE m.turn = t.id AND m.role = 'assistant')))`;
+  OR t.state = 'failed' AND EXISTS (SELECT 1 FROM lead_message m WHERE m.turn = t.id AND m.role = 'assistant')))`;
 /** A promise only counts once the reply that made it was shown: one from a reply still being written, or one that
  * failed without reaching the owner, was never heard. */
 const HEARD = `(c.turn IS NULL OR ${SHOWN('c.turn')})`;
@@ -196,11 +196,11 @@ export function checkLeadCommitments(store: Store, now: Date, root?: string): nu
       Number(store.handle.prepare("UPDATE lead_commitment SET state = ?, closed_at = ?, closed_by = 'lead', outcome = ?, checked_at = ? WHERE id = ? AND state = 'open'").run(state, at, outcome, at, id).changes) === 1;
     if (one === null) { close('cancelled', 'Its condition could not be read.'); continue; }
     // A reply still being written may yet be delivered; one that was not is dropped above.
-    const turn = one.turn === null ? null : store.getMateTurn(one.turn);
+    const turn = one.turn === null ? null : store.getLeadTurn(one.turn);
     if (turn !== null && (turn.state === 'queued' || turn.state === 'running')) continue;
     const account = store.accountOf(one.owner);
     if (account === null || account.revokedAt !== null || one.repo !== null && !store.accountCanAccess(one.owner, one.repo)) { close('cancelled', 'Access to this project ended.'); continue; }
-    const thread = store.getMateThread(one.thread);
+    const thread = store.getLeadThread(one.thread);
     if (thread === null || thread.approver !== one.owner || thread.closedAt !== null) { close('cancelled', 'The conversation it was promised in was closed.'); continue; }
     let seen: string | null;
     try { seen = observe(store, one, now, root); } catch { seen = null; }
@@ -213,7 +213,7 @@ export function checkLeadCommitments(store: Store, now: Date, root?: string): nu
       if (!close('done', seen!)) return;
       // The shared conversation always keeps the line; a promise made on a phone or team chat is also said there, as
       // the lead's own message to its owner, on that chat alone (the usual delivery receipts apply).
-      store.appendMateMessage({ thread: one.thread, turn: null, role: 'assistant', text: line }, now);
+      store.appendLeadMessage({ thread: one.thread, turn: null, role: 'assistant', text: line }, now);
       if (one.channel !== 'chat') store.enqueueNotification({ dedupeKey: `${PROMISE_KEY}${one.channel}:${one.id}`, kind: LEAD_SAY_KIND, subject: leadNameOf(store, one.owner),
         body: line.slice(0, 300), recipient: one.owner, source: { installation: true } }, now);
       reported++;

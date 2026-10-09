@@ -69,13 +69,13 @@ function seed(): { password: string; apiToken: string; hashes: string[] } {
   store.finishRun(run, { outcome: "built", now: NOW });
   store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "refunds", runId: run, action: "note", outcome: "recorded", source: "work", detail: `pasted ${PLANTED.github}` });
   store.setBudget({ scope: "project", key: REPO, limitMicrousd: 50_000_000, hardStop: true }, "alex", NOW);
-  // A chat, a flow and a teammate, each carrying a pasted key.
-  const thread = store.openMateThread("alex", "ceiling", NOW).thread;
-  store.appendMateMessage({ thread: thread.id, turn: null, role: "operator", text: `use ${PLANTED.slack} and ${PLANTED.openai}` }, NOW);
+  // A chat, a flow and a subagent, each carrying a pasted key.
+  const thread = store.openLeadThread("alex", "ceiling", NOW).thread;
+  store.appendLeadMessage({ thread: thread.id, turn: null, role: "operator", text: `use ${PLANTED.slack} and ${PLANTED.openai}` }, NOW);
   const flow = store.createFlow({ repo: REPO, name: "Support", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }) }, NOW);
   store.addFlowCard({ flow, title: "Customer email", description: `bot ${PLANTED.telegram}`, stage: "inbox", by: "alex" }, NOW);
-  const mate = store.createTeammate({ repo: REPO, handle: "maya", soul: "Helps with refunds.", model: null, manager: "alex", by: "alex" }, NOW);
-  store.addTeammateMemory({ teammate: mate, text: `aws ${PLANTED.aws}, stripe ${PLANTED.stripe}`, source: "person", by: "alex" }, NOW);
+  const mate = store.createSubagent({ repo: REPO, handle: "maya", soul: "Helps with refunds.", model: null, manager: "alex", by: "alex" }, NOW);
+  store.addSubagentMemory({ subagent: mate, text: `aws ${PLANTED.aws}, stripe ${PLANTED.stripe}`, source: "person", by: "alex" }, NOW);
   // Secrets kept in files beside the database.
   writeFileSync(join(dir, "monitoring.json"), JSON.stringify({ webhook: { url: "https://logs.example.com/hook", secret: PLANTED.webhook }, folder: null,
     traces: { endpoint: "https://otel.example.com", header: { name: "x-honeycomb-team", value: PLANTED.collector } } }));
@@ -124,10 +124,10 @@ test("the manifest lists every other file with its SHA-256, and a README explain
     expect(entry.bytes).toBe(data.length);
   }
   const readme = exported.files.find(one => one.path === "README.md")!.data.toString("utf8");
-  for (const folder of ["projects/", "tasks/", "runs/", "ledger/", "evidence-packs/", "chats/", "flows/", "teammates/", "settings/", "manifest.json"]) expect(readme).toContain(folder);
+  for (const folder of ["projects/", "tasks/", "runs/", "ledger/", "evidence-packs/", "chats/", "flows/", "subagents/", "settings/", "manifest.json"]) expect(readme).toContain(folder);
 });
 
-test("the export covers tasks, runs, the ledger and its checkpoints, evidence packs, chats, flows, teammates and settings", () => {
+test("the export covers tasks, runs, the ledger and its checkpoints, evidence packs, chats, flows, subagents and settings", () => {
   seed();
   store.ledgerCheckpoint("alex", NOW);
   const exported = exportOf();
@@ -140,11 +140,11 @@ test("the export covers tasks, runs, the ledger and its checkpoints, evidence pa
   expect(rows("ledger/ledger_seal.jsonl").length).toBeGreaterThan(0);
   expect(rows("ledger/ledger_checkpoint.jsonl")).toHaveLength(1);
   expect(JSON.parse(exported.files.find(one => one.path === "evidence-packs/refunds.json")!.data.toString("utf8"))).toMatchObject({ format: "standing-orders/evidence-pack/v1", task: { id: "refunds" }, totals: { runs: 1 } });
-  expect(rows("chats/mate_message.jsonl")).toHaveLength(1);
+  expect(rows("chats/lead_message.jsonl")).toHaveLength(1);
   expect(rows("flows/flow.jsonl")[0]).toMatchObject({ name: "Support" });
   expect(rows("flows/flow_card.jsonl")[0]).toMatchObject({ title: "Customer email" });
-  expect(rows("teammates/teammate.jsonl")[0]).toMatchObject({ handle: "maya" });
-  expect(rows("teammates/teammate_memory.jsonl")).toHaveLength(1);
+  expect(rows("subagents/subagent.jsonl")[0]).toMatchObject({ handle: "maya" });
+  expect(rows("subagents/subagent_memory.jsonl")).toHaveLength(1);
   expect(rows("people/approver.jsonl")[0]).toMatchObject({ name: "alex" });
   expect(rows("settings/budget.jsonl")[0]).toMatchObject({ scope_key: REPO, limit_microusd: 50_000_000 });
   expect(JSON.parse(exported.files.find(one => one.path === "settings/files.json")!.data.toString("utf8"))).toMatchObject({

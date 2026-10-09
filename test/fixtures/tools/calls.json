@@ -41,14 +41,15 @@
       { "operation": "pause_trigger", "trigger": 3 },
       { "operation": "starter", "repo": "r1", "starter": "ci-fix" }
     ],
-    "get_teammates": [{}, { "repo": "r1" }, { "teammate": 2 }],
-    "propose_teammate": [
+    "get_subagents": [{}, { "repo": "r1" }, { "subagent": 2 }],
+    "propose_subagent": [
+      { "operation": "ask", "subagent": 2, "text": "Draft the reply to Sam about order 1043." },
       { "operation": "create", "repo": "r1", "template": "support", "name": "Maya" },
-      { "operation": "edit_section", "teammate": 2, "section": "Decide on your own", "text": "- Refunds up to $100" },
-      { "operation": "tool_rule", "teammate": 2, "tool": "shop", "action": "refund_order", "use": "free", "limitField": "amount", "limitOver": 100 },
+      { "operation": "edit_section", "subagent": 2, "section": "Decide on your own", "text": "- Refunds up to $100" },
+      { "operation": "tool_rule", "subagent": 2, "tool": "shop", "action": "refund_order", "use": "free", "limitField": "amount", "limitOver": 100 },
       { "operation": "answer", "question": 4, "choice": "approve" },
-      { "operation": "add_routine", "teammate": 2, "schedule": "weekdays 09:00", "text": "Summarise yesterday's tickets." },
-      { "operation": "undo", "teammate": 2, "call": 8 }
+      { "operation": "add_routine", "subagent": 2, "schedule": "weekdays 09:00", "text": "Summarise yesterday's tickets." },
+      { "operation": "undo", "subagent": 2, "call": 8 }
     ],
     "get_flow_insights": [{}, { "flow": 2, "days": 7 }, { "flow": 2, "card": 5, "entry": 1 }],
     "get_skills": [{ "repo": "r1" }, { "repo": "r1", "version": "0123456789abcdef0123", "offset": 2000 }],

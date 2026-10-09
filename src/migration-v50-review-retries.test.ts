@@ -498,7 +498,7 @@ describe("schema 62 compatibility without manual refresh", () => {
     const root = mkdtempSync(join(tmpdir(), "refresh-migration-")), file = join(root, "test.db");
     try {
       let store = openStore(file); seed(store, join(root, "evidence"));
-      expect(SCHEMA_VERSION).toBe(116);
+      expect(SCHEMA_VERSION).toBe(117);
       expect(store.raw().prepare("PRAGMA table_info(run)").all().some(row => row["name"] === "review_refresh")).toBe(false);
       expect(store.raw().prepare("PRAGMA table_info(review_request)").all().some(row => row["name"] === "refresh_json")).toBe(false);
       // The retired schema-62 draft (a refresh request ledger, a second

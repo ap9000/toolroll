@@ -5,15 +5,15 @@ import { describe, expect, test } from "vitest";
 import { run } from "./exec.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import {
-  composeSubscriptionMatePrompt,
-  parseSubscriptionMateAnswer,
-  performSubscriptionMateRequest,
-  type SubscriptionMateRequest,
+  composeSubscriptionLeadPrompt,
+  parseSubscriptionLeadAnswer,
+  performSubscriptionLeadRequest,
+  type SubscriptionLeadRequest,
 } from "./subscription-chat.js";
 
 const TOOLS = [{ name: "recap", description: "summarize", inputSchema: { type: "object", properties: {}, additionalProperties: false } }] as const;
 
-const request = (provider: SubscriptionMateRequest["provider"]): SubscriptionMateRequest => ({
+const request = (provider: SubscriptionLeadRequest["provider"]): SubscriptionLeadRequest => ({
   provider,
   model: "default",
   system: "SYSTEM-CANARY",
@@ -40,13 +40,13 @@ describe("subscription chat's isolated harness adapter", () => {
           [null, message, { type: "turn.completed" }],
         ].map(events => events.map(value => JSON.stringify(value)).join("\n"));
     for (const stdout of cases) {
-      const result = await performSubscriptionMateRequest(request(provider), async () => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false }));
+      const result = await performSubscriptionLeadRequest(request(provider), async () => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false }));
       expect(result).toMatchObject({ ok: false, problem: "malformed-reply" });
     }
   });
 
   test("the prompt gives the harness no ambient-state authority", () => {
-    const prompt = composeSubscriptionMatePrompt(request("codex-subscription"));
+    const prompt = composeSubscriptionLeadPrompt(request("codex-subscription"));
     expect(prompt).toContain("Do not use any harness tools or inspect the computer");
     expect(prompt).toContain("SYSTEM-CANARY");
     expect(prompt).toContain("DATA-CANARY");
@@ -56,27 +56,27 @@ describe("subscription chat's isolated harness adapter", () => {
   // Regression (gate run 2026-09-30): the lead tried the host's project search as its own tool call, which the harness
   // refuses, then answered a question about the project's files saying the search wasn't available.
   test("the prompt says host tools, project search among them, are requested only through calls and are available that way", () => {
-    const prompt = composeSubscriptionMatePrompt(request("claude-subscription"));
+    const prompt = composeSubscriptionLeadPrompt(request("claude-subscription"));
     expect(prompt).toContain("calling one directly always fails. Request one only by listing it in calls");
     expect(prompt).toContain("Every AVAILABLE HOST TOOL below is available this way; never say one is unavailable.");
     expect(prompt).toContain("request get_project_context");
   });
 
   test("strict output accepts bounded calls and refuses smuggled or duplicate fields", () => {
-    const valid = parseSubscriptionMateAnswer(JSON.stringify({
+    const valid = parseSubscriptionLeadAnswer(JSON.stringify({
       text: "Let me recap.",
       calls: [{ id: "c1", name: "recap", argumentsJson: "{}" }],
     }), { tokensIn: 11, tokensOut: 7 });
     expect(valid).toMatchObject({ ok: true, answer: { text: "Let me recap.", tokensIn: 11, tokensOut: 7, reportedCostMicrousd: null } });
     if (valid.ok) expect(valid.answer.calls).toEqual([{ id: "c1", name: "recap", args: {} }]);
-    expect(parseSubscriptionMateAnswer('{"text":"a","text":"b","calls":[]}')).toMatchObject({ ok: false, problem: "duplicate-key" });
-    expect(parseSubscriptionMateAnswer('{"text":"a","calls":[],"extra":true}')).toMatchObject({ ok: false, problem: "wrong-shape" });
-    expect(parseSubscriptionMateAnswer(JSON.stringify({ text: "a", calls: [{ id: "c", name: "recap", argumentsJson: "[]" }] }))).toMatchObject({ ok: false, problem: "bad-tool-call" });
+    expect(parseSubscriptionLeadAnswer('{"text":"a","text":"b","calls":[]}')).toMatchObject({ ok: false, problem: "duplicate-key" });
+    expect(parseSubscriptionLeadAnswer('{"text":"a","calls":[],"extra":true}')).toMatchObject({ ok: false, problem: "wrong-shape" });
+    expect(parseSubscriptionLeadAnswer(JSON.stringify({ text: "a", calls: [{ id: "c", name: "recap", argumentsJson: "[]" }] }))).toMatchObject({ ok: false, problem: "bad-tool-call" });
   });
 
   test("Codex runs ephemerally in a deleted empty directory with tools, web, apps, rules, and credential env disabled", async () => {
     let seen: { file: string; args: readonly string[]; cwd: string; omitEnv: readonly string[]; timeoutMs: number | undefined } | null = null;
-    const result = await performSubscriptionMateRequest(request("codex-subscription"), async (file, args, options) => {
+    const result = await performSubscriptionLeadRequest(request("codex-subscription"), async (file, args, options) => {
       seen = { file, args, cwd: options?.cwd ?? "", omitEnv: options?.omitEnv ?? [], timeoutMs: options?.timeoutMs };
       expect(options?.stdin).toContain("SYSTEM-CANARY");
       expect(args).not.toContain(options?.stdin);
@@ -112,7 +112,7 @@ describe("subscription chat's isolated harness adapter", () => {
       ...['{"text": "Rea', 'dy \\"now\\"', '.\\nDone", "calls": []}'].map(partial => ({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: partial } } })),
       { usage: { input_tokens: 8, output_tokens: 2 }, type: "result", subtype: "success", is_error: false, structured_output: { text: 'Ready "now".\nDone', calls: [] } },
     ].map(line => JSON.stringify(line)).join("\n") + "\n";
-    const result = await performSubscriptionMateRequest({ ...request("claude-subscription"), onText: text => seen.push(text) }, async (_file, args, options) => {
+    const result = await performSubscriptionLeadRequest({ ...request("claude-subscription"), onText: text => seen.push(text) }, async (_file, args, options) => {
       expect(args).toEqual(expect.arrayContaining(["--output-format", "stream-json", "--verbose", "--include-partial-messages", "--safe-mode", "--tools", ""]));
       for (let at = 0; at < stdout.length; at += 23) options?.onStdout?.(stdout.slice(at, at + 23));
       return { code: 0, stdout, stderr: "", timedOut: false, notFound: false };
@@ -120,12 +120,12 @@ describe("subscription chat's isolated harness adapter", () => {
     expect(seen).toEqual(["Rea", 'Ready "now"', 'Ready "now".\nDone']);
     expect(result).toMatchObject({ ok: true, answer: { text: 'Ready "now".\nDone', tokensIn: 8, tokensOut: 2 } });
     // Without a watcher, and for Codex, the buffered run is unchanged.
-    await performSubscriptionMateRequest(request("claude-subscription"), async (_file, args, options) => {
+    await performSubscriptionLeadRequest(request("claude-subscription"), async (_file, args, options) => {
       expect(args).toEqual(expect.arrayContaining(["--output-format", "json"]));
       expect(options?.onStdout).toBeUndefined();
       return { code: 0, stdout: "{}", stderr: "", timedOut: false, notFound: false };
     });
-    await performSubscriptionMateRequest({ ...request("codex-subscription"), onText: () => undefined }, async (_file, args, options) => {
+    await performSubscriptionLeadRequest({ ...request("codex-subscription"), onText: () => undefined }, async (_file, args, options) => {
       expect(args).not.toContain("stream-json");
       expect(options?.onStdout).toBeUndefined();
       return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
@@ -134,7 +134,7 @@ describe("subscription chat's isolated harness adapter", () => {
 
   test("Claude runs in safe print mode with an empty tool and MCP surface", async () => {
     let seen: { args: readonly string[]; cwd: string } | null = null;
-    const result = await performSubscriptionMateRequest(request("claude-subscription"), async (_file, args, options) => {
+    const result = await performSubscriptionLeadRequest(request("claude-subscription"), async (_file, args, options) => {
       seen = { args, cwd: options?.cwd ?? "" };
       expect(options?.stdin).toContain("SYSTEM-CANARY");
       expect(args).not.toContain(options?.stdin);
@@ -159,7 +159,7 @@ describe("subscription chat's isolated harness adapter", () => {
       let spawned!: () => void;
       const started = new Promise<void>(resolve => { spawned = resolve; });
       // A stand-in harness: it starts a grandchild, records both pids, then never answers.
-      const pending = performSubscriptionMateRequest({ ...request("claude-subscription"), timeoutMs: 600_000, signal: controller.signal }, (_file, _args, options) => {
+      const pending = performSubscriptionLeadRequest({ ...request("claude-subscription"), timeoutMs: 600_000, signal: controller.signal }, (_file, _args, options) => {
         expect(options?.signal).toBe(controller.signal);
         return run("/bin/sh", ["-c", `sleep 600 & echo "$$ $!" > "${pids}"; echo ready; wait`], { ...options, onStdout: () => spawned() });
       });

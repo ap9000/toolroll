@@ -481,7 +481,7 @@ export class ChatMessages extends ChatCore {
   /**
    * Claim the oldest message that still needs a turn: queued, or running
    * under a claim that lapsed (a crash mid-turn), and not deferred past now.
-   * One at a time per bot — the mate runs one turn per approver anyway.
+   * One at a time per bot — the lead runs one turn per approver anyway.
    */
   claimMessage(botId: string, owner: string, ttlMs: number, now: Date, only?: "turns" | "replies"): TelegramConversation | null {
     return this.store.transact(() => {
@@ -640,7 +640,7 @@ export class ChatMessages extends ChatCore {
 
   replyParts(conversation: number): TelegramConversationPart[] {
     return this
-      .prepare(`SELECT p.*, EXISTS (SELECT 1 FROM mate_proposal mp WHERE mp.id = json_extract(p.payload, '$.proposal')) AS proposal_live
+      .prepare(`SELECT p.*, EXISTS (SELECT 1 FROM lead_proposal mp WHERE mp.id = json_extract(p.payload, '$.proposal')) AS proposal_live
         FROM chat_part p WHERE p.provider = :provider AND p.event = ? ORDER BY p.ordinal`)
       .all(`m${conversation}`).map(row => readTelegramConversationPart(row, conversation));
   }
@@ -723,7 +723,7 @@ export class ChatMessages extends ChatCore {
     // Every sent part of this bot's replies on that message, oldest first: images, the lead's replies and its cards.
     const parts = chat
       .prepare(
-        `SELECT p.*, c.payload AS asked, EXISTS (SELECT 1 FROM mate_proposal mp WHERE mp.id = json_extract(p.payload, '$.proposal')) AS proposal_live
+        `SELECT p.*, c.payload AS asked, EXISTS (SELECT 1 FROM lead_proposal mp WHERE mp.id = json_extract(p.payload, '$.proposal')) AS proposal_live
           FROM chat_part p JOIN chat_event c ON c.provider = p.provider AND c.id = p.event
           WHERE p.provider = :provider AND c.kind = 'message' AND c.binding = ? AND c.channel = ? AND p.message = ? AND p.state = 'sent'
           ORDER BY CAST(substr(p.event, 2) AS INTEGER), p.ordinal`,
@@ -738,7 +738,7 @@ export class ChatMessages extends ChatCore {
     // The lead's own messages: a reply from a turn that was about one task,
     // and a card, which names its task (or, once it filed one, the new task).
     const lead = parts.filter(one => one.part.kind !== "image").map(({ part, asked }) => part.kind === "card"
-      ? proposalTaskOf(part.proposal === null ? null : this.store.getMateProposal(part.proposal))
+      ? proposalTaskOf(part.proposal === null ? null : this.store.getLeadProposal(part.proposal))
       : asked.ok && asked.value.about !== undefined ? { task: asked.value.about.task, run: asked.value.about.run } : null);
     const shown = chat
       .prepare("SELECT task_id, run FROM chat_message_ref WHERE provider = :provider AND kind = 'task' AND binding = ? AND chat = ? AND message = ?")

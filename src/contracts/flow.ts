@@ -18,7 +18,7 @@ import { z } from "zod";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { limited, toModelSchema, versioned, type ContractOptions } from "./contract.js";
 
-export const FLOW_STAGE_KINDS = ["inbox", "task", "report", "approval", "check", "pull-request", "update", "notify", "sort", "draft", "request", "email", "tool", "wait", "teammate", "send", "choose", "done"] as const;
+export const FLOW_STAGE_KINDS = ["inbox", "task", "report", "approval", "check", "pull-request", "update", "notify", "sort", "draft", "request", "email", "tool", "wait", "subagent", "send", "choose", "done"] as const;
 export type FlowStageKind = (typeof FLOW_STAGE_KINDS)[number];
 export const FLOW_COLORS = ["slate", "blue", "violet", "amber", "green", "rose"] as const;
 export type FlowColor = (typeof FLOW_COLORS)[number];
@@ -117,7 +117,7 @@ export const flowWaitSchema = z.strictObject({
 });
 /** A choose zone's option: its button's words, and the zone it leads to (FLOW_END closes the card as Ignored). */
 export const flowChoiceSchema = z.strictObject({ label: words("label", "flowChoice").min(1), to: z.union([stageRef, z.literal(FLOW_END)]) });
-/** A script's or teammate's answer and the zone it leads to. */
+/** A script's or subagent's answer and the zone it leads to. */
 export const flowRouteSchema = z.strictObject({ answer: z.string().min(1).max(TEXT_LIMITS.flowAnswer).regex(/^[^\n]*$/, { error: "must be one line" }), to: stageRef });
 /** A time limit on a zone: after this long, the person it waits on is reminded; a Holding, "Person decides" or "Person
  * chooses" zone can also move the card on (`to`). */
@@ -140,7 +140,7 @@ function zoneSchemas(instructions: z.ZodString) {
     z.strictObject({ id, title, kind: z.literal("inbox"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, limit: move, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("task"), zone, instructions: text, planning: z.enum(FLOW_PLANNING), approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, repo: words("repo", "flowRepo").min(1).optional(), limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("report"), zone, instructions: text, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, limit: remind, next, onFail }),
-    z.strictObject({ id, title, kind: z.literal("approval"), zone, instructions: said, planning: nil, approver: words("approver", "flowDecider").min(1).nullable(), toOwner: z.literal(true).optional(), message: message.nullable(), close: nil, script: nil, sort: nil, teammate: zoneId.optional(), limit: move, next, onFail }),
+    z.strictObject({ id, title, kind: z.literal("approval"), zone, instructions: said, planning: nil, approver: words("approver", "flowDecider").min(1).nullable(), toOwner: z.literal(true).optional(), message: message.nullable(), close: nil, script: nil, sort: nil, subagent: zoneId.optional(), limit: move, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("check"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: scriptName, runIn: z.enum(FLOW_RUN_IN).optional(), routes, secrets: z.array(secretName).min(1).max(SECRETS_MAX).optional(), sort: nil, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("pull-request"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, merge: z.enum(FLOW_MERGE_METHODS).optional(), limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("update"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: z.boolean(), script: nil, sort: nil, limit: remind, next, onFail }),
@@ -151,7 +151,7 @@ function zoneSchemas(instructions: z.ZodString) {
     z.strictObject({ id, title, kind: z.literal("email"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, email: flowEmailSchema, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("tool"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, tool: flowToolSchema, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("wait"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, wait: flowWaitSchema, next, onFail }),
-    z.strictObject({ id, title, kind: z.literal("teammate"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, teammate: zoneId, routes, reply: z.literal(true).optional(), limit: remind, next, onFail }),
+    z.strictObject({ id, title, kind: z.literal("subagent"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, subagent: zoneId, routes, reply: z.literal(true).optional(), limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("send"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, limit: remind, next, onFail }),
     z.strictObject({ id, title, kind: z.literal("choose"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, options: z.array(flowChoiceSchema).min(CHOICES_MIN).max(CHOICES_MAX), limit: move, next: nil, onFail }),
     z.strictObject({ id, title, kind: z.literal("done"), zone, instructions: said, planning: nil, approver: nil, message: message.nullable(), close: nil, script: nil, sort: nil, next: nil, onFail: nil }),
@@ -252,8 +252,8 @@ const STEP_FIELDS = {
   /** Like "2 days" ("none" removes it), or minutes. */
   remindAfter: duration,
   thenMoveTo: ref,
-  /** A teammate's short name; "nobody" takes one off. */
-  teammate: z.string().min(1).max(TEXT_LIMITS.flowTeammate),
+  /** A subagent's short name; "nobody" takes one off. */
+  subagent: z.string().min(1).max(TEXT_LIMITS.flowSubagent),
   reply: z.boolean(),
   options: z.array(flowStepOptionSchema).min(CHOICES_MIN).max(CHOICES_MAX),
   ifReplied: ref,
@@ -274,7 +274,7 @@ const STEP_KINDS = {
   inbox: ["next", "ifFails", "remindAfter", "thenMoveTo"],
   task: ["instructions", "planning", "repo", "next", "ifFails", "remindAfter"],
   report: ["instructions", "next", "ifFails", "remindAfter"],
-  approval: ["decider", "teammate", "next", "ifFails", "remindAfter", "thenMoveTo"],
+  approval: ["decider", "subagent", "next", "ifFails", "remindAfter", "thenMoveTo"],
   check: ["script", "runIn", "routes", "secrets", "next", "ifFails", "remindAfter"],
   "pull-request": ["merge", "next", "ifFails", "remindAfter"],
   update: ["message", "close", "next", "ifFails", "remindAfter"],
@@ -285,7 +285,7 @@ const STEP_KINDS = {
   email: ["to", "subject", "body", "next", "ifFails", "remindAfter"],
   tool: ["server", "tool", "args", "next", "ifFails", "remindAfter"],
   wait: ["waitFor", "wait", "from", "until", "timeZone", "next", "ifNoReply"],
-  teammate: ["teammate", "instructions", "routes", "reply", "next", "ifFails", "remindAfter"],
+  subagent: ["subagent", "instructions", "routes", "reply", "next", "ifFails", "remindAfter"],
   send: ["next", "ifFails", "remindAfter"],
   choose: ["options", "ifReplied", "remindAfter", "ifNoReply", "thenMoveTo"],
   done: [],
@@ -301,9 +301,9 @@ const stepOf = <K extends FlowStageKind>(kind: K) => z.strictObject({
 const STEPS = {
   inbox: stepOf("inbox"), task: stepOf("task"), report: stepOf("report"), approval: stepOf("approval"), check: stepOf("check"), "pull-request": stepOf("pull-request"),
   update: stepOf("update"), notify: stepOf("notify"), sort: stepOf("sort"), draft: stepOf("draft"), request: stepOf("request"), email: stepOf("email"),
-  tool: stepOf("tool"), wait: stepOf("wait"), teammate: stepOf("teammate"), send: stepOf("send"), choose: stepOf("choose"), done: stepOf("done"),
+  tool: stepOf("tool"), wait: stepOf("wait"), subagent: stepOf("subagent"), send: stepOf("send"), choose: stepOf("choose"), done: stepOf("done"),
 };
-const stepList = [STEPS.inbox, STEPS.task, STEPS.report, STEPS.approval, STEPS.check, STEPS["pull-request"], STEPS.update, STEPS.notify, STEPS.sort, STEPS.draft, STEPS.request, STEPS.email, STEPS.tool, STEPS.wait, STEPS.teammate, STEPS.send, STEPS.choose, STEPS.done] as const;
+const stepList = [STEPS.inbox, STEPS.task, STEPS.report, STEPS.approval, STEPS.check, STEPS["pull-request"], STEPS.update, STEPS.notify, STEPS.sort, STEPS.draft, STEPS.request, STEPS.email, STEPS.tool, STEPS.wait, STEPS.subagent, STEPS.send, STEPS.choose, STEPS.done] as const;
 
 /** A step as the lead, `toolroll flows create/edit`, starters, kits and the gallery describe it, one schema per kind. */
 export const flowStepSchema = z.discriminatedUnion("kind", stepList);
@@ -320,9 +320,23 @@ const fileZone = <S extends (typeof stepList)[number]>(step: S) => step.extend({
 export const flowFileZoneSchema = z.discriminatedUnion("kind", [
   fileZone(STEPS.inbox), fileZone(STEPS.task), fileZone(STEPS.report), fileZone(STEPS.approval), fileZone(STEPS.check), fileZone(STEPS["pull-request"]),
   fileZone(STEPS.update), fileZone(STEPS.notify), fileZone(STEPS.sort), fileZone(STEPS.draft), fileZone(STEPS.request), fileZone(STEPS.email),
-  fileZone(STEPS.tool), fileZone(STEPS.wait), fileZone(STEPS.teammate), fileZone(STEPS.send), fileZone(STEPS.choose), fileZone(STEPS.done),
+  fileZone(STEPS.tool), fileZone(STEPS.wait), fileZone(STEPS.subagent), fileZone(STEPS.send), fileZone(STEPS.choose), fileZone(STEPS.done),
 ]);
 export type FlowFileZone = z.infer<typeof flowFileZoneSchema>;
+
+/**
+ * D5 (schema v117): a subagent step was a "teammate" step, naming its "teammate", and a flow file's needs said
+ * "teammate:<handle>". Saved drawings, step lists and flow files from before still read: the old words mean the new ones.
+ */
+export function legacySubagentStep(step: unknown): unknown {
+  if (step === null || typeof step !== "object" || Array.isArray(step)) return step;
+  const row = step as Record<string, unknown>;
+  if (row["kind"] !== "teammate" && !Object.hasOwn(row, "teammate")) return step;
+  const { teammate, ...rest } = row;
+  return { ...rest, ...(rest["kind"] === "teammate" ? { kind: "subagent" } : {}), ...(teammate !== undefined && rest["subagent"] === undefined ? { subagent: teammate } : {}) };
+}
+/** A flow file's need as it was written before D5 ("teammate:maya"), in today's words. */
+export const legacyFlowNeed = (need: unknown): unknown => typeof need === "string" && need.startsWith("teammate:") ? `subagent:${need.slice(9)}` : need;
 
 /** The keys people and models write for the ones a step means: refusals suggest them (contract.ts). */
 export const FLOW_ALIASES: ContractOptions = {
@@ -432,7 +446,7 @@ export const flowFileSchema = versioned(FLOW_FILE_VERSION, {
   format: z.literal(FLOW_FILE_FORMAT),
   name: visible("name", "flowName").min(1),
   about: visible("about", "flowFileAbout").optional().describe("One line on what the flow does. Untrusted: shown in the import preview."),
-  needs: z.array(visible("need", "flowFileNeed").min(1)).max(40).optional().describe("What the flow needs to run: github, linear, openrouter, email, tool:<server>, secret:<NAME>, teammate:<handle>, script:<name>."),
+  needs: z.array(visible("need", "flowFileNeed").min(1)).max(40).optional().describe("What the flow needs to run: github, linear, openrouter, email, tool:<server>, secret:<NAME>, subagent:<handle>, script:<name>."),
   parameters: z.array(flowFileParameterSchema).max(20).optional(),
   zones: z.array(flowFileZoneSchema).min(1).max(FLOW_ZONES_MAX).describe("The zones in order; the first is where cards start."),
   triggers: z.array(flowFileTriggerSchema).max(10).optional(),

@@ -26,9 +26,9 @@ import { CHAT_CONTROLS, isChatControl } from "./chat-controls.js";
 import { LIMITS } from "./decision.js";
 import { CHAT_TASK_ACTIONS, chatTaskRun, chatTaskStamp, isChatTaskAction } from "./chat-task-actions.js";
 /**
- * The mate's tools (mate arc §2): reads over the approver's ceiling and
+ * The lead's tools (mate arc §2): reads over the approver's ceiling and
  * proposals that become rows — never a write. Every result passes through
- * `mateView`, a fail-closed choke point (ruling 4; slice-1 review finding
+ * `leadView`, a fail-closed choke point (ruling 4; slice-1 review finding
  * 9): repos use `r1..rN` in the principal's order, and every string
  * that leaves is scrubbed of path-shaped text, digests, and account names
  * — titles, questions, and reasons included, because a human typed those
@@ -38,9 +38,9 @@ import { CHAT_TASK_ACTIONS, chatTaskRun, chatTaskStamp, isChatTaskAction } from 
  * projects after scrubbing; full paths and arbitrary text remain redacted.
  */
 import { Buffer } from "node:buffer";
-import { MATE_ASK_OTHER, type FlowCardRow, type FlowRow, type Store, type MateProposalKind, type MateTurnEvidence } from "./store.js";
+import { LEAD_ASK_OTHER, type FlowCardRow, type FlowRow, type Store, type LeadProposalKind, type LeadTurnEvidence } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
-import type { MateToolSchema } from "./converse.js";
+import type { LeadToolSchema } from "./converse.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, scanForSecrets } from "./evidence.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
@@ -61,14 +61,14 @@ import { flowInsights } from "./flow-insights.js";
 import { describeTrigger, FLOW_TRIGGER_KINDS, triggerConfigOf } from "./flow-triggers.js";
 import type { ChatAction } from "./chat-actions.js";
 
-export const MATE_MAX_PROPOSALS_PER_TURN = 5;
+export const LEAD_MAX_PROPOSALS_PER_TURN = 5;
 
-export type MateToolContext = {
+export type LeadToolContext = {
   store: Store;
   who: VerifiedApprover;
   now: Date;
   /** Records a proposal as `drafting` under the running turn; null when the turn may draft no more. */
-  draft: (kind: MateProposalKind, payload: Record<string, unknown>) => number | null;
+  draft: (kind: LeadProposalKind, payload: Record<string, unknown>) => number | null;
   /** The step this call runs in, and which decisions were read (by get_decision) at which step —
    * an answer may be proposed only for a decision read in an EARLIER step (v3 review, finding 6). */
   step: number;
@@ -78,7 +78,7 @@ export type MateToolContext = {
   evidenceRoot?: string;
   /** Records the screenshots this turn selected, under the turn, for a channel that delivers files; returns how many are recorded. Absent: nothing durable is kept. */
   /** Return the exact artifact ids reserved under this running turn, including earlier calls. */
-  selectEvidence?: (rows: readonly Omit<MateTurnEvidence, "turn" | "ordinal" | "createdAt">[]) => readonly number[];
+  selectEvidence?: (rows: readonly Omit<LeadTurnEvidence, "turn" | "ordinal" | "createdAt">[]) => readonly number[];
   /** How this surface delivers selected images: Telegram sends them as documents after the reply; every other surface shows identity only. */
   mediaDelivery?: "documents";
   /** The conversation and turn this call runs in: where a promise (commit_to) is reported. Absent: no promise can be kept. */
@@ -101,17 +101,17 @@ export type MateToolContext = {
   ask?: (question: string, options: readonly string[]) => boolean;
 };
 
-export type MateToolResult = { ok: true; body: unknown } | { ok: false; message: string };
+export type LeadToolResult = { ok: true; body: unknown } | { ok: false; message: string };
 
 export { reportSummaryFor } from "./report-summary.js";
 import { reportSummaryFor } from "./report-summary.js";
-import { labelOf, nameOf, summaryOf, zonesOf } from "./teammate-admin.js";
-import { TEAMMATE_TEMPLATES, withSection } from "./teammates.js";
-import { callOutcome, callWords, defaultRule, ruleWords } from "./teammate-tools.js";
-import { deskOf, routinesOf } from "./teammate-desk.js";
+import { labelOf, nameOf, summaryOf, zonesOf } from "./subagent-admin.js";
+import { SUBAGENT_TEMPLATES, withSection } from "./subagents.js";
+import { callOutcome, callWords, defaultRule, ruleWords } from "./subagent-tools.js";
+import { deskOf, routinesOf } from "./subagent-desk.js";
 import { KITS } from "./kits.js";
 import { STARTER_IDS } from "./flow-starters.js";
-import { undoFor, weekOf, weekWords } from "./teammate-week.js";
+import { undoFor, weekOf, weekWords } from "./subagent-week.js";
 import { PERSON_ID, personEntry, teamRoomOf } from "./lead-people.js";
 import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";
 
@@ -119,16 +119,16 @@ const REPO_ID = /^r[0-9]{1,3}$/;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ISO_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
-// ------------------------------------------------------------- mateView
+// ------------------------------------------------------------- leadView
 
 /** What a mate-facing string may not carry: an absolute path, a hex digest of 32+ digits, an account name. */
 const PATH_SHAPED = /(?:^|[\s"'`(<[=:,])(\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]+)/g;
 const HEX_DIGEST = /\b[0-9a-f]{32,}\b/gi;
 
-export type MateViewContext = { repos: readonly string[]; names: readonly string[] };
+export type LeadViewContext = { repos: readonly string[]; names: readonly string[] };
 
 /** Scrub one string. Exact repo paths and their basenames go first (v13: no paths, no basenames), then shapes. */
-export function redactForMate(text: string, view: MateViewContext): string {
+export function redactForLead(text: string, view: LeadViewContext): string {
   let out = text;
   for (const repo of view.repos) {
     if (repo === "") continue;
@@ -147,9 +147,9 @@ export function redactForMate(text: string, view: MateViewContext): string {
 }
 
 /** The choke point: every string inside a tool result, recursively, scrubbed. */
-export function mateView<T>(value: T, view: MateViewContext): T {
+export function leadView<T>(value: T, view: LeadViewContext): T {
   const walk = (node: unknown): unknown => {
-    if (typeof node === "string") return redactForMate(node, view);
+    if (typeof node === "string") return redactForLead(node, view);
     if (Array.isArray(node)) return node.map(walk);
     if (typeof node === "object" && node !== null) {
       const out: Record<string, unknown> = {};
@@ -161,15 +161,15 @@ export function mateView<T>(value: T, view: MateViewContext): T {
   return walk(value) as T;
 }
 
-export function mateViewContextFor(store: Store, who: VerifiedApprover): MateViewContext {
+export function leadViewContextFor(store: Store, who: VerifiedApprover): LeadViewContext {
   return { repos: who.repos, names: store.listApprovers().map(one => one.name) };
 }
 
 /** Project names are deliberate display metadata, not a general basename
  * exemption. Invalid, sensitive or account-identifying labels stay opaque. */
-export function projectLabelForMate(path: string, index: number, names: readonly string[]): string {
+export function projectLabelForLead(path: string, index: number, names: readonly string[]): string {
   const base = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
-  const label = redactForMate(base, { repos: [], names });
+  const label = redactForLead(base, { repos: [], names });
   return honest(label, 80) && /^[\p{L}\p{N}][\p{L}\p{N} ._()-]*$/u.test(label)
     && !/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/.test(label)
     ? label : `Project ${index + 1}`;
@@ -207,7 +207,7 @@ function taskIdOf(args: Record<string, unknown>): string | null {
 }
 
 /** The task's ref inside the principal's ceiling, or null — a task outside answers not-found, never its repo. */
-function admittedRef(ctx: MateToolContext, taskId: string): { id: number; repo: string; repoId: string } | null {
+function admittedRef(ctx: LeadToolContext, taskId: string): { id: number; repo: string; repoId: string } | null {
   const ref = ctx.store.lookupRef(taskId);
   if (ref === null || ref.repo === null) return null;
   const repoId = repoIdOf(ctx.who, ref.repo);
@@ -239,7 +239,7 @@ export function readAcceptanceArg(value: unknown): AcceptanceCriterion[] | null 
   return parsed.criteria;
 }
 
-const tooMany = (): MateToolResult => ({ ok: false, message: `this turn already holds ${MATE_MAX_PROPOSALS_PER_TURN} proposals` });
+const tooMany = (): LeadToolResult => ({ ok: false, message: `this turn already holds ${LEAD_MAX_PROPOSALS_PER_TURN} proposals` });
 
 /** How far back a task search reads: enough for a busy month, bounded. */
 const SEARCH_FAMILIES = 400;
@@ -257,27 +257,27 @@ function searchHits(words: readonly string[], fields: readonly string[]): number
   return words.filter(word => text.includes(word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word)).length;
 }
 
-const notFound = (): MateToolResult => ({ ok: false, message: "not-found: no such task in your projects" });
+const notFound = (): LeadToolResult => ({ ok: false, message: "not-found: no such task in your projects" });
 
 /** One lead tool's words and handler. Its input is LEAD_TOOL_READ_INPUTS[name] (src/contracts/lead-tools.ts): the handler
  * receives the call as that schema read it. `prepare` may complete a raw call before it is read (propose_flow's edit
  * fills a kept step's kind and name from the zone it keeps). */
 type LeadToolHandler<N extends LeadToolName> = {
   description: string;
-  prepare?: (ctx: MateToolContext, raw: Record<string, unknown>) => Record<string, unknown>;
-  handle: (ctx: MateToolContext, args: LeadToolInput<N>) => MateToolResult;
+  prepare?: (ctx: LeadToolContext, raw: Record<string, unknown>) => Record<string, unknown>;
+  handle: (ctx: LeadToolContext, args: LeadToolInput<N>) => LeadToolResult;
 };
 
 /** A lead tool as the model is shown it (its inputSchema derived from its contract) and as a call is read and run. */
-export type MateTool = MateToolSchema & {
-  read: (ctx: MateToolContext, raw: Record<string, unknown>) => ContractResult<Record<string, unknown>>;
-  handle: (ctx: MateToolContext, args: Record<string, unknown>) => MateToolResult;
+export type LeadTool = LeadToolSchema & {
+  read: (ctx: LeadToolContext, raw: Record<string, unknown>) => ContractResult<Record<string, unknown>>;
+  handle: (ctx: LeadToolContext, args: Record<string, unknown>) => LeadToolResult;
 };
 
 // ------------------------------------------------- shared queries (§2)
-// The one set of queries both the mate and the MCP gateway read. Every
+// The one set of queries both the lead and the MCP gateway read. Every
 // row names its repo by INDEX into the caller's admitted list; the view
-// then labels it — `rN` for the mate, the path for a coordinator whose
+// then labels it — `rN` for the lead, the path for a coordinator whose
 // allowlist is its authority. Consequences and recommendations are never
 // read here at all.
 
@@ -436,14 +436,14 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
     demands: route.demands.filter(reason => !/review/i.test(reason)),
     agents: route.legs.filter(leg => leg.phase !== "review").map(leg => ({ role: ROLE_WORD[leg.phase], provider: leg.provider, model: leg.model, chosen: chosenWords(leg), reasons: leg.reasons.map(reason => reason.replace("builder and reviewer", "builder")), problem: leg.problem })),
     problems: routeProblems(route),
-    // Only SELECTABLE choices are offered to the mate: a current agent the
+    // Only SELECTABLE choices are offered to the lead: a current agent the
     // configuration no longer names appears under `agents` (what runs
     // today) and nowhere a proposal could pick it.
     choices: Object.fromEntries(PHASES.filter(phase => phase !== "review").map(phase => [ROLE_WORD[phase], choices[phase].filter(one => one.selectable).map(one => ({ provider: one.provider, model: one.model, current: one.current }))])),
   };
 }
 
-const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
+const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
   get_brief: {
     description: 'Read current tasks, decisions, results and project knowledge from the local database. No model or mutation.',
     handle: (ctx, args) => {
@@ -465,21 +465,21 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
   get_action_status: {
     description: "Read the saved proposal outcome after confirmation. Opening a link proves no completion.",
     handle:(ctx,args)=>{
-      const proposal=ctx.store.getMateProposal(Number(args['proposal'])),action=proposal?.kind==='action'?sharedActionPayload(proposal.payload):null;
-      if(!proposal||!action||ctx.store.getMateThread(proposal.thread)?.approver!==ctx.who.name||!ctx.who.repos.includes(action.repo)||!ctx.store.accountCanAccess(ctx.who.name,action.repo))return {ok:false,message:'That action is outside your access.'};
+      const proposal=ctx.store.getLeadProposal(Number(args['proposal'])),action=proposal?.kind==='action'?sharedActionPayload(proposal.payload):null;
+      if(!proposal||!action||ctx.store.getLeadThread(proposal.thread)?.approver!==ctx.who.name||!ctx.who.repos.includes(action.repo)||!ctx.store.accountCanAccess(ctx.who.name,action.repo))return {ok:false,message:'That action is outside your access.'};
       return {ok:true,body:{proposal:proposal.id,operation:action.operation,state:proposal.state,outcome:proposal.outcome,finishedAt:proposal.resolvedAt}};
     },
   },
   get_actions: {
     description: "List shared actions and required inputs. All channels use the same approvals.",
-    handle: () => ({ok:true,body:{actions:Object.entries(CHAT_ACTIONS).filter(([operation])=>!operation.startsWith('flow_')&&!operation.startsWith('teammate_')).map(([operation,value])=>({operation,label:value.label,secureReview:value.protected,inputs:CHAT_ACTION_FIELDS[operation as keyof typeof CHAT_ACTIONS].filter(field=>field!=='nonce'&&field!=='files')})),notice:'Passwords and credentials never belong in a tool call or conversation. Secure review links complete protected actions.'}}),
+    handle: () => ({ok:true,body:{actions:Object.entries(CHAT_ACTIONS).filter(([operation])=>!operation.startsWith('flow_')&&!operation.startsWith('subagent_')).map(([operation,value])=>({operation,label:value.label,secureReview:value.protected,inputs:CHAT_ACTION_FIELDS[operation as keyof typeof CHAT_ACTIONS].filter(field=>field!=='nonce'&&field!=='files')})),notice:'Passwords and credentials never belong in a tool call or conversation. Secure review links complete protected actions.'}}),
   },
   propose_action: {
     description: "Read get_actions and relevant skills/evidence first. Save an exact-state proposal only; protected or long terms require full secure review.",
     handle:(ctx,args)=>{
       const operation=args['operation'];if(!isChatAction(operation))return {ok:false,message:'Choose an action from get_actions.'};
       if(operation.startsWith('flow_'))return {ok:false,message:'Use propose_flow for flows.'};
-      if(operation.startsWith('teammate_'))return {ok:false,message:'Use propose_teammate for teammates.'};
+      if(operation.startsWith('subagent_'))return {ok:false,message:'Use propose_subagent for subagents.'};
       const input:Record<string,unknown>={...args};delete input['operation'];
       if(operation.startsWith('skill_')||operation.startsWith('knowledge_')||operation.startsWith('tool_')){
         const repo=repoPathOf(ctx.who,args['repo']);if(repo===null)return {ok:false,message:'Choose a project from list_repos.'};input['repo']=repo;
@@ -778,7 +778,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_flows: {
-    description: "Read the flows in the operator's projects (each a process drawn as zones that cards move through): their steps in order and their cards — where each card is, what it waits on, whether it needs the operator, its task. flow reads one flow in full. Each card has its owner and latest comments; flow with card reads that card's whole discussion; read it before acting on what teammates said. Zones: Holding, Build and Research (each files an ordinary task), Person decides, Message, Done. Triggers start cards on their own: a button with questions, a schedule, GitHub (new issues, a label being added, new pull requests, failed checks), Linear, another flow's cards reaching a zone, email arriving in the operator's mailbox (optionally only from some senders or with words in the subject; reading mail is set up in Settings → Email), or a plane review (every morning, one card per problem from Toolroll's last 24 hours; a problem that comes back joins its card). A Slack, Discord or Teams channel feeds a flow when a paired approver sends 'flow <the flow's number>' in that channel (never from here); each message there becomes a card, and an 'update' step answers in its thread. Webhook addresses and the Linear key are set on the flow's Triggers panel, never in chat. Two steps run without a model: 'check' runs one of the project's scripts (named scripts in Python, Node or shell that belong to the project, not a flow) with the card as its input; what it prints is passed to later steps, a last line 'goto: <answer>' picks where the card goes, it can run in an empty folder or a copy of the card's work, and it takes the failure path if it fails; a schedule trigger can run a script and make a card of each item it prints. 'update' comments on the GitHub or Linear issue the card came from and can close it, or answers in the chat thread it came from. A Build whose project checks fail takes its failure path too. A 'sort' step has Jev (a fast decision model on the operator's OpenRouter account) read the card and send it where the answer it picks leads, or to its not-sure step, noting scores or yes/no answers too. A 'draft' step has Claude write a reply, summary or note from the card in seconds and sends nothing itself. 'request' calls a web address, 'email' sends mail from the operator's email account (answering the sender of a card that came from email keeps the reply in that thread), 'tool' uses one of the project's tools; their secrets are saved on the canvas or Tools page, never in chat. A 'wait' step after an 'email' step waits for the person to reply (the reply moves the card on and is kept for later steps; with none in time, the card takes its no-reply step), or just waits a set time. A 'pull-request' step opens a pull request for a Build's result and follows its CI (green moves on, red goes back to the build naming the failing check); it merges only when set to, and only after a person approved the card. AI teammates (get_teammates) are agents on the operator's team with a soul file (who they are, how they write, what they know, what they decide on their own, what they ask first, what they never do). They work flow cards within those rules: a teammate named on an approval step decides it (and hands hard ones to that step's person), and a 'teammate' step has one pick where the card goes and write what the next steps send. They never approve code tasks or merges. Each has a memory (what people told it and facts it kept from cards) and a desk (a flow): the operator can message it by name in their chat app ('@maya, …') and its answer goes back to whoever asked; its desk can send a card to a Build zone that files an ordinary task under the usual approvals. get_teammates with a teammate gives its week (what it did, cost, what the operator overrode). For where flows break, read get_flow_insights, and read a failed run's log before explaining it.",
+    description: "Read the flows in the operator's projects (each a process drawn as zones that cards move through): their steps in order and their cards — where each card is, what it waits on, whether it needs the operator, its task. flow reads one flow in full. Each card has its owner and latest comments; flow with card reads that card's whole discussion; read it before acting on what subagents said. Zones: Holding, Build and Research (each files an ordinary task), Person decides, Message, Done. Triggers start cards on their own: a button with questions, a schedule, GitHub (new issues, a label being added, new pull requests, failed checks), Linear, another flow's cards reaching a zone, email arriving in the operator's mailbox (optionally only from some senders or with words in the subject; reading mail is set up in Settings → Email), or a plane review (every morning, one card per problem from Toolroll's last 24 hours; a problem that comes back joins its card). A Slack, Discord or Teams channel feeds a flow when a paired approver sends 'flow <the flow's number>' in that channel (never from here); each message there becomes a card, and an 'update' step answers in its thread. Webhook addresses and the Linear key are set on the flow's Triggers panel, never in chat. Two steps run without a model: 'check' runs one of the project's scripts (named scripts in Python, Node or shell that belong to the project, not a flow) with the card as its input; what it prints is passed to later steps, a last line 'goto: <answer>' picks where the card goes, it can run in an empty folder or a copy of the card's work, and it takes the failure path if it fails; a schedule trigger can run a script and make a card of each item it prints. 'update' comments on the GitHub or Linear issue the card came from and can close it, or answers in the chat thread it came from. A Build whose project checks fail takes its failure path too. A 'sort' step has Jev (a fast decision model on the operator's OpenRouter account) read the card and send it where the answer it picks leads, or to its not-sure step, noting scores or yes/no answers too. A 'draft' step has Claude write a reply, summary or note from the card in seconds and sends nothing itself. 'request' calls a web address, 'email' sends mail from the operator's email account (answering the sender of a card that came from email keeps the reply in that thread), 'tool' uses one of the project's tools; their secrets are saved on the canvas or Tools page, never in chat. A 'wait' step after an 'email' step waits for the person to reply (the reply moves the card on and is kept for later steps; with none in time, the card takes its no-reply step), or just waits a set time. A 'pull-request' step opens a pull request for a Build's result and follows its CI (green moves on, red goes back to the build naming the failing check); it merges only when set to, and only after a person approved the card. subagents (get_subagents) are agents on the operator's team with a soul file (who they are, how they write, what they know, what they decide on their own, what they ask first, what they never do). They work flow cards within those rules: a subagent named on an approval step decides it (and hands hard ones to that step's person), and a 'subagent' step has one pick where the card goes and write what the next steps send. They never approve code tasks or merges. Each has a memory (what people told it and facts it kept from cards) and a desk (a flow): the operator asks it through you ('ask Maya to …', or '@maya, …'): propose_subagent ask puts it on its desk once they confirm, and its answer goes back to them; its desk can send a card to a Build zone that files an ordinary task under the usual approvals. get_subagents with a subagent gives its week (what it did, cost, what the operator overrode). For where flows break, read get_flow_insights, and read a failed run's log before explaining it.",
     handle: (ctx, args) => {
       const reachable = (repo: string) => ctx.who.repos.includes(repo) && ctx.store.accountCanAccess(ctx.who.name, repo);
       const needsYou = (flow: FlowRow, definition: FlowDefinition | null, card: FlowCardRow) => {
@@ -814,8 +814,8 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
               sureAt: Math.round(stage.sort.sureAt * 100), ...(stage.sort.notes.length === 0 ? {} : { alsoNote: stage.sort.notes.map(one => ({ question: one.question, kind: one.kind, ...(one.levels === null ? {} : { levels: one.levels }) })) }) } : {}),
             ...(stage.wait === undefined ? {} : stage.wait.for === "hours" ? { waitFor: "hours", from: stage.wait.from, until: stage.wait.to } : { waitFor: stage.wait.for, wait: durationWords(stage.wait.minutes) }),
             ...(stage.merge === undefined ? {} : { merge: stage.merge }),
-            ...(stage.teammate === undefined ? {} : { teammate: stage.teammate }),
-            ...(stage.kind === "teammate" && stage.routes !== undefined ? { routes: stage.routes.map(one => ({ answer: one.answer, goesTo: titleOf(one.to) })) } : {}),
+            ...(stage.subagent === undefined ? {} : { subagent: stage.subagent }),
+            ...(stage.kind === "subagent" && stage.routes !== undefined ? { routes: stage.routes.map(one => ({ answer: one.answer, goesTo: titleOf(one.to) })) } : {}),
             ...(stage.kind === "choose" ? { options: (stage.options ?? []).map((one, index) => ({ choice: index + 1, label: one.label, goesTo: one.to === "end" ? "end" : titleOf(one.to) })) } : {}),
             ...(stage.kind === "task" && stage.repo !== undefined ? { repo: repoIdOf(ctx.who, stage.repo) ?? "another project" } : {}),
             ...(stage.limit === undefined ? {} : { remindAfter: durationWords(stage.limit.minutes), ...(stage.limit.to === null ? {} : { thenMoveTo: titleOf(stage.limit.to) }) }),
@@ -830,11 +830,11 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
               : card.state !== "active" || definition.stages.find(one => one.id === card.stage)?.kind !== "approval" || card.waiting === null ? card.waiting
               : needsYou(flow, definition, card) ? "Waiting for you to approve or send it back" : "Waiting for someone else to decide",
             task: card.task ?? card.primaryTask, ...(card.note === null ? {} : { lastNote: card.note.slice(0, 300) }),
-            // Names never reach the model: people read as you or a teammate.
-            owner: card.owner === null ? null : card.owner === ctx.who.name ? "you" : "a teammate", following: ctx.store.flowCardWatchers(card.id).includes(ctx.who.name),
+            // Names never reach the model: people read as you or a subagent.
+            owner: card.owner === null ? null : card.owner === ctx.who.name ? "you" : "another person", following: ctx.store.flowCardWatchers(card.id).includes(ctx.who.name),
             ...(() => {
               const said = ctx.store.flowComments(card.id).filter(one => one.kind === "comment");
-              return said.length === 0 ? {} : { comments: said.length, discussion: said.slice(args["card"] === card.id ? -30 : -3).map(one => ({ by: one.author === ctx.who.name ? "you" : one.author.includes("@") ? "an email reply" : "a teammate", at: one.at, text: one.body.slice(0, args["card"] === card.id ? 2000 : 400) })) };
+              return said.length === 0 ? {} : { comments: said.length, discussion: said.slice(args["card"] === card.id ? -30 : -3).map(one => ({ by: one.author === ctx.who.name ? "you" : one.author.includes("@") ? "an email reply" : "another person", at: one.at, text: one.body.slice(0, args["card"] === card.id ? 2000 : 400) })) };
             })(),
           })).filter(card => args["card"] === undefined || card.card === args["card"]),
           scripts: ctx.store.flowScripts(flow.repo).map(script => ({ name: script.name, about: script.about, version: script.version, timeoutMinutes: script.timeoutMinutes, body: script.body.slice(0, 1500) })),
@@ -864,7 +864,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   propose_flow: {
-    description: "Draft a flow change as a card the operator confirms. To make a flow, create with a template or the steps in plain names; leave instructions out unless the operator gave them, and use decider 'me' when they decide. To change one, edit with the whole step list, keeping existing steps by id. For cards use add_card, move_card, approve, send_back with the operator's note, or cancel_card; find the card by what it is about; comment (with @name to ping someone), assign and follow here too. For triage, spam, lead, effort or exception routing, start from the matching template, with the sort as the first step. Use remindAfter and thenMoveTo for follow-ups and decisions that stall. The Issues to PRs template runs GitHub issues labelled toolroll through build, approval, pull request and a comment on the issue. When the operator asks for something to happen every time (fix CI when it fails, turn labelled issues into tasks, queue work overnight, review what went wrong every morning), offer the matching starter; each is one yes, and none merges without a person. When someone new wants a support desk, bug triage, sales follow-up or requests handled, a kit sets up the teammate and its flow in one card. Teammates: propose_teammate adds one (from a template: support, sales, ops, triage), changes one rule section (edit_section), pauses, resumes or removes it, passes it a note, or answers its question for the operator; put it to work with a flow here. When the operator says something like 'Maya can approve refunds up to $100 now', change that section of her soul file; when it's for this week or a one-off, pass it as a note. Teammates use the project's tools under a rule per action (do it, ask first: the operator approves each exact call, never, or up to a limit on a number); propose_teammate use_tool, stop_tool and tool_rule change them, and when a rule has a limit also change the soul file so its words agree. forget or edit_memory when the operator says a teammate has something wrong; a rule change it suggests is a question for the operator, answered only as they say. propose_teammate add_routine puts a card on its desk on a schedule; propose_teammate undo undoes a tool call only when its action has an undo set (tool_rule undoWith). Actions: starter: switch on a starter flow in a project (repo, starter: ci-fix files a fix task when CI fails on the main branch, issue-task makes a task of each GitHub issue labelled toolroll, overnight holds cards added in the day until 22:00 and leaves results for the morning, plane-review reviews the plane's last 24 hours every morning and turns each problem worth fixing into a researched fix and a pull request) — its zones and trigger in one card; offer the matching one when the operator says to do something every time. kit: set up a starter kit in a project (repo, kit: support-desk, bug-triage, sales-follow-up or ops-requests) — a teammate, the flow it works and its buttons, in one card; prefer it when the operator wants a support desk, bug triage, sales follow-up or requests handled. create: a template, or the steps in order (each leads to the next; Done is added; instructions may be left out). 'request' calls a web address (method, url with its host written out, headers — {{secret.NAME}} uses a secret the operator saved on the step, never in chat — and body); 'email' sends mail (to, subject, body; {{card.email}} is the card's email address); 'tool' calls one of the project's tools (server: the tool's name from get_project_tools, tool: its function, args: an object). Put a decision before any of these when they send what a model wrote or what an outsider sent. A 'draft' step has Claude write something from the card (instructions: what to write); follow it with an approval step (decider 'owner' asks the flow's owner in their chat app, where they can approve, edit or send it back), then an 'update' or 'notify' step whose message is '{{stage.<draft id>}}'. A 'sort' step has Jev pick one of its answers; make it the first step (never a holding step before it, or new cards wait unsorted): question, answers (answer, means: a few words Jev reads, goesTo: a step), sureAt (percent, default 80), ifNotSure (a step; otherwise the card waits for a person), and up to 3 alsoNote (score with levels lowest first, or yes-no); a sort has no next, so give each branch's last step its own next. A 'pull-request' step opens a pull request for the card's built result and waits for CI: next when it passes, ifFails when it fails (only this step defaults it: to the build before it, as a revision carrying the failing check); merge ('squash', 'merge' or 'rebase') merges once checks pass, and needs an approval step before it on every path. waitFor 'hours' with from and until (like '22:00' and '06:00') holds cards until the clock is inside those hours. A 'wait' step, after an 'email' step, waits for a reply to that email from someone it went to (waitFor 'reply', the default): next is where a reply goes (the reply is {{stage.<wait id>}}), ifNoReply where the card goes when none comes within wait (like '3 days', up to 30 days); waitFor 'time' just waits, then next. Any step but wait and done can have remindAfter (like '2 days': whoever it waits on is reminded once; 'none' removes it) and, on holding and approval steps, thenMoveTo (a step the card moves to then). AI teammates (get_teammates): an approval step with teammate (its short name) is decided by that teammate within its rules, and it hands hard ones to the step's decider; a 'teammate' step (teammate, instructions, routes of answer and goesTo) has it read the card, pick where it goes and write what the next steps send (the email body is then {{stage.<id>}}), asking the flow's owner when its rules say to. edit: the full step list, keeping existing steps by id — what a kept step leaves out carries over. add_card (starts in the first zone unless zone is named), move_card, approve, send_back (needs a note), cancel_card, comment (note; @name pings that person), assign (owner: a name, 'me', or 'nobody'), follow, unfollow, save_script (repo, and script: name, about, language python|node|shell, and either body (short) or file (a path in the project, like scripts/enrich.py), and timeoutMinutes; scripts belong to the project, so no flow is needed; a 'check' step in any of its flows names it). A 'check' step runs its script with the card as JSON on stdin (and in $FLOW_INPUT); what it prints is its result for later steps ({{stage.<id>}}); runIn 'folder' (an empty folder: for scripts that work on data) or 'copy' (a copy of the card's work, after setup: for tests on code; the default); routes (answer, goesTo) that a last printed line 'goto: <answer>' picks; ifFails is where a failing script sends the card, such as back to the build (it has no default: without it the card waits there); secrets (names of saved secrets it gets as variables). add_trigger with settings (kind button: label, questions; schedule: schedule like 'daily 09:00 Europe/London', and title, or script (a saved script whose printed items — one per line, a title or JSON with title, description, key — each become a card, once) with secrets; github: repo owner/name, watch issues|pulls|checks, label, branch, from team|anyone; linear: team, state, label; flow: follow (another flow's id), when (its zone); email: folder (default INBOX), sender (addresses or domains), subject (words it must contain); plane-review: at (HH:MM, default 07:30), timeZone — every day it reads the plane's last 24 hours and makes one card per problem worth fixing, a returning problem joining its card); pause_trigger, resume_trigger, remove_trigger with trigger. A 'send' step ('Send to me') sends the card's owner what the step before produced (summary, links, screenshots) in their chat apps, then moves on; a 'choose' step sends the same with 2 to 4 options (label, goesTo: a step, or 'end' to ignore the card) as buttons, ifReplied (where a reply goes as {{note}}; the build before by default), and remindAfter with ifNoReply. choose (card, and choice by number or a note to reply) answers one for the operator. A 'task' step may build in another project: repo (from list_repos). Read get_flows first except to create.",
+    description: "Draft a flow change as a card the operator confirms. To make a flow, create with a template or the steps in plain names; leave instructions out unless the operator gave them, and use decider 'me' when they decide. To change one, edit with the whole step list, keeping existing steps by id. For cards use add_card, move_card, approve, send_back with the operator's note, or cancel_card; find the card by what it is about; comment (with @name to ping someone), assign and follow here too. For triage, spam, lead, effort or exception routing, start from the matching template, with the sort as the first step. Use remindAfter and thenMoveTo for follow-ups and decisions that stall. The Issues to PRs template runs GitHub issues labelled toolroll through build, approval, pull request and a comment on the issue. When the operator asks for something to happen every time (fix CI when it fails, turn labelled issues into tasks, queue work overnight, review what went wrong every morning), offer the matching starter; each is one yes, and none merges without a person. When someone new wants a support desk, bug triage, sales follow-up or requests handled, a kit sets up the subagent and its flow in one card. Subagents: propose_subagent adds one (from a template: support, sales, ops, triage), changes one rule section (edit_section), pauses, resumes or removes it, passes it a note, or answers its question for the operator; put it to work with a flow here. When the operator says something like 'Maya can approve refunds up to $100 now', change that section of her soul file; when it's for this week or a one-off, pass it as a note. Subagents use the project's tools under a rule per action (do it, ask first: the operator approves each exact call, never, or up to a limit on a number); propose_subagent use_tool, stop_tool and tool_rule change them, and when a rule has a limit also change the soul file so its words agree. forget or edit_memory when the operator says a subagent has something wrong; a rule change it suggests is a question for the operator, answered only as they say. propose_subagent add_routine puts a card on its desk on a schedule; propose_subagent undo undoes a tool call only when its action has an undo set (tool_rule undoWith). Actions: starter: switch on a starter flow in a project (repo, starter: ci-fix files a fix task when CI fails on the main branch, issue-task makes a task of each GitHub issue labelled toolroll, overnight holds cards added in the day until 22:00 and leaves results for the morning, plane-review reviews the plane's last 24 hours every morning and turns each problem worth fixing into a researched fix and a pull request) — its zones and trigger in one card; offer the matching one when the operator says to do something every time. kit: set up a starter kit in a project (repo, kit: support-desk, bug-triage, sales-follow-up or ops-requests) — a subagent, the flow it works and its buttons, in one card; prefer it when the operator wants a support desk, bug triage, sales follow-up or requests handled. create: a template, or the steps in order (each leads to the next; Done is added; instructions may be left out). 'request' calls a web address (method, url with its host written out, headers — {{secret.NAME}} uses a secret the operator saved on the step, never in chat — and body); 'email' sends mail (to, subject, body; {{card.email}} is the card's email address); 'tool' calls one of the project's tools (server: the tool's name from get_project_tools, tool: its function, args: an object). Put a decision before any of these when they send what a model wrote or what an outsider sent. A 'draft' step has Claude write something from the card (instructions: what to write); follow it with an approval step (decider 'owner' asks the flow's owner in their chat app, where they can approve, edit or send it back), then an 'update' or 'notify' step whose message is '{{stage.<draft id>}}'. A 'sort' step has Jev pick one of its answers; make it the first step (never a holding step before it, or new cards wait unsorted): question, answers (answer, means: a few words Jev reads, goesTo: a step), sureAt (percent, default 80), ifNotSure (a step; otherwise the card waits for a person), and up to 3 alsoNote (score with levels lowest first, or yes-no); a sort has no next, so give each branch's last step its own next. A 'pull-request' step opens a pull request for the card's built result and waits for CI: next when it passes, ifFails when it fails (only this step defaults it: to the build before it, as a revision carrying the failing check); merge ('squash', 'merge' or 'rebase') merges once checks pass, and needs an approval step before it on every path. waitFor 'hours' with from and until (like '22:00' and '06:00') holds cards until the clock is inside those hours. A 'wait' step, after an 'email' step, waits for a reply to that email from someone it went to (waitFor 'reply', the default): next is where a reply goes (the reply is {{stage.<wait id>}}), ifNoReply where the card goes when none comes within wait (like '3 days', up to 30 days); waitFor 'time' just waits, then next. Any step but wait and done can have remindAfter (like '2 days': whoever it waits on is reminded once; 'none' removes it) and, on holding and approval steps, thenMoveTo (a step the card moves to then). subagents (get_subagents): an approval step with subagent (its short name) is decided by that subagent within its rules, and it hands hard ones to the step's decider; a 'subagent' step (subagent, instructions, routes of answer and goesTo) has it read the card, pick where it goes and write what the next steps send (the email body is then {{stage.<id>}}), asking the flow's owner when its rules say to. edit: the full step list, keeping existing steps by id — what a kept step leaves out carries over. add_card (starts in the first zone unless zone is named), move_card, approve, send_back (needs a note), cancel_card, comment (note; @name pings that person), assign (owner: a name, 'me', or 'nobody'), follow, unfollow, save_script (repo, and script: name, about, language python|node|shell, and either body (short) or file (a path in the project, like scripts/enrich.py), and timeoutMinutes; scripts belong to the project, so no flow is needed; a 'check' step in any of its flows names it). A 'check' step runs its script with the card as JSON on stdin (and in $FLOW_INPUT); what it prints is its result for later steps ({{stage.<id>}}); runIn 'folder' (an empty folder: for scripts that work on data) or 'copy' (a copy of the card's work, after setup: for tests on code; the default); routes (answer, goesTo) that a last printed line 'goto: <answer>' picks; ifFails is where a failing script sends the card, such as back to the build (it has no default: without it the card waits there); secrets (names of saved secrets it gets as variables). add_trigger with settings (kind button: label, questions; schedule: schedule like 'daily 09:00 Europe/London', and title, or script (a saved script whose printed items — one per line, a title or JSON with title, description, key — each become a card, once) with secrets; github: repo owner/name, watch issues|pulls|checks, label, branch, from team|anyone; linear: team, state, label; flow: follow (another flow's id), when (its zone); email: folder (default INBOX), sender (addresses or domains), subject (words it must contain); plane-review: at (HH:MM, default 07:30), timeZone — every day it reads the plane's last 24 hours and makes one card per problem worth fixing, a returning problem joining its card); pause_trigger, resume_trigger, remove_trigger with trigger. A 'send' step ('Send to me') sends the card's owner what the step before produced (summary, links, screenshots) in their chat apps, then moves on; a 'choose' step sends the same with 2 to 4 options (label, goesTo: a step, or 'end' to ignore the card) as buttons, ifReplied (where a reply goes as {{note}}; the build before by default), and remindAfter with ifNoReply. choose (card, and choice by number or a note to reply) answers one for the operator. A 'task' step may build in another project: repo (from list_repos). Read get_flows first except to create.",
     // An edit's kept steps may leave their kind and name to the zone they keep: they are filled in before the call is read.
     prepare: (ctx, given) => {
       const editing = given["operation"] === "edit" && Number.isSafeInteger(given["flow"]) ? ctx.store.getFlow(Number(given["flow"])) : null;
@@ -897,7 +897,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
             break;
           }
           case "kit": {
-            // a starter kit — a teammate, the flow it works, its buttons.
+            // a starter kit — a subagent, the flow it works, its buttons.
             const repo = repoPathOf(ctx.who, args["repo"]);
             if (repo === null) return { ok: false, message: "Choose a project from list_repos." };
             operation = "kit_setup"; input = { repo, kit: args["kit"] };
@@ -961,43 +961,43 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       }
     },
   },
-  get_teammates: {
-    description: "The project's AI teammates: who each is (its soul file: role, rules), what it works on, what it did today, and the questions it's waiting on you for. With teammate, one in full with its recent log.",
+  get_subagents: {
+    description: "The project's subagents: who each is (its soul file: role, rules), what it works on, what it did today, and the questions it's waiting on you for. With subagent, one in full with its recent log.",
     handle: (ctx, args) => {
       const repos = args["repo"] === undefined ? ctx.who.repos : [repoPathOf(ctx.who, args["repo"])].filter((one): one is string => one !== null);
       if (repos.length === 0) return { ok: false, message: "Choose a project from list_repos." };
       const today = new Date(ctx.now); today.setHours(0, 0, 0, 0);
-      const whoIs = (name: string | null) => name === null ? null : name === ctx.who.name ? "you" : "a teammate";
-      const mates = ctx.store.teammates(repos).filter(one => args["teammate"] === undefined || one.id === args["teammate"]);
-      if (args["teammate"] !== undefined && mates.length === 0) return { ok: false, message: "No such teammate in your projects." };
+      const whoIs = (name: string | null) => name === null ? null : name === ctx.who.name ? "you" : "another person";
+      const mates = ctx.store.subagents(repos).filter(one => args["subagent"] === undefined || one.id === args["subagent"]);
+      if (args["subagent"] !== undefined && mates.length === 0) return { ok: false, message: "No such subagent in your projects." };
       return { ok: true, body: {
-        teammates: mates.map(mate => ({
-          teammate: mate.id, name: nameOf(mate), label: labelOf(mate), handle: mate.handle, project: repoIdOf(ctx.who, mate.repo), working: mate.state === "active",
-          reportsTo: whoIs(mate.manager), soul: args["teammate"] === undefined ? mate.soul.slice(0, 600) : mate.soul, version: mate.version,
+        subagents: mates.map(mate => ({
+          subagent: mate.id, name: nameOf(mate), label: labelOf(mate), handle: mate.handle, project: repoIdOf(ctx.who, mate.repo), working: mate.state === "active",
+          reportsTo: whoIs(mate.manager), soul: args["subagent"] === undefined ? mate.soul.slice(0, 600) : mate.soul, version: mate.version,
           worksOn: zonesOf(ctx.store, mate).map(one => ({ flow: one.flow, flowName: one.flowName, zone: one.title, how: one.kind })),
           today: summaryOf(ctx.store, mate, today.toISOString()).said,
-          questions: ctx.store.openTeammateQuestions([mate.id]).map(one => ({ question: one.id, card: one.card, asks: one.question, options: one.options.map(option => option.label), askedOf: whoIs(one.askedOf), ...(one.toolCall === null ? {} : { approvesToolCall: true }), ...(one.suggestion === null ? {} : { suggestsRuleChange: true }) })),
+          questions: ctx.store.openSubagentQuestions([mate.id]).map(one => ({ question: one.id, card: one.card, asks: one.question, options: one.options.map(option => option.label), askedOf: whoIs(one.askedOf), ...(one.toolCall === null ? {} : { approvesToolCall: true }), ...(one.suggestion === null ? {} : { suggestsRuleChange: true }) })),
           // v96: where messages to it by name and its routines land, and its routines.
           desk: deskOf(ctx.store, mate)?.id ?? null,
           routines: routinesOf(ctx.store, mate).map(one => ({ routine: one.id, schedule: one.schedule, text: one.text, working: one.state === "active", last: one.lastOutcome })),
           // v95: what it remembers (what people told it, and what it kept), newest first.
-          memory: ctx.store.teammateMemories(mate.id, { limit: args["teammate"] === undefined ? 5 : 40 }).map(one => ({ memory: one.id, text: one.text, from: one.source === "person" ? whoIs(one.createdBy) : "itself" })),
+          memory: ctx.store.subagentMemories(mate.id, { limit: args["subagent"] === undefined ? 5 : 40 }).map(one => ({ memory: one.id, text: one.text, from: one.source === "person" ? whoIs(one.createdBy) : "itself" })),
           // v94: the tools it may use, and its rule for each action.
-          tools: ctx.store.teammateGrants(mate.id).map(grant => ({ tool: grant.tool, actions: grant.actions.map(action => ({ action: action.name, rule: ruleWords(grant.rules[action.name] ?? defaultRule(action)) })) })),
-          ...(args["teammate"] === undefined ? {} : {
-            recent: ctx.store.teammateEvents(mate.id, 30).map(one => ({ kind: one.kind, said: one.said, at: one.at })),
-            toolCalls: ctx.store.teammateCallsOf(mate.id, 20).map(one => ({ call: one.id, card: one.card, what: callWords(one.tool, one.action, one.input, 200), outcome: callOutcome(one), at: one.createdAt, ...(undoFor(ctx.store, one) === null ? {} : { undoWith: undoFor(ctx.store, one) }) })),
+          tools: ctx.store.subagentGrants(mate.id).map(grant => ({ tool: grant.tool, actions: grant.actions.map(action => ({ action: action.name, rule: ruleWords(grant.rules[action.name] ?? defaultRule(action)) })) })),
+          ...(args["subagent"] === undefined ? {} : {
+            recent: ctx.store.subagentEvents(mate.id, 30).map(one => ({ kind: one.kind, said: one.said, at: one.at })),
+            toolCalls: ctx.store.subagentCallsOf(mate.id, 20).map(one => ({ call: one.id, card: one.card, what: callWords(one.tool, one.action, one.input, 200), outcome: callOutcome(one), at: one.createdAt, ...(undoFor(ctx.store, one) === null ? {} : { undoWith: undoFor(ctx.store, one) }) })),
             // v97: its week, as its manager's report reads.
             week: weekWords(mate, weekOf(ctx.store, mate, ctx.now)),
           }),
         })),
-        templates: TEAMMATE_TEMPLATES.map(one => ({ template: one.id, about: one.about })),
-        rule: "Change teammates with propose_teammate. They decide flow work within their rules and never approve code tasks or merges.",
+        templates: SUBAGENT_TEMPLATES.map(one => ({ template: one.id, about: one.about })),
+        rule: "Change subagents with propose_subagent. They decide flow work within their rules and never approve code tasks or merges.",
       } };
     },
   },
-  propose_teammate: {
-    description: "Draft a teammate change as a card the operator confirms. create: a teammate in a project (repo) from a template (support, sales, ops, triage; name renames it) or a whole soul file (markdown: front matter with name and role, then sections like ## Who you are, ## How you write, ## What you know, ## Decide on your own, ## Ask first, ## Never). edit_section: replace one section of its soul file (section: its title, like 'Decide on your own'; text: the new section, as lines; a new title adds the section) — use this for changing its rules; edit_soul: the whole new soul file, when it's short (keep its name). pause, resume, remove. note: something for it to remember (note, one line); forget and edit_memory change what it remembers (memory: its id from get_teammates, text for the new words). add_routine gives it a routine (schedule like 'weekdays 09:00', 'daily 17:00 Europe/London', 'monday 09:00' or 'every 2 hours'; text: what to do each time, one line) — a card on its desk each time, its answer to its manager; stop_routine (routine: its id). answer: answer its open question (question, and choice: one of its options, or text); a tool call waiting for approval is a question too (choice approve or deny, or text to say what to do instead). Tools (get_teammates lists each teammate's tools and their actions; get_project_tools the project's): use_tool lets it use one of the project's tools (tool: the tool's name, like shop) — actions that only read start as do-it and the rest ask first; stop_tool; tool_rule sets one action's rule (tool: the tool's name, like shop; action: one of its actions, like refund_order; use: free, ask or never; with free, limitField and limitOver make it ask first above that number, like limitField amount and limitOver 100; undoWith: another action of the tool that undoes it, like remove_label for add_label, so a person can press Undo on its receipts). undo: undo one of its tool calls (call: its id from get_teammates) with the action its rule names. Put a teammate to work with propose_flow (an approval step's teammate, or a 'teammate' step).",
+  propose_subagent: {
+    description: "Draft a subagent change as a card the operator confirms. ask: delegate to a subagent (subagent, text: what the operator wants, in their words) — whenever they say 'ask Rosa to …' or write to one by name ('@rosa, …'); once they confirm, it lands on its desk, it works it within its own rules and tools (asking them first where its rules say to), and its answer goes back to them. Don't do its work yourself or answer for it. create: a subagent in a project (repo) from a template (support, sales, ops, triage; name renames it) or a whole soul file (markdown: front matter with name and role, then sections like ## Who you are, ## How you write, ## What you know, ## Decide on your own, ## Ask first, ## Never). edit_section: replace one section of its soul file (section: its title, like 'Decide on your own'; text: the new section, as lines; a new title adds the section) — use this for changing its rules; edit_soul: the whole new soul file, when it's short (keep its name). pause, resume, remove. note: something for it to remember (note, one line); forget and edit_memory change what it remembers (memory: its id from get_subagents, text for the new words). add_routine gives it a routine (schedule like 'weekdays 09:00', 'daily 17:00 Europe/London', 'monday 09:00' or 'every 2 hours'; text: what to do each time, one line) — a card on its desk each time, its answer to its manager; stop_routine (routine: its id). answer: answer its open question (question, and choice: one of its options, or text); a tool call waiting for approval is a question too (choice approve or deny, or text to say what to do instead). Tools (get_subagents lists each subagent's tools and their actions; get_project_tools the project's): use_tool lets it use one of the project's tools (tool: the tool's name, like shop) — actions that only read start as do-it and the rest ask first; stop_tool; tool_rule sets one action's rule (tool: the tool's name, like shop; action: one of its actions, like refund_order; use: free, ask or never; with free, limitField and limitOver make it ask first above that number, like limitField amount and limitOver 100; undoWith: another action of the tool that undoes it, like remove_label for add_label, so a person can press Undo on its receipts). undo: undo one of its tool calls (call: its id from get_subagents) with the action its rule names. Put a subagent to work with propose_flow (an approval step's subagent, or a 'subagent' step).",
     handle: (ctx, args) => {
       const given: Record<string, unknown> = args;
       const pick = (keys: readonly string[]) => Object.fromEntries(keys.filter(key => given[key] !== undefined).map(key => [key, given[key]]));
@@ -1007,44 +1007,49 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           case "create": {
             const repo = repoPathOf(ctx.who, args["repo"]);
             if (repo === null) return { ok: false, message: "Choose a project from list_repos." };
-            operation = "teammate_create"; input = { repo, ...pick(["template", "name", "soul"]) }; break;
+            operation = "subagent_create"; input = { repo, ...pick(["template", "name", "soul"]) }; break;
           }
-          case "edit_soul": operation = "teammate_soul"; input = pick(["teammate", "soul"]); break;
+          case "edit_soul": operation = "subagent_soul"; input = pick(["subagent", "soul"]); break;
           case "edit_section": {
-            const mate = Number.isSafeInteger(args["teammate"]) ? ctx.store.getTeammate(Number(args["teammate"])) : null;
-            if (mate === null || !ctx.who.repos.includes(mate.repo)) return { ok: false, message: "Choose a teammate from get_teammates." };
+            const mate = Number.isSafeInteger(args["subagent"]) ? ctx.store.getSubagent(Number(args["subagent"])) : null;
+            if (mate === null || !ctx.who.repos.includes(mate.repo)) return { ok: false, message: "Choose a subagent from get_subagents." };
             if (typeof args["section"] !== "string" || args["section"].trim() === "" || typeof args["text"] !== "string") return { ok: false, message: "Give the section's title and its new text." };
-            operation = "teammate_soul"; input = { teammate: mate.id, soul: withSection(mate.soul, args["section"], args["text"]) }; break;
+            operation = "subagent_soul"; input = { subagent: mate.id, soul: withSection(mate.soul, args["section"], args["text"]) }; break;
           }
-          case "pause": case "resume": case "remove": operation = "teammate_state"; input = { ...pick(["teammate"]), state: args["operation"] === "pause" ? "paused" : args["operation"] === "resume" ? "active" : "removed" }; break;
-          case "note": operation = "teammate_note"; input = pick(["teammate", "note"]); break;
-          case "answer": operation = "teammate_answer"; input = pick(["question", "choice", "text"]); break;
+          case "pause": case "resume": case "remove": operation = "subagent_state"; input = { ...pick(["subagent"]), state: args["operation"] === "pause" ? "paused" : args["operation"] === "resume" ? "active" : "removed" }; break;
+          case "note": operation = "subagent_note"; input = pick(["subagent", "note"]); break;
+          case "ask": {
+            const mate = Number.isSafeInteger(args["subagent"]) ? ctx.store.getSubagent(Number(args["subagent"])) : null;
+            if (mate === null || !ctx.who.repos.includes(mate.repo)) return { ok: false, message: "Choose a subagent from get_subagents." };
+            operation = "subagent_ask"; input = pick(["subagent", "text"]); break;
+          }
+          case "answer": operation = "subagent_answer"; input = pick(["question", "choice", "text"]); break;
           case "use_tool": case "stop_tool": case "tool_rule": {
-            const mate = Number.isSafeInteger(args["teammate"]) ? ctx.store.getTeammate(Number(args["teammate"])) : null;
-            if (mate === null || !ctx.who.repos.includes(mate.repo)) return { ok: false, message: "Choose a teammate from get_teammates." };
+            const mate = Number.isSafeInteger(args["subagent"]) ? ctx.store.getSubagent(Number(args["subagent"])) : null;
+            if (mate === null || !ctx.who.repos.includes(mate.repo)) return { ok: false, message: "Choose a subagent from get_subagents." };
             // A tool's name and one of its actions: "shop" and "refund_order", also taken as "shop.refund_order", or the action alone when one tool has it.
             let tool = typeof args["tool"] === "string" ? args["tool"].trim() : "", action = typeof args["action"] === "string" ? args["action"].trim() : "";
             const dot = tool.search(/\.|→/);
             if (dot > 0) { action ||= tool.slice(dot + 1).replace(/^>?\s*/, ""); tool = tool.slice(0, dot).trim(); }
             if (action.includes(".")) action = action.slice(action.lastIndexOf(".") + 1);
-            const grants = ctx.store.teammateGrants(mate.id);
+            const grants = ctx.store.subagentGrants(mate.id);
             if (args["operation"] !== "use_tool" && !grants.some(one => one.tool === tool)) {
               const owners = grants.filter(one => one.actions.some(each => each.name === tool));
               if (owners.length === 1 && (action === "" || action === tool)) { action = tool; tool = owners[0]!.tool; }
             }
-            operation = "teammate_tools";
-            input = { ...pick(["teammate", "use", "limitField", "limitOver", "undoWith"]), tool, ...(action === "" ? {} : { action }), change: args["operation"] === "use_tool" ? "grant" : args["operation"] === "stop_tool" ? "revoke" : "rule" }; break;
+            operation = "subagent_tools";
+            input = { ...pick(["subagent", "use", "limitField", "limitOver", "undoWith"]), tool, ...(action === "" ? {} : { action }), change: args["operation"] === "use_tool" ? "grant" : args["operation"] === "stop_tool" ? "revoke" : "rule" }; break;
           }
-          case "forget": case "edit_memory": operation = "teammate_memory"; input = { ...pick(["teammate", "memory", "text"]), change: args["operation"] === "forget" ? "forget" : "edit" }; break;
-          case "undo": operation = "teammate_undo"; input = pick(["teammate", "call"]); break;
-          case "add_routine": case "stop_routine": operation = "teammate_routine"; input = { ...pick(["teammate", "schedule", "text", "routine"]), change: args["operation"] === "add_routine" ? "add" : "remove" }; break;
-          default: return { ok: false, message: "Choose create, edit_section, edit_soul, pause, resume, remove, note, answer, use_tool, stop_tool, tool_rule, forget, edit_memory, add_routine, stop_routine or undo." };
+          case "forget": case "edit_memory": operation = "subagent_memory"; input = { ...pick(["subagent", "memory", "text"]), change: args["operation"] === "forget" ? "forget" : "edit" }; break;
+          case "undo": operation = "subagent_undo"; input = pick(["subagent", "call"]); break;
+          case "add_routine": case "stop_routine": operation = "subagent_routine"; input = { ...pick(["subagent", "schedule", "text", "routine"]), change: args["operation"] === "add_routine" ? "add" : "remove" }; break;
+          default: return { ok: false, message: "Choose ask, create, edit_section, edit_soul, pause, resume, remove, note, answer, use_tool, stop_tool, tool_rule, forget, edit_memory, add_routine, stop_routine or undo." };
         }
         const action = prepareSharedAction(ctx.store, ctx.who, operation, input, ctx.evidenceRoot, ctx.now);
         const id = ctx.draft("action", { ...action });
         return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: sharedActionNeedsReview(action) ? "human review in the secure confirmation screen" : "human confirmation", executed: false } };
       } catch (error) {
-        return { ok: false, message: error instanceof Error ? error.message : "That teammate change couldn't be drafted." };
+        return { ok: false, message: error instanceof Error ? error.message : "That subagent change couldn't be drafted." };
       }
     },
   },
@@ -1101,9 +1106,9 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const family = ctx.store.taskFamilyOf(taskId, ctx.who.repos, false);
       const root = family?.root.id ?? taskId;
       const limit = Number.isSafeInteger(args["limit"]) ? Math.max(1, Math.min(30, Number(args["limit"]))) : 12;
-      const thread = ctx.store.liveMateThreadFor(ctx.who.name, { kind: "task", key: root });
+      const thread = ctx.store.liveLeadThreadFor(ctx.who.name, { kind: "task", key: root });
       if (thread === null || thread.ceilingDigest !== ctx.who.ceilingDigest) return { ok: true, body: { task: root, messages: [], notice: "No conversation about this task yet." } };
-      const messages = ctx.store.listMateMessages(thread.id, limit).map(one => ({ from: one.role === "operator" ? "operator" : "lead", text: one.text.length > 1_200 ? `${one.text.slice(0, 1_200)}…` : one.text, at: one.createdAt }));
+      const messages = ctx.store.listLeadMessages(thread.id, limit).map(one => ({ from: one.role === "operator" ? "operator" : "lead", text: one.text.length > 1_200 ? `${one.text.slice(0, 1_200)}…` : one.text, at: one.createdAt }));
       return { ok: true, body: { task: root, title: family?.root.title ?? null, messages, notice: messages.length === limit ? "Only the most recent messages are shown." : null } };
     },
   },
@@ -1181,7 +1186,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (!honest(args["text"], 240)) return { ok: false, message: "Say the correction in one sentence." };
       const text = String(args["text"]).trim();
       // One card per correction: a card still waiting in this conversation for the same change is the one to confirm.
-      const waiting = ctx.thread === undefined ? [] : ctx.store.listMateProposals(ctx.thread, ["drafting", "pending", "confirming"])
+      const waiting = ctx.thread === undefined ? [] : ctx.store.listLeadProposals(ctx.thread, ["drafting", "pending", "confirming"])
         .filter(one => one.kind === "action" && one.payload["repo"] === repo);
       const same = (words: unknown) => typeof words === "string" && words.trim().toLowerCase() === text.toLowerCase();
       let operation: ChatAction, input: Record<string, unknown>;
@@ -1213,7 +1218,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_person: {
-    description: "One person, AI teammate or team chat from your catch-up's people index, in full, with their open tasks: its id as the index shows it (p3fa91c2e, t5, c07b1d9a4) or a name. Read it before answering a question about that person, teammate or team. Read-only.",
+    description: "One person, subagent or team chat from your catch-up's people index, in full, with their open tasks: its id as the index shows it (p3fa91c2e, t5, c07b1d9a4) or a name. Read it before answering a question about that person, subagent or team. Read-only.",
     handle: (ctx, args) => {
       const id = typeof args["id"] === "string" && PERSON_ID.test(args["id"]) ? args["id"] : undefined;
       const name = typeof args["name"] === "string" && args["name"].trim() !== "" ? args["name"] : undefined;
@@ -1255,7 +1260,7 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   ask_owner: {
-    description: `Ask the owner one question as tappable buttons: 2-4 short options; "${MATE_ASK_OTHER}" is added. The tapped option comes back as their next message. Only when the answer changes the work; at most once per reply. Then finish with a short reply that leads into it; the question and buttons follow it.`,
+    description: `Ask the owner one question as tappable buttons: 2-4 short options; "${LEAD_ASK_OTHER}" is added. The tapped option comes back as their next message. Only when the answer changes the work; at most once per reply. Then finish with a short reply that leads into it; the question and buttons follow it.`,
     handle: (ctx, args) => {
       if (ctx.ask === undefined) return { ok: false, message: "Questions with buttons are not available here. Ask in your reply instead." };
       const question = typeof args["question"] === "string" ? args["question"].trim() : "";
@@ -1264,9 +1269,9 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const options = Array.isArray(raw) ? raw.map(one => typeof one === "string" ? one.trim() : "") : [];
       if (options.length < 2 || options.length > 4 || options.some(one => one === "" || !honest(one, 40))) return { ok: false, message: "Give 2 to 4 short options of up to 40 characters each." };
       const seen = new Set(options.map(one => one.toLowerCase()));
-      if (seen.size !== options.length || seen.has(MATE_ASK_OTHER.toLowerCase())) return { ok: false, message: `Each option must differ, and "${MATE_ASK_OTHER}" is added for you.` };
+      if (seen.size !== options.length || seen.has(LEAD_ASK_OTHER.toLowerCase())) return { ok: false, message: `Each option must differ, and "${LEAD_ASK_OTHER}" is added for you.` };
       if (!ctx.ask(question, options)) return { ok: false, message: "This reply already asks a question. Ask one at a time." };
-      return { ok: true, body: { asked: question, options: [...options, MATE_ASK_OTHER], shown: "as buttons after your reply; the tapped option arrives as the owner's next message" } };
+      return { ok: true, body: { asked: question, options: [...options, LEAD_ASK_OTHER], shown: "as buttons after your reply; the tapped option arrives as the owner's next message" } };
     },
   },
   search_project_memory: {
@@ -1690,13 +1695,13 @@ const MATE_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
 };
 
 /** The lead's tools, in the order the model is shown them: each one's inputSchema is its contract, derived. */
-export const MATE_TOOLS: MateTool[] = (Object.keys(LEAD_TOOL_INPUTS) as LeadToolName[]).map(<N extends LeadToolName>(name: N): MateTool => {
+export const LEAD_TOOLS: LeadTool[] = (Object.keys(LEAD_TOOL_INPUTS) as LeadToolName[]).map(<N extends LeadToolName>(name: N): LeadTool => {
   const input = LEAD_TOOL_INPUTS[name];
   // Flow proposals already used their strict contract in 0.9.36; keep that validation unchanged. A shared action's
   // unknown keys reach prepareSharedAction, whose per-operation check refused them in 0.9.36 and still does. Every other
   // tool ignored unknown arguments and still strips them.
   const reader = name === "propose_flow" ? LEAD_TOOL_READ_INPUTS[name] : name === "propose_action" ? LEAD_TOOL_READ_INPUTS[name].loose() : LEAD_TOOL_READ_INPUTS[name].strip();
-  const handler = MATE_TOOL_HANDLERS[name] as LeadToolHandler<N>;
+  const handler = LEAD_TOOL_HANDLERS[name] as LeadToolHandler<N>;
   return {
     name,
     description: handler.description,
@@ -1711,7 +1716,7 @@ const DIFF_PAGE_CHARS = 10_000;
 const LOG_PAGE_CHARS = 8_000;
 
 /** A finished result the person may read: the exact run named, or the task's newest finished build. */
-function finishedResultOf(ctx: Parameters<MateTool["handle"]>[0], args: Record<string, unknown>): { ok: true; task: string; run: number } | { ok: false; message: string } {
+function finishedResultOf(ctx: Parameters<LeadTool["handle"]>[0], args: Record<string, unknown>): { ok: true; task: string; run: number } | { ok: false; message: string } {
   const task = taskIdOf(args);
   if (task === null) return { ok: false, message: "Choose a task and valid result number." };
   if (ctx.evidenceRoot === undefined) return { ok: false, message: "Saved results are unavailable here." };
@@ -1739,14 +1744,14 @@ export function patchFiles(patch: string): { path: string; added: number; remove
 }
 
 /** The files Settings → Integrations reads, beside this database, when the surface supplied none. */
-function integrationIoOf(ctx: MateToolContext): import("./integrations.js").IntegrationIo {
+function integrationIoOf(ctx: LeadToolContext): import("./integrations.js").IntegrationIo {
   const file = ctx.store.databaseFile();
   const dir = file === null ? null : dirname(file);
   return { store: ctx.store, dir, telegramTokenFile: dir === null ? null : join(dir, "telegram-token"), env: process.env, repos: ctx.who.repos };
 }
 
-/** The admitted project a proposal is about, when its arguments name one: the project, task, result, flow, card, teammate or decision. */
-function proposalRepoOf(ctx: MateToolContext, args: Record<string, unknown>): string | null {
+/** The admitted project a proposal is about, when its arguments name one: the project, task, result, flow, card, subagent or decision. */
+function proposalRepoOf(ctx: LeadToolContext, args: Record<string, unknown>): string | null {
   const { store } = ctx;
   const id = (key: string): number | null => Number.isSafeInteger(args[key]) && Number(args[key]) > 0 ? Number(args[key]) : null;
   const ofRun = (run: number | null): string | null => {
@@ -1758,7 +1763,7 @@ function proposalRepoOf(ctx: MateToolContext, args: Record<string, unknown>): st
     : id("run") !== null ? ofRun(id("run"))
     : id("flow") !== null ? store.getFlow(id("flow")!)?.repo ?? null
     : id("card") !== null ? (() => { const card = store.getFlowCard(id("card")!); return card === null ? null : store.getFlow(card.flow)?.repo ?? null; })()
-    : id("teammate") !== null ? store.getTeammate(id("teammate")!)?.repo ?? null
+    : id("subagent") !== null ? store.getSubagent(id("subagent")!)?.repo ?? null
     : id("decision") !== null ? ofRun(store.getDecision(id("decision")!)?.run ?? null)
     : null;
   return found !== null && ctx.who.repos.includes(found) ? found : null;
@@ -1774,7 +1779,7 @@ function hasRecordedDecisions(store: Store, repo: string): boolean {
  * project already settled. When the arguments name no project, it could be about any of them: each admitted project
  * with decisions needs a search (one over every project covers them all).
  */
-function memoryUnsearched(ctx: MateToolContext, name: string, args: Record<string, unknown>): MateToolResult | null {
+function memoryUnsearched(ctx: LeadToolContext, name: string, args: Record<string, unknown>): LeadToolResult | null {
   if (!name.startsWith("propose_")) return null;
   const named = proposalRepoOf(ctx, args);
   const settled = (named === null ? ctx.who.repos : [named]).filter(repo => hasRecordedDecisions(ctx.store, repo));
@@ -1791,7 +1796,7 @@ function memoryUnsearched(ctx: MateToolContext, name: string, args: Record<strin
  * read over its project in an EARLIER step of this turn, as a proposal needs its memory search: the
  * lead never promises what it has not checked can run. One that names no project is covered by any read this turn.
  */
-function capabilitiesUnread(ctx: MateToolContext, name: string, args: Record<string, unknown>): MateToolResult | null {
+function capabilitiesUnread(ctx: LeadToolContext, name: string, args: Record<string, unknown>): LeadToolResult | null {
   const read = ctx.checkedCapabilities;
   if (read === undefined || !needsCapabilities(name, args, ctx.channel)) return null;
   const before = (key: string): boolean => { const step = read.get(key); return step !== undefined && step < ctx.step; };
@@ -1802,7 +1807,7 @@ function capabilitiesUnread(ctx: MateToolContext, name: string, args: Record<str
 
 /** remember about-you: a card for one line about the owner. It replaces a line only when the lead names it with
  * replaces, and then the card shows both; otherwise the line is added. */
-function rememberAboutYou(ctx: MateToolContext, args: Record<string, unknown>): MateToolResult {
+function rememberAboutYou(ctx: LeadToolContext, args: Record<string, unknown>): LeadToolResult {
   const checked = checkAboutYouLine(args["text"]);
   if (!checked.ok || !honest(args["text"], 240)) return { ok: false, message: checked.ok ? "Say it in one plain line." : checked.message };
   // A shared team chat's lead speaks for the room; what the owner's own lead knows about them is theirs.
@@ -1812,7 +1817,7 @@ function rememberAboutYou(ctx: MateToolContext, args: Record<string, unknown>): 
   if (args["replaces"] !== undefined && Number(args["replaces"]) > lines.length)
     return { ok: false, message: `replaces is a line number from your catch-up's aboutYou (1 to ${lines.length}).` };
   const replaces = args["replaces"] !== undefined ? Number(args["replaces"]) : 0;
-  const waiting = ctx.thread === undefined ? [] : ctx.store.listMateProposals(ctx.thread, ["drafting", "pending", "confirming"])
+  const waiting = ctx.thread === undefined ? [] : ctx.store.listLeadProposals(ctx.thread, ["drafting", "pending", "confirming"])
     .filter(one => one.kind === "action" && one.payload["operation"] === "lead_about_you");
   const twin = waiting.find(one => String((one.payload["request"] as Record<string, unknown> | undefined)?.["line"] ?? "").toLowerCase() === checked.line.toLowerCase());
   if (twin !== undefined) return { ok: false, message: `Card ${twin.id} already proposes this; it is waiting to be confirmed.` };
@@ -1825,8 +1830,8 @@ function rememberAboutYou(ctx: MateToolContext, args: Record<string, unknown>): 
     next: "Once confirmed it is in your next catch-up's aboutYou." } };
 }
 
-/** get_person names people, teammates and team chat members on purpose; the scrub took them out with the rest. */
-function personNamesBack(raw: MateToolResult, scrubbed: MateToolResult): MateToolResult {
+/** get_person names people, subagents and team chat members on purpose; the scrub took them out with the rest. */
+function personNamesBack(raw: LeadToolResult, scrubbed: LeadToolResult): LeadToolResult {
   if (!raw.ok || !scrubbed.ok) return scrubbed;
   const before = raw.body as Record<string, unknown>, after = scrubbed.body as Record<string, unknown>;
   const person = before["person"] as Record<string, unknown> | undefined, shown = after["person"] as Record<string, unknown> | undefined;
@@ -1839,19 +1844,19 @@ function personNamesBack(raw: MateToolResult, scrubbed: MateToolResult): MateToo
   return scrubbed;
 }
 
-export const MATE_TOOL_SCHEMAS: MateToolSchema[] = MATE_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+export const LEAD_TOOL_SCHEMAS: LeadToolSchema[] = LEAD_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 
-export function isMateTool(name: string): boolean {
-  return MATE_TOOLS.some(one => one.name === name);
+export function isLeadTool(name: string): boolean {
+  return LEAD_TOOLS.some(one => one.name === name);
 }
 
 /** Scrub every result. Only list_repos then adds validated display metadata
  * from the same admitted project list; no user-authored result gets an exemption. */
-export function executeMateTool(ctx: MateToolContext, name: string, args: Record<string, unknown>, view?: MateViewContext): MateToolResult {
-  const tool = MATE_TOOLS.find(one => one.name === name);
-  const scrub = view ?? mateViewContextFor(ctx.store, ctx.who);
-  if (tool === undefined) return { ok: false, message: `no tool named ${redactForMate(name, scrub)}` };
-  let result: MateToolResult;
+export function executeLeadTool(ctx: LeadToolContext, name: string, args: Record<string, unknown>, view?: LeadViewContext): LeadToolResult {
+  const tool = LEAD_TOOLS.find(one => one.name === name);
+  const scrub = view ?? leadViewContextFor(ctx.store, ctx.who);
+  if (tool === undefined) return { ok: false, message: `no tool named ${redactForLead(name, scrub)}` };
+  let result: LeadToolResult;
   try {
     // The call is read by the contract's compatible reader, before any check or handler: a refusal is every path-named
     // line (`acceptance[0].evidence: at least 1 item`), so the next step can correct exactly that.
@@ -1867,10 +1872,10 @@ export function executeMateTool(ctx: MateToolContext, name: string, args: Record
   }
   // A result is checked against its output schema before it is scrubbed; a disagreement is reported, never refused.
   if (result.ok) reportToolOutput("lead", name, LEAD_TOOL_OUTPUTS[name as LeadToolName], result.body);
-  const sanitized = name === "get_person" ? personNamesBack(result, mateView(result, scrub)) : mateView(result, scrub);
+  const sanitized = name === "get_person" ? personNamesBack(result, leadView(result, scrub)) : leadView(result, scrub);
   if (name === "list_repos" && sanitized.ok) {
     return { ok: true, body: { repos: ctx.who.repos.map((path, index) => ({
-      repo: `r${index + 1}`, name: projectLabelForMate(path, index, scrub.names),
+      repo: `r${index + 1}`, name: projectLabelForLead(path, index, scrub.names),
     })) } };
   }
   return sanitized;

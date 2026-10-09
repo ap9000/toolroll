@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { updateSafeSchema } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -343,7 +343,7 @@ export function durableRename(temp: string, target: string): void {
 const LEGACY_DESTINATION = "legacy:single-destination";
 type Moved = { into: string; where: string; rows?: string };
 type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string };
-  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved };
+  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved; renamed?: Record<string, string> };
 /** v116: every old per-app chat table into the shared chat tables, keyed by provider (chat-migration.ts). Several old
  * tables fan into one shared table; each picks out only its own rows there, so every count is checked on its own. */
 const TELEGRAM_MOVES: Record<string, Moved> = {
@@ -393,6 +393,10 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   fallback_config: { retired: true }, fallback_cycle: { retired: true }, fallback_transition: { retired: true },
   // v115: each routine becomes one scheduled flow and its schedule trigger.
   flow: { fromRoutines: "flow" }, flow_trigger: { fromRoutines: "trigger" },
+  // v117 (D5): the lead's and the subagents' tables keep every row under their new names (mate_* → lead_*, teammate* →
+  // subagent*); a column renamed in a table that keeps its name keeps its values under the new one.
+  ...Object.fromEntries(Object.entries(V117_RENAMED_TABLES).map(([old, now]) => [old, { moved: { into: now, where: "1" } }])),
+  ...Object.fromEntries(V117_RENAMED_COLUMNS.filter(([table]) => !Object.values(V117_RENAMED_TABLES).includes(table)).map(([table, from, to]) => [table, { renamed: { [from]: to } }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));
@@ -506,7 +510,8 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
       return move === undefined || t.moved === undefined || arrived(db, move) - t.moved.found !== t.moved.rows;
     }
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
-    if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
+    const kept = (c: string) => present.has(c) || (rule?.renamed?.[c] !== undefined && present.has(rule.renamed[c]!));
+    if (t.columns.some(c => !kept(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));
     if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
     if (rule?.fromRoutines) { const kept = rowsHash(db, t.name, columns, t.last); return kept.count !== t.count || kept.hash !== t.hash || !movedRoutines(db, t, before); }
@@ -523,8 +528,9 @@ async function rehearse(j: RuntimeUpdateJournal, system: UpdateSystem, source: s
   copyFileSync(source, copy); chmodSync(copy, 0o600);
   try {
     let db = new (sqlite().DatabaseSync)(copy, { readOnly: true });
-    // Rows already pointing nowhere before the update are the install's own; only ones the migration makes refuse.
-    const orphans = (): Set<string> => new Set([...db.prepare("PRAGMA foreign_key_check").iterate()].map(row => JSON.stringify(row)));
+    // Rows already pointing nowhere before the update are the install's own; only ones the migration makes refuse. (By
+    // today's table names: a renamed table's old orphan is the same row under its new name, orphanKey.)
+    const orphans = (): Set<string> => new Set([...db.prepare("PRAGMA foreign_key_check").iterate()].map(row => orphanKey(row)));
     const before = historySnapshot(db), orphaned = orphans(); db.close();
     await system.rehearse(j.to.dist, copy);
     db = new (sqlite().DatabaseSync)(copy, { readOnly: true });

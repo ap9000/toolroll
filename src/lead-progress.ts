@@ -2,17 +2,17 @@
  * and the reply as it is written. Nothing here is durable or authoritative —
  * the finished turn's saved message and cards remain the record. */
 
-export type MateProgress =
+export type LeadProgress =
   | { kind: "started"; turn: number }
   | { kind: "step"; turn: number; step: number }
   | { kind: "tool"; turn: number; step: number; id: string; label: string }
-  | { kind: "tool-result"; turn: number; step: number; id: string; outcome: MateToolOutcome }
+  | { kind: "tool-result"; turn: number; step: number; id: string; outcome: LeadToolOutcome }
   | { kind: "text"; turn: number; step: number; text: string };
 
-export type MateToolOutcome = { state: "succeeded" } | { state: "failed"; reason: string };
-export type MateLiveTool = { id: string; label: string } & ({ state: "running" } | MateToolOutcome);
+export type LeadToolOutcome = { state: "succeeded" } | { state: "failed"; reason: string };
+export type LeadLiveTool = { id: string; label: string } & ({ state: "running" } | LeadToolOutcome);
 /** Keep tools as labels for older clients; toolCalls adds per-call outcomes. */
-export type MateLiveStep = { tools: string[]; toolCalls: MateLiveTool[]; text: string };
+export type LeadLiveStep = { tools: string[]; toolCalls: LeadLiveTool[]; text: string };
 
 /** Plain words for each tool the lead uses, as the person watching reads them. */
 const TOOL_LABELS: Record<string, string> = {
@@ -52,7 +52,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_person: "Looking them up",
 };
 
-export function mateToolLabel(name: string): string {
+export function leadToolLabel(name: string): string {
   if (name in TOOL_LABELS) return TOOL_LABELS[name]!;
   return name.startsWith("propose_") ? "Preparing a card for you to confirm" : "Working";
 }
@@ -79,8 +79,8 @@ const TOOL_FAILURE_REASONS = new Map<string, string>([
   ["that tool refused — the plane could not answer it right now", "Toolroll couldn't finish that step right now."],
 ]);
 
-export function mateToolFailureReason(name: string, message: string): string {
-  return TOOL_FAILURE_REASONS.get(message) ?? `That step didn't work (${mateToolLabel(name)}).`;
+export function leadToolFailureReason(name: string, message: string): string {
+  return TOOL_FAILURE_REASONS.get(message) ?? `That step didn't work (${leadToolLabel(name)}).`;
 }
 
 /** The `text` of a structured answer still being written, when the answer

@@ -350,7 +350,7 @@ export type BrowserFailure = { line: string; evidence: string | null; suggestion
 export type BrowserRunChecks = { action: string; level: "quick" | "full"; returnTo: string };
 /** One zone on a flow's canvas: its step, where it leads, and where it sits. */
 export type BrowserFlowStage = {
-  id: string; title: string; kind: "inbox" | "task" | "report" | "approval" | "check" | "pull-request" | "update" | "notify" | "sort" | "draft" | "request" | "email" | "tool" | "wait" | "teammate" | "send" | "choose" | "done";
+  id: string; title: string; kind: "inbox" | "task" | "report" | "approval" | "check" | "pull-request" | "update" | "notify" | "sort" | "draft" | "request" | "email" | "tool" | "wait" | "subagent" | "send" | "choose" | "done";
   zone: { x: number; y: number; w: number; h: number; color: string };
   instructions: string | null; planning: "auto" | "required" | "skip" | null; approver: string | null; message: string | null;
   /** An approval zone the flow's owner decides. */
@@ -369,9 +369,9 @@ export type BrowserFlowStage = {
   /** A Pull request zone merges once checks pass (after a person approved), this way. */
   merge?: "squash" | "merge" | "rebase" | undefined;
   limit?: { minutes: number; to: string | null } | undefined;
-  /** v92: the AI teammate who decides (an approval zone) or handles (a teammate zone) it. */
-  teammate?: string | undefined;
-  /** v96: a teammate zone sends what the teammate writes back to whoever asked. */
+  /** v92: the subagent who decides (an approval zone) or handles (a subagent zone) it. */
+  subagent?: string | undefined;
+  /** v96: a subagent zone sends what the subagent writes back to whoever asked. */
   reply?: boolean | undefined;
   /** A "Person chooses" zone's buttons: each one's words and the zone it leads to ("end" ignores the card). */
   options?: { label: string; to: string }[] | undefined;
@@ -402,20 +402,20 @@ export type BrowserFlowCard = {
   draft: { zone: string; title: string; text: string } | null;
   /** v91: when its Wait zone gives up or moves on, or its zone's time limit comes (shown in the viewer's own time). */
   deadline?: { at: string; label: string } | null;
-  /** v92: a teammate's open question about this visit, and whether the viewer is the one asked. */
+  /** v92: a subagent's open question about this visit, and whether the viewer is the one asked. */
   question?: { id: number; from: string; question: string; options: { id: string; label: string }[]; askedOf: string; mine: boolean;
-    /** v94: a tool call waiting for approval — why the teammate wants it, and why it needs approval. */
+    /** v94: a tool call waiting for approval — why the subagent wants it, and why it needs approval. */
     call?: { why: string; rule: string } | null } | null;
-  /** v92: what the teammate said when it handed this decision to a person. */
+  /** v92: what the subagent said when it handed this decision to a person. */
   handoff?: { from: string; note: string } | null;
   /** Waiting at a "Person chooses" zone: what was sent, its options and whether the viewer is the one who chooses. */
   choose?: { entry: number; title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; mine: boolean; options: { choice: number; label: string }[]; reply: boolean } | null;
   /** What a "Send to me" (or an earlier choice) last sent the card's person. */
   sent?: { title: string; summary: string; links: { label: string; href: string }[]; items?: BrowserFlowSentItem[]; person: string; at: string } | null;
-  /** v94: every tool call teammates made or asked to make on this card, oldest first: the receipts. */
+  /** v94: every tool call subagents made or asked to make on this card, oldest first: the receipts. */
   calls?: { id: number; who: string; words: string; state: string; outcome: string; why: string; result: string | null; at: string;
-    /** v97: the teammate's id and the action that undoes this call, when a person can press Undo. */
-    teammate?: number; undo?: string | null }[];
+    /** v97: the subagent's id and the action that undoes this call, when a person can press Undo. */
+    subagent?: number; undo?: string | null }[];
 };
 
 /** What starts cards in a flow on its own. */
@@ -456,8 +456,8 @@ export type BrowserFlowView = {
   me: string;
   /** Whether sort zones can run: an OpenRouter key is saved in Settings → AI providers. */
   sortReady: boolean;
-  /** v92: the project's AI teammates, to staff zones with. */
-  teammates?: { handle: string; label: string; name: string; working: boolean; href: string }[];
+  /** v92: the project's subagents, to staff zones with. */
+  subagents?: { handle: string; label: string; name: string; working: boolean; href: string }[];
   /** v87: whether email is set up (Settings → Email), the names of this project's request secrets, and its tools with what each can do. */
   emailReady: boolean;
   requestSecrets: string[];

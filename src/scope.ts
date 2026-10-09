@@ -671,10 +671,10 @@ export type Scope = SavedScopeTerms & {
    * non-null verdict, so filtering, defaulting, or coercion can never
    * turn a corrupt row into authority. Undefined on a hand-built scope. */
   termsProblem?: string | null;
-  /** Who wrote the text (mate arc, ruling 2): a confirmed mate proposal,
+  /** Who wrote the text (mate arc, ruling 2): a confirmed lead proposal,
    * the coordinator, a scout, or a person (null). Read raw and proved by
    * `termsProblem` — a word outside these is a stated problem, never a
-   * value that slips past the mate quarantine at a mode seal. */
+   * value that slips past the lead quarantine at a mode seal. */
   proposedVia?: "mate" | "coordinator" | "scout" | null;
 };
 

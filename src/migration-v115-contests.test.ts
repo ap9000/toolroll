@@ -186,9 +186,9 @@ test("v114 → v115: contests go, and every task they owned ends ordinary, held 
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
   const raw = store.handle;
-  expect(raw.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(116);
+  expect(raw.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
   // The tables and their indexes are gone; the history columns stay without their foreign key.
   expect(raw.prepare("SELECT name FROM sqlite_master WHERE name IN ('tournament_terms','contest','contestant','tournament_terms_one_active','contest_by_task','one_open_decision_per_contestant')").all()).toEqual([]);
   for (const table of ["run", "decision", "execution_slot"]) {

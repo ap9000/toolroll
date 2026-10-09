@@ -132,11 +132,11 @@ test("the sweep removes only evidence older than its period, and never what a ta
 test("chat messages, notifications and finished checkout records older than their periods go; newer ones and those a task needs stay", () => {
   const open = work("queued");
   const finished = work("completed");
-  const thread = (scope: "lead" | "task", key: string | null) => Number(store.handle.prepare("INSERT INTO mate_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES ('alex', 'd', ?, ?, ?)").run(OLD.toISOString(), scope, key).lastInsertRowid);
+  const thread = (scope: "lead" | "task", key: string | null) => Number(store.handle.prepare("INSERT INTO lead_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES ('alex', 'd', ?, ?, ?)").run(OLD.toISOString(), scope, key).lastInsertRowid);
   const lead = thread("lead", null), openTask = thread("task", open.id);
-  const oldMessage = store.appendMateMessage({ thread: lead, turn: null, role: "operator", text: "what's running?" }, OLD);
-  const newMessage = store.appendMateMessage({ thread: lead, turn: null, role: "assistant", text: "two builds" }, new Date(NOW.getTime() - DAY));
-  const neededMessage = store.appendMateMessage({ thread: openTask, turn: null, role: "operator", text: "keep the old API" }, OLD);
+  const oldMessage = store.appendLeadMessage({ thread: lead, turn: null, role: "operator", text: "what's running?" }, OLD);
+  const newMessage = store.appendLeadMessage({ thread: lead, turn: null, role: "assistant", text: "two builds" }, new Date(NOW.getTime() - DAY));
+  const neededMessage = store.appendLeadMessage({ thread: openTask, turn: null, role: "operator", text: "keep the old API" }, OLD);
 
   const notify = (key: string, at: Date, resolved: boolean, source?: { taskRef: number }) => {
     store.enqueueNotification({ dedupeKey: key, kind: "note", subject: key, body: "body", ...(source === undefined ? {} : { source }) }, at);
@@ -161,7 +161,7 @@ test("chat messages, notifications and finished checkout records older than thei
   const count = (kind: string) => swept.counts.find(one => one.kind === kind)!.count;
   expect([count("chat"), count("notifications"), count("checkouts")]).toEqual([1, 1, 1]);
 
-  const messages = store.handle.prepare("SELECT id FROM mate_message ORDER BY id").all().map(row => Number(row["id"]));
+  const messages = store.handle.prepare("SELECT id FROM lead_message ORDER BY id").all().map(row => Number(row["id"]));
   expect(messages).toEqual([newMessage, neededMessage]);
   expect(messages).not.toContain(oldMessage);
   const notifications = store.handle.prepare("SELECT dedupe_key FROM notification WHERE dedupe_key NOT LIKE 'life:%' ORDER BY id").all().map(row => String(row["dedupe_key"]));

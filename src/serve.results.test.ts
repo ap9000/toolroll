@@ -21,7 +21,7 @@ import { addApprover, approvalOf, approve, propose } from "./scope.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer, reviewPriorityOf, rankReviewQueue, withinSignedTouches, diffFileAnchor, reviewFilePriority, orderChangedFiles, type ReviewQueueFacts, type ReviewFileRow } from "./serve.js";
-import type { MateProviderAnswer } from "./converse.js";
+import type { LeadProviderAnswer } from "./converse.js";
 import { resultFactsFromHtml, resultReturnTarget } from "./result-review.js";
 import { Window } from "happy-dom";
 import { validateTaskText, TASK_TEXT_LIMITS } from "./task-text.js";
@@ -1921,14 +1921,14 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const verified = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [repo]);
     if (!verified.ok) throw new Error(verified.reason);
     store.setChatConfig({ provider: "claude-subscription", model: "opus", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", now);
-    const session = store.mintMateSession({ approver: "alex", approverGeneration: verified.who.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: verified.who.ceilingDigest, termsDigest: "fixture" }, now);
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: verified.who.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: verified.who.ceilingDigest, termsDigest: "fixture" }, now);
     // Messages about a task speak in that task's own thread (v77).
-    const thread = store.openMateThread("alex", verified.who.ceilingDigest, now, { kind: "task", key: root }).thread;
-    const answers: MateProviderAnswer[] = [];
+    const thread = store.openLeadThread("alex", verified.who.ceilingDigest, now, { kind: "task", key: root }).thread;
+    const answers: LeadProviderAnswer[] = [];
     const contexts: string[] = [];
-    const tool = (name: string, args: Record<string, unknown>): MateProviderAnswer => ({ text: "", calls: [{ id: name, name, args }], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null });
-    const done = (): MateProviderAnswer => ({ text: "Review the card to confirm.", calls: [], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null });
-    await boot({ repo, subscriptionChatRunner: async (request: import("./subscription-chat.js").SubscriptionMateRequest) => {
+    const tool = (name: string, args: Record<string, unknown>): LeadProviderAnswer => ({ text: "", calls: [{ id: name, name, args }], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null });
+    const done = (): LeadProviderAnswer => ({ text: "Review the card to confirm.", calls: [], tokensIn: 1, tokensOut: 1, reportedCostMicrousd: null });
+    await boot({ repo, subscriptionChatRunner: async (request: import("./subscription-chat.js").SubscriptionLeadRequest) => {
       contexts.push(request.history.filter(one => one.role === "operator").map(one => one.text).join("\n"));
       const answer = answers.shift(); if (!answer) throw new Error("No scripted answer");
       return { ok: true, answer };
@@ -1940,10 +1940,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       const response = await post(cookie, "/chat", { csrf, task: root, result: String(run), message });
       expect(response.status).toBe(303);
       expect(response.headers.get("location")).not.toContain("said=");
-      for (let i = 0; i < 100 && store.liveMateTurnFor("alex") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
-      expect(store.liveMateTurnFor("alex")).toBeNull();
-      const proposal = store.listMateProposals(thread.id, ["pending"]).at(-1)!;
-      expect(proposal?.kind, JSON.stringify(store.listMateMessages(thread.id, 10))).toBe("review");
+      for (let i = 0; i < 100 && store.liveLeadTurnFor("alex") !== null; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      expect(store.liveLeadTurnFor("alex")).toBeNull();
+      const proposal = store.listLeadProposals(thread.id, ["pending"]).at(-1)!;
+      expect(proposal?.kind, JSON.stringify(store.listLeadMessages(thread.id, 10))).toBe("review");
       return proposal;
     };
     answers.push(tool("get_result", { task: root, run }), tool("propose_review", { run, operation: "note", note: "Use shorter labels." }), done());
@@ -1992,12 +1992,12 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     await post(cookie, `/chat/proposal/${revise.id}/confirm`, { csrf });
     expect(store.taskFamilyOf(root, [repo], false)?.versions).toHaveLength(2);
     expect(store.allDiffComments(run)).toHaveLength(3);
-    expect(store.getMateSession(session)?.spentMicrousd).toBe(0);
+    expect(store.getLeadSession(session)?.spentMicrousd).toBe(0);
   });
 
   test("chat review refuses unread, stale, inaccessible and damaged results without saving partial feedback", async () => {
     const { verifyApproverStanding } = await import("./principal.js");
-    const { executeMateTool } = await import("./mate-tools.js");
+    const { executeLeadTool } = await import("./lead-tools.js");
     const { readChatResult, applyChatReview } = await import("./chat-review.js");
     const ref = seed("review-guard", "Guard feedback");
     const run = build("review-guard", ref, RICH);
@@ -2006,7 +2006,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     if (!verified.ok) throw new Error(verified.reason);
     const who = verified.who;
     const ctx = { store, who, now: T0, evidenceRoot, step: 1, readDecisions: new Map(), readResults: new Map(), draft: () => 1 };
-    expect(executeMateTool(ctx, "propose_review", { run, operation: "revise", note: "Fix it." })).toMatchObject({ ok: false });
+    expect(executeLeadTool(ctx, "propose_review", { run, operation: "revise", note: "Fix it." })).toMatchObject({ ok: false });
     const read = readChatResult(store, who, evidenceRoot, "review-guard", run);
     if (!read.ok) throw new Error(read.message);
     const request = { snapshot: read.snapshot, operation: "revise" as const, note: "Fix this.", path: null, line: null, notes: [] };

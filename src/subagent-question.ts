@@ -1,38 +1,38 @@
 /**
- * A teammate's question, answered in the chat app (v93).
+ * A subagent's question, answered in the chat app (v93).
  *
- * When a teammate asks its person something ("Refund all $200, or half?"),
- * the notice reaches them in their chat app under the teammate's name, with
+ * When a subagent asks its person something ("Refund all $200, or half?"),
+ * the notice reaches them in their chat app under the subagent's name, with
  * one button per option and one to answer in their own words. A tap answers
  * at once; "Answer in words" opens a prompt: on Telegram, a reply to it; in
  * Slack, Discord and Teams, their next message in their chat with Standing
  * Orders ("cancel" leaves it). Either way the answer goes through the same
- * door as the card's own panel (answerTeammateQuestion): once, and only from
+ * door as the card's own panel (answerSubagentQuestion): once, and only from
  * the person it was asked of. Answered anywhere, every button retires.
  */
 import { randomBytes } from "node:crypto";
 import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
 import { partContent, savedChatPart } from "./chat-delivery-state.js";
-import type { Store, TelegramBinding, TeammateQuestionRow } from "./store.js";
-import type { InlineButton } from "./telegram-mate.js";
-import { answerTeammateQuestion } from "./teammate-work.js";
-import { labelOf } from "./teammate-admin.js";
+import type { Store, TelegramBinding, SubagentQuestionRow } from "./store.js";
+import type { InlineButton } from "./telegram-lead.js";
+import { answerSubagentQuestion } from "./subagent-work.js";
+import { labelOf } from "./subagent-admin.js";
 import { telegramButton } from "./contracts/telegram-callback.js";
 
-/** The key notifyPeople gives a teammate's question: flow-card:<card>:teammate-q:<question>:<person>. */
-export const TEAMMATE_Q_KEY = /^flow-card:[1-9][0-9]{0,14}:teammate-q:([1-9][0-9]{0,14}):/;
+/** The key notifyPeople gives a subagent's question: flow-card:<card>:teammate-q:<question>:<person>. */
+export const SUBAGENT_Q_KEY = /^flow-card:[1-9][0-9]{0,14}:teammate-q:([1-9][0-9]{0,14}):/;
 export const IN_WORDS = "Answer in words";
 const PROMPT_MS = 30 * 60_000;
 const ANSWER_CHARS = 2000;
 
 /** The question a notice is about, while it is still open. */
-export function openQuestionOf(store: Store, dedupeKey: string): TeammateQuestionRow | null {
-  const match = TEAMMATE_Q_KEY.exec(dedupeKey);
-  const question = match === null ? null : store.teammateQuestion(Number(match[1]));
+export function openQuestionOf(store: Store, dedupeKey: string): SubagentQuestionRow | null {
+  const match = SUBAGENT_Q_KEY.exec(dedupeKey);
+  const question = match === null ? null : store.subagentQuestion(Number(match[1]));
   return question !== null && question.state === "open" ? question : null;
 }
 
-const who = (store: Store, question: TeammateQuestionRow) => { const mate = store.getTeammate(question.teammate); return mate === null ? "Your teammate" : labelOf(mate).split(" · ")[0]!; };
+const who = (store: Store, question: SubagentQuestionRow) => { const mate = store.getSubagent(question.subagent); return mate === null ? "Your subagent" : labelOf(mate).split(" · ")[0]!; };
 
 /** Everyone else's buttons retire once a question is answered anywhere. */
 function retireEverywhere(store: Store, question: number, now: Date, state?: ChatState): void {
@@ -44,7 +44,7 @@ function retireEverywhere(store: Store, question: number, now: Date, state?: Cha
 // ---- Telegram ----------------------------------------------------------------------
 
 /** Buttons for the question, minted before the send (for the person it asks only); `place` stamps the message they land on. */
-export function telegramQuestionButtons(store: Store, binding: TelegramBinding, question: TeammateQuestionRow, now: Date): { keyboard: InlineButton[][]; tokens: string[] } | null {
+export function telegramQuestionButtons(store: Store, binding: TelegramBinding, question: SubagentQuestionRow, now: Date): { keyboard: InlineButton[][]; tokens: string[] } | null {
   if (binding.approver !== question.askedOf) return null;
   const choices = [...question.options.map(one => ({ token: randomBytes(16).toString("hex"), choice: one.id as string | null, label: one.label })), { token: randomBytes(16).toString("hex"), choice: null, label: `✏️ ${IN_WORDS}` }];
   store.createTelegramQuestionActions({ binding: binding.id, chatId: binding.chatId, question: question.id }, choices, now);
@@ -63,11 +63,11 @@ export type QuestionTapEffect =
 /** A tapped question button, inside the update's transaction. */
 export function applyTelegramQuestionTap(store: Store, binding: TelegramBinding, action: NonNullable<ReturnType<Store["getTelegramQuestionAction"]>>, message: { text: string }, now: Date): QuestionTapEffect[] {
   if (action.consumedAt !== null || action.expiresAt <= now.toISOString()) return [{ kind: "ack", text: "That was already answered, or these buttons are too old." }];
-  const question = store.teammateQuestion(action.question);
+  const question = store.subagentQuestion(action.question);
   if (question === null || question.state !== "open") { store.retireTelegramQuestion(action.question, now); return [{ kind: "ack", text: "That was already answered." }]; }
   if (action.choice === null) return [{ kind: "ack", text: "Send your answer" }, { kind: "prompt", question: question.id, placeholder: "Your answer",
     text: `Your answer to ${who(store, question)}: “${question.question}” Reply to this message.` }];
-  const answered = answerTeammateQuestion(store, question.id, { choice: action.choice, text: null, by: binding.approver, via: "telegram" }, now);
+  const answered = answerSubagentQuestion(store, question.id, { choice: action.choice, text: null, by: binding.approver, via: "telegram" }, now);
   if (!answered.ok) return [{ kind: "ack", text: answered.said.slice(0, 190) }];
   retireEverywhere(store, question.id, now);
   const label = question.options.find(one => one.id === action.choice)?.label ?? action.choice;
@@ -80,7 +80,7 @@ export function applyTelegramQuestionReply(store: Store, binding: TelegramBindin
   const said = text.trim();
   if (said === "") return "Send the answer itself as a reply.";
   if (said.length > ANSWER_CHARS) return `Keep it under ${ANSWER_CHARS.toLocaleString("en-US")} characters.`;
-  const answered = answerTeammateQuestion(store, prompt.question, { choice: null, text: said, by: binding.approver, via: "telegram" }, now);
+  const answered = answerSubagentQuestion(store, prompt.question, { choice: null, text: said, by: binding.approver, via: "telegram" }, now);
   retireEverywhere(store, prompt.question, now);
   return answered.ok ? `✅ ${answered.said}` : answered.said;
 }
@@ -122,7 +122,7 @@ export function applyChatQuestionTap(options: { store: Store; state: ChatState; 
   // Bound to the person, the chat and the exact message the button rode.
   if (Number(action["owner"]) !== binding.id || action["channel"] !== event.channel || action["message"] !== event.ts) { say("That button expired or was already used."); return true; }
   const questionId = Number(action["question"]), part = Number(action["part"]);
-  const question = store.teammateQuestion(questionId);
+  const question = store.subagentQuestion(questionId);
   if (action["consumed"] !== null || String(action["expires"]) <= now.toISOString() || question === null || question.state !== "open") {
     retireEverywhere(store, questionId, now, state);
     repaint(state, part, event, "This was already answered.");
@@ -137,7 +137,7 @@ export function applyChatQuestionTap(options: { store: Store; state: ChatState; 
     say(`Your next message here is your answer to ${who(store, question)}: “${question.question}” Send “cancel” to leave it.`);
     return true;
   }
-  const answered = answerTeammateQuestion(store, questionId, { choice: String(action["choice"]), text: null, by: binding.approver, via: options.label.toLowerCase() }, now);
+  const answered = answerSubagentQuestion(store, questionId, { choice: String(action["choice"]), text: null, by: binding.approver, via: options.label.toLowerCase() }, now);
   if (!answered.ok) { say(answered.said); return true; }
   retireEverywhere(store, questionId, now, state);
   const label = question.options.find(one => one.id === action["choice"])?.label ?? String(action["choice"]);
@@ -160,7 +160,7 @@ export function answerChatQuestionPrompt(options: { store: Store; state: ChatSta
     if (said === "") { say("Send the answer itself, or “cancel”."); return true; }
     // A message the chat cut short is never taken as part of an answer.
     if ((input.originalLength ?? 0) > input.text.length || said.length > ANSWER_CHARS) { say(`That's too long to take from here. Keep it under ${ANSWER_CHARS.toLocaleString("en-US")} characters, or answer on the card.`); return true; }
-    const answered = answerTeammateQuestion(store, questionId, { choice: null, text: said, by: binding.approver, via: options.label.toLowerCase() }, now);
+    const answered = answerSubagentQuestion(store, questionId, { choice: null, text: said, by: binding.approver, via: options.label.toLowerCase() }, now);
     retireEverywhere(store, questionId, now, state);
     say(answered.ok ? `✅ ${answered.said}` : answered.said);
     return true;

@@ -66,7 +66,7 @@ export function projectDeleteConfirmHtml(view: ProjectSettingsView, csrf: string
     "The checkouts and branches Toolroll made",
     ...(h.chats > 0 ? [count(h.chats, "chat")] : []),
     ...(h.flows > 0 ? [`${count(h.flows, "flow")} and ${count(h.cards, "card")}`] : []),
-    ...(h.teammates > 0 ? [count(h.teammates, "teammate")] : []),
+    ...(h.subagents > 0 ? [count(h.subagents, "subagent")] : []),
     "Its budgets, settings and knowledge",
   ];
   return `<section class="project-delete">${problem === null ? "" : `<p class="problem" role="alert">${e(problem)}</p>`}` +

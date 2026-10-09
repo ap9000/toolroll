@@ -27,8 +27,8 @@ export type ApprovalRulesView = {
 export function rulesSummary(rules: ApprovalRules): string {
   const parts: string[] = [];
   if (rules.notRequester) parts.push("The person who filed a task can't approve it.");
-  if (rules.protectProject) parts.push("All work here is protected: two people approve it, never an AI teammate or an operating mode.");
-  else if (rules.protectedPaths.length > 0) parts.push(`Work touching ${rules.protectedPaths.join(", ")} is protected: two people approve it, never an AI teammate or an operating mode.`);
+  if (rules.protectProject) parts.push("All work here is protected: two people approve it, never a subagent or an operating mode.");
+  else if (rules.protectedPaths.length > 0) parts.push(`Work touching ${rules.protectedPaths.join(", ")} is protected: two people approve it, never a subagent or an operating mode.`);
   return parts.length === 0 ? "No approval rules: anyone who can approve on this project can approve its work, including their own." : parts.join(" ");
 }
 

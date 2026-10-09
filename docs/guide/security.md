@@ -106,7 +106,7 @@ clears them.
 **Workflows → Action ledger** keeps who did what, and when: work (runs,
 decisions, approvals), console requests, account and access changes,
 sign-ins (and refusals, locks and sign-outs), and policy changes with what
-changed, like "Auto → Full access" for the permission default, a teammate's
+changed, like "Auto → Full access" for the permission default, a subagent's
 tool rules, an agent choice or an operating mode. Filter it, open it as JSON,
 or export it as CSV. It is append-only in the database; it doesn't copy
 passwords, prompts or request bodies. A name typed at sign-in that isn't an

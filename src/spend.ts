@@ -7,8 +7,8 @@
  * Models), or at the provider's highest listed price when the model isn't
  * listed; work with no tokens and no cost is "unpriced" and said so.
  *
- * Spend counts toward a project (a run's task, a teammate's, a project chat),
- * a person (who filed the task, or had the chat), a teammate (its turns, and
+ * Spend counts toward a project (a run's task, a subagent's, a project chat),
+ * a person (who filed the task, or had the chat), a subagent (its turns, and
  * tasks it filed), and the whole installation. Budgets are per calendar
  * month (UTC).
  */
@@ -48,7 +48,7 @@ export function claudeBillingFrom(seen: { keySource: string | null; model: strin
   return seen.keySource === "none" ? "api-key" : null;
 }
 
-/** How Claude bills on this computer when Toolroll gives it no key (teammate turns, drafts): as its keyless runs
+/** How Claude bills on this computer when Toolroll gives it no key (subagent turns, drafts): as its keyless runs
  * were last seen, and its plan until one has been. */
 export function claudeMachineBilling(db: Database): Billing {
   return seenBilling(db, "claude") ?? "subscription";
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS run_spend (
 );
 CREATE TABLE IF NOT EXISTS budget (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope_kind  TEXT NOT NULL CHECK (scope_kind IN ('installation', 'project', 'person', 'teammate')),
+  scope_kind  TEXT NOT NULL CHECK (scope_kind IN ('installation', 'project', 'person', 'subagent')),
   scope_key   TEXT NOT NULL,
   limit_microusd INTEGER NOT NULL CHECK (limit_microusd > 0),
   hard_stop   INTEGER NOT NULL DEFAULT 1,
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS provider_limit (
   observed_at    TEXT NOT NULL,
   PRIMARY KEY (provider, window)
 );
--- Spend that isn't a run, a teammate turn or a chat: a flow's Claude draft.
+-- Spend that isn't a run, a subagent turn or a chat: a flow's Claude draft.
 CREATE TABLE IF NOT EXISTS side_spend (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   kind      TEXT NOT NULL CHECK (kind IN ('draft')),
@@ -163,16 +163,16 @@ CREATE TABLE IF NOT EXISTS provider_account (
 );
 CREATE INDEX IF NOT EXISTS chat_turn_created ON chat_turn (created_at);
 CREATE INDEX IF NOT EXISTS mate_turn_created ON mate_turn (created_at);
-CREATE INDEX IF NOT EXISTS teammate_turn_at ON teammate_turn (at);
+CREATE INDEX IF NOT EXISTS subagent_turn_at ON subagent_turn (at);
 `;
 
-export type BudgetScope = "installation" | "project" | "person" | "teammate";
+export type BudgetScope = "installation" | "project" | "person" | "subagent";
 export type Budget = { id: number; scope: BudgetScope; key: string; limitMicrousd: number; hardStop: boolean; updatedBy: string; updatedAt: string };
 
 /** One piece of spend, whatever made it, with what it counts toward. */
 export type SpendItem = {
-  at: string; kind: "run" | "teammate" | "chat" | "sort" | "draft"; microusd: number | null; source: PriceSource;
-  project: string | null; person: string | null; teammate: number | null; provider: string; model: string | null;
+  at: string; kind: "run" | "subagent" | "chat" | "sort" | "draft"; microusd: number | null; source: PriceSource;
+  project: string | null; person: string | null; subagent: number | null; provider: string; model: string | null;
   tokensIn: number | null; tokensOut: number | null; taskId: string | null; runId: number | null; authMode: string | null;
 };
 
@@ -189,26 +189,26 @@ export function monthNamed(name: string | null): { from: string; to: string; nam
   return monthOf(new Date(`${name}-01T00:00:00.000Z`));
 }
 
-/** The teammate behind a filing: tasks a teammate files are filed as its name ("Maya (AI)", from its soul file), in
- * its project. A later teammate with the same name and project wins, as it would read on the card. */
-/** A teammate's name as its soul file gives it ("Maya"), or null. */
+/** The subagent behind a filing: tasks a subagent files are filed as its name ("Maya (AI)", from its soul file), in
+ * its project. A later subagent with the same name and project wins, as it would read on the card. */
+/** A subagent's name as its soul file gives it ("Maya"), or null. */
 const soulName = (soul: unknown): string | null => {
   const front = /^---\s*\n([\s\S]*?)\n---/.exec(String(soul ?? ""));
   return front === null ? null : /^name:\s*(.+?)\s*$/m.exec(front[1]!)?.[1] ?? null;
 };
 
-/** Every teammate's name by id (its handle when its soul file names none). */
-export function teammateNames(db: Database): Map<number, string> {
-  return new Map(db.prepare("SELECT id, handle, soul FROM teammate").all().map(row => [Number(row["id"]), soulName(row["soul"]) ?? String(row["handle"])]));
+/** Every subagent's name by id (its handle when its soul file names none). */
+export function subagentNames(db: Database): Map<number, string> {
+  return new Map(db.prepare("SELECT id, handle, soul FROM subagent").all().map(row => [Number(row["id"]), soulName(row["soul"]) ?? String(row["handle"])]));
 }
 
-export function teammateFilers(db: Database): (repo: string | null, filedBy: string | null, kind: string | null) => number | null {
+export function subagentFilers(db: Database): (repo: string | null, filedBy: string | null, kind: string | null) => number | null {
   const byName = new Map<string, number>();
-  for (const row of db.prepare("SELECT id, repo, handle, soul FROM teammate ORDER BY id").all()) {
+  for (const row of db.prepare("SELECT id, repo, handle, soul FROM subagent ORDER BY id").all()) {
     const name = soulName(row["soul"]);
     for (const one of [String(row["handle"]), ...(name === null ? [] : [name])]) byName.set(`${String(row["repo"])}\n${one} (AI)`, Number(row["id"]));
   }
-  return (repo, filedBy, kind) => kind !== "teammate" || repo === null || filedBy === null ? null : byName.get(`${repo}\n${filedBy}`) ?? null;
+  return (repo, filedBy, kind) => kind !== "subagent" || repo === null || filedBy === null ? null : byName.get(`${repo}\n${filedBy}`) ?? null;
 }
 
 /** Who a task's work counts toward: its own filer, or, for a revision filed by automation (an automatic repair), the
@@ -233,10 +233,10 @@ export function filersOf(db: Database): (taskRef: number) => { repo: string | nu
   };
 }
 
-/** Every piece of spend in [from, to): runs (by when they started), teammate turns and chat turns. `modeOf` says how
+/** Every piece of spend in [from, to): runs (by when they started), subagent turns and chat turns. `modeOf` says how
  * a provider bills when a record doesn't (older rows): its current login or key. */
 export function spendItems(db: Database, from: string, to: string, modeOf: (provider: string) => Billing = provider => billingOf(provider, db)): SpendItem[] {
-  const teammateOf = teammateFilers(db);
+  const subagentOf = subagentFilers(db);
   const filerOf = filersOf(db);
   const text = (value: unknown) => value == null ? null : String(value);
   const count = (value: unknown) => value == null ? null : Number(value);
@@ -259,19 +259,19 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
       source: settled ? String(row["source"]) as PriceSource : priced!.source,
       project: text(row["repo"]),
       person: kind === "person" || kind === "coordinator" ? filer.filedBy : null,
-      teammate: teammateOf(filer.repo, filer.filedBy, kind), provider, model: text(row["model"]),
+      subagent: subagentOf(filer.repo, filer.filedBy, kind), provider, model: text(row["model"]),
       tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]),
       taskId: String(row["task"]), runId: Number(row["id"]), authMode: billing,
     };
   });
-  // A teammate's own turns get no key from Toolroll (teammates.ts claudeTurnRunner): they bill as this computer's
+  // A subagent's own turns get no key from Toolroll (subagents.ts claudeTurnRunner): they bill as this computer's
   // Claude sign-in was seen billing when the turn ran (a plan, or a Console login, key helper or gateway).
-  for (const row of db.prepare(`SELECT t.at, t.teammate, t.model, t.cost_usd, t.tokens_in, t.tokens_out, t.billing, m.repo FROM teammate_turn t JOIN teammate m ON m.id = t.teammate
+  for (const row of db.prepare(`SELECT t.at, t.subagent, t.model, t.cost_usd, t.tokens_in, t.tokens_out, t.billing, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
       WHERE t.at >= ? AND t.at < ? ORDER BY t.id`).all(from, to)) {
     const billing: Billing = row["billing"] === "api-key" ? "api-key" : "subscription";
     const priced = priceWork(db, { provider: "claude", model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing });
-    items.push({ at: String(row["at"]), kind: "teammate", microusd: priced.microusd, source: priced.source, project: String(row["repo"]), person: null,
-      teammate: Number(row["teammate"]), provider: "claude", model: text(row["model"]),
+    items.push({ at: String(row["at"]), kind: "subagent", microusd: priced.microusd, source: priced.source, project: String(row["repo"]), person: null,
+      subagent: Number(row["subagent"]), provider: "claude", model: text(row["model"]),
       tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), taskId: null, runId: null, authMode: billing });
   }
   // A chat turn that mirrors a project chat's turn is that turn: counted once, as the project chat's. A task's chat
@@ -281,19 +281,19 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
     UNION ALL SELECT t.created_at, t.approver, COALESCE((SELECT c.provider FROM chat_turn c WHERE c.mate_turn = t.id ORDER BY c.id LIMIT 1), 'lead'),
         (SELECT c.model FROM chat_turn c WHERE c.mate_turn = t.id ORDER BY c.id LIMIT 1), t.settled_microusd, t.tokens_in, t.tokens_out,
         CASE th.scope_kind WHEN 'project' THEN th.scope_key WHEN 'task' THEN (SELECT r.repo FROM task_ref r WHERE r.external_id = th.scope_key ORDER BY r.id DESC LIMIT 1) END
-      FROM mate_turn t LEFT JOIN mate_thread th ON th.id = t.thread WHERE t.created_at >= ? AND t.created_at < ?`).all(from, to, from, to)) {
+      FROM mate_turn t LEFT JOIN lead_thread th ON th.id = t.thread WHERE t.created_at >= ? AND t.created_at < ?`).all(from, to, from, to)) {
     const provider = String(row["provider"]);
     const subscription = provider.endsWith("-subscription") && modeOf(provider) === "subscription";
     const settled = count(row["settled_microusd"]);
     items.push({ at: String(row["at"]), kind: "chat", microusd: subscription ? 0 : settled, source: subscription ? "subscription" : settled === null ? "unpriced" : "reported",
-      project: text(row["project"]), person: text(row["approver"]), teammate: null, provider, model: text(row["model"]),
+      project: text(row["project"]), person: text(row["approver"]), subagent: null, provider, model: text(row["model"]),
       tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), taskId: null, runId: null, authMode: subscription ? "subscription" : "api-key" });
   }
-  // A flow's Claude drafts: like a teammate's turns, billed as the sign-in was.
+  // A flow's Claude drafts: like a subagent's turns, billed as the sign-in was.
   for (const row of db.prepare("SELECT at, kind, repo, provider, model, cost_usd, billing FROM side_spend WHERE at >= ? AND at < ? ORDER BY id").all(from, to)) {
     const billing: Billing = row["billing"] === "api-key" ? "api-key" : "subscription";
     const priced = priceWork(db, { provider: String(row["provider"]), model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: null, tokensOut: null, billing });
-    items.push({ at: String(row["at"]), kind: "draft", microusd: priced.microusd, source: priced.source, project: text(row["repo"]), person: null, teammate: null,
+    items.push({ at: String(row["at"]), kind: "draft", microusd: priced.microusd, source: priced.source, project: text(row["repo"]), person: null, subagent: null,
       provider: String(row["provider"]), model: text(row["model"]), tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: billing });
   }
   // A flow's Sort zone asks Jev on OpenRouter (the key's credit): what it cost is kept with its answer.
@@ -302,7 +302,7 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
       WHERE fs.kind = 'sort' AND fs.decision_json IS NOT NULL AND fs.started_at >= ? AND fs.started_at < ? ORDER BY fs.started_at`).all(from, to)) {
     const cost = typeof row["cost"] === "number" && Number.isFinite(row["cost"]) && row["cost"] >= 0 ? row["cost"] : null;
     items.push({ at: String(row["at"]), kind: "sort", microusd: cost === null ? null : Math.round(cost * 1_000_000), source: cost === null ? "unpriced" : "reported",
-      project: text(row["repo"]), person: null, teammate: null, provider: "openrouter", model: text(row["model"]), tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: "api-key" });
+      project: text(row["repo"]), person: null, subagent: null, provider: "openrouter", model: text(row["model"]), tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: "api-key" });
   }
   return items;
 }
@@ -312,7 +312,7 @@ export function countsToward(item: SpendItem, budget: Pick<Budget, "scope" | "ke
   if (budget.scope === "installation") return true;
   if (budget.scope === "project") return item.project === budget.key;
   if (budget.scope === "person") return item.person === budget.key;
-  return item.teammate !== null && String(item.teammate) === budget.key;
+  return item.subagent !== null && String(item.subagent) === budget.key;
 }
 
 export type BudgetState = Budget & { spentMicrousd: number; unpriced: number; percent: number };
@@ -325,9 +325,9 @@ export type BudgetHold = { over: BudgetState | null; why: "used-up" | "unpriced"
 
 const PROVIDER_WORDS: Record<string, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter" };
 /** Why work waits on a budget, in words. */
-export function budgetHoldWords(hold: BudgetHold, month: string, teammateName?: string): string {
+export function budgetHoldWords(hold: BudgetHold, month: string, subagentName?: string): string {
   if (hold.over === null) return "";
-  const label = budgetLabel(hold.over, teammateName);
+  const label = budgetLabel(hold.over, subagentName);
   return hold.why === "unpriced"
     ? `${label} budget can't price ${PROVIDER_WORDS[hold.unpricedProvider ?? ""] ?? hold.unpricedProvider} work on a key yet. Open Settings → Models to load prices`
     : `${label} budget is used up for ${month}`;
@@ -343,12 +343,12 @@ export function budgetStates(budgets: readonly Budget[], items: readonly SpendIt
   });
 }
 
-/** A budget in words: "The shop project's", "alex's", "Maya's (teammate)", "The whole installation's". */
-export function budgetLabel(budget: Pick<Budget, "scope" | "key">, teammateName?: string): string {
+/** A budget in words: "The shop project's", "alex's", "Maya's (subagent)", "The whole installation's". */
+export function budgetLabel(budget: Pick<Budget, "scope" | "key">, subagentName?: string): string {
   if (budget.scope === "installation") return "The whole installation's";
   if (budget.scope === "project") return `The ${budget.key.split("/").filter(Boolean).pop() ?? budget.key} project's`;
   if (budget.scope === "person") return `${budget.key}'s`;
-  return `${teammateName ?? `Teammate ${budget.key}`}'s`;
+  return `${subagentName ?? `Subagent ${budget.key}`}'s`;
 }
 
 export const usd = (microusd: number | null): string => microusd === null ? "unpriced" : `$${(microusd / 1_000_000).toFixed(microusd !== 0 && Math.abs(microusd) < 10_000_000 ? 2 : 0)}`;

@@ -18,15 +18,15 @@ test.each([102, -102])("v%s: the ledger written before is sealed whole on first 
   first.createTask({ id: "old-task", title: "filed before v103" }, now);
   for (let i = 0; i < 3; i++) first.recordAction({ at: now.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: `before ${i}`, outcome: "done", source: "policy" });
   first.close();
-  // The v102 shape: no chain, no checkpoints, no ledger rows for teammate calls or minted coordinators.
+  // The v102 shape: no chain, no checkpoints, no ledger rows for subagent calls or minted coordinators.
   const db = new DatabaseSync(file);
   db.exec("DROP TABLE ledger_seal; DROP TABLE ledger_checkpoint; DROP TRIGGER ledger_coordinator_minted");
   const before = Number(db.prepare("SELECT COUNT(*) AS n FROM action_ledger").get()?.n);
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
   // Nothing is sealed until something reads or the worker passes; then everything is, in order.
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM ledger_seal").get()?.n).toBe(0);
   expect(store.ledgerChain()).toMatchObject({ ok: true, entries: before, unsealed: 0, checkpoints: 0 });

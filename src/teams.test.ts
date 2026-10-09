@@ -18,7 +18,7 @@ import { flowFromSteps } from "./flows.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { advanceFlows } from "./flow-engine.js";
 import { prepareSharedAction } from "./chat-actions.js";
-import { resolveChannelMate } from "./chat-channel.js";
+import { resolveChannelLead } from "./chat-channel.js";
 import { verifyApproverStanding, ceilingDigestOf } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
 import { SOURCE_BUDGET_DEFAULTS } from "./request-budget.js";
@@ -90,13 +90,13 @@ describe("Teams shared chat", () => {
   /** A pending card on alex's own Teams thread, planned as a part, without a model turn. */
   function draft(payload: Record<string, unknown>) {
     const binding = state.bindingFor(credentials.installation, ALEX)!;
-    const resolved = resolveChannelMate(store, { approver: binding.approver, approverGeneration: binding.generation }, projects, now);
+    const resolved = resolveChannelLead(store, { approver: binding.approver, approverGeneration: binding.generation }, projects, now);
     if (!resolved.ok) throw Error("session");
-    const opened = store.openMateTurn({ approver: "alex", session: resolved.session.id, thread: resolved.thread.id, credentialKey: resolved.session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60000 }, now);
+    const opened = store.openLeadTurn({ approver: "alex", session: resolved.session.id, thread: resolved.thread.id, credentialKey: resolved.session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60000 }, now);
     if (!opened.ok) throw Error("turn");
-    const started = store.startMateTurn(opened.id, now); if (!started.ok) throw Error("start");
-    const id = store.draftMateProposal({ thread: resolved.thread.id, turn: opened.id, kind: "action", payload, ceilingDigest: resolved.who.ceilingDigest }, now);
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
+    const started = store.startLeadTurn(opened.id, now); if (!started.ok) throw Error("start");
+    const id = store.draftLeadProposal({ thread: resolved.thread.id, turn: opened.id, kind: "action", payload, ceilingDigest: resolved.who.ceilingDigest }, now);
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
     const event = chatHash(`card${++ids}`);
     state.enqueue({ id: event, installation: credentials.installation, binding: binding.id, kind: "message", channel: DM_ALEX, member: ALEX, ts: "x", thread: "x", payload: "{}", created: now.toISOString() });
     state.plan(event, [{ text: "", proposal: id }], now);
@@ -233,7 +233,7 @@ describe("Teams shared chat", () => {
     expect(tap({ so: "0".repeat(32) })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("That button expired or was already used.");
-    expect(store.getMateProposal(proposal)?.state).toBe("pending");
+    expect(store.getLeadProposal(proposal)?.state).toBe("pending");
     // Adaptive Cards may submit other fields with the token; the old reader used only value.so.
     expect(tap({ ...(confirm as { data: Record<string, unknown> }).data, extra: 1 })).toBe(true);
     await processTeamsEvent(options); await drain();
@@ -243,7 +243,7 @@ describe("Teams shared chat", () => {
     await processTeamsEvent(options); await drain();
     expect(lastText()).toContain("Accepted and finished.");
     expect(assignmentOf(store, "sample", now, { principal: "operator", repos: projects }, join(dir, "evidence"))).toMatchObject({ state: "complete", completion: { actor: "operator:alex" } });
-    expect(store.getMateProposal(proposal)?.outcome).toMatchObject({ ok: true, via: "teams" });
+    expect(store.getLeadProposal(proposal)?.outcome).toMatchObject({ ok: true, via: "teams" });
     expect(store.proofAcceptance(run)).toBeNull();
   });
 
@@ -266,7 +266,7 @@ describe("Teams shared chat", () => {
     expect(lastText()).toContain("This room now follows Website launch (lead Engineering)");
     expect(receive(activity(CHANNEL, SAM, "<at>Toolroll</at> Add a criterion for the footer"))).toBe(true);
     await processTeamsEvent(options); await drain();
-    const queued = store.handle.prepare("SELECT q.author, q.request_id, m.text FROM team_message q JOIN mate_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
+    const queued = store.handle.prepare("SELECT q.author, q.request_id, m.text FROM team_message q JOIN lead_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
     expect(queued).toEqual([{ author: "sam", request_id: expect.stringMatching(/^teams:19:/), text: "Add a criterion for the footer" }]);
     const claim = domain.claimNext("fixture-runner", now)!;
     expect(domain.finish(claim, { status: "answered", text: "Added: the footer must show the current year." }, now)).toBe(true);

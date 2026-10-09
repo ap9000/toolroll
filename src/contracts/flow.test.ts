@@ -7,7 +7,7 @@ import { z } from "zod";
 import { readTriggerConfig, readTriggerSettings, validateTriggerConfig } from "../flow-triggers.js";
 import { parseFlowFile } from "../flow-share.js";
 import { FLOW_TEMPLATES, flowDefinitionForStore, flowDefinitionFromStore, flowDigest, flowFromSteps, readFlowDefinition, readFlowSteps, validateFlowDefinition, withZoneNames, type FlowDefinition } from "../flows.js";
-import { MATE_TOOLS } from "../mate-tools.js";
+import { LEAD_TOOLS } from "../lead-tools.js";
 import { openStore, type Store } from "../store.js";
 import { addApprover } from "../scope.js";
 import { TEXT_LIMITS } from "../text-limits.js";
@@ -240,7 +240,7 @@ describe("triggers", () => {
 describe("propose_flow", () => {
   it("is what the lead is told, derived from the same step and trigger schemas, with limits from TEXT_LIMITS", () => {
     expect(PROPOSE_FLOW_MODEL_SCHEMA).toEqual(toModelSchema(proposeFlowInputSchema));
-    expect(MATE_TOOLS.find(one => one.name === "propose_flow")!.inputSchema).toEqual(PROPOSE_FLOW_MODEL_SCHEMA);
+    expect(LEAD_TOOLS.find(one => one.name === "propose_flow")!.inputSchema).toEqual(PROPOSE_FLOW_MODEL_SCHEMA);
     const properties = PROPOSE_FLOW_MODEL_SCHEMA["properties"] as Record<string, Record<string, unknown>>;
     expect(properties["steps"]).toEqual(toModelSchema(flowStepsSchema.shape.steps));
     expect(properties["settings"]).toEqual(toModelSchema(leadTriggerSchema));

@@ -72,7 +72,7 @@ describe("a Telegram button's data", () => {
   });
 
   it("no Telegram keyboard is drawn from a hand-made button object", () => {
-    for (const file of ["telegram.ts", "telegram-mate.ts", "telegram-flow.ts", "telegram-team.ts", "telegram-status.ts", "telegram-progress.ts", "teammate-question.ts"]) {
+    for (const file of ["telegram.ts", "telegram-lead.ts", "telegram-flow.ts", "telegram-team.ts", "telegram-status.ts", "telegram-progress.ts", "subagent-question.ts"]) {
       const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
       expect(source.match(/callback_data:\s/g) ?? [], file).toEqual([]);
     }

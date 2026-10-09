@@ -500,7 +500,7 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
         ? <div className="so-docked-empty"><p className="so-docked-empty-title">{dock.title}</p><p className="so-docked-empty-hint">{dock.hint}</p>
             <div className="so-suggestions">{dock.suggestions.map(one => <button key={one} type="button" className="so-suggestion" onClick={() => { controller.edit(one); box.current?.focus(); }}>{one.trim().replace(/:$/, "…")}</button>)}</div></div>
         : <><ConversationEmptyState title="What would you like to work on?" />
-            {/* v99: or a working setup in one click — a teammate and the flow it works. */}
+            {/* v99: or a working setup in one click — a subagent and the flow it works. */}
             <nav className="so-kit-links" aria-label="Starter kits" data-kit-links><span>Or start from a kit:</span>{KIT_LINKS.map(([id, label]) => <a key={id} className="so-suggestion" href={`/kits/${id}`}>{label}</a>)}</nav></>)}
       <div id="chat-thread" data-chat-region="thread">{chat.messages.map(message => <ThreadMessage key={message.id} message={message} workspace={workspace} onChanged={() => { void controller.check(); }} />)}</div>
       {(busy || live !== null) && <LiveReplyBubble live={live} leadName={workspace.leadName ?? "Lead"} />}

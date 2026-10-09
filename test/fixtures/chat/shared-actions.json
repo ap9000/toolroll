@@ -27,11 +27,14 @@
   },
   {
    "name": "teammate_answer in words",
-   "payload": {"operation": "teammate_answer", "request": {"question": 4, "choice": null, "text": "Refund it and say sorry."}, "repo": "/work/sample-app", "title": "Answer Maya", "terms": ["Refund order 1043?", "Your answer: Refund it and say sorry."], "stamp": "4444444444444444444444444444444444444444444444444444444444444444", "state": {"question": 4}}
+   "payload": {"operation": "teammate_answer", "request": {"question": 4, "choice": null, "text": "Refund it and say sorry."}, "repo": "/work/sample-app", "title": "Answer Maya", "terms": ["Refund order 1043?", "Your answer: Refund it and say sorry."], "stamp": "4444444444444444444444444444444444444444444444444444444444444444", "state": {"question": 4}},
+   "reads": {"version": 1, "operation": "subagent_answer", "request": {"question": 4, "choice": null, "text": "Refund it and say sorry."}, "repo": "/work/sample-app", "title": "Answer Maya", "terms": ["Refund order 1043?", "Your answer: Refund it and say sorry."], "stamp": "4444444444444444444444444444444444444444444444444444444444444444", "state": {"question": 4}}
   },
   {
    "name": "teammate_tools rule with a limit",
    "payload": {"operation": "teammate_tools", "request": {"teammate": 3, "tool": "shop", "change": "rule", "action": "refund_order", "use": "free", "limitField": "amount", "limitOver": 100}, "repo": "/work/sample-app", "title": "Maya: refund_order — does it up to amount 100", "terms": ["shop → refund_order: does it up to amount 100.", "Was: asks you first."], "stamp": "5555555555555555555555555555555555555555555555555555555555555555", "state": {"rules": "{\"refund_order\":{\"use\":\"ask\"}}"}}
+,
+   "reads": {"version": 1, "operation": "subagent_tools", "request": {"subagent": 3, "tool": "shop", "change": "rule", "action": "refund_order", "use": "free", "limitField": "amount", "limitOver": 100}, "repo": "/work/sample-app", "title": "Maya: refund_order — does it up to amount 100", "terms": ["shop → refund_order: does it up to amount 100.", "Was: asks you first."], "stamp": "5555555555555555555555555555555555555555555555555555555555555555", "state": {"rules": "{\"refund_order\":{\"use\":\"ask\"}}"}}
   },
   {
    "name": "decision_record replacing an older one",

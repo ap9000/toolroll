@@ -39,9 +39,9 @@ const GROUPS = {
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
-  maya: { journeys: 3, real: 1, shared: 1, about: "AI teammates (Maya), which the lead then changes" },
-  rosa: { journeys: 4, real: 1, shared: 1, about: "A teammate that acts with a real tool: its rules, routine, week and undo" },
-  memory: { journeys: 2, shared: 1, about: "A teammate that acts with a real tool: its memory, and the looser rule it suggests" },
+  maya: { journeys: 4, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help" },
+  rosa: { journeys: 4, real: 1, shared: 1, about: "A subagent that acts with a real tool: its rules, routine, week and undo" },
+  memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },
   flows: { journeys: 5, about: "Code steps and schedules in flows, the live canvas, starter kits and one-click connections" },
   onboarding: { journeys: 4, about: "From an empty home folder: toolroll up opens Chat signed in with the lead on, a first task filed and followed to Ready, no agent shows the command and turns on by itself, the wrong-host page" },
@@ -213,7 +213,7 @@ async function addCard(title, details) {
   await page.fill('input[aria-label="Title"]', title);
   if (details) await page.fill('textarea[aria-label="Details"]', details);
   await page.click('button:has-text("Add card")');
-  // The card is on the canvas before anything else happens: the canvas re-renders live as a teammate moves cards, and a
+  // The card is on the canvas before anything else happens: the canvas re-renders live as a subagent moves cards, and a
   // click in the middle of that re-render can miss (gate run 2059: the second of three cards in a row).
   await page.locator("[data-card]", { hasText: title }).first().waitFor({ timeout: 30_000 });
 }
@@ -237,7 +237,7 @@ await journey("console", SCRIPTED, "A wrong password is refused, and a signed-ou
 
 await journey("pages", SCRIPTED, "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
   const paths = ["/chat", "/work", "/tasks", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
-    "/inbox", "/board", "/next", "/done", "/system", "/workbench", "/code", "/kits", "/teammates", "/fleet", "/people"];
+    "/inbox", "/board", "/next", "/done", "/system", "/workbench", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
   const broken = [];
   const phone = await signIn("sam", { width: 390, height: 844 }, "dark");
   for (const path of paths) {
@@ -1146,33 +1146,33 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
 
 // ------------------------------------------------------------------ two people on one flow
 
-await journey("maya", SCRIPTED, "AI teammates: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)", [], async () => {
+await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)", [], async () => {
   // What Maya decides, card by card: questions answered, the $30 refund approved, the $400 one handed to you.
   const reads = /WHERE YOU ARE: the zone “Maya reads it”/, decides = /WHERE YOU ARE: the zone “Refund\?”/;
   script(
-    { role: "teammate", when: [reads, /Title: Where is/], answer: { action: "route", answer: "Just a question", text: "Hi! Your order shipped and is on its way; it should reach you within 2 days. — Maya", reason: "A question about delivery, not a refund." } },
-    { role: "teammate", when: [reads, /Title: (Charged twice|Broken TV)/], answer: { action: "route", answer: "Refund request", text: "Sorry about that! I've passed your refund request on, and you'll hear back today. — Maya", reason: "The customer asks for their money back." } },
-    { role: "teammate", when: [decides, /Title: Charged twice/], answer: { action: "approve", reason: "A $30 duplicate charge is within my $50 limit." } },
-    { role: "teammate", when: [decides, /Title: Broken TV/], answer: { action: "hand_off", note: "A $400 refund is over my $50 limit. I'd approve it: the screen arrived cracked.", reason: "Over my limit." } },
+    { role: "subagent", when: [reads, /Title: Where is/], answer: { action: "route", answer: "Just a question", text: "Hi! Your order shipped and is on its way; it should reach you within 2 days. — Maya", reason: "A question about delivery, not a refund." } },
+    { role: "subagent", when: [reads, /Title: (Charged twice|Broken TV)/], answer: { action: "route", answer: "Refund request", text: "Sorry about that! I've passed your refund request on, and you'll hear back today. — Maya", reason: "The customer asks for their money back." } },
+    { role: "subagent", when: [decides, /Title: Charged twice/], answer: { action: "approve", reason: "A $30 duplicate charge is within my $50 limit." } },
+    { role: "subagent", when: [decides, /Title: Broken TV/], answer: { action: "hand_off", note: "A $400 refund is over my $50 limit. I'd approve it: the screen arrived cracked.", reason: "Over my limit." } },
   );
-  // A teammate from the Support rep template, on the Teammates page; its soul file saves as a new version.
-  await page.goto(`${base}/teammates`);
-  await page.selectOption('form[data-new-teammate] select[name="template"]', "support");
-  await Promise.all([page.waitForNavigation(), page.click('form[data-new-teammate] button')]);
-  const mateId = Number(/\/teammates\/(\d+)/.exec(page.url())?.[1]);
-  if (!mateId) throw new Error(`no teammate page: ${page.url()}`);
-  const soul = await page.inputValue("#teammate-soul");
+  // A subagent from the Support rep template, on the Subagents page; its soul file saves as a new version.
+  await page.goto(`${base}/settings/lead/subagents`);
+  await page.selectOption('form[data-new-subagent] select[name="template"]', "support");
+  await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
+  const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
+  if (!subagentId) throw new Error(`no subagent page: ${page.url()}`);
+  const soul = await page.inputValue("#subagent-soul");
   if (!/name: Maya/.test(soul) || !/Refunds and replacements up to \$50/.test(soul)) throw new Error(`the template's soul file: ${soul.slice(0, 200)}`);
-  await page.fill("#teammate-soul", soul.replace("## What you know\n", "## What you know\n- Order numbers look like #1234.\n"));
+  await page.fill("#subagent-soul", soul.replace("## What you know\n", "## What you know\n- Order numbers look like #1234.\n"));
   await Promise.all([page.waitForNavigation(), page.click('form[data-soul-form] button')]);
   if (!/version 2/.test(new URL(page.url()).searchParams.get("said") ?? "")) throw new Error(`saving the soul file said: ${page.url()}`);
   // A flow Maya works: she reads each message and picks where it goes, then decides the refunds.
   const at = (id, title, kind, x, y, rest) => ({ id, title, kind, zone: zone(x, y), ...none, next: null, onFail: null, ...rest });
   // Not "Support desk": the starter kit of that name is set up later in this world.
   const id = await newFlow("Customer help", [
-    at("read", "Maya reads it", "teammate", 0, 0, { teammate: "maya", instructions: "Read the customer's message. Write the short reply we'd send them, and pick where it goes: a refund request goes to the refund decision; anything else is just a question.",
+    at("read", "Maya reads it", "subagent", 0, 0, { subagent: "maya", instructions: "Read the customer's message. Write the short reply we'd send them, and pick where it goes: a refund request goes to the refund decision; anything else is just a question.",
       routes: [{ answer: "Just a question", to: "answered" }, { answer: "Refund request", to: "decide" }], onFail: "stuck" }),
-    at("decide", "Refund?", "approval", 360, 0, { teammate: "maya", toOwner: true, next: "refunded", onFail: "declined" }),
+    at("decide", "Refund?", "approval", 360, 0, { subagent: "maya", toOwner: true, next: "refunded", onFail: "declined" }),
     at("answered", "Answered", "inbox", 0, 380, {}), at("refunded", "Refunded", "inbox", 720, 0, {}), at("declined", "Declined", "inbox", 720, 380, {}), at("stuck", "For a person", "inbox", 360, 380, {}),
   ], "read");
   await addCard("Where is my order #1201?", "Hi, I ordered a lamp last week and it hasn't arrived yet. Any news? — Priya");
@@ -1189,47 +1189,94 @@ await journey("maya", SCRIPTED, "AI teammates: Maya (a support rep) answers a qu
   await page.reload(); await page.waitForSelector("[data-zone]");
   await page.locator(`[data-card="${brought.id}"]`).click();
   await page.waitForSelector(`[data-flow-card-panel="${brought.id}"]`);
-  await shot("teammate-brings-it");
+  await shot("subagent-brings-it");
   if (brought.question?.mine) {
-    await page.locator(`[data-teammate-question] textarea`).fill("Yes, it's a refund request. Go ahead and send it to the refund decision.");
-    await page.locator(`[data-teammate-question] button:has-text("Answer")`).click();
+    await page.locator(`[data-subagent-question] textarea`).fill("Yes, it's a refund request. Go ahead and send it to the refund decision.");
+    await page.locator(`[data-subagent-question] button:has-text("Answer")`).click();
   }
   const handed = await until("the decision to be yours", async () => { const one = await cardOf("Broken TV"); return one?.canDecide ? one : one?.stage === "refunded" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   if (handed.stage !== "refunded") {
     await page.reload(); await page.waitForSelector("[data-zone]");
     await page.locator(`[data-card="${handed.id}"]`).click();
     // What Maya said when she handed it over is in front of the person deciding.
-    if (handed.handoff != null && !/^Maya · Support:/.test(await page.locator("[data-teammate-handoff]").innerText())) throw new Error("Maya's note isn't on the decision");
+    if (handed.handoff != null && !/^Maya · Support:/.test(await page.locator("[data-subagent-handoff]").innerText())) throw new Error("Maya's note isn't on the decision");
     await page.click('[data-flow-card-panel] button:has-text("Approve")');
     await until("the $400 refund to be approved by you", async () => (await cardOf("Broken TV"))?.stage === "refunded", { timeoutMs: 30_000, everyMs: 1000 });
   }
   const told = rows(`SELECT subject FROM notification WHERE recipient = 'alex' AND subject LIKE 'Maya · Support%'`);
   if (told.length === 0) throw new Error("you weren't told by Maya, under her name");
-  if (rows(`SELECT 1 FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`).length === 0 && rows(`SELECT 1 FROM teammate_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
+  if (rows(`SELECT 1 FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`).length === 0 && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
   // Paused, the zones she handles wait; resumed, she picks the card up.
-  await page.goto(`${base}/teammates/${mateId}`);
+  await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Pause Maya")')]);
   await page.goto(`${base}/flows/${id}`); await page.waitForSelector("[data-zone]");
   await addCard("Where is order #1204?", "Just checking on my order. — Ana");
   await until("the card to wait while Maya is paused", async () => /paused/.test((await cardOf("Where is order #1204"))?.waiting ?? ""), { timeoutMs: 60_000, everyMs: 2000 });
-  await page.goto(`${base}/teammates/${mateId}`);
+  await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Resume Maya")')]);
   await until("Maya to pick it up again", async () => (await cardOf("Where is order #1204"))?.stage !== "read", { timeoutMs: 300_000, everyMs: 3000 });
   // Her page: what she did and why, and today's summary sent to her manager.
-  await page.goto(`${base}/teammates/${mateId}`);
+  await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Send today\'s summary")')]);
   if (rows(`SELECT 1 FROM notification WHERE kind = 'teammate-summary' AND recipient = 'alex'`).length === 0) throw new Error("no summary was sent");
-  await shot("teammate-page");
+  await shot("subagent-page");
   const phone = await alexPhone("dark");
-  await phone.goto(`${base}/teammates/${mateId}`); await phone.waitForLoadState("load"); await settle(phone);
-  await phone.screenshot({ path: join(w.out, "teammate-phone.png") });
+  await phone.goto(`${base}/settings/lead/subagents/${subagentId}`); await phone.waitForLoadState("load"); await settle(phone);
+  await phone.screenshot({ path: join(w.out, "subagent-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
-  if (wide) throw new Error("the teammate page scrolls sideways on a phone");
-  return { reply: reply.slice(0, 120), summary: (await page.locator(".teammate-summary").innerText()).slice(0, 200) };
+  if (wide) throw new Error("the subagent page scrolls sideways on a phone");
+  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200) };
 });
 
-await journey("maya", REAL_MODEL, "The lead adds a teammate and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "AI teammates: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
+await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
+  const maya = rows("SELECT id FROM subagent WHERE handle = 'maya' AND state = 'active'")[0]?.id;
+  if (!maya) throw new Error("Maya isn't on the team");
+  // Settings → Lead: the lead and its subagents in one place, with one action to add another.
+  await page.goto(`${base}/settings/lead`);
+  await page.waitForSelector("[data-lead-subagents]");
+  const section = (await page.locator("[data-lead-subagents]").innerText()).replace(/\s+/g, " ");
+  if (!/Maya · Support/.test(section)) throw new Error(`Settings → Lead's subagents: ${section}`);
+  if (await page.locator("[data-lead-subagents] [data-add-subagent]").count() !== 1) throw new Error("Settings → Lead doesn't have exactly one Add subagent action");
+  await page.locator("[data-lead-subagents]").scrollIntoViewIfNeeded();
+  await shot("lead-subagents");
+  const phone = await alexPhone("light");
+  await phone.goto(`${base}/settings/lead`); await phone.waitForSelector("[data-lead-subagents]");
+  await phone.locator("[data-lead-subagents]").scrollIntoViewIfNeeded(); await settle(phone);
+  await phone.screenshot({ path: join(w.out, "lead-subagents-phone.png") });
+  const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  const add = await phone.locator("[data-lead-subagents] [data-add-subagent]").boundingBox();
+  const row = await phone.locator("[data-lead-subagents] li a").first().boundingBox();
+  await putPhoneDown();
+  if (wide) throw new Error("Settings → Lead scrolls sideways on a phone");
+  if (add === null || add.height < 44 || row === null || row.height < 44) throw new Error(`tap targets on a phone: Add subagent ${add?.height}px, Maya's row ${row?.height}px`);
+  // Add subagent opens the form on its page; a saved link to a teammate lands on the subagent's page.
+  await page.click("[data-lead-subagents] [data-add-subagent]");
+  await page.waitForSelector("details#add[open] form[data-new-subagent]");
+  await page.goto(`${base}/teammates/${maya}`);
+  if (new URL(page.url()).pathname !== `/settings/lead/subagents/${maya}`) throw new Error(`/teammates/${maya} led to ${page.url()}`);
+  // "Ask Maya …": the lead drafts the ask as a card with exactly what goes to her; confirmed, one card lands on her desk
+  // from you, she works it within her rules, and her answer comes back to you.
+  script(
+    { role: "lead", when: [/Ask Maya to look up order #1204/], answer: { steps: [
+      { text: "Asking Maya.", calls: [{ name: "propose_subagent", arguments: { operation: "ask", subagent: maya, text: "Look up order #1204 and tell me when it ships." } }] },
+      { text: "Maya will look it up once you confirm.", calls: [] },
+    ] } },
+    { role: "subagent", when: [/WHERE YOU ARE: the zone “Requests”/, /order #1204/], answer: { action: "route", answer: "Done", text: "Order #1204 ships tomorrow morning.", reason: "Looked it up." } },
+  );
+  const asked = await askLead("Ask Maya to look up order #1204 and tell me when it ships.");
+  const pending = await pendingCard(asked.reply, "the card asking Maya", { label: "Ask Maya" });
+  if (!/Look up order #1204 and tell me when it ships\./.test(await pending.innerText())) throw new Error("the card doesn't show exactly what goes to Maya");
+  await confirmCard(asked.reply, "Ask Maya");
+  await shot("lead-asks-maya");
+  const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${maya}`)[0]?.desk_flow;
+  const cards = desk ? rows(`SELECT title, created_by FROM flow_card WHERE flow = ${desk} AND title LIKE 'Look up order #1204%'`) : [];
+  if (cards.length !== 1 || cards[0].created_by !== "alex") throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
+  const answer = await until("Maya's answer to reach you", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND body LIKE '%#1204%'")[0] ?? null, { timeoutMs: 120_000, everyMs: 1500 });
+  return { section: section.slice(0, 160), answer };
+});
+
+await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
   // The lead's own proposal is what's checked: the card it drafted (a reply without one fails quoting the reply and the
   // tools the lead called), then what confirming it saved.
   const confirm = async (asked, what) => {
@@ -1237,10 +1284,10 @@ await journey("maya", REAL_MODEL, "The lead adds a teammate and changes one's ru
     await card.locator("[data-card-confirm]").click();
     await until(`${what} to be confirmed`, async () => (await asked.reply.locator('[data-view="chat-card"][data-card-state="confirmed"]').count()) > 0, { timeoutMs: 30_000 });
   };
-  await confirm(await askLead("Add a sales rep teammate called Leo to this project. Just draft it, no need to ask."), "the card adding Leo");
-  if (rows("SELECT 1 FROM teammate WHERE handle = 'leo' AND state = 'active'").length !== 1) throw new Error("Leo isn't on the team");
+  await confirm(await askLead("Add a sales rep subagent called Leo to this project. Just draft it, no need to ask."), "the card adding Leo");
+  if (rows("SELECT 1 FROM subagent WHERE handle = 'leo' AND state = 'active'").length !== 1) throw new Error("Leo isn't on the team");
   await confirm(await askLead("Maya can approve refunds and replacements up to $100 on her own now. Update her rules."), "the card changing Maya's rules");
-  const soul = rows("SELECT soul FROM teammate WHERE handle = 'maya'")[0]?.soul ?? "";
+  const soul = rows("SELECT soul FROM subagent WHERE handle = 'maya'")[0]?.soul ?? "";
   if (!/\$100/.test(soul) || !/name: Maya/.test(soul)) throw new Error(`Maya's soul file: ${soul.slice(0, 400)}`);
   return { maya: soul.split("## Decide on your own")[1]?.split("##")[0]?.trim().slice(0, 200) };
 });
@@ -1249,13 +1296,13 @@ await journey("maya", REAL_MODEL, "The lead adds a teammate and changes one's ru
 function rosaRefunds(title, order, amount, zone = "Rosa handles it") {
   const on = [new RegExp(`WHERE YOU ARE: the zone “${zone}”`), new RegExp(`Title: ${title}`)];
   return [
-    { role: "teammate", when: on, unless: [/\d\. store\.lookup_order/], answer: { action: "use_tool", tool: "store.lookup_order", input: { order }, reason: "To see what the customer paid." } },
-    { role: "teammate", when: [...on, /\d\. store\.lookup_order/], unless: [/\d\. store\.refund_order/], answer: { action: "use_tool", tool: "store.refund_order", input: { order, amount }, reason: `The customer is owed $${amount}.` } },
-    { role: "teammate", when: [...on, /\d\. store\.refund_order/], answer: { action: "route", answer: "Refunded", text: `Hi! I've refunded $${amount} on order ${order} to your original payment method; it takes up to 5 days to show. — Rosa`, reason: "The refund is made." } },
+    { role: "subagent", when: on, unless: [/\d\. store\.lookup_order/], answer: { action: "use_tool", tool: "store.lookup_order", input: { order }, reason: "To see what the customer paid." } },
+    { role: "subagent", when: [...on, /\d\. store\.lookup_order/], unless: [/\d\. store\.refund_order/], answer: { action: "use_tool", tool: "store.refund_order", input: { order, amount }, reason: `The customer is owed $${amount}.` } },
+    { role: "subagent", when: [...on, /\d\. store\.refund_order/], answer: { action: "route", answer: "Refunded", text: `Hi! I've refunded $${amount} on order ${order} to your original payment method; it takes up to 5 days to show. — Rosa`, reason: "The refund is made." } },
   ];
 }
 
-const TOOL_CHECK = "Teammates that act: Rosa uses a real store tool under her rules — looks orders up and refunds $30 on her own, asks you before $400, and your Approve makes exactly that call (real Claude turns)";
+const TOOL_CHECK = "Subagents that act: Rosa uses a real store tool under her rules — looks orders up and refunds $30 on her own, asks you before $400, and your Approve makes exactly that call (real Claude turns)";
 await journey(["rosa", "memory"], SCRIPTED, TOOL_CHECK, [], async () => {
   // What Rosa does with each card: looks the order up, refunds it with the store (the $400 one waits for you), says where it goes.
   script(rosaRefunds("Charged twice for order 2201", "2201", 30), rosaRefunds("Broken TV, order 2202", "2202", 400));
@@ -1293,12 +1340,12 @@ createInterface({ input: process.stdin }).on("line", line => {
     if (answered.status() >= 400) throw new Error(`the Tools page refused ${form.action}: ${answered.status()}`);
   }
   // Rosa, from the Support rep template; on her page she's let use the store.
-  await page.goto(`${base}/teammates`);
+  await page.goto(`${base}/settings/lead/subagents`);
   await page.evaluate(() => { for (const one of document.querySelectorAll("details")) one.open = true; });
-  await page.selectOption('form[data-new-teammate] select[name="template"]', "support");
-  await page.fill('form[data-new-teammate] input[name="name"]', "Rosa");
-  await Promise.all([page.waitForNavigation(), page.click('form[data-new-teammate] button')]);
-  const mateId = Number(/\/teammates\/(\d+)/.exec(page.url())?.[1]);
+  await page.selectOption('form[data-new-subagent] select[name="template"]', "support");
+  await page.fill('form[data-new-subagent] input[name="name"]', "Rosa");
+  await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
+  const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
   await page.selectOption('form.tool-add select[name="tool"]', "store");
   await Promise.all([page.waitForNavigation(), page.click('form.tool-add button')]);
   const shopRules = page.locator('[data-tool-grant="store"]');
@@ -1310,14 +1357,14 @@ createInterface({ input: process.stdin }).on("line", line => {
   await shopRules.locator('input[name="over.refund_order"]').fill("50");
   await shopRules.locator('select[name="use.delete_customer"]').selectOption("never");
   await Promise.all([page.waitForNavigation(), shopRules.locator('button:has-text("Save rules")').click()]);
-  const rules = JSON.parse(rows(`SELECT rules_json FROM teammate_tool WHERE teammate = ${mateId} AND tool = 'store'`)[0]?.rules_json ?? "{}");
+  const rules = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${subagentId} AND tool = 'store'`)[0]?.rules_json ?? "{}");
   if (rules.refund_order?.limit?.over !== 50 || rules.delete_customer?.use !== "never") throw new Error(`the saved rules: ${JSON.stringify(rules)}`);
   await page.locator("#tools").scrollIntoViewIfNeeded(); await settle(page);
-  await shot("teammate-tools");
+  await shot("subagent-tools");
   // A flow Rosa handles: she reads the refund request, uses the store, and says where it goes.
   const at = (id, title, kind, x, y, rest) => ({ id, title, kind, zone: zone(x, y), ...none, next: null, onFail: null, ...rest });
   const id = await newFlow("Refund desk", [
-    at("rosa", "Rosa handles it", "teammate", 0, 0, { teammate: "rosa", instructions: "Look the order up in the store, then refund what the customer is owed with the store's refund. Write the short reply we'd send them.",
+    at("rosa", "Rosa handles it", "subagent", 0, 0, { subagent: "rosa", instructions: "Look the order up in the store, then refund what the customer is owed with the store's refund. Write the short reply we'd send them.",
       routes: [{ answer: "Refunded", to: "refunded" }, { answer: "Nothing to refund", to: "answered" }], onFail: "stuck" }),
     at("refunded", "Refunded", "inbox", 360, 0, {}), at("answered", "Answered", "inbox", 360, 380, {}), at("stuck", "For a person", "inbox", 0, 380, {}),
   ], "rosa");
@@ -1332,7 +1379,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   const asking = await until("Rosa to ask you before refunding $400", async () => {
     const one = await cardOf("Broken TV");
     if (one?.question?.mine && one.question.call == null) {
-      await post(`/teammates/questions/${one.question.id}/answer`, { text: "Yes, refund the full $400." });
+      await post(`/settings/lead/subagents/questions/${one.question.id}/answer`, { text: "Yes, refund the full $400." });
       return null;
     }
     return one?.question?.mine && one.question.call != null ? one : one !== undefined && one.stage !== "rosa" ? one : null;
@@ -1343,9 +1390,9 @@ createInterface({ input: process.stdin }).on("line", line => {
   if (rows(`SELECT 1 FROM notification WHERE recipient = 'alex' AND subject LIKE '%Rosa · Support asks to use refund_order%'`).length === 0) throw new Error("you weren't told in your chat app");
   await page.reload(); await page.waitForSelector("[data-zone]");
   await page.locator(`[data-card="${asking.id}"]`).click();
-  await page.waitForSelector(`[data-teammate-question="${asking.question.id}"]`);
-  await shot("teammate-asks-to-call");
-  await page.locator(`[data-teammate-question="${asking.question.id}"] button:has-text("Approve")`).click();
+  await page.waitForSelector(`[data-subagent-question="${asking.question.id}"]`);
+  await shot("subagent-asks-to-call");
+  await page.locator(`[data-subagent-question="${asking.question.id}"] button:has-text("Approve")`).click();
   const approved = await until("the approved $400 refund to be made and Rosa to finish", async () => { const one = await cardOf("Broken TV"); return refunds("2202").length > 0 && one?.stage !== "rosa" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   const made = refunds("2202");
   if (made.length !== 1 || Number(made[0].arguments.amount) !== 400) throw new Error(`the approved call: ${JSON.stringify(made)}`);
@@ -1353,25 +1400,25 @@ createInterface({ input: process.stdin }).on("line", line => {
   if (calls().some(one => one.name === "delete_customer")) throw new Error("a never-allowed action was called");
   await page.reload(); await page.waitForSelector("[data-zone]");
   await page.locator(`[data-card="${approved.id}"]`).click();
-  await page.waitForSelector("[data-teammate-calls]");
-  await page.evaluate(() => { const one = document.querySelector("[data-teammate-calls]"); if (one) { one.open = true; one.scrollIntoView({ block: "center" }); } });
+  await page.waitForSelector("[data-subagent-calls]");
+  await page.evaluate(() => { const one = document.querySelector("[data-subagent-calls]"); if (one) { one.open = true; one.scrollIntoView({ block: "center" }); } });
   await settle(page);
-  await shot("teammate-receipts");
+  await shot("subagent-receipts");
   // Her page lists the calls with what came of them; on a phone it fits.
-  await page.goto(`${base}/teammates/${mateId}`);
+  await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await page.evaluate(() => { for (const one of document.querySelectorAll("details")) one.open = true; });
-  if (!/Used store → refund_order/.test(await page.locator(".teammate-activity").innerText())) throw new Error("her page doesn't list her tool calls");
+  if (!/Used store → refund_order/.test(await page.locator(".subagent-activity").innerText())) throw new Error("her page doesn't list her tool calls");
   const phone = await alexPhone("light");
-  await phone.goto(`${base}/teammates/${mateId}#tools`); await phone.waitForLoadState("load"); await settle(phone);
-  await phone.screenshot({ path: join(w.out, "teammate-tools-phone.png") });
+  await phone.goto(`${base}/settings/lead/subagents/${subagentId}#tools`); await phone.waitForLoadState("load"); await settle(phone);
+  await phone.screenshot({ path: join(w.out, "subagent-tools-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
-  if (wide) throw new Error("the teammate page scrolls sideways on a phone");
+  if (wide) throw new Error("the subagent page scrolls sideways on a phone");
   return { small: small.outputs.find(one => one.stage === "rosa")?.text?.slice(0, 120), big: approved.outputs.find(one => one.stage === "rosa")?.text?.slice(0, 120), calls: calls().map(one => `${one.name} ${JSON.stringify(one.arguments)}`) };
 });
 
 // In the rosa group's own world the lead chat isn't on yet: this journey turns it on the same way first.
-await journey("rosa", REAL_MODEL, "The lead changes a teammate's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
+await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
   if (!leadChatOn) await turnLeadChatOn();
   const { reply } = await askLead("Rosa can refund orders up to $100 in the store without asking me now. Just draft it.");
   const pending = reply.locator('[data-view="chat-card"][data-card-state="pending"]:has([data-card-confirm])');
@@ -1384,35 +1431,35 @@ await journey("rosa", REAL_MODEL, "The lead changes a teammate's tool rule from 
     await until("the confirmed card to settle", async () => (await pending.count()) < before, { timeoutMs: 10_000, everyMs: 250 }).catch(() => undefined);
   }
   const rules = await until("Rosa's refund rule to change", async () => {
-    const saved = JSON.parse(rows("SELECT t.rules_json FROM teammate_tool t JOIN teammate m ON m.id = t.teammate WHERE m.handle = 'rosa' AND t.tool = 'store'")[0]?.rules_json ?? "{}");
+    const saved = JSON.parse(rows("SELECT t.rules_json FROM subagent_tool t JOIN subagent m ON m.id = t.subagent WHERE m.handle = 'rosa' AND t.tool = 'store'")[0]?.rules_json ?? "{}");
     return saved.refund_order?.limit?.over === 100 ? saved : null;
   }, { timeoutMs: 30_000, everyMs: 1000 });
   if (rules.refund_order.use !== "free") throw new Error(`Rosa's refund rule: ${JSON.stringify(rules.refund_order)}`);
   return { rule: rules.refund_order };
 });
 
-await journey("memory", SCRIPTED, "Teammates remember and learn: Rosa keeps a customer's preference for later cards, you correct her memory, and after approving refunds in a row she suggests a looser rule you accept in one tap (real Claude turns)", [TOOL_CHECK], async () => {
-  const mate = rows("SELECT id FROM teammate WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
+await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a customer's preference for later cards, you correct her memory, and after approving refunds in a row she suggests a looser rule you accept in one tap (real Claude turns)", [TOOL_CHECK], async () => {
+  const mate = rows("SELECT id FROM subagent WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   const flowId = rows("SELECT id FROM flow WHERE name = 'Refund desk'")[0]?.id;
   if (!mate || !flowId) throw new Error("Rosa or her flow is missing");
   const cardOf = async title => (await flowView(flowId)).cards.find(one => one.title.startsWith(title));
   await page.goto(`${base}/flows/${flowId}`); await page.waitForSelector("[data-zone]");
-  script({ role: "teammate", when: [/Title: Question from Priya Shah/], answer: { action: "route", answer: "Nothing to refund", text: "Hi Priya, order 2201 is all sorted: the duplicate $30 was refunded. I'll email you rather than call. — Rosa",
+  script({ role: "subagent", when: [/Title: Question from Priya Shah/], answer: { action: "route", answer: "Nothing to refund", text: "Hi Priya, order 2201 is all sorted: the duplicate $30 was refunded. I'll email you rather than call. — Rosa",
     reason: "A question; the refund was already made.", remember: "Priya Shah prefers store credit over refunds, and email over phone calls." } });
   for (const [at, amount] of [120, 125, 130, 135, 140].entries()) script(rosaRefunds(`Broken chair, order ${2204 + at}`, String(2204 + at), amount));
   // A customer says something worth keeping for later cards.
   await addCard("Question from Priya Shah", "Hi, it's Priya Shah. For anything in future: I always prefer store credit over a refund, and please email me rather than call. Is order 2201 all sorted now? — Priya");
-  const kept = await until("Rosa to keep Priya's preference", async () => rows(`SELECT id, text FROM teammate_memory WHERE teammate = ${mate} AND source = 'teammate' AND state = 'active'`).find(one => /priya/i.test(one.text)) ?? null, { timeoutMs: 300_000, everyMs: 3000 });
+  const kept = await until("Rosa to keep Priya's preference", async () => rows(`SELECT id, text FROM subagent_memory WHERE subagent = ${mate} AND source = 'subagent' AND state = 'active'`).find(one => /priya/i.test(one.text)) ?? null, { timeoutMs: 300_000, everyMs: 3000 });
   // On her page, the memory says where it came from; you correct it.
-  await page.goto(`${base}/teammates/${mate}#memory`);
+  await page.goto(`${base}/settings/lead/subagents/${mate}#memory`);
   const line = page.locator(`[data-memory="${kept.id}"]`);
   if (!/kept this from/.test(await line.innerText())) throw new Error(`the memory line: ${await line.innerText()}`);
   await line.locator("summary").click();
   await line.locator("textarea").fill("Priya Shah prefers store credit over refunds, and email over phone calls.");
   await Promise.all([page.waitForNavigation(), line.locator('button:has-text("Save")').click()]);
-  if (rows(`SELECT text FROM teammate_memory WHERE id = ${kept.id}`)[0]?.text !== "Priya Shah prefers store credit over refunds, and email over phone calls.") throw new Error("the memory wasn't changed");
+  if (rows(`SELECT text FROM subagent_memory WHERE id = ${kept.id}`)[0]?.text !== "Priya Shah prefers store credit over refunds, and email over phone calls.") throw new Error("the memory wasn't changed");
   await page.locator("#memory").scrollIntoViewIfNeeded(); await settle(page);
-  await shot("teammate-memory");
+  await shot("subagent-memory");
   // Refunds over her limit, each approved: the approvals in a row teach her to suggest a looser rule.
   await page.goto(`${base}/flows/${flowId}`); await page.waitForSelector("[data-zone]");
   const amounts = [120, 125, 130, 135, 140];
@@ -1420,34 +1467,34 @@ await journey("memory", SCRIPTED, "Teammates remember and learn: Rosa keeps a cu
   const suggestion = await until("Rosa to suggest a looser refund rule", async () => {
     for (const [at] of amounts.entries()) {
       const one = await cardOf(`Broken chair, order ${2204 + at}`);
-      if (one?.question?.mine) await post(`/teammates/questions/${one.question.id}/answer`, one.question.call != null ? { choice: "approve" } : { text: "Yes, refund it in full." });
+      if (one?.question?.mine) await post(`/settings/lead/subagents/questions/${one.question.id}/answer`, one.question.call != null ? { choice: "approve" } : { text: "Yes, refund it in full." });
     }
-    return rows(`SELECT id, said, rule_json FROM teammate_suggestion WHERE teammate = ${mate} AND state = 'open'`)[0] ?? null;
+    return rows(`SELECT id, said, rule_json FROM subagent_suggestion WHERE subagent = ${mate} AND state = 'open'`)[0] ?? null;
   }, { timeoutMs: 600_000, everyMs: 4000 });
   if (!/refund_order/.test(suggestion.said)) throw new Error(`the suggestion: ${suggestion.said}`);
   if (rows(`SELECT 1 FROM notification WHERE recipient = 'alex' AND subject LIKE '%Rosa · Support suggests a rule change%'`).length === 0) throw new Error("her manager wasn't told in their chat app");
   // One tap on her page accepts it: that one rule changes.
-  await page.goto(`${base}/teammates/${mate}`);
+  await page.goto(`${base}/settings/lead/subagents/${mate}`);
   const offered = page.locator("[data-suggestion]");
   await offered.waitFor();
-  await shot("teammate-suggests");
+  await shot("subagent-suggests");
   const phone = await alexPhone("dark");
-  await phone.goto(`${base}/teammates/${mate}`); await phone.waitForLoadState("load"); await settle(phone);
-  await phone.screenshot({ path: join(w.out, "teammate-suggests-phone.png") });
-  await phone.goto(`${base}/teammates/${mate}#memory`); await phone.waitForLoadState("load"); await settle(phone);
-  await phone.screenshot({ path: join(w.out, "teammate-memory-phone.png") });
+  await phone.goto(`${base}/settings/lead/subagents/${mate}`); await phone.waitForLoadState("load"); await settle(phone);
+  await phone.screenshot({ path: join(w.out, "subagent-suggests-phone.png") });
+  await phone.goto(`${base}/settings/lead/subagents/${mate}#memory`); await phone.waitForLoadState("load"); await settle(phone);
+  await phone.screenshot({ path: join(w.out, "subagent-memory-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
-  if (wide) throw new Error("the teammate page scrolls sideways on a phone");
+  if (wide) throw new Error("the subagent page scrolls sideways on a phone");
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
-  const rule = JSON.parse(rows(`SELECT rules_json FROM teammate_tool WHERE teammate = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
+  const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
   // Let the rest of the refunds finish so nothing is left waiting.
   await until("the chair refunds to finish", async () => {
     let left = 0;
     for (const [at] of amounts.entries()) {
       const one = await cardOf(`Broken chair, order ${2204 + at}`);
-      if (one?.question?.mine) await post(`/teammates/questions/${one.question.id}/answer`, one.question.call != null ? { choice: "approve" } : { text: "Yes, refund it in full." });
+      if (one?.question?.mine) await post(`/settings/lead/subagents/questions/${one.question.id}/answer`, one.question.call != null ? { choice: "approve" } : { text: "Yes, refund it in full." });
       if (one?.stage === "rosa") left++;
     }
     return left === 0;
@@ -1455,80 +1502,80 @@ await journey("memory", SCRIPTED, "Teammates remember and learn: Rosa keeps a cu
   return { memory: kept.text, suggestion: suggestion.said, rule };
 });
 
-await journey("rosa", SCRIPTED, "A teammate's routine: added on its page for weekdays, run now, it looks the order up with its tool and its answer reaches its manager (real Claude turn)", [TOOL_CHECK], async () => {
-  const mate = rows("SELECT id FROM teammate WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
+await journey("rosa", SCRIPTED, "A subagent's routine: added on its page for weekdays, run now, it looks the order up with its tool and its answer reaches its manager (real Claude turn)", [TOOL_CHECK], async () => {
+  const mate = rows("SELECT id FROM subagent WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   if (!mate) throw new Error("Rosa is missing");
-  await page.goto(`${base}/teammates/${mate}#desk`);
+  await page.goto(`${base}/settings/lead/subagents/${mate}#desk`);
   const form = page.locator("form.routine-add");
   await form.locator('input[name="schedule"]').fill("weekdays 09:00");
   const request = [/WHERE YOU ARE: the zone “Requests”/, /Title: Look up order 2201/];
   script(
-    { role: "teammate", when: request, unless: [/\d\. store\.lookup_order/], answer: { action: "use_tool", tool: "store.lookup_order", input: { order: "2201" }, reason: "The routine asks for its status." } },
-    { role: "teammate", when: [...request, /\d\. store\.lookup_order/], answer: { action: "route", answer: "Done", text: "Order 2201, a $30 desk lamp, was charged twice: one $30 payment is a duplicate, and it has been refunded.", reason: "Answered from the store." } },
+    { role: "subagent", when: request, unless: [/\d\. store\.lookup_order/], answer: { action: "use_tool", tool: "store.lookup_order", input: { order: "2201" }, reason: "The routine asks for its status." } },
+    { role: "subagent", when: [...request, /\d\. store\.lookup_order/], answer: { action: "route", answer: "Done", text: "Order 2201, a $30 desk lamp, was charged twice: one $30 payment is a duplicate, and it has been refunded.", reason: "Answered from the store." } },
   );
   await form.locator('input[name="text"]').fill("Look up order 2201 in the store and tell me its status in one sentence.");
   await Promise.all([page.waitForNavigation(), form.locator("button").click()]);
   const routine = page.locator("[data-routine]").first();
   if (!/weekdays at 09:00/.test(await routine.innerText())) throw new Error(`the routine reads: ${await routine.innerText()}`);
-  const desk = rows(`SELECT desk_flow FROM teammate WHERE id = ${mate}`)[0]?.desk_flow;
+  const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${mate}`)[0]?.desk_flow;
   if (!desk) throw new Error("Rosa has no desk");
   await Promise.all([page.waitForNavigation(), routine.locator('button:has-text("Run now")').click()]);
   const answer = await until("Rosa's answer to reach her manager", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex'")[0] ?? null, { timeoutMs: 300_000, everyMs: 3000 });
   if (!/^Rosa · Support: Look up order 2201/.test(answer.subject) || !/2201|lamp|refund/i.test(answer.body)) throw new Error(`the answer: ${answer.subject} — ${answer.body}`);
   const card = (await flowView(desk)).cards[0];
   if (card?.stage !== "done") throw new Error(`the routine's card is in ${card?.stage}`);
-  await page.goto(`${base}/teammates/${mate}#desk`); await page.waitForLoadState("load");
+  await page.goto(`${base}/settings/lead/subagents/${mate}#desk`); await page.waitForLoadState("load");
   await page.locator("#desk").scrollIntoViewIfNeeded();
-  await shot("teammate-desk");
+  await shot("subagent-desk");
   const phone = await alexPhone("light");
-  await phone.goto(`${base}/teammates/${mate}#desk`); await phone.waitForLoadState("load"); await settle(phone);
-  await phone.screenshot({ path: join(w.out, "teammate-desk-phone.png") });
+  await phone.goto(`${base}/settings/lead/subagents/${mate}#desk`); await phone.waitForLoadState("load"); await settle(phone);
+  await phone.screenshot({ path: join(w.out, "subagent-desk-phone.png") });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
-  if (wide) throw new Error("the teammate page scrolls sideways on a phone");
+  if (wide) throw new Error("the subagent page scrolls sideways on a phone");
   return { answer: answer.body.slice(0, 160) };
 });
 
-await journey("rosa", SCRIPTED, "A teammate's week and undo: its page shows the week with what its turns cost and what you overrode; name an undo for refunds, undo Rosa's $30 refund from its card, and send the week's report", [TOOL_CHECK], async () => {
-  const mate = rows("SELECT id FROM teammate WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
+await journey("rosa", SCRIPTED, "A subagent's week and undo: its page shows the week with what its turns cost and what you overrode; name an undo for refunds, undo Rosa's $30 refund from its card, and send the week's report", [TOOL_CHECK], async () => {
+  const mate = rows("SELECT id FROM subagent WHERE handle = 'rosa' AND state = 'active'")[0]?.id;
   const flowId = rows("SELECT id FROM flow WHERE name = 'Refund desk'")[0]?.id;
   if (!mate || !flowId) throw new Error("Rosa or her flow is missing");
-  if (rows(`SELECT COUNT(*) AS n FROM teammate_turn WHERE teammate = ${mate} AND cost_usd IS NOT NULL`)[0]?.n < 1) throw new Error("no turn kept what it cost");
+  if (rows(`SELECT COUNT(*) AS n FROM subagent_turn WHERE subagent = ${mate} AND cost_usd IS NOT NULL`)[0]?.n < 1) throw new Error("no turn kept what it cost");
   // Under Tools → Undo: cancel_refund undoes refund_order.
-  await page.goto(`${base}/teammates/${mate}#tools`);
+  await page.goto(`${base}/settings/lead/subagents/${mate}#tools`);
   const store = page.locator('[data-tool-grant="store"]');
   await store.locator("details.tool-undo summary").click();
   await store.locator('select[name="undo.refund_order"]').selectOption("cancel_refund");
   await Promise.all([page.waitForNavigation(), store.locator('button:has-text("Save rules")').click()]);
-  if (JSON.parse(rows(`SELECT rules_json FROM teammate_tool WHERE teammate = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order?.undo !== "cancel_refund") throw new Error("the undo wasn't saved");
+  if (JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order?.undo !== "cancel_refund") throw new Error("the undo wasn't saved");
   // On the $30 card's receipts: Undo with cancel_refund, made as you with the same input.
   const cardId = (await flowView(flowId)).cards.find(one => one.title.startsWith("Charged twice"))?.id;
   await page.goto(`${base}/flows/${flowId}?card=${cardId}`); await page.waitForSelector(`[data-flow-card-panel="${cardId}"]`);
-  await page.evaluate(() => { const one = document.querySelector("[data-teammate-calls]"); if (one) one.open = true; });
-  await page.locator("[data-teammate-undo]").first().click();
+  await page.evaluate(() => { const one = document.querySelector("[data-subagent-calls]"); if (one) one.open = true; });
+  await page.locator("[data-subagent-undo]").first().click();
   const log = join(w.root, "shop-calls.log");
   await until("the refund to be cancelled", async () => readFileSync(log, "utf8").includes('"cancel_refund"'), { timeoutMs: 30_000, everyMs: 500 });
   const cancelled = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)).find(one => one.name === "cancel_refund");
   if (String(cancelled.arguments.order).replace(/^#/, "") !== "2201" || Number(cancelled.arguments.amount) !== 30) throw new Error(`the undo call: ${JSON.stringify(cancelled)}`);
-  if (rows("SELECT undone_by FROM teammate_call WHERE action = 'refund_order' AND undone_by IS NOT NULL").length !== 1) throw new Error("the refund isn't marked undone");
+  if (rows("SELECT undone_by FROM subagent_call WHERE action = 'refund_order' AND undone_by IS NOT NULL").length !== 1) throw new Error("the refund isn't marked undone");
   await page.reload(); await page.waitForSelector(`[data-flow-card-panel="${cardId}"]`);
-  await page.evaluate(() => { const one = document.querySelector("[data-teammate-calls]"); if (one) { one.open = true; one.scrollIntoView({ block: "center" }); } });
+  await page.evaluate(() => { const one = document.querySelector("[data-subagent-calls]"); if (one) { one.open = true; one.scrollIntoView({ block: "center" }); } });
   await settle(page);
-  await shot("teammate-undone");
+  await shot("subagent-undone");
   // Its page: the week, and the report sent now.
-  await page.goto(`${base}/teammates/${mate}#week`);
+  await page.goto(`${base}/settings/lead/subagents/${mate}#week`);
   const week = await page.locator("#week").innerText();
   if (!/Tool calls: \d+ made/.test(week) || !/at API prices/.test(week) || !/undone/.test(week)) throw new Error(`the week reads: ${week.slice(0, 400)}`);
   await Promise.all([page.waitForNavigation(), page.click('#week button:has-text("Send the week\'s report")')]);
   const report = rows("SELECT subject, body FROM notification WHERE kind = 'teammate-weekly' AND recipient = 'alex'")[0];
   if (report?.subject !== "Rosa · Support: the week") throw new Error(`the report: ${JSON.stringify(report)}`);
   await page.locator("#week").scrollIntoViewIfNeeded(); await settle(page);
-  await shot("teammate-week");
+  await shot("subagent-week");
   return { report: report.body.slice(0, 300) };
 });
 
 await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)", [], async () => {
-  script({ role: "teammate", when: [/WHERE YOU ARE: the zone “Maya answers”/, /Title: Where's my order/], answer: { action: "route", answer: "Reply", text: "Hi Priya, good news: order #1042 shipped on the 15th with UPS and is out for delivery tomorrow. Thanks for your patience! — Maya", reason: "The order's status is in the message." } });
+  script({ role: "subagent", when: [/WHERE YOU ARE: the zone “Maya answers”/, /Title: Where's my order/], answer: { action: "route", answer: "Reply", text: "Hi Priya, good news: order #1042 shipped on the 15th with UPS and is out for delivery tomorrow. Thanks for your patience! — Maya", reason: "The order's status is in the message." } });
   await page.goto(`${base}/kits`);
   await page.waitForSelector('[data-kit="support-desk"]');
   if ((await page.locator("[data-kit]").count()) !== 4) throw new Error("the gallery doesn't show the four kits");
@@ -1543,11 +1590,11 @@ await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up May
   await Promise.all([page.waitForNavigation(), page.locator('[data-kit="support-desk"] button:has-text("Set it up")').click()]);
   if (!/\/kits\/support-desk/.test(page.url())) throw new Error(`setting it up went to ${page.url()}`);
   const done = async id => (await page.locator(`[data-step="${id}"]`).getAttribute("data-done")) === "true";
-  if (!(await done("teammate")) || !(await done("flow")) || await done("sample")) throw new Error("the checklist doesn't read teammate and flow done, sample to try");
+  if (!(await done("subagent")) || !(await done("flow")) || await done("sample")) throw new Error("the checklist doesn't read subagent and flow done, sample to try");
   if ((await page.locator('[data-step="tool-stripe"] a:has-text("Connect")').count()) !== 1) throw new Error("the checklist doesn't offer to connect Stripe");
   await shot("kit-checklist");
   const flow = rows("SELECT id FROM flow WHERE name = 'Support desk' AND state = 'active'")[0]?.id;
-  if (!flow || rows("SELECT 1 FROM teammate WHERE handle = 'maya' AND state = 'active'").length !== 1) throw new Error("the kit didn't make Maya and the Support desk flow");
+  if (!flow || rows("SELECT 1 FROM subagent WHERE handle = 'maya' AND state = 'active'").length !== 1) throw new Error("the kit didn't make Maya and the Support desk flow");
   // Try it: a sample customer email, and Maya drafts the reply you check.
   await Promise.all([page.waitForNavigation(), page.locator('[data-step="sample"] button:has-text("Try it")').click()]);
   if (!new RegExp(`/flows/${flow}`).test(page.url())) throw new Error(`Try it went to ${page.url()}`);
@@ -1602,7 +1649,7 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     await shot("kit-connected");
     const tool = rows("SELECT spec_json FROM project_tool WHERE name = 'stripe'")[0];
     if (!tool || JSON.parse(tool.spec_json).url !== `${standBase}/mcp`) throw new Error(`the tool: ${JSON.stringify(tool)}`);
-    if (rows("SELECT 1 FROM teammate_tool t JOIN teammate m ON m.id = t.teammate WHERE m.handle = 'maya' AND t.tool = 'stripe'").length !== 1) throw new Error("Maya wasn't given Stripe");
+    if (rows("SELECT 1 FROM subagent_tool t JOIN subagent m ON m.id = t.subagent WHERE m.handle = 'maya' AND t.tool = 'stripe'").length !== 1) throw new Error("Maya wasn't given Stripe");
     const first = JSON.parse(readFileSync(secrets, "utf8"));
     if (!stand.live.has(first.OAUTH_ACCESS_TOKEN) || !first.OAUTH_REFRESH_TOKEN) throw new Error("the sign-in isn't in the tool's secrets file");
     for (const file of [w.db, `${w.db}-wal`].filter(existsSync)) if (readFileSync(file).includes(first.OAUTH_REFRESH_TOKEN)) throw new Error(`the sign-in reached ${file}`);
@@ -1671,7 +1718,7 @@ await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on i
   return { account: "priya" };
 });
 
-await journey("flows", SCRIPTED, "Live canvas: a teammate sees who's here and a card move without reloading", ["Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret"], async () => {
+await journey("flows", SCRIPTED, "Live canvas: someone else sees who's here and a card move without reloading", ["Code steps: a Python file and a Node script get the card, pass on what they print, pick the next zone, and get a secret"], async () => {
   const sam = await signIn("sam");
   try {
     await sam.goto(`${base}/flows/${codeFlow}`); await sam.waitForSelector("[data-zone]");

@@ -67,9 +67,9 @@ import { ABOUT_YOU_LINE_MAX,ABOUT_YOU_MAX_LINES } from "../lead-about.js";
 import { LEAD_CONTEXT_CSS } from '../lead-context.js';
 import { LEAD_NAME_MAX,LEAD_PERSONA_MAX,type LeadIdentity } from "../lead-identity.js";
 import { LIMITS_CSS,limitsHtml } from "../limits-ui.js";
-import { PROPOSAL_WAIT_REASON,proposalActGate } from "../mate-doors.js";
-import type { MateLiveStep } from "../mate-progress.js";
-import { MATE_MESSAGE_MAX_CHARS } from "../mate.js";
+import { PROPOSAL_WAIT_REASON,proposalActGate } from "../lead-doors.js";
+import type { LeadLiveStep } from "../lead-progress.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "../lead.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "../mobile-viewport.js";
 import { type VersionRunner } from "../model-catalog.js";
 import { MODELS_CSS } from "../models-ui.js";
@@ -138,9 +138,9 @@ import { SKILLS_CSS } from "../skills-ui.js";
 import { SPEND_CSS } from "../spend-ui.js";
 import { SSO_CSS } from "../sso-ui.js";
 import { STORAGE_CSS } from "../storage-ui.js";
-import type { ChatConfig,ChatProviderId,ChatSnapshot,ChatTurn,CoordinatorProposal,DirectChatProviderId,MateMessage,MateProposal,MateSession,MateTurn,PlanRevisionKind,PlanRevisionStatus,PublicationGrant,PushSubscription,RepairChainRow,ReviewRetryState,RevisionLineage,SteerNote,SubscriptionChatProviderId,TaskFamily } from "../store.js";
+import type { ChatConfig,ChatProviderId,ChatSnapshot,ChatTurn,CoordinatorProposal,DirectChatProviderId,LeadMessage,LeadProposal,LeadSession,LeadTurn,PlanRevisionKind,PlanRevisionStatus,PublicationGrant,PushSubscription,RepairChainRow,ReviewRetryState,RevisionLineage,SteerNote,SubscriptionChatProviderId,TaskFamily } from "../store.js";
 import {
-MATE_ASK_OTHER,
+LEAD_ASK_OTHER,
 type Artifact,
 type Capability,
 type CheckProgress,
@@ -149,7 +149,7 @@ type DiffComment,
 type ExternalMirror,
 type Hold,
 type Incident,
-type MateAsk,
+type LeadAsk,
 type Publication,
 type ResultScreenshots,
 type Run,
@@ -159,14 +159,14 @@ type TaskState,
 type WorktreeRow,
 } from "../store.js";
 import { styleAsset } from "../style-asset.js";
-import type { SubscriptionMateRunner } from "../subscription-chat.js";
+import type { SubscriptionLeadRunner } from "../subscription-chat.js";
 import { runCostWords,spendLine,tally } from "../summary.js";
 import { scheduleEditorHtml,scheduleEditorScript } from "../task-composer.js";
 import { type TaskControlView } from "../task-control.js";
 import { assignmentStageOf,demoChecksOf,pullRequestFactOf,requirementsOf,requirementWordOf,stageOfCode,stageOfDispatch,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,TASK_STATUS_CSS,taskStatusOf,type PullRequestFact,type TaskStatus } from '../task-status.js';
 import type { TeamChatProviderResolver } from '../team-chat-authorization.js';
 import type { TeamSnapshot } from '../team-contract.js';
-import { TEAMMATE_CSS } from "../teammates-ui.js";
+import { SUBAGENT_CSS } from "../subagents-ui.js";
 import { redactToken,TOKEN_ENV,type TokenSource } from "../telegram.js";
 import { TEMPLATES } from "../templates.js";
 import { UPDATES_CSS } from "../toolroll-update-ui.js";
@@ -308,7 +308,7 @@ export type ServeOptions = {
   chatFetcher?: typeof fetch;
   /** Subscription-backed mate transport; injected in tests so no real
    * Codex or Claude membership turn is consumed. */
-  subscriptionChatRunner?: SubscriptionMateRunner;
+  subscriptionChatRunner?: SubscriptionLeadRunner;
   /** Tests: stands in for `codex mcp list --json` in the project (the Tools page's "Found on this computer"). */
   codexToolList?: (cwd: string) => Promise<string | null>;
   /** Tests: the home whose ~/.toolroll (or older ~/.standing-orders) tool-secrets and ~/.claude.json the Tools page uses. */
@@ -516,7 +516,7 @@ export class PersistentSessions extends Map<string, Session> {
  * closeCoding starts the coding shutdown on its own, ahead of the rest of a stop; close() awaits the same promise. */
 export type DecisionServer = Server & { mintSignInLink(account: string): string | null; closeCoding(): Promise<void> };
 
-/** How long a stop waits for teammates and the lead's follow pass before closing anyway. */
+/** How long a stop waits for subagents and the lead's follow pass before closing anyway. */
 export const SHUTDOWN_WAIT_MS = 5_000;
 
 // ---- path plumbing ---------------------------------------------------------
@@ -3629,7 +3629,7 @@ ${THEME_DARK}
     padding: .75rem .9rem; border: 1px solid var(--border);
     border-radius: calc(var(--radius) - 2px); background: var(--card); font-size: .8125rem; min-width: 0;
   }
-  /* The mate's unified workspace: a glass project navigator beside one
+  /* The lead's unified workspace: a glass project navigator beside one
      long-lived conversation. The content stays calm and legible; the
      atmosphere belongs to the shell and edges, never behind the prose. */
   main:has(.chat-workspace) { max-width: 86rem; padding-top: 1.5rem; }
@@ -4491,7 +4491,7 @@ export const INBOX_TABS_CSS = '.inbox-tabs{display:inline-flex;gap:2px;max-width
   '.inbox-ask{margin:18px 0 0}.inbox-ask>h2{display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:15px;font-weight:600}.inbox-ask>h2 .count{font:500 12px var(--so-mono,ui-monospace,monospace);font-variant-numeric:tabular-nums;color:var(--so-muted)}.inbox-ask h3{font-size:13px;font-weight:600;margin:12px 0 4px}' +
   '.inbox-unread{display:none;position:absolute;top:4px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--so-signal)}' +
   '@media (max-width:760px){.inbox-tabs{display:flex;width:100%}.inbox-tabs a{flex:1;justify-content:center;min-height:44px;padding:0 6px}.inbox-unread{display:block}}';
-export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + TEAMMATE_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
+export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + SUBAGENT_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
 
 /** Everything the sidebar needs to draw itself for one request. */
 export type Chrome = {
@@ -6398,7 +6398,7 @@ export function chatFleetOverview(
 }
 
 /**
- * The mate's project rail: one bounded pulse per admitted project, plus
+ * The lead's project rail: one bounded pulse per admitted project, plus
  * two roads that preserve the plane's contracts. "ask" sends the stable
  * rN alias the model already sees; "board" uses the existing POST switch
  * instead of smuggling a project change through a GET parameter.
@@ -6446,7 +6446,7 @@ export function chatProjectRail(projects: readonly ChatProjectPulse[], csrf: str
 }
 
 /** Spend-authorized one-click questions: ordinary /chat posts, not a new door. */
-export function matePromptStarters(csrf: string, focus: TaskChatFocus | null = null): string {
+export function leadPromptStarters(csrf: string, focus: TaskChatFocus | null = null): string {
   const prompts = focus === null
     ? [
         ["brief me", "Brief me on what needs my attention, what is building, and the highest-leverage next action across every project."],
@@ -6579,6 +6579,8 @@ export type LeadFormFacts = {
 export function leadSettingsHtml(data: { config: import("../store.js").ChatConfig | null; facts: LeadFormFacts; words: string | null; signedIn: string | null; command: string; said: string | null;
   saved?: boolean; identity?: LeadIdentity;
   about?: string[]; aboutSaved?: boolean;
+  /** D5: the lead's subagents in the projects this person can use: name and role, project, and whether it's paused. */
+  subagents?: { id: number; label: string; project: string; paused: boolean }[];
   promises?: { id: number; what: string; when: string; until: string }[] }): string {
   const { config, facts } = data;
   const hidden = `<input type="hidden" name="csrf" value="${escape(facts.csrf)}"><input type="hidden" name="return" value="/settings/lead">`;
@@ -6611,6 +6613,11 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
     (data.promises ?? []).length === 0 ? "" : `<section class="card lead-promises" data-lead-promises><h2>Promises</h2><ul class="lead-promise-list">${data.promises!.map(one =>
       `<li data-promise="${one.id}"><p>${escape(one.what)}</p><p class="meta">${escape(one.when.charAt(0).toUpperCase() + one.when.slice(1))} · <span class="nowrap">until ${escape(new Date(one.until).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }))}</span></p>` +
       `<form method="post" action="/settings/lead/promise/cancel" class="inline">${hidden}<input type="hidden" name="promise" value="${one.id}"><button type="submit" class="secondary">Cancel</button></form></li>`).join("")}</ul></section>`,
+    // D5: the lead's subagents, one line each; everything else about one is on its own page.
+    data.subagents === undefined ? "" : `<section class="card lead-subagents" id="subagents" data-lead-subagents><h2>Subagents</h2>` +
+      (data.subagents.length === 0 ? `<p class="meta">None yet. Your lead can ask one for help once it's here.</p>`
+        : `<ul class="lead-subagent-list">${data.subagents.map(one => `<li data-subagent="${one.id}"><a href="/settings/lead/subagents/${one.id}">${escape(one.label)}</a><span class="meta">${escape(one.project)}${one.paused ? " · Paused" : ""}</span></li>`).join("")}</ul>`) +
+      `<p><a class="button-link" href="/settings/lead/subagents?add=1#add" data-add-subagent>Add subagent</a></p></section>`,
     `<details class="lead-advanced" data-lead-advanced><summary>Advanced</summary>`,
     leadConfigForm(config, facts),
     config === null ? "" : `<form method="post" action="/chat/config" class="inline">${hidden}<input type="hidden" name="off" value="1">` +
@@ -6695,8 +6702,8 @@ export function chatPage(chrome: Chrome, data: {
   liveModels?: { value: string; label: string }[];
   csrf: string;
   problem: string | null;
-  /** The card that mints a mate session (mate arc §5), approvers only. */
-  mateMint?: string;
+  /** The card that mints a lead session (mate arc §5), approvers only. */
+  leadMint?: string;
   /** Pending coordinator proposals as cards (mate arc v3), approvers only. */
   coordinatorProposals?: string;
   /** The task's result detail (package 3), when the URL opened one. */
@@ -6740,7 +6747,7 @@ export function chatPage(chrome: Chrome, data: {
   if (!data.canManage) {
     parts.push(`<div class="card chat-readonly"><strong>Read-only view</strong><p class="meta">An approver can start the unified conversation and confirm its proposed actions. You can still open every live card and project board here.</p></div>`);
   }
-  if (data.canManage && data.mateMint !== undefined) parts.push(data.mateMint);
+  if (data.canManage && data.leadMint !== undefined) parts.push(data.leadMint);
   if (data.canManage && data.coordinatorProposals !== undefined) parts.push(data.coordinatorProposals);
   parts.push(
     data.focusTask === null && !data.catchUp ? `<details class="chat-fleet-context">${chatOverviewSummaryHtml(data.projects, data.fleetSnapshot?.attentionCount)}${chatFleetOverview(data.fleetSnapshot, data.projects, data.csrf, false)}</details>` : "",
@@ -6834,7 +6841,7 @@ export function chatAckPage(chrome: Chrome, turn: ChatTurn, nonce: string, csrf:
 }
 
 /** The card that starts a conversation: the one password ceremony (mate arc §1). */
-export function mateMintCard(
+export function leadMintCard(
   csrf: string,
   enabled: { billing: "metered" | "subscription"; config: { provider: ChatProviderId; weeklyCeilingMicrousd: number } },
   returnTo = "/chat",
@@ -6871,13 +6878,13 @@ export function decisionsFor(store: Store, proposals: readonly { kind: string; p
 
 export type ProposalCardView = {
   id: number;
-  kind: MateProposal["kind"];
+  kind: LeadProposal["kind"];
   payload: Record<string, unknown>;
   state: string;
   outcome: Record<string, unknown> | null;
-  /** Who proposed: the mate, or a coordinator by name. */
+  /** Who proposed: the lead, or a coordinator by name. */
   by: { mate: true } | { mate: false; name: string; ago: string };
-  /** Where confirm/dismiss post: `/chat/proposal` for the mate's, `/proposals` for a coordinator's. */
+  /** Where confirm/dismiss post: `/chat/proposal` for the lead's, `/proposals` for a coordinator's. */
   actionBase: string;
 };
 
@@ -6899,7 +6906,7 @@ export function proposalCardParts(view: ProposalCardView, csrf: string, inert: b
   const text = (key: string): string => (typeof payload[key] === "string" ? (payload[key] as string) : "");
   const task = text("task");
   const repoId = text("repoId");
-  const presentations: Record<MateProposal["kind"], { label: string; action: string; icon: string }> = {
+  const presentations: Record<LeadProposal["kind"], { label: string; action: string; icon: string }> = {
     task: { label: payload["report"] === true ? "Scout investigation" : "New task", action: "file task", icon: `<path d="M12 5v14"/><path d="M5 12h14"/>` },
     next: { label: "Queue priority", action: "move to front", icon: `<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>` },
     reserve: { label: "Worker assignment", action: payload["worker"] === null ? "release" : "reserve", icon: `<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>` },
@@ -7077,7 +7084,7 @@ export function proposalCardParts(view: ProposalCardView, csrf: string, inert: b
       (decision === null ? "" : `<p class="proposal-summary">${escape(decision.question)}</p>`) +
       options +
       `<div class="proposal-rationale"><span class="eyebrow">proposed answer</span><strong>${escape(text("optionLabel"))}</strong><p>${escape(text("rationale"))}</p></div>` +
-      `<p class="meta proposal-disclosure">${payload["readConsequences"] === true ? `${view.by.mate ? "The mate" : "The coordinator"} read every consequence but not the builder's recommendation` : `${view.by.mate ? "The mate" : "The coordinator"} did not read the consequences`}. You see both here${decision !== null && decision.state !== "open" ? " · this decision is no longer open" : ""}.</p>`;
+      `<p class="meta proposal-disclosure">${payload["readConsequences"] === true ? `${view.by.mate ? "The lead" : "The coordinator"} read every consequence but not the builder's recommendation` : `${view.by.mate ? "The lead" : "The coordinator"} did not read the consequences`}. You see both here${decision !== null && decision.state !== "open" ? " · this decision is no longer open" : ""}.</p>`;
   } else {
     what = `<h3>Cancel <a href="${taskHref(task)}">${escape(task)}</a></h3><p class="proposal-summary">${escape(text("reason"))}</p>` + facts(["project", `<span class="mono">${escape(repoId)}</span>`]);
   }
@@ -7159,19 +7166,19 @@ export function proposalCardParts(view: ProposalCardView, csrf: string, inert: b
   return { html, card };
 }
 
-export function mateProposalCard(proposal: MateProposal, csrf: string, inert: boolean, decision: Decision | null, returnTo: string | null = null): string {
-  return mateProposalCardParts(proposal, csrf, inert, decision, returnTo).html;
+export function leadProposalCard(proposal: LeadProposal, csrf: string, inert: boolean, decision: Decision | null, returnTo: string | null = null): string {
+  return leadProposalCardParts(proposal, csrf, inert, decision, returnTo).html;
 }
-export function mateProposalCardParts(proposal: MateProposal, csrf: string, inert: boolean, decision: Decision | null, returnTo: string | null = null): { html: string; card: BrowserActionCard } {
+export function leadProposalCardParts(proposal: LeadProposal, csrf: string, inert: boolean, decision: Decision | null, returnTo: string | null = null): { html: string; card: BrowserActionCard } {
   return proposalCardParts({ id: proposal.id, kind: proposal.kind, payload: proposal.payload, state: proposal.state, outcome: proposal.outcome, by: { mate: true }, actionBase: "/chat/proposal" }, csrf, inert, decision, returnTo);
 }
 
 /** Review and inline team cards share the same server-decided controls and reasons. */
-export function teamProposalCardParts(store: Store, actor: { name: string; generation: number }, proposal: MateProposal, snapshot: TeamSnapshot, csrf: string, decision: Decision | null, now: Date, provider: TeamChatProviderResolver): { html: string; card: BrowserActionCard } {
+export function teamProposalCardParts(store: Store, actor: { name: string; generation: number }, proposal: LeadProposal, snapshot: TeamSnapshot, csrf: string, decision: Decision | null, now: Date, provider: TeamChatProviderResolver): { html: string; card: BrowserActionCard } {
   const gate = proposalActGate(store, actor, proposal.thread, now, provider);
   const reason = !gate.ok ? gate.said : null;
   const back = '/chat?conversation=' + encodeURIComponent(snapshot.selected!.id);
-  const parts = mateProposalCardParts(proposal, csrf, reason !== null, decision, back);
+  const parts = leadProposalCardParts(proposal, csrf, reason !== null, decision, back);
   if (reason !== null && reason !== PROPOSAL_WAIT_REASON && proposal.state === 'pending') {
     parts.html = parts.html.replace(PROPOSAL_WAIT_REASON, reason);
     parts.card = { ...parts.card, note: reason };
@@ -7208,12 +7215,12 @@ export function coordinatorProposalsSection(proposals: readonly CoordinatorPropo
 }
 
 /** The lead thread a change in reachable projects closed (mate arc ruling 9): its saved words and card outcomes, never continued. */
-export type ReplacedThread = { messages: MateMessage[]; proposals: MateProposal[]; decisions: Map<number, Decision> };
+export type ReplacedThread = { messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision> };
 export const REPLACED_THREAD_DIVIDER = "New conversation — the projects I can reach changed";
 
 /** The replaced thread as the React conversation renders it: words and card outcomes, no buttons. */
 export function replacedBrowserMessages(previous: ReplacedThread, csrf: string): import("../browser-workspace.js").BrowserMessage[] {
-  return mateBrowserMessages({ ...previous, pending: null, ask: null, asks: new Map() }, csrf, null).map(message => ({
+  return leadBrowserMessages({ ...previous, pending: null, ask: null, asks: new Map() }, csrf, null).map(message => ({
     ...message, cardsHtml: "",
     cards: (message.cards ?? []).map(card => ({ ...card, primary: null, dismissable: false })),
   }));
@@ -7229,44 +7236,44 @@ export function replacedThreadHtml(previous: ReplacedThread | null | undefined):
     `<p class="chat-previous-divider" role="separator" data-thread-divider>${escape(REPLACED_THREAD_DIVIDER)}</p></section>`;
 }
 
-export type MateThreadRows = {
+export type LeadThreadRows = {
   /** The lead thread a change in reachable projects replaced; shown only. */
   previous?: ReplacedThread | null;
-  messages: MateMessage[];
-  proposals: MateProposal[];
+  messages: LeadMessage[];
+  proposals: LeadProposal[];
   /** The decisions the answer cards name. */
   decisions: Map<number, Decision>;
   coordinatorProposals: CoordinatorProposal[];
-  pending: MateTurn | null;
-  recent: MateTurn[];
+  pending: LeadTurn | null;
+  recent: LeadTurn[];
   /** Optional task lens into the same unified thread. */
   focusTask: TaskChatFocus | null;
   /** The lead's open question to this reader, drawn as buttons under its reply. */
-  ask?: MateAsk | null;
+  ask?: LeadAsk | null;
   /** Every question the lead asked in these messages, by turn: answered ones show their words without buttons. */
-  asks?: Map<number, MateAsk>;
+  asks?: Map<number, LeadAsk>;
 };
 
 /** The lead's question as buttons: each option sends itself as the next message (the same POST as a typed one);
  * "Something else" moves to the composer. Nothing shows while a reply is running. */
-export function mateAskHtml(ask: MateAsk, csrf: string, target: { task: string | null; project: string | null }, composer: string, open = true): string {
+export function leadAskHtml(ask: LeadAsk, csrf: string, target: { task: string | null; project: string | null }, composer: string, open = true): string {
   if (!open) return `<div class="so-owner-ask" data-ask="${ask.turn}"><p class="so-owner-ask-question"><strong>${escape(ask.question)}</strong></p></div>`;
   const hidden = `<input type="hidden" name="csrf" value="${escape(csrf)}">` +
     (target.task !== null ? `<input type="hidden" name="task" value="${escape(target.task)}">` : target.project !== null ? `<input type="hidden" name="project" value="${escape(target.project)}">` : "");
   return `<div class="so-owner-ask" data-ask="${ask.turn}"><p class="so-owner-ask-question"><strong>${escape(ask.question)}</strong></p>` +
     `<div class="so-owner-ask-options" role="group" aria-label="Answer options">` +
     ask.options.map(option => `<form method="post" action="/chat" class="inline">${hidden}<button type="submit" name="message" value="${escape(option)}" class="so-suggestion quiet">${escape(option)}</button></form>`).join("") +
-    `<label for="${escape(composer)}" class="so-suggestion so-owner-ask-other">${escape(MATE_ASK_OTHER)}</label></div></div>`;
+    `<label for="${escape(composer)}" class="so-suggestion so-owner-ask-other">${escape(LEAD_ASK_OTHER)}</label></div></div>`;
 }
 
 /** The thread's messages as the React conversation renders them, each
  * with the proposal cards its turn produced; `back` is where a card's
  * confirm or dismiss returns. */
-export function mateBrowserMessages(rows: Pick<MateThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "asks">, csrf: string, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
+export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "asks">, csrf: string, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
   const open = rows.pending === null ? rows.ask?.turn ?? null : null;
   const asked = (turn: number | null): string => {
     const ask = turn === null ? undefined : rows.asks?.get(turn);
-    return ask === undefined ? "" : mateAskHtml(ask, csrf, target, target.task === null ? "lead-message" : "task-message", ask.turn === open);
+    return ask === undefined ? "" : leadAskHtml(ask, csrf, target, target.task === null ? "lead-message" : "task-message", ask.turn === open);
   };
   // The owner's message each reply answers: when it asked for ids, the reply keeps them.
   const askedBy = new Map<number, string>();
@@ -7278,7 +7285,7 @@ export function mateBrowserMessages(rows: Pick<MateThreadRows, "messages" | "pro
     ...(() => {
       // Under the lead's message only, as the server-rendered thread does: the person's message shares the turn.
       const parts = message.turn === null || message.role === 'operator' ? [] : rows.proposals.filter(one => one.turn === message.turn)
-        .map(one => mateProposalCardParts(one, csrf, rows.pending !== null, rows.decisions.get(typeof one.payload['decision'] === 'number' ? one.payload['decision'] : -1) ?? null, back));
+        .map(one => leadProposalCardParts(one, csrf, rows.pending !== null, rows.decisions.get(typeof one.payload['decision'] === 'number' ? one.payload['decision'] : -1) ?? null, back));
       return { cardsHtml: parts.map(one => one.html).join(''), cards: parts.map(one => one.card) };
     })(),
   }));
@@ -7290,7 +7297,7 @@ export function mateBrowserMessages(rows: Pick<MateThreadRows, "messages" | "pro
  * decisions the cards name, and the task lens's own facts — and nothing
  * that merely ticks: no relative age, no freshly minted nonce, no csrf.
  * Equal versions mean equal fragments; the poll fetches nothing else. */
-export function mateChatVersion(rows: MateThreadRows): string {
+export function leadChatVersion(rows: LeadThreadRows): string {
   const focus = rows.focusTask;
   const facts = [
     rows.messages.map(one => [one.id, one.role, one.turn]),
@@ -7326,11 +7333,11 @@ export function mateChatVersion(rows: MateThreadRows): string {
  * populated thread. Every child carries a stable `data-key` so the page
  * keeps an unchanged node (its open disclosures, its focus) and replaces
  * only what the server rendered differently. The composer is never here. */
-export function mateThreadHtml(data: MateThreadRows & { csrf: string; now: Date; problem: string | null; chatProject?: string | null }): string {
+export function leadThreadHtml(data: LeadThreadRows & { csrf: string; now: Date; problem: string | null; chatProject?: string | null }): string {
   const returnTo = data.focusTask === null ? "/chat" : taskChatHref(data.focusTask.id);
   const parts: string[] = [];
   if (data.problem !== null) parts.push(`<div class="problem" data-key="said">${escape(data.problem)}</div>`);
-  const byTurn = new Map<number, MateProposal[]>();
+  const byTurn = new Map<number, LeadProposal[]>();
   for (const one of data.proposals) {
     const list = byTurn.get(one.turn) ?? [];
     list.push(one);
@@ -7361,9 +7368,9 @@ export function mateThreadHtml(data: MateThreadRows & { csrf: string; now: Date;
         renderChatText(message.text, asked) +
         (() => {
           const ask = message.turn === null ? undefined : data.asks?.get(message.turn);
-          return ask === undefined ? "" : mateAskHtml(ask, data.csrf, { task: data.focusTask?.id ?? null, project: data.chatProject ?? null }, "chat-message", data.pending === null && data.ask?.turn === ask.turn);
+          return ask === undefined ? "" : leadAskHtml(ask, data.csrf, { task: data.focusTask?.id ?? null, project: data.chatProject ?? null }, "chat-message", data.pending === null && data.ask?.turn === ask.turn);
         })() +
-        cards.map(one => mateProposalCard(one, data.csrf, inert, data.decisions.get(typeof one.payload["decision"] === "number" ? one.payload["decision"] : -1) ?? null, data.focusTask === null ? null : returnTo)).join("") +
+        cards.map(one => leadProposalCard(one, data.csrf, inert, data.decisions.get(typeof one.payload["decision"] === "number" ? one.payload["decision"] : -1) ?? null, data.focusTask === null ? null : returnTo)).join("") +
         `<div class="chat-message-foot">${chatActivity(message.activity)}<time datetime="${escape(message.createdAt)}">${escape(relativeAge(message.createdAt, data.now))}</time></div>` +
         `</div>`,
     );
@@ -7383,12 +7390,12 @@ export function mateThreadHtml(data: MateThreadRows & { csrf: string; now: Date;
 
 /** What follows the composer (package 2): the starters of an EMPTY thread
  * sit under the box; once the first message lands they move above it. */
-export function mateAfterComposerHtml(data: { messages: MateMessage[]; pending: MateTurn | null; focusTask: TaskChatFocus | null; csrf: string }): string {
-  return `<div id="chat-after-composer" data-chat-region="after">${data.messages.length === 0 && data.pending === null ? matePromptStarters(data.csrf, data.focusTask) : ""}</div>`;
+export function leadAfterComposerHtml(data: { messages: LeadMessage[]; pending: LeadTurn | null; focusTask: TaskChatFocus | null; csrf: string }): string {
+  return `<div id="chat-after-composer" data-chat-region="after">${data.messages.length === 0 && data.pending === null ? leadPromptStarters(data.csrf, data.focusTask) : ""}</div>`;
 }
 
-export function matePage(chrome: Chrome, data: MateThreadRows & {
-  session: MateSession;
+export function leadPage(chrome: Chrome, data: LeadThreadRows & {
+  session: LeadSession;
   /** A project's own thread (v77); null for the lead conversation or a task. */
   chatProject?: string | null;
   follow?: { enabled: boolean; detail: string };
@@ -7446,19 +7453,19 @@ export function matePage(chrome: Chrome, data: MateThreadRows & {
   const lastMessage = data.messages.at(-1);
   const latestReply = data.pending === null && lastMessage?.role === "assistant" ? lastMessage.id : null;
   conversation.push(replacedThreadHtml(data.previous));
-  conversation.push(mateThreadHtml({ ...data, problem: null, chatProject }));
+  conversation.push(leadThreadHtml({ ...data, problem: null, chatProject }));
   conversation.push(
     // The New update action (package 2): hidden until a live update lands
     // while the reader is above the latest message; a real button, so the
     // keyboard reaches it. Only this act moves the reader.
     `<div class="chat-new-update-holder"><button type="button" class="chat-new-update" id="chat-new-update" hidden>New update ↓</button></div>`,
-    `<form method="post" action="/chat" class="card composer" id="${latestReply === null && data.pending === null ? "latest" : "chat-composer"}" aria-label="message the mate" data-chat-session="${data.session.id}" data-chat-task="${escape(data.focusTask?.id ?? "")}" data-chat-user="${escape(data.session.approver)}" data-chat-busy="${data.pending === null ? "0" : "1"}" data-chat-version="${mateChatVersion(data)}" data-chat-approval="${escape(data.focusTask?.approval?.digest ?? "")}">`,
+    `<form method="post" action="/chat" class="card composer" id="${latestReply === null && data.pending === null ? "latest" : "chat-composer"}" aria-label="message the lead" data-chat-session="${data.session.id}" data-chat-task="${escape(data.focusTask?.id ?? "")}" data-chat-user="${escape(data.session.approver)}" data-chat-busy="${data.pending === null ? "0" : "1"}" data-chat-version="${leadChatVersion(data)}" data-chat-approval="${escape(data.focusTask?.approval?.digest ?? "")}">`,
     `<input type="hidden" name="csrf" value="${escape(data.csrf)}">`,
     `<input type="hidden" name="request" value="${randomBytes(16).toString("hex")}"><input type="hidden" name="request-session" value="${data.session.id}">`,
     data.focusTask === null ? "" : `<input type="hidden" name="task" value="${escape(data.focusTask.id)}">`,
     chatProject === null ? "" : `<input type="hidden" name="project" value="${escape(chatProject)}">`,
     data.resultRunId == null ? "" : `<input type="hidden" name="result" value="${data.resultRunId}">`,
-    `<label>Message<textarea id="chat-message" name="message" rows="1" maxlength="${MATE_MESSAGE_MAX_CHARS}" placeholder="${data.focusTask !== null ? "Ask about this task…" : chatProject !== null ? `Ask about ${escape(projectName(chatProject))}…` : "Describe what you want done…"}"></textarea></label>`,
+    `<label>Message<textarea id="chat-message" name="message" rows="1" maxlength="${LEAD_MESSAGE_MAX_CHARS}" placeholder="${data.focusTask !== null ? "Ask about this task…" : chatProject !== null ? `Ask about ${escape(projectName(chatProject))}…` : "Describe what you want done…"}"></textarea></label>`,
     `<button type="submit" aria-label="${data.pending === null ? "send message" : "wait for the current reply before sending"}"${data.pending === null ? "" : " disabled"}>Send</button>`,
     `</form>`,
     // Concise pass (2026-09-13): the status line speaks only when there is
@@ -7468,7 +7475,7 @@ export function matePage(chrome: Chrome, data: MateThreadRows & {
     // The explicit reconnection (package 2): shown only once the session
     // or sign-in changed under this page; it reloads on the reader's act.
     `<p class="meta composer-hint" id="chat-reconnect" hidden><button type="button" class="quiet">Reconnect</button></p>`,
-    mateAfterComposerHtml(data),
+    leadAfterComposerHtml(data),
     controlsHtml,
 
   );
@@ -7478,9 +7485,9 @@ export function matePage(chrome: Chrome, data: MateThreadRows & {
     { chrome, functional: { script: CHAT_CONTINUITY_SCRIPT + CHAT_UI_SCRIPT + (data.focusTask === null ? "" : RESULT_REVIEW_SCRIPT), fetches: true },
       workspace: {
         conversation: {
-          sessionId: data.session.id, user: data.session.approver, version: mateChatVersion(data),
-          messages: mateBrowserMessages(data, data.csrf, data.focusTask === null && chatProject === null ? null : returnTo, { task: data.focusTask?.id ?? null, project: chatProject }),
-          pendingTurnId: data.pending?.id ?? null, requestId: randomBytes(16).toString('hex'), maxChars: MATE_MESSAGE_MAX_CHARS,
+          sessionId: data.session.id, user: data.session.approver, version: leadChatVersion(data),
+          messages: leadBrowserMessages(data, data.csrf, data.focusTask === null && chatProject === null ? null : returnTo, { task: data.focusTask?.id ?? null, project: chatProject }),
+          pendingTurnId: data.pending?.id ?? null, requestId: randomBytes(16).toString('hex'), maxChars: LEAD_MESSAGE_MAX_CHARS,
           taskId: data.focusTask?.id ?? null, resultRunId: data.resultRunId ?? null, project: chatProject,
           ...(data.previous == null ? {} : { previous: { messages: replacedBrowserMessages(data.previous, data.csrf) } }),
         },
@@ -7839,9 +7846,9 @@ export function workPage(
     (data.previous ? `<a class="button-link" href="${escape(href(data.view))}">First page</a>` : '') +
     (data.work.nextCursor === null ? '' : `<a class="button-link" rel="next" href="${escape(href(data.view, data.work.nextCursor))}">Next page</a>`) + `</nav>`;
   const tools = `<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">` +
-    [['/inbox', 'Inbox'], ...(chrome.code ? [['/code', 'Coding sessions']] : []), ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
+    [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
       .map(([path, label]) => `<a href="${path}">${label}</a>`).join('') + `</nav></details>`;
-  const toolLinks = [['/inbox', 'Inbox'], ...(chrome.code ? [['/code', 'Coding sessions']] : []), ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
+  const toolLinks = [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
   const view: BrowserTasksView = {
     kind: 'tasks',
     tabs: WORK_VIEWS.map(one => ({ label: one.label, href: href(one.key), count: data.work.totals[one.key], active: one.key === data.view })),
@@ -8840,7 +8847,7 @@ export type NavRow = { key: Chrome["active"]; href: string; label: string; hint:
  */
 export function workToolRows(scoped = false, _offersChat = false, offersCode = false): NavRow[] {
   const rows: NavRow[] = [
-    ...(offersCode ? [{ key: "code" as const, href: "/code", label: "Coding sessions", hint: "Direct coding sessions and their saved results" }] : []),
+    // D5: coding sessions are deprecated; /code still opens this release, but nothing links to it.
     { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
@@ -14325,7 +14332,7 @@ export function oneLineOf(text: string, cap: number): string {
   /** Live replies (chat streaming): per thread, the turn being answered —
    * each step's tools in plain words and its text as it is written. Memory
    * only and display only; the saved turn stays the record. */
-  export type LiveTurn = { steps: MateLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout };
+  export type LiveTurn = { steps: LeadLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout };
 
   export type ChatEnablement =
     | { ok: true; billing: "metered"; config: ChatConfig & { provider: DirectChatProviderId }; key: string; keySource: "environment" | "stored"; price: import("../converse.js").ModelPrice; credentialKey: string }

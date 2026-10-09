@@ -18,7 +18,7 @@ import { register } from "./runner.js";
 import { createDecisionServer } from "./serve.js";
 import { storeEvidence } from "./evidence.js";
 import { verifyApproverStanding } from "./principal.js";
-import { executeMateTool } from "./mate-tools.js";
+import { executeLeadTool } from "./lead-tools.js";
 import { chatControlHref } from "./chat-controls.js";
 import {
   changeSkills,
@@ -485,27 +485,27 @@ describe("managed project skills", () => {
         return cards.length;
       },
     };
-    const index = executeMateTool(ctx, "get_skills", { repo: "r1" });
+    const index = executeLeadTool(ctx, "get_skills", { repo: "r1" });
     expect(JSON.stringify(index)).toContain(skill.sha.slice(0, 20));
     expect(JSON.stringify(index)).not.toContain("Use short button");
     expect(
       JSON.stringify(
-        executeMateTool(ctx, "get_skills", {
+        executeLeadTool(ctx, "get_skills", {
           repo: "r1",
           version: skill.sha.slice(0, 20),
         }),
       ),
     ).toContain("Use short button");
-    expect(executeMateTool(ctx, "get_skills", { repo: "r2" }).ok).toBe(false);
+    expect(executeLeadTool(ctx, "get_skills", { repo: "r2" }).ok).toBe(false);
     expect(
-      executeMateTool(ctx, "show_control", { control: "skills", repo: "r1" })
+      executeLeadTool(ctx, "show_control", { control: "skills", repo: "r1" })
         .ok,
     ).toBe(true);
     expect(cards).toHaveLength(1);
     expect(chatControlHref("skills", "", undefined, cards[0]!["project"])).toBe(
       "/settings/skills?repo=" + encodeURIComponent(repo),
     );
-    expect(executeMateTool(ctx, "show_control", { control: "skills" }).ok).toBe(
+    expect(executeLeadTool(ctx, "show_control", { control: "skills" }).ok).toBe(
       false,
     );
     expect(() => conversationSkills(store, repo, "unknown")).toThrow(/access/);

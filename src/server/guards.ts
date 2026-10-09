@@ -224,15 +224,15 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     // sessions): each route separately proves cookie, standing, password and every project it names.
     if (route?.limited === "self") return true;
     if (route?.limited === "proposal") {
-      const proposal=runtime.store.getMateProposal(Number(path.split('/')[3])),action=proposal?.kind==='action'?sharedActionPayload(proposal.payload):null;
+      const proposal=runtime.store.getLeadProposal(Number(path.split('/')[3])),action=proposal?.kind==='action'?sharedActionPayload(proposal.payload):null;
       const shared = proposal ? runtime.store.handle.prepare('SELECT id FROM team_conversation WHERE thread=?').get(proposal.thread) : null;
       if (shared && who.via === 'cookie') {
         try { const access = runtime.team.domain.access({ name: who.name, generation: who.session.generation }, String(shared['id']), 'contributor'); if (access.conversation.projects.every(visible)) return true; }
         catch { /* The same scoped refusal below also covers revoked membership. */ }
       }
-      if(action&&proposal&&runtime.store.getMateThread(proposal.thread)?.approver===who.name&&visible(action.repo)&&runtime.store.accountCanAccess(who.name,action.repo))return true;
+      if(action&&proposal&&runtime.store.getLeadThread(proposal.thread)?.approver===who.name&&visible(action.repo)&&runtime.store.accountCanAccess(who.name,action.repo))return true;
       // A card about the person themselves (what their lead knows about them) is in no project.
-      if(action&&proposal&&action.repo===''&&OWNER_ACTIONS.has(action.operation)&&runtime.store.getMateThread(proposal.thread)?.approver===who.name)return true;
+      if(action&&proposal&&action.repo===''&&OWNER_ACTIONS.has(action.operation)&&runtime.store.getLeadThread(proposal.thread)?.approver===who.name)return true;
       refuse(response,who,404,'No such action in your projects.','/projects');return false;
     }
     // A task address whose id does not decode names no task.

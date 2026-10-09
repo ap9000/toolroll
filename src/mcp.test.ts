@@ -644,7 +644,7 @@ describe("the MCP stdio server", () => {
     }
   });
 
-  test("the read tools the mate shares (mate arc, slice 4): recap, list_decisions, queue — the coordinator's view keeps paths, never consequences", () => {
+  test("the read tools the lead shares (mate arc, slice 4): recap, list_decisions, queue — the coordinator's view keeps paths, never consequences", () => {
     const filed = fileCoordinatorProposal(store, token, { repo: REPO, title: "first", idempotencyKey: "key-00000001" }, T0);
     const second = fileCoordinatorProposal(store, token, { repo: REPO, title: "second", idempotencyKey: "key-00000002" }, T0);
     if (!filed.ok || !second.ok) throw new Error("filing failed");

@@ -1,19 +1,19 @@
 /**
- * AI teammates (v92): agents that work a flow's cards the way an employee
+ * subagents (v92): agents that work a flow's cards the way an employee
  * would, within rules a person wrote for them.
  *
- * A teammate is a soul file: who it is, how it writes, what it knows, what it
+ * A subagent is a soul file: who it is, how it writes, what it knows, what it
  * decides on its own, what it asks about first, and what it never does. It is
  * staffed on zones: a "Person decides" zone it decides (approve, send back,
- * or hand it to a person), or a "Teammate handles it" zone where it picks
+ * or hand it to a person), or a "Subagent handles it" zone where it picks
  * where the card goes and writes what the next zones send. It never acts
  * itself: each turn answers with one decision as JSON, through Claude with no
  * tools, no repository and no MCP servers, and Toolroll carries it out
  * within the zone's choices. The card is data, never instructions. (v94: it
  * may ask for a project tool call on its turn; Toolroll makes it, or
- * asks a person first, by the rules in teammate-tools.ts.)
+ * asks a person first, by the rules in subagent-tools.ts.)
  *
- * Teammates do flow work only: they never approve a code task, a merge or
+ * Subagents do flow work only: they never approve a code task, a merge or
  * spending — those stay with people (or a signed hands-off mode).
  */
 import { Buffer } from "node:buffer";
@@ -25,7 +25,7 @@ import { scanForSecrets } from "./evidence.js";
 import { run, type ExecResult } from "./exec.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { ContractResult } from "./contracts/contract.js";
-import { readTurnAnswer, TURN_MODEL_SCHEMA, type TurnAction, type TurnAnswer } from "./contracts/teammate-turn.js";
+import { readTurnAnswer, TURN_MODEL_SCHEMA, type TurnAction, type TurnAnswer } from "./contracts/subagent-turn.js";
 import { LIMITS } from "./decision.js";
 import { overruns, TEXT_LIMITS, type Overrun } from "./text-limits.js";
 
@@ -35,7 +35,7 @@ const HANDLE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export type Soul = { name: string; role: string; sections: { title: string; body: string }[] };
 
 /** A handle from a name: "Maya" → "maya". */
-export const handleOf = (name: string) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "teammate";
+export const handleOf = (name: string) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "subagent";
 export const isHandle = (value: unknown): value is string => typeof value === "string" && HANDLE.test(value);
 
 /** A soul file read: its name and role (front matter) and its sections. */
@@ -48,15 +48,15 @@ export function parseSoul(text: string): { ok: true; soul: Soul } | { ok: false;
   if (front === null) return { ok: false, problem: "Start the file with its name and role, like:\n---\nname: Maya\nrole: Support\n---" };
   const field = (key: string) => new RegExp(`^${key}:\\s*(.+)$`, "im").exec(front[1]!)?.[1]?.trim() ?? "";
   const name = field("name"), role = field("role");
-  if (!/^[\p{L}][\p{L}\p{N} .'-]{0,39}$/u.test(name)) return { ok: false, problem: "Give the teammate a name of up to 40 letters, like “name: Maya”." };
-  if (role === "" || role.length > 40) return { ok: false, problem: "Say what the teammate does in up to 40 characters, like “role: Support”." };
+  if (!/^[\p{L}][\p{L}\p{N} .'-]{0,39}$/u.test(name)) return { ok: false, problem: "Give the subagent a name of up to 40 letters, like “name: Maya”." };
+  if (role === "" || role.length > 40) return { ok: false, problem: "Say what the subagent does in up to 40 characters, like “role: Support”." };
   const body = normal.slice(front[0].length);
   const sections: { title: string; body: string }[] = [];
   for (const part of body.split(/^## /m).slice(1)) {
     const [title, ...rest] = part.split("\n");
     sections.push({ title: title!.trim(), body: rest.join("\n").trim() });
   }
-  if (sections.length === 0 || sections.every(one => one.body === "")) return { ok: false, problem: "Write at least one section, like “## Who you are”, saying who the teammate is." };
+  if (sections.length === 0 || sections.every(one => one.body === "")) return { ok: false, problem: "Write at least one section, like “## Who you are”, saying who the subagent is." };
   return { ok: true, soul: { name, role, sections } };
 }
 
@@ -75,8 +75,8 @@ export function withSection(soul: string, title: string, text: string): string {
 const soul = (name: string, role: string, parts: Record<string, string[]>) =>
   `---\nname: ${name}\nrole: ${role}\n---\n\n${Object.entries(parts).map(([title, lines]) => `## ${title}\n${lines.join("\n")}`).join("\n\n")}\n`;
 
-/** Starters to copy and make your own. Every rule is plain words the teammate reads each turn. */
-export const TEAMMATE_TEMPLATES: readonly { id: string; label: string; about: string; soul: string }[] = [
+/** Starters to copy and make your own. Every rule is plain words the subagent reads each turn. */
+export const SUBAGENT_TEMPLATES: readonly { id: string; label: string; about: string; soul: string }[] = [
   {
     id: "support", label: "Support rep", about: "Answers customers, handles refunds and replacements within limits, and hands angry or costly cases to you.",
     soul: soul("Maya", "Support", {
@@ -123,12 +123,12 @@ export const TEAMMATE_TEMPLATES: readonly { id: string; label: string; about: st
   },
 ];
 
-export type { TurnAction, TurnAnswer } from "./contracts/teammate-turn.js";
+export type { TurnAction, TurnAnswer } from "./contracts/subagent-turn.js";
 /** Each field's limit, in characters: stated in the prompt before it answers (turnPrompt), and an answer over one is
- * asked once to shorten (teammateTurn); one still over is kept whole, never cut. "text" is what the next zones read;
- * "note" is a decision or send-back note. Not in the turn's schema (src/contracts/teammate-turn.ts): the CLI would
+ * asked once to shorten (subagentTurn); one still over is kept whole, never cut. "text" is what the next zones read;
+ * "note" is a decision or send-back note. Not in the turn's schema (src/contracts/subagent-turn.ts): the CLI would
  * refuse an answer a few characters over one whole. */
-export const TURN_LIMITS = { answer: TEXT_LIMITS.teammateAnswer, text: TEXT_LIMITS.stageOutput, note: LIMITS.note, question: TEXT_LIMITS.teammateQuestion, reason: TEXT_LIMITS.teammateReason, remember: TEXT_LIMITS.teammateRemember } as const;
+export const TURN_LIMITS = { answer: TEXT_LIMITS.subagentAnswer, text: TEXT_LIMITS.stageOutput, note: LIMITS.note, question: TEXT_LIMITS.subagentQuestion, reason: TEXT_LIMITS.subagentReason, remember: TEXT_LIMITS.subagentRemember } as const;
 
 /** The fields of an answer over their limits. */
 export function turnOverruns(answer: TurnAnswer): Overrun[] {
@@ -138,7 +138,7 @@ export function turnOverruns(answer: TurnAnswer): Overrun[] {
 /** Everything one turn is told: the zone, the card as data, and what its people said. */
 export type TurnContext = {
   soul: string; name: string; role: string; flow: string; zone: string;
-  /** decide: a "Person decides" zone; handle: a "Teammate handles it" zone. */
+  /** decide: a "Person decides" zone; handle: a "Subagent handles it" zone. */
   kind: "decide" | "handle";
   instructions: string | null;
   /** decide: the draft being decided on (null: none), whether it can be sent back, and to whom hard ones go. */
@@ -220,7 +220,7 @@ export function turnPrompt(context: TurnContext): string {
 const ASK_OPTIONS = 4, TOOL_NAME_CHARS = 140, TOOL_INPUT_CHARS = 8000;
 
 /**
- * A turn's answer, read through its contract (src/contracts/teammate-turn.ts) and then checked against what this zone
+ * A turn's answer, read through its contract (src/contracts/subagent-turn.ts) and then checked against what this zone
  * allows, each refusal naming its path (`action: "route" isn't one this zone allows`). Text is trimmed and kept whole
  * (a field over its limit is asked to shorten, turnOverruns); blank options are dropped, and an ask offers at most 4,
  * each cut to an answer's length, and a tool name is cut to 140, as they always were.
@@ -236,7 +236,7 @@ export function readTurn(value: unknown, context: Pick<TurnContext, "kind" | "ca
     ...((context.tools ?? []).length > 0 ? ["use_tool" as const] : [])];
   const refuse = (path: string, what: string): ContractResult<TurnAnswer> => ({ ok: false, issues: [{ path, kind: "bad-value", line: `${path}: ${what}` }] });
   if (!allowed.includes(answer.action)) return refuse("action", `"${answer.action}" isn't one this zone allows (${allowed.map(one => `"${one}"`).join(", ")})`);
-  // A tool call is checked against the teammate's rules where it's carried out; here only that it names one and fits.
+  // A tool call is checked against the subagent's rules where it's carried out; here only that it names one and fits.
   if (answer.action === "use_tool" && answer.tool === "") return refuse("tool", "required for use_tool");
   if (answer.action === "use_tool" && answer.input.length > TOOL_INPUT_CHARS) return refuse("input", `at most ${TOOL_INPUT_CHARS.toLocaleString("en-US")} characters`);
   if (answer.action === "route" && !context.answers.some(one => one.toLowerCase() === answer.answer.toLowerCase())) return refuse("answer", `"${answer.answer}" isn't one of this zone's answers`);
@@ -258,7 +258,7 @@ type CommandRunner = (file: string, args: readonly string[], options: Parameters
 /** The production runner: Claude through this computer's sign-in, answering in the turn schema (TURN_MODEL_SCHEMA), with no tools, no MCP servers and no repository. */
 export function claudeTurnRunner(runner: CommandRunner = run): TurnRunner {
   return async request => {
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-teammate-"));
+    const dir = mkdtempSync(join(tmpdir(), "standing-orders-subagent-"));
     const started = Date.now();
     try {
       const result = await runner("claude", [
@@ -294,7 +294,7 @@ function costOf(body: Record<string, unknown>): TurnCost {
   return { ...(cost === undefined ? {} : { costUsd: cost }), ...(tokensIn > 0 ? { tokensIn } : {}), ...(tokensOut > 0 ? { tokensOut } : {}) };
 }
 
-/** How a teammate is named to people: "Maya · Support". */
-export const teammateLabel = (soul: Pick<Soul, "name" | "role">) => `${soul.name} · ${soul.role}`;
+/** How a subagent is named to people: "Maya · Support". */
+export const subagentLabel = (soul: Pick<Soul, "name" | "role">) => `${soul.name} · ${soul.role}`;
 /** How its acts read in a card's history: "Maya (AI)". */
-export const teammateActor = (soul: Pick<Soul, "name">) => `${soul.name} (AI)`;
+export const subagentActor = (soul: Pick<Soul, "name">) => `${soul.name} (AI)`;

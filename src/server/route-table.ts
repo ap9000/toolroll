@@ -193,8 +193,10 @@ get("flows", "flows.gallery", "^\\/flows\\/new\\/[a-z-]{1,40}$", { limited: "res
 get("flows", "flows.page", "/flows", { limited: "resource", ...free });
 get("flows", "kits", "/kits");
 get("flows", "kit.page", "^\\/kits\\/[a-z-]{1,40}$", { sample: "/kits/support" });
-get("flows", "teammates", "/teammates", free);
-get("flows", "teammate.page", `^\\/teammates\\/[1-9][0-9]{0,9}(\\/soul\\.md)?$`, { ...free, sample: "/teammates/1/soul.md" });
+get("flows", "subagents", "/settings/lead/subagents", free);
+// D5: subagents were teammates; old links to them land on the same pages under Settings → Lead.
+get("flows", "subagents.legacy", "^\\/teammates(\\/[1-9][0-9]{0,9}(\\/soul\\.md)?)?$", { ...free, sample: "/teammates/1" });
+get("flows", "subagent.page", `^\\/settings\\/lead\\/subagents\\/[1-9][0-9]{0,9}(\\/soul\\.md)?$`, { ...free, sample: "/settings/lead/subagents/1/soul.md" });
 get("flows", "flow.read", `^\\/flows\\/${FLOW}\\/(insights|runs\\/${FLOW}\\/${FLOW})$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/runs/2/3" });
 get("flows", "flow.export", `^\\/flows\\/${FLOW}\\/export$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/export" });
 get("flows", "flow.live", `^\\/flows\\/${FLOW}\\/live$`, { callers: ["cookie"], project: "flow", limited: "resource", ...free, sample: "/flows/1/live",
@@ -243,9 +245,9 @@ post("settings", "settings.skills-revise", "/settings/skills/revise", { project:
 post("settings", "settings.skills-import", "/settings/skills/import", { project: "form", limited: "unscoped" });
 post("settings", "settings.skills-change", "/settings/skills/change", { project: "form", limited: "unscoped" });
 post("flows", "kit.act", "^\\/kits\\/[a-z-]{1,40}\\/(setup|sample|github)$", { project: "form", sample: "/kits/support/setup" });
-post("flows", "teammate.new", "/teammates/new", { project: "form" });
-post("flows", "teammate.act", "^\\/teammates\\/[1-9][0-9]{0,9}\\/(soul|state|note|settings|summary|tools|memory|routines|week)$", { sample: "/teammates/1/soul" });
-post("flows", "teammate.answer", "^\\/teammates\\/questions\\/[1-9][0-9]{0,9}\\/answer$", { sample: "/teammates/questions/1/answer" });
+post("flows", "subagent.new", "/settings/lead/subagents/new", { project: "form" });
+post("flows", "subagent.act", "^\\/settings\\/lead\\/subagents\\/[1-9][0-9]{0,9}\\/(soul|state|note|settings|summary|tools|memory|routines|week)$", { sample: "/settings/lead/subagents/1/soul" });
+post("flows", "subagent.answer", "^\\/settings\\/lead\\/subagents\\/questions\\/[1-9][0-9]{0,9}\\/answer$", { sample: "/settings/lead/subagents/questions/1/answer" });
 post("flows", "flows.gallery-create", "^\\/flows\\/new\\/[a-z-]{1,40}$", { project: "form", limited: "resource", sample: "/flows/new/triage" });
 post("flows", "flows.create", "/flows/new", { project: "form", limited: "resource" });
 post("flows", "flows.example", "/flows/example", { project: "form" });

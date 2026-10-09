@@ -10,6 +10,7 @@ import { databasePath } from './store.js';
 import type { TeamChatAuthorization, TeamMessage, TeamOperation, TeamRequest, TeamResponse, TeamSnapshot } from './team-contract.js';
 import { configBase, namedPath } from './names.js';
 import { parseApiToken } from './api-tokens.js';
+import { deprecationWarning } from './deprecations.js';
 
 export type TeamCliOptions = {
   fetch?: typeof fetch; env?: NodeJS.ProcessEnv; home?: string; profileFile?: string;
@@ -17,6 +18,9 @@ export type TeamCliOptions = {
   isTTY?: boolean; stderr?: (line: string) => void; signal?: AbortSignal;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 };
+/** The central service's own lead verbs; every other `lead …` (token, say, or none) is the local lead's. */
+const CENTRAL_LEAD_ACTIONS = ['list', 'create', 'update', 'member', 'transfer'];
+/** D5: deprecated (deprecations.ts). Each still runs this release, hidden from help and the contract, with one warning on stderr. */
 export const TEAM_CLI_ACTIONS = ['connect', 'lead list', 'lead create', 'lead update', 'lead member', 'lead transfer', 'conversation list', 'conversation create', 'conversation show', 'conversation member', 'conversation edit', 'conversation withdraw', 'conversation read', 'conversation follow', 'conversation stop'] as const;
 const HELP = `toolroll connect <HTTPS-origin> --as <account> --token-stdin
   Pipe your API token (so_…, from Settings → API tokens) or use --token-file <private-file>;
@@ -240,8 +244,9 @@ function render(reply: TeamResponse, listing?: 'leads' | 'conversations'): strin
 /** null means preserve the existing local command path. Nothing here opens a database. */
 export async function maybeRunTeamCommand(argv: readonly string[], write: (line: string) => void, options: TeamCliOptions = {}): Promise<number | null> {
   const command = argv[0];
-  // `lead token` is local: the credential a lead agent acts with on this computer.
-  if (command === 'lead' && (argv[1] === 'token' || argv[1] === 'say')) return null;
+  // `lead token` and `lead say` are local: the credential a lead agent acts with on this computer, and its voice. A bare
+  // `lead` is the local lead's too ("lead" means only the lead); only the central service's verbs go on from here.
+  if (command === 'lead' && (argv[1] === 'token' || argv[1] === 'say' || !argv.some(arg => arg === '--profile' || CENTRAL_LEAD_ACTIONS.includes(arg)))) return null;
   if (!['connect', 'lead', 'conversation', 'chat', 'brief'].includes(command ?? '') && !argv.includes('--profile')) return null;
   const json = argv.includes('--json');
   let secret = '';
@@ -258,9 +263,14 @@ export async function maybeRunTeamCommand(argv: readonly string[], write: (line:
       return null;
     }
     const explicit = ['connect', 'lead', 'conversation'].includes(command!) || argv.some(arg => ['--profile', '--lead', '--conversation', '--authorize', '--terms-digest', '--request-id'].includes(arg));
+    // D5: the central team service is deprecated. It still runs this release; each use says so once, on stderr.
+    const verb = command === 'lead' || command === 'conversation' ? `${command} ${argv.slice(1).find(arg => !arg.startsWith('--')) ?? ''}`.trim() : command === 'connect' ? command : `${command} --conversation`;
+    const warn = () => stderr(deprecationWarning(verb, 'team'));
+    if (explicit) warn();
     if (explicit && (argv.includes('--help') || ['lead', 'conversation'].includes(command!) && argv.length === 1)) { write(HELP); return 0; }
     const saved = profiles(options);
     if (!explicit && !saved) return null;
+    if (!explicit) warn();
     const parsed = parse(argv), { flags, action } = parsed;
     if (flags.help || ((command === 'lead' || command === 'conversation') && !action)) { write(HELP); return 0; }
     const profileName = value(flags, 'profile') || (command === 'connect' ? 'default' : saved?.active ?? 'default');

@@ -1,9 +1,9 @@
 {
- "about": "Teammate turns replayed by src/contracts/teammate-turn.test.ts through readTurnAnswer: answers in the shape Claude gives under the turn's --json-schema, and decision_json as teammate-work.ts keeps it (the turn as read). Saved turns are read back only for their note (flow-engine.ts handoffWords), unchanged. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
+ "about": "Subagent turns replayed by src/contracts/subagent-turn.test.ts through readTurnAnswer: answers in the shape Claude gives under the turn's --json-schema, and decision_json as teammate-work.ts keeps it (the turn as read). Saved turns are read back only for their note (flow-engine.ts handoffWords), unchanged. The installed database (~/.config/standing-orders/orders.db) was not readable from the build that wrote this file (read-only access was denied), so no row here is copied from it; each sample names the writer or test whose shape it records.",
  "valid": [
   {
    "name": "route with a reply",
-   "source": "src/teammate-limits.test.ts",
+   "source": "src/subagent-limits.test.ts",
    "payload": {
     "answer": "Replied",
     "text": "Hi Priya, your lamp arrives tomorrow.",
@@ -19,7 +19,7 @@
   },
   {
    "name": "approve",
-   "source": "src/teammates.test.ts",
+   "source": "src/subagents.test.ts",
    "payload": {
     "answer": "",
     "text": "",
@@ -35,7 +35,7 @@
   },
   {
    "name": "send back",
-   "source": "src/teammate-desk.test.ts",
+   "source": "src/subagent-desk.test.ts",
    "payload": {
     "answer": "",
     "text": "",
@@ -51,7 +51,7 @@
   },
   {
    "name": "ask with options",
-   "source": "src/teammates.ts turnPrompt",
+   "source": "src/subagents.ts turnPrompt",
    "payload": {
     "answer": "",
     "text": "",
@@ -70,7 +70,7 @@
   },
   {
    "name": "tool call",
-   "source": "src/teammate-tools.test.ts",
+   "source": "src/subagent-tools.test.ts",
    "payload": {
     "answer": "",
     "text": "",
@@ -86,7 +86,7 @@
   },
   {
    "name": "saved decision_json (v95: remember)",
-   "source": "src/teammate-work.ts carryOut (JSON.stringify(answer))",
+   "source": "src/subagent-work.ts carryOut (JSON.stringify(answer))",
    "payload": {
     "action": "route",
     "answer": "Replied",
@@ -151,7 +151,7 @@
   },
   {
    "name": "saved decision_json from v92–v93 (before tools and memory)",
-   "source": "src/teammate-work.ts as v92 wrote it; read back only for its note",
+   "source": "src/subagent-work.ts as v92 wrote it; read back only for its note",
    "payload": {
     "action": "hand_off",
     "answer": "",

@@ -1,6 +1,6 @@
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
-import { chatQuestionButtons } from "./teammate-question.js";
+import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { channelInbox } from "./chat-inbox.js";
 import { roomCommand } from "./chat-rooms.js";
@@ -20,7 +20,7 @@ import {
   armedCardText,
   armedYesLabel,
 } from "./chat-channel.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
 import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatBinding, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
@@ -41,7 +41,7 @@ import {
   verifyResultImage,
 } from "./chat-evidence.js";
 import { type Store } from "./store.js";
-import type { SubscriptionMateRunner } from "./subscription-chat.js";
+import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 
 export type SlackChatOptions = {
   store: Store;
@@ -52,7 +52,7 @@ export type SlackChatOptions = {
   evidenceRoot: string;
   current: () => boolean;
   origin: () => string | null;
-  subscriptionRunner?: SubscriptionMateRunner;
+  subscriptionRunner?: SubscriptionLeadRunner;
   canNotify?: () => boolean;
   clock?: () => Date;
   upload?: typeof uploadSlackBytes;
@@ -124,7 +124,7 @@ export function receiveSlack(
     payload = match
       ? { hash: chatHash(match[1]!) }
       : {
-          text: event.text.slice(0, MATE_MESSAGE_MAX_CHARS + 1),
+          text: event.text.slice(0, LEAD_MESSAGE_MAX_CHARS + 1),
           originalLength: event.text.length,
         };
     id = chatHash(`${identity.installation}:event:${body.event_id}`);
@@ -308,7 +308,7 @@ export async function deliverSlackPart(
   }
   try {
     const session =
-      event.session === null ? null : store.getMateSession(event.session);
+      event.session === null ? null : store.getLeadSession(event.session);
     const repos = await access(options, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
@@ -435,7 +435,7 @@ export async function deliverSlackPart(
       }
     }
     if (content.proposal) {
-      const proposal = store.getMateProposal(content.proposal);
+      const proposal = store.getLeadProposal(content.proposal);
       if (!proposal) text = "This proposal is unavailable.";
       else if (proposal.state !== "pending")
         text = proposalOutcomeText(proposal);
@@ -499,7 +499,7 @@ export async function deliverSlackPart(
               ...(one.action === "approve" ? { style: "primary" } : {}),
             }))
           : []),
-        // A teammate's question (v93): its options, then "Answer in words".
+        // A subagent's question (v93): its options, then "Answer in words".
         ...(content.question
           ? chatQuestionButtons(state, row.id, now).map((one) => ({
               type: "button",

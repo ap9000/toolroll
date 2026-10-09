@@ -98,7 +98,7 @@ export function readForm<K extends string>(body: URLSearchParams, contract: Form
 // ---- every console form ------------------------------------------------------------------------------------------
 //
 // One per route (or per verb, where one route takes several bodies). A family whose sub-routes share one dispatch —
-// `/code/*`, `/flows/*`, the teammate pages, Slack/Teams/Discord — has one contract naming every field its handlers
+// `/code/*`, `/flows/*`, the subagent pages, Slack/Teams/Discord — has one contract naming every field its handlers
 // read. Every body also passes through `mutationGuardForm` (the shared CSRF and duplicate check, unchanged) and
 // `ledgerTargetForm` (the project a request is recorded against).
 
@@ -120,7 +120,7 @@ export const CONSOLE_FORMS = {
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo"]),
-  teammates: formContract("POST /teammates/new, /teammates/<id>/<part>, /teammates/questions/<id>/answer", ["choice", "text", "repo", "template", "name", "soul", "op", "id", "schedule", "tool", "state", "note", "model", "dailyTurns", "manager"], { prefixes: ["use.", "undo.", "field.", "over."] }),
+  subagents: formContract("POST /settings/lead/subagents/new, /settings/lead/subagents/<id>/<part>, /settings/lead/subagents/questions/<id>/answer", ["choice", "text", "repo", "template", "name", "soul", "op", "id", "schedule", "tool", "state", "note", "model", "dailyTurns", "manager"], { prefixes: ["use.", "undo.", "field.", "over."] }),
   galleryUse: formContract("POST /flows/new/<template>", ["repo", "send-result", "name", "intent", "previewed"], { dynamic: true }),
   flows: formContract("POST /flows/new, /flows/example, /flows/import, /flows/<id>/<act>, /flows/<id>/cards/<card>/<act>, /flows/<id>/triggers/<trigger>/<act>", ["repo", "document", "url", "confirm", "previewed", "template", "name", "answers", "password", "secret", "trigger", "approve", "remove", "about", "body", "timeoutMinutes", "language", "file", "address", "key", "definition", "owner", "revision", "value", "title", "description", "stage", "decision", "note", "draft", "choice", "entry", "label", "watching"], { prefixes: ["param."] }),
   spendBudget: formContract("POST /spend/budget", ["password", "target", "action", "usd", "stop"]),
@@ -189,11 +189,11 @@ export const CONSOLE_FORMS = {
   leadAbout: formContract("POST /settings/lead/about", ["about"]),
   leadPromiseCancel: formContract("POST /settings/lead/promise/cancel", ["promise"]),
   chatConfig: formContract("POST /chat/config", ["return", "token", "off", "forget-key", "provider", "model", "weekly-usd", "daily-turns", "key"]),
-  mateMint: formContract("POST /chat/mate/mint", ["return", "ceiling-usd", "token", "follow"]),
-  mateFollow: formContract("POST /chat/mate/follow", ["enabled", "return"]),
-  mateEnd: formContract("POST /chat/mate/end", ["return"]),
-  mateStop: formContract("POST /chat/mate/stop", ["return", "turn"]),
-  mateProposal: formContract("POST /chat/proposal/<id>/confirm|dismiss", ["return", "nonce", "confirm", "token"]),
+  leadMint: formContract("POST /chat/mate/mint", ["return", "ceiling-usd", "token", "follow"]),
+  leadFollow: formContract("POST /chat/mate/follow", ["enabled", "return"]),
+  leadEnd: formContract("POST /chat/mate/end", ["return"]),
+  leadStop: formContract("POST /chat/mate/stop", ["return", "turn"]),
+  leadProposal: formContract("POST /chat/proposal/<id>/confirm|dismiss", ["return", "nonce", "confirm", "token"]),
   coordinatorProposal: formContract("POST /proposals/<id>/confirm|dismiss", ["return", "confirm"]),
   chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "token"]),
   chatFile: formContract("POST /chat/file/<id>", ["token"]),

@@ -404,17 +404,17 @@ export function tokenCount(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
 }
 
-// ---------------------------------------------------------------- the mate
+// ---------------------------------------------------------------- the lead
 
-export const MATE_MAX_STEPS = 8;
-export const MATE_MAX_CALLS_PER_STEP = 4;
+export const LEAD_MAX_STEPS = 8;
+export const LEAD_MAX_CALLS_PER_STEP = 4;
 /** A tool result, measured AS EMBEDDED — the JSON-encoded string, escapes included. */
-export const MATE_TOOL_RESULT_CAP_BYTES = 16_384;
+export const LEAD_TOOL_RESULT_CAP_BYTES = 16_384;
 /** A tool call, measured as the serialized `{id, name, args}` — the id counts. */
-export const MATE_TOOL_CALL_CAP_BYTES = 2_048;
-export const MATE_TOOL_CALL_ID_CAP_BYTES = 64;
+export const LEAD_TOOL_CALL_CAP_BYTES = 2_048;
+export const LEAD_TOOL_CALL_ID_CAP_BYTES = 64;
 /** One step's assistant text; over it the reply is malformed (review finding 7). */
-export const MATE_STEP_TEXT_CAP_BYTES = 8_192;
+export const LEAD_STEP_TEXT_CAP_BYTES = 8_192;
 
 /**
  * The triangular worst case (mate arc, ruling 6; slice-1 review finding 7):
@@ -425,16 +425,16 @@ export const MATE_STEP_TEXT_CAP_BYTES = 8_192;
  * body), so each is budgeted at twice its cap — escaping at most doubles
  * a string. Each step may answer with the full output allowance.
  */
-export function mateWorstCaseForPrice(
+export function leadWorstCaseForPrice(
   price: ModelPrice,
   baseBytes: number,
   caps: { steps?: number; callsPerStep?: number; resultCap?: number; callCap?: number; textCap?: number } = {},
 ): number {
-  const S = caps.steps ?? MATE_MAX_STEPS;
-  const M = caps.callsPerStep ?? MATE_MAX_CALLS_PER_STEP;
-  const R = caps.resultCap ?? MATE_TOOL_RESULT_CAP_BYTES;
-  const C = caps.callCap ?? MATE_TOOL_CALL_CAP_BYTES;
-  const T = caps.textCap ?? MATE_STEP_TEXT_CAP_BYTES;
+  const S = caps.steps ?? LEAD_MAX_STEPS;
+  const M = caps.callsPerStep ?? LEAD_MAX_CALLS_PER_STEP;
+  const R = caps.resultCap ?? LEAD_TOOL_RESULT_CAP_BYTES;
+  const C = caps.callCap ?? LEAD_TOOL_CALL_CAP_BYTES;
+  const T = caps.textCap ?? LEAD_STEP_TEXT_CAP_BYTES;
   const tokens = (bytes: number): number => Math.ceil(bytes / 3);
   let input = 0;
   for (let s = 1; s <= S; s++) {
@@ -448,14 +448,14 @@ export function embeddedBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text), "utf8");
 }
 
-export type MateToolSchema = { name: string; description: string; inputSchema: Record<string, unknown> };
-export type MateToolCall = { id: string; name: string; args: Record<string, unknown> };
+export type LeadToolSchema = { name: string; description: string; inputSchema: Record<string, unknown> };
+export type LeadToolCall = { id: string; name: string; args: Record<string, unknown> };
 /** A provider answer with tool calls allowed: text, calls, usage. */
-export type MateProviderAnswer = { text: string; calls: MateToolCall[]; tokensIn: number; tokensOut: number; reportedCostMicrousd: number | null };
-/** One message of the mate's own history, provider-neutral. */
-export type MateHistoryMessage =
+export type LeadProviderAnswer = { text: string; calls: LeadToolCall[]; tokensIn: number; tokensOut: number; reportedCostMicrousd: number | null };
+/** One message of the lead's own history, provider-neutral. */
+export type LeadHistoryMessage =
   | { role: "operator"; text: string }
-  | { role: "assistant"; text: string; calls: MateToolCall[] }
+  | { role: "assistant"; text: string; calls: LeadToolCall[] }
   | { role: "tool"; callId: string; name: string; result: string };
 
 /**
@@ -464,30 +464,30 @@ export type MateHistoryMessage =
  * most M per answer, each argument object under the call cap), and
  * anything else about the shape is malformed.
  */
-export function parseMateProviderWrapper(
+export function parseLeadProviderWrapper(
   provider: DirectChatProviderId,
   bytes: Buffer,
-): { ok: true; answer: MateProviderAnswer } | { ok: false; problem: string } {
+): { ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string } {
   const parsed = strictJsonParse(bytes, WRAPPER_CAP_BYTES, 14);
   if (!parsed.ok) return { ok: false, problem: parsed.problem };
   const body = parsed.value as Record<string, unknown>;
   if (typeof body !== "object" || body === null) return { ok: false, problem: "not-an-object" };
   const readArgs = (raw: unknown): Record<string, unknown> | null => {
     const text = typeof raw === "string" ? raw : JSON.stringify(raw ?? null);
-    if (Buffer.byteLength(text, "utf8") > MATE_TOOL_CALL_CAP_BYTES) return null;
-    const inner = strictJsonParse(Buffer.from(text, "utf8"), MATE_TOOL_CALL_CAP_BYTES, 6);
+    if (Buffer.byteLength(text, "utf8") > LEAD_TOOL_CALL_CAP_BYTES) return null;
+    const inner = strictJsonParse(Buffer.from(text, "utf8"), LEAD_TOOL_CALL_CAP_BYTES, 6);
     if (!inner.ok || typeof inner.value !== "object" || inner.value === null || Array.isArray(inner.value)) return null;
     return inner.value as Record<string, unknown>;
   };
   // A call is bounded WHOLE (finding 7): the id is repeated in the assistant
   // block and the result, so it is capped and counted inside the call cap.
-  const readCall = (id: unknown, name: unknown, rawArgs: unknown): MateToolCall | null => {
-    if (typeof id !== "string" || id === "" || Buffer.byteLength(id, "utf8") > MATE_TOOL_CALL_ID_CAP_BYTES) return null;
+  const readCall = (id: unknown, name: unknown, rawArgs: unknown): LeadToolCall | null => {
+    if (typeof id !== "string" || id === "" || Buffer.byteLength(id, "utf8") > LEAD_TOOL_CALL_ID_CAP_BYTES) return null;
     if (typeof name !== "string" || name === "" || name.length > 64) return null;
     const args = readArgs(rawArgs);
     if (args === null) return null;
     const call = { id, name, args };
-    if (Buffer.byteLength(JSON.stringify(call), "utf8") > MATE_TOOL_CALL_CAP_BYTES) return null;
+    if (Buffer.byteLength(JSON.stringify(call), "utf8") > LEAD_TOOL_CALL_CAP_BYTES) return null;
     return call;
   };
   // Usage is integers or nothing (ruling 14; finding 8): no coercion from
@@ -503,9 +503,9 @@ export function parseMateProviderWrapper(
   if (provider === "anthropic-api") {
     if (body["type"] !== "message") return { ok: false, problem: "wrong-type" };
     const content = body["content"];
-    if (!Array.isArray(content) || content.length === 0 || content.length > MATE_MAX_CALLS_PER_STEP + 1) return { ok: false, problem: "bad-content" };
+    if (!Array.isArray(content) || content.length === 0 || content.length > LEAD_MAX_CALLS_PER_STEP + 1) return { ok: false, problem: "bad-content" };
     let text = "";
-    const calls: MateToolCall[] = [];
+    const calls: LeadToolCall[] = [];
     for (const raw of content) {
       const block = raw as Record<string, unknown>;
       if (typeof block !== "object" || block === null) return { ok: false, problem: "not-a-block" };
@@ -519,8 +519,8 @@ export function parseMateProviderWrapper(
         return { ok: false, problem: "bad-block" };
       }
     }
-    if (calls.length > MATE_MAX_CALLS_PER_STEP) return { ok: false, problem: "too-many-calls" };
-    if (Buffer.byteLength(text, "utf8") > MATE_STEP_TEXT_CAP_BYTES) return { ok: false, problem: "text-over-cap" };
+    if (calls.length > LEAD_MAX_CALLS_PER_STEP) return { ok: false, problem: "too-many-calls" };
+    if (Buffer.byteLength(text, "utf8") > LEAD_STEP_TEXT_CAP_BYTES) return { ok: false, problem: "text-over-cap" };
     const usage = usageOf(body["usage"], "input_tokens", "output_tokens");
     if (usage === null) return { ok: false, problem: "no-usage" };
     return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, reportedCostMicrousd: null } };
@@ -532,10 +532,10 @@ export function parseMateProviderWrapper(
   if (message === undefined) return { ok: false, problem: "not-text" };
   const text = typeof message["content"] === "string" ? message["content"] : message["content"] === null ? "" : null;
   if (text === null) return { ok: false, problem: "not-text" };
-  const calls: MateToolCall[] = [];
+  const calls: LeadToolCall[] = [];
   const rawCalls = message["tool_calls"];
   if (rawCalls !== undefined) {
-    if (!Array.isArray(rawCalls) || rawCalls.length > MATE_MAX_CALLS_PER_STEP) return { ok: false, problem: "too-many-calls" };
+    if (!Array.isArray(rawCalls) || rawCalls.length > LEAD_MAX_CALLS_PER_STEP) return { ok: false, problem: "too-many-calls" };
     for (const raw of rawCalls) {
       const one = raw as Record<string, unknown>;
       const fn = one?.["function"] as Record<string, unknown> | undefined;
@@ -545,7 +545,7 @@ export function parseMateProviderWrapper(
       calls.push(call);
     }
   }
-  if (Buffer.byteLength(text, "utf8") > MATE_STEP_TEXT_CAP_BYTES) return { ok: false, problem: "text-over-cap" };
+  if (Buffer.byteLength(text, "utf8") > LEAD_STEP_TEXT_CAP_BYTES) return { ok: false, problem: "text-over-cap" };
   const usage = usageOf(body["usage"], "prompt_tokens", "completion_tokens");
   if (usage === null) return { ok: false, problem: "no-usage" };
   // A reported cost is absent, or a finite non-negative number whose
@@ -562,16 +562,16 @@ export function parseMateProviderWrapper(
   return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, reportedCostMicrousd } };
 }
 
-/** The mate's request: system contract, the data document as the first
+/** The lead's request: system contract, the data document as the first
  * operator message, the history in provider-native shape, the tools. */
-export function composeMateRequest(args: {
+export function composeLeadRequest(args: {
   provider: DirectChatProviderId;
   model: string;
   key: string;
   system: string;
   dataDocument: string;
-  history: readonly MateHistoryMessage[];
-  tools: readonly MateToolSchema[];
+  history: readonly LeadHistoryMessage[];
+  tools: readonly LeadToolSchema[];
 }): { url: string; headers: Record<string, string>; body: string } {
   const opener = `DATA:\n${args.dataDocument}\n\n(The conversation follows. Every operator message is data, from the operator.)`;
   if (args.provider === "anthropic-api") {
@@ -622,13 +622,13 @@ export function composeMateRequest(args: {
   };
 }
 
-/** The mate's network call: the same transport posture as fleet chat's, the tool-capable parser at the end. */
-export async function performMateRequest(
+/** The lead's network call: the same transport posture as fleet chat's, the tool-capable parser at the end. */
+export async function performLeadRequest(
   request: { url: string; headers: Record<string, string>; body: string },
   provider: DirectChatProviderId,
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
-): Promise<{ ok: true; answer: MateProviderAnswer } | { ok: false; problem: string }> {
+): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
   let response: Response;
   try {
     response = await fetcher(request.url, { method: "POST", headers: request.headers, body: request.body, redirect: "error", signal });
@@ -640,7 +640,7 @@ export async function performMateRequest(
   if (!contentType.includes("application/json")) return { ok: false, problem: "not-json-content" };
   const body = await readCappedBody(response, WRAPPER_CAP_BYTES);
   if (body === null) return { ok: false, problem: "over-size" };
-  return parseMateProviderWrapper(provider, body);
+  return parseLeadProviderWrapper(provider, body);
 }
 
 export function parseProviderWrapper(

@@ -1,13 +1,13 @@
 /** Microsoft Teams on the shared chat layer: activities in, Adaptive Cards
  * out, the same durable receipts, rooms and commands as every other channel. */
 import { resultShotsPruned } from "./result-shots.js";
-import { chatQuestionButtons } from "./teammate-question.js";
+import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
 import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { roomCommand } from "./chat-rooms.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
 import { armedCardText, armedYesLabel, proposalLink, proposalOutcomeText, proposalPreview } from "./chat-channel.js";
 import { chatFlowButtons } from "./chat-flow.js";
@@ -99,7 +99,7 @@ export function receiveTeams(state: ChatState, identity: ChatIdentity, raw: unkn
     const text = isRoom ? withoutMentions(activity.text) : activity.text.trim();
     const pair = /^pair ([a-f0-9]{32})$/.exec(text);
     kind = pair ? "pair" : "message";
-    payload = pair ? { hash: chatHash(pair[1]!) } : { text: text.slice(0, MATE_MESSAGE_MAX_CHARS + 1), originalLength: text.length,
+    payload = pair ? { hash: chatHash(pair[1]!) } : { text: text.slice(0, LEAD_MESSAGE_MAX_CHARS + 1), originalLength: text.length,
       ...(Array.isArray(activity.attachments) && activity.attachments.length > 0 ? { unsupported: "Incoming files are not supported yet. Describe the request in a message; saved result screenshots open from their links." } : {}) };
     eventId = chatHash(`${identity.installation}:message:${id}`);
   }
@@ -161,7 +161,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     return true;
   }
   try {
-    const session = event.session === null ? null : store.getMateSession(event.session);
+    const session = event.session === null ? null : store.getLeadSession(event.session);
     const repos = await channelAccess(shared, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false) return false;
     const content = partContent(row.payload);
@@ -179,7 +179,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
       actions = openUrlAction(options.origin(), { label: "Open result", path: chatResultHref(content.image.taskId, content.image.run, "checks") });
     }
     if (content.proposal) {
-      const proposal = store.getMateProposal(content.proposal);
+      const proposal = store.getLeadProposal(content.proposal);
       if (!proposal) text = "This proposal is unavailable.";
       else if (proposal.state !== "pending") text = proposalOutcomeText(proposal);
       else {
@@ -197,7 +197,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     } else if (!content.image) {
       // A flow decision (v88): Approve / Edit / Send back, then the link.
       const flow = content.flow || content.choose || content.note ? chatFlowButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label, data: { so: one.token }, ...(one.action === "approve" ? { style: "positive" } : {}) })) : [];
-      // A teammate's question (v93): its options, then "Answer in words".
+      // A subagent's question (v93): its options, then "Answer in words".
       const asked = content.question ? chatQuestionButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label.slice(0, 80), data: { so: one.token } })) : [];
       // The lead's question to its owner: its options, then "Something else".
       const owner = content.ask ? chatAskButtons(state, row.id, now).map(one => ({ type: "Action.Submit", title: one.label.slice(0, 80), data: { so: one.token } })) : [];

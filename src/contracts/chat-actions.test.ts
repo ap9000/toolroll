@@ -43,15 +43,16 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   flow_trigger_pause: { trigger: 5 },
   flow_trigger_resume: { trigger: 5 },
   flow_trigger_remove: { trigger: 5 },
-  teammate_create: { repo: "/work/app", template: "support", name: "Maya" },
-  teammate_soul: { teammate: 3, soul: "---\nname: Maya\nrole: support\n---" },
-  teammate_state: { teammate: 3, state: "paused" },
-  teammate_note: { teammate: 3, note: "Order 1043 is a gift." },
-  teammate_answer: { question: 4, choice: "yes" },
-  teammate_tools: { teammate: 3, tool: "shop", change: "grant" },
-  teammate_memory: { teammate: 3, memory: 8, change: "forget" },
-  teammate_routine: { teammate: 3, change: "add", schedule: "weekdays 09:00", text: "Check the inbox." },
-  teammate_undo: { teammate: 3, call: 21 },
+  subagent_create: { repo: "/work/app", template: "support", name: "Maya" },
+  subagent_soul: { subagent: 3, soul: "---\nname: Maya\nrole: support\n---" },
+  subagent_state: { subagent: 3, state: "paused" },
+  subagent_note: { subagent: 3, note: "Order 1043 is a gift." },
+  subagent_ask: { subagent: 3, text: "Draft the reply to Sam about order 1043." },
+  subagent_answer: { question: 4, choice: "yes" },
+  subagent_tools: { subagent: 3, tool: "shop", change: "grant" },
+  subagent_memory: { subagent: 3, memory: 8, change: "forget" },
+  subagent_routine: { subagent: 3, change: "add", schedule: "weekdays 09:00", text: "Check the inbox." },
+  subagent_undo: { subagent: 3, call: 21 },
   kit_setup: { repo: "/work/app", kit: "support-desk" },
   decision_record: { repo: "/work/app", claim: "Dates are UTC.", why: "Support reads them across zones.", source: "chat" },
   decision_retire: { repo: "/work/app", decision: 9, reason: "Superseded." },
@@ -64,27 +65,27 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
 
 /** Values the 0.9.36 preparation branches ignored, defaulted or delegated to their owning reader. */
 const COMPATIBLE_REQUESTS: Partial<Record<ChatActionOperation, Record<string, unknown>[]>> = {
-  teammate_create: [
+  subagent_create: [
     { repo: "/work/app", template: "support", name: null, soul: null },
     { repo: "/work/app", template: null, name: null, soul: "---\nname: Maya\nrole: Support\n---\nHelpful." },
     { repo: "/work/app", template: "support", name: false, soul: 0 },
   ],
-  teammate_tools: [
-    { teammate: 3, tool: "shop", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null },
-    { teammate: 3, tool: "shop", change: "revoke", action: 0, use: false, undoWith: [], limitField: {}, limitOver: "unused" },
-    { teammate: 3, tool: "shop", change: "rule", action: "refund_order", use: "free", undoWith: null, limitField: "amount", limitOver: "100" },
+  subagent_tools: [
+    { subagent: 3, tool: "shop", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null },
+    { subagent: 3, tool: "shop", change: "revoke", action: 0, use: false, undoWith: [], limitField: {}, limitOver: "unused" },
+    { subagent: 3, tool: "shop", change: "rule", action: "refund_order", use: "free", undoWith: null, limitField: "amount", limitOver: "100" },
   ],
   tool_add: [
     { repo: "/work/app", catalog: null, about: null, url: null },
     { repo: "/work/app", name: "shop", command: "node", about: null, url: null, args: null, secrets: null },
     { repo: "/work/app", catalog: "github", name: false, command: 3, args: {}, about: [], url: false, secrets: false },
   ],
-  teammate_memory: [{ teammate: 3, memory: 8, change: "forget", text: null }],
-  teammate_routine: [
-    { teammate: 3, change: "remove", routine: 2, schedule: null, text: false },
-    { teammate: 3, change: "add", routine: null, schedule: "daily 09:00", text: "Check the inbox." },
+  subagent_memory: [{ subagent: 3, memory: 8, change: "forget", text: null }],
+  subagent_routine: [
+    { subagent: 3, change: "remove", routine: 2, schedule: null, text: false },
+    { subagent: 3, change: "add", routine: null, schedule: "daily 09:00", text: "Check the inbox." },
   ],
-  teammate_answer: [{ question: 4, choice: "yes", text: false }, { question: 4, choice: 0, text: "Refund it." }],
+  subagent_answer: [{ question: 4, choice: "yes", text: false }, { question: 4, choice: 0, text: "Refund it." }],
   flow_card_add: [{ flow: 3, title: "Footer year", description: false }],
   flow_card_choose: [{ card: 12, choice: 1, note: null }],
   flow_card_watch: [null, "false", 0, {}, [], false, true].map(watching => ({ card: 12, watching })),
@@ -96,7 +97,7 @@ describe("the chat action contracts", () => {
     for (const operation of CHAT_ACTION_OPERATIONS) expect(CHAT_ACTION_FIELDS[operation]).toEqual(Object.keys(chatActionRequestSchemas[operation].shape));
     // The lead reads these in get_actions, in this order.
     expect(CHAT_ACTION_FIELDS.tool_add).toEqual(["repo", "catalog", "name", "command", "args", "url", "secrets", "about"]);
-    expect(CHAT_ACTION_FIELDS.teammate_tools).toEqual(["teammate", "tool", "change", "action", "use", "limitField", "limitOver", "undoWith"]);
+    expect(CHAT_ACTION_FIELDS.subagent_tools).toEqual(["subagent", "tool", "change", "action", "use", "limitField", "limitOver", "undoWith"]);
   });
 
   it.each(CHAT_ACTION_OPERATIONS)("%s holds: round trip, a request it takes, and fields of another action refused by path", operation => {
@@ -120,7 +121,7 @@ describe("the chat action contracts", () => {
     expect(lines("flow_card_move", { zone: "review" })).toEqual(["card: required"]);
     expect(lines("flow_card_move", { card: "12", zone: "review" })).toEqual(["card: must be a number (got a string)"]);
     expect(lines("result_accept", { task: "fix-footer", run: 0 })).toEqual(["run: at least 1"]);
-    expect(lines("teammate_state", { teammate: 3, state: "asleep" })).toEqual(['state: must be one of "active", "paused", "removed"']);
+    expect(lines("subagent_state", { subagent: 3, state: "asleep" })).toEqual(['state: must be one of "active", "paused", "removed"']);
     expect(lines("skill_enable", { repo: "/work/app", version: "abc", restore: 1 })).toEqual(["payload: unknown key 'restore'"]);
     expect(lines("flow_card_move", { cards: 12, zone: "review" })).toEqual(["card: required", "payload: unknown key 'cards' (did you mean card?)"]);
   });
@@ -151,8 +152,9 @@ describe("a saved proposal's action", () => {
       const read = readSharedAction(one.payload);
       if (!read.ok) throw Error(`${one.name}: ${read.issues.map(issue => issue.line).join("; ")}`);
       expect(read.value, one.name).toEqual(one.reads ?? { version: 1, ...one.payload });
-      // The stamp is a hash over the request as saved: key order and values are kept exactly.
-      expect(JSON.stringify(read.value.request), one.name).toBe(JSON.stringify(one.payload["request"]));
+      // The stamp is a hash over the request as saved: key order and values are kept exactly. (A card saved before D5
+      // named its subagent a teammate: it reads in today's words, and its stamp no longer matches, so it asks again.)
+      expect(JSON.stringify(read.value.request), one.name).toBe(JSON.stringify((one.reads ?? one.payload)["request"]));
       expect(sha(read.value.state), one.name).toBe(sha(one.payload["state"]));
     }
   });

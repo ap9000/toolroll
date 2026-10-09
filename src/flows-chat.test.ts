@@ -13,8 +13,8 @@ import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { FLOW_TEMPLATES, flowFromSteps, flowTerms } from "./flows.js";
 import { advanceFlows, flowDefinitionOf } from "./flow-engine.js";
 import { sharedActionNeedsReview, sharedActionPayload } from "./chat-actions.js";
-import { confirmMateProposal } from "./mate-doors.js";
-import { executeMateTool } from "./mate-tools.js";
+import { confirmLeadProposal } from "./lead-doors.js";
+import { executeLeadTool } from "./lead-tools.js";
 import { confirmedLink } from "./chat-channel.js";
 
 describe("steps into a drawing", () => {
@@ -87,27 +87,27 @@ describe("the lead builds and runs a flow", () => {
     const verified = verifyApproverStanding(store, "operator", store.accountOf("operator")!.generation, [repo]);
     if (!verified.ok) throw Error("identity");
     who = verified.who;
-    session = store.mintMateSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "flows", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
-    thread = store.openMateThread(who.name, who.ceilingDigest, now).thread.id;
+    session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "flows", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
+    thread = store.openLeadThread(who.name, who.ceilingDigest, now).thread.id;
   });
   afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 
   /** One lead turn: the tool runs as the model would call it, and its cards are ready to confirm when the turn ends. */
   function lead(name: string, args: Record<string, unknown>) {
-    const turn = store.openMateTurn({ approver: who.name, session, thread, credentialKey: "flows", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, now);
+    const turn = store.openLeadTurn({ approver: who.name, session, thread, credentialKey: "flows", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, now);
     if (!turn.ok) throw Error(turn.reason);
-    const started = store.startMateTurn(turn.id, now);
+    const started = store.startLeadTurn(turn.id, now);
     if (!started.ok) throw Error("start");
-    const result = executeMateTool({ store, who, now, step: 1, readDecisions: new Map(), evidenceRoot: root,
-      draft: (kind, payload) => store.draftMateProposal({ thread, turn: turn.id, kind, payload, ceilingDigest: who.ceilingDigest }, now) }, name, args);
-    store.finalizeMateTurn(turn.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Here it is.", activity: "" } }, now);
+    const result = executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), evidenceRoot: root,
+      draft: (kind, payload) => store.draftLeadProposal({ thread, turn: turn.id, kind, payload, ceilingDigest: who.ceilingDigest }, now) }, name, args);
+    store.finalizeLeadTurn(turn.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Here it is.", activity: "" } }, now);
     return result;
   }
   const proposalOf = (result: ReturnType<typeof lead>) => {
     if (!result.ok) throw Error(result.message);
     return (result.body as { proposal: number }).proposal;
   };
-  const confirm = (id: number) => confirmMateProposal(store, who, id, now, { via: "telegram", evidenceRoot: root });
+  const confirm = (id: number) => confirmLeadProposal(store, who, id, now, { via: "telegram", evidenceRoot: root });
 
   test("create from plain steps, add a card, move it, approve it — each a card the operator confirms — and a stale card is refused", () => {
     // With no flows yet, the lead still learns that scripts are the project's and can be saved now.
@@ -116,14 +116,14 @@ describe("the lead builds and runs a flow", () => {
     const created = proposalOf(lead("propose_flow", { operation: "create", repo: "r1", name: "Bug fixes", steps: [
       { title: "Requests", kind: "inbox" }, { title: "Look into it", kind: "report" }, { title: "Go ahead?", kind: "approval", decider: "me" }, { title: "Build", kind: "task" },
     ] }));
-    const drafted = sharedActionPayload(store.getMateProposal(created)!.payload)!;
+    const drafted = sharedActionPayload(store.getLeadProposal(created)!.payload)!;
     expect(drafted.title).toBe("Create the Bug fixes flow in shop");
     expect(drafted.terms[2]).toBe("3. Go ahead? — Person decides\nDecides: operator. Approve → Build. Send back → Look into it.");
     expect(sharedActionNeedsReview(drafted)).toBe(false);
     expect(store.listFlows([repo])).toEqual([]);
     const outcome = confirm(created);
     expect(outcome).toMatchObject({ ok: true, said: "Flow created. Add cards to it here or on its canvas.", href: "/flows/1" });
-    expect(confirmedLink(store, outcome, store.getMateProposal(created)!, [repo])).toEqual({ label: "Open the flow", path: "/flows/1" });
+    expect(confirmedLink(store, outcome, store.getLeadProposal(created)!, [repo])).toEqual({ label: "Open the flow", path: "/flows/1" });
     const flow = store.listFlows([repo])[0]!;
     expect(lead("get_flows", { flow: flow.id })).toMatchObject({ ok: true, body: { name: "Bug fixes", project: "r1", steps: [
       { id: "requests", does: "Holding", next: "Look into it" }, { id: "look-into-it", does: "Research" },
@@ -132,7 +132,7 @@ describe("the lead builds and runs a flow", () => {
 
     // A card, then moved by name into research: its step files a task under the usual approvals.
     const added = proposalOf(lead("propose_flow", { operation: "add_card", flow: flow.id, title: "Checkout rounding", description: "Totals are off by a cent" }));
-    expect(sharedActionPayload(store.getMateProposal(added)!.payload)!.terms).toEqual(["Checkout rounding\nTotals are off by a cent", "Starts in Requests: Cards wait here until someone moves them."]);
+    expect(sharedActionPayload(store.getLeadProposal(added)!.payload)!.terms).toEqual(["Checkout rounding\nTotals are off by a cent", "Starts in Requests: Cards wait here until someone moves them."]);
     expect(confirm(added)).toMatchObject({ ok: true, said: "Card added to Requests.", href: "/flows/1?card=1" });
     const moved = proposalOf(lead("propose_flow", { operation: "move_card", card: 1, zone: "look into it" }));
     expect(confirm(moved)).toMatchObject({ ok: true, said: "Moved to Look into it. Its step filed a task under your usual approvals." });
@@ -146,7 +146,7 @@ describe("the lead builds and runs a flow", () => {
     expect(lead("get_flows", { flow: flow.id })).toMatchObject({ ok: true, body: { cards: [{ card: 1, at: "Go ahead?", needsYou: true, waiting: "Waiting for you to approve or send it back" }] } });
     expect(lead("propose_flow", { operation: "send_back", card: 1 })).toEqual({ ok: false, message: "Say what should change." });
     const approve = proposalOf(lead("propose_flow", { operation: "approve", card: 1, note: "Small and safe" }));
-    expect(sharedActionPayload(store.getMateProposal(approve)!.payload)!.terms).toEqual(["Go ahead?: approved. It moves to Build.", "Note: Small and safe"]);
+    expect(sharedActionPayload(store.getLeadProposal(approve)!.payload)!.terms).toEqual(["Go ahead?: approved. It moves to Build.", "Note: Small and safe"]);
     // A card drafted before the flow moved on is refused, not replayed.
     const late = proposalOf(lead("propose_flow", { operation: "cancel_card", card: 1 }));
     expect(confirm(approve)).toMatchObject({ ok: true, said: "Approved. Moved to Build. Its step filed a task under your usual approvals." });
@@ -168,7 +168,7 @@ describe("the lead builds and runs a flow", () => {
     const flow = store.createFlow({ repo, name: "Bug fixes", definitionJson: JSON.stringify(FLOW_TEMPLATES[0]!.definition), by: "operator" }, now);
     const steps = [{ id: "inbox" }, { id: "triage" }, { id: "go-ahead" }, { id: "build" }, { title: "Security check", kind: "approval", decider: "me" }, { id: "review" }, { id: "announce" }, { id: "done" }];
     const edit = proposalOf(lead("propose_flow", { operation: "edit", flow, steps }));
-    const payload = sharedActionPayload(store.getMateProposal(edit)!.payload)!;
+    const payload = sharedActionPayload(store.getLeadProposal(edit)!.payload)!;
     expect(payload.title).toBe("Change the Bug fixes flow");
     expect(payload.terms[0]).toBe("Steps: Inbox → Triage → Go ahead? → Build → Security check → Review → Tell the team → Done");
     expect(payload.terms).toContain("5. Security check — Person decides (new)\nDecides: operator. Approve → Review. Send back → Build.");
@@ -189,17 +189,17 @@ describe("the lead builds and runs a flow", () => {
     // Cards have people too: the lead comments and takes a card on, each a card the operator confirms.
     const target = store.addFlowCard({ flow, title: "Login is slow", description: null, stage: "inbox", by: "operator" }, now);
     const comment = proposalOf(lead("propose_flow", { operation: "comment", card: target, note: "Profiling shows the session lookup." }));
-    expect(sharedActionPayload(store.getMateProposal(comment)!.payload)!.terms).toEqual(["Profiling shows the session lookup.", "Its owner and followers hear about it."]);
+    expect(sharedActionPayload(store.getLeadProposal(comment)!.payload)!.terms).toEqual(["Profiling shows the session lookup.", "Its owner and followers hear about it."]);
     expect(confirm(comment)).toMatchObject({ ok: true, said: "Comment added.", href: `/flows/${flow}?card=${target}` });
     const assign = proposalOf(lead("propose_flow", { operation: "assign", card: target, owner: "me" }));
-    expect(sharedActionPayload(store.getMateProposal(assign)!.payload)!.title).toBe("Make you the owner of “Login is slow”");
+    expect(sharedActionPayload(store.getLeadProposal(assign)!.payload)!.title).toBe("Make you the owner of “Login is slow”");
     expect(confirm(assign)).toMatchObject({ ok: true, said: "You own it now." });
     expect(store.getFlowCard(target)).toMatchObject({ owner: "operator" });
     expect(lead("propose_flow", { operation: "assign", card: target, owner: "me" })).toEqual({ ok: false, message: "You already own it." });
     expect(lead("get_flows", { flow, card: target })).toMatchObject({ ok: true, body: { cards: [{ card: target, owner: "you", following: true, comments: 1, discussion: [{ by: "you", text: "Profiling shows the session lookup." }] }] } });
     // Scripts: the lead drafts one as a card; confirming saves it for every flow in the project. Insights read back.
     const script = proposalOf(lead("propose_flow", { operation: "save_script", repo: "r1", script: { name: "run-tests", about: "Runs the unit tests", body: "npm ci\nnpm test", timeoutMinutes: 10 } }));
-    const scriptCard = sharedActionPayload(store.getMateProposal(script)!.payload)!;
+    const scriptCard = sharedActionPayload(store.getLeadProposal(script)!.payload)!;
     expect(scriptCard.title).toBe("Save the run-tests script in shop");
     expect(scriptCard.terms).toEqual(["run-tests: Runs the unit tests", "npm ci\nnpm test", "Shell, with no AI, for up to 10 minutes, whenever a card reaches a zone that runs it (or a schedule does). It gets the card as data; what it prints is passed on."]);
     expect(sharedActionNeedsReview(scriptCard)).toBe(false);
@@ -218,7 +218,7 @@ describe("the lead builds and runs a flow", () => {
       { title: "Build", kind: "task" }, { title: "Send me the result", kind: "send" },
       { title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] }, { title: "Ship", kind: "inbox" },
     ] }));
-    expect(sharedActionPayload(store.getMateProposal(created)!.payload)!.terms[2]).toBe("3. What next? — Person chooses\nSends the card's owner (or the flow's) what the step before produced, and asks them to choose:\nShip it → Ship.\nIgnore → ignores the card.\nOr a reply with what they'd change → Build.");
+    expect(sharedActionPayload(store.getLeadProposal(created)!.payload)!.terms[2]).toBe("3. What next? — Person chooses\nSends the card's owner (or the flow's) what the step before produced, and asks them to choose:\nShip it → Ship.\nIgnore → ignores the card.\nOr a reply with what they'd change → Build.");
     expect(confirm(created)).toMatchObject({ ok: true });
     const flow = store.listFlows([repo])[0]!;
     expect(lead("get_flows", { flow: flow.id })).toMatchObject({ ok: true, body: { steps: [{ id: "build" }, { id: "send-me-the-result", kind: "send", next: "What next?" },
@@ -232,7 +232,7 @@ describe("the lead builds and runs a flow", () => {
     expect(lead("propose_flow", { operation: "choose", card: one, choice: 3 })).toEqual({ ok: false, message: "Choose one of its 2 options, by number." });
     expect(lead("propose_flow", { operation: "choose", card: one })).toEqual({ ok: false, message: "Say what you'd change, or choose an option by number." });
     const ship = proposalOf(lead("propose_flow", { operation: "choose", card: one, choice: 1 }));
-    expect(sharedActionPayload(store.getMateProposal(ship)!.payload)!).toMatchObject({ title: "Choose “Ship it” for “Checkout rounding”", terms: ["What next?: “Ship it”. It moves to Ship."] });
+    expect(sharedActionPayload(store.getLeadProposal(ship)!.payload)!).toMatchObject({ title: "Choose “Ship it” for “Checkout rounding”", terms: ["What next?: “Ship it”. It moves to Ship."] });
     expect(store.getFlowCard(one)!.stage).toBe("what-next");
     // The option is bound as proposed: relabelled before it is confirmed, it is refused and nothing moves.
     const drawn = flowDefinitionOf(store.getFlow(flow.id)!)!;
@@ -244,7 +244,7 @@ describe("the lead builds and runs a flow", () => {
     expect(confirm(proposalOf(lead("propose_flow", { operation: "choose", card: one, choice: 1 })))).toMatchObject({ ok: true, said: "Ship it. Moved to Ship." });
     expect(store.getFlowCard(one)!.stage).toBe("ship");
     const reply = proposalOf(lead("propose_flow", { operation: "choose", card: two, note: "Use 16px." }));
-    expect(sharedActionPayload(store.getMateProposal(reply)!.payload)!.terms).toEqual(["What next?: your reply goes to Build as its note:\nUse 16px."]);
+    expect(sharedActionPayload(store.getLeadProposal(reply)!.payload)!.terms).toEqual(["What next?: your reply goes to Build as its note:\nUse 16px."]);
     expect(confirm(reply)).toMatchObject({ ok: true });
     expect(store.getFlowCard(two)).toMatchObject({ stage: "build", note: "Use 16px." });
     expect(store.flowEvents(two).at(-1)).toMatchObject({ actor: "operator", outcome: "sent-back" });
@@ -252,7 +252,7 @@ describe("the lead builds and runs a flow", () => {
 
   test("\"do this every time\": the lead offers a starter flow as one card, saying what it does and never does; confirming makes its trigger and zones", () => {
     const offered = lead("propose_flow", { operation: "starter", repo: "r1", starter: "overnight" });
-    const card = sharedActionPayload(store.getMateProposal(proposalOf(offered))!.payload)!;
+    const card = sharedActionPayload(store.getLeadProposal(proposalOf(offered))!.payload)!;
     expect(card.title).toBe("Switch on Overnight queue in shop");
     expect(card.terms).toEqual(["Cards you add during the day start after 22:00; results wait for you in the morning.", "Adds a “Queue for tonight” button.",
       "Holds each card until 22:00, then builds it as a task, under your usual approvals.", "Results wait for your review in the morning.", "Never merges or ships anything without you."]);

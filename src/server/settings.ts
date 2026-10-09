@@ -8,8 +8,8 @@ import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
 import { publishingOf } from '../pull-request-flow.js';
 import { skillTestFeedbackHtml } from "../skills-ui.js";
-import { nameOf } from "../teammate-admin.js";
-import { grantTool } from "../teammate-tools.js";
+import { labelOf, nameOf } from "../subagent-admin.js";
+import { grantTool } from "../subagent-tools.js";
 import { learningHtml } from "../workspace-ui.js";
 import { adapterPolicy } from "./route-policy.js";
 
@@ -106,7 +106,7 @@ import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
 import { spendCsv,spendHtml } from "../spend-ui.js";
-import { budgetStates,monthNamed,spendItems,usd as spendUsd,teammateNames as teammateNamesOf } from "../spend.js";
+import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
 import { lastSweep,saveSweep,storageSweepOff } from "../storage-sweep.js";
@@ -138,23 +138,23 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
       const month = asked === null ? current : monthNamed(asked);
       if (month === null) return refuse(response, who, 400, "Choose a month like 2026-09.", "/spend");
       const items = spendItems(store.handle, month.from, month.to);
-      const teammates = store.teammates([...new Set([...managedRepos(), ...store.knownRepos()])]);
-      const teammateNames = teammateNamesOf(store.handle);
+      const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+      const subagentNames = subagentNamesOf(store.handle);
       if (url.searchParams.get("format") === "csv") {
         response.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="standing-orders-spend-${month.name}.csv"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
-        return void response.end(spendCsv(items, teammateNames));
+        return void response.end(spendCsv(items, subagentNames));
       }
       const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
       const projects = consoleProjects();
       const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
       const view = {
         month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1),
-        items, budgets: budgetStates(store.budgets(), items), teammateNames, csrf: who.via === "cookie" ? who.session.csrf : "",
+        items, budgets: budgetStates(store.budgets(), items), subagentNames, csrf: who.via === "cookie" ? who.session.csrf : "",
         targets: [
           { value: "installation:*", label: "Everything", group: "Everything" as const },
           ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
           ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
-          ...teammates.map(one => ({ value: `teammate:${one.id}`, label: `${teammateNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Teammates" as const })),
+          ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
         ],
       };
       return sendScreen(response, 200, screen("Spend", spendHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "spend") }));
@@ -496,7 +496,8 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
       const promises = openCommitments(store, who.name, 50).map(one => ({ id: one.id, what: one.what, when: conditionWords(store, one.condition), until: one.expiresAt }));
       return sendScreen(response, 200, screen("Lead", leadSettingsHtml({ config, facts, words: leadWords(), signedIn, command: agentSignInCommand(),
         said: url.searchParams.get("said"), saved: url.searchParams.get("saved") === "1", identity: leadIdentityOf(store, who.name), promises,
-        about: aboutYouOf(store, who.name), aboutSaved: url.searchParams.get("saved") === "about" }), { chrome: chromeFor(project, "settings") }));
+        about: aboutYouOf(store, who.name), aboutSaved: url.searchParams.get("saved") === "about",
+        subagents: store.subagents(consoleProjects().filter(repo => store.accountCanAccess(who.name, repo))).map(one => ({ id: one.id, label: labelOf(one), project: projectName(one.repo), paused: one.state === "paused" })) }), { chrome: chromeFor(project, "settings") }));
     }
     if (url.pathname === "/settings/telegram") {
       // Any approver pairs their OWN phone here; the bot token stays on /settings.
@@ -667,14 +668,14 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return refuse(response, who, 403, "An instance operator sets budgets.", "/spend");
       const back = (key: "said" | "problem", words: string) => redirect(response, `/spend?${key}=${encodeURIComponent(words)}`);
       if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
-      const target = /^(installation|project|person|teammate):(.+)$/.exec(body.get("target") ?? "");
+      const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
       if (target === null) return back("problem", "Choose what the budget is for.");
-      const scope = target[1] as "installation" | "project" | "person" | "teammate", key = target[2]!;
+      const scope = target[1] as "installation" | "project" | "person" | "subagent", key = target[2]!;
       const known = scope === "installation" ? key === "*"
         : scope === "project" ? consoleProjects().includes(key)
         : scope === "person" ? store.accountFacts().some(one => one.name === key && one.revokedAt === null)
-        : store.teammates([...new Set([...managedRepos(), ...store.knownRepos()])]).some(one => String(one.id) === key);
-      if (!known) return back("problem", "That isn't a project, person or teammate here.");
+        : store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]).some(one => String(one.id) === key);
+      if (!known) return back("problem", "That isn't a project, person or subagent here.");
       const label = budgetLabel({ scope, key }).replace(/'s$/, "");
       if (body.get("action") === "remove") {
         const existing = store.budgets().find(one => one.scope === scope && one.key === key);
@@ -1447,7 +1448,7 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
     if (url.pathname === "/settings/telegram/pair" || url.pathname === "/settings/telegram/unpair") {
       const body = readForm(posted, CONSOLE_FORMS.telegramPair);
       // The person's own pairing, under their password: a code minted for
-      // them alone, or their own chats revoked. Teammates' pairings are
+      // them alone, or their own chats revoked. Subagents' pairings are
       // never touched from here.
       if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "An approver can pair their own phone.", "/settings");
       const botId = options.telegramTokenFile === undefined ? null : loadBotToken(process.env, options.telegramTokenFile)?.botId ?? null;
@@ -1965,9 +1966,9 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
     if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return respond(response, 403, "text/plain", "Forbidden");
     const finished = await finishConnect(store, visit, code, now, { fetcher: options.connectFetch ?? fetch, home: toolHome, omitEnv: ALL_CREDENTIAL_ENV });
     if (!finished.ok) return done(back, "problem", finished.said);
-    // From a kit: its teammate may use the tool now (reading freely, the rest after a person approves each call).
+    // From a kit: its subagent may use the tool now (reading freely, the rest after a person approves each call).
     const set = kit === null || !kit.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kit, visit.repo);
-    if (set !== null && store.teammateGrant(set.mate.id, service.id) === null) {
+    if (set !== null && store.subagentGrant(set.mate.id, service.id) === null) {
       const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome });
       if (granted.ok) return done(back, "said", `${service.label} is connected to ${to}, and ${nameOf(set.mate)} can use it: reading freely, the rest after you approve each call.`);
     }

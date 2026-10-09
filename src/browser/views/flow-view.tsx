@@ -30,7 +30,7 @@ const KIND_ICONS: Record<BrowserFlowStage["kind"], ReactNode> = {
   approval: <UserCheck className="size-3.5" aria-hidden="true" />, notify: <Megaphone className="size-3.5" aria-hidden="true" />, done: <Flag className="size-3.5" aria-hidden="true" />,
   check: <ListChecks className="size-3.5" aria-hidden="true" />, "pull-request": <GitPullRequest className="size-3.5" aria-hidden="true" />, update: <MessageSquareReply className="size-3.5" aria-hidden="true" />,
   sort: <Split className="size-3.5" aria-hidden="true" />, draft: <PenLine className="size-3.5" aria-hidden="true" />,
-  request: <Globe className="size-3.5" aria-hidden="true" />, email: <Mail className="size-3.5" aria-hidden="true" />, tool: <Wrench className="size-3.5" aria-hidden="true" />, wait: <Hourglass className="size-3.5" aria-hidden="true" />, teammate: <Bot className="size-3.5" aria-hidden="true" />,
+  request: <Globe className="size-3.5" aria-hidden="true" />, email: <Mail className="size-3.5" aria-hidden="true" />, tool: <Wrench className="size-3.5" aria-hidden="true" />, wait: <Hourglass className="size-3.5" aria-hidden="true" />, subagent: <Bot className="size-3.5" aria-hidden="true" />,
   send: <Send className="size-3.5" aria-hidden="true" />, choose: <Signpost className="size-3.5" aria-hidden="true" />,
 };
 
@@ -144,8 +144,8 @@ function AlsoHere({ others, cards }: { others: Here[]; cards: BrowserFlowCard[] 
 
 type ZoneData = {
   stage: BrowserFlowStage; kindLabel: string; owner: string; cards: BrowserFlowCard[]; editing: boolean; canMove: boolean; start: boolean;
-  /** v92: the teammate who decides or handles this zone, by name. */
-  teammate: string | null;
+  /** v92: the subagent who decides or handles this zone, by name. */
+  subagent: string | null;
   selectedCard: number | null; onCard: (id: number) => void; onDrop: (card: number, stage: string) => void; hidden: number;
   /** Who else has each card open right now. */
   lookers: Record<number, string[]>;
@@ -177,7 +177,7 @@ function ZoneNode({ data, selected }: NodeProps<Node<ZoneData, "zone">>) {
       <span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: color }}>{KIND_ICONS[stage.kind]}</span>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] font-semibold">{stage.title}</div>
-        <div className="truncate text-[11px] text-muted-foreground">{data.kindLabel}{data.start ? " · new cards start here" : ""}{data.teammate !== null ? ` · ${data.teammate}` : stage.toOwner === true ? ` · ${data.owner}` : stage.approver ? ` · ${stage.approver}` : ""}</div>
+        <div className="truncate text-[11px] text-muted-foreground">{data.kindLabel}{data.start ? " · new cards start here" : ""}{data.subagent !== null ? ` · ${data.subagent}` : stage.toOwner === true ? ` · ${data.owner}` : stage.approver ? ` · ${stage.approver}` : ""}</div>
       </div>
       {cards.length > 0 && <span className="rounded-full bg-muted px-1.5 text-[11px] font-semibold text-muted-foreground">{cards.length}</span>}
     </header>
@@ -473,7 +473,7 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{card.source.label}</a>}</p>}
     {card.description !== null && <p className="whitespace-pre-wrap text-[13px]">{card.description}</p>}
     {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-[13px]">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
-    {card.question != null && <TeammateQuestion question={card.question} csrf={csrf} apply={apply} />}
+    {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
     {card.choose != null && <ChooseBox choose={card.choose} base={`${view.flow.href}/cards/${card.id}`} csrf={csrf} apply={apply} />}
     {card.sent != null && <SentBox sent={card.sent} />}
     {card.question != null && card.deadline != null && <p className="text-[12px] text-muted-foreground">{deadlineWords(card.deadline)}</p>}
@@ -484,7 +484,7 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       <p className="mt-2 whitespace-pre-wrap text-[12.5px]">{card.draft.text}</p>
     </details>}
     {card.canDecide && <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3">
-      {card.handoff != null && <p className="rounded-md bg-muted px-3 py-2 text-[13px]" data-teammate-handoff><span className="font-medium">{card.handoff.from}:</span> {card.handoff.note}</p>}
+      {card.handoff != null && <p className="rounded-md bg-muted px-3 py-2 text-[13px]" data-subagent-handoff><span className="font-medium">{card.handoff.from}:</span> {card.handoff.note}</p>}
       {card.draft !== null && <>
         <Label htmlFor="flow-draft" className="text-[13px]">Draft from {card.draft.title}</Label>
         <Textarea id="flow-draft" value={draftText} onChange={event => setDraftText(event.target.value)} rows={8} maxLength={12000} data-flow-draft-edit />
@@ -504,14 +504,14 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
         {view.stages.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
     </div>}
-    {(card.calls ?? []).length > 0 && <details className="rounded-md border px-3 py-2" data-teammate-calls>
+    {(card.calls ?? []).length > 0 && <details className="rounded-md border px-3 py-2" data-subagent-calls>
       <summary className="cursor-pointer text-[13px] font-medium">Tool calls ({card.calls!.length})</summary>
-      <ol className="mt-2 flex flex-col gap-2.5">{card.calls!.map(call => <li key={call.id} className="flex flex-col gap-0.5 text-[12.5px]" data-teammate-call={call.state}>
+      <ol className="mt-2 flex flex-col gap-2.5">{card.calls!.map(call => <li key={call.id} className="flex flex-col gap-0.5 text-[12.5px]" data-subagent-call={call.state}>
         <span className="break-words"><span className="font-medium">{call.who}</span> · {call.words}</span>
         <span className="text-muted-foreground">{call.outcome}{call.why !== "" && call.state !== "refused" ? ` · ${call.why}` : ""}</span>
         {call.result !== null && call.result !== "" && (call.state === "done" || call.state === "failed") && <span className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 text-[12px]">{call.result}</span>}
-        {call.undo != null && call.teammate !== undefined && <Button size="sm" variant="outline" className="mt-1 self-start" disabled={busy} data-teammate-undo={call.id}
-          onClick={() => void act(`/teammates/${call.teammate}/week`, { op: "undo", id: String(call.id) })}>Undo with {call.undo}</Button>}
+        {call.undo != null && call.subagent !== undefined && <Button size="sm" variant="outline" className="mt-1 self-start" disabled={busy} data-subagent-undo={call.id}
+          onClick={() => void act(`/settings/lead/subagents/${call.subagent}/week`, { op: "undo", id: String(call.id) })}>Undo with {call.undo}</Button>}
       </li>)}</ol>
     </details>}
     {card.outputs.length > 0 && <div className="flex flex-col gap-2">
@@ -644,7 +644,7 @@ function SecretsBox({ view, csrf, apply, words, chosen, choose }: { view: Browse
 }
 
 /** A script zone (v90): which script, where it runs, the answers its "goto:" line picks, and the secrets it gets. */
-/** The answers a zone may pick, each with the zone it leads to (a script's "goto:", a teammate's choice). */
+/** The answers a zone may pick, each with the zone it leads to (a script's "goto:", a subagent's choice). */
 function Answers({ routes, others, set, hint }: { routes: { answer: string; to: string }[]; others: BrowserFlowStage[]; set: (next: { answer: string; to: string }[]) => void; hint: React.ReactNode }) {
   return <div className="grid gap-1.5" data-code-routes><span className="text-[13px] font-medium">Answers (optional)</span>
     <p className="text-[12px] text-muted-foreground">{hint}</p>
@@ -658,16 +658,16 @@ function Answers({ routes, others, set, hint }: { routes: { answer: string; to: 
   </div>;
 }
 
-/** v92: a teammate's question about this card; the person asked answers with a tap or in their words. */
-function TeammateQuestion({ question, csrf, apply }: { question: NonNullable<BrowserFlowCard["question"]>; csrf: string; apply: (result: Said) => void }) {
+/** v92: a subagent's question about this card; the person asked answers with a tap or in their words. */
+function SubagentQuestion({ question, csrf, apply }: { question: NonNullable<BrowserFlowCard["question"]>; csrf: string; apply: (result: Said) => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const answer = async (fields: Record<string, string>) => { setBusy(true); const result = await send(`/teammates/questions/${question.id}/answer`, fields, csrf); setBusy(false); apply(result); if (result.ok) setText(""); };
+  const answer = async (fields: Record<string, string>) => { setBusy(true); const result = await send(`/settings/lead/subagents/questions/${question.id}/answer`, fields, csrf); setBusy(false); apply(result); if (result.ok) setText(""); };
   const call = question.call ?? null;
-  return <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3" data-teammate-question={question.id}>
+  return <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3" data-subagent-question={question.id}>
     <p className="text-[12px] text-muted-foreground">{call === null ? `${question.from} asks${question.mine ? " you" : ` ${question.askedOf}`}` : `${question.from} needs ${question.mine ? "your" : `${question.askedOf}'s`} approval`}</p>
     <p className="break-words text-[13px] font-medium">{question.question}</p>
-    {call !== null && <p className="text-[12.5px] text-muted-foreground" data-teammate-call-why>{call.why !== "" && <>{call.why} </>}({call.rule})</p>}
+    {call !== null && <p className="text-[12.5px] text-muted-foreground" data-subagent-call-why>{call.why !== "" && <>{call.why} </>}({call.rule})</p>}
     {question.mine && <>
       {question.options.length > 0 && <div className="flex flex-wrap gap-2">{question.options.map((one, at) => <Button key={one.id} size="sm" variant={call !== null && at === 0 ? "default" : "outline"} disabled={busy} onClick={() => void answer({ choice: one.id })}>{one.label}</Button>)}</div>}
       <Textarea value={text} onChange={event => setText(event.target.value)} rows={2} maxLength={2000} placeholder={call === null ? "Or answer in your words" : `Or tell ${question.from.split(" · ")[0]} what to do instead`} aria-label="Your answer" />
@@ -676,18 +676,18 @@ function TeammateQuestion({ question, csrf, apply }: { question: NonNullable<Bro
   </div>;
 }
 
-/** v92: a "Teammate handles it" zone: who, what to do here, and where its answers lead. */
-function TeammateSettings({ stage, others, view, update }: { stage: BrowserFlowStage; others: BrowserFlowStage[]; view: BrowserFlowView; update: (change: Partial<BrowserFlowStage>) => void }) {
-  const mates = view.teammates ?? [];
+/** v92: a "Subagent handles it" zone: who, what to do here, and where its answers lead. */
+function SubagentSettings({ stage, others, view, update }: { stage: BrowserFlowStage; others: BrowserFlowStage[]; view: BrowserFlowView; update: (change: Partial<BrowserFlowStage>) => void }) {
+  const mates = view.subagents ?? [];
   return <>
-    <Field label="Teammate" hint={mates.length === 0 ? undefined : "It follows its soul file's rules, and asks the flow's owner when they say to."}>
-      {mates.length === 0 ? <p className="text-[13px] text-muted-foreground">No teammates in this project yet. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/teammates">Add one</a>.</p>
-        : <select className={SELECT} aria-label="Teammate" value={stage.teammate ?? ""} onChange={event => update({ teammate: event.target.value })}>
+    <Field label="Subagent" hint={mates.length === 0 ? undefined : "It follows its soul file's rules, and asks the flow's owner when they say to."}>
+      {mates.length === 0 ? <p className="text-[13px] text-muted-foreground">No subagents in this project yet. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings/lead/subagents">Add one</a>.</p>
+        : <select className={SELECT} aria-label="Subagent" value={stage.subagent ?? ""} onChange={event => update({ subagent: event.target.value })}>
           {mates.map(one => <option key={one.handle} value={one.handle}>{one.label}{one.working ? "" : " (paused)"}</option>)}</select>}
     </Field>
     <Field label="What to do here"><Textarea rows={4} value={stage.instructions ?? ""} maxLength={8000} onChange={event => update({ instructions: event.target.value })} aria-label="What to do here" placeholder="Read the customer's reply and decide what happens next." /></Field>
     <Answers routes={stage.routes ?? []} others={others} set={routes => update({ routes })} hint="It picks one, and writes what the next zones send. With none, it moves the card on to “Then”." />
-    <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" className="mt-0.5 size-4" checked={stage.reply === true} onChange={event => update({ reply: event.target.checked ? true : undefined })} data-teammate-reply />
+    <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" className="mt-0.5 size-4" checked={stage.reply === true} onChange={event => update({ reply: event.target.checked ? true : undefined })} data-subagent-reply />
       <span>Answer whoever asked<span className="block text-[12px] text-muted-foreground">What it writes goes back to the person who added the card, in their chat app.</span></span></label>
   </>;
 }
@@ -774,8 +774,8 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
         ...(event.target.value === "draft" ? { instructions: stage.instructions ?? "Write a short, friendly reply to the person who sent this card, in plain words." } : {}),
         ...(event.target.value === "approval" ? { toOwner: stage.toOwner ?? true } : {}),
         ...(event.target.value === "wait" ? { wait: stage.wait ?? { for: "reply", minutes: 3 * 24 * 60 } } : {}),
-        ...(event.target.value === "teammate" ? { teammate: stage.teammate ?? view.teammates?.[0]?.handle, instructions: stage.instructions ?? "Read the card and decide what happens next." }
-          : event.target.value !== "approval" ? { teammate: undefined } : {}),
+        ...(event.target.value === "subagent" ? { subagent: stage.subagent ?? view.subagents?.[0]?.handle, instructions: stage.instructions ?? "Read the card and decide what happens next." }
+          : event.target.value !== "approval" ? { subagent: undefined } : {}),
         ...(event.target.value === "wait" || event.target.value === "done" ? { limit: undefined } : event.target.value !== "inbox" && event.target.value !== "approval" && event.target.value !== "choose" && stage.limit !== undefined ? { limit: { ...stage.limit, to: null } } : {}),
         ...(event.target.value === "choose" ? { next: null, options: stage.options ?? [{ label: "Looks good", to: others.find(one => one.kind === "done")?.id ?? others[0]?.id ?? "end" }, { label: "Ignore", to: "end" }] } : { options: undefined }),
         ...(event.target.value === "task" ? {} : { repo: undefined }),
@@ -802,10 +802,10 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
       </select>
     </Field>}
     {stage.kind === "approval" && <Field label="Who decides">
-      <select className={select} aria-label="Who decides" value={stage.teammate !== undefined ? `__mate__:${stage.teammate}` : stage.toOwner === true ? "__owner__" : stage.approver ?? ""}
-        onChange={event => update(event.target.value.startsWith("__mate__:") ? { teammate: event.target.value.slice(9), toOwner: true, approver: null }
-          : event.target.value === "__owner__" ? { teammate: undefined, toOwner: true, approver: null } : { teammate: undefined, toOwner: false, approver: event.target.value === "" ? null : event.target.value })}>
-        {(view.teammates ?? []).map(one => <option key={one.handle} value={`__mate__:${one.handle}`}>{one.name} (AI teammate), handing hard ones to the flow's owner{one.working ? "" : " (paused)"}</option>)}
+      <select className={select} aria-label="Who decides" value={stage.subagent !== undefined ? `__mate__:${stage.subagent}` : stage.toOwner === true ? "__owner__" : stage.approver ?? ""}
+        onChange={event => update(event.target.value.startsWith("__mate__:") ? { subagent: event.target.value.slice(9), toOwner: true, approver: null }
+          : event.target.value === "__owner__" ? { subagent: undefined, toOwner: true, approver: null } : { subagent: undefined, toOwner: false, approver: event.target.value === "" ? null : event.target.value })}>
+        {(view.subagents ?? []).map(one => <option key={one.handle} value={`__mate__:${one.handle}`}>{one.name} (subagent), handing hard ones to the flow's owner{one.working ? "" : " (paused)"}</option>)}
         <option value="__owner__">The flow's owner ({view.flow.owner}), in their chat app</option>
         <option value="">Anyone who can approve</option>{view.approvers.map(name => <option key={name} value={name}>{name}</option>)}
       </select>
@@ -821,7 +821,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
       </select>
     </Field>}
     {stage.kind === "check" && <CodeSettings stage={stage} others={others} view={view} csrf={csrf} apply={apply} update={update} />}
-    {stage.kind === "teammate" && <TeammateSettings stage={stage} others={others} view={view} update={update} />}
+    {stage.kind === "subagent" && <SubagentSettings stage={stage} others={others} view={view} update={update} />}
     {stage.kind === "request" && stage.request !== undefined && <RequestSettings request={stage.request} view={view} csrf={csrf} apply={apply} set={request => update({ request })} />}
     {stage.kind === "email" && stage.email !== undefined && <EmailSettings email={stage.email} view={view} set={email => update({ email })} />}
     {stage.kind === "tool" && stage.tool !== undefined && <ToolSettings tool={stage.tool} view={view} set={tool => update({ tool })} />}
@@ -849,7 +849,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
         <option value="">Stay here for a person</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
     </Field>}
-    {(stage.kind === "approval" || stage.kind === "task" || stage.kind === "report" || stage.kind === "check" || stage.kind === "pull-request" || stage.kind === "update" || stage.kind === "sort" || stage.kind === "request" || stage.kind === "email" || stage.kind === "tool" || stage.kind === "teammate" || stage.kind === "choose") && <Field label={FAIL_LABELS[stage.kind] ?? "If it fails"} {...(stage.kind === "choose" ? { hint: "Their reply is the note there ({{note}})." } : {})}>
+    {(stage.kind === "approval" || stage.kind === "task" || stage.kind === "report" || stage.kind === "check" || stage.kind === "pull-request" || stage.kind === "update" || stage.kind === "sort" || stage.kind === "request" || stage.kind === "email" || stage.kind === "tool" || stage.kind === "subagent" || stage.kind === "choose") && <Field label={FAIL_LABELS[stage.kind] ?? "If it fails"} {...(stage.kind === "choose" ? { hint: "Their reply is the note there ({{note}})." } : {})}>
       <select className={select} aria-label={FAIL_LABELS[stage.kind] ?? "If it fails"} value={stage.onFail ?? ""} onChange={event => update({ onFail: event.target.value || null })}>
         <option value="">{stage.kind === "approval" ? "Can't be sent back" : stage.kind === "sort" ? "Wait here for a person" : stage.kind === "choose" ? "Where the first option goes" : "Wait here"}</option>{others.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
@@ -868,7 +868,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
 }
 
 /** What a zone's failure path is called in its settings. */
-const FAIL_LABELS: Partial<Record<BrowserFlowStage["kind"], string>> = { approval: "If sent back", sort: "If it isn't sure", teammate: "If it can't handle it", "pull-request": "If checks fail", choose: "If they reply" };
+const FAIL_LABELS: Partial<Record<BrowserFlowStage["kind"], string>> = { approval: "If sent back", sort: "If it isn't sure", subagent: "If it can't handle it", "pull-request": "If checks fail", choose: "If they reply" };
 
 /** A "Person chooses" zone's buttons: 2 to 4, each with its words and where it leads (or ignoring the card). */
 function ChooseSettings({ options, others, set }: { options: { label: string; to: string }[]; others: BrowserFlowStage[]; set: (options: { label: string; to: string }[]) => void }) {
@@ -1389,7 +1389,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
     style: { width: stage.zone.w, height: stage.zone.h }, draggable: editing, selectable: editing,
     data: {
       stage, kindLabel: view.kinds.find(one => one.kind === stage.kind)?.label ?? stage.kind, owner: draft?.owner ?? view.flow.owner,
-      teammate: stage.teammate === undefined ? null : view.teammates?.find(one => one.handle === stage.teammate)?.name ?? stage.teammate,
+      subagent: stage.subagent === undefined ? null : view.subagents?.find(one => one.handle === stage.subagent)?.name ?? stage.subagent,
       cards: view.cards.filter(card => card.stage === stage.id && card.state === "active" && (!mineOnly || card.mine)),
       hidden: mineOnly ? view.cards.filter(card => card.stage === stage.id && card.state === "active" && !card.mine).length : 0, lookers,
       editing, canMove: view.canEdit, start: stage.id === start, selectedCard: selected !== null && "card" in selected ? selected.card : null,
@@ -1458,7 +1458,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
       const fail = stage.onFail === null ? undefined : stages.find(one => one.id === stage.onFail);
       const limitTo = stage.limit?.to == null ? undefined : stages.find(one => one.id === stage.limit!.to);
       // A sort zone (or a script zone's answers, v90): one arrow to each zone its answers lead to, named by those answers.
-      const picks = stage.kind === "sort" && stage.sort !== null ? stage.sort.answers : stage.kind === "check" || stage.kind === "teammate" ? stage.routes ?? []
+      const picks = stage.kind === "sort" && stage.sort !== null ? stage.sort.answers : stage.kind === "check" || stage.kind === "subagent" ? stage.routes ?? []
         : stage.kind === "choose" ? (stage.options ?? []).filter(one => one.to !== "end").map(one => ({ answer: one.label, to: one.to })) : [];
       const answers = picks.length > 0 ? [...new Set(picks.map(one => one.to))].flatMap(to => {
         const target = stages.find(one => one.id === to);

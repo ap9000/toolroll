@@ -376,7 +376,7 @@ export async function testTool(spec: ToolSpec, values: Record<string, string>, o
 /**
  * Start the server once and read what each of its tools does (v94): the name,
  * its description, what input it takes, and whether it says it only reads.
- * A teammate is offered these, each under its own rule.
+ * A subagent is offered these, each under its own rule.
  */
 export async function listProjectToolActions(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }> {
   const answer = await exchange(spec, values, { method: "tools/list", params: {}, doing: "listing its tools" }, options);

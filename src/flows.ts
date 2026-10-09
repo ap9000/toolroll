@@ -53,7 +53,7 @@ import { parseContract, readVersioned, type ContractIssue, type ContractResult }
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import {
   CHOICES_MAX, CHOICES_MIN, FLOW_ALIASES, FLOW_COLORS, FLOW_DEFINITION_VERSION, FLOW_END, FLOW_MERGE_METHODS, FLOW_STAGE_KINDS, flowDefinitionSchema, flowStepsSchema,
-  HEADERS_MAX, LONGEST_WAIT_MINUTES, savedFlowDefinitionSchema, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf, SURE_AT_MAX, SURE_AT_MIN, ZONE_ID,
+  HEADERS_MAX, legacySubagentStep, LONGEST_WAIT_MINUTES, savedFlowDefinitionSchema, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf, SURE_AT_MAX, SURE_AT_MIN, ZONE_ID,
   type FlowChoice, type FlowColor, type FlowDefinition, type FlowLimit, type FlowSort, type FlowStage, type FlowStageKind, type FlowStepFields, type FlowWait, type FlowZone, type ScriptLanguage, type TriggerInput,
 } from "./contracts/flow.js";
 
@@ -79,7 +79,7 @@ export const FLOW_KIND_WORDS: Record<FlowStageKind, { label: string; about: stri
   draft: { label: "Draft", about: "Claude writes a reply, summary or note from the card in seconds. Nothing is sent until a later step sends it." },
   sort: { label: "Sort", about: "Jev reads the card in under a second and sends it where its answer leads. Cards it isn't sure about take the not-sure path." },
   wait: { label: "Wait", about: "Waits for a reply to the card's email, or for a set time. A reply moves the card on; if none comes in time, it takes the no-reply path." },
-  teammate: { label: "Teammate handles it", about: "An AI teammate reads the card, decides where it goes within its rules, and writes what the next zones send. When its rules say to ask, it asks you first." },
+  subagent: { label: "Subagent handles it", about: "A subagent reads the card, decides where it goes within its rules, and writes what the next zones send. When its rules say to ask, it asks you first." },
   send: { label: "Send to me", about: "Sends the card's owner what the step before produced: its summary, links and any screenshots, in each chat app they use and on the card. Then moves on." },
   choose: { label: "Person chooses", about: "Sends the card's owner what was done with 2 to 4 buttons you name, in their chat apps and here. Each leads to a zone or ignores the card; a reply instead goes where replies go, as the note." },
   done: { label: "Done", about: "The end of the flow." },
@@ -178,7 +178,7 @@ function canonicalSort(input: unknown): unknown {
   };
 }
 
-/** A script's or teammate's answers as every release has kept them: trimmed, none left out. */
+/** A script's or subagent's answers as every release has kept them: trimmed, none left out. */
 function canonicalRoutes(input: unknown): unknown {
   if (!given(input)) return undefined;
   if (!Array.isArray(input)) return input;
@@ -206,7 +206,7 @@ function canonicalWait(input: unknown): unknown {
  */
 function canonicalStage(input: unknown, index: number): unknown {
   if (!isRecord(input)) return input;
-  const stage = input;
+  const stage = legacySubagentStep(input) as Record<string, unknown>;
   const kind = stage["kind"];
   const zone = isRecord(stage["zone"]) ? stage["zone"] : {};
   const planning = stage["planning"] === "required" || stage["planning"] === "skip" || stage["planning"] === "auto" ? stage["planning"] : null;
@@ -237,9 +237,9 @@ function canonicalStage(input: unknown, index: number): unknown {
     ...(kind === "wait" ? { wait: canonicalWait(stage["wait"]) } : {}),
     // true is a squash, the default; false or none is no merge.
     ...(kind === "pull-request" && given(stage["merge"]) && stage["merge"] !== false ? { merge: stage["merge"] === true ? "squash" : stage["merge"] } : {}),
-    ...((kind === "approval" || kind === "teammate") && given(stage["teammate"]) && stage["teammate"] !== "" ? { teammate: stage["teammate"] } : {}),
-    ...(kind === "teammate" && routes !== undefined ? { routes } : {}),
-    ...(kind === "teammate" && stage["reply"] === true ? { reply: true } : {}),
+    ...((kind === "approval" || kind === "subagent") && given(stage["subagent"]) && stage["subagent"] !== "" ? { subagent: stage["subagent"] } : {}),
+    ...(kind === "subagent" && routes !== undefined ? { routes } : {}),
+    ...(kind === "subagent" && stage["reply"] === true ? { reply: true } : {}),
     ...(kind === "choose" ? { options: Array.isArray(stage["options"]) ? stage["options"].map(one => { const row = isRecord(one) ? one : {}; return { label: said(row["label"]), to: said(row["to"]) }; }) : given(stage["options"]) ? stage["options"] : [] } : {}),
     ...(kind === "task" && given(stage["repo"]) && stage["repo"] !== "" ? { repo: said(stage["repo"]) } : {}),
     ...(limit === undefined ? {} : { limit }),
@@ -533,7 +533,7 @@ function fillOne(key: string, stage: string | undefined, card: { title: string; 
   }
 }
 
-const KIND_COLORS: Record<FlowStageKind, FlowColor> = { inbox: "slate", task: "blue", report: "violet", approval: "amber", check: "blue", "pull-request": "blue", update: "green", notify: "green", sort: "violet", draft: "violet", request: "blue", email: "green", tool: "blue", wait: "slate", teammate: "violet", send: "green", choose: "amber", done: "green" };
+const KIND_COLORS: Record<FlowStageKind, FlowColor> = { inbox: "slate", task: "blue", report: "violet", approval: "amber", check: "blue", "pull-request": "blue", update: "green", notify: "green", sort: "violet", draft: "violet", request: "blue", email: "green", tool: "blue", wait: "slate", subagent: "violet", send: "green", choose: "amber", done: "green" };
 /** A step id as the lead may write it (sort_by_hand, Sort-By-Hand) in the one form zones use. */
 const idOf = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
 const slugOf = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 28) || "zone";
@@ -599,7 +599,7 @@ export function withKeptSteps(steps: unknown, previous: FlowDefinition | null): 
 
 /** A flow's steps, read by their one schema: `steps[0].routes[0]: unknown key 'to' (did you mean goesTo?)`. */
 export function readFlowSteps(input: unknown, previous: FlowDefinition | null = null): ContractResult<FlowStepFields[]> {
-  const read = parseContract(flowStepsSchema, { steps: withKeptSteps(input, previous) }, FLOW_ALIASES);
+  const read = parseContract(flowStepsSchema, { steps: withKeptSteps(Array.isArray(input) ? input.map(legacySubagentStep) : input, previous) }, FLOW_ALIASES);
   return read.ok ? { ok: true, value: read.value.steps as FlowStepFields[] } : read;
 }
 
@@ -670,7 +670,7 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
       id, title, kind,
       zone: old?.zone ?? { x: 0, y: 0, w: 260, h: kind === "done" || kind === "notify" || kind === "send" ? 220 : 300, color: KIND_COLORS[kind] },
       // A kept step on our default instructions gets the default again, so it reads any research step added before it.
-      instructions: kind === "teammate" ? step.instructions?.trim() || old?.instructions || "Read the card and decide what happens next."
+      instructions: kind === "subagent" ? step.instructions?.trim() || old?.instructions || "Read the card and decide what happens next."
         : kind === "draft" ? step.instructions?.trim() || old?.instructions || DRAFT_DEFAULT
         : kind === "task" || kind === "report"
         ? step.instructions?.trim() || (old?.instructions && old.instructions !== defaultInstructions(kind, previous!.stages.slice(0, previous!.stages.indexOf(old))) ? old.instructions : defaultInstructions(kind, earlier))
@@ -694,10 +694,10 @@ export function flowFromSteps(input: unknown, previous: FlowDefinition | null = 
       ...(kind === "tool" ? { tool: { server: step.server ?? old?.tool?.server ?? "", name: step.tool ?? old?.tool?.name ?? "", args: typeof step.args === "string" ? step.args : step.args !== undefined ? JSON.stringify(step.args) : old?.tool?.args ?? "{}" } } : {}),
       ...(kind === "wait" ? { wait: waitFromStep(step, old?.wait ?? null, at) } : {}),
       ...(kind === "pull-request" && (step.merge === undefined ? old?.merge !== undefined : step.merge !== false) ? { merge: step.merge === undefined || step.merge === true || step.merge === false ? old?.merge ?? "squash" : step.merge } : {}),
-      // v92: "nobody" (or "none") takes a teammate off an approval step.
-      ...((kind === "approval" || kind === "teammate") && (step.teammate === undefined ? old?.teammate !== undefined : !/^(nobody|none|no one)$/i.test(step.teammate.trim())) ? { teammate: idOf(step.teammate ?? old!.teammate!) } : {}),
-      ...(kind === "teammate" ? step.routes !== undefined ? routesOf(step.routes) : old?.routes === undefined ? {} : { routes: old.routes } : {}),
-      ...(kind === "teammate" && (step.reply ?? old?.reply) === true ? { reply: true as const } : {}),
+      // v92: "nobody" (or "none") takes a subagent off an approval step.
+      ...((kind === "approval" || kind === "subagent") && (step.subagent === undefined ? old?.subagent !== undefined : !/^(nobody|none|no one)$/i.test(step.subagent.trim())) ? { subagent: idOf(step.subagent ?? old!.subagent!) } : {}),
+      ...(kind === "subagent" ? step.routes !== undefined ? routesOf(step.routes) : old?.routes === undefined ? {} : { routes: old.routes } : {}),
+      ...(kind === "subagent" && (step.reply ?? old?.reply) === true ? { reply: true as const } : {}),
       ...(kind === "choose" ? { options: choicesFromStep(step, old?.options ?? null, at, find) } : {}),
       ...(kind === "task" && (step.repo ?? old?.repo) !== undefined && (step.repo ?? old?.repo)!.trim() !== "" ? { repo: (step.repo ?? old?.repo)!.trim() } : {}),
       ...(() => {
@@ -829,8 +829,8 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
       `Then → ${to(stage.next)}${stage.onFail === null ? " If it can't be sent → waits there." : ` If it can't be sent → ${to(stage.onFail)}`}`);
     else if (stage.kind === "tool" && stage.tool !== undefined) lines.push(`Uses ${stage.tool.server} → ${stage.tool.name} with ${plain(stage.tool.args).slice(0, 400)}`,
       `Then → ${to(stage.next)}${stage.onFail === null ? " If it fails → waits there." : ` If it fails → ${to(stage.onFail)}`}`);
-    else if (stage.kind === "approval") lines.push(`Decides: ${stage.teammate !== undefined ? `the AI teammate ${stage.teammate}, within its rules, handing hard ones to ${stage.toOwner === true ? "the flow's owner" : stage.approver ?? "anyone who approves"}` : stage.toOwner === true ? "the flow's owner, in their chat app" : stage.approver ?? "anyone who approves on this project"}. Approve → ${to(stage.next)} Send back → ${stage.onFail === null ? "not possible." : to(stage.onFail)}`);
-    else if (stage.kind === "teammate") lines.push(`The AI teammate ${stage.teammate ?? "(none)"} handles it${stage.instructions === null ? "" : `: ${plain(stage.instructions)}`}`,
+    else if (stage.kind === "approval") lines.push(`Decides: ${stage.subagent !== undefined ? `the subagent ${stage.subagent}, within its rules, handing hard ones to ${stage.toOwner === true ? "the flow's owner" : stage.approver ?? "anyone who approves"}` : stage.toOwner === true ? "the flow's owner, in their chat app" : stage.approver ?? "anyone who approves on this project"}. Approve → ${to(stage.next)} Send back → ${stage.onFail === null ? "not possible." : to(stage.onFail)}`);
+    else if (stage.kind === "subagent") lines.push(`The subagent ${stage.subagent ?? "(none)"} handles it${stage.instructions === null ? "" : `: ${plain(stage.instructions)}`}`,
       ...(stage.routes === undefined || stage.routes.length === 0 ? [`Then → ${to(stage.next)}`] : stage.routes.map(one => `${one.answer} → ${to(one.to)}`)),
       `It asks the flow's owner when its rules say to.${stage.reply === true ? " It sends what it writes back to whoever asked." : ""}${stage.onFail === null ? "" : ` If it can't → ${to(stage.onFail)}`}`);
     else if (stage.kind === "notify") lines.push(`Posts: ${plain(stage.message ?? "")}`, `Then → ${to(stage.next)}`);
@@ -880,7 +880,7 @@ export function flowTerms(definition: FlowDefinition, previous: FlowDefinition |
   if (definition.stages.some(one => one.kind === "pull-request")) terms.push(`Pull request steps push the card's branch to GitHub and open a pull request under this project's pull request setup.${definition.stages.some(one => one.merge !== undefined) ? " A merge happens only after a person approves the card; nothing merges without one." : " Nothing merges on its own."}`);
   if (definition.stages.some(one => one.kind === "draft")) terms.push("Draft steps send each card's text to Claude through the lead chat's sign-in. Nothing a draft writes is sent until a later step sends it.");
   if (definition.stages.some(one => one.kind === "task" && one.repo !== undefined)) terms.push("A build step in another project files its task there, only when the flow's owner may file work in that project.");
-  if (definition.stages.some(one => one.teammate !== undefined)) terms.push("AI teammates decide and act within their soul files' rules, reading each card through Claude on this computer's sign-in; they never approve code tasks or merges.");
+  if (definition.stages.some(one => one.subagent !== undefined)) terms.push("subagents decide and act within their soul files' rules, reading each card through Claude on this computer's sign-in; they never approve code tasks or merges.");
   return terms;
 }
 

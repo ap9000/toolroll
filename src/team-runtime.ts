@@ -8,15 +8,15 @@ import { workIndexPage } from './work-index.js';
 import { TeamLeads, type TeamClaim } from './team-leads.js';
 import { teamScopeAllows, type TeamActor, type TeamChatAuthorization, type TeamExecute, type TeamResponse, type TeamSnapshot } from './team-contract.js';
 import { verifyApproverStanding } from './principal.js';
-import { credentialKeyOf, isDirectChatProvider, priceForConfig, subscriptionCredentialKey, mateWorstCaseForPrice } from './converse.js';
-import { runMateTurn, type MateTurnInput } from './mate.js';
+import { credentialKeyOf, isDirectChatProvider, priceForConfig, subscriptionCredentialKey, leadWorstCaseForPrice } from './converse.js';
+import { runLeadTurn, type LeadTurnInput } from './lead.js';
 import { teamChatAuthorization, type TeamChatProviderResolver } from './team-chat-authorization.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
 
 export type TeamRuntimeOptions = {
   store: Store; repos: () => readonly string[]; evidenceRoot: string;
   provider: TeamChatProviderResolver;
-  subscriptionRunner?: MateTurnInput['subscriptionRunner']; fetcher?: typeof fetch;
+  subscriptionRunner?: LeadTurnInput['subscriptionRunner']; fetcher?: typeof fetch;
   clock?: () => Date; capacity?: number; workspaceRevision?: WorkspaceRevision;
 };
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -47,7 +47,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
     const stamp=hash([grant.termsDigest,grant.enabled,session?.id,session?.spentMicrousd,used,weekly,Boolean(latched),legacyBusy]);
     let reason=grant.waitingReason??(!grant.enabled?'Enable chat using the current provider and limits.':null);
     if(!reason&&live&&session){
-      const price=priceForConfig(live.config),minimum=isDirectChatProvider(live.config.provider)&&price?mateWorstCaseForPrice(price,0,{steps:1}):0;
+      const price=priceForConfig(live.config),minimum=isDirectChatProvider(live.config.provider)&&price?leadWorstCaseForPrice(price,0,{steps:1}):0;
       if(latched)reason='A previous chat cost is unconfirmed. Open Settings to inspect it.';
       else if(used>=live.config.dailyTurns)reason='The daily chat limit is reached. Queued messages are saved.';
       else if(session.ceilingMicrousd-session.spentMicrousd<minimum)reason='This conversation has used its chat allowance. Queued messages are saved.';
@@ -82,7 +82,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
     const waitingReason=selected&&view.canSend&&grant.enabled?admission(actor,selected.id).reason:null;
     return { ...view, chatAuthorization:{...grant,...(waitingReason?{waitingReason}:{})},
       ...(selected ? {tasks:tasksFor(selected),
-      proposals:store.listMateProposals(selected.threadId).filter(p=>p.state!=='drafting').slice(-40).map(p=>({id:p.id,turnId:p.turn,title:typeof p.payload['title']==='string'?p.payload['title'].slice(0,160):`Review ${p.kind.replaceAll('_',' ')}`,state:p.state,href:`/chat?conversation=${encodeURIComponent(selected.id)}&proposal=${p.id}`}))}: {}) };
+      proposals:store.listLeadProposals(selected.threadId).filter(p=>p.state!=='drafting').slice(-40).map(p=>({id:p.id,turnId:p.turn,title:typeof p.payload['title']==='string'?p.payload['title'].slice(0,160):`Review ${p.kind.replaceAll('_',' ')}`,state:p.state,href:`/chat?conversation=${encodeURIComponent(selected.id)}&proposal=${p.id}`}))}: {}) };
   }
 
   function authorize(actor: TeamActor, args: Record<string, unknown>): TeamResponse {
@@ -115,7 +115,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
       if (!domain.current(claim)) { domain.finish(claim,{status:'cancelled',error:'Conversation access changed.'},clock()); return; }
       const view = snapshot(claim.actor, claim.conversationId), grant = view.chatAuthorization;
       if(claim.requestId.startsWith('team-update:')&&!view.selected?.follow){domain.finish(claim,{status:'cancelled',error:'Automatic updates were paused.'},clock());return;}
-      const provider = options.provider(), session = store.teamMateSession(claim.actor.name, claim.threadId), thread = store.getMateThread(claim.threadId);
+      const provider = options.provider(), session = store.teamMateSession(claim.actor.name, claim.threadId), thread = store.getLeadThread(claim.threadId);
       const proof = verifyApproverStanding(store, claim.actor.name, claim.actor.generation, claim.projects);
       if (!provider || !session || !thread || !proof.ok || !grant?.enabled) {
         domain.finish(claim, { status: 'failed', error: grant?.waitingReason ?? 'Chat authorization changed. Enable chat before sending a new message.' }, clock()); return;
@@ -123,13 +123,13 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
       const requestId = requestFor(claim);
       // A saved terminal provider receipt wins over delivery bookkeeping.
       // Neither failure nor an unconfirmed receipt causes another provider call.
-      const receipt = store.mateRequestReceipt(session.id, requestId);
+      const receipt = store.leadRequestReceipt(session.id, requestId);
       if (receipt) {
-        const turn = store.getMateTurn(receipt.turn);
+        const turn = store.getLeadTurn(receipt.turn);
         domain.finish(claim, { status: turn?.state === 'answered' ? 'answered' : turn?.state === 'failed' && !domain.deliveryUncertain(turn.id) ? 'failed' : 'uncertain',
           turnId: receipt.turn, ...(turn?.state === 'answered' ? {} : { error: 'Inspect the saved response; this message was not sent again.' }) }, clock()); return;
       }
-      const result = await runMateTurn({ store, who: proof.who, session, thread, ...provider, message: claim.text, requestId, channel: "console",
+      const result = await runLeadTurn({ store, who: proof.who, session, thread, ...provider, message: claim.text, requestId, channel: "console",
         ...(() => { const name = view.leads.find(lead => lead.id === claim.leadId)?.name; return name === undefined ? {} : { leadName: name }; })(),
         queuedMessageId: claim.messageId,
         onAdmitted: turn => { if (!domain.current(claim) || !domain.bindTurn(claim, turn)) throw new Error('The queued message changed before admission.'); },

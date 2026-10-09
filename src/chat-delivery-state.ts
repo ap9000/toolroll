@@ -1,6 +1,6 @@
 /** Durable chat receipts on the shared chat core: what each app's chats sent us and what we plan to send them. */
 import { randomBytes } from "node:crypto";
-import { MATE_ASK_TTL_MS } from "./store.js";
+import { LEAD_ASK_TTL_MS } from "./store.js";
 import { ChatCore, chatHash, type ChatBinding, type ChatProvider, type ChatRoom } from "./chat-core.js";
 import { ChatMessages } from "./chat-messages.js";
 import { readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatEventBody } from "./contracts/chat-content.js";
@@ -128,7 +128,7 @@ export class ChatState extends ChatMessages {
         if (part.ask)
           for (const choice of [...part.ask.options.map((_, index) => index), null])
             this.prepare("INSERT INTO chat_ask_action (provider, token, part, turn, choice, expires) VALUES (:provider, ?, ?, ?, ?, ?)")
-              .run(token(), id, part.ask.turn, choice, new Date(now.getTime() + MATE_ASK_TTL_MS).toISOString());
+              .run(token(), id, part.ask.turn, choice, new Date(now.getTime() + LEAD_ASK_TTL_MS).toISOString());
         if (part.choose)
           for (const one of part.choose.options)
             this.prepare("INSERT INTO chat_flow_choice (provider, token, part, card, entry, choice, label, created, expires) VALUES (:provider, ?, ?, ?, ?, ?, ?, ?, ?)")

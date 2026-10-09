@@ -11,7 +11,6 @@ export const CHAT_CONTROLS = {
   acceptance: { label: "Inspect result", target: "task" },
   publish: { label: "Review publication", target: "task" },
   projects: { label: "Manage projects", href: "/projects" },
-  code: { label: "Open coding workspace", href: "/code" },
   flows: { label: "Open flows", href: "/flows" },
   recipes: { label: "Browse workflows", href: "/recipes" },
   workers: { label: "Manage workers", href: "/fleet" },

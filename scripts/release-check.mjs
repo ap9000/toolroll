@@ -11,8 +11,8 @@
  *   - the upgrade path (scripts/upgrade-path.mjs): each of the last 3 published releases, with a realistic database,
  *     moves to this candidate through the deploy's facts check, `toolroll update` and `npm i -g` with no manual step
  *     (needs the npm registry; each release is installed once and cached)
- *   - the real-model journeys only when model-facing code changed (the lead, chat, mate tools, the planner, the
- *     builder, teammates, the provider adapters) or --real is given: every group with real-model journeys, and the
+ *   - the real-model journeys only when model-facing code changed (the lead and its tools, chat, the planner, the
+ *     builder, subagents, the provider adapters) or --real is given: every group with real-model journeys, and the
  *     journeys they need, each real turn under one cap shared by both runners (scripts/provider-gate.mjs, default at
  *     most 4; TOOLROLL_CHECK_PROVIDERS). The nightly journeys flow (scripts/flows/real-model-journeys.mjs) runs every
  *     journey with real models
@@ -59,12 +59,12 @@ function baseOf() {
   return tryGit("rev-parse", "--verify", "-q", "origin/main");
 }
 
-/** Model-facing code: a change here runs the real-model journeys (the lead, chat, mate tools, the planner, the builder,
- * teammates, task sizing and sorting, the provider adapters and how a turn is run and read). */
+/** Model-facing code: a change here runs the real-model journeys (the lead and its tools, chat, the planner, the builder,
+ * subagents, task sizing and sorting, the provider adapters and how a turn is run and read). */
 const MODEL = [
-  /^src\/(mate|mate-[a-z-]+|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
+  /^src\/(lead|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
   /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence)\.ts$/,
-  /^src\/(teammates|teammate-work|task-sizing|flow-sort|flow-draft)\.ts$/,
+  /^src\/(subagents|subagent-work|task-sizing|flow-sort|flow-draft)\.ts$/,
   /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
 ];
 /** Changes no test reads. */

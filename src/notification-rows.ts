@@ -1,12 +1,12 @@
 /** Saved notifications, read and told apart without a store: the row readers, the lifecycle key and the predicates
  * the store and the chat core (chat-messages.ts) share. A leaf: it imports types only. */
-import type { MateProposal, Notification, NotificationReceipt } from "./store.js";
+import type { LeadProposal, Notification, NotificationReceipt } from "./store.js";
 
 /** The one task a card is about: a task its confirmation created (a new
  * task, a revision), else the task it names (and, for feedback on a result,
  * that result). Null for a card about no single task. A pointer for
  * replies, never an authority. */
-export function proposalTaskOf(proposal: MateProposal | null): { task: string; run: number | null } | null {
+export function proposalTaskOf(proposal: LeadProposal | null): { task: string; run: number | null } | null {
   if (proposal === null) return null;
   const named = typeof proposal.payload["task"] === "string" && proposal.payload["task"] !== "" ? proposal.payload["task"] : null;
   const creates = proposal.kind === "task" || (proposal.kind === "review" && proposal.payload["operation"] === "revise");

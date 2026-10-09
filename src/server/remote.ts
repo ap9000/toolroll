@@ -163,9 +163,11 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       case 'edge.mcp': return mcpHttp(request, response);
       case 'edge.oauth-discovery': case 'edge.oauth-register': case 'edge.oauth-token': case 'edge.oauth-authorize': case 'edge.oauth-consent':
         await oauthHttp(request, response, url); return;
+      // D5: native coding sessions and the central team service are deprecated (still served this release); each
+      // answer says so in a Deprecation header (RFC 9745).
       case 'edge.sessions-list': case 'edge.sessions-show': case 'edge.sessions-changes': case 'edge.sessions-start': case 'edge.sessions-send': case 'edge.sessions-stop': case 'edge.sessions-resume': case 'edge.sessions-recover':
-        await sessionEndpoint(request, response); return;
-      case 'edge.team-read': case 'edge.team-send': case 'edge.team-events': await teamEndpoint(request, response); return;
+        response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); return;
+      case 'edge.team-read': case 'edge.team-send': case 'edge.team-events': response.setHeader('Deprecation', 'true'); await teamEndpoint(request, response); return;
       case 'edge.cli': await cliEndpoint(request, response); return;
       case 'edge.teams':
         if (options.configDir !== undefined && await handleTeamsHttp(request, response, { store, dir: options.configDir, ...(options.teamsFetcher ? { fetcher: options.teamsFetcher } : {}), clock,

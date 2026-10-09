@@ -30,13 +30,13 @@ test.each([104, -104])("v%s: runs from before are priced when read (none settled
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   db.close();
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
   expect(store.monthSpend(now).items).toMatchObject([{ runId: run, microusd: 2_500_000, source: "reported", person: "alex" }]);
   expect(store.providerLimits()).toEqual([]);
   expect(store.budgets()).toEqual([]);
   store.setBudget({ scope: "installation", key: "*", limitMicrousd: 1_000_000, hardStop: true }, "alex", now);
-  expect(store.budgetGate(now)({ project: null, person: null, teammate: null }).over).toMatchObject({ scope: "installation" });
+  expect(store.budgetGate(now)({ project: null, person: null, subagent: null }).over).toMatchObject({ scope: "installation" });
   // Read while Claude is on its plan, the same unsettled run is $0.
   setAuthMode("claude", "subscription");
   expect(store.monthSpend(now).items).toMatchObject([{ runId: run, microusd: 0, source: "subscription" }]);

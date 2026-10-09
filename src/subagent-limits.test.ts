@@ -1,5 +1,5 @@
 /**
- * A teammate writes to known limits: its prompt states each one, an answer over one is asked once to shorten, and one
+ * A subagent writes to known limits: its prompt states each one, an answer over one is asked once to shorten, and one
  * still over is kept whole (what the next zones read links to it), never cut.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -10,21 +10,21 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { run as exec } from "./exec.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
-import { readTurn, TEAMMATE_TEMPLATES, TURN_LIMITS, turnOverruns, type TurnRequest, type TurnRunner } from "./teammates.js";
+import { readTurn, SUBAGENT_TEMPLATES, TURN_LIMITS, turnOverruns, type TurnRequest, type TurnRunner } from "./subagents.js";
 
 const T0 = new Date("2026-10-04T09:00:00.000Z");
 let dir: string, repo: string, store: Store, flow: number;
 
 beforeEach(() => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "so-teammate-limits-")));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "so-subagent-limits-")));
   repo = join(dir, "desk");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
   const stage = (id: string, kind: string, rest: Record<string, unknown> = {}) => ({ id, title: id, kind, zone: {}, instructions: null, next: null, onFail: null, ...rest });
   flow = store.createFlow({ repo, name: "Support", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya", stages: [
-    stage("maya", "teammate", { title: "Maya replies", teammate: "maya", routes: [{ answer: "Replied", to: "done" }] }), stage("done", "done"),
+    stage("maya", "subagent", { title: "Maya replies", subagent: "maya", routes: [{ answer: "Replied", to: "done" }] }), stage("done", "done"),
   ] }) }, T0);
-  store.createTeammate({ repo, handle: "maya", soul: TEAMMATE_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
+  store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -40,7 +40,7 @@ function turns(...answers: Record<string, unknown>[]): TurnRunner & { prompts: s
   runner.prompts = prompts;
   return runner;
 }
-const io = (teammate: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, teammate });
+const io = (subagent: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, subagent });
 const reply = "Hi Priya, your lamp shipped on the 15th and arrives tomorrow. ".repeat(250).trim();
 
 test("an answer is read whole, never sliced, and its fields over their limits are named", () => {
@@ -79,7 +79,7 @@ test("a reply still over its limit after the one ask is attached whole to the ca
 test("a send-back note still over 4,000 after the one ask is kept whole on the card, and the note links to it, never cut", async () => {
   const stage = (id: string, kind: string, rest: Record<string, unknown> = {}) => ({ id, title: id, kind, zone: {}, instructions: null, next: null, onFail: null, ...rest });
   const refunds = store.createFlow({ repo, name: "Refunds", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya-decides", stages: [
-    stage("maya-decides", "approval", { title: "Maya decides", teammate: "maya", toOwner: true, next: "done", onFail: "rework" }), stage("rework", "inbox"), stage("done", "done"),
+    stage("maya-decides", "approval", { title: "Maya decides", subagent: "maya", toOwner: true, next: "done", onFail: "rework" }), stage("rework", "inbox"), stage("done", "done"),
   ] }) }, T0);
   const card = store.addFlowCard({ flow: refunds, title: "Refund $30 for order 51", description: null, stage: "maya-decides", by: "alex" }, T0);
   const note = "The order shows two lamps, but the refund covers one; check which was returned. ".repeat(60).trim();

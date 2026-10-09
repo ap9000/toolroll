@@ -368,7 +368,9 @@ function assertConfig(j: UpdateJournal): void {
 }
 function snapshot(db: DatabaseSync): string {
   const result: Record<string, unknown> = {};
-  for (const table of ["task", "task_scope", "approver", "run", "artifact", "mate_message", "project"]) {
+  // The lead's messages were mate_message before v117 (D5); a desktop update never migrates, so read whichever is here.
+  const messages = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lead_message'").get() === undefined ? "mate_message" : "lead_message";
+  for (const table of ["task", "task_scope", "approver", "run", "artifact", messages, "project"]) {
     const rows = db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all();
     result[table] = rows;
   }

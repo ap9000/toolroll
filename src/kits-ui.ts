@@ -5,7 +5,7 @@
  */
 import type { Store } from "./store.js";
 import { kitChecklist, kitInstalled, KITS, type Kit } from "./kits.js";
-import { TEAMMATE_TEMPLATES } from "./teammates.js";
+import { SUBAGENT_TEMPLATES } from "./subagents.js";
 
 const e = (text: string) => text.replace(/[&<>"']/g, one => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[one]!);
 const hidden = (csrf: string) => `<input type="hidden" name="csrf" value="${e(csrf)}">`;
@@ -22,22 +22,22 @@ export const KITS_CSS = `.kits{max-width:960px;min-width:0}.kits-lede{color:var(
   `.kit-steps .kit-step-go{display:inline-flex;align-items:center;padding:0 12px;border:1px solid var(--so-line);border-radius:8px;text-decoration:none;font-size:.9rem}` +
   `@media(max-width:600px){.kit-steps li{flex-wrap:wrap}.kit-steps .kit-step-said{flex-basis:calc(100% - 40px)}.kit form select{font-size:16px}}`;
 
-const teammateWords = (kit: Kit) => { const template = TEAMMATE_TEMPLATES.find(one => one.id === kit.teammate.template); return template === undefined ? kit.teammate.handle : template.label.toLowerCase(); };
+const subagentWords = (kit: Kit) => { const template = SUBAGENT_TEMPLATES.find(one => one.id === kit.subagent.template); return template === undefined ? kit.subagent.handle : template.label.toLowerCase(); };
 
 /** The gallery: every kit, set up in a project with one button (or opened, when it's already there). */
 export function kitsGalleryHtml(store: Store, projects: readonly string[], projectName: (repo: string) => string, csrf: string, canSetUp: boolean, notice: { problem?: string | null }): string {
   const cards = KITS.map(kit => {
     const here = projects.filter(repo => kitInstalled(store, kit, repo) !== null);
     const open = projects.length === 1 && here.length === 1;
-    const name = kit.teammate.handle.charAt(0).toUpperCase() + kit.teammate.handle.slice(1);
-    const gets = `${name} (${teammateWords(kit)}) · the ${kit.flowName} flow${kit.tools.length === 0 ? "" : ` · works with ${kit.tools.map(one => one.label).join(" and ")}`}`;
+    const name = kit.subagent.handle.charAt(0).toUpperCase() + kit.subagent.handle.slice(1);
+    const gets = `${name} (${subagentWords(kit)}) · the ${kit.flowName} flow${kit.tools.length === 0 ? "" : ` · works with ${kit.tools.map(one => one.label).join(" and ")}`}`;
     const action = open ? `<a class="kit-open" href="/kits/${kit.id}?repo=${encodeURIComponent(projects[0]!)}">Open ${e(kit.name)} →</a>`
       : !canSetUp || projects.length === 0 ? ""
       : `<form method="post" action="/kits/${kit.id}/setup">${hidden(csrf)}${projects.length === 1 ? `<input type="hidden" name="repo" value="${e(projects[0]!)}">`
         : `<label>Project<select name="repo">${projects.map(repo => `<option value="${e(repo)}">${e(projectName(repo))}${here.includes(repo) ? " (set up)" : ""}</option>`).join("")}</select></label>`}<button>Set it up</button></form>`;
     return `<article class="kit" data-kit="${kit.id}"><h2>${e(kit.name)}</h2><p class="kit-promise">${e(kit.promise)}</p><p class="kit-gets">${e(gets)}</p>${action}</article>`;
   }).join("");
-  return `<section class="kits">${notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : ""}<p class="kits-lede">A working setup in one click: an AI teammate, the flow it works, and what to connect next. Nothing goes out without you approving it.</p><div class="kit-grid">${cards}</div></section>`;
+  return `<section class="kits">${notice.problem ? `<p class="problem" role="alert">${e(notice.problem)}</p>` : ""}<p class="kits-lede">A working setup in one click: a subagent, the flow it works, and what to connect next. Nothing goes out without you approving it.</p><div class="kit-grid">${cards}</div></section>`;
 }
 
 /** A kit's own page: what's set up, and the next step on each line. */
