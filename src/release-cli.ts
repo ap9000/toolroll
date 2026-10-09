@@ -9,7 +9,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
+// Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
+const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 import { checkedEnvelopeJson } from "./contracts/cli.js";
 import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome } from "./release.js";
 import { processes, releaseAdapters } from "./release-adapters.js";
@@ -145,7 +147,7 @@ function installedGateWorld(): GateReleaseWorld {
   return {
     database, stateDir: dirname(database), now: () => new Date(), processes,
     open: () => {
-      const db = new DatabaseSync(database) as unknown as Database;
+      const db = new (sqlite().DatabaseSync)(database) as unknown as Database;
       db.exec("PRAGMA busy_timeout=5000");
       return db;
     },

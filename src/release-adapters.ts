@@ -10,7 +10,9 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
+// Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
+const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullRequest, ReleaseAdapters } from "./release.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
@@ -176,7 +178,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const database = options.database ?? databasePath(process.env, homedir());
   const liveOwner = () => {
     if (!existsSync(database)) return null;
-    const db = new DatabaseSync(database, { readOnly: true }) as unknown as Database;
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
     try { return gateOwner(db); } finally { db.close(); }
   };
   const tail = (result: { code: number; stdout: string; stderr: string }) => (result.stderr || result.stdout).trim().split("\n").slice(-4).join(" ") || `exit ${result.code}`;
@@ -259,7 +261,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return answer["ok"] === true ? { ok: true } : { ok: false, message: refused(answer) };
       },
       async busy() {
-        const db = new DatabaseSync(database, { readOnly: true }) as unknown as Database;
+        const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
         try {
           // Match the deploy guard, including unfinished runs whose claim is gone. Keep one read snapshot.
           db.exec("BEGIN");
