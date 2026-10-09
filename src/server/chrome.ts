@@ -836,7 +836,7 @@ export type NavRow = { key: Chrome["active"]; href: string; label: string; hint:
  */
 export function workToolRows(scoped = false, _offersChat = false, offersCode = false): NavRow[] {
   const rows: NavRow[] = [
-    ...(offersCode ? [{ key: "code" as const, href: "/code", label: "Coding sessions", hint: "Direct coding sessions and their saved results" }] : []),
+    // D5: coding sessions are deprecated; /code still opens this release, but nothing links to it.
     { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },

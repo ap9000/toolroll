@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.56 — 2026-10-09
+
+- **One lead.** Your assistant in the console, on your phone, in chat and in
+  the CLI is the same lead. Teammates are now its subagents, with their
+  personalities and rules: "ask Rosa to…", or from a flow step.
+- **Retiring soon.** The central team service and native coding sessions are
+  hidden and warn when used; they are removed next release.
+- **Fresh baseline.** New installs start from a baseline schema. Databases
+  older than 0.5.0 are asked to update through 0.9.x first.
+
 ## 0.9.55 — 2026-10-09
 
 - **One door per route.** Every page's access comes from one table with one
