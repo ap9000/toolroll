@@ -1,7 +1,7 @@
 /** Small warm touches while the lead works on a chat app: once a turn will take more than a few seconds (its first tool
  * step starts), a 👍 on the owner's message and the app's typing indicator until the turn ends. Best effort only: an
  * app or permission that does not allow it is skipped silently, and nothing here can fail, delay or change the turn. */
-import type { MateProgress } from "./mate-progress.js";
+import type { LeadProgress } from "./lead-progress.js";
 
 export const WARM_EMOJI = "👍";
 /** Telegram and Teams show typing for about five seconds, Discord for ten: refreshed inside the shorter window. */
@@ -14,7 +14,7 @@ export type WarmHooks = {
   typing?: () => Promise<unknown>;
 };
 
-export type WarmTurn = { onProgress: (event: MateProgress) => void; stop: () => void };
+export type WarmTurn = { onProgress: (event: LeadProgress) => void; stop: () => void };
 
 /** The turn's progress listener: on the first tool step, react once and keep typing shown until `stop`. */
 export function warmTurn(hooks: WarmHooks, options: { refreshMs?: number } = {}): WarmTurn {

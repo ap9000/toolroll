@@ -7,14 +7,14 @@
  * costs nothing extra).
  */
 import type { Store } from "./store.js";
-import { budgetLabel, teammateNames, usd, type BudgetState } from "./spend.js";
+import { budgetLabel, subagentNames, usd, type BudgetState } from "./spend.js";
 
 const MARKS = [100, 80, 50] as const;
 
 export function budgetAlertPass(store: Store, now: Date): { sent: { budget: number; mark: number }[] } {
   const { month, budgets } = store.monthSpend(now);
   const sent: { budget: number; mark: number }[] = [];
-  const names = teammateNames(store.handle);
+  const names = subagentNames(store.handle);
   for (const budget of budgets) {
     const mark = MARKS.find(one => budget.percent >= one);
     if (mark === undefined) continue;
@@ -22,7 +22,7 @@ export function budgetAlertPass(store: Store, now: Date): { sent: { budget: numb
     const key = (one: number) => `budget:${budget.id}:${budget.limitMicrousd}:${month}:${one}`;
     // A higher mark already sent this month covers this one.
     if (MARKS.filter(one => one >= mark).some(one => store.handle.prepare("SELECT 1 AS hit FROM notification WHERE dedupe_key = ?").get(key(one)) !== undefined)) continue;
-    const label = budgetLabel(budget, budget.scope === "teammate" ? names.get(Number(budget.key)) : undefined);
+    const label = budgetLabel(budget, budget.scope === "subagent" ? names.get(Number(budget.key)) : undefined);
     const fresh = store.enqueueNotification({
       dedupeKey: key(mark), kind: "budget-alert", pushClass: "attention", link: `/spend?month=${month}`,
       subject: `${label} budget: ${mark}% used`,

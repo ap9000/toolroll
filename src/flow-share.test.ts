@@ -162,6 +162,14 @@ describe("export then import", () => {
     }
   });
 
+  test("a flow file written before subagents were named so (D5) reads exactly as one written since", () => {
+    const recorded = JSON.parse(readFileSync(new URL("../test/fixtures/flows/flow-files.json", import.meta.url), "utf8")) as { files: { json: string }[] };
+    const today = recorded.files.find(one => one.json.includes('"kind": "subagent"'))!.json;
+    const before = today.replaceAll('"kind": "subagent"', '"kind": "teammate"').replaceAll('"subagent": ', '"teammate": ').replaceAll('"subagent:', '"teammate:');
+    expect(before).toContain('"kind": "teammate"');
+    expect(parseFlowFile(before)).toEqual(parseFlowFile(today));
+  });
+
   test("an imported script waits for approval before a zone runs it", async () => {
     const flow = richFlow();
     const exported = exportFlow(store, store.getFlow(flow)!, here);

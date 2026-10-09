@@ -1,7 +1,7 @@
 /**
  * Deleting a project: everything Toolroll holds for it goes (tasks and
  * their versions, runs, evidence, checkouts and the branches it made, chats,
- * flows and cards, teammates, budgets, settings), never while its work runs,
+ * flows and cards, subagents, budgets, settings), never while its work runs,
  * never the repository or branches it didn't make, never another project's
  * rows; the ledger keeps every entry, still verifies, and says who deleted
  * what. The console asks for the name, then the password; so does the CLI's
@@ -67,21 +67,21 @@ function task(where: string, revisionOf?: string): { id: string; ref: number; ru
   return { id, ref, run };
 }
 
-/** Everything a project can have: tasks and a version, runs and evidence, a chat, a flow and card, a teammate, budgets, settings, knowledge. */
+/** Everything a project can have: tasks and a version, runs and evidence, a chat, a flow and card, a subagent, budgets, settings, knowledge. */
 function populate(where: string) {
   const first = task(where);
   const second = task(where, first.id);
   const flow = store.createFlow({ repo: where, name: "Support", definitionJson: JSON.stringify({ stages: [{ id: "inbox", name: "Inbox" }] }), by: "alex" }, NOW);
   const card = store.addFlowCard({ flow, title: "Refund", description: null, stage: "inbox", by: "alex" }, NOW);
   store.addFlowComment({ card, author: "alex", body: "Looking", mentions: [] }, NOW);
-  const mate = store.createTeammate({ repo: where, handle: `maya${serial}`, soul: "---\nname: Maya\n---\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
-  store.addTeammateTurn({ teammate: mate, card, model: "sonnet", ok: true, ms: 5, costUsd: 0.1 }, NOW);
-  const thread = store.openMateThread("alex", "d", NOW, { kind: "project", key: where }).thread.id;
-  store.appendMateMessage({ thread, turn: null, role: "operator", text: "How is the shop?" }, NOW);
-  const taskThread = store.openMateThread("alex", "d", NOW, { kind: "task", key: first.id }).thread.id;
-  store.appendMateMessage({ thread: taskThread, turn: null, role: "operator", text: "Status?" }, NOW);
+  const mate = store.createSubagent({ repo: where, handle: `maya${serial}`, soul: "---\nname: Maya\n---\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
+  store.addSubagentTurn({ subagent: mate, card, model: "sonnet", ok: true, ms: 5, costUsd: 0.1 }, NOW);
+  const thread = store.openLeadThread("alex", "d", NOW, { kind: "project", key: where }).thread.id;
+  store.appendLeadMessage({ thread, turn: null, role: "operator", text: "How is the shop?" }, NOW);
+  const taskThread = store.openLeadThread("alex", "d", NOW, { kind: "task", key: first.id }).thread.id;
+  store.appendLeadMessage({ thread: taskThread, turn: null, role: "operator", text: "Status?" }, NOW);
   store.setBudget({ scope: "project", key: where, limitMicrousd: 5_000_000, hardStop: true }, "alex", NOW);
-  store.setBudget({ scope: "teammate", key: String(mate), limitMicrousd: 1_000_000, hardStop: true }, "alex", NOW);
+  store.setBudget({ scope: "subagent", key: String(mate), limitMicrousd: 1_000_000, hardStop: true }, "alex", NOW);
   store.setApprovalRules(where, { notRequester: true, protectProject: false, protectedPaths: [] }, "alex", NOW);
   // Knowledge history refuses deletes by design; a project's own goes with it.
   store.handle.prepare("INSERT INTO knowledge_change (repo, identity, revision, actor, at, payload, sha) VALUES (?, 'k', 1, 'alex', ?, '{}', 'x')").run(where, NOW.toISOString());
@@ -120,8 +120,8 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   const shop = populate(repo);
   const other = populate(OTHER);
   const before = { main: git("rev-parse", "main"), feature: git("rev-parse", "feature/login"), head: git("symbolic-ref", "HEAD"), status: git("status", "--porcelain") };
-  expect(projectHoldings(store, repo)).toMatchObject({ tasks: 1, versions: 1, runs: 2, evidence: 2, checkouts: 2, chats: 2, flows: 1, cards: 1, teammates: 1, budgets: 2 });
-  expect(holdingsWords(projectHoldings(store, repo))).toContain("1 task, 1 version, 2 runs, 2 evidence files, 2 checkouts, 2 chats, 1 flow with 1 card, 1 teammate, 2 budgets");
+  expect(projectHoldings(store, repo)).toMatchObject({ tasks: 1, versions: 1, runs: 2, evidence: 2, checkouts: 2, chats: 2, flows: 1, cards: 1, subagents: 1, budgets: 2 });
+  expect(holdingsWords(projectHoldings(store, repo))).toContain("1 task, 1 version, 2 runs, 2 evidence files, 2 checkouts, 2 chats, 1 flow with 1 card, 1 subagent, 2 budgets");
   const otherBefore = projectHoldings(store, OTHER);
   // Another project's task that points at this project's evidence keeps everything but the pointer.
   const shared = Number(store.handle.prepare("SELECT id FROM artifact WHERE run = ?").get(shop.first.run)!["id"]);
@@ -133,19 +133,19 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
 
   const done = await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool });
-  expect(done).toMatchObject({ ok: true, removed: { tasks: 1, versions: 1, runs: 2, branches: 2, chats: 2, teammates: 1 }, left: [] });
+  expect(done).toMatchObject({ ok: true, removed: { tasks: 1, versions: 1, runs: 2, branches: 2, chats: 2, subagents: 1 }, left: [] });
   // The shop's message and its reply went with it; the other project's stayed.
   expect(store.handle.prepare("SELECT id FROM chat_event WHERE provider = 'telegram' AND kind = 'message'").all().map(row => row["id"])).toEqual([talk[1]]);
   expect(store.handle.prepare("SELECT event FROM chat_part WHERE provider = 'telegram'").all().map(row => row["event"])).toEqual([talk[1]]);
 
-  // Nothing names the project any more; its tasks, runs, chats, cards, teammate and evidence are gone.
+  // Nothing names the project any more; its tasks, runs, chats, cards, subagent and evidence are gone.
   expect(mentions(repo)).toEqual([]);
   expect(count("SELECT COUNT(*) AS n FROM task WHERE id IN (?, ?)", shop.first.id, shop.second.id)).toBe(0);
   expect(count("SELECT COUNT(*) AS n FROM run WHERE id IN (?, ?)", shop.first.run, shop.second.run)).toBe(0);
   expect(count("SELECT COUNT(*) AS n FROM artifact WHERE run IN (?, ?)", shop.first.run, shop.second.run)).toBe(0);
-  expect(count("SELECT COUNT(*) AS n FROM mate_message WHERE thread IN (?, ?)", shop.thread, shop.taskThread)).toBe(0);
+  expect(count("SELECT COUNT(*) AS n FROM lead_message WHERE thread IN (?, ?)", shop.thread, shop.taskThread)).toBe(0);
   expect(count("SELECT COUNT(*) AS n FROM flow_comment WHERE card = ?", shop.card)).toBe(0);
-  expect(count("SELECT COUNT(*) AS n FROM teammate_turn WHERE teammate = ?", shop.mate)).toBe(0);
+  expect(count("SELECT COUNT(*) AS n FROM subagent_turn WHERE subagent = ?", shop.mate)).toBe(0);
   expect(count("SELECT COUNT(*) AS n FROM budget WHERE scope_key IN (?, ?)", repo, String(shop.mate))).toBe(0);
   expect(existsSync(join(evidence, String(shop.first.run)))).toBe(false);
   // The other project is untouched, its evidence and knowledge history too.
@@ -168,7 +168,7 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   expect(chain.ok).toBe(true);
   const entry = store.handle.prepare("SELECT * FROM action_ledger WHERE id = ?").get(done.ok ? done.ledgerId : 0)!;
   expect(entry).toMatchObject({ actor: "alex", repo, action: "project deleted", outcome: "deleted", source: "policy" });
-  expect(String(entry["detail"])).toMatch(/^1 task, 1 version, 2 runs, 2 evidence files, 2 checkouts, 2 branches, 2 chats, 1 flow with 1 card, 1 teammate, 2 budgets, \d+ settings? → deleted from the command line$/);
+  expect(String(entry["detail"])).toMatch(/^1 task, 1 version, 2 runs, 2 evidence files, 2 checkouts, 2 branches, 2 chats, 1 flow with 1 card, 1 subagent, 2 budgets, \d+ settings? → deleted from the command line$/);
   expect(count("SELECT COUNT(*) AS n FROM action_ledger WHERE repo = ? AND action <> 'project deleted'", repo)).toBeGreaterThan(0);
 });
 

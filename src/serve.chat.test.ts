@@ -1,5 +1,5 @@
 /**
- * The console server: fleet chat, the mate's thread and scout digests —
+ * The console server: fleet chat, the lead's thread and scout digests —
  * the model drafts, the ceremony approves.
  */
 
@@ -10,12 +10,12 @@ import { saveSlackCredentials } from "./slack-api.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { mateTimeoutNotice, openStore, type Store } from "./store.js";
+import { leadTimeoutNotice, openStore, type Store } from "./store.js";
 import { release } from "./claim.js";
 import { addApprover, approvalOf, approve, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { PersistentSessions } from "./server/session.js";
-import { TURN_WALL_CLOCK_MS, type MateProviderAnswer } from "./converse.js";
+import { TURN_WALL_CLOCK_MS, type LeadProviderAnswer } from "./converse.js";
 import { Window } from "happy-dom";
 import { presented, T0, stylesOf, workspaceOf, sealScopeFixture } from "../test/serve-kit.js";
 import { TeamLeads } from './team-leads.js';
@@ -345,6 +345,33 @@ describe("fleet chat — the LLM drafts, the ceremony approves (v13)", () => {
     expect(workspace.leadName).toBe("Maya");
   });
 
+  test("D5: Settings → Lead shows the lead's subagents in one place with one Add subagent action, and old teammate links land on them", async () => {
+    await boot();
+    const cookie = await login();
+    const empty = await (await fetch(url("/settings/lead"), { headers: { cookie } })).text();
+    expect(empty).toContain("data-lead-subagents");
+    expect(empty).toContain("None yet.");
+    expect(empty).toContain(`href="/settings/lead/subagents?add=1#add" data-add-subagent>Add subagent</a>`);
+    const soul = "---\nname: Rosa\nrole: Support\n---\n\n## Who you are\nWarm and quick.\n\n## Decide on your own\n- Refunds up to $50.\n";
+    const rosa = store.createSubagent({ repo: repoDir, handle: "rosa", soul, model: null, manager: "alex", by: "alex" }, T0);
+    const listed = await (await fetch(url("/settings/lead"), { headers: { cookie } })).text();
+    expect(listed).toContain(`<a href="/settings/lead/subagents/${rosa}">Rosa · Support</a>`);
+    expect(listed).not.toContain("None yet.");
+    store.updateSubagent(rosa, { state: "paused" }, "alex", T0);
+    expect(await (await fetch(url("/settings/lead"), { headers: { cookie } })).text()).toContain(" · Paused</span>");
+    // Its page sits under Lead, with its personality and rules; Add subagent opens the form.
+    const page = await (await fetch(url(`/settings/lead/subagents/${rosa}`), { headers: { cookie } })).text();
+    expect(page).toContain('<a href="/settings/lead">Lead</a>');
+    expect(page).toContain("Refunds up to $50.");
+    expect(await (await fetch(url("/settings/lead/subagents?add=1"), { headers: { cookie } })).text()).toMatch(/<details class="card" id="add" open>/);
+    // A saved link from before lands on the same place.
+    for (const [from, to] of [["/teammates", "/settings/lead#subagents"], [`/teammates/${rosa}`, `/settings/lead/subagents/${rosa}`], [`/teammates/${rosa}/soul.md`, `/settings/lead/subagents/${rosa}/soul.md`]]) {
+      const moved = await fetch(url(from!), { headers: { cookie }, redirect: "manual" });
+      expect(moved.status, from).toBe(303);
+      expect(moved.headers.get("location"), from).toBe(to);
+    }
+  });
+
   test("c1: Settings → Lead edits what your lead knows about you, one line each, and refuses a note that is too long", async () => {
     await boot();
     const cookie = await login();
@@ -503,7 +530,7 @@ describe("fleet chat — the LLM drafts, the ceremony approves (v13)", () => {
   test("Settings → Lead lists the lead's open promises, and the owner cancels one", async () => {
     await boot();
     const cookie = await login();
-    const thread = store.openMateThread("alex", "ceiling", T0).thread.id;
+    const thread = store.openLeadThread("alex", "ceiling", T0).thread.id;
     const { recordCommitment, getCommitment } = await import("./lead-commitments.js");
     const made = recordCommitment(store, { owner: "alex", repo: null, thread, turn: null, what: "Tell you when the release check passes",
       condition: { kind: "time", at: new Date(T0.getTime() + 3_600_000).toISOString() } }, T0);
@@ -526,7 +553,7 @@ describe("fleet chat — the LLM drafts, the ceremony approves (v13)", () => {
   });
 });
 
-describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversation whose acts are cards", () => {
+describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversation whose acts are cards", () => {
   let store: Store;
   let server: Server;
   let base: string;
@@ -534,7 +561,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
   let evidenceRoot: string;
   let repoDir: string;
   let script: (() => Response)[];
-  let subscriptionAnswers: MateProviderAnswer[];
+  let subscriptionAnswers: LeadProviderAnswer[];
   /** What the scripted subscription runner was handed (package 2): the
    * exact history — with its task context — the provider would see. */
   let subscriptionRequests: { history: { role: string; text?: string }[] }[];
@@ -562,10 +589,10 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     fetch(url(path), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams(fields), redirect: "manual" });
   const settle = async (): Promise<void> => {
     for (let i = 0; i < 200; i++) {
-      if (store.liveMateTurnFor("alex") === null) return;
+      if (store.liveLeadTurnFor("alex") === null) return;
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    throw new Error("the mate turn never settled");
+    throw new Error("the lead turn never settled");
   };
   const mint = async (cookie: string, ceilingUsd = "50"): Promise<string> => {
     const csrf = csrfFrom(await page(cookie));
@@ -649,17 +676,17 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     await team('authorize', { conversationId, termsDigest: created.snapshot!.chatAuthorization!.termsDigest, ceilingUsd: created.snapshot!.chatAuthorization!.conversationCeilingUsd });
     const session = store.teamMateSession('alex', thread)!;
     const openTurn = () => {
-      const opened = store.openMateTurn({ approver: 'alex', session: session.id, thread, credentialKey: session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 100_000_000, deadlineMs: 60_000 }, T0);
+      const opened = store.openLeadTurn({ approver: 'alex', session: session.id, thread, credentialKey: session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 100_000_000, deadlineMs: 60_000 }, T0);
       if (!opened.ok) throw Error(opened.reason);
-      const started = store.startMateTurn(opened.id, T0);
+      const started = store.startLeadTurn(opened.id, T0);
       if (!started.ok) throw Error('start');
       return { id: opened.id, generation: started.generation };
     };
     // Existing rows need no migration or new linkage: the saved turn is enough.
     const turn = openTurn();
-    const draft = (kind: 'hold' | 'unhold', task: string) => store.draftMateProposal({ thread, turn: turn.id, kind, payload: { task, reason: 'Wait for the audit.', sawHold: null }, ceilingDigest: session.ceilingDigest }, T0);
+    const draft = (kind: 'hold' | 'unhold', task: string) => store.draftLeadProposal({ thread, turn: turn.id, kind, payload: { task, reason: 'Wait for the audit.', sawHold: null }, ceilingDigest: session.ceilingDigest }, T0);
     const held = draft('hold', 'a'), dismissed = draft('hold', 'b'), unauthorized = draft('hold', 'b');
-    expect(store.finalizeMateTurn(turn.id, turn.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'Here are the proposed holds.', activity: '' } }, T0)).toBe(true);
+    expect(store.finalizeLeadTurn(turn.id, turn.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'Here are the proposed holds.', activity: '' } }, T0)).toBe(true);
     const read = async () => (await team('show', { conversationId })).snapshot!;
     let snapshot = await read();
     expect(snapshot.proposals).toMatchObject([{ id: held, turnId: turn.id, state: 'pending', card: { kind: 'hold', state: 'pending', primary: { kind: 'confirm', label: 'Hold' }, dismissable: true } }, { id: dismissed }, { id: unauthorized }]);
@@ -669,6 +696,10 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(await review()).toContain(`action="/chat/proposal/${held}/confirm"`);
     const workspace = await (await fetch(url(`/chat?conversation=${conversationId}&format=workspace`), { headers: { cookie } })).json();
     expect(workspace.team.proposals).toEqual(snapshot.proposals);
+    // D5: team chat is deprecated: asked for by address it still opens, and says so first; plain /chat is the lead's.
+    expect(workspace.notices[0]).toMatch(/^Team chat is deprecated and will be removed in the next minor release\./);
+    expect(await (await fetch(url(`/chat?conversation=${conversationId}`), { headers: { cookie } })).text()).toContain('data-deprecated="team"');
+    expect(await (await fetch(url("/chat"), { headers: { cookie } })).text()).not.toContain('data-deprecated="team"');
     const cli = await (await fetch(url(`/api/team?conversation=${conversationId}`), { headers: { authorization: `Bearer alex:${approverToken}` } })).json() as TeamResponse;
     expect(cli.snapshot!.proposals![0]).toEqual({ id: held, turnId: turn.id, title: 'Review hold', state: 'pending', href: snapshot.proposals![0]!.href });
 
@@ -679,11 +710,11 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Enable chat in this conversation before acting on a proposal.' });
     expect(await review()).toContain(snapshot.proposals![0]!.card!.note!);
     expect(await review()).not.toContain(`action="/chat/proposal/${held}/confirm"`);
-    const before = store.getMateProposal(held);
+    const before = store.getLeadProposal(held);
     const stale = await fetch(url(`/chat/proposal/${held}/confirm`), { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, body: new URLSearchParams({ csrf }), redirect: 'manual' });
     expect(stale.status).toBe(409);
     expect(await stale.json()).toEqual({ ok: false, said: snapshot.proposals![0]!.card!.note, taskId: null });
-    expect(store.getMateProposal(held)).toEqual(before);
+    expect(store.getLeadProposal(held)).toEqual(before);
     expect(store.handle.prepare('SELECT 1 FROM hold').get()).toBeUndefined();
     store.setChatConfig(config, 'alex', T0);
 
@@ -697,7 +728,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const claim = domain.claimNext('fixture', T0)!;
     const running = openTurn();
     expect(domain.bindTurn(claim, running.id)).toBe(true);
-    const own = store.draftMateProposal({ thread, turn: running.id, kind: 'hold', payload: { task: 'b', reason: 'Its own turn.', sawHold: null }, ceilingDigest: session.ceilingDigest }, T0);
+    const own = store.draftLeadProposal({ thread, turn: running.id, kind: 'hold', payload: { task: 'b', reason: 'Its own turn.', sawHold: null }, ceilingDigest: session.ceilingDigest }, T0);
     snapshot = await read();
     expect(snapshot.proposals![0]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Available when the current reply finishes.' });
     expect(await review()).toContain('Available when the current reply finishes.');
@@ -707,11 +738,11 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     let refused = await decide(held, 'confirm');
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ ok: false, said: snapshot.proposals![0]!.card!.note, taskId: null });
-    expect(store.getMateProposal(held)?.state).toBe('pending');
+    expect(store.getLeadProposal(held)?.state).toBe('pending');
     expect(holdOf('a')).toBeUndefined();
     expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: true });
     // The proposal's own turn has finished while its message row still says running: not a live turn.
-    store.finalizeMateTurn(running.id, running.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'The plan is saved.', activity: '' } }, T0);
+    store.finalizeLeadTurn(running.id, running.generation, { state: 'answered', settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: 'The plan is saved.', activity: '' } }, T0);
     expect(store.handle.prepare('SELECT status FROM team_message WHERE turn_id=?').get(running.id)).toMatchObject({ status: 'running' });
     expect((await read()).proposals!.find(one => one.id === own)!.card).toMatchObject({ primary: { kind: 'confirm' }, dismissable: true });
     expect(await (await decide(own, 'confirm')).json()).toMatchObject({ ok: true });
@@ -726,7 +757,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect((await read()).proposals![1]!.card).toMatchObject({ state: 'dismissed', primary: null, dismissable: false, note: 'Dismissed.' });
     expect(await (await decide(dismissed, 'dismiss')).json()).toMatchObject({ ok: false });
 
-    store.handle.prepare('UPDATE mate_session SET ended_at=? WHERE id=?').run(T0.toISOString(), session.id);
+    store.handle.prepare('UPDATE lead_session SET ended_at=? WHERE id=?').run(T0.toISOString(), session.id);
     snapshot = await read();
     expect(snapshot.proposals![2]!.card).toMatchObject({ primary: null, dismissable: false, note: 'Enable chat in this conversation before acting on a proposal.' });
     expect(await (await fetch(url(snapshot.proposals![2]!.href), { headers: { cookie } })).text()).toContain(snapshot.proposals![2]!.card!.note!);
@@ -734,7 +765,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     refused = await decide(unauthorized, 'confirm');
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ ok: false, said: snapshot.proposals![2]!.card!.note, taskId: null });
-    expect(store.getMateProposal(unauthorized)?.state).toBe('pending');
+    expect(store.getLeadProposal(unauthorized)?.state).toBe('pending');
     expect(holdOf('b')).toMatchObject({ reason: 'Its own turn.' });
   });
 
@@ -768,7 +799,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(after.conversation!.messages.map(one => one.role)).toEqual(['operator', 'assistant']);
     expect(after.conversation!.messages.at(-1)!.html).toContain('&lt;script&gt;unsafe&lt;/script&gt;');
     await read(`&request=${request}`);
-    expect(store.recentMateTurns('alex', 10)).toHaveLength(1);
+    expect(store.recentLeadTurns('alex', 10)).toHaveLength(1);
     expect((await fetch(url('/chat?format=workspace'), { headers: { authorization: `Bearer alex:${approverToken}` } })).status).toBe(403);
     expect((await fetch(url('/chat?format=workspace'), { redirect: 'manual' })).status).toBe(303);
   });
@@ -789,11 +820,11 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
       expect(html.match(/data-message-role="assistant"[^>]*><div class="chat-copy"><p>The reply took too long/g)).toHaveLength(1);
       expect(html).not.toContain('<div class="problem"');
     }
-    const proposal = store.listMateProposals(store.liveMateThreadFor('alex')!.id)[0]!;
+    const proposal = store.listLeadProposals(store.liveLeadThreadFor('alex')!.id)[0]!;
     expect(proposal).toMatchObject({ kind: 'hold', state: 'pending' });
     const stopped = (await read()).conversation!.messages;
     expect(stopped.map(one => one.role)).toEqual(['operator', 'assistant']);
-    expect(stopped[1]!.text).toBe(mateTimeoutNotice(true));
+    expect(stopped[1]!.text).toBe(leadTimeoutNotice(true));
     expect(stopped.map(one => one.cards.length)).toEqual([0, 1]);
     expect(stopped[1]!.cardsHtml).toContain(`/chat/proposal/${proposal.id}/confirm`);
     script.push(() => answer([{ type: 'text', text: 'Nothing else needs you.' }]));
@@ -1021,10 +1052,10 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(sent.status).toBe(202);
     expect(await sent.json()).toMatchObject({ ok: true, project: repoDir });
     await settle();
-    const projectThread = store.liveMateThreadFor('alex', { kind: 'project', key: repoDir })!;
-    expect(store.listMateMessages(projectThread.id, 10).map(one => one.text)).toEqual(['What is queued?', 'Two tasks are queued here.']);
-    const lead = store.liveMateThreadFor('alex');
-    expect(lead === null ? [] : store.listMateMessages(lead.id, 10)).toEqual([]);
+    const projectThread = store.liveLeadThreadFor('alex', { kind: 'project', key: repoDir })!;
+    expect(store.listLeadMessages(projectThread.id, 10).map(one => one.text)).toEqual(['What is queued?', 'Two tasks are queued here.']);
+    const lead = store.liveLeadThreadFor('alex');
+    expect(lead === null ? [] : store.listLeadMessages(lead.id, 10)).toEqual([]);
     // The project's Tasks page docks it, and the chat list names it.
     const projectRead = await (await fetch(url(`/work?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
     expect(projectRead.view?.kind).toBe('tasks');
@@ -1117,15 +1148,15 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(before).toContain('aria-label="Project catch-up"');
     expect(before.indexOf('aria-label="Project catch-up"')).toBeLessThan(before.indexOf('class="card mate-mint"'));
     expect(before).toContain('name="follow" value="yes"');
-    const csrf = await mint(cookie, "5"), thread = store.liveMateThreadFor("alex")!.id;
+    const csrf = await mint(cookie, "5"), thread = store.liveLeadThreadFor("alex")!.id;
     expect(await page(cookie)).toContain("Enable updates");
     expect((await post(cookie, "/chat/mate/follow", { csrf: "wrong", enabled: "yes" })).status).toBe(403);
     expect((await post(cookie, "/chat/mate/follow", { csrf, enabled: "yes" })).status).toBe(303);
     expect(await page(cookie)).toContain("Pause updates");
     expect((await post(cookie, "/chat/mate/follow", { csrf, enabled: "no" })).status).toBe(303);
     expect(await page(cookie)).toContain("Enable updates");
-    expect(store.liveMateThreadFor("alex")!.id).toBe(thread);
-    expect(store.listMateMessages(thread, 10)).toHaveLength(0);
+    expect(store.liveLeadThreadFor("alex")!.id).toBe(thread);
+    expect(store.listLeadMessages(thread, 10)).toHaveLength(0);
   });
 
   test("the mint card is the one password ceremony; the thread then takes messages without one", async () => {
@@ -1139,11 +1170,11 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     // password; a wrong password, when one is sent, is still refused.
     const wrong = await post(cookie, "/chat/mate/mint", { csrf, "ceiling-usd": "5", token: "not-the-password" });
     expect(decodeURIComponent(wrong.headers.get("location") ?? "")).toContain("That password did not match.");
-    expect(store.activeMateSession("alex")).toBeNull();
+    expect(store.activeLeadSession("alex")).toBeNull();
     const badTerms = await post(cookie, "/chat/mate/mint", { csrf, "ceiling-usd": "0", token: approverToken });
     expect(badTerms.headers.get("location") ?? "").toContain("dollar");
     await mint(cookie, "5");
-    const session = store.activeMateSession("alex");
+    const session = store.activeLeadSession("alex");
     expect(session).toMatchObject({ approver: "alex", ceilingMicrousd: 5_000_000, spentMicrousd: 0 });
     const thread = await page(cookie);
     expect(thread).toContain('class="thread"');
@@ -1233,17 +1264,17 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const cookie = await login(); const csrf = await mint(cookie);
     const html = await page(cookie);
     const request = /name="request" value="([a-f0-9]{32})"/.exec(html)![1]!;
-    const session = store.activeMateSession("alex")!.id;
+    const session = store.activeLeadSession("alex")!.id;
     const fields = { csrf, message: "What needs me?", request, "request-session": String(session) };
     script.push(() => answer([{ type: "text", text: "Here is the current picture." }]));
     expect((await post(cookie, "/chat", fields)).status).toBe(303); await settle();
     expect((await post(cookie, "/chat", fields)).status).toBe(303); await settle();
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(1);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(1);
     const state = await fetch(url(`/chat/mate/status?request=${request}`), { headers: { cookie } });
     expect(await state.json()).toMatchObject({ session, task: "", received: true, pending: false, version: expect.stringMatching(/^[a-f0-9]{16}$/) });
     expect(await (await fetch(url("/chat/mate/status?request=bad"), { headers: { cookie } })).json()).toMatchObject({ received: false });
     await post(cookie, "/chat", { ...fields, message: "Different work" }); await settle();
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(1);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(1);
     expect(await page(cookie)).toContain("different text or task context");
     const wrongSession = await post(cookie, "/chat", { ...fields, "request-session": String(session + 1) });
     expect(decodeURIComponent(wrongSession.headers.get("location")!)).toContain("conversation changed");
@@ -1264,14 +1295,14 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(pending).toContain('class="card composer"');
     expect(pending).toContain("draft your next message");
     expect(pending).not.toMatch(/<meta http-equiv="refresh" content="5">/);
-    const turn = store.liveMateTurnFor("alex")!.id;
+    const turn = store.liveLeadTurnFor("alex")!.id;
     const workspace = workspaceOf(pending);
     expect(workspace.refreshUrl).toBe('/chat?format=workspace');
     expect(workspace.conversation).toMatchObject({ pendingTurnId: turn, taskId: null });
     const refreshed = await (await fetch(url(workspace.refreshUrl), { headers: { cookie } })).json();
     expect(refreshed.conversation).toMatchObject({ sessionId: workspace.conversation!.sessionId, pendingTurnId: turn });
     expect(refreshed.conversation.messages).toEqual(workspace.conversation!.messages);
-    expect(store.recentMateTurns('alex', 10)).toHaveLength(1);
+    expect(store.recentLeadTurns('alex', 10)).toHaveLength(1);
     await post(cookie, "/chat/mate/stop", { csrf, turn: String(turn) });
     finish(answer([{ type: "text", text: "Stopped." }])); await settle();
     expect((await (await fetch(url(workspace.refreshUrl), { headers: { cookie } })).json()).conversation.pendingTurnId).toBeNull();
@@ -1346,7 +1377,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
 
     const unknown = await post(cookie, "/chat", { csrf, task: "not-in-this-workspace", message: "do something" });
     expect(decodeURIComponent(unknown.headers.get("location") ?? "")).toContain("not available in this workspace");
-    expect(store.recentMateTurns("alex", 5)).toEqual([]);
+    expect(store.recentLeadTurns("alex", 5)).toEqual([]);
 
     script.push(
       () => answer([
@@ -1381,7 +1412,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     ]);
   });
 
-  test("chat-steer: the mate reads the current agents, proposes a confirmation-gated agent change, the card says exactly what changes, and confirming goes through the authenticated route edit", async () => {
+  test("chat-steer: the lead reads the current agents, proposes a confirmation-gated agent change, the card says exactly what changes, and confirming goes through the authenticated route edit", async () => {
     store.setPhaseTierConfig("installation", "plan", "strong", "codex", "gpt-5-codex", "test", T0);
     const cookie = await login();
     let html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
@@ -1402,8 +1433,8 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(sent.status).toBe(303);
     await settle();
     // The turn ran both tools and answered; the proposal waits pending.
-    expect(store.recentMateTurns("alex", 1)[0]).toMatchObject({ state: "answered" });
-    expect(store.getMateProposal(1)).toMatchObject({ kind: "agents", state: "pending", payload: expect.objectContaining({ task: "a", phase: "plan", provider: "codex", model: "gpt-5-codex", approval: "approved", before: "claude · sonnet plans, builds, and repairs" }) });
+    expect(store.recentLeadTurns("alex", 1)[0]).toMatchObject({ state: "answered" });
+    expect(store.getLeadProposal(1)).toMatchObject({ kind: "agents", state: "pending", payload: expect.objectContaining({ task: "a", phase: "plan", provider: "codex", model: "gpt-5-codex", approval: "approved", before: "claude · sonnet plans, builds, and repairs" }) });
     // The card: the role, the exact agent, the approval consequence.
     html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
     expect(html).toContain('data-card-kind="agents"');
@@ -1483,7 +1514,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain("inspect the project and draft a plan first");
     const confirmed = await post(cookie, "/chat/proposal/1/confirm", { csrf });
     expect(confirmed.status).toBe(303);
-    const proposal = store.getMateProposal(1);
+    const proposal = store.getLeadProposal(1);
     const taskId = typeof proposal?.outcome?.["taskId"] === "string" ? proposal.outcome["taskId"] : null;
     if (taskId === null) throw new Error("the task proposal did not file");
     expect(store.lookupRef(taskId)?.plan).toBe("requested");
@@ -1505,7 +1536,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const again = await post(cookie, "/chat/proposal/1/confirm", { csrf });
     expect(again.headers.get("location")).toBe("/chat#latest");
     expect(store.listTasks().filter(one => one.title === "Polish the result cockpit")).toHaveLength(1);
-    expect(store.getMateProposal(1)?.state).toBe("confirmed");
+    expect(store.getLeadProposal(1)?.state).toBe("confirmed");
   });
 
   test("a logged-in Codex membership has no dollar maximum in setup, minting, or the live conversation", async () => {
@@ -1538,7 +1569,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
 
     const minted = await post(cookie, "/chat/mate/mint", { csrf, token: approverToken });
     expect(minted.status).toBe(303);
-    expect(store.activeMateSession("alex")).toMatchObject({ ceilingMicrousd: 0, spentMicrousd: 0 });
+    expect(store.activeLeadSession("alex")).toMatchObject({ ceilingMicrousd: 0, spentMicrousd: 0 });
     // The live pilot's chat message overflowed at 390px; the allowed-files
     // path is a separate case. Keep this exact path in both message roles.
     const path = "docs/assessments/WORKSPACE_5_REAL_WORK_PILOT_2026-09-14.md";
@@ -1558,7 +1589,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).not.toContain("this session: $0.00 of $0.00");
     expect(html).toContain('class="card composer"');
     expect(html).not.toContain('name="token"');
-    const turn = store.recentMateTurns("alex", 1)[0];
+    const turn = store.recentLeadTurns("alex", 1)[0];
     expect(turn).toMatchObject({ state: "answered", reservedMicrousd: 0, settledMicrousd: 0, tokensIn: 21, tokensOut: 5 });
     expect(store.raw().prepare("SELECT provider, reserved_microusd, settled_microusd FROM chat_turn WHERE mate_turn = ?").get(turn?.id)).toEqual({ provider: "codex-subscription", reserved_microusd: 0, settled_microusd: 0 });
   });
@@ -1572,34 +1603,34 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     );
     await post(cookie, "/chat", { csrf, message: "what next?" });
     await settle();
-    const proposal = store.getMateProposal(1)!;
+    const proposal = store.getLeadProposal(1)!;
     expect(proposal.state).toBe("pending");
     const confirm = () => fetch(url("/chat/proposal/1/confirm"), { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf }), redirect: "manual" });
     const before = store.queuePosition("b")?.position;
     // A live turn in the same thread: the card waits and the door says why.
-    const session = store.activeMateSession("alex")!;
-    const opened = store.openMateTurn({ approver: "alex", session: session.id, thread: proposal.thread, credentialKey: session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 100_000_000, deadlineMs: 60_000 }, T0);
+    const session = store.activeLeadSession("alex")!;
+    const opened = store.openLeadTurn({ approver: "alex", session: session.id, thread: proposal.thread, credentialKey: session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 100_000_000, deadlineMs: 60_000 }, T0);
     if (!opened.ok) throw Error(opened.reason);
-    const started = store.startMateTurn(opened.id, T0);
+    const started = store.startLeadTurn(opened.id, T0);
     if (!started.ok) throw Error("start");
     expect(await page(cookie)).toContain("Available when the current reply finishes.");
     let refused = await confirm();
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ ok: false, said: "Available when the current reply finishes.", taskId: null });
-    expect(store.getMateProposal(1)?.state).toBe("pending");
+    expect(store.getLeadProposal(1)?.state).toBe("pending");
     expect(store.queuePosition("b")?.position).toBe(before);
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, T0);
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0 }, T0);
     // Chat turned off: refused with the same plain reason, nothing moves.
-    store.endMateSession(session.id, "alex", T0);
+    store.endLeadSession(session.id, "alex", T0);
     refused = await confirm();
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ ok: false, said: "Enable chat in this conversation before acting on a proposal.", taskId: null });
-    expect(store.getMateProposal(1)?.state).toBe("pending");
+    expect(store.getLeadProposal(1)?.state).toBe("pending");
     expect(store.queuePosition("b")?.position).toBe(before);
     // Enabled again, with no live turn: the same POST confirms, once.
-    store.mintMateSession({ approver: "alex", approverGeneration: session.approverGeneration, credentialKey: session.credentialKey, ceilingMicrousd: session.ceilingMicrousd, ceilingDigest: session.ceilingDigest, termsDigest: session.termsDigest }, T0);
+    store.mintLeadSession({ approver: "alex", approverGeneration: session.approverGeneration, credentialKey: session.credentialKey, ceilingMicrousd: session.ceilingMicrousd, ceilingDigest: session.ceilingDigest, termsDigest: session.termsDigest }, T0);
     expect(await (await confirm()).json()).toMatchObject({ ok: true });
-    expect(store.getMateProposal(1)).toMatchObject({ state: "confirmed", resolvedBy: "alex" });
+    expect(store.getLeadProposal(1)).toMatchObject({ state: "confirmed", resolvedBy: "alex" });
     expect(store.queuePosition("b")?.position).toBe(1);
     expect(await (await confirm()).json()).toMatchObject({ ok: false });
   });
@@ -1614,7 +1645,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const sent = await post(cookie, "/chat", { csrf, message: "what is queued?" });
     expect(sent.status).toBe(303);
     await settle();
-    const turn = store.recentMateTurns("alex", 1)[0];
+    const turn = store.recentLeadTurns("alex", 1)[0];
     expect(turn).toMatchObject({ state: "answered", steps: 2 });
     let html = await page(cookie);
     expect(html).toContain('<div class="msg op" data-message-role="operator" data-key="m1"><p style="white-space:pre-wrap">what is queued?</p></div>');
@@ -1632,17 +1663,17 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     // No csrf: the central gate refuses, nothing moves.
     const forged = await fetch(url("/chat/proposal/1/confirm"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({}), redirect: "manual" });
     expect(forged.status).toBe(403);
-    expect(store.getMateProposal(1)?.state).toBe("pending");
+    expect(store.getLeadProposal(1)?.state).toBe("pending");
     const confirmed = await post(cookie, "/chat/proposal/1/confirm", { csrf });
     expect(confirmed.status).toBe(303);
-    expect(store.getMateProposal(1)).toMatchObject({ state: "confirmed", resolvedBy: "alex" });
+    expect(store.getLeadProposal(1)).toMatchObject({ state: "confirmed", resolvedBy: "alex" });
     expect(store.queuePosition("b")?.position).toBe(1);
     html = await page(cookie);
     expect(html).toContain("b moved to the front of its column");
     expect(html).not.toContain('action="/chat/proposal/1/confirm"');
     // A second act on the same card is a no-op with a note.
     await post(cookie, "/chat/proposal/1/confirm", { csrf });
-    expect(store.getMateProposal(1)?.state).toBe("confirmed");
+    expect(store.getLeadProposal(1)?.state).toBe("confirmed");
     // A proposal the queue outran: the door refuses with the typed reason, rendered on the card.
     script.push(
       () => answer([{ type: "tool_use", id: "c3", name: "propose_next", input: { task: "a" } }]),
@@ -1650,14 +1681,14 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     );
     await post(cookie, "/chat", { csrf, message: "and a?" });
     await settle();
-    expect(store.getMateProposal(2)?.state).toBe("pending");
+    expect(store.getLeadProposal(2)?.state).toBe("pending");
     store.moveTaskNext("a", clockNow);
     await post(cookie, "/chat/proposal/2/confirm", { csrf });
-    expect(store.getMateProposal(2)).toMatchObject({ state: "refused" });
+    expect(store.getLeadProposal(2)).toMatchObject({ state: "refused" });
     html = await page(cookie);
     expect(html).toContain("the queue moved since this was proposed");
     // Session spend is the two turns' settled cost, shown on the page.
-    const session = store.activeMateSession("alex");
+    const session = store.activeLeadSession("alex");
     expect(session?.spentMicrousd).toBe(4 * (100 * 3 + 20 * 15));
     expect(html).toContain("this conversation: $0.00 of $50.00");
   });
@@ -1686,7 +1717,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
 
     const confirmed = await post(cookie, "/chat/proposal/1/confirm", { csrf });
     expect(confirmed.status).toBe(303);
-    expect(store.getMateProposal(1)).toMatchObject({ state: "confirmed", outcome: { taskId: "b" } });
+    expect(store.getLeadProposal(1)).toMatchObject({ state: "confirmed", outcome: { taskId: "b" } });
     expect(store.blockers("b")).toEqual([]);
     html = await page(cookie);
     expect(html).toContain("task b can now continue without task a");
@@ -1706,17 +1737,17 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).not.toContain('action="/chat/proposal/1/confirm"');
     expect(html).toContain('action="/chat/proposal/2/confirm"');
     await post(cookie, "/chat/proposal/1/confirm", { csrf });
-    expect(store.getMateProposal(1)?.state).toBe("pending");
+    expect(store.getLeadProposal(1)?.state).toBe("pending");
     await post(cookie, "/chat/proposal/2/dismiss", { csrf });
-    expect(store.getMateProposal(2)?.state).toBe("dismissed");
+    expect(store.getLeadProposal(2)?.state).toBe("dismissed");
     expect(store.activeHolds(store.refFor("built-in", "b").id, clockNow)).toEqual([]);
-    const threadId = store.openMateThread("alex", store.activeMateSession("alex")!.ceilingDigest, clockNow).thread.id;
-    expect(store.listMateMessages(threadId, 10)).toHaveLength(2);
+    const threadId = store.openLeadThread("alex", store.activeLeadSession("alex")!.ceilingDigest, clockNow).thread.id;
+    expect(store.listLeadMessages(threadId, 10)).toHaveLength(2);
     const ended = await post(cookie, "/chat/mate/end", { csrf });
     expect(ended.status).toBe(303);
-    expect(store.activeMateSession("alex")).toBeNull();
-    expect(store.listMateMessages(threadId, 10)).toEqual([]);
-    expect(store.listMateProposals(threadId)).toEqual([]);
+    expect(store.activeLeadSession("alex")).toBeNull();
+    expect(store.listLeadMessages(threadId, 10)).toEqual([]);
+    expect(store.listLeadProposals(threadId)).toEqual([]);
     html = await page(cookie);
     expect(html).toContain('action="/chat/mate/mint"');
     expect(html).not.toContain('class="thread"');
@@ -1737,7 +1768,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     // The start card speaks plainly and its act is the primary button.
     expect(before).toContain("<strong>Start a conversation</strong>");
     expect(before).toContain("<button type=\"submit\">Start chat</button>");
-    expect(before).not.toContain("talk to the mate");
+    expect(before).not.toContain("talk to the lead");
     expect(before).not.toContain(">unified workspace</span>");
     // The provider bar is gone from the top: no bare "answering with" row.
     expect(before).not.toContain("answering with");
@@ -1811,20 +1842,20 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
   test("a membership chat opens ready to talk: no password card, a live conversation, settings one tap away", async () => {
     store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
     const cookie = await login();
-    expect(store.activeMateSession("alex")).toBeNull();
+    expect(store.activeLeadSession("alex")).toBeNull();
     const html = await page(cookie);
-    expect(store.activeMateSession("alex")).not.toBeNull();
+    expect(store.activeLeadSession("alex")).not.toBeNull();
     expect(html).not.toContain('action="/chat/mate/mint"');
     expect(html).not.toContain('autocomplete="current-password"');
     expect(html).toContain('href="/settings/lead">Lead settings</a>');
     // Reloading keeps the same conversation rather than starting another.
-    const first = store.activeMateSession("alex")!.id;
+    const first = store.activeLeadSession("alex")!.id;
     await page(cookie);
-    expect(store.activeMateSession("alex")!.id).toBe(first);
+    expect(store.activeLeadSession("alex")!.id).toBe(first);
     // The settings view starts nothing and opens the settings.
-    store.endMateSessionsFor("alex", "alex", T0);
+    store.endLeadSessionsFor("alex", "alex", T0);
     const settings = await (await fetch(url("/chat?settings=1"), { headers: { cookie } })).text();
-    expect(store.activeMateSession("alex")).toBeNull();
+    expect(store.activeLeadSession("alex")).toBeNull();
     expect(settings).toContain('<p class="meta" id="chat-settings"><a href="/settings/lead">Lead settings</a>');
   });
 
@@ -1832,7 +1863,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     store.setChatConfig({ provider: "codex-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", T0);
     const cookie = await login();
     const workspaceOf = (html: string) => JSON.parse(/<script type="application\/json" id="standing-orders-workspace-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]!) as import("./browser-workspace.js").BrowserWorkspace;
-    const counts = () => store.raw().prepare("SELECT (SELECT COUNT(*) FROM mate_session) AS sessions, (SELECT COUNT(*) FROM mate_thread) AS threads").get();
+    const counts = () => store.raw().prepare("SELECT (SELECT COUNT(*) FROM lead_session) AS sessions, (SELECT COUNT(*) FROM lead_thread) AS threads").get();
     const csrf = csrfFrom(await page(cookie));
     subscriptionAnswers.push({ text: "The old route was through the payments project.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
     expect((await post(cookie, "/chat", { csrf, message: "Remember the payments route" })).status).toBe(303);
@@ -1841,9 +1872,9 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(workspaceOf(html).conversation?.previous ?? null).toBeNull();
     expect(html).not.toContain("data-thread-divider");
     // The projects this lead could reach changed under the live conversation.
-    const old = store.activeMateSession("alex")!;
-    store.raw().prepare("UPDATE mate_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), old.id);
-    store.raw().prepare("UPDATE mate_thread SET ceiling_digest = ? WHERE approver = 'alex' AND closed_at IS NULL").run("f".repeat(64));
+    const old = store.activeLeadSession("alex")!;
+    store.raw().prepare("UPDATE lead_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), old.id);
+    store.raw().prepare("UPDATE lead_thread SET ceiling_digest = ? WHERE approver = 'alex' AND closed_at IS NULL").run("f".repeat(64));
     const before = counts() as { sessions: number; threads: number };
     html = await page(cookie);
     // Exactly what a GET did before: one new session and one new thread, no more.
@@ -1899,11 +1930,11 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const viewerCsrf = /name="csrf" value="([0-9a-f]{64})"/.exec(viewerPage)?.[1] ?? csrf;
     const viewerMint = await fetch(url("/chat/mate/mint"), { method: "POST", headers: { cookie: viewerCookie, origin: base }, body: new URLSearchParams({ csrf: viewerCsrf, "ceiling-usd": "5", token: "watching-only-1" }), redirect: "manual" });
     expect(viewerMint.status).toBe(403);
-    expect(store.activeMateSession("vic")).toBeNull();
+    expect(store.activeLeadSession("vic")).toBeNull();
     // The approver's session, minted under a different repo order than the server holds: the page says so and changes nothing.
     await mint(cookie);
-    const live = store.activeMateSession("alex")!;
-    store.handle.prepare("UPDATE mate_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), live.id);
+    const live = store.activeLeadSession("alex")!;
+    store.handle.prepare("UPDATE lead_session SET ceiling_digest = ? WHERE id = ?").run("f".repeat(64), live.id);
     const html = await page(cookie);
     expect(html).toContain("Project access changed. Your tasks and results are saved. Start a conversation with the current projects to continue.");
     // Plain words, not internals (UI polish 2026-09-13): no "admitted",
@@ -1912,16 +1943,16 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).not.toContain("admitted projects");
     expect(html).not.toContain("minted");
     expect(html).toContain('action="/chat/mate/mint"');
-    expect(store.activeMateSession("alex")).not.toBeNull();
+    expect(store.activeLeadSession("alex")).not.toBeNull();
   });
 
   test("an operator can stop one in-flight turn without ending the conversation", async () => {
     const cookie = await login();
     const csrf = await mint(cookie);
-    const session = store.activeMateSession("alex");
+    const session = store.activeLeadSession("alex");
     if (session === null) throw new Error("missing session");
-    const thread = store.openMateThread("alex", session.ceilingDigest, clockNow).thread;
-    const opened = store.openMateTurn(
+    const thread = store.openLeadThread("alex", session.ceilingDigest, clockNow).thread;
+    const opened = store.openLeadTurn(
       {
         approver: "alex",
         session: session.id,
@@ -1935,7 +1966,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
       clockNow,
     );
     if (!opened.ok) throw new Error(opened.reason);
-    expect(store.startMateTurn(opened.id, clockNow)).toMatchObject({ ok: true });
+    expect(store.startLeadTurn(opened.id, clockNow)).toMatchObject({ ok: true });
 
     let html = await page(cookie);
     expect(html).toContain('action="/chat/mate/stop"');
@@ -1943,9 +1974,9 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     const stopped = await post(cookie, "/chat/mate/stop", { csrf, turn: String(opened.id) });
     expect(stopped.status).toBe(303);
     expect(stopped.headers.get("location")).toBe("/chat#latest");
-    expect(store.liveMateTurnFor("alex")).toBeNull();
-    expect(store.activeMateSession("alex")).not.toBeNull();
-    expect(store.recentMateTurns("alex", 1)[0]).toMatchObject({ state: "failed", failureReason: "stopped" });
+    expect(store.liveLeadTurnFor("alex")).toBeNull();
+    expect(store.activeLeadSession("alex")).not.toBeNull();
+    expect(store.recentLeadTurns("alex", 1)[0]).toMatchObject({ state: "failed", failureReason: "stopped" });
 
     html = await page(cookie);
     expect(html).toContain("stopped — the conversation is still open");
@@ -2090,13 +2121,13 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     // by the person, is the same turn — no second dispatch, one message.
     const again = await sendJson(cookie, fields);
     expect(again.status).toBe(202); await settle();
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(1);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(1);
     expect(script).toHaveLength(0);
     expect(await status(cookie, `?request=${request}`)).toMatchObject({ received: true, pending: false });
     // The native form still redirects.
     const native = await post(cookie, "/chat", fields);
     expect(native.status).toBe(303); await settle();
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(1);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(1);
     // Refusals carry the server's words, and nothing is dispatched.
     const changed = await sendJson(cookie, { ...fields, "request-session": "2" });
     expect(changed.status).toBe(409);
@@ -2108,7 +2139,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(gone.status).toBe(404);
     expect(await gone.json()).toMatchObject({ ok: false, said: "That task is not available in this workspace." });
     expect((await sendJson(cookie, { ...fields, csrf: "bad" })).status).toBe(403);
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(1);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(1);
     // After the conversation ends, a JSON send says so instead of minting.
     await post(cookie, "/chat/mate/end", { csrf });
     const ended = await sendJson(cookie, fields);
@@ -2148,7 +2179,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     // message: the engine refuses it rather than replaying a's turn as b's.
     expect((await sendJson(cookie, { csrf, task: "b", message: "Where is this?", request: requestA, "request-session": "1" })).status).toBe(202);
     await settle();
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(2);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(2);
     expect(subscriptionRequests).toHaveLength(2);
     expect(await (await fetch(url("/chat?task=b"), { headers: { cookie } })).text()).toContain("different text or task context");
     // Each task keeps its own thread (v77): the lead conversation shows
@@ -2292,7 +2323,7 @@ describe("the mate's thread (mate arc, slice 2): one ceremony, then a conversati
     if (gone.status === 200) expect(await gone.json()).toEqual({ session: null });
     const refused = await sendJson(cookie, { csrf, message: "Still me?", request, "request-session": "1" });
     expect([303, 401, 403, 409]).toContain(refused.status);
-    expect(store.recentMateTurns("alex", 10)).toHaveLength(0);
+    expect(store.recentLeadTurns("alex", 10)).toHaveLength(0);
   });
 });
 

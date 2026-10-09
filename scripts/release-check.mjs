@@ -8,11 +8,11 @@
  *   - every scripted browser journey (scripts/flows-e2e.mjs and app-e2e.mjs, the model scripted by
  *     scripts/fixtures/scripted-provider.mjs), each script's groups through scripts/e2e-parallel.mjs: flows 2 at once,
  *     app 4 at once
- *   - the upgrade path (scripts/upgrade-path.mjs): each of the last 3 published releases, with a realistic database,
+ *   - the upgrade path (scripts/upgrade-path.mjs): every published release from 0.5.0 on, with a realistic database,
  *     moves to this candidate through the deploy's facts check, `toolroll update` and `npm i -g` with no manual step
  *     (needs the npm registry; each release is installed once and cached)
- *   - the real-model journeys only when model-facing code changed (the lead, chat, mate tools, the planner, the
- *     builder, teammates, the provider adapters) or --real is given: every group with real-model journeys, and the
+ *   - the real-model journeys only when model-facing code changed (the lead and its tools, chat, the planner, the
+ *     builder, subagents, the provider adapters) or --real is given: every group with real-model journeys, and the
  *     journeys they need, each real turn under one cap shared by both runners (scripts/provider-gate.mjs, default at
  *     most 4; TOOLROLL_CHECK_PROVIDERS). The nightly journeys flow (scripts/flows/real-model-journeys.mjs) runs every
  *     journey with real models
@@ -59,12 +59,12 @@ function baseOf() {
   return tryGit("rev-parse", "--verify", "-q", "origin/main");
 }
 
-/** Model-facing code: a change here runs the real-model journeys (the lead, chat, mate tools, the planner, the builder,
- * teammates, task sizing and sorting, the provider adapters and how a turn is run and read). */
+/** Model-facing code: a change here runs the real-model journeys (the lead and its tools, chat, the planner, the builder,
+ * subagents, task sizing and sorting, the provider adapters and how a turn is run and read). */
 const MODEL = [
-  /^src\/(mate|mate-[a-z-]+|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
+  /^src\/(lead|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
   /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence)\.ts$/,
-  /^src\/(teammates|teammate-work|task-sizing|flow-sort|flow-draft)\.ts$/,
+  /^src\/(subagents|subagent-work|task-sizing|flow-sort|flow-draft)\.ts$/,
   /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
 ];
 /** Changes no test reads. */
@@ -138,7 +138,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   // No main to compare with, or nothing differs from it (a release of main itself): check everything.
   const plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, journeys: scripts });
   const upgrade = plan.checks && existsSync(join("scripts", "upgrade-path.mjs"));
-  console.log(`Release check against ${base === null ? "nothing (origin/main unknown)" : `origin/main ${base.slice(0, 12)}`} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from the last 3 releases and 0.9.11" : ""}.`);
+  console.log(`Release check against ${base === null ? "nothing (origin/main unknown)" : `origin/main ${base.slice(0, 12)}`} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from every release since 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
 
   // Each journey run: a script, scripted or real-model, in every group with journeys of that kind.

@@ -60,18 +60,20 @@ export const chatActionRequestSchemas = {
   flow_trigger_pause: z.strictObject({ trigger: id }),
   flow_trigger_resume: z.strictObject({ trigger: id }),
   flow_trigger_remove: z.strictObject({ trigger: id }),
-  teammate_create: z.strictObject({ repo: words, template: z.unknown().optional(), name: z.unknown().optional(), soul: z.unknown().optional() }),
-  teammate_soul: z.strictObject({ teammate: id, soul: words }),
-  teammate_state: z.strictObject({ teammate: id, state: z.enum(["active", "paused", "removed"]) }),
-  teammate_note: z.strictObject({ teammate: id, note: words }),
-  teammate_answer: z.strictObject({ question: id, choice: z.unknown().optional(), text: z.unknown().optional() }),
-  teammate_tools: z.strictObject({
-    teammate: id, tool: words, change: z.enum(["grant", "revoke", "rule"]), action: z.unknown().optional(), use: z.unknown().optional(),
+  subagent_create: z.strictObject({ repo: words, template: z.unknown().optional(), name: z.unknown().optional(), soul: z.unknown().optional() }),
+  subagent_soul: z.strictObject({ subagent: id, soul: words }),
+  subagent_state: z.strictObject({ subagent: id, state: z.enum(["active", "paused", "removed"]) }),
+  subagent_note: z.strictObject({ subagent: id, note: words }),
+  /** D5: the lead delegates — "ask Rosa to …" — as a card on the subagent's desk. */
+  subagent_ask: z.strictObject({ subagent: id, text: words }),
+  subagent_answer: z.strictObject({ question: id, choice: z.unknown().optional(), text: z.unknown().optional() }),
+  subagent_tools: z.strictObject({
+    subagent: id, tool: words, change: z.enum(["grant", "revoke", "rule"]), action: z.unknown().optional(), use: z.unknown().optional(),
     limitField: z.unknown().optional(), limitOver: z.unknown().optional(), undoWith: z.unknown().optional(),
   }),
-  teammate_memory: z.strictObject({ teammate: id, memory: id, change: z.enum(["edit", "forget"]), text: z.unknown().optional() }),
-  teammate_routine: z.strictObject({ teammate: id, change: z.enum(["add", "remove"]), routine: z.unknown().optional(), schedule: z.unknown().optional(), text: z.unknown().optional() }),
-  teammate_undo: z.strictObject({ teammate: id, call: id }),
+  subagent_memory: z.strictObject({ subagent: id, memory: id, change: z.enum(["edit", "forget"]), text: z.unknown().optional() }),
+  subagent_routine: z.strictObject({ subagent: id, change: z.enum(["add", "remove"]), routine: z.unknown().optional(), schedule: z.unknown().optional(), text: z.unknown().optional() }),
+  subagent_undo: z.strictObject({ subagent: id, call: id }),
   kit_setup: z.strictObject({ repo: words, kit: words }),
   decision_record: z.strictObject({ repo: words, claim: words, why: words, supersedes: id.optional(), source: words.optional() }),
   decision_retire: z.strictObject({ repo: words, decision: id, reason: words }),
@@ -139,7 +141,22 @@ const under = (prefix: string, issues: readonly ContractIssue[]): ContractIssue[
   });
 
 /** Legacy readers checked only the envelope. Confirmation still prepares the request again before acting. */
-export function readSharedAction(input: unknown): ContractResult<SharedAction> {
+/**
+ * D5 (schema v117): a subagent action was a "teammate_…" one, naming its "teammate", before. A saved card reads in today's
+ * words, so a conversation's history still shows it; its stamp was made over the old words, so confirming it asks for
+ * a fresh proposal, as any card drafted before a change does.
+ */
+function legacySubagentAction(input: unknown): unknown {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return input;
+  const row = input as Record<string, unknown>;
+  if (typeof row["operation"] !== "string" || !row["operation"].startsWith("teammate_")) return input;
+  const renamed = (value: unknown) => value === null || typeof value !== "object" || Array.isArray(value) ? value
+    : Object.fromEntries(Object.entries(value).map(([key, one]) => [key === "teammate" ? "subagent" : key, one]));
+  return { ...row, operation: `subagent_${row["operation"].slice("teammate_".length)}`, request: renamed(row["request"]), ...(Object.hasOwn(row, "state") ? { state: renamed(row["state"]) } : {}) };
+}
+
+export function readSharedAction(given: unknown): ContractResult<SharedAction> {
+  const input = legacySubagentAction(given);
   const read = readVersioned(sharedActionSchema, input, SHARED_ACTION_UPGRADES);
   if (!read.ok) return read;
   if (!isOperation(read.value.operation)) return { ok: false, issues: [{ path: "operation", kind: "bad-value", line: "operation: not an action" }] };

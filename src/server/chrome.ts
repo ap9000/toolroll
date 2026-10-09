@@ -41,7 +41,7 @@ import { type Decision,type Run } from "../store.js";
 import { styleAsset } from "../style-asset.js";
 import { spendLine,type tally } from "../summary.js";
 import { TASK_STATUS_CSS } from "../task-status.js";
-import { TEAMMATE_CSS } from "../teammates-ui.js";
+import { SUBAGENT_CSS } from "../subagents-ui.js";
 import { UPDATES_CSS } from "../toolroll-update-ui.js";
 import { TOOLS_CSS } from "../tools-ui.js";
 import { TRANSITIONS_CSS } from "../transitions-recipes.js";
@@ -156,7 +156,7 @@ export const INBOX_TABS_CSS = '.inbox-tabs{display:inline-flex;gap:2px;max-width
   '.inbox-ask{margin:18px 0 0}.inbox-ask>h2{display:flex;align-items:baseline;gap:8px;margin:0 0 4px;font-size:15px;font-weight:600}.inbox-ask>h2 .count{font:500 12px var(--so-mono,ui-monospace,monospace);font-variant-numeric:tabular-nums;color:var(--so-muted)}.inbox-ask h3{font-size:13px;font-weight:600;margin:12px 0 4px}' +
   '.inbox-unread{display:none;position:absolute;top:4px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--so-signal)}' +
   '@media (max-width:760px){.inbox-tabs{display:flex;width:100%}.inbox-tabs a{flex:1;justify-content:center;min-height:44px;padding:0 6px}.inbox-unread{display:block}}';
-export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + TEAMMATE_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
+export const WORKSPACE_STYLE = styleAsset(STYLE + BRAND_MARK_CSS + INBOX_TABS_CSS + APPROVAL_RULES_CSS + SPEND_CSS + RETENTION_CSS + STORAGE_CSS + UPDATES_CSS + LIMITS_CSS + MONITORING_CSS + INTEGRATIONS_CSS + BACKUP_CSS + EXPORT_CSS + PROJECT_DELETE_CSS + POLICY_CSS + EVIDENCE_PACK_CSS + THEME_CONTROLS_CSS + CODING_CSS + CODING_SHIPPING_CSS + RECIPE_CSS + SKILLS_CSS + TOOLS_CSS + FLOWS_CSS + SUBAGENT_CSS + KITS_CSS + STARTERS_CSS + GALLERY_CSS + SSO_CSS + CREDENTIALS_CSS + REQUEST_LIMITS_CSS + PEOPLE_AUDIT_CSS + KNOWLEDGE_CSS + MODELS_CSS + CHAT_POLISH_CSS + TRANSITIONS_CSS + WORKSPACE_MOTION_CSS + ASSIGNMENT_CSS + TASK_STATUS_CSS + LEAD_CONTEXT_CSS + PULL_REQUEST_SETTINGS_CSS + CHECK_SETTINGS_CSS + DISCLOSURE_CSS + '.learning{min-width:0;overflow-wrap:anywhere}.learning .card{min-width:0}.learning code,.learning blockquote,.learning pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.learning button,.learning summary,.learning .button-link{min-height:44px}.learning button{white-space:nowrap}.learning summary{padding:12px 0;cursor:pointer}.learning form{margin:12px 0}.learning select{max-width:100%}.learning blockquote{margin:8px 0}.learning ul{padding-left:20px}');
 
 /** Everything the sidebar needs to draw itself for one request. */
 export type Chrome = {
@@ -836,7 +836,7 @@ export type NavRow = { key: Chrome["active"]; href: string; label: string; hint:
  */
 export function workToolRows(scoped = false, _offersChat = false, offersCode = false): NavRow[] {
   const rows: NavRow[] = [
-    ...(offersCode ? [{ key: "code" as const, href: "/code", label: "Coding sessions", hint: "Direct coding sessions and their saved results" }] : []),
+    // D5: coding sessions are deprecated; /code still opens this release, but nothing links to it.
     { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },

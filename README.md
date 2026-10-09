@@ -366,7 +366,7 @@ for people splitting those parts across machines.
 Specialized views remain in **Tools** and **Settings**: the activity ledger, the review cockpit,
 the fleet,
 people (invite a second approver), the operating mode (a signed, expiring
-envelope that pre-approves your own filings), and **chat** — the mate, one
+envelope that pre-approves your own filings), and **chat** — your lead, one
 conversation across every project, which only ever proposes.
 
 ### In the terminal
@@ -383,7 +383,7 @@ toolroll decide <id> --choose <option>      # answer a parked decision
 toolroll task show retries                  # attempts, outcome, where the branch is
 
 toolroll task add "Why does the login test flake?" --id flaky --report   # a scout
-toolroll chat --say "what is waiting on me across every project?"       # the mate
+toolroll chat --say "what is waiting on me across every project?"       # your lead
 ```
 
 Every command takes `--json` and answers with one envelope; every mutation
@@ -808,20 +808,36 @@ contents or command lines, with credential-shaped lines redacted at
 write. Digits focus one pane, `a` shows them all, `q` leaves. Outside a
 terminal, or with `--json`, it prints one snapshot and exits.
 
-## The mate, and the gateway
+## The lead, its subagents, and the gateway
 
-`/chat` in the console (or `toolroll chat` in the terminal) is one
-conversation across every project you serve. The mate reads the fleet
+`/chat` in the console (or `toolroll chat` in the terminal, or your chat app on
+the phone) is one conversation with your lead across every project you serve.
+The console, the terminal, Telegram, Slack, Discord and Teams all talk to the
+same lead with the same tools. The lead reads the fleet
 and **only proposes**: file a task (or a scout), move one to the front,
 reserve it for a worker, hold it, rewrite a scope, retry/replace/unlink a
 terminal dependency, guide a task's next attempt, cancel, or suggest an answer to a parked decision. Every
 proposal is a card you confirm, with
 every consequence and the builder's recommendation shown beside the
-mate's pick; a scope the mate wrote never seals under an operating mode.
+lead's pick; a scope the lead wrote never seals under an operating mode.
 Absolute paths, internal digests and account names are redacted; source context includes relative file citations. Direct API use spends
 against a ceiling you set per conversation. The console keeps a live pulse for every
 admitted project beside that shared thread, with one-click fleet questions
 and a direct road to each project's board.
+
+The lead has **subagents**: named helpers, each with its own personality,
+instructions and rules (what it does on its own, what it asks first, what it
+never does). Say "ask Maya to draft the refund reply" and the lead shows a card
+with exactly what goes to Maya; once you confirm, Maya works it within her rules
+and her answer comes back to you. A flow step can call a subagent by name too.
+They live in **Settings → Lead → Subagents** ([guide](docs/guide/subagents.md)).
+Subagents used to be called AI teammates; each carried over unchanged.
+
+The central team service (`toolroll connect`, the central `toolroll lead
+list|create|update|member|transfer`, `toolroll conversation …`, team chat) and
+native coding sessions (`toolroll session …`, the `/code` page) are deprecated:
+they still work for this release, hidden from help and the console, print one warning
+when used, and are removed in the next minor release.
 
 Every task has an **Overview / Ask** switch. **Ask** opens a focused companion
 to that task without creating another conversation: Toolroll attaches
@@ -831,7 +847,7 @@ result inspection. Proposed guidance is inert until you confirm its card, then i
 reaches the next attempt without interrupting work already running.
 
 New work starts the same way: describe the outcome once in ordinary language.
-The mate infers a concise title, narrow scope, safe non-goals, and proof
+The lead infers a concise title, narrow scope, safe non-goals, and proof
 criteria; it asks only when the project or outcome is genuinely ambiguous, or
 when an irreversible or compatibility tradeoff changes what should be built.
 Questions are grouped, carry a recommended default, and stop for reversible
@@ -985,7 +1001,7 @@ Everything below ships in 0.4.0:
   sessions, invites, and every mode they signed end together, while
   history stays attributed forever.
 - **Scout tasks** — `task add … --report` (or the "scout" checkbox, or
-  the mate's `propose_task` with `report: true`) files a task whose
+  the lead's `propose_task` with `report: true`) files a task whose
   deliverable is a report, never a branch: once its scope is approved,
   a read-only session investigates the goal as a question and hands
   back a title, a summary, a document, and up to five follow-ups, each

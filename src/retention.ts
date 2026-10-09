@@ -183,7 +183,7 @@ export function retentionPlan(store: Store, evidenceRoot: string, now: Date, per
   }
 
   if (periods.chat !== null) {
-    const rows = db.prepare(`SELECT m.id AS id, length(m.text) + COALESCE(length(m.activity), 0) + 64 AS bytes FROM mate_message m JOIN mate_thread th ON th.id = m.thread
+    const rows = db.prepare(`SELECT m.id AS id, length(m.text) + COALESCE(length(m.activity), 0) + 64 AS bytes FROM lead_message m JOIN lead_thread th ON th.id = m.thread
       WHERE m.created_at < ?
         AND NOT EXISTS (SELECT 1 FROM team_message tm WHERE tm.message = m.id AND tm.status IN ('queued', 'running', 'uncertain'))
         AND NOT EXISTS (SELECT 1 FROM mate_turn turn WHERE turn.id = m.turn AND turn.state IN ('queued', 'running'))
@@ -258,10 +258,10 @@ export function sweepRetention(store: Store, evidenceRoot: string, now: Date, ac
     }
     if (periods.chat !== null) {
       const team = db.prepare("DELETE FROM team_message WHERE message = ? AND status NOT IN ('queued', 'running', 'uncertain')");
-      const message = db.prepare("DELETE FROM mate_message WHERE id = ? AND NOT EXISTS (SELECT 1 FROM team_message WHERE message = ?)");
-      const asked = db.prepare("SELECT turn FROM mate_message WHERE id = ? AND role = 'assistant' AND turn IS NOT NULL");
+      const message = db.prepare("DELETE FROM lead_message WHERE id = ? AND NOT EXISTS (SELECT 1 FROM team_message WHERE message = ?)");
+      const asked = db.prepare("SELECT turn FROM lead_message WHERE id = ? AND role = 'assistant' AND turn IS NOT NULL");
       // The lead's question goes with the reply that asked it; its buttons then say it expired.
-      const ask = db.prepare("DELETE FROM mate_ask WHERE turn = ? AND NOT EXISTS (SELECT 1 FROM mate_message WHERE turn = ? AND role = 'assistant')");
+      const ask = db.prepare("DELETE FROM lead_ask WHERE turn = ? AND NOT EXISTS (SELECT 1 FROM lead_message WHERE turn = ? AND role = 'assistant')");
       for (const one of plan.items.chat) {
         team.run(one.id);
         const turn = asked.get(one.id)?.["turn"];

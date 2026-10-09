@@ -37,7 +37,7 @@ const words = stageHandoffSchema.pick({ text: true });
  */
 export const STAGE_HANDOFFS = {
   inbox: null, task: words, report: stageHandoffSchema, approval: null, check: words, "pull-request": words, update: words, notify: null,
-  sort: words, draft: words, request: words, email: words, tool: words, wait: words, teammate: words, send: words, choose: null, done: null,
+  sort: words, draft: words, request: words, email: words, tool: words, wait: words, subagent: words, send: words, choose: null, done: null,
 } as const satisfies Record<FlowStageKind, z.ZodObject | null>;
 
 /** The extra `{{stage.<id>.<field>}}` fields a zone kind hands on. */

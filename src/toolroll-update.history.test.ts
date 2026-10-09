@@ -21,7 +21,7 @@ function saved(): DatabaseSync {
     INSERT INTO ledger_seal VALUES(1,2,'sig');
     INSERT INTO task VALUES('T-1','Keep my work'),('T-2','And this');
     INSERT INTO setting VALUES('theme','dark');
-    INSERT INTO run VALUES(1,'x'),(2,NULL);
+    INSERT INTO run VALUES(1,'x'),(2,NULL),(3,'x');
     INSERT INTO run_process VALUES(1,1,10,'o1','e1'),(2,1,11,'o2','e2'),(3,1,12,'o3','e3'),(4,2,13,'o4',NULL);
     INSERT INTO notification(kind) VALUES('ready'),('failed');`);
   return db;
@@ -87,6 +87,58 @@ test("v114 run_process compaction passes only when the summary accounts for ever
     db.exec("UPDATE run_process_summary SET witnesses=9 WHERE run=1");
     expect(changedHistory(db, before)).toEqual(["run_process", "run_process_summary"]);
   } finally { db.close(); }
+});
+
+/** The newer run settled first; compacting the older one must not look like a rewrite below max(rowid). */
+function newerSummary(): DatabaseSync {
+  const db = saved();
+  db.exec(COMPACT + "DELETE FROM run_process WHERE run=2; INSERT INTO run_process_summary VALUES(2,1,1,'o4','o4','e4','earlier')");
+  return db;
+}
+const COMPACT_OLDER = "DELETE FROM run_process WHERE run=1; INSERT INTO run_process_summary VALUES(1,3,1,'o1','o3','e3','later');";
+
+test("process summaries accept an older run compacted below the previous maximum key", () => {
+  const db = newerSummary();
+  try {
+    const before = historySnapshot(db);
+    expect(before.find(t => t.name === "run_process_summary")!.last).toBe(2);
+    expect(changedHistory(db, before)).toEqual([]);
+    db.exec(COMPACT_OLDER);
+    expect(changedHistory(db, before)).toEqual([]);
+    expect(changedHistory(db, historySnapshot(db))).toEqual([]);
+  } finally { db.close(); }
+});
+
+test.each([
+  ["rewritten saved metadata", "UPDATE run_process_summary SET settled_at='rewritten' WHERE run=2;"],
+  ["a removed saved summary", "DELETE FROM run_process_summary WHERE run=2;"],
+  ["a saved summary moved to another key", "UPDATE run_process_summary SET run=3 WHERE run=2;"],
+  ["an extra summary with no witnesses", "INSERT INTO run_process_summary VALUES(3,0,0,'o','o','e','now');"],
+])("process summaries refuse %s after an out-of-order compaction", (_name, edit) => {
+  const db = newerSummary();
+  try {
+    const before = historySnapshot(db);
+    db.exec(COMPACT_OLDER + edit);
+    expect(changedHistory(db, before)).toContain("run_process_summary");
+  } finally { db.close(); }
+});
+
+test.each([false, true])("new summary keys require compaction of that same run (summary table already exists: %s)", exists => {
+  for (const edit of [
+    // The total witnesses still balance, but the summary belongs to a different run.
+    "DELETE FROM run_process WHERE run=1; INSERT INTO run_process_summary VALUES(3,3,1,'o1','o3','e3','now');",
+    // A zero-count addition leaves the aggregate sum unchanged; it still needs a compacted source.
+    "INSERT INTO run_process_summary VALUES(3,0,0,'o','o','e','now');",
+    // Partial deletion cannot claim a summary while witnesses for that run remain.
+    "DELETE FROM run_process WHERE id=1; INSERT INTO run_process_summary VALUES(1,1,1,'o1','o1','e1','now');",
+  ]) {
+    const db = exists ? newerSummary() : saved();
+    try {
+      const before = historySnapshot(db);
+      db.exec((exists ? "" : COMPACT) + edit);
+      expect(changedHistory(db, before)).toEqual([exists ? "run_process_summary" : "run_process"]);
+    } finally { db.close(); }
+  }
 });
 
 

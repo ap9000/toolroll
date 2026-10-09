@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { BrowserWorkspace } from "../browser-workspace.js";
-import type { MateLiveTool } from "../mate-progress.js";
+import type { LeadLiveTool } from "../lead-progress.js";
 import { roomName, useLiveRoom } from "./live.js";
 import { Message, MessageContent } from "./ui/conversation.js";
 
-type LiveTool = MateLiveTool | { id: string; label: string; state: "unknown" };
+type LiveTool = LeadLiveTool | { id: string; label: string; state: "unknown" };
 export type LiveReply = { steps: { tools: LiveTool[]; text: string }[]; done: boolean; disconnected?: boolean };
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 

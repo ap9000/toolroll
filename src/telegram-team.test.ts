@@ -9,7 +9,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { subscriptionCredentialKey } from './converse.js';
 import { teamChatAuthorization, subscriptionTeamChatProvider } from './team-chat-authorization.js';
-import { PROPOSAL_CHAT_REASON } from './mate-doors.js';
+import { PROPOSAL_CHAT_REASON } from './lead-doors.js';
 import { TeamLeads } from "./team-leads.js";
 import { ceilingDigestOf } from "./principal.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
@@ -51,18 +51,18 @@ describe("Telegram team chats", () => {
   const actor = (name: string) => ({ name, generation: store.accountOf(name)!.generation });
   const consent = (name: string) => store.mintTeamMateSession({ approver: name, approverGeneration: actor(name).generation, thread, credentialKey: subscriptionCredentialKey('claude-subscription'), ceilingMicrousd: 0, ceilingDigest: ceilingDigestOf([REPO]), termsDigest: teamChatAuthorization(store, actor(name), domain.access(actor(name), conversation).conversation, subscriptionTeamChatProvider(store)).termsDigest }, T0);
   const pass = (script: ReturnType<typeof scripted>, extra: Partial<Parameters<typeof bridgePass>[1]> = {}) => bridgePass(store, { botId: BOT, transport: script.transport, clock: () => T0, readProjects: async () => [REPO], conversation: { evidenceRoot: dir, phoneOrigin: () => "https://console.example" }, ...extra });
-  const queued = () => store.handle.prepare("SELECT q.author, q.request_id, q.status, m.text FROM team_message q JOIN mate_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
+  const queued = () => store.handle.prepare("SELECT q.author, q.request_id, q.status, m.text FROM team_message q JOIN lead_message m ON m.id = q.message WHERE q.conversation = ? ORDER BY q.message").all(conversation);
 
   const replyWithCard = () => {
     const session = store.teamMateSession("alex", thread)?.id ?? consent("alex");
     store.createTask({ id: "target", title: "Launch page" }, T0);
     store.placeTask(store.lookupRef("target")!.id, REPO);
-    const opened = store.openMateTurn({ approver: "alex", session, thread, credentialKey: subscriptionCredentialKey('claude-subscription'), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
+    const opened = store.openLeadTurn({ approver: "alex", session, thread, credentialKey: subscriptionCredentialKey('claude-subscription'), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, T0);
     if (!opened.ok) throw new Error(opened.reason);
-    const started = store.startMateTurn(opened.id, T0);
+    const started = store.startLeadTurn(opened.id, T0);
     if (!started.ok) throw new Error("start");
-    const proposal = store.draftMateProposal({ thread, turn: opened.id, kind: "hold", payload: { task: "target", taskTitle: "Launch page", reason: "Wait for the audit", sawHold: null }, ceilingDigest: ceilingDigestOf([REPO]) }, T0);
-    expect(store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "The launch needs an audit.", activity: "" } }, T0)).toBe(true);
+    const proposal = store.draftLeadProposal({ thread, turn: opened.id, kind: "hold", payload: { task: "target", taskTitle: "Launch page", reason: "Wait for the audit", sawHold: null }, ceilingDigest: ceilingDigestOf([REPO]) }, T0);
+    expect(store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "The launch needs an audit.", activity: "" } }, T0)).toBe(true);
     return proposal;
   };
   const groupTap = (id: number, user: number, token: string, messageId: number) => ({ update_id: id, callback_query: { id: `cb-${id}`, data: token, from: { id: user }, message: { message_id: messageId, chat: group } } });
@@ -236,7 +236,7 @@ describe("Telegram team chats", () => {
     const script = scripted();
     script.updates.push([textUpdate(1, priv(SAM.chat), SAM.user, "/team 1")]);
     await pass(script);
-    const id = store.appendMateMessage({ thread, turn: null, role: "assistant", text: "Private launch details" }, T0);
+    const id = store.appendLeadMessage({ thread, turn: null, role: "assistant", text: "Private launch details" }, T0);
     if (change === "membership") expect(domain.execute(actor("alex"), { operation: "member", args: { conversationId: conversation, account: "sam", role: "contributor", active: false, expectedRevision: 2 } }, T0).ok).toBe(true);
     if (change === "lead-membership") {
       const lead = domain.access(actor("alex"), conversation).lead;
@@ -248,14 +248,14 @@ describe("Telegram team chats", () => {
     if (change === "unpair-and-repair") pairAs("sam", SAM);
     expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 0 } });
     expect(script.texts(SAM.chat)).not.toContain("Private launch details");
-    expect(store.listMateMessages(thread, 10).some(message => message.id === id)).toBe(true);
+    expect(store.listLeadMessages(thread, 10).some(message => message.id === id)).toBe(true);
   });
 
   test("group delivery stops when its granting manager is unpaired, even if another contributor remains paired", async () => {
     const script = scripted();
     script.updates.push([textUpdate(1, group, ALEX.user, "/team 1")]);
     await pass(script);
-    store.appendMateMessage({ thread, turn: null, role: "assistant", text: "Do not send after the grant ends" }, T0);
+    store.appendLeadMessage({ thread, turn: null, role: "assistant", text: "Do not send after the grant ends" }, T0);
     store.unpairTelegram(BOT, "alex", T0);
     expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 0 } });
     expect(script.texts(GROUP)).not.toContain("Do not send after the grant ends");
@@ -267,7 +267,7 @@ describe("Telegram team chats", () => {
     await pass(script);
     const before = script.sends().length;
     const urls = Array.from({ length: 300 }, (_, index) => `https://docs.example.org/guide/${index}?a=1&b=2`);
-    store.appendMateMessage({ thread, turn: null, role: "assistant", text: urls.map((url, index) => `**Step ${index}** a<b & c: ${url}`).join(" ") }, T0);
+    store.appendLeadMessage({ thread, turn: null, role: "assistant", text: urls.map((url, index) => `**Step ${index}** a<b & c: ${url}`).join(" ") }, T0);
     await pass(script);
     const sent = script.sends().slice(before).map(call => String(call.params["text"]));
     expect(sent.length).toBeGreaterThan(1);
@@ -283,7 +283,7 @@ describe("Telegram team chats", () => {
     script.updates.push([textUpdate(1, priv(SAM.chat), SAM.user, "/team 1")]);
     await pass(script);
     const before = script.sends().length;
-    store.appendMateMessage({ thread, turn: null, role: "assistant", text: "Details ".repeat(1200) }, T0);
+    store.appendLeadMessage({ thread, turn: null, role: "assistant", text: "Details ".repeat(1200) }, T0);
     const transport: TelegramTransport = async (...args) => {
       const result = await script.transport(...args);
       if (args[0] === "sendMessage") expect(domain.execute(actor("alex"), { operation: "member", args: { conversationId: conversation, account: "sam", role: "contributor", active: false, expectedRevision: 2 } }, T0).ok).toBe(true);
@@ -320,7 +320,7 @@ describe("Telegram team chats", () => {
     const card = sentCard(script);
     script.updates.push([groupTap(2, SAM.user, card.token, card.messageId)]);
     expect(await pass(script, { readProjects: async () => [REPO, "/test/unrelated-project"] })).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-    expect(store.getMateProposal(proposal)).toMatchObject({ state: "confirmed", resolvedBy: "sam", outcome: { ok: true, via: "telegram" } });
+    expect(store.getLeadProposal(proposal)).toMatchObject({ state: "confirmed", resolvedBy: "sam", outcome: { ok: true, via: "telegram" } });
   });
 
   test('changed provider terms refuse a Telegram confirmation with the enable-chat reason and preserve the proposal', async () => {
@@ -330,14 +330,14 @@ describe("Telegram team chats", () => {
     await pass(script);
     const proposal = replyWithCard();
     await pass(script);
-    const card = sentCard(script), before = store.getMateProposal(proposal);
+    const card = sentCard(script), before = store.getLeadProposal(proposal);
     store.setChatConfig({ ...store.getChatConfig()!, dailyTurns: 51 }, 'alex', T0);
     script.updates.push([groupTap(2, SAM.user, card.token, card.messageId)]);
     const refused = await pass(script);
     expect(refused).toMatchObject({ ok: true });
     expect(refused.ok && (refused.report.chatConfirmed ?? 0)).toBe(0);
     expect(script.calls.filter(call => call.method === 'editMessageText').at(-1)?.params['text']).toContain(PROPOSAL_CHAT_REASON);
-    expect(store.getMateProposal(proposal)).toEqual(before);
+    expect(store.getLeadProposal(proposal)).toEqual(before);
     expect(store.handle.prepare('SELECT 1 FROM hold').get()).toBeUndefined();
   });
 
@@ -354,7 +354,7 @@ describe("Telegram team chats", () => {
     await pass(script);
     expect(script.calls.slice(before).filter(call => call.method === "editMessageText")).toEqual([]);
     expect(store.getTelegramProposalAction(card.token)!.consumedAt).toBeNull();
-    expect(store.getMateProposal(proposal)!.state).toBe("pending");
+    expect(store.getLeadProposal(proposal)!.state).toBe("pending");
   });
 
   test("rebinding a group to another conversation makes its old card unavailable", async () => {
@@ -371,7 +371,7 @@ describe("Telegram team chats", () => {
     expect(store.bindTelegramTeamChat({ botId: BOT, chatId: String(GROUP), kind: "group", conversation: other, by: "alex", binding: store.liveTelegramBindingFor(BOT, String(ALEX.user))!.id }, T0).ok).toBe(true);
     script.updates.push([groupTap(2, ALEX.user, card.token, card.messageId)]);
     await pass(script);
-    expect(store.getMateProposal(proposal)!.state).toBe("pending");
+    expect(store.getLeadProposal(proposal)!.state).toBe("pending");
     expect(script.calls.filter(call => call.method === "answerCallbackQuery").at(-1)!.params["text"]).toContain("no longer available");
   });
 

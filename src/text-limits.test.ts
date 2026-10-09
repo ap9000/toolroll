@@ -8,7 +8,7 @@ import { LEAD_REPLY_LIMITS, leadContext } from "./lead-context.js";
 import { openStore } from "./store.js";
 import { REPORT_LIMITS, parseReport } from "./scout-report.js";
 import { shapeReplyParts } from "./reply-shape.js";
-import { PART_CAP, splitParts } from "./telegram-mate.js";
+import { PART_CAP, splitParts } from "./telegram-lead.js";
 import { limitRule, overruns, passOn, PLATFORM_LIMITS, shortenAsk, TEXT_LIMITS, writeWithin } from "./text-limits.js";
 
 test("the raised limits: notes 4000, flow instructions 8000, report summary 2500 bytes, a step's output 12000", () => {

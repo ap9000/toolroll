@@ -23,7 +23,7 @@ import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./
 import { modeDigestOf, modeTermsJson, presetTerms, type ModeTerms } from "./modes.js";
 import { advanceFlows } from "./flow-engine.js";
 import { flowFromSteps } from "./flows.js";
-import { mintCardTokens, proposalPreview } from "./telegram-mate.js";
+import { mintCardTokens, proposalPreview } from "./telegram-lead.js";
 import { subscriptionCredentialKey } from "./converse.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { readTelegramButtonData } from "./contracts/telegram-callback.js";
@@ -348,22 +348,22 @@ describe("decide-in-chat cards", () => {
 
 describe("a lead's proposal", () => {
   /** A pending card on alex's own session and thread, its tokens placed on a synthetic message. */
-  const proposal = (kind: Parameters<Store["draftMateProposal"]>[0]["kind"], payload: Record<string, unknown>, messageId: number) => {
+  const proposal = (kind: Parameters<Store["draftLeadProposal"]>[0]["kind"], payload: Record<string, unknown>, messageId: number) => {
     const verified = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [REPO]);
     if (!verified.ok) throw new Error(verified.reason);
     const me = verified.who;
     const credentialKey = subscriptionCredentialKey("claude-subscription");
-    if (store.activeMateSession("alex") === null) store.mintMateSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
-    const session = store.activeMateSession("alex")!;
-    const thread = store.openMateThread("alex", me.ceilingDigest, now).thread;
-    const opened = store.openMateTurn({ approver: "alex", session: session.id, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
+    if (store.activeLeadSession("alex") === null) store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey, ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+    const session = store.activeLeadSession("alex")!;
+    const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
+    const opened = store.openLeadTurn({ approver: "alex", session: session.id, thread: thread.id, credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
     if (!opened.ok) throw new Error(opened.reason);
-    const started = store.startMateTurn(opened.id, now);
+    const started = store.startLeadTurn(opened.id, now);
     if (!started.ok) throw new Error("start");
-    const id = store.draftMateProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: me.ceilingDigest }, now);
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
+    const id = store.draftLeadProposal({ thread: thread.id, turn: opened.id, kind, payload, ceilingDigest: me.ceilingDigest }, now);
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
     const minted = mintCardTokens(store, store.liveTelegramBindingFor(BOT, String(ALEX))!, id, now, String(messageId));
-    const text = proposalPreview(store, store.getMateProposal(id)!, [REPO], "telegram").text;
+    const text = proposalPreview(store, store.getLeadProposal(id)!, [REPO], "telegram").text;
     // As the bridge sends it: the card's words, then its Confirm and Dismiss.
     script.calls.push({ method: "sendMessage", params: { chat_id: ALEX, text, reply_markup: { inline_keyboard: minted.keyboard } }, messageId });
     return { id, messageId };
@@ -380,7 +380,7 @@ describe("a lead's proposal", () => {
       "Nothing changes until you confirm.",
     ].join("\n"));
     // Slack, Discord and Teams keep their own card words.
-    expect(proposalPreview(store, store.getMateProposal(card.id)!, [REPO], "slack").text).toContain("Confirm or Dismiss below. Nothing changes until you confirm.");
+    expect(proposalPreview(store, store.getLeadProposal(card.id)!, [REPO], "slack").text).toContain("Confirm or Dismiss below. Nothing changes until you confirm.");
   });
 
   test("an irreversible answer: sent, armed, cancelled, then answered through the shared door", async () => {
@@ -648,8 +648,8 @@ describe("approving anywhere the owner has authority", () => {
   });
 
   test("asked to approve, the lead sends the plan's and the flow card's own buttons; the owner's taps decide, never the lead", async () => {
-    const { MATE_TOOLS } = await import("./mate-tools.js");
-    const offer = MATE_TOOLS.find(one => one.name === "offer_approval")!;
+    const { LEAD_TOOLS } = await import("./lead-tools.js");
+    const offer = LEAD_TOOLS.find(one => one.name === "offer_approval")!;
     const principal = verifyApproverStanding(store, "bob", store.accountOf("bob")!.generation, [REPO]);
     if (!principal.ok) throw new Error("principal");
     const ctx = { store, who: principal.who, now, draft: () => null, step: 1, readDecisions: new Map(), evidenceRoot: dir, channel: "telegram" as const };

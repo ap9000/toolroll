@@ -83,10 +83,10 @@ try {
         await page.locator('.composer textarea').fill(message);
         await page.locator('.composer button[type="submit"]').click();
         await page.waitForFunction(() => document.querySelector('.composer')?.getAttribute('aria-busy') !== 'true');
-        for (let i = 0; i < 100 && (answers.length || store.liveMateTurnFor(fixture.name)); i++) await new Promise(r => setTimeout(r, 50));
+        for (let i = 0; i < 100 && (answers.length || store.liveLeadTurnFor(fixture.name)); i++) await new Promise(r => setTimeout(r, 50));
         assert.equal(answers.length, 0);
         await page.waitForSelector('.proposal-task_action.pending, .proposal-review.pending');
-        return store.raw().prepare("SELECT id FROM mate_proposal ORDER BY id DESC LIMIT 1").get().id;
+        return store.raw().prepare("SELECT id FROM lead_proposal ORDER BY id DESC LIMIT 1").get().id;
       };
       const stop = await send('Stop this task', [tool('get_task', { task }), tool('propose_task_action', { task, run: run.id, operation: 'stop' })]);
       const stopCard = page.locator('article').filter({ has: page.locator(`form[action="/chat/proposal/${stop}/confirm"]`) });
@@ -144,7 +144,7 @@ try {
       await page.locator('.composer textarea').fill(draft);
       await submit(page, page.locator(`form[action="/chat/proposal/${stale}/confirm"] button`));
       await page.locator('.proposal-task_action.refused').waitFor();
-      check(name+' stale card refuses without draft loss', store.getMateProposal(stale).state === 'refused' && await page.locator('.composer textarea').inputValue() === draft);
+      check(name+' stale card refuses without draft loss', store.getLeadProposal(stale).state === 'refused' && await page.locator('.composer textarea').inputValue() === draft);
       await page.locator('.proposal-task_action.refused').scrollIntoViewIfNeeded();
       await shot(page, name === 'phone' ? 'phone-refusal-draft' : 'desktop-refusal-draft');
       // Complete the same task-owned ceremony, entered from the focused chat.

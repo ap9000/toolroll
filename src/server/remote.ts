@@ -160,6 +160,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       admitSource: request => teamsSourceBudget.admit(joinSourceOf(request)), admitTenant: tenant => teamsTenantBudget.admit(tenant) })) return;
     return respond(response, 404, 'text/plain; charset=utf-8', 'No such address.');
   };
+  // D5: native coding sessions and the central team service are deprecated (still served this release); each
+  // answer says so in a Deprecation header (RFC 9745).
   // Each protocol adapter keeps its own operation boundary; every row still names its own entry.
   const registrations = handlersOf("remote", {}, {
     "edge.telegram-hook": async ({ request, response }) => { await telegramHook(hookContext, request, response); },
@@ -172,16 +174,16 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     "edge.oauth-token": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
     "edge.oauth-authorize": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
     "edge.oauth-consent": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
-    "edge.sessions-list": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-show": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-changes": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-start": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-send": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-stop": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-resume": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.sessions-recover": async ({ request, response }) => { await sessionEndpoint(request, response); },
-    "edge.team-read": async ({ request, response }) => { await teamEndpoint(request, response); },
-    "edge.team-send": async ({ request, response }) => { await teamEndpoint(request, response); },
+    "edge.sessions-list": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-show": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-changes": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-start": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-send": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-stop": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-resume": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.sessions-recover": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
+    "edge.team-read": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await teamEndpoint(request, response); },
+    "edge.team-send": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await teamEndpoint(request, response); },
     "edge.cli": async ({ request, response }) => { await cliEndpoint(request, response); },
     "edge.teams": teams,
   });

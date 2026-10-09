@@ -1,9 +1,10 @@
 import { reclaimDatabase } from "./database-reclaim.js";
+import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
 import { type ChatBinding, type ChatRoom } from "./chat-core.js";
 import { ChatMessages, TELEGRAM_HOLD_REASONS, TELEGRAM_SKIPPED_ELSEWHERE, TELEGRAM_SKIPPED_OTHER_CHAT, TELEGRAM_SKIPPED_QUIET, TELEGRAM_UNSETTLED } from "./chat-messages.js";
 import { isLifecycleNotification, isTelegramProgressNotification, LIFECYCLE_KEY_PREFIX, LIFECYCLE_KINDS, proposalTaskOf, readNotification, type LifecycleKind } from "./notification-rows.js";
-import { chatTablesShared, convertChatTables, LEGACY_CHAT_APPS, LEGACY_TELEGRAM_SCHEMA, legacyAppSchema, legacyAppTables, legacyChatProblem, legacyChatTablesPresent } from "./chat-migration.js";
+import { chatTablesShared, convertChatTables, legacyAppTables, legacyChatProblem, legacyChatTablesPresent } from "./chat-migration.js";
 import { ServerTelemetry } from "./server-telemetry.js";
 import { instrumentDatabase, measureWriteWait } from "./sqlite-telemetry.js";
 import { trackWorkspaceWrites } from "./workspace-revision.js";
@@ -65,7 +66,7 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, exactKeys, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, exactKeys, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
   canonicalOverridesJson,
@@ -116,7 +117,7 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
-import { LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V54_COLUMNS, LEDGER_V54_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
+import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
@@ -124,7 +125,7 @@ import { POLICY_SCHEMA, agentRefusal, approvalRefusal, policyParts, readPolicy, 
 import { PROVIDER_AUTH_SCHEMA } from "./provider-auth.js";
 import { REQUEST_BUDGET_SCHEMA } from "./request-budget.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
-import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, teammateFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
+import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, subagentFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
 import { CHECKOUT_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
@@ -140,7 +141,7 @@ import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 // and its cards, persisted before any send); readers below v63 refuse it.
 // v64 adds typed media identity to those parts (an image part names the exact
 // task, run, artifact and recorded hash of one verified screenshot) and the
-// screenshots one answered mate turn selected for an exact result; readers
+// screenshots one answered lead turn selected for an exact result; readers
 // below v64 refuse it.
 // v65 adds immutable skill packages, project selections, run snapshots and skill tests.
 // v76 adds the live model catalog, CLI version checks and the model watch.
@@ -159,12 +160,12 @@ import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 // v89 adds inbox triggers: mail arriving in a mailbox (IMAP, or a connected Google account) and messages in a chat channel start cards.
 // v90 adds code steps: project scripts in Python and Node (or a file in the project), given the card and passing on what they print.
 // v91 adds waiting for replies: each card's email conversation (what was sent, what came back) and where the reply watcher stands.
-// v92 adds AI teammates: soul files, what each decided and why, and the questions they put to people; a teammate's turn is a flow step.
-// v93 lets people answer a teammate's question in their chat app: a tap on an option, or a reply in their words.
-// v94 lets teammates use project tools within per-action rules: each call is a receipt, and an ask-first call waits for a person's approval.
-// v95 gives each teammate a memory (what it kept, and what its people told it) and lets it suggest its own rule changes from what people approved.
-// v96 gives each teammate a desk: its own flow, where messages to it by name and its routines land as cards.
-// v97 keeps what each teammate turn cost, lets a person undo a teammate's tool call where the tool can, and sends a weekly report.
+// v92 adds subagents: soul files, what each decided and why, and the questions they put to people; a subagent's turn is a flow step.
+// v93 lets people answer a subagent's question in their chat app: a tap on an option, or a reply in their words.
+// v94 lets subagents use project tools within per-action rules: each call is a receipt, and an ask-first call waits for a person's approval.
+// v95 gives each subagent a memory (what it kept, and what its people told it) and lets it suggest its own rule changes from what people approved.
+// v96 gives each subagent a desk: its own flow, where messages to it by name and its routines land as cards.
+// v97 keeps what each subagent turn cost, lets a person undo a subagent's tool call where the tool can, and sends a weekly report.
 // v98 lets Telegram push a bot's updates to Toolroll (a webhook) instead of being polled for them.
 // v99 gives the action ledger its own kinds of event for sign-ins and policy changes, each with a short detail (a change's before → after).
 // v100 lets people sign in with the organisation's identity provider: each provider identity is linked to one account.
@@ -315,7 +316,7 @@ CREATE TABLE IF NOT EXISTS project_mute (
 `;
 /** A lead reply stopped at its deadline, in the thread as plain words: what happened, what it means, one next step. The
  * proposals it made before then are kept; the cost line only when an unknown cost paused chat. */
-export function mateTimeoutNotice(keptProposals: boolean, unknownCost = false): string {
+export function leadTimeoutNotice(keptProposals: boolean, unknownCost = false): string {
   return [
     unknownCost ? "The reply took too long and was stopped, and its cost isn't known yet, so chat is paused." : "The reply took too long and was stopped.",
     keptProposals ? "What it proposed is below." : null,
@@ -324,7 +325,7 @@ export function mateTimeoutNotice(keptProposals: boolean, unknownCost = false): 
 }
 
 /** Whether a turn's proposals stand: it answered, or it stopped at its deadline after its completed tool calls proposed them. */
-export function mateTurnKeepsProposals(turn: { state: string; failureReason: string | null } | null): boolean {
+export function leadTurnKeepsProposals(turn: { state: string; failureReason: string | null } | null): boolean {
   return turn !== null && (turn.state === "answered" || turn.state === "failed" && (turn.failureReason === "timeout" || turn.failureReason === "crashed"));
 }
 
@@ -377,15 +378,15 @@ export type TaskActRow = { act: TaskAct; account: string; lead: boolean; person:
 /** The lead's one question to its owner (no version bump): at most one per answered turn, two to four short options;
  * "Something else" is implied. The tapped option comes back as the owner's next message, so nothing here is an answer:
  * a question is open while no later message from the owner sits in its thread. */
-export const MATE_ASK_SCHEMA = `
-CREATE TABLE IF NOT EXISTS mate_ask (
+export const LEAD_ASK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS lead_ask (
   turn         INTEGER PRIMARY KEY REFERENCES mate_turn(id) ON DELETE CASCADE,
-  thread       INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
+  thread       INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
   question     TEXT NOT NULL,
   options_json TEXT NOT NULL,
   created_at   TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS mate_ask_thread ON mate_ask (thread, turn);
+CREATE INDEX IF NOT EXISTS lead_ask_thread ON lead_ask (thread, turn);
 `;
 /** Decisions in the chat app (chat-decide.ts; no version bump: additive only). A token names one act on one card (the chat and message it rides); `digest` is
  * what the card showed — a receipt, a revision source, a task stamp, a plan or a commit. */
@@ -468,10 +469,10 @@ CREATE TABLE IF NOT EXISTS chat_decide_prompt (
 CREATE INDEX IF NOT EXISTS chat_decide_prompt_open ON chat_decide_prompt (channel, binding, consumed_at);
 `;
 
-export type MateAsk = { turn: number; thread: number; question: string; options: string[]; createdAt: string };
-export const MATE_ASK_OTHER = "Something else";
+export type LeadAsk = { turn: number; thread: number; question: string; options: string[]; createdAt: string };
+export const LEAD_ASK_OTHER = "Something else";
 /** How long the question's buttons work, on every channel. */
-export const MATE_ASK_TTL_MS = 7 * 86_400_000;
+export const LEAD_ASK_TTL_MS = 7 * 86_400_000;
 /** What a turn the lead starts itself for automatic crew updates says in the owner's place (lead-follow.ts): never their answer. */
 export const LEAD_FOLLOW_MESSAGE = "Automatic crew update: inspect the saved results or decisions and tell me what needs attention. Do not rerun work.";
 
@@ -620,9 +621,9 @@ export type CheckProgress = CheckProgressSnapshot & { run: number; updatedAt: st
 const REGISTERED_AT_FILING = "again, as it was filed";
 /** A ledger entry with its seal (v103); null until the next pass seals it. */
 export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: string } | null };
-// v103 chains the action ledger (every entry sealed with the one before it), keeps checkpoints of the chain, and records teammate tool calls (from the store) and minted coordinators (by trigger) in it.
+// v103 chains the action ledger (every entry sealed with the one before it), keeps checkpoints of the chain, and records subagent tool calls (from the store) and minted coordinators (by trigger) in it.
 // v104 keeps where each monitoring destination (the audit stream to a webhook or a folder, traces to an OpenTelemetry collector) has delivered to, and who is sending.
-// v105 prices every run (reported, or tokens at the catalogue price) and keeps monthly budgets per project, person, teammate and installation.
+// v105 prices every run (reported, or tokens at the catalogue price) and keeps monthly budgets per project, person, subagent and installation.
 // v106 keeps the organisation policy, retention periods, backup settings and runs, check progress, and runner capacity changes.
 // v107 keeps a check's progress and result in one record (run_check absorbs check_progress).
 // v108 keeps sign-in pauses: one incident per provider whose sign-in stopped working (provider_auth_pause).
@@ -636,7 +637,41 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (the write wrapper bumps the revision). Every later DDL change bumps the version.
 // v115 removes contests, held sessions, fallback chains and routines (each routine becomes a scheduled flow).
 // v116 keeps every chat app (Telegram, Slack, Discord, Teams) in one set of chat tables keyed by provider, moving each old table's rows.
-export const SCHEMA_VERSION = 116;
+// v117 (D5) names one AI concept, the lead: the mate's tables become the lead's (mate_* → lead_*), and teammates become
+// the lead's subagents (teammate* → subagent*, their rows' teammate column → subagent), with every row, id and link kept.
+// mate_turn (and chat_turn.mate_turn) keep their names this release: the update gate the previous build's updater lifts
+// names them byte for byte (desktop-update-gate.ts), so they move once every updater reads either name.
+export const SCHEMA_VERSION = 117;
+
+/** v117: each table renamed, by its old name. Rows, ids, foreign keys and indexes go with it (renameForV117). */
+export const V117_RENAMED_TABLES: Readonly<Record<string, string>> = Object.freeze({
+  mate_session: "lead_session", mate_thread: "lead_thread", mate_message: "lead_message", mate_proposal: "lead_proposal",
+  mate_ask: "lead_ask", mate_turn_evidence: "lead_turn_evidence",
+  teammate: "subagent", teammate_version: "subagent_version", teammate_event: "subagent_event", teammate_question: "subagent_question",
+  teammate_tool: "subagent_tool", teammate_call: "subagent_call", teammate_turn: "subagent_turn", teammate_memory: "subagent_memory",
+  teammate_suggestion: "subagent_suggestion",
+});
+/** v117: the columns renamed with them (by the table's new name): a subagent's rows name it `subagent`. */
+export const V117_RENAMED_COLUMNS: readonly (readonly [table: string, from: string, to: string])[] = Object.freeze(
+  ["subagent_version", "subagent_event", "subagent_question", "subagent_tool", "subagent_call", "subagent_turn", "subagent_memory", "subagent_suggestion"]
+    .map(table => [table, "teammate", "subagent"] as const));
+/** v117: the internal kinds that said 'teammate' and now say 'subagent' (a step run's kind, a budget's scope, a memory's source,
+ * a task's filer); the first three are held by a CHECK that names it. */
+const V117_KINDS: readonly (readonly [table: string, column: string])[] = [["flow_step_run", "kind"], ["budget", "scope_kind"], ["subagent_memory", "source"], ["task_ref", "filed_by_kind"]];
+const V117_OLD_NAME: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(V117_RENAMED_TABLES).map(([old, now]) => [now, old]));
+/** The table's name in this file: before v117 runs (the preflight), a renamed table still has its old one. */
+function presentTable(db: Database, name: string): string {
+  const old = V117_OLD_NAME[name];
+  return old !== undefined && !tableExists(db, name) && tableExists(db, old) ? old : name;
+}
+/** A row `PRAGMA foreign_key_check` reports, by today's table names: a row already pointing nowhere before v117 is the
+ * same row after it, though RENAME now reports it (and what it points at) under the new names. */
+export function orphanKey(row: Record<string, unknown>): string {
+  const named = (value: unknown) => typeof value === "string" ? V117_RENAMED_TABLES[value] ?? value : value;
+  return JSON.stringify({ table: named(row["table"]), rowid: row["rowid"], parent: named(row["parent"]), fkid: row["fkid"] });
+}
+/** Shapes compare by today's names: a pre-v117 table, index or reference names the same shape by its old one. */
+const V117_LEGACY_NAMES = /\b(?:mate_(?:session|thread|message|proposal|turn_evidence|ask)|teammate(?:_(?:version|event|question|tool|call|turn|memory|suggestion))?)\b/g;
 
 /** v115: the tables migrateToV115 drops. */
 export const V115_DROPPED_TABLES: readonly string[] = Object.freeze([
@@ -656,6 +691,8 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * needs the separate verified migration procedure. The desktop update never
  * migrates and does not read this list.
  *
+ * v108 only adds provider_auth_pause; v109 only adds task_ref.auth_wait_pause,
+ * so a database at the v107 baseline (0.5.0) takes the same update.
  * v110 rebuilds action_ledger only to widen its source check ('api', 'mcp'):
  * every row, id and hash-chain link is copied unchanged. v111 adds nullable
  * api_token columns (project limit, rotation); existing tokens read as before.
@@ -676,9 +713,11 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * separate procedure. v116 is the next declared exception: every row of the 70 old
  * per-app chat tables moves into the shared chat tables keyed by provider, in one
  * transaction that checks each count before the old tables are dropped; the
- * rehearsal checks each moved table's rows arrived (HISTORY_RULES).
+ * rehearsal checks each moved table's rows arrived (HISTORY_RULES). v117 renames the mate's tables to the lead's and the
+ * teammates' to its subagents' (SQLite's RENAME, every row, id and link carried), renames their teammate column, and rewrites four internal kinds from 'teammate' to 'subagent' in place; the rehearsal checks
+ * each renamed table's rows arrived under its new name.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([110, 111, 112, 113, 114, 115, 116]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117]);
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -1014,12 +1053,12 @@ export type ChatTurn = {
   acknowledgedBy: string | null;
   replyBytes: number | null;
   candidateCount: number | null;
-  /** 'chat' = fleet chat v13, one request; 'mate-step' = one request of a mate turn. */
+  /** 'chat' = fleet chat v13, one request; 'mate-step' = one request of a lead turn. */
   kind: "chat" | "mate-step";
-  mateTurn: number | null;
+  leadTurn: number | null;
 };
 
-export type MateSession = {
+export type LeadSession = {
   id: number;
   approver: string;
   approverGeneration: number;
@@ -1035,18 +1074,18 @@ export type MateSession = {
 
 /** What one lead thread is about (v77): the lead conversation across every
  * project, one project, or one task (keyed by its root id). */
-export type MateThreadScope = { kind: "lead" } | { kind: "project"; key: string } | { kind: "task"; key: string };
-export const LEAD_THREAD: MateThreadScope = { kind: "lead" };
-export type MateThread = { id: number; approver: string; ceilingDigest: string; openedAt: string; lastTurnAt: string | null; closedAt: string | null; scope: MateThreadScope };
+export type LeadThreadScope = { kind: "lead" } | { kind: "project"; key: string } | { kind: "task"; key: string };
+export const LEAD_THREAD: LeadThreadScope = { kind: "lead" };
+export type LeadThread = { id: number; approver: string; ceilingDigest: string; openedAt: string; lastTurnAt: string | null; closedAt: string | null; scope: LeadThreadScope };
 /** A thread as the chat list shows it: its scope and its latest message. */
-export type MateThreadSummary = MateThread & { lastMessageAt: string | null; lastMessage: string | null; messages: number };
+export type LeadThreadSummary = LeadThread & { lastMessageAt: string | null; lastMessage: string | null; messages: number };
 
-export type MateMessage = { id: number; thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity: string | null; createdAt: string };
+export type LeadMessage = { id: number; thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity: string | null; createdAt: string };
 
-export type MateProposalKind = "task" | "next" | "reserve" | "hold" | "unhold" | "steer" | "scope" | "cancel" | "answer" | "repair" | "agents" | "review" | "control" | "task_action" | "action";
+export type LeadProposalKind = "task" | "next" | "reserve" | "hold" | "unhold" | "steer" | "scope" | "cancel" | "answer" | "repair" | "agents" | "review" | "control" | "task_action" | "action";
 
 /** A coordinator's proposal over the MCP gateway (mate arc v3): the same
- * kinds as the mate's (no `task` — filing has its own door), confirmed by
+ * kinds as the lead's (no `task` — filing has its own door), confirmed by
  * any approver whose ceiling admits the repo. */
 export type CoordinatorProposalKind = "next" | "reserve" | "hold" | "unhold" | "scope" | "cancel" | "answer";
 export type CoordinatorProposalState = "pending" | "confirming" | "confirmed" | "refused" | "dismissed" | "expired";
@@ -1064,15 +1103,15 @@ export type CoordinatorProposal = {
   resolvedBy: string | null;
   outcome: Record<string, unknown> | null;
 };
-export type MateProposalState = "drafting" | "pending" | "confirming" | "confirmed" | "refused" | "dismissed" | "expired";
-export type MateProposal = {
+export type LeadProposalState = "drafting" | "pending" | "confirming" | "confirmed" | "refused" | "dismissed" | "expired";
+export type LeadProposal = {
   id: number;
   thread: number;
   turn: number;
-  kind: MateProposalKind;
+  kind: LeadProposalKind;
   payload: Record<string, unknown>;
   ceilingDigest: string;
-  state: MateProposalState;
+  state: LeadProposalState;
   createdAt: string;
   resolvedAt: string | null;
   resolvedBy: string | null;
@@ -1080,79 +1119,79 @@ export type MateProposal = {
 };
 
 /** The zones a worker's step pass runs, one run per visit. */
-export type FlowStepKind = "check" | "update" | "sort" | "draft" | "request" | "email" | "tool" | "teammate";
-/** An AI teammate (v92): who it is lives in its soul file; `handle` is how zones and chat name it. */
-export type TeammateRow = { id: number; repo: string; handle: string; state: "active" | "paused" | "removed"; version: number; soul: string; model: string | null; dailyTurns: number;
+export type FlowStepKind = "check" | "update" | "sort" | "draft" | "request" | "email" | "tool" | "subagent";
+/** A subagent (v92): who it is lives in its soul file; `handle` is how zones and chat name it. */
+export type SubagentRow = { id: number; repo: string; handle: string; state: "active" | "paused" | "removed"; version: number; soul: string; model: string | null; dailyTurns: number;
   manager: string; createdBy: string; createdAt: string; updatedBy: string; updatedAt: string; summaryAt: string | null;
   /** v96: its desk, the flow where what's asked of it directly lands (null until it's first needed). */
   deskFlow: number | null;
   /** v97: when its last weekly report went out. */
   weeklyAt: string | null };
-export type TeammateEventKind = "decided" | "handled" | "handed" | "asked" | "answered" | "note" | "paused" | "resumed" | "summary" | "failed";
-export type TeammateEventRow = { id: number; teammate: number; card: number | null; entry: number | null; kind: TeammateEventKind; said: string; detail: Record<string, unknown> | null; by: string | null; at: string };
-export type TeammateQuestionRow = { id: number; teammate: number; card: number; entry: number; question: string; options: { id: string; label: string }[]; askedOf: string;
+export type SubagentEventKind = "decided" | "handled" | "handed" | "asked" | "answered" | "note" | "paused" | "resumed" | "summary" | "failed";
+export type SubagentEventRow = { id: number; subagent: number; card: number | null; entry: number | null; kind: SubagentEventKind; said: string; detail: Record<string, unknown> | null; by: string | null; at: string };
+export type SubagentQuestionRow = { id: number; subagent: number; card: number; entry: number; question: string; options: { id: string; label: string }[]; askedOf: string;
   state: "open" | "answered" | "dropped"; choice: string | null; answer: string | null; answeredBy: string | null; answeredVia: string | null; answeredAt: string | null; createdAt: string;
-  /** v94: the ask-first tool call this question approves (null: a question of the teammate's own). */
+  /** v94: the ask-first tool call this question approves (null: a question of the subagent's own). */
   toolCall: number | null;
   /** v95: the rule change this question offers its manager (null: not one). */
   suggestion: number | null };
-/** v95: one thing a teammate remembers: kept by it on a turn, or told it by a person. */
-export type TeammateMemoryRow = { id: number; teammate: number; text: string; source: "teammate" | "person"; card: number | null; createdBy: string; createdAt: string; updatedBy: string; updatedAt: string; usedAt: string | null };
-/** v95: a rule change a teammate suggests from what its people approved. */
-export type TeammateSuggestionRow = { id: number; teammate: number; tool: string; action: string; rule: ToolRule; was: ToolRule; evidence: number[]; said: string;
+/** v95: one thing a subagent remembers: kept by it on a turn, or told it by a person. */
+export type SubagentMemoryRow = { id: number; subagent: number; text: string; source: "subagent" | "person"; card: number | null; createdBy: string; createdAt: string; updatedBy: string; updatedAt: string; usedAt: string | null };
+/** v95: a rule change a subagent suggests from what its people approved. */
+export type SubagentSuggestionRow = { id: number; subagent: number; tool: string; action: string; rule: ToolRule; was: ToolRule; evidence: number[]; said: string;
   state: "open" | "accepted" | "dismissed" | "stale"; decidedBy: string | null; decidedAt: string | null; createdAt: string };
 
-function readTeammateMemory(row: Record<string, unknown>): TeammateMemoryRow {
-  return { id: Number(row["id"]), teammate: Number(row["teammate"]), text: String(row["text"]), source: String(row["source"]) as TeammateMemoryRow["source"], card: row["card"] === null ? null : Number(row["card"]),
+function readSubagentMemory(row: Record<string, unknown>): SubagentMemoryRow {
+  return { id: Number(row["id"]), subagent: Number(row["subagent"]), text: String(row["text"]), source: String(row["source"]) as SubagentMemoryRow["source"], card: row["card"] === null ? null : Number(row["card"]),
     createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]), usedAt: row["used_at"] === null ? null : String(row["used_at"]) };
 }
 
-function readTeammateSuggestion(row: Record<string, unknown>): TeammateSuggestionRow {
+function readSubagentSuggestion(row: Record<string, unknown>): SubagentSuggestionRow {
   const parsed = <T>(column: StoreColumn, key: string, fallback: T): T => { const read = readStoreColumn(column, row[key]); return read.ok ? read.value as T : fallback; };
-  return { id: Number(row["id"]), teammate: Number(row["teammate"]), tool: String(row["tool"]), action: String(row["action"]), rule: parsed<ToolRule>("teammate_suggestion.rule_json", "rule_json", { use: "ask" }), was: parsed<ToolRule>("teammate_suggestion.was_json", "was_json", { use: "ask" }),
-    evidence: parsed<number[]>("teammate_suggestion.evidence_json", "evidence_json", []), said: String(row["said"]), state: String(row["state"]) as TeammateSuggestionRow["state"],
+  return { id: Number(row["id"]), subagent: Number(row["subagent"]), tool: String(row["tool"]), action: String(row["action"]), rule: parsed<ToolRule>("subagent_suggestion.rule_json", "rule_json", { use: "ask" }), was: parsed<ToolRule>("subagent_suggestion.was_json", "was_json", { use: "ask" }),
+    evidence: parsed<number[]>("subagent_suggestion.evidence_json", "evidence_json", []), said: String(row["said"]), state: String(row["state"]) as SubagentSuggestionRow["state"],
     decidedBy: row["decided_by"] === null ? null : String(row["decided_by"]), decidedAt: row["decided_at"] === null ? null : String(row["decided_at"]), createdAt: String(row["created_at"]) };
 }
 /** v94: one action a project tool offers, as it described itself when listed. */
 export type ToolActionInfo = SavedToolAction;
-/** v94: a teammate's rule for one action: do it, ask first, or never; "free" may ask first above a number in its input. */
+/** v94: a subagent's rule for one action: do it, ask first, or never; "free" may ask first above a number in its input. */
 export type ToolRule = SavedToolRule;
-export type TeammateGrantRow = { teammate: number; tool: string; actions: ToolActionInfo[]; rules: Record<string, ToolRule>; listedAt: string | null; updatedBy: string; updatedAt: string };
-export type TeammateCallState = "asked" | "approved" | "denied" | "refused" | "running" | "done" | "failed";
-/** v94: a tool call a teammate made, or asked to make, on one visit of a card: the receipt. */
-export type TeammateCallRow = { id: number; teammate: number; card: number; entry: number; tool: string; action: string; input: Record<string, unknown>; rule: ToolRule["use"]; why: string;
-  state: TeammateCallState; result: string | null; decidedBy: string | null; decidedAt: string | null; createdAt: string; doneAt: string | null;
+export type SubagentGrantRow = { subagent: number; tool: string; actions: ToolActionInfo[]; rules: Record<string, ToolRule>; listedAt: string | null; updatedBy: string; updatedAt: string };
+export type SubagentCallState = "asked" | "approved" | "denied" | "refused" | "running" | "done" | "failed";
+/** v94: a tool call a subagent made, or asked to make, on one visit of a card: the receipt. */
+export type SubagentCallRow = { id: number; subagent: number; card: number; entry: number; tool: string; action: string; input: Record<string, unknown>; rule: ToolRule["use"]; why: string;
+  state: SubagentCallState; result: string | null; decidedBy: string | null; decidedAt: string | null; createdAt: string; doneAt: string | null;
   /** v97: the call this one undid (a person's Undo), and who undid this one. */
   undoOf: number | null; undoneBy: string | null; undoneAt: string | null };
-/** v97: one model turn a teammate took. */
-export type TeammateTurnRow = { id: number; teammate: number; card: number | null; model: string; ok: boolean; ms: number; costUsd: number | null; tokensIn: number | null; tokensOut: number | null; at: string };
+/** v97: one model turn a subagent took. */
+export type SubagentTurnRow = { id: number; subagent: number; card: number | null; model: string; ok: boolean; ms: number; costUsd: number | null; tokensIn: number | null; tokensOut: number | null; at: string };
 
-function readTeammateCall(row: Record<string, unknown>): TeammateCallRow {
+function readSubagentCall(row: Record<string, unknown>): SubagentCallRow {
   const text = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
-  const read = readStoreColumn("teammate_call.input_json", row["input_json"]);
+  const read = readStoreColumn("subagent_call.input_json", row["input_json"]);
   const input: Record<string, unknown> = read.ok ? read.value : {};
-  return { id: Number(row["id"]), teammate: Number(row["teammate"]), card: Number(row["card"]), entry: Number(row["entry"]), tool: String(row["tool"]), action: String(row["action"]), input,
-    rule: String(row["rule"]) as ToolRule["use"], why: String(row["why"]), state: String(row["state"]) as TeammateCallState, result: text("result"), decidedBy: text("decided_by"), decidedAt: text("decided_at"),
+  return { id: Number(row["id"]), subagent: Number(row["subagent"]), card: Number(row["card"]), entry: Number(row["entry"]), tool: String(row["tool"]), action: String(row["action"]), input,
+    rule: String(row["rule"]) as ToolRule["use"], why: String(row["why"]), state: String(row["state"]) as SubagentCallState, result: text("result"), decidedBy: text("decided_by"), decidedAt: text("decided_at"),
     createdAt: String(row["created_at"]), doneAt: text("done_at"), undoOf: row["undo_of"] === null || row["undo_of"] === undefined ? null : Number(row["undo_of"]), undoneBy: text("undone_by"), undoneAt: text("undone_at") };
 }
 
-function readTeammateGrant(row: Record<string, unknown>): TeammateGrantRow {
+function readSubagentGrant(row: Record<string, unknown>): SubagentGrantRow {
   const parsed = <T>(column: StoreColumn, key: string, fallback: T): T => { const read = readStoreColumn(column, row[key]); return read.ok ? read.value as T : fallback; };
-  return { teammate: Number(row["teammate"]), tool: String(row["tool"]), actions: parsed<ToolActionInfo[]>("teammate_tool.actions_json", "actions_json", []), rules: parsed<Record<string, ToolRule>>("teammate_tool.rules_json", "rules_json", {}),
+  return { subagent: Number(row["subagent"]), tool: String(row["tool"]), actions: parsed<ToolActionInfo[]>("subagent_tool.actions_json", "actions_json", []), rules: parsed<Record<string, ToolRule>>("subagent_tool.rules_json", "rules_json", {}),
     listedAt: row["listed_at"] === null ? null : String(row["listed_at"]), updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]) };
 }
 
-function readTeammateRow(row: Record<string, unknown>): TeammateRow {
-  return { id: Number(row["id"]), repo: String(row["repo"]), handle: String(row["handle"]), state: String(row["state"]) as TeammateRow["state"], version: Number(row["version"]), soul: String(row["soul"]),
+function readSubagentRow(row: Record<string, unknown>): SubagentRow {
+  return { id: Number(row["id"]), repo: String(row["repo"]), handle: String(row["handle"]), state: String(row["state"]) as SubagentRow["state"], version: Number(row["version"]), soul: String(row["soul"]),
     model: row["model"] === null ? null : String(row["model"]), dailyTurns: Number(row["daily_turns"]), manager: String(row["manager"]), createdBy: String(row["created_by"]), createdAt: String(row["created_at"]),
     updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]), summaryAt: row["summary_at"] === null ? null : String(row["summary_at"]),
     deskFlow: row["desk_flow"] === null || row["desk_flow"] === undefined ? null : Number(row["desk_flow"]),
     weeklyAt: row["weekly_at"] === null || row["weekly_at"] === undefined ? null : String(row["weekly_at"]) };
 }
-function readTeammateQuestion(row: Record<string, unknown>): TeammateQuestionRow {
+function readSubagentQuestion(row: Record<string, unknown>): SubagentQuestionRow {
   const text = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
-  return { id: Number(row["id"]), teammate: Number(row["teammate"]), card: Number(row["card"]), entry: Number(row["entry"]), question: String(row["question"]),
-    options: parseStoreColumn("teammate_question.options_json", row["options_json"]), askedOf: String(row["asked_of"]), state: String(row["state"]) as TeammateQuestionRow["state"],
+  return { id: Number(row["id"]), subagent: Number(row["subagent"]), card: Number(row["card"]), entry: Number(row["entry"]), question: String(row["question"]),
+    options: parseStoreColumn("subagent_question.options_json", row["options_json"]), askedOf: String(row["asked_of"]), state: String(row["state"]) as SubagentQuestionRow["state"],
     choice: text("choice"), answer: text("answer"), answeredBy: text("answered_by"), answeredVia: text("answered_via"), answeredAt: text("answered_at"), createdAt: String(row["created_at"]),
     toolCall: row["tool_call"] === null || row["tool_call"] === undefined ? null : Number(row["tool_call"]),
     suggestion: row["suggestion"] === null || row["suggestion"] === undefined ? null : Number(row["suggestion"]) };
@@ -1235,7 +1274,7 @@ function readFlowTriggerRow(row: Record<string, unknown>): FlowTriggerRow {
 }
 
 
-export type MateTurn = {
+export type LeadTurn = {
   id: number;
   approver: string;
   session: number;
@@ -1824,7 +1863,7 @@ export type TelegramConversation = {
   updateId: number;
   messageId: string;
   replyTo: string | null;
-  /** The mate request receipt identity: 32 hex, derived from bot, binding and update. */
+  /** The lead request receipt identity: 32 hex, derived from bot, binding and update. */
   request: string;
   text: string;
   /** Server-authored context for the turn — the exact task/result a reply bound to. */
@@ -1883,8 +1922,8 @@ export type TelegramConversationPartPlan =
   | { kind: "card"; text: string; proposal: number; keyboard: TelegramConversationPart["keyboard"] }
   | { kind: "image"; text: string; taskId: string; run: number; artifact: number; sha256: string };
 
-/** One verified screenshot a mate turn selected for an exact result (v64): trusted identities only, never bytes or paths. */
-export type MateTurnEvidence = {
+/** One verified screenshot a lead turn selected for an exact result (v64): trusted identities only, never bytes or paths. */
+export type LeadTurnEvidence = {
   turn: number;
   ordinal: number;
   taskId: string;
@@ -2390,7 +2429,7 @@ CREATE TABLE IF NOT EXISTS chat_turn (
 CREATE INDEX IF NOT EXISTS chat_turn_credential ON chat_turn (credential_key, created_at);
 CREATE INDEX IF NOT EXISTS chat_turn_approver ON chat_turn (approver, created_at);
 
--- The mate (v32, persistent sessions in v36): one conversation per approver
+-- The lead (v32, persistent sessions in v36): one conversation per approver
 -- that manages the fleet by proposal. A session is delegated chat spend,
 -- signed once and live until explicitly ended (ruling 10);
 -- a thread is the conversation, ceiling-bound (ruling 9); messages hold
@@ -2399,7 +2438,7 @@ CREATE INDEX IF NOT EXISTS chat_turn_approver ON chat_turn (approver, created_at
 -- transaction (ruling 7); a turn is the accounting row for one operator
 -- message and its several provider requests, each of which is a chat_turn
 -- step (ruling 5).
-CREATE TABLE IF NOT EXISTS mate_session (
+CREATE TABLE IF NOT EXISTS lead_session (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   approver            TEXT NOT NULL,
   approver_generation INTEGER NOT NULL,
@@ -2412,9 +2451,9 @@ CREATE TABLE IF NOT EXISTS mate_session (
   ended_at            TEXT,
   ended_by            TEXT
 );
-CREATE INDEX IF NOT EXISTS mate_session_live ON mate_session (approver, ended_at);
+CREATE INDEX IF NOT EXISTS lead_session_live ON lead_session (approver, ended_at);
 
-CREATE TABLE IF NOT EXISTS mate_thread (
+CREATE TABLE IF NOT EXISTS lead_thread (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   approver       TEXT NOT NULL,
   ceiling_digest TEXT NOT NULL,
@@ -2424,18 +2463,18 @@ CREATE TABLE IF NOT EXISTS mate_thread (
   scope_kind     TEXT NOT NULL DEFAULT 'lead' CHECK (scope_kind IN ('lead','project','task')),
   scope_key      TEXT
 );
-CREATE INDEX IF NOT EXISTS mate_thread_live ON mate_thread (approver, closed_at);
+CREATE INDEX IF NOT EXISTS lead_thread_live ON lead_thread (approver, closed_at);
 
-CREATE TABLE IF NOT EXISTS mate_message (
+CREATE TABLE IF NOT EXISTS lead_message (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread     INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
+  thread     INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
   turn       INTEGER,
   role       TEXT NOT NULL CHECK (role IN ('operator','assistant')),
   text       TEXT NOT NULL,
   activity   TEXT,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS mate_message_thread ON mate_message (thread, id);
+CREATE INDEX IF NOT EXISTS lead_message_thread ON lead_message (thread, id);
 
 -- v78: the task a paired chat chose to talk about (/tasks, /task <name>),
 -- per surface and binding; cleared by /lead. A choice, not an authority:
@@ -2570,7 +2609,7 @@ CREATE TABLE IF NOT EXISTS flow_step_run (
   card           INTEGER NOT NULL REFERENCES flow_card(id),
   entry          INTEGER NOT NULL,
   stage          TEXT NOT NULL,
-  kind           TEXT NOT NULL CHECK (kind IN ('check','update','sort','draft','request','email','tool','teammate')),
+  kind           TEXT NOT NULL CHECK (kind IN ('check','update','sort','draft','request','email','tool','subagent')),
   script         TEXT,
   script_version INTEGER,
   state          TEXT NOT NULL CHECK (state IN ('running','passed','failed','waiting')),
@@ -2609,11 +2648,11 @@ CREATE TABLE IF NOT EXISTS flow_mail (
   at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS flow_mail_card ON flow_mail (card, at);
--- v92: AI teammates. One per project and name; its soul file (who it is,
+-- v92: subagents. One per project and name; its soul file (who it is,
 -- how it writes, what it decides on its own, what it asks about, what it
 -- never does) is versioned like scripts. Its manager hears its questions
 -- and its daily summary.
-CREATE TABLE IF NOT EXISTS teammate (
+CREATE TABLE IF NOT EXISTS subagent (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   repo         TEXT NOT NULL,
   handle       TEXT NOT NULL,
@@ -2631,19 +2670,19 @@ CREATE TABLE IF NOT EXISTS teammate (
   desk_flow    INTEGER REFERENCES flow(id),
   weekly_at    TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS teammate_live ON teammate (repo, handle) WHERE state <> 'removed';
-CREATE TABLE IF NOT EXISTS teammate_version (
-  teammate   INTEGER NOT NULL REFERENCES teammate(id),
+CREATE UNIQUE INDEX IF NOT EXISTS subagent_live ON subagent (repo, handle) WHERE state <> 'removed';
+CREATE TABLE IF NOT EXISTS subagent_version (
+  subagent   INTEGER NOT NULL REFERENCES subagent(id),
   version    INTEGER NOT NULL,
   soul       TEXT NOT NULL,
   saved_by   TEXT NOT NULL,
   saved_at   TEXT NOT NULL,
-  PRIMARY KEY (teammate, version)
+  PRIMARY KEY (subagent, version)
 );
--- What a teammate did and why, what it asked, and what its people told it.
-CREATE TABLE IF NOT EXISTS teammate_event (
+-- What a subagent did and why, what it asked, and what its people told it.
+CREATE TABLE IF NOT EXISTS subagent_event (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  teammate    INTEGER NOT NULL REFERENCES teammate(id),
+  subagent    INTEGER NOT NULL REFERENCES subagent(id),
   card        INTEGER REFERENCES flow_card(id),
   entry       INTEGER,
   kind        TEXT NOT NULL CHECK (kind IN ('decided','handled','handed','asked','answered','note','paused','resumed','summary','failed')),
@@ -2652,11 +2691,11 @@ CREATE TABLE IF NOT EXISTS teammate_event (
   by          TEXT,
   at          TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS teammate_event_recent ON teammate_event (teammate, id);
--- A question a teammate put to a person about one visit of a card: open until answered.
-CREATE TABLE IF NOT EXISTS teammate_question (
+CREATE INDEX IF NOT EXISTS subagent_event_recent ON subagent_event (subagent, id);
+-- A question a subagent put to a person about one visit of a card: open until answered.
+CREATE TABLE IF NOT EXISTS subagent_question (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  teammate      INTEGER NOT NULL REFERENCES teammate(id),
+  subagent      INTEGER NOT NULL REFERENCES subagent(id),
   card          INTEGER NOT NULL REFERENCES flow_card(id),
   entry         INTEGER NOT NULL,
   question      TEXT NOT NULL,
@@ -2669,28 +2708,28 @@ CREATE TABLE IF NOT EXISTS teammate_question (
   answered_via  TEXT,
   answered_at   TEXT,
   created_at    TEXT NOT NULL,
-  tool_call     INTEGER REFERENCES teammate_call(id),
-  suggestion    INTEGER REFERENCES teammate_suggestion(id)
+  tool_call     INTEGER REFERENCES subagent_call(id),
+  suggestion    INTEGER REFERENCES subagent_suggestion(id)
 );
--- v94: the project tools a teammate may use, and its rule for each of their
+-- v94: the project tools a subagent may use, and its rule for each of their
 -- actions: do it, ask first (a person approves the exact call), or never.
 -- actions_json is what the tool offered when it was last listed.
-CREATE TABLE IF NOT EXISTS teammate_tool (
-  teammate     INTEGER NOT NULL REFERENCES teammate(id),
+CREATE TABLE IF NOT EXISTS subagent_tool (
+  subagent     INTEGER NOT NULL REFERENCES subagent(id),
   tool         TEXT NOT NULL,
   actions_json TEXT NOT NULL,
   rules_json   TEXT NOT NULL,
   listed_at    TEXT,
   updated_by   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
-  PRIMARY KEY (teammate, tool)
+  PRIMARY KEY (subagent, tool)
 );
--- v94: every tool call a teammate made or asked to make on a card: the
+-- v94: every tool call a subagent made or asked to make on a card: the
 -- receipt. An ask-first call waits (asked) until its person approves or
 -- denies it; what the tool answered is kept, secrets scrubbed.
-CREATE TABLE IF NOT EXISTS teammate_call (
+CREATE TABLE IF NOT EXISTS subagent_call (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  teammate    INTEGER NOT NULL REFERENCES teammate(id),
+  subagent    INTEGER NOT NULL REFERENCES subagent(id),
   card        INTEGER NOT NULL REFERENCES flow_card(id),
   entry       INTEGER NOT NULL,
   tool        TEXT NOT NULL,
@@ -2704,16 +2743,16 @@ CREATE TABLE IF NOT EXISTS teammate_call (
   decided_at  TEXT,
   created_at  TEXT NOT NULL,
   done_at     TEXT,
-  undo_of     INTEGER REFERENCES teammate_call(id),
+  undo_of     INTEGER REFERENCES subagent_call(id),
   undone_by   TEXT,
   undone_at   TEXT
 );
-CREATE INDEX IF NOT EXISTS teammate_call_card ON teammate_call (card, entry, id);
--- v97: every model turn a teammate took: what it cost (the CLI's own
+CREATE INDEX IF NOT EXISTS subagent_call_card ON subagent_call (card, entry, id);
+-- v97: every model turn a subagent took: what it cost (the CLI's own
 -- estimate) and how long it took — its weekly report.
-CREATE TABLE IF NOT EXISTS teammate_turn (
+CREATE TABLE IF NOT EXISTS subagent_turn (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  teammate    INTEGER NOT NULL REFERENCES teammate(id),
+  subagent    INTEGER NOT NULL REFERENCES subagent(id),
   card        INTEGER REFERENCES flow_card(id),
   model       TEXT NOT NULL,
   ok          INTEGER NOT NULL,
@@ -2723,17 +2762,17 @@ CREATE TABLE IF NOT EXISTS teammate_turn (
   tokens_out  INTEGER,
   at          TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS teammate_turn_recent ON teammate_turn (teammate, at);
-CREATE INDEX IF NOT EXISTS teammate_call_recent ON teammate_call (teammate, id);
--- v95: what a teammate remembers: facts it kept from its own turns, and
+CREATE INDEX IF NOT EXISTS subagent_turn_recent ON subagent_turn (subagent, at);
+CREATE INDEX IF NOT EXISTS subagent_call_recent ON subagent_call (subagent, id);
+-- v95: what a subagent remembers: facts it kept from its own turns, and
 -- what its people told it (replacing v92's notes). Searchable, editable, and
 -- forgotten on request; each turn reads what its people said and what fits
 -- the card.
-CREATE TABLE IF NOT EXISTS teammate_memory (
+CREATE TABLE IF NOT EXISTS subagent_memory (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  teammate    INTEGER NOT NULL REFERENCES teammate(id),
+  subagent    INTEGER NOT NULL REFERENCES subagent(id),
   text        TEXT NOT NULL,
-  source      TEXT NOT NULL CHECK (source IN ('teammate','person')),
+  source      TEXT NOT NULL CHECK (source IN ('subagent','person')),
   card        INTEGER REFERENCES flow_card(id),
   state       TEXT NOT NULL CHECK (state IN ('active','forgotten')),
   created_by  TEXT NOT NULL,
@@ -2742,13 +2781,13 @@ CREATE TABLE IF NOT EXISTS teammate_memory (
   updated_at  TEXT NOT NULL,
   used_at     TEXT
 );
-CREATE INDEX IF NOT EXISTS teammate_memory_live ON teammate_memory (teammate, state, id);
--- v95: a rule change a teammate suggests from what its people approved (five
+CREATE INDEX IF NOT EXISTS subagent_memory_live ON subagent_memory (subagent, state, id);
+-- v95: a rule change a subagent suggests from what its people approved (five
 -- approvals in a row of one action, say). Its manager accepts it or not; a
 -- suggestion made when the rule was different goes stale.
-CREATE TABLE IF NOT EXISTS teammate_suggestion (
+CREATE TABLE IF NOT EXISTS subagent_suggestion (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  teammate      INTEGER NOT NULL REFERENCES teammate(id),
+  subagent      INTEGER NOT NULL REFERENCES subagent(id),
   tool          TEXT NOT NULL,
   action        TEXT NOT NULL,
   rule_json     TEXT NOT NULL,
@@ -2760,7 +2799,7 @@ CREATE TABLE IF NOT EXISTS teammate_suggestion (
   decided_at    TEXT,
   created_at    TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS teammate_suggestion_action ON teammate_suggestion (teammate, tool, action, id);
+CREATE INDEX IF NOT EXISTS subagent_suggestion_action ON subagent_suggestion (subagent, tool, action, id);
 -- v91: where the reply watcher stands in the mailbox. One row.
 CREATE TABLE IF NOT EXISTS flow_mail_watch (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2805,9 +2844,9 @@ CREATE TABLE IF NOT EXISTS run_tool (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS mate_proposal (
+CREATE TABLE IF NOT EXISTS lead_proposal (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread         INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
+  thread         INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
   turn           INTEGER NOT NULL,
   kind           TEXT NOT NULL CHECK (kind IN ('task','next','reserve','hold','unhold','steer','scope','cancel','answer','repair','agents','review','control','task_action','action')),
   payload_json   TEXT NOT NULL,
@@ -2818,7 +2857,7 @@ CREATE TABLE IF NOT EXISTS mate_proposal (
   resolved_by    TEXT,
   outcome_json   TEXT
 );
-CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state);
+CREATE INDEX IF NOT EXISTS lead_proposal_thread ON lead_proposal (thread, state);
 
 CREATE TABLE IF NOT EXISTS coordinator_proposal (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2838,8 +2877,8 @@ CREATE INDEX IF NOT EXISTS coordinator_proposal_state ON coordinator_proposal (s
 CREATE TABLE IF NOT EXISTS mate_turn (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   approver          TEXT NOT NULL,
-  session           INTEGER NOT NULL REFERENCES mate_session(id),
-  thread            INTEGER NOT NULL REFERENCES mate_thread(id),
+  session           INTEGER NOT NULL REFERENCES lead_session(id),
+  thread            INTEGER NOT NULL REFERENCES lead_thread(id),
   credential_key    TEXT NOT NULL,
   state             TEXT NOT NULL CHECK (state IN ('queued','running','answered','failed')),
   generation        INTEGER NOT NULL DEFAULT 1,
@@ -3435,14 +3474,14 @@ CREATE TABLE IF NOT EXISTS notification_delivery (
   receipt TEXT,
   PRIMARY KEY (notification, destination)
 );
--- v64: the screenshots one mate turn selected for an exact result, kept
+-- v64: the screenshots one lead turn selected for an exact result, kept
 -- under the turn so a channel that delivers files (Telegram) plans them
 -- from the completed turn after a crash without another model call. Only
 -- trusted identities ride here — the task, its run, the artifact row and
 -- the hash that row carried — never bytes, paths or model prose. A failed
 -- turn's rows are deleted with its drafts; a channel sends nothing from a
 -- turn that did not answer, and re-verifies every artifact before upload.
-CREATE TABLE IF NOT EXISTS mate_turn_evidence (
+CREATE TABLE IF NOT EXISTS lead_turn_evidence (
   turn       INTEGER NOT NULL REFERENCES mate_turn(id) ON DELETE CASCADE,
   ordinal    INTEGER NOT NULL,
   task_id    TEXT NOT NULL,
@@ -4180,7 +4219,7 @@ export function isDatabaseBusy(error: unknown): boolean {
  *
  * Coverage: only Store.transact begins its write through this door.
  * Autocommit statements and the other BEGIN IMMEDIATEs in this file
- * (migrate and the per-version table rebuilds) keep the plain busy_timeout
+ * (the baseline, the per-version steps and table rebuilds) keep the plain busy_timeout
  * wait, which is still counted in nominal sleep.
  */
 function beginWriteWithin(db: Database, budgetMs: number): void {
@@ -4246,7 +4285,7 @@ CREATE TABLE IF NOT EXISTS team_lead_member (
 CREATE TABLE IF NOT EXISTS team_conversation (
  id TEXT PRIMARY KEY, lead TEXT NOT NULL REFERENCES team_lead(id), title TEXT NOT NULL,
  visibility TEXT NOT NULL CHECK(visibility IN ('private','team')), projects_json TEXT NOT NULL,
- revision INTEGER NOT NULL DEFAULT 1, thread INTEGER NOT NULL UNIQUE REFERENCES mate_thread(id),
+ revision INTEGER NOT NULL DEFAULT 1, thread INTEGER NOT NULL UNIQUE REFERENCES lead_thread(id),
  created_by TEXT NOT NULL REFERENCES approver(name), created_at TEXT NOT NULL, last_claimed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS team_participant (
@@ -4255,7 +4294,7 @@ CREATE TABLE IF NOT EXISTS team_participant (
  revision INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(conversation,account)
 );
 CREATE TABLE IF NOT EXISTS team_message (
- message INTEGER PRIMARY KEY REFERENCES mate_message(id), conversation TEXT NOT NULL REFERENCES team_conversation(id),
+ message INTEGER PRIMARY KEY REFERENCES lead_message(id), conversation TEXT NOT NULL REFERENCES team_conversation(id),
  author TEXT NOT NULL REFERENCES approver(name), author_generation INTEGER NOT NULL, lead_member_revision INTEGER NOT NULL, participant_revision INTEGER NOT NULL, request_id TEXT NOT NULL,
  payload_hash TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','answered','failed','cancelled','uncertain')),
  revision INTEGER NOT NULL DEFAULT 1, generation INTEGER NOT NULL DEFAULT 0, runner TEXT, claimed_at TEXT,
@@ -4274,7 +4313,7 @@ CREATE TABLE IF NOT EXISTS team_follow (
  generation INTEGER NOT NULL, lead_member_revision INTEGER NOT NULL, participant_revision INTEGER NOT NULL, enabled INTEGER NOT NULL, PRIMARY KEY(conversation,account)
 );
 CREATE TABLE IF NOT EXISTS team_mate_session (
- session INTEGER PRIMARY KEY REFERENCES mate_session(id), thread INTEGER NOT NULL REFERENCES mate_thread(id)
+ session INTEGER PRIMARY KEY REFERENCES lead_session(id), thread INTEGER NOT NULL REFERENCES lead_thread(id)
 );
 CREATE INDEX IF NOT EXISTS team_mate_session_thread ON team_mate_session(thread,session);
 CREATE TABLE IF NOT EXISTS team_task_owner (
@@ -4296,117 +4335,104 @@ CREATE TABLE IF NOT EXISTS team_request (
 `;
 
 function initializeStore(db: Database, file: string): Store {
-  // THE EPOCH, BEFORE ANY DDL (implementation review, finding 3): even
-  // the fresh-SCHEMA exec below adds this build's new tables and indexes
-  // to an old database, so the sentinel commits FIRST — a non-migrating
-  // reader must never see new shapes under an old positive version.
   // THE PREFLIGHT (v48 integrity): the version is read as EXACTLY ONE
   // safe, supported integer before any DDL — one row, a safe integer,
   // its magnitude between 1 and this build's version. A database with no
   // version table is a fresh file; anything else (two rows, a text or
   // fractional version, a newer build's version, a zero) refuses here,
   // with the file untouched, rather than running this build's DDL over a
-  // shape it cannot name.
-  const preflight = schemaVersionPreflight(db, file);
-  if (preflight !== null && Math.abs(preflight) >= 70 && !tableExists(db, "service_cursor")) {
+  // shape it cannot name. So does a schema older than the v107 baseline
+  // (or an upgrade to one that stopped partway): no release on npm ever
+  // wrote one, and this build keeps no steps for it.
+  const read = schemaVersionPreflight(db, file);
+  if (read !== null && Math.abs(read) < BASELINE_SCHEMA_VERSION) throw new Error(olderThanBaseline(file, read));
+  // A fresh file becomes the v107 baseline first, then takes the same steps an installation from 0.5.0 takes.
+  const fresh = read === null;
+  const preflight = fresh ? createBaseline(db, file) : read;
+  // History every database since v107 keeps: an open that finds it missing refuses rather than recreate it empty.
+  if (!tableExists(db, "service_cursor")) {
     throw new Error(`${file}: service progress is missing; refusing to silently reset worker cursors`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 71) {
-    for (const table of TEAM_TABLES) if (!tableExists(db, table)) throw new Error(`${file}: team history is missing; refusing to recreate membership or queued work`);
-  }
+  for (const table of TEAM_TABLES) if (!tableExists(db, table)) throw new Error(`${file}: team history is missing; refusing to recreate membership or queued work`);
   // v116 moved every chat app onto the shared chat tables. Until then (or until an interrupted move finishes) the old
   // tables must be here, in a shape the move knows; after it, the shared ones must be.
   const chatsShared = chatTablesShared(db) && !legacyChatTablesPresent(db);
-  if (preflight !== null && Math.abs(preflight) >= 116 && !chatsShared) {
+  if (Math.abs(preflight) >= 116 && !chatsShared) {
     throw new Error(`${file}: chat history is missing; refusing to recreate pairings and receipts`);
   }
-  const legacyChats = preflight !== null && !chatsShared;
-  if (legacyChats && Math.abs(preflight ?? 0) >= 72) {
+  const legacyChats = !chatsShared;
+  if (legacyChats) {
     if (!tableExists(db, "telegram_team_chat")) throw new Error(`${file}: Telegram team chat history is missing; refusing to recreate subscriptions`);
     if (!hasColumn(db, "telegram_team_chat", "binding")) throw new Error(`${file}: Telegram team chat pairing metadata is missing; refusing to recreate subscription authority`);
   }
   // Check existing authority metadata before even stamping a migration.
-  if (preflight !== null && Math.abs(preflight) >= 54) {
-    for (const table of ["approver", "invite"]) {
-      if (!db.prepare(`PRAGMA table_info(${table})`).all().some(row => row["name"] === "projects_json")) {
-        throw new Error(`${file}: project access metadata is missing from ${table}; refusing to widen access`);
-      }
-    }
+  for (const table of ["approver", "invite"]) {
+    if (!hasColumn(db, table, "projects_json")) throw new Error(`${file}: project access metadata is missing from ${table}; refusing to widen access`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 55 && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='plan_authorization'").get() === undefined) {
-    throw new Error(`${file}: plan authorization metadata is missing; refusing to recreate authority`);
+  if (!tableExists(db, "plan_authorization")) throw new Error(`${file}: plan authorization metadata is missing; refusing to recreate authority`);
+  for (const table of ["workflow_recipe", "workflow_preview"]) {
+    if (!tableExists(db, table)) throw new Error(`${file}: workflow recipe metadata is missing; refusing to recreate launch history`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 56) {
-    for (const table of ["workflow_recipe", "workflow_preview"]) {
-      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) === undefined) throw new Error(`${file}: workflow recipe metadata is missing; refusing to recreate launch history`);
-    }
+  for (const table of ["learning_capture", "learning_policy", "project_lesson", "learning_event", "learning_snapshot"]) {
+    if (!tableExists(db, table)) throw new Error(`${file}: learning history is missing; refusing to recreate authority`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 58) {
-    for (const table of ["learning_capture", "learning_policy", "project_lesson", "learning_event", "learning_snapshot"]) {
-      if (!tableExists(db, table)) throw new Error(`${file}: learning history is missing; refusing to recreate authority`);
-    }
+  for (const table of ["project_knowledge", "knowledge_change", "knowledge_snapshot"]) {
+    if (!tableExists(db, table)) throw new Error(`${file}: project knowledge history is missing; refusing to recreate it`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 59) {
-    for (const table of ["project_knowledge", "knowledge_change", "knowledge_snapshot"]) {
-      if (!tableExists(db, table)) throw new Error(`${file}: project knowledge history is missing; refusing to recreate it`);
-    }
+  for (const table of legacyChats ? ["notification_delivery", "telegram_outbound_message", "telegram_retry"] : ["notification_delivery"]) {
+    if (!tableExists(db, table)) throw new Error(`${file}: Telegram delivery history is missing; refusing to recreate receipts`);
   }
-  // THE SENTINEL IS A CHECKED COMPARE-AND-SET (raw authority repair): the
-  // row moves from exactly the version the preflight read to its negative,
-  // or this open refuses — a second migrator that raced this one between
-  // the preflight and here has already moved the row, and nothing alters a
-  // file whose version it did not read.
-  if (preflight !== null && Math.abs(preflight) >= 61) {
-    for (const table of legacyChats ? ["notification_delivery", "telegram_outbound_message", "telegram_retry"] : ["notification_delivery"]) {
-      if (!tableExists(db, table)) throw new Error(`${file}: Telegram delivery history is missing; refusing to recreate receipts`);
-    }
-    for (const column of ["provenance_scope", "project", "task_ref", "task_id", "source_run"]) {
-      if (!hasColumn(db, "notification", column)) throw new Error(`${file}: notification provenance is missing; refusing to recreate authority`);
-    }
+  for (const column of ["provenance_scope", "project", "task_ref", "task_id", "source_run"]) {
+    if (!hasColumn(db, "notification", column)) throw new Error(`${file}: notification provenance is missing; refusing to recreate authority`);
   }
-  if (legacyChats && Math.abs(preflight ?? 0) >= 62) {
+  if (legacyChats) {
     for (const table of ["telegram_conversation", "telegram_proposal_action"]) {
       if (!tableExists(db, table)) throw new Error(`${file}: Telegram conversation history is missing; refusing to recreate it`);
     }
-  }
-  if (legacyChats && Math.abs(preflight ?? 0) >= 63) {
     if (!tableExists(db, "telegram_conversation_part")) throw new Error(`${file}: Telegram reply history is missing; refusing to recreate it`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 64) {
-    if (!tableExists(db, "mate_turn_evidence") || (legacyChats && !hasColumn(db, "telegram_conversation_part", "artifact"))) throw new Error(`${file}: Telegram image history is missing; refusing to recreate it`);
+  if (!tableExists(db, presentTable(db, "lead_turn_evidence")) || (legacyChats && !hasColumn(db, "telegram_conversation_part", "artifact"))) throw new Error(`${file}: Telegram image history is missing; refusing to recreate it`);
+  for (const table of ["skill_package", "skill_owner", "project_skill_change", "skill_snapshot", "skill_test"]) {
+    if (!tableExists(db, table)) throw new Error(`${file}: saved skills are missing; refusing to recreate them`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 65) {
-    for (const table of ["skill_package", "skill_owner", "project_skill_change", "skill_snapshot", "skill_test"]) {
-      if (!tableExists(db, table)) throw new Error(`${file}: saved skills are missing; refusing to recreate them`);
-    }
+  const proposalDdl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(presentTable(db, "lead_proposal"))?.["sql"];
+  if (typeof proposalDdl !== "string" || canonicalDdl(proposalDdl) !== canonicalDdl(LEAD_PROPOSAL_DDL("lead_proposal"))) throw new Error(`${file}: shared action history has an unknown shape; refusing to recreate it`);
+  // v117 renames the lead's and the subagents' tables: one here under both names is a shape it cannot name.
+  for (const [old, now] of Object.entries(V117_RENAMED_TABLES)) {
+    if (tableExists(db, old) && tableExists(db, now)) throw new Error(`${file}: both ${old} and ${now} are here; refusing to merge them`);
   }
-  if (preflight !== null && Math.abs(preflight) >= 66) {
-    const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='mate_proposal'").get()?.["sql"];
-    if (typeof ddl !== "string" || canonicalDdl(ddl) !== canonicalDdl(MATE_PROPOSAL_V66_DDL("mate_proposal"))) throw new Error(`${file}: shared action history has an unknown shape; refusing to recreate it`);
-  }
-  if (legacyChats && Math.abs(preflight ?? 0) >= 67) {
-    for (const table of legacyAppTables("slack").slice(0, 7)) if (!tableExists(db, table)) throw new Error(`${file}: Slack history is missing; refusing to recreate receipts`);
-  }
-  if (legacyChats && Math.abs(preflight ?? 0) >= 68) {
-    for (const table of legacyAppTables("discord").slice(0, 7)) if (!tableExists(db, table)) throw new Error(`${file}: Discord history is missing; refusing to recreate receipts`);
-  }
-  // The old chat tables the v116 move will read: each in a shape it can name, before anything is changed.
   if (legacyChats) {
+    for (const table of legacyAppTables("slack").slice(0, 7)) if (!tableExists(db, table)) throw new Error(`${file}: Slack history is missing; refusing to recreate receipts`);
+    for (const table of legacyAppTables("discord").slice(0, 7)) if (!tableExists(db, table)) throw new Error(`${file}: Discord history is missing; refusing to recreate receipts`);
+    // The old chat tables the v116 move will read: each in a shape it can name, before anything is changed.
     const problem = legacyChatProblem(db);
     if (problem !== null) throw new Error(`${file}: ${problem}; refusing to move chat history it cannot name`);
   }
   // A current file is this build's exact shape: the checks above read, the connection gets its settings, and no DDL
-  // runs. Everything below runs once, for a fresh file or on the way up from an older version.
+  // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   if (preflight === SCHEMA_VERSION) {
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
   }
-  if (preflight !== null && preflight > 0 && preflight < SCHEMA_VERSION) {
+  // THE EPOCH, BEFORE ANY DDL (implementation review, finding 3): even the
+  // SCHEMA exec below adds this build's new tables and indexes to an old
+  // database, so the sentinel commits FIRST — a non-migrating reader must
+  // never see new shapes under an old positive version. It is a checked
+  // compare-and-set (raw authority repair): the row moves from exactly the
+  // version the preflight read to its negative, or this open refuses — a
+  // second migrator that raced this one between the preflight and here has
+  // already moved the row, and nothing alters a file whose version it did
+  // not read. A negative version is an upgrade that died mid-flight: every
+  // step below is idempotent, so this open resumes it.
+  if (preflight > 0) {
     const stamped = db.prepare("UPDATE schema_version SET version = ? WHERE version = ?").run(-preflight, preflight);
     if (Number(stamped.changes) !== 1) {
       throw new Error(`${file}: refusing to open — the schema version moved from v${preflight} between the preflight and the epoch stamp (another process is migrating it); this build speaks schema v${SCHEMA_VERSION} and alters nothing it cannot name`);
     }
   }
+  // v117 renames first, before any step below names a table: they all speak today's names (the lead's, the subagents').
+  // A fresh file is the v107 baseline by now, under the old names, so it takes the same renames.
+  renameForV117(db);
   db.exec(SCHEMA);
   db.exec(LEARNING_SCHEMA);
   db.exec(KNOWLEDGE_SCHEMA);
@@ -4414,12 +4440,6 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(MODELS_SCHEMA);
   db.exec(SKILLS_SCHEMA);
   db.exec(CHAT_SCHEMA);
-  // An older database keeps its old chat tables until v116 moves them (convertChatTables, after migrateToV115):
-  // the ones its version should have had are created as earlier builds did, so the older steps find them.
-  if (legacyChats) {
-    db.exec(LEGACY_TELEGRAM_SCHEMA);
-    for (const app of LEGACY_CHAT_APPS) db.exec(legacyAppSchema(app));
-  }
   db.exec(TEAM_SCHEMA);
   db.exec(SSO_SCHEMA);
   db.exec(CREDENTIALS_SCHEMA);
@@ -4435,7 +4455,7 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(LEDGER_CHAIN_SCHEMA);
   db.exec(MONITORING_SCHEMA);
   db.exec(INTEGRATIONS_SCHEMA);
-  db.exec(MATE_ASK_SCHEMA);
+  db.exec(LEAD_ASK_SCHEMA);
   // Decisions in the chat app (no version bump: additive only): result, plan and merge buttons, and Request changes.
   db.exec(CHAT_DECIDE_SCHEMA);
   // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
@@ -4483,13 +4503,9 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "lead_config", "about_json", "TEXT NOT NULL DEFAULT '[]'");
   db.exec(LEAD_COMMITMENT_SCHEMA);
   mergeCheckTables(db);
+  // v110: the action ledger admits remote commands ('api', 'mcp').
+  rebuildLedger(db);
   addColumn(db, "monitoring_status", "target", "TEXT");
-  // v105: how a teammate's turn was billed (this computer's Claude sign-in, as last seen).
-  addColumn(db, "teammate_turn", "billing", "TEXT");
-  // (A database from an earlier build of v105 made run_spend before these.)
-  addColumn(db, "run_spend", "billing", "TEXT NOT NULL DEFAULT 'subscription' CHECK (billing IN ('subscription', 'api-key'))");
-  addColumn(db, "run_spend", "billing_fixed", "INTEGER NOT NULL DEFAULT 0");
-  migrate(db, preflight === null ? null : Math.abs(preflight));
   // Complete → pull request → merge: when a grant publishes, the project's "Merge when checks pass", and each
   // followed pull request's CI revisions and merge record (no version bump: additive only).
   addColumn(db, "publication_grant", "publish_on", "TEXT NOT NULL DEFAULT 'build' CHECK (publish_on IN ('build', 'complete'))");
@@ -4500,14 +4516,9 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "flow_card", "source_json", "TEXT");
   addColumn(db, "flow_card", "owner", "TEXT");
   addColumn(db, "flow", "owner", "TEXT");
-  // v90: scripts in Python and Node, and scripts that run a file in the project.
-  addColumn(db, "flow_script", "language", "TEXT NOT NULL DEFAULT 'shell'");
-  addColumn(db, "flow_script", "file", "TEXT");
   // A script that came in with an imported flow waits for a person to approve it before it runs (no version bump: additive only).
   addColumn(db, "flow_script", "held", "TEXT");
   addColumn(db, "notification", "recipient", "TEXT");
-  addColumn(db, "approver", "projects_json", "TEXT");
-  addColumn(db, "invite", "projects_json", "TEXT");
   db.exec(LEDGER_SCHEMA);
   db.exec(RECIPE_SCHEMA);
   // v115: a repeating recipe makes a scheduled flow; its receipt names the flow (routine_id stays as history).
@@ -4587,38 +4598,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_blocked_revision_per_task
   ON plan_revision (task_ref) WHERE status = 'blocked';
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_run ON run_checkpoint (run, id);
 CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, id);`);
-  if (preflight !== null) migrateToV114(db);
+  migrateToV114(db);
   // v115: the removed features' tables go, after every older step has had its say.
   migrateToV115(db);
   // v116: every chat app onto the shared chat tables, after v115 and every older step gave the old tables their last shape.
   convertChatTables(db);
-  if (preflight !== null) {
-    // Keep the epoch until reclamation succeeds, including a retry after compaction already committed.
-    reclaimDatabase(db, "migration");
-  }
+  // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
+  // nothing to reclaim.
+  if (!fresh) reclaimDatabase(db, "migration");
 
-  // THE BOOKKEEPING WRITE, checked (raw authority repair): migrate() has
-  // already done the work by the time this runs; the row is bookkeeping
-  // about it, not the trigger for it — and it is written ONLY from the
-  // exact marker this open stamped or resumed. A fresh file gains its one
-  // row; an upgrade clears exactly its own sentinel (−from); a resumed
-  // epoch clears exactly the sentinel the preflight read; a current file
-  // is left alone. A row that is not what this open expects was moved by
+  // THE BOOKKEEPING WRITE, checked (raw authority repair): the steps above
+  // have already done the work by the time this runs; the row is
+  // bookkeeping about it, not the trigger for it — and it is written ONLY
+  // from the exact marker this open stamped or resumed: an upgrade clears
+  // exactly its own sentinel (−from), a resumed epoch exactly the one the
+  // preflight read. A row that is not what this open expects was moved by
   // another process, and this open refuses rather than overwriting it.
-  const expectedMarker = preflight === null ? null : preflight === SCHEMA_VERSION ? null : preflight < 0 ? preflight : -preflight;
-  if (preflight === null) {
-    const inserted = db.prepare("INSERT INTO schema_version (version) SELECT ? WHERE NOT EXISTS (SELECT 1 FROM schema_version)").run(SCHEMA_VERSION);
-    if (Number(inserted.changes) !== 1) {
-      throw new Error(`${file}: refusing to open — a schema version appeared under this fresh open (another process is creating it); this build speaks schema v${SCHEMA_VERSION} and alters nothing it cannot name`);
-    }
-  } else if (expectedMarker !== null) {
-    const cleared = db.prepare("UPDATE schema_version SET version = ? WHERE version = ?").run(SCHEMA_VERSION, expectedMarker);
-    if (Number(cleared.changes) !== 1) {
-      throw new Error(`${file}: refusing to open — the epoch sentinel ${expectedMarker} moved under this migration (another process is migrating it); this build speaks schema v${SCHEMA_VERSION} and alters nothing it cannot name`);
-    }
+  const expectedMarker = preflight < 0 ? preflight : -preflight;
+  const cleared = db.prepare("UPDATE schema_version SET version = ? WHERE version = ?").run(SCHEMA_VERSION, expectedMarker);
+  if (Number(cleared.changes) !== 1) {
+    throw new Error(`${file}: refusing to open — the epoch sentinel ${expectedMarker} moved under this migration (another process is migrating it); this build speaks schema v${SCHEMA_VERSION} and alters nothing it cannot name`);
   }
 
   return new Store(db);
+}
+
+/** The refusal for a schema older than the baseline: words a person can act on, before anything is altered. */
+function olderThanBaseline(file: string, version: number): string {
+  const what = version < 0 ? `an upgrade from schema v${-version} stopped partway` : `it is schema v${version}`;
+  return `${file}: refusing to open — ${what}, older than v${BASELINE_SCHEMA_VERSION} (Toolroll 0.5.0, the first npm release), and this build cannot upgrade it; update through 0.9.x first (Toolroll 0.9.54 brings it up to date), then open it with this build`;
+}
+
+/**
+ * A fresh file becomes the v107 baseline and its version row in one
+ * transaction, so a crash leaves it fresh or at v107, never in between. The
+ * file is looked at again under the write lock: a second opener that waited
+ * on the first finds its tables there and refuses rather than recreating them.
+ */
+function createBaseline(db: Database, file: string): number {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (Number(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master").get()?.["n"]) !== 0) {
+      throw new Error(`${file}: refusing to open — a schema version appeared under this fresh open (another process is creating it); this build speaks schema v${SCHEMA_VERSION} and alters nothing it cannot name`);
+    }
+    db.exec(BASELINE_SCHEMA);
+    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(BASELINE_SCHEMA_VERSION);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return BASELINE_SCHEMA_VERSION;
 }
 
 /**
@@ -4773,1123 +4803,6 @@ export function openStoreNoMigrate(
   return { ok: true, store: new Store(db) };
 }
 
-/**
- * Loaded through `createRequire` rather than a top-level import so that the
- * cost — and the experimental warning — falls only on a command that actually
- * opens the database. `import()` would work too, but it would make opening the
- * store async for every caller in order to save nothing.
- *
- * Node prints `ExperimentalWarning: SQLite is an experimental feature` to
- * stderr the first time this runs. It is left alone: an earlier version
- * filtered it by swapping the process-wide `warning` listeners, which turned
- * every `process.once("warning")` anyone else had registered into a permanent
- * one and re-emitted the rest in a format Node does not use. Hiding one line
- * of stderr is not worth breaking a global for. The right fix belongs in the
- * launcher — `--disable-warning=ExperimentalWarning` — not in a library.
- */
-/**
- * Columns added after somebody's database already existed.
- *
- * `CREATE TABLE IF NOT EXISTS` does exactly nothing to a table that is already
- * there, so a column added to the schema later never reaches an existing file
- * — and every test opening `:memory:` or a fresh path passes while the first
- * real database fails on the next query. This one was found by opening one.
- *
- * Additive only, and idempotent: each column is added if it is missing and
- * skipped if it is not. Nothing here rewrites or drops anything.
- */
-function migrate(db: Database, origin: number | null): void {
-  // THE MIGRATION EPOCH (MCP gateway spec v6, Codex rounds 3/5). This
-  // migrator alters schema first and bumps schema_version last, so a
-  // reader re-checking the version can pass MID-DDL. The fix is a
-  // committed marker BEFORE any DDL: an upgrading database's version row
-  // goes NEGATIVE (−from) in its own autocommitted statement, and the
-  // final bookkeeping write at the end of openStore replaces it with the
-  // target. A non-migrating reader treats a negative version — or any
-  // version other than its own — as "not mine to touch". A crash mid-
-  // migration leaves the sentinel VISIBLE instead of a silently
-  // half-shaped database; re-running the same (idempotent) migrator
-  // clears it, which the resume below allows.
-  // The epoch sentinel was committed by openStore BEFORE the SCHEMA exec
-  // (review finding 3). A negative version here is a prior death mid-
-  // flight — this run resumes it (every step is IF-NOT-EXISTS/
-  // recognize-and-rebuild idempotent) and the final bookkeeping clears it.
-  addColumn(db, "task_ref", "origin", "TEXT NOT NULL DEFAULT 'theirs'");
-  addColumn(db, "task_ref", "repo", "TEXT");
-  addColumn(db, "claim", "released_by", "TEXT");
-  addColumn(db, "notification", "resolved_at", "TEXT");
-  addColumn(db, "approver", "generation", "INTEGER NOT NULL DEFAULT 1");
-  // v77: a lead thread belongs to the lead conversation, a project or a task.
-  addColumn(db, "mate_thread", "scope_kind", "TEXT NOT NULL DEFAULT 'lead' CHECK (scope_kind IN ('lead','project','task'))");
-  addColumn(db, "mate_thread", "scope_key", "TEXT");
-  db.exec("CREATE INDEX IF NOT EXISTS mate_thread_scope ON mate_thread (approver, scope_kind, scope_key, closed_at)");
-  // v4 additive: failure strikes and the watch incarnation a claim was
-  // dispatched under.
-  addColumn(db, "task_ref", "strikes", "INTEGER NOT NULL DEFAULT 0");
-  addColumn(db, "claim", "incarnation", "TEXT");
-  // v72: one live Telegram binding per (bot, user) replaces one per bot, so
-  // several teammates can pair their own chats. The schema text already
-  // created the new index; the old rule is dropped here, idempotently.
-  db.exec("DROP INDEX IF EXISTS telegram_binding_live");
-  // v73: the same rule for Slack and Discord — one binding per (installation,
-  // member) instead of one per installation.
-  db.exec("DROP INDEX IF EXISTS slack_one_binding");
-  db.exec("DROP INDEX IF EXISTS discord_one_binding");
-  rebuild(db);
-  rebuildDecisionVia(db);
-  // v4 CHECK widenings, each a copy-rename against an exactly recognized
-  // predecessor. Order matters only in that they follow the older rebuilds:
-  // an M2 database reaches the v4 shapes through rebuild() directly.
-  rebuildForV4(
-    db,
-    "run",
-    "'built','failed','refused','parked'",
-    "'no-change'",
-    V4_RUN_DDL("run_next"),
-    V4_RUN_COLUMNS,
-  );
-  rebuildForV4(
-    db,
-    "hold",
-    "'operator','decision','incident'",
-    "'backoff'",
-    `CREATE TABLE hold_next (
-       id         INTEGER PRIMARY KEY AUTOINCREMENT,
-       task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-       owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff')),
-       owner_id   TEXT NOT NULL,
-       reason     TEXT NOT NULL,
-       until      TEXT,
-       held_at    TEXT NOT NULL,
-       UNIQUE (owner_kind, owner_id)
-     )`,
-    ["id", "task_ref", "owner_kind", "owner_id", "reason", "until", "held_at"],
-  );
-  rebuildForV4(
-    db,
-    "incident",
-    "'malformed-decision'",
-    "'attempts-exhausted'",
-    `CREATE TABLE incident_next (
-       id          INTEGER PRIMARY KEY AUTOINCREMENT,
-       run         INTEGER NOT NULL UNIQUE REFERENCES run(id) ON DELETE CASCADE,
-       kind        TEXT NOT NULL CHECK (kind IN ('malformed-decision','attempts-exhausted','commit-failure','malformed-plan','plan-attempts-exhausted')),
-       created_at  TEXT NOT NULL,
-       resolved_at TEXT,
-       resolved_by TEXT
-     )`,
-    ["id", "run", "kind", "created_at", "resolved_at", "resolved_by"],
-  );
-  // Columns the v4 run shape carries; idempotent for any table that arrived
-  // here by a path that already has them.
-  addColumn(db, "run", "provider_started_at", "TEXT");
-  addColumn(db, "run", "tokens_in", "INTEGER");
-  addColumn(db, "run", "tokens_out", "INTEGER");
-  addColumn(db, "run", "cost_usd", "REAL");
-  addColumn(db, "run", "usage_json", "TEXT");
-  addColumn(db, "run", "head_revision", "TEXT");
-  addColumn(db, "run", "handoff", "TEXT");
-  // v7 (planning): additive task_ref columns, then three CHECK widenings —
-  // each a copy-rename against an exactly recognized predecessor, run AFTER
-  // every older normalizer so a v6 database is the only shape they see
-  // (Codex planning review, finding 8: editing the fresh DDL alone would
-  // skip existing files, recording v7 over a table that still refuses
-  // planner rows).
-  addColumn(db, "task_ref", "plan", "TEXT CHECK (plan IN ('requested','drafted'))");
-  // v32 (the mate): a chat_turn row may be one step of a mate turn; a
-  // scope may have been written by a confirmed mate proposal.
-  addColumn(db, "chat_turn", "kind", "TEXT NOT NULL DEFAULT 'chat'");
-  addColumn(db, "chat_turn", "mate_turn", "INTEGER");
-  addColumn(db, "task_scope", "proposed_via", "TEXT");
-  // v35 (subscription-backed mate): the chat provider CHECKs admit the
-  // two local harness login modes. The dollar columns stay intact for API
-  // traffic; subscription rows carry zero because no dollar amount is
-  // observable or enforceable through a membership login.
-  rebuildChatProvidersForV35(db);
-  // v36 (long-running mate): the password-minted conversation is an
-  // explicit-lifecycle capability, not a wall-clock lease. Existing v35
-  // sessions are closed during migration because their signed terms were
-  // time-bounded; the operator can mint a persistent session deliberately.
-  rebuildMateSessionForV36(db);
-  // v37 (unattended permissions): the installation singleton arrives via
-  // SCHEMA on both roads; task overrides are additive and null by default.
-  addColumn(db, "task_ref", "permission_mode", "TEXT CHECK (permission_mode IN ('auto','bypassPermissions'))");
-  // v33 (mate v3): `answer` joins the proposal kinds — a CHECK widening,
-  // copy-rename against the v32 shape.
-  rebuildMateProposalForV33(db);
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-  addColumn(db, "task_ref", "plan_strikes", "INTEGER NOT NULL DEFAULT 0");
-  rebuildForV4(
-    db,
-    "run",
-    "role IN ('builder','repair')",
-    "'planner'",
-    V4_RUN_DDL("run_next"),
-    V4_RUN_COLUMNS,
-  );
-  rebuildForV4(
-    db,
-    "artifact",
-    "'diff','status','park-payload'",
-    "'plan'",
-    `CREATE TABLE artifact_next (
-       id             INTEGER PRIMARY KEY AUTOINCREMENT,
-       run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-       kind           TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan')),
-       key            TEXT NOT NULL,
-       bytes_original INTEGER NOT NULL,
-       bytes_stored   INTEGER NOT NULL,
-       truncated      INTEGER NOT NULL DEFAULT 0,
-       sha256         TEXT NOT NULL,
-       capture        TEXT NOT NULL,
-       created_at     TEXT NOT NULL,
-       redacted       INTEGER NOT NULL DEFAULT 0
-     )`,
-    ["id", "run", "kind", "key", "bytes_original", "bytes_stored", "truncated", "sha256", "capture", "created_at", "redacted"],
-  );
-  rebuildForV4(
-    db,
-    "incident",
-    "'malformed-decision','attempts-exhausted','commit-failure'",
-    "'malformed-plan'",
-    `CREATE TABLE incident_next (
-       id          INTEGER PRIMARY KEY AUTOINCREMENT,
-       run         INTEGER NOT NULL UNIQUE REFERENCES run(id) ON DELETE CASCADE,
-       kind        TEXT NOT NULL CHECK (kind IN ('malformed-decision','attempts-exhausted','commit-failure','malformed-plan','plan-attempts-exhausted')),
-       created_at  TEXT NOT NULL,
-       resolved_at TEXT,
-       resolved_by TEXT
-     )`,
-    ["id", "run", "kind", "created_at", "resolved_at", "resolved_by"],
-  );
-  // v8 (routines, removed in v115 — their tables only ever arrived through the
-  // fresh SCHEMA): task_ref grows the nullable instance link, kept as history.
-  addColumn(db, "task_ref", "routine_id", "INTEGER");
-  // v9 (providers): run.provider rides all three canonical shapes — fresh
-  // SCHEMA, V4_RUN_DDL, V4_RUN_COLUMNS — AND this additive column for
-  // databases whose run table is already current (the rebuilds only fire
-  // on pre-v7 shapes; ordering per the Codex provider review, Q7). The
-  // default backfills history truthfully: only claude ever spawned.
-  addColumn(db, "run", "provider", "TEXT NOT NULL DEFAULT 'claude'");
-  // The instance/task agent pin: stamped when an approved standing order files a task, so a firing
-  // resolved under approved terms cannot be re-routed by later flags.
-  addColumn(db, "task_ref", "agent_provider", "TEXT");
-  addColumn(db, "task_ref", "agent_model", "TEXT");
-  // v10 (free-text answers): two new tables via the fresh SCHEMA, plus the
-  // digest that binds an irreversible confirmation to the EXACT note it
-  // confirmed (Codex free-text review, finding 3).
-  if (tableExists(db, "telegram_action")) addColumn(db, "telegram_action", "note_digest", "TEXT");
-  // v11 (M5 worktree setup): additive — the worktree_setup table arrives
-  // through the fresh SCHEMA's IF NOT EXISTS, and existing worktree rows
-  // gain the setup cache column.
-  addColumn(db, "worktree", "setup_digest", "TEXT");
-  // v11b (M6.8 revision tasks): additive columns; diff_comment arrives via
-  // the fresh SCHEMA's IF NOT EXISTS.
-  addColumn(db, "task_ref", "revision_of", "TEXT");
-  addColumn(db, "task_ref", "revision_brief_artifact", "INTEGER REFERENCES artifact(id)");
-  // v11c (M8 audit C-6): the remote's observed PR verdict, additive.
-  addColumn(db, "publication", "remote_state", "TEXT");
-  // v11c (audit SD-4): the last OBSERVED check state, additive.
-  addColumn(db, "publication", "last_check_state", "TEXT");
-  addColumn(db, "publication", "last_check_at", "TEXT");
-  // v11c (M8.17 PR-comment intake): the ingest idempotency key, additive —
-  // a same-day v11 database gains it here; fresh ones carry it already.
-  // Its unique index rides the post-migration block in openStore.
-  addColumn(db, "diff_comment", "source_key", "TEXT");
-  // v11 (M5 activity): the machine-authored phase — stamped by the control
-  // plane at its own state-machine boundaries, never parsed out of a
-  // provider stream. Transient in meaning (read while the run is open),
-  // durable in storage (the simplest shared state between daemon and
-  // console is the database they already share).
-  addColumn(db, "run", "phase", "TEXT");
-  // v11 (M5 terminal diff): artifact.kind admits 'terminal-diff' (the
-  // immutable base→head patch captured before the worktree releases) and
-  // 'diff-stat' (its machine-parsed summary). Same recognized-exactly
-  // CHECK-widening recipe as v7's.
-  rebuildForV4(
-    db,
-    "artifact",
-    "'diff','status','park-payload','plan'",
-    "'terminal-diff','diff-stat'",
-    `CREATE TABLE artifact_next (
-       id             INTEGER PRIMARY KEY AUTOINCREMENT,
-       run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-       kind           TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan','terminal-diff','diff-stat')),
-       key            TEXT NOT NULL,
-       bytes_original INTEGER NOT NULL,
-       bytes_stored   INTEGER NOT NULL,
-       truncated      INTEGER NOT NULL DEFAULT 0,
-       sha256         TEXT NOT NULL,
-       capture        TEXT NOT NULL,
-       created_at     TEXT NOT NULL,
-       redacted       INTEGER NOT NULL DEFAULT 0
-     )`,
-    ["id", "run", "kind", "key", "bytes_original", "bytes_stored", "truncated", "sha256", "capture", "created_at", "redacted"],
-  );
-  // v11b (M6 handoff + revision briefs): the same recipe again, recognizing
-  // BOTH the pre-v11 shape (already rebuilt by the step above when this
-  // runs on an old file) and a database that opened at v11 earlier today.
-  rebuildForV4(
-    db,
-    "artifact",
-    "'terminal-diff','diff-stat'",
-    "'handoff','revision-brief'",
-    `CREATE TABLE artifact_next (
-       id             INTEGER PRIMARY KEY AUTOINCREMENT,
-       run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-       kind           TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan','terminal-diff','diff-stat','handoff','revision-brief')),
-       key            TEXT NOT NULL,
-       bytes_original INTEGER NOT NULL,
-       bytes_stored   INTEGER NOT NULL,
-       truncated      INTEGER NOT NULL DEFAULT 0,
-       sha256         TEXT NOT NULL,
-       capture        TEXT NOT NULL,
-       created_at     TEXT NOT NULL,
-       redacted       INTEGER NOT NULL DEFAULT 0
-     )`,
-    ["id", "run", "kind", "key", "bytes_original", "bytes_stored", "truncated", "sha256", "capture", "created_at", "redacted"],
-  );
-  // v12 (adoption review, finding 7): immutable filing provenance, additive.
-  // installation_fact arrives through the fresh SCHEMA's IF NOT EXISTS.
-  addColumn(db, "task_ref", "filed_via", "TEXT");
-  // v13 (fleet chat): purely additive — chat_config and chat_turn arrive
-  // through the fresh SCHEMA's IF NOT EXISTS; no existing table changes.
-  // v13b: the pinned per-token price joins the config row, additive.
-  addColumn(db, "chat_config", "price_in_microusd", "INTEGER");
-  addColumn(db, "chat_config", "price_out_microusd", "INTEGER");
-  // v14 (tournaments, removed in v115 — the fresh SCHEMA no longer creates
-  // their tables): existing tables gain nullable columns here; and hold's
-  // owner_kind CHECK is WIDENED by the recognized-exactly rebuild — v14
-  // is deliberately NOT purely additive, and this is the one place that
-  // says so.
-  // (Their contestant columns are plain history since v115 removed contests.)
-  addColumn(db, "run", "contestant", "INTEGER");
-  addColumn(db, "decision", "contestant", "INTEGER");
-  addColumn(db, "decision", "closed_reason", "TEXT CHECK (closed_reason IN ('excluded'))");
-  addColumn(db, "artifact", "capture_status", "TEXT CHECK (capture_status IN ('ok','failed'))");
-  addColumn(db, "runner", "capacity_mode", "TEXT NOT NULL DEFAULT 'tasks'");
-  rebuildForV4(
-    db,
-    "hold",
-    "'operator','decision','incident','backoff'",
-    "'contest'",
-    `CREATE TABLE hold_next (
-       id         INTEGER PRIMARY KEY AUTOINCREMENT,
-       task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-       owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff','contest')),
-       owner_id   TEXT NOT NULL,
-       reason     TEXT NOT NULL,
-       until      TEXT,
-       held_at    TEXT NOT NULL,
-       UNIQUE (owner_kind, owner_id)
-     )`,
-    ["id", "task_ref", "owner_kind", "owner_id", "reason", "until", "held_at"],
-  );
-  // v15 (budgets, operator request): the per-attempt dollar cap joins the
-  // scope, and spend_defaults arrives via the fresh SCHEMA's IF NOT EXISTS.
-  addColumn(db, "task_scope", "budget_microusd", "INTEGER");
-  // v16 (stage 6 + operator request): the default competing-agent count.
-  addColumn(db, "spend_defaults", "race_agents", "INTEGER CHECK (race_agents BETWEEN 2 AND 4)");
-  // v17 (live peek): the occupancy fence on checkouts, and artifact.kind
-  // admits 'base-tree' (the enveloped dispatch-time snapshot the peek
-  // consumes) — same recognized-exactly CHECK-widening recipe as v11's,
-  // with the FULL current column set so capture_status survives.
-  addColumn(db, "worktree", "lease_epoch", "TEXT");
-  rebuildForV4(
-    db,
-    "artifact",
-    "'diff','status','park-payload','plan','terminal-diff','diff-stat','handoff','revision-brief'",
-    "'base-tree'",
-    `CREATE TABLE artifact_next (
-       id             INTEGER PRIMARY KEY AUTOINCREMENT,
-       run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-       kind           TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan','terminal-diff','diff-stat','handoff','revision-brief','base-tree')),
-       key            TEXT NOT NULL,
-       bytes_original INTEGER NOT NULL,
-       bytes_stored   INTEGER NOT NULL,
-       truncated      INTEGER NOT NULL DEFAULT 0,
-       sha256         TEXT NOT NULL,
-       capture        TEXT NOT NULL,
-       created_at     TEXT NOT NULL,
-       redacted       INTEGER NOT NULL DEFAULT 0,
-       capture_status TEXT CHECK (capture_status IN ('ok','failed'))
-     )`,
-    ["id", "run", "kind", "key", "bytes_original", "bytes_stored", "truncated", "sha256", "capture", "created_at", "redacted", "capture_status"],
-  );
-  // v18 (chains and next): the queue rank. Scheduling, never authority —
-  // no digest binds it and no approval is voided by it.
-  addColumn(db, "task", "priority", "INTEGER NOT NULL DEFAULT 0");
-  // v19 (queue columns): reservations, the column note, and the queue
-  // revision the console's drag CAS-checks. All additive; no index in
-  // the fresh SCHEMA (the recorded partial-index trap).
-  addColumn(db, "task_ref", "assigned_runner", "TEXT");
-  addColumn(db, "runner", "queue_note", "TEXT");
-  db.exec(`CREATE TABLE IF NOT EXISTS queue_state (
-    id       INTEGER PRIMARY KEY CHECK (id = 1),
-    revision INTEGER NOT NULL DEFAULT 0
-  )`);
-  db.exec("INSERT OR IGNORE INTO queue_state (id, revision) VALUES (1, 0)");
-  // v20 (external dispatch): dispatch authority + blocked state on the
-  // grant (cross-column rule dispatch=1 → remote_repo/plane_id lives in
-  // saveGrant — ALTER ADD COLUMN cannot carry cross-column CHECKs), and
-  // the mirror/ledger/intent tables. The trigger and every table are
-  // shared with the fresh SCHEMA via CREATE IF NOT EXISTS.
-  addColumn(db, "backend_grant", "dispatch", "INTEGER NOT NULL DEFAULT 0 CHECK (dispatch IN (0, 1))");
-  addColumn(db, "backend_grant", "remote_repo", "TEXT");
-  addColumn(db, "backend_grant", "plane_id", "TEXT");
-  addColumn(db, "backend_grant", "dispatch_blocked", "TEXT CHECK (dispatch_blocked IN ('pending-marker','unreachable','foreign','missing','multiple-or-malformed'))");
-  addColumn(db, "backend_grant", "dispatch_blocked_at", "TEXT");
-  addColumn(db, "backend_grant", "dispatch_blocked_detail", "TEXT");
-  db.exec(`CREATE TABLE IF NOT EXISTS external_mirror (
-    local_task_id   TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
-    backend         TEXT NOT NULL,
-    remote_repo     TEXT NOT NULL,
-    remote_id       TEXT NOT NULL,
-    provenance      TEXT NOT NULL CHECK (provenance IN ('local-create','intake','granted-all')),
-    intake_grant    INTEGER,
-    established_by  TEXT NOT NULL,
-    established_at  TEXT NOT NULL,
-    remote_state    TEXT NOT NULL CHECK (remote_state IN ('open','closed','missing')),
-    close_generation INTEGER,
-    sync_generation INTEGER NOT NULL DEFAULT 0,
-    dispatch_ok     INTEGER NOT NULL DEFAULT 0 CHECK (dispatch_ok IN (0, 1)),
-    reopened_by     TEXT,
-    reopened_at     TEXT,
-    CHECK ((provenance = 'intake') = (intake_grant IS NOT NULL)),
-    UNIQUE (backend, remote_repo, remote_id)
-  )`);
-  db.exec(`CREATE TRIGGER IF NOT EXISTS external_mirror_immutable
-    BEFORE UPDATE ON external_mirror
-    WHEN OLD.backend IS NOT NEW.backend OR OLD.remote_repo IS NOT NEW.remote_repo
-      OR OLD.remote_id IS NOT NEW.remote_id OR OLD.provenance IS NOT NEW.provenance
-      OR OLD.intake_grant IS NOT NEW.intake_grant
-      OR OLD.established_by IS NOT NEW.established_by OR OLD.established_at IS NOT NEW.established_at
-    BEGIN
-      SELECT RAISE(ABORT, 'external mirror identity is immutable');
-    END`);
-  db.exec(`CREATE TABLE IF NOT EXISTS sync_ledger (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    backend     TEXT NOT NULL,
-    remote_repo TEXT NOT NULL,
-    generation  INTEGER NOT NULL,
-    started_at  TEXT NOT NULL,
-    finished_at TEXT,
-    outcome     TEXT CHECK (outcome IN ('complete','capped','failed')),
-    candidates  INTEGER NOT NULL DEFAULT 0,
-    mirrored    INTEGER NOT NULL DEFAULT 0,
-    detail      TEXT,
-    UNIQUE (backend, remote_repo, generation)
-  )`);
-  db.exec(`CREATE TABLE IF NOT EXISTS external_intent (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    mirror       TEXT NOT NULL REFERENCES external_mirror(local_task_id),
-    kind         TEXT NOT NULL CHECK (kind IN ('comment','transition','close')),
-    body         TEXT,
-    state        TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','delivered','refused')),
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    last_error   TEXT,
-    created_at   TEXT NOT NULL,
-    delivered_at TEXT
-  )`);
-  // v21 (merge grant): merge authority as explicit fields on the
-  // publication grant (cross-column rule merge=1 → merge_method lives in
-  // savePublicationGrant + a trigger — additive ALTER cannot carry it),
-  // plus the observation/intent/blocker tables shared with fresh SCHEMA.
-  addColumn(db, "publication_grant", "merge", "INTEGER NOT NULL DEFAULT 0 CHECK (merge IN (0, 1))");
-  addColumn(db, "publication_grant", "merge_method", "TEXT CHECK (merge_method IN ('squash','merge','rebase'))");
-  addColumn(db, "publication_grant", "merge_delete_branch", "INTEGER NOT NULL DEFAULT 0 CHECK (merge_delete_branch IN (0, 1))");
-  db.exec(`CREATE TABLE IF NOT EXISTS ci_observation (
-    github_repo TEXT NOT NULL,
-    pr_number   INTEGER NOT NULL,
-    head_sha    TEXT NOT NULL,
-    state       TEXT NOT NULL CHECK (state IN ('passing','failing','running','none')),
-    generation  INTEGER NOT NULL,
-    observed_at TEXT NOT NULL,
-    PRIMARY KEY (github_repo, pr_number)
-  )`);
-  db.exec(`CREATE TABLE IF NOT EXISTS merge_intent (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    publication   INTEGER NOT NULL UNIQUE REFERENCES publication(id),
-    grant_terms_hash TEXT NOT NULL,
-    head_sha      TEXT NOT NULL,
-    method        TEXT NOT NULL CHECK (method IN ('squash','merge','rebase')),
-    delete_branch INTEGER NOT NULL DEFAULT 0 CHECK (delete_branch IN (0, 1)),
-    state         TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','claimed','merged','refused','superseded')),
-    claimed_by    TEXT,
-    claimed_until TEXT,
-    generation    INTEGER NOT NULL DEFAULT 0,
-    attempts      INTEGER NOT NULL DEFAULT 0,
-    last_error    TEXT,
-    receipt       TEXT,
-    created_at    TEXT NOT NULL,
-    settled_at    TEXT,
-    CHECK (state <> 'claimed' OR (claimed_by IS NOT NULL AND claimed_until IS NOT NULL))
-  )`);
-  db.exec(`CREATE TABLE IF NOT EXISTS merge_blocker (
-    publication INTEGER NOT NULL UNIQUE REFERENCES publication(id),
-    reason      TEXT NOT NULL CHECK (reason IN ('repair-open')),
-    task_id     TEXT,
-    created_at  TEXT NOT NULL
-  )`);
-  // v23 (arc 3, the phone): the push surface. Two NEW tables (their own
-  // indexes may ride beside them — the whole tables are new) plus two
-  // additive notification columns stamped by producers: a closed
-  // attention class and a machine-minted console link. Kinds without a
-  // class never push.
-  addColumn(db, "notification", "push_class", "TEXT CHECK (push_class IN ('decision','pick','merge','attention'))");
-  addColumn(db, "notification", "link", "TEXT");
-  db.exec(`CREATE TABLE IF NOT EXISTS push_subscription (
-    id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-    endpoint                  TEXT NOT NULL,
-    p256dh                    TEXT NOT NULL,
-    auth                      TEXT NOT NULL,
-    approver                  TEXT NOT NULL,
-    approver_generation       INTEGER NOT NULL,
-    ua_words                  TEXT NOT NULL,
-    vapid_fingerprint         TEXT NOT NULL,
-    starts_after_notification INTEGER NOT NULL,
-    created_at                TEXT NOT NULL,
-    last_ok_at                TEXT,
-    consecutive_failures      INTEGER NOT NULL DEFAULT 0,
-    retired_at                TEXT,
-    retired_reason            TEXT
-  )`);
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS push_subscription_live
-    ON push_subscription (endpoint) WHERE retired_at IS NULL`);
-  db.exec(`CREATE TABLE IF NOT EXISTS push_delivery (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    notification     INTEGER NOT NULL REFERENCES notification(id) ON DELETE CASCADE,
-    subscription     INTEGER NOT NULL REFERENCES push_subscription(id) ON DELETE CASCADE,
-    state            TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (state IN ('pending','claimed','accepted','rejected','undeliverable','retired')),
-    claim_owner      TEXT,
-    claim_expires_at TEXT,
-    claim_generation INTEGER NOT NULL DEFAULT 0,
-    attempts         INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at  TEXT,
-    last_error       TEXT,
-    created_at       TEXT NOT NULL,
-    accepted_at      TEXT,
-    UNIQUE (notification, subscription),
-    CHECK (state <> 'claimed' OR (claim_owner IS NOT NULL AND claim_expires_at IS NOT NULL))
-  )`);
-  db.exec(`CREATE INDEX IF NOT EXISTS push_delivery_due
-    ON push_delivery (state, next_attempt_at) WHERE state IN ('pending','claimed')`);
-
-  // v22 (arc 1, the live window): operator steering notes. A NEW table —
-  // additive, identical to the fresh SCHEMA; its partial pending index
-  // lives in openStore's post-migration block (the v11c lesson).
-  db.exec(`CREATE TABLE IF NOT EXISTS task_steer (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-    author        TEXT NOT NULL,
-    note          TEXT NOT NULL,
-    created_at    TEXT NOT NULL,
-    attached_run  INTEGER REFERENCES run(id),
-    attached_at   TEXT,
-    delivered_at  TEXT,
-    superseded_at TEXT,
-    CHECK ((attached_run IS NULL) = (attached_at IS NULL)),
-    CHECK (delivered_at IS NULL OR attached_run IS NOT NULL)
-  )`);
-
-  // v24 (Parity II foundations): the execution-profile columns, added with
-  // LEGACY defaults — an existing row is grandfathered/unverified until the
-  // data pass below classifies it; every new INSERT writes these columns
-  // explicitly, so a road that forgets fails closed into the legacy label.
-  addColumn(db, "task_scope", "profile_json", "TEXT");
-  addColumn(db, "task_scope", "profile_state", "TEXT NOT NULL DEFAULT 'resolved'");
-  addColumn(db, "task_scope", "unresolved_reason", "TEXT");
-  addColumn(db, "task_scope", "approved_profile_json", "TEXT");
-  addColumn(db, "task_scope", "digest_version", "INTEGER NOT NULL DEFAULT 1");
-  addColumn(db, "task_scope", "profile_provenance", "TEXT");
-  addColumn(db, "run", "scope_digest", "TEXT");
-  addColumn(db, "run", "profile_digest", "TEXT");
-  addColumn(db, "run", "provider_version", "TEXT");
-  addColumn(db, "task_steer", "authorship_state", "TEXT NOT NULL DEFAULT 'unverified-legacy'");
-  addColumn(db, "task_steer", "superseded_reason", "TEXT");
-  // The v24 DATA pass runs exactly once — on a database whose stored
-  // version predates it. A fresh database (no version row yet) has
-  // nothing to classify, and a v24 database must never be re-classified:
-  // a freshly approved routine with no profile column YET would otherwise
-  // be "grandfathered" by its own migration on the next open.
-  // The version the file was AT when this upgrade began (v48 authority repair): openStore
-  // has already negated it into the epoch sentinel, and a sentinel resumed
-  // after a crash is negative too — so the ORIGIN is the magnitude, never
-  // the sign. Read as a plain comparison, −47 < 24 re-ran the v24 data
-  // pass on every upgrade from v24 onward and on every resumed epoch.
-  // The origin arrives from the one strict preflight reader (raw
-  // authority repair) — never re-read leniently here, mid-DDL.
-  if (origin !== null && origin < 24) migrateToV24(db);
-
-  // v25 (attended core): two shape rebuilds, each recognized exactly and
-  // idempotent, ordered AFTER every addColumn above so the only pre-v25
-  // shape they ever see is the full v24 one. (Its three held-session tables
-  // are gone since v115: the fresh SCHEMA no longer creates them, and the
-  // run/decision columns that pointed at them stay as history.)
-  rebuildForV4(
-    db,
-    "run",
-    "'built','failed','refused','parked','no-change'",
-    "'interrupted'",
-    V25_RUN_DDL("run_next"),
-    V25_RUN_COLUMNS,
-  );
-  rebuildDecisionForV25(db);
-
-  // v26 (attested runtime): phase_config's provider CHECK gains 'gemini'.
-  rebuildPhaseConfigForV26(db);
-
-  // v28 (parallel watched sessions, removed in v115): the
-  // one-held-session-per-runner index is withdrawn. Dropping it is
-  // harmless on any file, so the step stays.
-  db.exec("DROP INDEX IF EXISTS one_held_session_per_runner");
-
-  // v29 (operating modes + the reviewer role + multi-user): additive
-  // columns FIRST (round-4 ordering), then the exact-recognizer rebuilds.
-  // The four new tables arrive through the fresh SCHEMA's IF NOT EXISTS.
-  addColumn(db, "approver", "role", "TEXT NOT NULL DEFAULT 'approver' CHECK (role IN ('approver','viewer'))");
-  addColumn(db, "approver", "revoked_at", "TEXT");
-  addColumn(db, "approver", "revoked_by", "TEXT");
-  addColumn(db, "task_scope", "approval_basis", "TEXT");
-  addColumn(db, "task_scope", "mode_digest", "TEXT");
-  addColumn(db, "diff_comment", "reviewer_run", "INTEGER REFERENCES run(id)");
-  // review_request arrives whole by IF NOT EXISTS; these cover a file
-  // that created the table before basis/mode_digest existed. FAIL CLOSED
-  // on that upgrade (Codex reviewer round 2, finding 1): a pre-typed open
-  // request queued by a mode would default to basis 'human' and survive
-  // the mode's revocation — and legacy display strings are ambiguous with
-  // human names, so NO open pre-typed request keeps its authority. Spent
-  // as 'legacy-untyped'; a person simply asks again.
-  const preTypedRequests = tableExists(db, "review_request") && !hasColumn(db, "review_request", "basis");
-  addColumn(db, "review_request", "basis", "TEXT NOT NULL DEFAULT 'human' CHECK (basis IN ('human','mode'))");
-  addColumn(db, "review_request", "mode_digest", "TEXT");
-  if (preTypedRequests) {
-    db.exec(
-      `UPDATE review_request SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), consumed_reason = 'legacy-untyped' WHERE consumed_at IS NULL`,
-    );
-  }
-  addColumn(db, "diff_comment", "severity", "TEXT CHECK (severity IN ('note','question','problem'))");
-  addColumn(db, "task_ref", "plan_provider", "TEXT");
-  addColumn(db, "task_ref", "plan_model", "TEXT");
-  addColumn(db, "merge_blocker", "lifted_at", "TEXT");
-  addColumn(db, "merge_blocker", "lifted_by", "TEXT");
-  rebuildRunForV29(db);
-  rebuildPhaseConfigForV29(db);
-  rebuildMergeIntentForV29(db);
-  rebuildMergeBlockerForV29(db);
-
-  // v30 (fallback chains, removed in v115): additive columns on top of the
-  // v29 shapes (kept as history) and the quota identity rebuild. Quota needs a RECOGNIZED rebuild (its
-  // PK changes) — additive columns cannot change a primary key.
-  // v31 (MCP gateway): the coordinator linkage column; the three new
-  // tables arrive through the fresh SCHEMA's IF NOT EXISTS on both roads.
-  addColumn(db, "task_ref", "coordinator_cid", "TEXT REFERENCES coordinator_credential(cid)");
-  addColumn(db, "task_scope", "proposed_chain_json", "TEXT");
-  addColumn(db, "task_scope", "approved_chain_json", "TEXT");
-  addColumn(db, "task_scope", "approval_kind", "TEXT NOT NULL DEFAULT 'profile' CHECK (approval_kind IN ('profile','chain'))");
-  addColumn(db, "run", "chain_cycle", "INTEGER");
-  addColumn(db, "run", "chain_index", "INTEGER");
-  addColumn(db, "run", "entry_digest", "TEXT");
-  addColumn(db, "run", "auth_mode", "TEXT");
-  addColumn(db, "run", "terminal_class", "TEXT");
-  rebuildQuotaForV30(db);
-  // v34 (scout tasks, Telegram digests): the deliverable column is
-  // additive; three CHECK widenings — run.role admits 'scout' (an exact
-  // recognizer over the v29+v30 shape), artifact.kind admits 'report',
-  // incident.kind admits 'malformed-report' (the recorded copy-rename
-  // recipe, with the FULL current column sets). telegram_digest arrives
-  // through the fresh SCHEMA's IF NOT EXISTS. The attention indexes are
-  // re-created after migration, as always.
-  addColumn(db, "task_ref", "deliverable", "TEXT NOT NULL DEFAULT 'branch' CHECK (deliverable IN ('branch','report'))");
-  rebuildRunForV34(db);
-  rebuildArtifactForV34(db);
-  rebuildIncidentForV34(db);
-
-  // v38 (verified done): artifact.kind admits 'proof','check-log','screenshot';
-  // incident.kind admits 'malformed-proof' — both exact recognizers over the
-  // v34 shape (the same CHECK widening recipe, one generation later).
-  // verify_command, proof_verdict, and proof_acceptance are wholly new
-  // tables and arrive through the fresh SCHEMA's IF NOT EXISTS on both roads.
-  rebuildArtifactForV38(db);
-  rebuildIncidentForV38(db);
-
-  // v39 (Acceptance Contract v2): purely additive, no CHECK widening, no
-  // table rebuild — a nullable column an absent value reads back as `[]`
-  // from, which is exactly the golden-digest grandfathering this migration
-  // promises: every row from before this code existed keeps the digest it
-  // already has.
-  addColumn(db, "task_scope", "acceptance_json", "TEXT");
-  addColumn(db, "proof_verdict", "matrix_json", "TEXT");
-
-  // v40 (evidence-review-v1): purely additive, no CHECK widening, no table
-  // rebuild. machine_verdict is a nullable column on the existing
-  // proof_verdict table; criterion_review and repair_chain are wholly new
-  // tables and arrive through the fresh SCHEMA's IF NOT EXISTS on both
-  // roads — nothing here rewrites a row that predates this migration.
-  addColumn(db, "proof_verdict", "machine_verdict", "TEXT");
-  // The review BINDING columns (audit hardening, still evidence-review-v1):
-  // the fresh criterion_review DDL was widened by seven hash-bound input
-  // columns (scope_digest, head_sha, proof_artifact, proof_sha,
-  // check_log_artifact, check_log_sha, screenshots_json) UNDER THE SAME
-  // schema version — so a database that already carried the ten-column
-  // table kept it through IF NOT EXISTS, and ingestReview's INSERT failed
-  // on it with "table criterion_review has no column named scope_digest"
-  // (run 1507). Additive, in-version, idempotent: every column arrives
-  // exactly as the fresh DDL declares it, every existing row keeps its ten
-  // values byte for byte, and a row from before the hardening reads back
-  // UNBOUND — NULL bindings, an empty screenshot list — which is the truth
-  // about it: nothing is backfilled, because no evidence of what that
-  // reviewer was shown exists to bind. A file already at this build's
-  // version takes the same road on its next plain open; nothing else about
-  // it moves.
-  addColumn(db, "criterion_review", "scope_digest", "TEXT");
-  addColumn(db, "criterion_review", "head_sha", "TEXT");
-  addColumn(db, "criterion_review", "proof_artifact", "INTEGER");
-  addColumn(db, "criterion_review", "proof_sha", "TEXT");
-  addColumn(db, "criterion_review", "check_log_artifact", "INTEGER");
-  addColumn(db, "criterion_review", "check_log_sha", "TEXT");
-  addColumn(db, "criterion_review", "screenshots_json", "TEXT NOT NULL DEFAULT '[]'");
-  // v51 (inherited review context): the context inventory binding, additive
-  // and NULL on every judgement recorded before a run could carry one.
-  addColumn(db, "criterion_review", "context_artifact", "INTEGER");
-  addColumn(db, "criterion_review", "context_sha", "TEXT");
-
-  // v41 (two quality modes): additive and backwards-compatible. Default
-  // deliberately means the historical workflow; only an explicitly strict
-  // scope changes its digest and queues the isolated semantic reviewer.
-  addColumn(db, "task_ref", "quality_mode", "TEXT CHECK (quality_mode IN ('default','strict'))");
-  addColumn(db, "task_scope", "quality_mode", "TEXT NOT NULL DEFAULT 'default' CHECK (quality_mode IN ('default','strict'))");
-  addColumn(db, "run", "quality_mode", "TEXT NOT NULL DEFAULT 'default' CHECK (quality_mode IN ('default','strict'))");
-
-  // v42 (dependency repair): the mate may propose one explicit, confirmed
-  // repair — retry the failed blocker, replace the edge, or unlink it. This
-  // widens only the proposal CHECK; the dependency primitives remain the
-  // authority and re-prove live graph state when the card is confirmed.
-  rebuildMateProposalForV42(db);
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-
-  // v43 (task companion): chat may draft one operator steering note. The
-  // note remains inert until the operator confirms its card; the existing
-  // credentialed steering primitive is still the only write authority.
-  rebuildMateProposalForV43(db);
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-
-  // v44 (adaptive execution plans): plan_revision and run_checkpoint are
-  // wholly new tables and arrive through the fresh SCHEMA's IF NOT EXISTS.
-  // `run` gains two nullable columns naming the exact plan revision and
-  // authority snapshot a build's brief was constructed from — additive,
-  // null on every run from before this migration. `hold`'s owner_kind CHECK
-  // is WIDENED to admit 'revision': the pause an authority-changing
-  // proposal places while it awaits an operator, lifted by that operator's
-  // accept or reject act exactly like a decision hold is lifted by
-  // answering it.
-  addColumn(db, "run", "plan_revision", "INTEGER REFERENCES plan_revision(id)");
-  addColumn(db, "run", "authority_digest", "TEXT");
-  rebuildForV4(
-    db,
-    "hold",
-    "'operator','decision','incident','backoff','contest'",
-    "'revision'",
-    `CREATE TABLE hold_next (
-       id         INTEGER PRIMARY KEY AUTOINCREMENT,
-       task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-       owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff','contest','revision')),
-       owner_id   TEXT NOT NULL,
-       reason     TEXT NOT NULL,
-       until      TEXT,
-       held_at    TEXT NOT NULL,
-       UNIQUE (owner_kind, owner_id)
-     )`,
-    ["id", "task_ref", "owner_kind", "owner_id", "reason", "until", "held_at"],
-  );
-
-  // v45 (bounded environment recovery): older verification approvals keep
-  // their exact authority. Only a newly confirmed verify row may bind the
-  // digest of an already-approved setup command for one recovery replay.
-  addColumn(db, "verify_command", "recovery_setup_digest", "TEXT");
-
-  // v46 (structured-output repair): preserve every planner/reviewer reply
-  // involved in a bounded correction as sealed evidence. This is a CHECK
-  // widening, using the same exact-recognizer copy/rename discipline as
-  // v34 and v38; no historical row changes meaning.
-  rebuildArtifactForV46(db);
-
-  // v47 (explainable risk-aware phase routing): additive columns only, the
-  // v41 quality precedent verbatim — every historical scope reads back as
-  // routine risk with no route, digests exactly as it did, and its sealed
-  // profile remains the whole authority for its build. The three new
-  // tables arrive by IF NOT EXISTS on fresh and upgraded files alike.
-  addColumn(db, "task_ref", "risk_level", "TEXT CHECK (risk_level IN ('routine','elevated','high'))");
-  addColumn(db, "task_ref", "route_overrides_json", "TEXT");
-  addColumn(db, "task_scope", "risk_level", "TEXT NOT NULL DEFAULT 'routine' CHECK (risk_level IN ('routine','elevated','high'))");
-  addColumn(db, "task_scope", "proposed_route_json", "TEXT");
-  addColumn(db, "task_scope", "approved_route_json", "TEXT");
-  // The route ERA: NULL on every row that existed before this migration —
-  // the one durable proof that a scope predates routing — and set by every
-  // saveScope since. Never backfilled.
-  addColumn(db, "task_scope", "route_era", "INTEGER");
-  // v69: a prepared commit the machine installs as the attempt, no agent.
-  addColumn(db, "task_scope", "candidate", "TEXT");
-  addColumn(db, "review_request", "route_digest", "TEXT");
-
-  // v48 (routing authority): chat may propose one confirmed agent change, so
-  // `agents` joins the proposal kinds through the same exact, row-preserving
-  // copy-rename every earlier widening used.
-  rebuildMateProposalForV48(db);
-  rebuildMateProposalForV60(db);
-  rebuildMateProposalForV66(db);
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-
-  // v49: reviews have no task claim. Bind watch-owned reviews explicitly so
-  // takeover can recover them without closing concurrent cron reviews.
-  // Historical rows remain unbound; never infer custody from timestamps.
-  addColumn(db, "run", "watch_incarnation", "TEXT");
-
-  // v50 (bounded review retries): two additive columns, one exact data
-  // pass, one index replacement. `run.review_attempt` is the root
-  // reviewer's ordinal for its source run (1..REVIEW_ROOT_ATTEMPTS; NULL on
-  // a correction child and on every other role);
-  // `review_request.reviewer_run` binds a spent request to the root that
-  // answered it. The data pass runs exactly once, on a file whose stored
-  // version predates v50 (the v24 precedent — the origin is the magnitude
-  // of the epoch sentinel, so a resumed upgrade runs it again, and it is
-  // idempotent). v29's one_review_per_source partial unique is dropped
-  // here and replaced by the four exact backstops in the post-migration
-  // index block; every historical row, id, outcome, comment, judgement,
-  // and evidence binding is left byte for byte as it was.
-  addColumn(db, "run", "review_attempt", "INTEGER");
-  addColumn(db, "review_request", "reviewer_run", "INTEGER REFERENCES run(id)");
-  if (origin !== null && origin < 50) migrateToV50(db);
-  db.exec("DROP INDEX IF EXISTS one_review_per_source");
-  // v50 (explicit-only retries): `review_request.origin` says how an ask
-  // was produced — the column and its one classification pass arrive
-  // together, in one write transaction (migrateReviewRequestOrigin).
-  migrateReviewRequestOrigin(db);
-
-  // v51 (preserve the filed planning contract): artifact.kind additionally
-  // admits 'plan-contract' — the planner's recorded source and its
-  // ingestion record. The same exact-recognizer copy/rename as v46; no
-  // historical row changes meaning.
-  rebuildArtifactForV51(db);
-
-  // v52 (safe task stop and resume): `run_stop` is a wholly new table and
-  // arrives through the fresh SCHEMA's IF NOT EXISTS. `hold`'s owner_kind
-  // CHECK is WIDENED to admit 'stop' — the pause an exact attempt's stop
-  // places, lifted only by resuming that attempt — through the same
-  // exact-recognizer copy/rename v44 used for 'revision'. No historical
-  // row changes meaning.
-  rebuildForV4(
-    db,
-    "hold",
-    "'operator','decision','incident','backoff','contest','revision'",
-    "'stop'",
-    `CREATE TABLE hold_next (
-       id         INTEGER PRIMARY KEY AUTOINCREMENT,
-       task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-       owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff','contest','revision','stop')),
-       owner_id   TEXT NOT NULL,
-       reason     TEXT NOT NULL,
-       until      TEXT,
-       held_at    TEXT NOT NULL,
-       UNIQUE (owner_kind, owner_id)
-     )`,
-    ["id", "task_ref", "owner_kind", "owner_id", "reason", "until", "held_at"],
-  );
-
-  // v61: legacy rows remain unknown, including previously delivered rows.
-  // No text/link parsing can turn historical content into authorization.
-  addColumn(db, "notification", "provenance_scope", "TEXT NOT NULL DEFAULT 'unknown' CHECK (provenance_scope IN ('unknown','installation','project','task'))");
-  addColumn(db, "notification", "project", "TEXT");
-  addColumn(db, "notification", "task_ref", "INTEGER REFERENCES task_ref(id)");
-  addColumn(db, "notification", "task_id", "TEXT");
-  addColumn(db, "notification", "source_run", "INTEGER REFERENCES run(id)");
-
-  // v62 (Telegram conversation): a stop confirmed from a paired phone is
-  // recorded as exactly that. The audit CHECK admits 'telegram' through the
-  // exact-recognizer rebuild; every v52 row, id and settlement is carried
-  // whole, and an unknown shape refuses rather than being guessed.
-  rebuildRunStopForV62(db);
-  rebuildSlackAuditForV67(db);
-  rebuildDiscordAuditForV68(db);
-  rebuildTeamsAuditForV74(db);
-
-  // v64 (result screenshots on demand): telegram_conversation_part admits
-  // 'image' and carries typed media identity through the same exact-
-  // recognizer copy/rename; every v63 reply and card row, its message id,
-  // attempts and uncertain count is carried whole. mate_turn_evidence is a
-  // wholly new table and arrives through the fresh SCHEMA's IF NOT EXISTS.
-  rebuildTelegramConversationPartForV64(db);
-
-  // v53 (OS containment and login recovery): four additive, nullable
-  // columns on run_process. A legacy witness has NULL in all four, which
-  // every reader treats as "unknown boot, observed containment" — the
-  // conservative road it already took. No historical row changes meaning.
-  addColumn(db, "run_process", "boot_id", "TEXT");
-  addColumn(db, "run_process", "containment", "TEXT");
-  addColumn(db, "run_process", "container", "TEXT");
-  addColumn(db, "run_process", "container_empty_at", "TEXT");
-  addColumn(db, "run_process", "container_identity", "TEXT");
-
-  // v85 (sort steps): flow_step_run's kind CHECK admits 'sort', and a new
-  // nullable decision_json keeps what Jev answered. The same exact-
-  // recognizer copy/rename; every v84 check and update run is carried whole.
-  rebuildForV4(
-    db,
-    "flow_step_run",
-    "CHECK (kind IN ('check','update'))",
-    "'sort'",
-    `CREATE TABLE flow_step_run_next (
-       card           INTEGER NOT NULL REFERENCES flow_card(id),
-       entry          INTEGER NOT NULL,
-       stage          TEXT NOT NULL,
-       kind           TEXT NOT NULL CHECK (kind IN ('check','update','sort')),
-       script         TEXT,
-       script_version INTEGER,
-       state          TEXT NOT NULL CHECK (state IN ('running','passed','failed','waiting')),
-       attempts       INTEGER NOT NULL DEFAULT 0,
-       next_at        TEXT,
-       started_at     TEXT NOT NULL,
-       finished_at    TEXT,
-       duration_ms    INTEGER,
-       exit_code      INTEGER,
-       result         TEXT,
-       log            TEXT,
-       decision_json  TEXT,
-       PRIMARY KEY (card, entry)
-     )`,
-    ["card", "entry", "stage", "kind", "script", "script_version", "state", "attempts", "next_at", "started_at", "finished_at", "duration_ms", "exit_code", "result", "log", "decision_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS flow_step_run_recent ON flow_step_run (started_at)");
-
-  // v86 (draft steps): kind admits 'draft' through the same copy/rename,
-  // carrying every v85 run whole.
-  rebuildForV4(
-    db,
-    "flow_step_run",
-    "CHECK (kind IN ('check','update','sort'))",
-    "'draft'",
-    `CREATE TABLE flow_step_run_next (
-       card           INTEGER NOT NULL REFERENCES flow_card(id),
-       entry          INTEGER NOT NULL,
-       stage          TEXT NOT NULL,
-       kind           TEXT NOT NULL CHECK (kind IN ('check','update','sort','draft')),
-       script         TEXT,
-       script_version INTEGER,
-       state          TEXT NOT NULL CHECK (state IN ('running','passed','failed','waiting')),
-       attempts       INTEGER NOT NULL DEFAULT 0,
-       next_at        TEXT,
-       started_at     TEXT NOT NULL,
-       finished_at    TEXT,
-       duration_ms    INTEGER,
-       exit_code      INTEGER,
-       result         TEXT,
-       log            TEXT,
-       decision_json  TEXT,
-       PRIMARY KEY (card, entry)
-     )`,
-    ["card", "entry", "stage", "kind", "script", "script_version", "state", "attempts", "next_at", "started_at", "finished_at", "duration_ms", "exit_code", "result", "log", "decision_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS flow_step_run_recent ON flow_step_run (started_at)");
-
-  // v87 (steps that reach outside): kind admits 'request', 'email' and
-  // 'tool', carrying every v86 run whole.
-  rebuildForV4(
-    db,
-    "flow_step_run",
-    "CHECK (kind IN ('check','update','sort','draft'))",
-    "'request'",
-    `CREATE TABLE flow_step_run_next (
-       card           INTEGER NOT NULL REFERENCES flow_card(id),
-       entry          INTEGER NOT NULL,
-       stage          TEXT NOT NULL,
-       kind           TEXT NOT NULL CHECK (kind IN ('check','update','sort','draft','request','email','tool')),
-       script         TEXT,
-       script_version INTEGER,
-       state          TEXT NOT NULL CHECK (state IN ('running','passed','failed','waiting')),
-       attempts       INTEGER NOT NULL DEFAULT 0,
-       next_at        TEXT,
-       started_at     TEXT NOT NULL,
-       finished_at    TEXT,
-       duration_ms    INTEGER,
-       exit_code      INTEGER,
-       result         TEXT,
-       log            TEXT,
-       decision_json  TEXT,
-       PRIMARY KEY (card, entry)
-     )`,
-    ["card", "entry", "stage", "kind", "script", "script_version", "state", "attempts", "next_at", "started_at", "finished_at", "duration_ms", "exit_code", "result", "log", "decision_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS flow_step_run_recent ON flow_step_run (started_at)");
-
-  // v94 (teammate tools): a visit may hold several questions — one of its own,
-  // and one per ask-first tool call — so the (card, entry) uniqueness moves to
-  // partial indexes. Every question is carried whole, with its id.
-  rebuildForV4(
-    db,
-    "teammate_question",
-    "UNIQUE (card, entry)",
-    "tool_call     INTEGER",
-    `CREATE TABLE teammate_question_next (
-       id            INTEGER PRIMARY KEY AUTOINCREMENT,
-       teammate      INTEGER NOT NULL REFERENCES teammate(id),
-       card          INTEGER NOT NULL REFERENCES flow_card(id),
-       entry         INTEGER NOT NULL,
-       question      TEXT NOT NULL,
-       options_json  TEXT NOT NULL,
-       asked_of      TEXT NOT NULL,
-       state         TEXT NOT NULL CHECK (state IN ('open','answered','dropped')),
-       choice        TEXT,
-       answer        TEXT,
-       answered_by   TEXT,
-       answered_via  TEXT,
-       answered_at   TEXT,
-       created_at    TEXT NOT NULL,
-       tool_call     INTEGER REFERENCES teammate_call(id),
-       suggestion    INTEGER REFERENCES teammate_suggestion(id)
-     )`,
-    ["id", "teammate", "card", "entry", "question", "options_json", "asked_of", "state", "choice", "answer", "answered_by", "answered_via", "answered_at", "created_at", "tool_call", "suggestion"],
-  );
-  // v99: the action ledger admits sign-in and policy events, each with a short detail; v110: and remote commands ('api', 'mcp').
-  rebuildLedger(db);
-  // v101: a coordinator credential's expiry (null: made before expiry existed, until renewed).
-  addColumn(db, "coordinator_credential", "expires_at", "TEXT");
-  // v102: who filed a task (a person, or the person a coordinator acts for; null when no person is known) and what kind of filer.
-  addColumn(db, "task_ref", "filed_by", "TEXT");
-  addColumn(db, "task_ref", "filed_by_kind", "TEXT");
-  // v98: where Telegram pushes this bot's updates, as the bridge last found it.
-  if (tableExists(db, "bridge_lease")) {
-    addColumn(db, "bridge_lease", "push_url", "TEXT");
-    addColumn(db, "bridge_lease", "push_at", "TEXT");
-    addColumn(db, "bridge_lease", "push_problem", "TEXT");
-  }
-  // v96: a teammate's desk flow.
-  addColumn(db, "teammate", "desk_flow", "INTEGER REFERENCES flow(id)");
-  // v97: its weekly report, and undoing its tool calls.
-  addColumn(db, "teammate", "weekly_at", "TEXT");
-  addColumn(db, "teammate_call", "undo_of", "INTEGER REFERENCES teammate_call(id)");
-  addColumn(db, "teammate_call", "undone_by", "TEXT");
-  addColumn(db, "teammate_call", "undone_at", "TEXT");
-  // v95: a rule-change suggestion is a question too (to the manager, about the card that prompted it), never the visit's own question.
-  addColumn(db, "teammate_question", "suggestion", "INTEGER REFERENCES teammate_suggestion(id)");
-  if (/WHERE tool_call IS NULL\s*$/.test(String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'teammate_question_visit'").get()?.["sql"] ?? ""))) db.exec("DROP INDEX teammate_question_visit");
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS teammate_question_visit ON teammate_question (card, entry) WHERE tool_call IS NULL AND suggestion IS NULL");
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS teammate_question_suggestion ON teammate_question (suggestion) WHERE suggestion IS NOT NULL");
-  // v95: what people told a teammate (v92 notes) becomes its memory, once: the join line stays in its log.
-  // (Only when there are notes: even an INSERT that copies nothing starts the table's sqlite_sequence row, and a reopen must change nothing.)
-  if (Number(db.prepare("SELECT COUNT(*) AS n FROM teammate_memory").get()?.["n"] ?? 0) === 0
-    && db.prepare("SELECT 1 AS hit FROM teammate_event WHERE kind = 'note' AND said NOT LIKE '% onto the team.' LIMIT 1").get() !== undefined) {
-    db.exec(`INSERT INTO teammate_memory (teammate, text, source, card, state, created_by, created_at, updated_by, updated_at)
-      SELECT teammate, said, 'person', NULL, 'active', COALESCE(by, 'someone'), at, COALESCE(by, 'someone'), at FROM teammate_event
-      WHERE kind = 'note' AND said NOT LIKE '% onto the team.' ORDER BY id`);
-  }
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS teammate_question_call ON teammate_question (tool_call) WHERE tool_call IS NOT NULL");
-  db.exec("CREATE INDEX IF NOT EXISTS teammate_question_open ON teammate_question (card, entry, state)");
-
-  // v92 (teammates): kind admits 'teammate', carrying every v87 run whole.
-  rebuildForV4(
-    db,
-    "flow_step_run",
-    "CHECK (kind IN ('check','update','sort','draft','request','email','tool'))",
-    "'teammate'",
-    `CREATE TABLE flow_step_run_next (
-       card           INTEGER NOT NULL REFERENCES flow_card(id),
-       entry          INTEGER NOT NULL,
-       stage          TEXT NOT NULL,
-       kind           TEXT NOT NULL CHECK (kind IN ('check','update','sort','draft','request','email','tool','teammate')),
-       script         TEXT,
-       script_version INTEGER,
-       state          TEXT NOT NULL CHECK (state IN ('running','passed','failed','waiting')),
-       attempts       INTEGER NOT NULL DEFAULT 0,
-       next_at        TEXT,
-       started_at     TEXT NOT NULL,
-       finished_at    TEXT,
-       duration_ms    INTEGER,
-       exit_code      INTEGER,
-       result         TEXT,
-       log            TEXT,
-       decision_json  TEXT,
-       PRIMARY KEY (card, entry)
-     )`,
-    ["card", "entry", "stage", "kind", "script", "script_version", "state", "attempts", "next_at", "started_at", "finished_at", "duration_ms", "exit_code", "result", "log", "decision_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS flow_step_run_recent ON flow_step_run (started_at)");
-
-  // v89 (inbox triggers): kind admits 'email' and 'chat', carrying every
-  // trigger whole (its id, so flow_trigger_event keeps pointing at it).
-  rebuildForV4(
-    db,
-    "flow_trigger",
-    "CHECK (kind IN ('button','schedule','github','linear','flow','webhook'))",
-    "'email'",
-    `CREATE TABLE flow_trigger_next (
-       id           INTEGER PRIMARY KEY AUTOINCREMENT,
-       flow         INTEGER NOT NULL REFERENCES flow(id),
-       kind         TEXT NOT NULL CHECK (kind IN ('button','schedule','github','linear','flow','webhook','email','chat')),
-       config_json  TEXT NOT NULL,
-       state        TEXT NOT NULL CHECK (state IN ('active','paused','removed')),
-       hook_hash    TEXT UNIQUE,
-       cursor       TEXT,
-       next_at      TEXT,
-       last_at      TEXT,
-       last_outcome TEXT,
-       failures     INTEGER NOT NULL DEFAULT 0,
-       created_by   TEXT NOT NULL,
-       created_at   TEXT NOT NULL,
-       updated_at   TEXT NOT NULL
-     )`,
-    ["id", "flow", "kind", "config_json", "state", "hook_hash", "cursor", "next_at", "last_at", "last_outcome", "failures", "created_by", "created_at", "updated_at"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS flow_trigger_live ON flow_trigger (flow, state)");
-}
-
-/** The origin CHECK, verbatim from the fresh review_request DDL. */
-const REVIEW_REQUEST_ORIGIN_DEFINITION = "TEXT NOT NULL DEFAULT 'operator' CHECK (origin IN ('operator','automatic'))";
-
-/**
- * The v50 provenance pass (explicit-only retries): `review_request.origin`
- * arrives together with its one classification, atomically. On a file from
- * before the column, a mode-basis row was by definition automatic; a
- * human-basis row was either an operator's ask or the Strict / release
- * producer's, and the two are byte-identical — so an OPEN human-basis ask
- * that would already be a retry (its source carries a root attempt) cannot
- * be proved to be a fresh operator act, and is spent as 'legacy-origin'
- * rather than admitted on a guess (the v29 legacy-untyped precedent: a
- * person simply asks again). Consumed rows keep their words; nothing is
- * ever admitted from them.
- *
- * THE COLUMN IS THE MARK THAT THE PASS RAN, so the ALTER and the two
- * UPDATEs commit as one unit or not at all: an interruption after the
- * column was added, between the classification writes, or before the
- * commit rolls the column back with them, and the next open runs the whole
- * pass again (fault injection, review-retry dogfood: an ALTER committed on
- * its own left a replayed Strict retry open as an operator's ask, and it
- * admitted attempt 2). The presence check is repeated INSIDE the write
- * lock: a second opener that waited on BEGIN IMMEDIATE for the first
- * migrator finds the column already there and classifies nothing — an
- * operator ask queued after the first migrator committed is not a legacy
- * row, and a repeated pass would have spent it as one.
- */
-function migrateReviewRequestOrigin(db: Database): void {
-  if (!tableExists(db, "review_request") || hasColumn(db, "review_request", "origin")) return;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (!hasColumn(db, "review_request", "origin")) {
-      db.exec(`ALTER TABLE review_request ADD COLUMN origin ${REVIEW_REQUEST_ORIGIN_DEFINITION}`);
-      db.exec("UPDATE review_request SET origin = 'automatic' WHERE basis = 'mode'");
-      db.exec(
-        `UPDATE review_request SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), consumed_reason = 'legacy-origin'
-          WHERE consumed_at IS NULL AND basis = 'human'
-            AND EXISTS (SELECT 1 FROM run WHERE run.parent_run = review_request.run AND run.role = 'reviewer' AND run.review_attempt IS NOT NULL)`,
-      );
-    }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
 /** The bounded review-retry law (v50): a source run takes at most this
  * many ROOT reviewer attempts, ever — the first ask plus two explicit
  * retries. Correction children (the same-session structured-output
@@ -5904,21 +4817,6 @@ function reviewRequestOriginOf(row: Record<string, unknown>): ReviewRequestOrigi
   return String(row["basis"]) === "mode" || String(row["origin"] ?? "operator") === "automatic" ? "automatic" : "operator";
 }
 
-/**
- * The v50 data pass: every existing root reviewer (a reviewer whose parent
- * is NOT a reviewer) becomes attempt 1 of its source — v49's
- * one_review_per_source guaranteed there was never more than one — and
- * each such root is bound to the one request v49's admission spent on it.
- * The binding is derived only from the one-to-one relation v29..v49
- * guaranteed (a request consumed by an admission was stamped
- * `dispatched`, then `reviewed`, `reviewer-…`, or `interrupted`; every
- * other consumed reason spent a request WITHOUT a run). A root with no
- * such request stays unbound — an omission recorded as one, never a
- * guess. A source run whose history contradicts that relation (two roots,
- * or two run-bearing requests for one root) is a shape this migration
- * cannot prove, and the upgrade refuses in words rather than binding a
- * retry allowance to it.
- */
 /**
  * v114, once, on the way up (the sentinel is already stamped): the workspace
  * revision triggers go (the write wrapper bumps the revision now), notification
@@ -5999,112 +4897,6 @@ function compactSettledRunProcesses(db: Database, now: Date, only: number | null
     removed += Number(remove.run(run).changes);
   }
   return removed;
-}
-
-function migrateToV50(db: Database): void {
-  if (!tableExists(db, "run") || !tableExists(db, "review_request")) return;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const roots = db
-      .prepare(
-        `SELECT reviewer.id AS id, reviewer.parent_run AS source, reviewer.review_attempt AS attempt
-           FROM run AS reviewer
-           JOIN run AS parent ON parent.id = reviewer.parent_run
-          WHERE reviewer.role = 'reviewer' AND parent.role <> 'reviewer'
-          ORDER BY reviewer.id`,
-      )
-      .all() as { id: number | bigint; source: number | bigint; attempt: number | bigint | null }[];
-    const bySource = new Map<number, number[]>();
-    for (const root of roots) {
-      const list = bySource.get(Number(root.source)) ?? [];
-      list.push(Number(root.id));
-      bySource.set(Number(root.source), list);
-    }
-    for (const [source, ids] of bySource) {
-      if (ids.length > 1) {
-        throw new Error(`run #${source} carries ${ids.length} root reviewer runs (#${ids.join(", #")}) — a shape v49 never wrote; refusing to assign review attempts to it`);
-      }
-    }
-    const bind = db.prepare("UPDATE run SET review_attempt = 1 WHERE id = ? AND review_attempt IS NULL");
-    const spent = db.prepare(
-      `SELECT id FROM review_request
-        WHERE run = ? AND consumed_at IS NOT NULL
-          AND (consumed_reason = 'dispatched' OR consumed_reason = 'reviewed' OR consumed_reason = 'interrupted' OR consumed_reason LIKE 'reviewer-%')
-        ORDER BY id`,
-    );
-    const link = db.prepare("UPDATE review_request SET reviewer_run = ? WHERE id = ? AND reviewer_run IS NULL");
-    for (const root of roots) {
-      if (root.attempt === null || root.attempt === undefined) bind.run(Number(root.id));
-      const requests = spent.all(Number(root.source)) as { id: number | bigint }[];
-      if (requests.length > 1) {
-        throw new Error(`run #${Number(root.source)} spent ${requests.length} review requests on one reviewer run (#${Number(root.id)}) — a shape v49 never wrote; refusing to bind a retry allowance to it`);
-      }
-      if (requests.length === 1) link.run(Number(root.id), Number(requests[0]!.id));
-    }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-/** The v17 artifact shape — what every v17..v33 database carries (the
- * fresh DDL canonicalizes to it too). */
-function V17_ARTIFACT_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-    kind           TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan','terminal-diff','diff-stat','handoff','revision-brief','base-tree')),
-    key            TEXT NOT NULL,
-    bytes_original INTEGER NOT NULL,
-    bytes_stored   INTEGER NOT NULL,
-    truncated      INTEGER NOT NULL DEFAULT 0,
-    sha256         TEXT NOT NULL,
-    capture        TEXT NOT NULL,
-    created_at     TEXT NOT NULL,
-    redacted       INTEGER NOT NULL DEFAULT 0,
-    capture_status TEXT CHECK (capture_status IN ('ok','failed'))
-  )`;
-}
-function V34_ARTIFACT_DDL(name: string): string {
-  return V17_ARTIFACT_DDL(name).replace("'revision-brief','base-tree'", "'revision-brief','base-tree','report'");
-}
-const ARTIFACT_COLUMNS = ["id", "run", "kind", "key", "bytes_original", "bytes_stored", "truncated", "sha256", "capture", "created_at", "redacted", "capture_status"] as const;
-
-/** The v7 incident shape — every v7..v33 database, and the fresh DDL. */
-function V7_INCIDENT_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    run         INTEGER NOT NULL UNIQUE REFERENCES run(id) ON DELETE CASCADE,
-    kind        TEXT NOT NULL CHECK (kind IN ('malformed-decision','attempts-exhausted','commit-failure','malformed-plan','plan-attempts-exhausted')),
-    created_at  TEXT NOT NULL,
-    resolved_at TEXT,
-    resolved_by TEXT
-  )`;
-}
-function V34_INCIDENT_DDL(name: string): string {
-  return V7_INCIDENT_DDL(name).replace("'plan-attempts-exhausted'", "'plan-attempts-exhausted','malformed-report'");
-}
-const INCIDENT_COLUMNS = ["id", "run", "kind", "created_at", "resolved_at", "resolved_by"] as const;
-
-/** v38: artifact.kind additionally admits 'proof','check-log','screenshot'. */
-function V38_ARTIFACT_DDL(name: string): string {
-  return V34_ARTIFACT_DDL(name).replace("'revision-brief','base-tree','report'", "'revision-brief','base-tree','report','proof','check-log','screenshot'");
-}
-
-/** v46: raw planner/reviewer protocol attempts become first-class evidence. */
-function V46_ARTIFACT_DDL(name: string): string {
-  return V38_ARTIFACT_DDL(name).replace("'proof','check-log','screenshot'", "'proof','check-log','screenshot','structured-output'");
-}
-
-/** v51: the planner's recorded source and plan-contract record are evidence. */
-function V51_ARTIFACT_DDL(name: string): string {
-  return V46_ARTIFACT_DDL(name).replace("'screenshot','structured-output'", "'screenshot','structured-output','plan-contract','review-context'");
-}
-
-/** v38: incident.kind additionally admits 'malformed-proof'. */
-function V38_INCIDENT_DDL(name: string): string {
-  return V34_INCIDENT_DDL(name).replace("'plan-attempts-exhausted','malformed-report'", "'plan-attempts-exhausted','malformed-report','malformed-proof'");
 }
 
 /** The durable outbox (§6). A notification is a fact that something wants a
@@ -6249,9 +5041,7 @@ function readWebSession(row: Record<string, unknown>): WebSessionRow {
 }
 
 /**
- * v99: the ledger's source admits 'sign-in' and 'policy', and each row may
- * carry a short detail. v110: it admits 'api' and 'mcp' too, from either
- * earlier shape; rows, ids and the counter are carried whole, so the v103
+ * v110: the ledger's source admits 'api' and 'mcp', from the v99 shape; rows, ids and the counter are carried whole, so the v103
  * seals over them still hold. The work triggers on other tables write into the
  * ledger, and a rename refuses while a trigger points at a table that's gone,
  * so every trigger naming it is dropped first; openStore puts them back
@@ -6263,167 +5053,15 @@ function rebuildLedger(db: Database): void {
   for (const trigger of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%action_ledger%'").all()) {
     db.exec(`DROP TRIGGER IF EXISTS "${String(trigger["name"]).replace(/"/g, '""')}"`);
   }
-  if (canonicalDdl(String(row["sql"])) === canonicalDdl(LEDGER_V54_TABLE("action_ledger"))) rebuildExact(db, "action_ledger", LEDGER_V54_TABLE, LEDGER_TABLE, LEDGER_V54_COLUMNS);
-  else rebuildExact(db, "action_ledger", LEDGER_V99_TABLE, LEDGER_TABLE, [...LEDGER_V54_COLUMNS, "detail"]);
+  rebuildExact(db, "action_ledger", LEDGER_V99_TABLE, LEDGER_TABLE, LEDGER_COLUMNS);
 }
 
-/** v34: artifact.kind admits 'report'. A table already rebuilt to the v38
- * shape (migrate() runs unconditionally on every open, including a fresh
- * database created straight at the current shape) is a DONE shape too —
- * the same "old-shape-plus-later-widening" recognizer rebuildRunForV29
- * uses for V34_RUN_DDL. */
-export function rebuildArtifactForV34(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact'").get();
-  if (
-    row !== undefined &&
-    [V38_ARTIFACT_DDL("artifact"), V46_ARTIFACT_DDL("artifact"), V51_ARTIFACT_DDL("artifact")].some(ddl => canonicalDdl(String(row["sql"])) === canonicalDdl(ddl))
-  ) return;
-  rebuildExact(db, "artifact", V17_ARTIFACT_DDL, V34_ARTIFACT_DDL, ARTIFACT_COLUMNS);
-}
-
-/** v34: incident.kind admits 'malformed-report'. Same v38-shape tolerance as rebuildArtifactForV34. */
-export function rebuildIncidentForV34(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'incident'").get();
-  if (row !== undefined && canonicalDdl(String(row["sql"])) === canonicalDdl(V38_INCIDENT_DDL("incident"))) return;
-  rebuildExact(db, "incident", V7_INCIDENT_DDL, V34_INCIDENT_DDL, INCIDENT_COLUMNS);
-}
-
-/** v38: artifact.kind admits 'proof','check-log','screenshot'. */
-export function rebuildArtifactForV38(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact'").get();
-  if (
-    row !== undefined &&
-    [V46_ARTIFACT_DDL("artifact"), V51_ARTIFACT_DDL("artifact")].some(ddl => canonicalDdl(String(row["sql"])) === canonicalDdl(ddl))
-  ) return;
-  rebuildExact(db, "artifact", [V17_ARTIFACT_DDL, V34_ARTIFACT_DDL], V38_ARTIFACT_DDL, ARTIFACT_COLUMNS);
-}
-
-/** v46: artifact.kind additionally admits structured-output. A table
- * already at the v51 shape is a DONE shape (migrate() runs every step on
- * every open). */
-export function rebuildArtifactForV46(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact'").get();
-  if (row !== undefined && canonicalDdl(String(row["sql"])) === canonicalDdl(V51_ARTIFACT_DDL("artifact"))) return;
-  rebuildExact(db, "artifact", V38_ARTIFACT_DDL, V46_ARTIFACT_DDL, ARTIFACT_COLUMNS);
-}
-
-/** v51: artifact.kind additionally admits plan-contract and review-context. */
-export function rebuildArtifactForV51(db: Database): void {
-  rebuildExact(db, "artifact", V46_ARTIFACT_DDL, V51_ARTIFACT_DDL, ARTIFACT_COLUMNS);
-}
-
-/** v38: incident.kind admits 'malformed-proof'. */
-export function rebuildIncidentForV38(db: Database): void {
-  rebuildExact(db, "incident", [V7_INCIDENT_DDL, V34_INCIDENT_DDL], V38_INCIDENT_DDL, INCIDENT_COLUMNS);
-}
-
-/** The v34 run shape: 'scout' joins the roles, and the v30 columns sit
- * inline before the table CHECK (where ALTER put them on older files). */
-function V34_RUN_DDL(name: string): string {
-  return V29_RUN_DDL(name)
-    .replace("'builder','repair','planner','reviewer'", "'builder','repair','planner','reviewer','scout'")
-    .replace(
-      "    handoff       TEXT,\n    CHECK",
-      "    handoff       TEXT,\n    chain_cycle INTEGER REFERENCES fallback_cycle(id), chain_index INTEGER, entry_digest TEXT, auth_mode TEXT, terminal_class TEXT,\n    CHECK",
-    );
-}
-
-/** v41 is an additive column after every run-table rebuild. SQLite inserts
- * the new column immediately before the table CHECK, so the exact recognizers
- * must admit that known final shape on later opens without weakening to
- * substring checks. */
-function V34_RUN_PLUS_V41_DDL(name: string): string {
-  return V34_RUN_DDL(name).replace(
-    "    chain_cycle INTEGER REFERENCES fallback_cycle(id), chain_index INTEGER, entry_digest TEXT, auth_mode TEXT, terminal_class TEXT,\n    CHECK",
-    "    chain_cycle INTEGER REFERENCES fallback_cycle(id), chain_index INTEGER, entry_digest TEXT, auth_mode TEXT, terminal_class TEXT, quality_mode TEXT NOT NULL DEFAULT 'default' CHECK (quality_mode IN ('default','strict')),\n    CHECK",
-  );
-}
-
-/** v44: plan_revision and authority_digest are additive columns after every
- * run-table rebuild, exactly like v41's quality_mode — SQLite inserts each
- * new column immediately before the table CHECK, so this known final shape
- * must be admitted by name wherever the run table's shape is recognized. */
-function V34_RUN_PLUS_V41_PLUS_V44_DDL(name: string): string {
-  return V34_RUN_PLUS_V41_DDL(name).replace(
-    " quality_mode TEXT NOT NULL DEFAULT 'default' CHECK (quality_mode IN ('default','strict')),\n    CHECK",
-    " quality_mode TEXT NOT NULL DEFAULT 'default' CHECK (quality_mode IN ('default','strict')), plan_revision INTEGER REFERENCES plan_revision(id), authority_digest TEXT,\n    CHECK",
-  );
-}
-
-function V49_RUN_DDL(name: string): string {
-  return V34_RUN_PLUS_V41_PLUS_V44_DDL(name).replace(
-    " authority_digest TEXT,\n    CHECK",
-    " authority_digest TEXT, watch_incarnation TEXT,\n    CHECK",
-  );
-}
-
-/** v50: review_attempt is one more additive column after every run-table
- * rebuild — the same known final shape rule as v41, v44, and v49. */
-function V50_RUN_DDL(name: string): string {
-  return V49_RUN_DDL(name).replace(
-    " watch_incarnation TEXT,\n    CHECK",
-    " watch_incarnation TEXT, review_attempt INTEGER,\n    CHECK",
-  );
-}
-
-const V34_RUN_COLUMNS = [
-  "id", "task_ref", "lease_id", "runner", "scope_digest", "profile_digest", "provider_version", "role", "provider",
-  "parent_run", "session_id", "base_revision", "branch", "worktree", "model", "phase", "contestant", "outcome",
-  "reason", "committed", "attended_authorization", "started_at", "finished_at", "provider_started_at", "tokens_in",
-  "tokens_out", "cost_usd", "usage_json", "head_revision", "handoff", "chain_cycle", "chain_index", "entry_digest",
-  "auth_mode", "terminal_class",
-] as const;
-
-/**
- * v34: run.role admits 'scout'. An EXACT recognizer, like v29's and v33's:
- * the stored DDL must be the v29+v30 shape (either placement of the v30
- * columns is the same shape) or already v34; anything else refuses rather
- * than being guessed. Rows and ids are carried whole; foreign keys are
- * checked before commit; the indexes return with the post-migration block.
- */
-export function rebuildRunForV34(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  if (
-    stored === canonicalDdl(V34_RUN_DDL("run")) ||
-    stored === canonicalDdl(V34_RUN_PLUS_V41_DDL("run")) ||
-    stored === canonicalDdl(V34_RUN_PLUS_V41_PLUS_V44_DDL("run")) ||
-    stored === canonicalDdl(V49_RUN_DDL("run")) ||
-    stored === canonicalDdl(V50_RUN_DDL("run"))
-  ) return;
-  if (stored !== canonicalDdl(V29_RUN_PLUS_V30_COLS_DDL)) {
-    throw new Error("the run table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(V34_RUN_DDL("run_next"));
-      const names = V34_RUN_COLUMNS.join(", ");
-      db.exec(`INSERT INTO run_next (${names}) SELECT ${names} FROM run`);
-      db.exec("DROP TABLE run");
-      db.exec("ALTER TABLE run_next RENAME TO run");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) throw new Error("foreign keys did not survive the run rebuild");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-/** v30: quota's PRIMARY KEY grows auth_mode + credential_fp (a subscription
- * and an API key exhaust independently). A PK change is a rebuild, not an
- * addColumn; recognized exactly like every other v-rebuild. */
-const MATE_PROPOSAL_V32_DDL = `CREATE TABLE IF NOT EXISTS mate_proposal (
+/** lead_proposal as every database since v66 has it (mate_proposal before v117): initializeStore refuses any other shape rather than recreate it. */
+const LEAD_PROPOSAL_DDL = (name: string): string => `CREATE TABLE ${name} (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread         INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
+  thread         INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
   turn           INTEGER NOT NULL,
-  kind           TEXT NOT NULL CHECK (kind IN ('task','next','reserve','hold','unhold','scope','cancel')),
+  kind           TEXT NOT NULL CHECK (kind IN ('task','next','reserve','hold','unhold','steer','scope','cancel','answer','repair','agents','review','control','task_action','action')),
   payload_json   TEXT NOT NULL,
   ceiling_digest TEXT NOT NULL,
   state          TEXT NOT NULL CHECK (state IN ('drafting','pending','confirming','confirmed','refused','dismissed','expired')),
@@ -6432,609 +5070,6 @@ const MATE_PROPOSAL_V32_DDL = `CREATE TABLE IF NOT EXISTS mate_proposal (
   resolved_by    TEXT,
   outcome_json   TEXT
 )`;
-const MATE_PROPOSAL_V33_DDL = (name: string): string => `CREATE TABLE ${name} (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread         INTEGER NOT NULL REFERENCES mate_thread(id) ON DELETE CASCADE,
-  turn           INTEGER NOT NULL,
-  kind           TEXT NOT NULL CHECK (kind IN ('task','next','reserve','hold','unhold','scope','cancel','answer')),
-  payload_json   TEXT NOT NULL,
-  ceiling_digest TEXT NOT NULL,
-  state          TEXT NOT NULL CHECK (state IN ('drafting','pending','confirming','confirmed','refused','dismissed','expired')),
-  created_at     TEXT NOT NULL,
-  resolved_at    TEXT,
-  resolved_by    TEXT,
-  outcome_json   TEXT
-)`;
-const MATE_PROPOSAL_V42_DDL = (name: string): string =>
-  MATE_PROPOSAL_V33_DDL(name).replace("'cancel','answer'", "'cancel','answer','repair'");
-const MATE_PROPOSAL_V43_DDL = (name: string): string =>
-  MATE_PROPOSAL_V42_DDL(name).replace("'hold','unhold'", "'hold','unhold','steer'");
-const MATE_PROPOSAL_V48_DDL = (name: string): string =>
-  MATE_PROPOSAL_V43_DDL(name).replace("'answer','repair'", "'answer','repair','agents'");
-const MATE_PROPOSAL_V60_DDL = (name: string): string =>
-  MATE_PROPOSAL_V48_DDL(name).replace("'agents'", "'agents','review','control','task_action'");
-
-const MATE_PROPOSAL_V66_DDL = (name: string): string =>
-  MATE_PROPOSAL_V60_DDL(name).replace("'task_action'", "'task_action','action'");
-
-export function rebuildMateProposalForV66(db: Database): void {
-  rebuildExact(db, "mate_proposal", MATE_PROPOSAL_V60_DDL, MATE_PROPOSAL_V66_DDL,
-    ["id", "thread", "turn", "kind", "payload_json", "ceiling_digest", "state", "created_at", "resolved_at", "resolved_by", "outcome_json"]);
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-}
-
-const RUN_STOP_V52_DDL = (name: string): string => `CREATE TABLE ${name} (
-  run           INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
-  task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-  requested_by  TEXT NOT NULL,
-  requested_via TEXT NOT NULL CHECK (requested_via IN ('cli','web')),
-  requested_at  TEXT NOT NULL,
-  settled_at    TEXT,
-  settlement    TEXT CHECK (settlement IN ('interrupted','recovered','held','finished')),
-  resumed_at    TEXT,
-  resumed_by    TEXT,
-  resumed_via   TEXT CHECK (resumed_via IN ('cli','web')),
-  CHECK ((settled_at IS NULL) = (settlement IS NULL)),
-  CHECK (resumed_at IS NULL OR settled_at IS NOT NULL),
-  CHECK ((resumed_at IS NULL) = (resumed_by IS NULL))
-)`;
-const RUN_STOP_V62_DDL = (name: string): string =>
-  RUN_STOP_V52_DDL(name).replace("requested_via IN ('cli','web')", "requested_via IN ('cli','web','telegram')").replace("resumed_via IN ('cli','web')", "resumed_via IN ('cli','web','telegram')");
-
-
-const DECISION_V66_DDL = (name: string): string => `CREATE TABLE ${name} (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-  urgency        TEXT NOT NULL CHECK (urgency IN ('blocking')),
-  state          TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','expired','answered')),
-  recap          TEXT NOT NULL,
-  question       TEXT NOT NULL,
-  options        TEXT NOT NULL,
-  recommendation TEXT NOT NULL,
-  assignee       TEXT,
-  -- Attention metadata only. A deadline is never a hold expiry: a blocking
-  -- decision that goes overdue becomes 'expired' and MORE visible, not a
-  -- task that quietly dispatches itself unanswered.
-  deadline       TEXT,
-  created_at     TEXT NOT NULL,
-  answered_at    TEXT,
-  answered_by    TEXT,
-  -- Which racing agent asked (v14); lets one-open-question-per-agent be a
-  -- real database rule instead of a hope (finding 28). NULL = ordinary.
-  contestant     INTEGER REFERENCES contestant(id),
-  -- Typed closure (v14): 'excluded' = the operator stopped the asking
-  -- agent instead of answering. Never a fake option.
-  closed_reason  TEXT CHECK (closed_reason IN ('excluded')),
-  answered_via   TEXT CHECK (answered_via IN ('cli','web','telegram')),
-  choice         TEXT,
-  note           TEXT,
-  -- v25 held-session linkage. session_turn = the turn whose settlement
-  -- produced this park (causal, held runs only). delivered_turn = the
-  -- answer turn that claimed delivery into the live session — the
-  -- delivery-CAS target: set once (WHERE delivered_turn IS NULL), reverted
-  -- only when that turn terminally never reached acceptance.
-  session_turn   INTEGER REFERENCES session_turn(id),
-  delivered_turn INTEGER REFERENCES session_turn(id)
-)`;
-const DECISION_V67_DDL = (name: string): string => DECISION_V66_DDL(name).replace("'cli','web','telegram'", "'cli','web','telegram','slack'");
-const RUN_STOP_V67_DDL = (name: string): string => RUN_STOP_V62_DDL(name).replaceAll("'cli','web','telegram'", "'cli','web','telegram','slack'");
-const DECISION_V68_DDL = (name:string):string => DECISION_V67_DDL(name).replace("'cli','web','telegram','slack'", "'cli','web','telegram','slack','discord'");
-const RUN_STOP_V68_DDL = (name:string):string => RUN_STOP_V67_DDL(name).replaceAll("'cli','web','telegram','slack'", "'cli','web','telegram','slack','discord'");
-/** v74: Microsoft Teams joins the recorded surfaces a stop or an answer names. */
-export const DECISION_V74_DDL = (name:string):string => DECISION_V68_DDL(name).replace("'cli','web','telegram','slack','discord'", "'cli','web','telegram','slack','discord','teams'");
-export const RUN_STOP_V74_DDL = (name:string):string => RUN_STOP_V68_DDL(name).replaceAll("'cli','web','telegram','slack','discord'", "'cli','web','telegram','slack','discord','teams'");
-function isTeamsAudit(db:Database,table:"decision"|"run_stop"):boolean {
- const row=db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table);
- return row!==undefined&&canonicalDdl(String(row.sql))===canonicalDdl((table==="decision"?DECISION_V74_DDL:RUN_STOP_V74_DDL)(table));
-}
-export function rebuildTeamsAuditForV74(db:Database):void {
- if(!isTeamsAudit(db,"decision")) rebuildExact(db,"decision",DECISION_V68_DDL,DECISION_V74_DDL,["id","run","urgency","state","recap","question","options","recommendation","assignee","deadline","created_at","answered_at","answered_by","contestant","closed_reason","answered_via","choice","note","session_turn","delivered_turn"]);
- if(!isTeamsAudit(db,"run_stop")) rebuildExact(db,"run_stop",RUN_STOP_V68_DDL,RUN_STOP_V74_DDL,["run","task_ref","requested_by","requested_via","requested_at","settled_at","settlement","resumed_at","resumed_by","resumed_via"]);
- db.exec("CREATE INDEX IF NOT EXISTS run_stop_by_task ON run_stop (task_ref, requested_at DESC)");
-}
-function isDiscordAudit(db:Database,table:"decision"|"run_stop"):boolean {
- if(isTeamsAudit(db,table)) return true;
- const row=db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table);
- return row!==undefined&&canonicalDdl(String(row.sql))===canonicalDdl((table==="decision"?DECISION_V68_DDL:RUN_STOP_V68_DDL)(table));
-}
-export const DECISION_V68_DDL_FOR_TESTS = (name:string):string => DECISION_V68_DDL(name);
-export const RUN_STOP_V68_DDL_FOR_TESTS = (name:string):string => RUN_STOP_V68_DDL(name);
-export function rebuildDiscordAuditForV68(db:Database):void {
- if(isTeamsAudit(db,"decision")&&isTeamsAudit(db,"run_stop")) return;
- if(!isTeamsAudit(db,"decision")) rebuildExact(db,"decision",DECISION_V67_DDL,DECISION_V68_DDL,["id","run","urgency","state","recap","question","options","recommendation","assignee","deadline","created_at","answered_at","answered_by","contestant","closed_reason","answered_via","choice","note","session_turn","delivered_turn"]);
- if(!isTeamsAudit(db,"run_stop")) rebuildExact(db,"run_stop",RUN_STOP_V67_DDL,RUN_STOP_V68_DDL,["run","task_ref","requested_by","requested_via","requested_at","settled_at","settlement","resumed_at","resumed_by","resumed_via"]);
- db.exec("CREATE INDEX IF NOT EXISTS run_stop_by_task ON run_stop (task_ref, requested_at DESC)");
-}
-function isSlackAudit(db: Database, table: "decision" | "run_stop"): boolean {
-  if(isDiscordAudit(db,table)) return true;
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table);
-  return row !== undefined && canonicalDdl(String(row.sql)) === canonicalDdl((table === "decision" ? DECISION_V67_DDL : RUN_STOP_V67_DDL)(table));
-}
-export function rebuildSlackAuditForV67(db: Database): void {
-  if(!isDiscordAudit(db,"decision")) rebuildExact(db, "decision", DECISION_V66_DDL, DECISION_V67_DDL,
-    ["id","run","urgency","state","recap","question","options","recommendation","assignee","deadline","created_at","answered_at","answered_by","contestant","closed_reason","answered_via","choice","note","session_turn","delivered_turn"]);
-  if(!isDiscordAudit(db,"run_stop")) rebuildExact(db, "run_stop", RUN_STOP_V62_DDL, RUN_STOP_V67_DDL,
-    ["run","task_ref","requested_by","requested_via","requested_at","settled_at","settlement","resumed_at","resumed_by","resumed_via"]);
-  db.exec("CREATE INDEX IF NOT EXISTS run_stop_by_task ON run_stop (task_ref, requested_at DESC)");
-}
-
-const TELEGRAM_CONVERSATION_PART_V63_DDL = (name: string): string => `CREATE TABLE ${name} (
-  conversation    INTEGER NOT NULL REFERENCES telegram_conversation(id) ON DELETE CASCADE,
-  ordinal         INTEGER NOT NULL,
-  kind            TEXT NOT NULL CHECK (kind IN ('reply','card')),
-  text            TEXT NOT NULL,
-  reply_to        TEXT,
-  proposal        INTEGER REFERENCES mate_proposal(id) ON DELETE SET NULL,
-  keyboard_json   TEXT,
-  state           TEXT NOT NULL CHECK (state IN ('pending','sent','dropped')),
-  message_id      TEXT,
-  attempts        INTEGER NOT NULL DEFAULT 0,
-  uncertain       INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at TEXT,
-  last_error      TEXT,
-  created_at      TEXT NOT NULL,
-  sent_at         TEXT,
-  PRIMARY KEY (conversation, ordinal),
-  CHECK ((state = 'sent') = (message_id IS NOT NULL)),
-  CHECK ((state = 'sent') = (sent_at IS NOT NULL))
-)`;
-const TELEGRAM_CONVERSATION_PART_V64_DDL = (name: string): string => `CREATE TABLE ${name} (
-  conversation    INTEGER NOT NULL REFERENCES telegram_conversation(id) ON DELETE CASCADE,
-  ordinal         INTEGER NOT NULL,
-  kind            TEXT NOT NULL CHECK (kind IN ('reply','card','image')),
-  text            TEXT NOT NULL,
-  reply_to        TEXT,
-  proposal        INTEGER REFERENCES mate_proposal(id) ON DELETE SET NULL,
-  keyboard_json   TEXT,
-  state           TEXT NOT NULL CHECK (state IN ('pending','sent','dropped')),
-  message_id      TEXT,
-  attempts        INTEGER NOT NULL DEFAULT 0,
-  uncertain       INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at TEXT,
-  last_error      TEXT,
-  created_at      TEXT NOT NULL,
-  sent_at         TEXT,
-  task_id         TEXT,
-  source_run      INTEGER REFERENCES run(id),
-  artifact        INTEGER,
-  sha256          TEXT,
-  PRIMARY KEY (conversation, ordinal),
-  CHECK ((state = 'sent') = (message_id IS NOT NULL)),
-  CHECK ((state = 'sent') = (sent_at IS NOT NULL)),
-  CHECK ((kind = 'image') = (task_id IS NOT NULL AND source_run IS NOT NULL AND artifact IS NOT NULL AND sha256 IS NOT NULL))
-)`;
-/** The v63 columns, in order: what an upgrade copies, and what a wind-back keeps. */
-export const TELEGRAM_CONVERSATION_PART_V63_COLUMNS = ["conversation", "ordinal", "kind", "text", "reply_to", "proposal", "keyboard_json", "state", "message_id", "attempts", "uncertain", "next_attempt_at", "last_error", "created_at", "sent_at"] as const;
-
-/** v64: image parts join the outbound conversation parts with typed media identity. Every v63 row, receipt, attempt and uncertain count is carried whole. */
-export function rebuildTelegramConversationPartForV64(db: Database): void {
-  rebuildExact(db, "telegram_conversation_part", TELEGRAM_CONVERSATION_PART_V63_DDL, TELEGRAM_CONVERSATION_PART_V64_DDL, TELEGRAM_CONVERSATION_PART_V63_COLUMNS);
-}
-
-/** v62: the stop audit admits 'telegram'. Rows, ids and settlements are carried whole. */
-export function rebuildRunStopForV62(db: Database): void {
-  if (isSlackAudit(db, "run_stop")) return;
-  rebuildExact(db, "run_stop", RUN_STOP_V52_DDL, RUN_STOP_V62_DDL,
-    ["run", "task_ref", "requested_by", "requested_via", "requested_at", "settled_at", "settlement", "resumed_at", "resumed_by", "resumed_via"]);
-}
-
-function isMateProposalV60(db: Database): boolean {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mate_proposal'").get();
-  return row !== undefined && [MATE_PROPOSAL_V60_DDL, MATE_PROPOSAL_V66_DDL].some(ddl => canonicalDdl(String(row["sql"])) === canonicalDdl(ddl("mate_proposal")));
-}
-
-export function rebuildMateProposalForV60(db: Database): void {
-  if (isMateProposalV60(db)) return;
-  rebuildExact(db, "mate_proposal", MATE_PROPOSAL_V48_DDL, MATE_PROPOSAL_V60_DDL,
-    ["id", "thread", "turn", "kind", "payload_json", "ceiling_digest", "state", "created_at", "resolved_at", "resolved_by", "outcome_json"]);
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-}
-
-/**
- * v33 (mate v3): `answer` joins mate_proposal's kinds — an EXACT recognizer
- * (v3 review, finding 9): the stored DDL must equal the v32 shape or the
- * v33 shape, byte for byte after canonicalization; anything else refuses
- * rather than being guessed. Rows and ids are carried whole; the one
- * shipped index is recreated; foreign keys are checked before commit.
- */
-export function rebuildMateProposalForV33(db: Database): void {
-  if (isMateProposalV60(db)) return;
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mate_proposal'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  // A fresh database already carries the later widening. Older
-  // normalizers run on every open, so they must recognize later canonical
-  // shapes as complete rather than trying to migrate them backwards.
-  if (stored === canonicalDdl(MATE_PROPOSAL_V42_DDL("mate_proposal")) || stored === canonicalDdl(MATE_PROPOSAL_V43_DDL("mate_proposal")) || stored === canonicalDdl(MATE_PROPOSAL_V48_DDL("mate_proposal"))) return;
-  const target = canonicalDdl(MATE_PROPOSAL_V33_DDL("mate_proposal_next")).replace("mate_proposal_next", "mate_proposal");
-  if (stored === target) return;
-  if (stored !== canonicalDdl(MATE_PROPOSAL_V32_DDL).replace("IF NOT EXISTS ", "")) {
-    throw new Error("the mate_proposal table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(MATE_PROPOSAL_V33_DDL("mate_proposal_next"));
-      db.exec("INSERT INTO mate_proposal_next (id, thread, turn, kind, payload_json, ceiling_digest, state, created_at, resolved_at, resolved_by, outcome_json) SELECT id, thread, turn, kind, payload_json, ceiling_digest, state, created_at, resolved_at, resolved_by, outcome_json FROM mate_proposal");
-      db.exec("DROP TABLE mate_proposal");
-      db.exec("ALTER TABLE mate_proposal_next RENAME TO mate_proposal");
-      db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) throw new Error("the mate_proposal rebuild left a dangling reference — rolled back");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-/** v42: `repair` joins the mate proposal kinds through the same exact,
- * row-preserving copy-rename used for v33. */
-export function rebuildMateProposalForV42(db: Database): void {
-  if (isMateProposalV60(db)) return;
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mate_proposal'").get();
-  if (row !== undefined && (canonicalDdl(String(row["sql"])) === canonicalDdl(MATE_PROPOSAL_V43_DDL("mate_proposal")) || canonicalDdl(String(row["sql"])) === canonicalDdl(MATE_PROPOSAL_V48_DDL("mate_proposal")))) return;
-  rebuildExact(
-    db,
-    "mate_proposal",
-    name => MATE_PROPOSAL_V33_DDL(name),
-    name => MATE_PROPOSAL_V42_DDL(name),
-    ["id", "thread", "turn", "kind", "payload_json", "ceiling_digest", "state", "created_at", "resolved_at", "resolved_by", "outcome_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-}
-
-/** v43: `steer` joins the mate proposal kinds through the same exact,
- * row-preserving copy-rename used for v33 and v42. */
-export function rebuildMateProposalForV43(db: Database): void {
-  if (isMateProposalV60(db)) return;
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mate_proposal'").get();
-  if (row !== undefined && canonicalDdl(String(row["sql"])) === canonicalDdl(MATE_PROPOSAL_V48_DDL("mate_proposal"))) return;
-  rebuildExact(
-    db,
-    "mate_proposal",
-    name => MATE_PROPOSAL_V42_DDL(name),
-    name => MATE_PROPOSAL_V43_DDL(name),
-    ["id", "thread", "turn", "kind", "payload_json", "ceiling_digest", "state", "created_at", "resolved_at", "resolved_by", "outcome_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-}
-
-/** v48: `agents` joins the mate proposal kinds — the same exact,
- * row-preserving copy-rename as v33, v42, and v43. */
-export function rebuildMateProposalForV48(db: Database): void {
-  if (isMateProposalV60(db)) return;
-  rebuildExact(
-    db,
-    "mate_proposal",
-    name => MATE_PROPOSAL_V43_DDL(name),
-    name => MATE_PROPOSAL_V48_DDL(name),
-    ["id", "thread", "turn", "kind", "payload_json", "ceiling_digest", "state", "created_at", "resolved_at", "resolved_by", "outcome_json"],
-  );
-  db.exec("CREATE INDEX IF NOT EXISTS mate_proposal_thread ON mate_proposal (thread, state)");
-}
-
-function rebuildQuotaForV30(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'quota'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  const target = canonicalDdl(QUOTA_V30_DDL).replace("quota_next", "quota");
-  if (stored === target) return;
-  const oldBare = canonicalDdl(QUOTA_OLD_DDL);
-  if (stored !== oldBare) {
-    throw new Error("the quota table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(QUOTA_V30_DDL);
-      // Every pre-v30 row was a subscription-shaped credential with no
-      // fingerprint — that is exactly what the defaults say.
-      db.exec("INSERT INTO quota_next (runner, provider, scope, auth_mode, credential_fp, state, reason, observed_at, reset_at) SELECT runner, provider, scope, 'subscription', '', state, reason, observed_at, reset_at FROM quota");
-      db.exec("DROP TABLE quota");
-      db.exec("ALTER TABLE quota_next RENAME TO quota");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-const QUOTA_OLD_DDL = `CREATE TABLE quota (
-  runner      TEXT NOT NULL,
-  provider    TEXT NOT NULL,
-  scope       TEXT NOT NULL DEFAULT '',
-  state       TEXT NOT NULL CHECK (state IN ('exhausted','half-open')),
-  reason      TEXT NOT NULL,
-  observed_at TEXT NOT NULL,
-  reset_at    TEXT,
-  PRIMARY KEY (runner, provider, scope)
-)`;
-
-const QUOTA_V30_DDL = `CREATE TABLE quota_next (
-  runner      TEXT NOT NULL,
-  provider    TEXT NOT NULL,
-  scope       TEXT NOT NULL DEFAULT '',
-  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription','api-key')),
-  credential_fp TEXT NOT NULL DEFAULT '',
-  state       TEXT NOT NULL CHECK (state IN ('exhausted','half-open')),
-  reason      TEXT NOT NULL,
-  observed_at TEXT NOT NULL,
-  reset_at    TEXT,
-  PRIMARY KEY (runner, provider, scope, auth_mode, credential_fp)
-)`;
-
-/** The v28 run shape — V25's columns unchanged since; the recognizer for
- * the v29 rebuild. rebuildForV4's substring check is deliberately NOT
- * reused here (round-3 finding 5: substrings are not recognizers). */
-function V28_RUN_DDL(name: string): string {
-  return V25_RUN_DDL(name);
-}
-
-function V29_RUN_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-    lease_id      TEXT NOT NULL,
-    runner        TEXT NOT NULL,
-    scope_digest     TEXT,
-    profile_digest   TEXT,
-    provider_version TEXT,
-    role          TEXT NOT NULL DEFAULT 'builder' CHECK (role IN ('builder','repair','planner','reviewer')),
-    provider      TEXT NOT NULL DEFAULT 'claude',
-    parent_run    INTEGER REFERENCES run(id),
-    session_id    TEXT,
-    base_revision TEXT,
-    branch        TEXT,
-    worktree      TEXT,
-    model         TEXT,
-    phase         TEXT,
-    contestant    INTEGER REFERENCES contestant(id),
-    outcome       TEXT CHECK (outcome IN ('built','failed','refused','parked','no-change','interrupted')),
-    reason        TEXT,
-    committed     INTEGER,
-    attended_authorization TEXT REFERENCES attended_authorization(id),
-    started_at    TEXT NOT NULL,
-    finished_at   TEXT,
-    provider_started_at TEXT,
-    tokens_in     INTEGER,
-    tokens_out    INTEGER,
-    cost_usd      REAL,
-    usage_json    TEXT,
-    head_revision TEXT,
-    handoff       TEXT,
-    CHECK ((role = 'reviewer' AND branch IS NULL AND worktree IS NULL)
-        OR (role <> 'reviewer' AND branch IS NOT NULL AND worktree IS NOT NULL))
-  )`;
-}
-
-/** The v29 run shape after the v30 ALTER ADD COLUMNs — SQLite appends each
- * new column before the closing paren, AFTER the table-level CHECK. The
- * recognizer accepts this so a v30 database does not re-enter the v29
- * rebuild on every open. */
-const V29_RUN_PLUS_V30_COLS_DDL = V29_RUN_DDL("run").replace(
-  // ALTER ADD COLUMN inserts each column AFTER the last column definition
-  // and BEFORE the table-level CHECK — never after the final paren.
-  "    handoff       TEXT,\n    CHECK",
-  "    handoff       TEXT, chain_cycle INTEGER REFERENCES fallback_cycle(id), chain_index INTEGER, entry_digest TEXT, auth_mode TEXT, terminal_class TEXT,\n    CHECK",
-);
-
-function rebuildRunForV29(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  // Already the v29 shape — OR the v29 shape PLUS the v30 addColumns
-  // (chain_cycle … terminal_class), which ALTER appends after the CHECK.
-  // Both are done shapes; only a pre-v29 (v28) table rebuilds. This mirrors
-  // rebuildMergeBlockerForV29's old-plus-added-columns recognizer.
-  if (
-    stored === canonicalDdl(V29_RUN_DDL("run")) ||
-    stored === canonicalDdl(V29_RUN_PLUS_V30_COLS_DDL) ||
-    stored === canonicalDdl(V34_RUN_DDL("run")) ||
-    stored === canonicalDdl(V34_RUN_PLUS_V41_DDL("run")) ||
-    stored === canonicalDdl(V34_RUN_PLUS_V41_PLUS_V44_DDL("run")) ||
-    stored === canonicalDdl(V49_RUN_DDL("run")) ||
-    stored === canonicalDdl(V50_RUN_DDL("run"))
-  ) return;
-  if (stored !== canonicalDdl(V28_RUN_DDL("run"))) {
-    throw new Error("the run table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(V29_RUN_DDL("run_next"));
-      const names = V25_RUN_COLUMNS.join(", ");
-      db.exec(`INSERT INTO run_next (${names}) SELECT ${names} FROM run`);
-      db.exec("DROP TABLE run");
-      db.exec("ALTER TABLE run_next RENAME TO run");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) throw new Error("foreign keys did not survive the run rebuild");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-const PHASE_CONFIG_V29_DDL = `CREATE TABLE phase_config_next (
-  scope      TEXT NOT NULL,
-  phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
-  model      TEXT,
-  updated_at TEXT NOT NULL,
-  updated_by TEXT NOT NULL,
-  PRIMARY KEY (scope, phase)
-)`;
-
-/** Rebuild #3 of phase_config: 'review' joins the phases (v29). */
-function rebuildPhaseConfigForV29(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'phase_config'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  if (stored === canonicalDdl(PHASE_CONFIG_V29_DDL).replace("phase_config_next", "phase_config")) return;
-  // PHASE_CONFIG_V26_DDL is the CURRENT shape (the v26 migration's
-  // product, unchanged through v28) — the constant is named for the
-  // migration that made it, not the version reading it.
-  if (stored !== canonicalDdl(PHASE_CONFIG_V26_DDL).replace("phase_config_next", "phase_config")) {
-    throw new Error("the phase_config table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(PHASE_CONFIG_V29_DDL);
-      db.exec(`INSERT INTO phase_config_next (scope, phase, provider, model, updated_at, updated_by)
-               SELECT scope, phase, provider, model, updated_at, updated_by FROM phase_config`);
-      db.exec("DROP TABLE phase_config");
-      db.exec("ALTER TABLE phase_config_next RENAME TO phase_config");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-const MERGE_INTENT_V21_DDL = `CREATE TABLE merge_intent (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  publication   INTEGER NOT NULL UNIQUE REFERENCES publication(id),
-  grant_terms_hash TEXT NOT NULL,
-  head_sha      TEXT NOT NULL,
-  method        TEXT NOT NULL CHECK (method IN ('squash','merge','rebase')),
-  delete_branch INTEGER NOT NULL DEFAULT 0 CHECK (delete_branch IN (0, 1)),
-  state         TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','claimed','merged','refused','superseded')),
-  claimed_by    TEXT,
-  claimed_until TEXT,
-  generation    INTEGER NOT NULL DEFAULT 0,
-  attempts      INTEGER NOT NULL DEFAULT 0,
-  last_error    TEXT,
-  receipt       TEXT,
-  created_at    TEXT NOT NULL,
-  settled_at    TEXT,
-  CHECK (state <> 'claimed' OR (claimed_by IS NOT NULL AND claimed_until IS NOT NULL))
-)`;
-
-const MERGE_INTENT_V29_DDL = `CREATE TABLE merge_intent_next (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  publication   INTEGER NOT NULL UNIQUE REFERENCES publication(id),
-  grant_terms_hash TEXT NOT NULL,
-  head_sha      TEXT NOT NULL,
-  method        TEXT NOT NULL CHECK (method IN ('squash','merge','rebase')),
-  delete_branch INTEGER NOT NULL DEFAULT 0 CHECK (delete_branch IN (0, 1)),
-  state         TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','claimed','waiting-human','firing','merged','refused','superseded')),
-  claimed_by    TEXT,
-  claimed_until TEXT,
-  authority_basis TEXT NOT NULL DEFAULT 'grant' CHECK (authority_basis IN ('grant','mode','human')),
-  mode_digest   TEXT,
-  firing_at     TEXT,
-  firing_deadline TEXT,
-  generation    INTEGER NOT NULL DEFAULT 0,
-  attempts      INTEGER NOT NULL DEFAULT 0,
-  last_error    TEXT,
-  receipt       TEXT,
-  created_at    TEXT NOT NULL,
-  settled_at    TEXT,
-  CHECK (state <> 'claimed' OR (claimed_by IS NOT NULL AND claimed_until IS NOT NULL)),
-  CHECK (state <> 'firing' OR (firing_at IS NOT NULL AND firing_deadline IS NOT NULL))
-)`;
-
-/** v29: the intent machine gains waiting-human + firing and the authority
- * binding. Existing rows keep basis 'grant' — the truthful backfill: every
- * pre-v29 intent fired under the grant ceremony's own signature. */
-function rebuildMergeIntentForV29(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'merge_intent'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  if (stored === canonicalDdl(MERGE_INTENT_V29_DDL).replace("merge_intent_next", "merge_intent")) return;
-  if (stored !== canonicalDdl(MERGE_INTENT_V21_DDL)) {
-    throw new Error("the merge_intent table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  const COLS = "id, publication, grant_terms_hash, head_sha, method, delete_branch, state, claimed_by, claimed_until, generation, attempts, last_error, receipt, created_at, settled_at";
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(MERGE_INTENT_V29_DDL);
-      db.exec(`INSERT INTO merge_intent_next (${COLS}) SELECT ${COLS} FROM merge_intent`);
-      db.exec("DROP TABLE merge_intent");
-      db.exec("ALTER TABLE merge_intent_next RENAME TO merge_intent");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-const MERGE_BLOCKER_OLD_DDL = `CREATE TABLE merge_blocker (
-  publication INTEGER NOT NULL UNIQUE REFERENCES publication(id),
-  reason      TEXT NOT NULL CHECK (reason IN ('repair-open')),
-  task_id     TEXT,
-  created_at  TEXT NOT NULL
-)`;
-
-const MERGE_BLOCKER_V29_DDL = `CREATE TABLE merge_blocker_next (
-  publication INTEGER NOT NULL REFERENCES publication(id),
-  reason      TEXT NOT NULL CHECK (reason IN ('repair-open')),
-  task_id     TEXT,
-  created_at  TEXT NOT NULL,
-  lifted_at   TEXT,
-  lifted_by   TEXT
-)`;
-
-/** v29: lifting becomes a stamp; the in-table UNIQUE becomes the
- * one-live partial unique (post-migration block). The addColumn calls
- * above already handled a table that predates this rebuild's run, so the
- * recognizer accepts BOTH the bare old shape and old+added columns. */
-function rebuildMergeBlockerForV29(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'merge_blocker'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  const target = canonicalDdl(MERGE_BLOCKER_V29_DDL).replace("merge_blocker_next", "merge_blocker");
-  if (stored === target) return;
-  const oldBare = canonicalDdl(MERGE_BLOCKER_OLD_DDL);
-  const oldPlusCols = canonicalDdl(MERGE_BLOCKER_OLD_DDL.replace(
-    "  created_at  TEXT NOT NULL\n)",
-    "  created_at  TEXT NOT NULL, lifted_at TEXT, lifted_by TEXT)",
-  ));
-  if (stored !== oldBare && stored !== oldPlusCols) {
-    throw new Error("the merge_blocker table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  const has = new Set(db.prepare("PRAGMA table_info(merge_blocker)").all().map(one => String(one["name"])));
-  const cols = ["publication", "reason", "task_id", "created_at", ...(has.has("lifted_at") ? ["lifted_at", "lifted_by"] : [])].join(", ");
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(MERGE_BLOCKER_V29_DDL);
-      db.exec(`INSERT INTO merge_blocker_next (${cols}) SELECT ${cols} FROM merge_blocker`);
-      db.exec("DROP TABLE merge_blocker");
-      db.exec("ALTER TABLE merge_blocker_next RENAME TO merge_blocker");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
 
 /** Whitespace-collapsed, IF-NOT-EXISTS-stripped DDL for full-equality
  * comparison — a doctored constraint that merely CONTAINS the expected
@@ -7045,6 +5080,8 @@ function canonicalDdl(sql: string): string {
     .replace(/--[^\n]*/g, "") // comments are prose, not shape (v29)
     // v115 removed the tables these pointed at; a column keeps its shape with or without the reference.
     .replace(V115_DROPPED_REFERENCES, "")
+    // v117 renamed the lead's and the subagents' tables; a shape is the same under either name.
+    .replace(V117_LEGACY_NAMES, name => V117_RENAMED_TABLES[name] ?? name)
     .replace(/\bIF NOT EXISTS\b/i, "")
     .replace(/"([A-Za-z_][A-Za-z0-9_]*)"/g, "$1") // RENAME re-quotes the name
     .replace(/\s+/g, " ")
@@ -7057,751 +5094,6 @@ function canonicalDdl(sql: string): string {
     // preceding newline as one space after collapsing whitespace.
     .replace(/ \)/g, ")")
     .trim();
-}
-
-function CHAT_CONFIG_V34_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-  id                      INTEGER PRIMARY KEY CHECK (id = 1),
-  provider                TEXT NOT NULL CHECK (provider IN ('anthropic-api','openrouter-api')),
-  model                   TEXT NOT NULL,
-  daily_turns             INTEGER NOT NULL DEFAULT 50,
-  weekly_ceiling_microusd INTEGER NOT NULL,
-  price_in_microusd       INTEGER,
-  price_out_microusd      INTEGER,
-  updated_at              TEXT NOT NULL,
-  updated_by              TEXT NOT NULL
-)`;
-}
-
-/** The same v34 table as carried by installations that predate chat price
- * pinning: SQLite appends ADD COLUMN fields after the original audit fields.
- * Column order is storage shape, not meaning, but remains part of the exact
- * recognizer so a genuinely unknown table is still refused. */
-function CHAT_CONFIG_V34_APPENDED_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-  id                      INTEGER PRIMARY KEY CHECK (id = 1),
-  provider                TEXT NOT NULL CHECK (provider IN ('anthropic-api','openrouter-api')),
-  model                   TEXT NOT NULL,
-  daily_turns             INTEGER NOT NULL DEFAULT 50,
-  weekly_ceiling_microusd INTEGER NOT NULL,
-  updated_at              TEXT NOT NULL,
-  updated_by              TEXT NOT NULL,
-  price_in_microusd       INTEGER,
-  price_out_microusd      INTEGER
-)`;
-}
-
-function CHAT_CONFIG_V35_DDL(name: string): string {
-  return CHAT_CONFIG_V34_DDL(name).replace(
-    "'anthropic-api','openrouter-api'",
-    "'anthropic-api','openrouter-api','claude-subscription','codex-subscription'",
-  );
-}
-
-function CHAT_TURN_V34_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  approver          TEXT NOT NULL,
-  credential_key    TEXT NOT NULL,
-  provider          TEXT NOT NULL CHECK (provider IN ('anthropic-api','openrouter-api')),
-  model             TEXT NOT NULL,
-  state             TEXT NOT NULL CHECK (state IN ('queued','running','answered','failed')),
-  generation        INTEGER NOT NULL DEFAULT 1,
-  created_at        TEXT NOT NULL,
-  started_at        TEXT,
-  deadline_at       TEXT,
-  finished_at       TEXT,
-  tokens_in         INTEGER,
-  tokens_out        INTEGER,
-  reserved_microusd INTEGER NOT NULL,
-  settled_microusd  INTEGER,
-  failure_reason    TEXT CHECK (failure_reason IN
-    ('provider-error','timeout','over-budget','malformed-reply','secret-refused','crashed','over-cap','unknown-spend')),
-  unknown_spend     INTEGER NOT NULL DEFAULT 0,
-  acknowledged_at   TEXT,
-  acknowledged_by   TEXT,
-  reply_bytes       INTEGER,
-  candidate_count   INTEGER,
-  kind TEXT NOT NULL DEFAULT 'chat',
-  mate_turn INTEGER
-)`;
-}
-
-function CHAT_TURN_V35_DDL(name: string): string {
-  return CHAT_TURN_V34_DDL(name).replace(
-    "'anthropic-api','openrouter-api'",
-    "'anthropic-api','openrouter-api','claude-subscription','codex-subscription'",
-  );
-}
-
-const CHAT_CONFIG_COLUMNS = [
-  "id", "provider", "model", "daily_turns", "weekly_ceiling_microusd", "price_in_microusd", "price_out_microusd", "updated_at", "updated_by",
-] as const;
-const CHAT_TURN_COLUMNS = [
-  "id", "approver", "credential_key", "provider", "model", "state", "generation", "created_at", "started_at", "deadline_at", "finished_at",
-  "tokens_in", "tokens_out", "reserved_microusd", "settled_microusd", "failure_reason", "unknown_spend", "acknowledged_at", "acknowledged_by",
-  "reply_bytes", "candidate_count", "kind", "mate_turn",
-] as const;
-
-/** v35: widen both persisted provider checks with exact-shape rebuilds. */
-export function rebuildChatProvidersForV35(db: Database): void {
-  rebuildExact(db, "chat_config", [CHAT_CONFIG_V34_DDL, CHAT_CONFIG_V34_APPENDED_DDL], CHAT_CONFIG_V35_DDL, CHAT_CONFIG_COLUMNS);
-  rebuildExact(db, "chat_turn", CHAT_TURN_V34_DDL, CHAT_TURN_V35_DDL, CHAT_TURN_COLUMNS);
-  db.exec("CREATE INDEX IF NOT EXISTS chat_turn_credential ON chat_turn (credential_key, created_at)");
-  db.exec("CREATE INDEX IF NOT EXISTS chat_turn_approver ON chat_turn (approver, created_at)");
-}
-
-function MATE_SESSION_V35_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  approver            TEXT NOT NULL,
-  approver_generation INTEGER NOT NULL,
-  credential_key      TEXT NOT NULL,
-  ceiling_microusd    INTEGER NOT NULL,
-  spent_microusd      INTEGER NOT NULL DEFAULT 0,
-  ceiling_digest      TEXT NOT NULL,
-  terms_digest        TEXT NOT NULL,
-  minted_at           TEXT NOT NULL,
-  expires_at          TEXT NOT NULL,
-  ended_at            TEXT,
-  ended_by            TEXT
-)`;
-}
-
-function MATE_SESSION_V36_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  approver            TEXT NOT NULL,
-  approver_generation INTEGER NOT NULL,
-  credential_key      TEXT NOT NULL,
-  ceiling_microusd    INTEGER NOT NULL,
-  spent_microusd      INTEGER NOT NULL DEFAULT 0,
-  ceiling_digest      TEXT NOT NULL,
-  terms_digest        TEXT NOT NULL,
-  minted_at           TEXT NOT NULL,
-  ended_at            TEXT,
-  ended_by            TEXT
-)`;
-}
-
-const MATE_SESSION_V36_COLUMNS = [
-  "id", "approver", "approver_generation", "credential_key", "ceiling_microusd",
-  "spent_microusd", "ceiling_digest", "terms_digest", "minted_at", "ended_at", "ended_by",
-] as const;
-
-/** v36: remove the mate's artificial absolute expiry. */
-export function rebuildMateSessionForV36(db: Database): void {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mate_session'").get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  if (stored === canonicalDdl(MATE_SESSION_V36_DDL("mate_session"))) return;
-  if (stored !== canonicalDdl(MATE_SESSION_V35_DDL("mate_session"))) {
-    throw new Error("the mate_session table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // A v35 session was signed with an expiry. Never silently broaden
-      // those old terms into a persistent authorization during migration.
-      db.exec(`UPDATE mate_session
-                  SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                      ended_by = 'v36-migration'
-                WHERE ended_at IS NULL`);
-      db.exec(MATE_SESSION_V36_DDL("mate_session_next"));
-      const names = MATE_SESSION_V36_COLUMNS.join(", ");
-      db.exec(`INSERT INTO mate_session_next (${names}) SELECT ${names} FROM mate_session`);
-      db.exec("DROP TABLE mate_session");
-      db.exec("ALTER TABLE mate_session_next RENAME TO mate_session");
-      db.exec("CREATE INDEX IF NOT EXISTS mate_session_live ON mate_session (approver, ended_at)");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) throw new Error("foreign keys did not survive the mate_session rebuild");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-const PHASE_CONFIG_V25_DDL = `CREATE TABLE phase_config (
-  scope      TEXT NOT NULL,
-  phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter')),
-  model      TEXT,
-  updated_at TEXT NOT NULL,
-  updated_by TEXT NOT NULL,
-  PRIMARY KEY (scope, phase)
-)`;
-
-const PHASE_CONFIG_V26_DDL = `CREATE TABLE phase_config_next (
-  scope      TEXT NOT NULL,
-  phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
-  model      TEXT,
-  updated_at TEXT NOT NULL,
-  updated_by TEXT NOT NULL,
-  PRIMARY KEY (scope, phase)
-)`;
-
-/**
- * The v26 rebuild: phase_config recognized by FULL canonical-DDL equality
- * (sqlite_master's stored form, whitespace-collapsed), rows copied
- * verbatim, refused on any unrecognized shape. Idempotent: the v26 form
- * returns without touching anything.
- */
-function rebuildPhaseConfigForV26(db: Database): void {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'phase_config'")
-    .get();
-  if (row === undefined) return;
-  const stored = canonicalDdl(String(row["sql"]));
-  const target = canonicalDdl(PHASE_CONFIG_V26_DDL).replace("phase_config_next", "phase_config");
-  if (stored === target) return;
-  // A LATER shape is also done: a fresh database is born at the newest
-  // DDL, and this earlier rebuild waves it through to v29's own pass.
-  if (stored === canonicalDdl(PHASE_CONFIG_V29_DDL).replace("phase_config_next", "phase_config")) return;
-  if (stored !== canonicalDdl(PHASE_CONFIG_V25_DDL)) {
-    throw new Error("the phase_config table's DDL is not a shape this migration knows — refusing to rebuild it");
-  }
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(PHASE_CONFIG_V26_DDL);
-      db.exec(
-        `INSERT INTO phase_config_next (scope, phase, provider, model, updated_at, updated_by)
-         SELECT scope, phase, provider, model, updated_at, updated_by FROM phase_config`,
-      );
-      db.exec("DROP TABLE phase_config");
-      db.exec("ALTER TABLE phase_config_next RENAME TO phase_config");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-/**
- * The v24 DATA pass (foundations findings 10/16 + rulings 10/11): runs once
- * per database — idempotent because every UPDATE keys on the legacy state
- * it is classifying away from.
- *
- * - APPROVED scopes (the full predicate: approved_digest equals
- *   the stored digest — reproposal keeps historical approval fields, so
- *   approved_at alone lies) get their EFFECTIVE profile resolved with
- *   today's precedence (pin > project > installation > default) and
- *   snapshotted as the approval profile, GRANDFATHERED (digest untouched,
- *   provenance says so). Unresolvable = profile_state 'unresolved': not
- *   dispatchable, not re-approvable, until restated.
- * - UNAPPROVED scopes get a working profile and their digest RECOMPUTED to
- *   v2 (nothing signed is altered — there is no live approval).
- * - Every pre-v24 steer note is unverified-legacy (the column default);
- *   UNDELIVERED ones are additionally superseded so they can never enter
- *   a future brief (ruling 11's quarantine).
- */
-function migrateToV24(db: Database): void {
-  const now = new Date().toISOString();
-
-  // -- steering quarantine ---------------------------------------------
-  db.prepare(
-    `UPDATE task_steer SET superseded_at = ?, superseded_reason = 'unverified-author'
-      WHERE authorship_state = 'unverified-legacy' AND delivered_at IS NULL AND superseded_at IS NULL`,
-  ).run(now);
-
-  // -- effective-profile resolution, replicated for raw-db use ----------
-  const KNOWN = new Set(["claude", "codex", "openrouter"]);
-  const configRow = (scope: string): { provider: string; model: string | null } | null => {
-    const row = db.prepare("SELECT provider, model FROM phase_config WHERE scope = ? AND phase = 'build'").get(scope) as
-      | { provider: string; model: string | null }
-      | undefined;
-    return row ?? null;
-  };
-  const effective = (
-    repo: string | null,
-    pinProvider: string | null,
-    pinModel: string | null,
-  ): { ok: true; profile: ExecutionProfile; resolvedFrom: string } | { ok: false; reason: string } => {
-    let provider: string | null = null;
-    let model: string | null = null;
-    let resolvedFrom = "default";
-    if (pinProvider !== null) {
-      provider = pinProvider;
-      model = pinModel;
-      resolvedFrom = "pinned";
-    } else {
-      const row = (repo === null ? null : configRow(repo)) ?? configRow("installation");
-      if (row !== null) {
-        provider = row.provider;
-        model = row.model;
-        resolvedFrom = "config";
-      } else {
-        provider = "claude";
-        model = null;
-      }
-    }
-    if (!KNOWN.has(provider)) return { ok: false, reason: `unknown provider \`${provider}\`` };
-    if (model === null || model === "") return { ok: false, reason: "no configured model — name one and re-approve" };
-    // Legacy effective repair behavior was inherit-the-build-model (flags
-    // were per-invocation, never per-task), so "inherit" is the honest pin.
-    const profile: ExecutionProfile =
-      provider === "claude"
-        ? {
-            provider: "claude",
-            model,
-            permissionArgv: "acceptEdits",
-            maxTurns: CLAUDE_LIMITS.maxTurns,
-            repairMaxTurns: CLAUDE_LIMITS.repairMaxTurns,
-            timeoutSeconds: CLAUDE_LIMITS.timeoutSeconds,
-            repairTimeoutSeconds: CLAUDE_LIMITS.repairTimeoutSeconds,
-            repairModel: "inherit",
-          }
-        : {
-            provider: provider as "codex" | "openrouter",
-            model,
-            sandboxMode: "workspace-write",
-            maxTurns: "unsupported",
-            repairMaxTurns: "unsupported",
-            timeoutSeconds: CODEX_SHAPED_LIMITS.timeoutSeconds,
-            repairTimeoutSeconds: CODEX_SHAPED_LIMITS.repairTimeoutSeconds,
-            repairModel: "inherit",
-          };
-    return { ok: true, profile, resolvedFrom };
-  };
-
-  // -- scopes ------------------------------------------------------------
-  const scopes = db
-    .prepare(
-      `SELECT ts.task_id AS taskId, ts.goal, ts.out_of_scope AS outOfScope, ts.touches,
-              ts.budget_microusd AS budget, ts.digest, ts.approved_digest AS approvedDigest,
-              tr.repo AS repo, tr.agent_provider AS pinProvider, tr.agent_model AS pinModel
-         FROM task_scope ts
-         LEFT JOIN task_ref tr ON tr.id = (SELECT id FROM task_ref WHERE external_id = ts.task_id ORDER BY id LIMIT 1)
-        WHERE ts.profile_json IS NULL AND ts.profile_state = 'resolved' AND ts.approved_profile_json IS NULL`,
-    )
-    .all() as {
-    taskId: string; goal: string; outOfScope: string | null; touches: string;
-    budget: number | null; digest: string; approvedDigest: string | null;
-    repo: string | null; pinProvider: string | null; pinModel: string | null;
-  }[];
-  const setUnresolved = db.prepare(
-    "UPDATE task_scope SET profile_state = 'unresolved', unresolved_reason = ? WHERE task_id = ?",
-  );
-  const pinApproved = db.prepare(
-    `UPDATE task_scope SET profile_json = ?, approved_profile_json = ?, profile_provenance = ? WHERE task_id = ?`,
-  );
-  const stampUnapproved = db.prepare(
-    `UPDATE task_scope SET profile_json = ?, digest = ?, digest_version = 2, profile_provenance = ? WHERE task_id = ?`,
-  );
-  for (const row of scopes) {
-    const approved = row.approvedDigest !== null && row.approvedDigest === row.digest;
-    const resolved = effective(row.repo, row.pinProvider, row.pinModel);
-    if (!resolved.ok) {
-      setUnresolved.run(resolved.reason, row.taskId);
-      continue;
-    }
-    const snapshot = canonicalProfileJson(resolved.profile);
-    const provenance = JSON.stringify({ resolvedFrom: resolved.resolvedFrom, grandfathered: approved, pinnedAt: now });
-    if (approved) {
-      // digest + digest_version stay EXACTLY as signed (golden-tested).
-      pinApproved.run(snapshot, snapshot, provenance, row.taskId);
-    } else {
-      let touches: string[] = [];
-      const read = readStoreColumn("task_scope.touches", row.touches);
-      // Unlike the display reader, v24 passed every valid JSON value to digestOf, including non-arrays.
-      if (read.ok) touches = read.value as string[];
-      const recomputed = digestOf(
-        { goal: row.goal, outOfScope: row.outOfScope, touches, budgetMicrousd: row.budget },
-        resolved.profile,
-      );
-      stampUnapproved.run(snapshot, recomputed, provenance, row.taskId);
-    }
-  }
-}
-
-/** The v4 run shape, shared by the fresh SCHEMA, the M2 rebuild, and the v3→v4 rebuild. */
-function V4_RUN_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-    lease_id      TEXT NOT NULL,
-    runner        TEXT NOT NULL,
-    role          TEXT NOT NULL DEFAULT 'builder' CHECK (role IN ('builder','repair','planner')),
-    provider      TEXT NOT NULL DEFAULT 'claude',
-    parent_run    INTEGER REFERENCES run(id),
-    session_id    TEXT,
-    base_revision TEXT,
-    branch        TEXT NOT NULL,
-    worktree      TEXT NOT NULL,
-    model         TEXT,
-    phase         TEXT,
-    outcome       TEXT CHECK (outcome IN ('built','failed','refused','parked','no-change')),
-    reason        TEXT,
-    committed     INTEGER,
-    started_at    TEXT NOT NULL,
-    finished_at   TEXT,
-    provider_started_at TEXT,
-    tokens_in     INTEGER,
-    tokens_out    INTEGER,
-    cost_usd      REAL,
-    usage_json    TEXT,
-    head_revision TEXT,
-    handoff       TEXT
-  )`;
-}
-
-const V4_RUN_COLUMNS = [
-  "id", "task_ref", "lease_id", "runner", "role", "provider", "parent_run", "session_id",
-  "base_revision", "branch", "worktree", "model", "phase", "outcome", "reason",
-  "committed", "started_at", "finished_at", "provider_started_at", "tokens_in",
-  "tokens_out", "cost_usd", "usage_json", "head_revision", "handoff",
-];
-
-/**
- * The v25 run shape: outcome admits 'interrupted' and the attended
- * authorization stamp arrives. The column list is the FULL v24 set —
- * this rebuild runs after every addColumn in migrate(), so the only
- * pre-v25 shape it ever sees carries all of them, and the intersection
- * copy tolerates an interrupted earlier migration exactly like v4's.
- */
-function V25_RUN_DDL(name: string): string {
-  return `CREATE TABLE ${name} (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-    lease_id      TEXT NOT NULL,
-    runner        TEXT NOT NULL,
-    scope_digest     TEXT,
-    profile_digest   TEXT,
-    provider_version TEXT,
-    role          TEXT NOT NULL DEFAULT 'builder' CHECK (role IN ('builder','repair','planner')),
-    provider      TEXT NOT NULL DEFAULT 'claude',
-    parent_run    INTEGER REFERENCES run(id),
-    session_id    TEXT,
-    base_revision TEXT,
-    branch        TEXT NOT NULL,
-    worktree      TEXT NOT NULL,
-    model         TEXT,
-    phase         TEXT,
-    contestant    INTEGER REFERENCES contestant(id),
-    outcome       TEXT CHECK (outcome IN ('built','failed','refused','parked','no-change','interrupted')),
-    reason        TEXT,
-    committed     INTEGER,
-    attended_authorization TEXT REFERENCES attended_authorization(id),
-    started_at    TEXT NOT NULL,
-    finished_at   TEXT,
-    provider_started_at TEXT,
-    tokens_in     INTEGER,
-    tokens_out    INTEGER,
-    cost_usd      REAL,
-    usage_json    TEXT,
-    head_revision TEXT,
-    handoff       TEXT
-  )`;
-}
-
-const V25_RUN_COLUMNS = [
-  "id", "task_ref", "lease_id", "runner", "scope_digest", "profile_digest",
-  "provider_version", "role", "provider", "parent_run", "session_id",
-  "base_revision", "branch", "worktree", "model", "phase", "contestant",
-  "outcome", "reason", "committed", "attended_authorization", "started_at",
-  "finished_at", "provider_started_at", "tokens_in", "tokens_out", "cost_usd",
-  "usage_json", "head_revision", "handoff",
-];
-
-/**
- * v25: the decision table sheds its one-decision-per-run UNIQUE (a held
- * session parks, is answered, and parks again — many decisions, one run)
- * and gains the held-session linkage columns. Recognized exactly: the only
- * pre-v25 shape is rebuildDecisionVia's output (or the fresh pre-v25
- * SCHEMA, which is byte-compatible on the recognizer fragments); anything
- * else refuses loudly. The one-unresolved-per-run rule moves to a partial
- * unique index in openStore's post-migration block.
- */
-function rebuildDecisionForV25(db: Database): void {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'decision'")
-    .get();
-  if (row === undefined) return;
-  const ddl = String(row["sql"]);
-  if (ddl.includes("delivered_turn")) return;
-  if (!ddl.includes("UNIQUE REFERENCES run(id)")) {
-    throw new Error(
-      "the decision table's DDL is not a shape this migration knows — refusing to rebuild it",
-    );
-  }
-
-  const present = new Set(
-    db.prepare("PRAGMA table_info(decision)").all().map(one => String(one["name"])),
-  );
-  const target = [
-    "id", "run", "urgency", "state", "recap", "question", "options",
-    "recommendation", "assignee", "deadline", "created_at", "answered_at",
-    "answered_by", "contestant", "closed_reason", "answered_via", "choice", "note",
-  ];
-  const carried = target.filter(column => present.has(column));
-  const names = carried.join(", ");
-
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(
-        `CREATE TABLE decision_next (
-           id             INTEGER PRIMARY KEY AUTOINCREMENT,
-           run            INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-           urgency        TEXT NOT NULL CHECK (urgency IN ('blocking')),
-           state          TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','expired','answered')),
-           recap          TEXT NOT NULL,
-           question       TEXT NOT NULL,
-           options        TEXT NOT NULL,
-           recommendation TEXT NOT NULL,
-           assignee       TEXT,
-           deadline       TEXT,
-           created_at     TEXT NOT NULL,
-           answered_at    TEXT,
-           answered_by    TEXT,
-           contestant     INTEGER REFERENCES contestant(id),
-           closed_reason  TEXT CHECK (closed_reason IN ('excluded')),
-           answered_via   TEXT CHECK (answered_via IN ('cli','web','telegram')),
-           choice         TEXT,
-           note           TEXT,
-           session_turn   INTEGER REFERENCES session_turn(id),
-           delivered_turn INTEGER REFERENCES session_turn(id)
-         )`,
-      );
-      db.exec(`INSERT INTO decision_next (${names}) SELECT ${names} FROM decision`);
-      db.exec("DROP TABLE decision");
-      db.exec("ALTER TABLE decision_next RENAME TO decision");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) {
-        throw new Error(`decision rebuild left ${broken.length} dangling foreign key(s)`);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-/**
- * One v4 CHECK widening: recognized exactly, refused otherwise. The copy
- * moves the intersection of the target's columns and the columns actually
- * present, so an interrupted earlier migration cannot lose data.
- */
-function rebuildForV4(
-  db: Database,
-  table: string,
-  oldFragment: string,
-  newFragment: string,
-  targetDDL: string,
-  targetColumns: readonly string[],
-): void {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(table);
-  if (row === undefined) return;
-  const ddl = String(row["sql"]);
-  if (ddl.includes(newFragment)) return;
-  if (!ddl.includes(oldFragment)) {
-    throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to rebuild it`);
-  }
-
-  const present = new Set(
-    db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"])),
-  );
-  const carried = targetColumns.filter(column => present.has(column));
-  const names = carried.join(", ");
-
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // The AUTOINCREMENT bookkeeping (the v51 rebuildExact discipline,
-      // applied here for v52's hold widening): a drop-and-rename moves or
-      // mints the table's sqlite_sequence row; the rows that stood before
-      // are restored in their order and with their counters, and a row
-      // the copy minted for a table that had none is removed again.
-      const sequenceBefore = tableExists(db, "sqlite_sequence")
-        ? (db.prepare("SELECT name, seq FROM sqlite_sequence ORDER BY rowid").all() as { name: string; seq: number | bigint }[])
-        : [];
-      db.exec(targetDDL);
-      db.exec(`INSERT INTO ${table}_next (${names}) SELECT ${names} FROM ${table}`);
-      db.exec(`DROP TABLE ${table}`);
-      db.exec(`ALTER TABLE ${table}_next RENAME TO ${table}`);
-      if (tableExists(db, "sqlite_sequence")) {
-        if (sequenceBefore.some(row => row.name === table)) {
-          db.exec("DELETE FROM sqlite_sequence");
-          const restore = db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)");
-          for (const row of sequenceBefore) restore.run(row.name, typeof row.seq === "bigint" ? row.seq : BigInt(row.seq));
-        } else {
-          db.prepare("DELETE FROM sqlite_sequence WHERE name = ?").run(table);
-        }
-      }
-      if (table === "hold") db.exec("CREATE INDEX IF NOT EXISTS hold_by_task ON hold (task_ref)");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) {
-        throw new Error(`${table} rebuild left ${broken.length} dangling foreign key(s)`);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-/**
- * v3: decision.answered_via admits 'telegram'. Same copy-rename recipe as
- * rebuild(), but the detection is exact: only the two DDL shapes this
- * project has ever written are recognized, and anything else refuses loudly
- * — a substring guess against somebody's hand-edited schema is how a
- * migration eats a database.
- */
-function rebuildDecisionVia(db: Database): void {
-  if (isSlackAudit(db, "decision")) return;
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'decision'")
-    .get();
-  if (row === undefined) return;
-  const ddl = String(row["sql"]);
-  if (ddl.includes("'cli','web','telegram'")) return;
-  if (!ddl.includes("'cli','web'")) {
-    throw new Error(
-      "the decision table's DDL is not a shape this migration knows — refusing to rebuild it",
-    );
-  }
-
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(
-        `CREATE TABLE decision_next (
-           id             INTEGER PRIMARY KEY AUTOINCREMENT,
-           run            INTEGER NOT NULL UNIQUE REFERENCES run(id) ON DELETE CASCADE,
-           urgency        TEXT NOT NULL CHECK (urgency IN ('blocking')),
-           state          TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','expired','answered')),
-           recap          TEXT NOT NULL,
-           question       TEXT NOT NULL,
-           options        TEXT NOT NULL,
-           recommendation TEXT NOT NULL,
-           assignee       TEXT,
-           deadline       TEXT,
-           created_at     TEXT NOT NULL,
-           answered_at    TEXT,
-           answered_by    TEXT,
-           answered_via   TEXT CHECK (answered_via IN ('cli','web','telegram')),
-           choice         TEXT,
-           note           TEXT
-         )`,
-      );
-      db.exec(
-        `INSERT INTO decision_next (id, run, urgency, state, recap, question, options,
-                                    recommendation, assignee, deadline, created_at,
-                                    answered_at, answered_by, answered_via, choice, note)
-         SELECT id, run, urgency, state, recap, question, options,
-                recommendation, assignee, deadline, created_at,
-                answered_at, answered_by, answered_via, choice, note FROM decision`,
-      );
-      db.exec("DROP TABLE decision");
-      db.exec("ALTER TABLE decision_next RENAME TO decision");
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) {
-        throw new Error(`decision rebuild left ${broken.length} dangling foreign key(s)`);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
-}
-
-/**
- * The tables whose shape changed, not merely grew.
- *
- * `run`'s outcome CHECK had to admit 'parked' and `hold` had to move its
- * primary key, and SQLite's ALTER can do neither — so this is the manual's
- * copy-rename recipe: build the new table, move the rows, drop the old, take
- * its name. Detected by column presence, like `addColumn`, so it runs once
- * per database ever and is a no-op on a fresh file whose SCHEMA already has
- * the new shape.
- *
- * Every fresh-`:memory:` test passes without this function existing; the
- * first park against a real M2 database is what it exists for.
- */
-function rebuild(db: Database): void {
-  const oldHold = tableExists(db, "hold") && !hasColumn(db, "hold", "owner_kind");
-  const oldRun = tableExists(db, "run") && !hasColumn(db, "run", "role");
-  if (!oldHold && !oldRun) return;
-
-  // Foreign keys off so `run` can be dropped while decision/artifact rows
-  // name it — and a PRAGMA is a no-op inside a transaction, so it brackets
-  // one rather than living in it. The check at the end proves the swap left
-  // every reference intact before anything commits.
-  db.exec("PRAGMA foreign_keys = OFF");
-  try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      if (oldHold) {
-        db.exec(
-          `CREATE TABLE hold_next (
-             id         INTEGER PRIMARY KEY AUTOINCREMENT,
-             task_ref   INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-             owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff')),
-             owner_id   TEXT NOT NULL,
-             reason     TEXT NOT NULL,
-             until      TEXT,
-             held_at    TEXT NOT NULL,
-             UNIQUE (owner_kind, owner_id)
-           )`,
-        );
-        // Every pre-M3 hold was placed by a person; ownership records that.
-        db.exec(
-          `INSERT INTO hold_next (task_ref, owner_kind, owner_id, reason, until, held_at)
-           SELECT task_ref, 'operator', CAST(task_ref AS TEXT), reason, until, held_at FROM hold`,
-        );
-        db.exec("DROP TABLE hold");
-        db.exec("ALTER TABLE hold_next RENAME TO hold");
-        db.exec("CREATE INDEX IF NOT EXISTS hold_by_task ON hold (task_ref)");
-      }
-      if (oldRun) {
-        // Straight to the newest shape: an M2 database does not stop at v3
-        // on its way here.
-        db.exec(V4_RUN_DDL("run_next"));
-        db.exec(
-          `INSERT INTO run_next (id, task_ref, lease_id, runner, branch, worktree, model,
-                                 outcome, reason, committed, started_at, finished_at)
-           SELECT id, task_ref, lease_id, runner, branch, worktree, model,
-                  outcome, reason, committed, started_at, finished_at FROM run`,
-        );
-        db.exec("DROP TABLE run");
-        db.exec("ALTER TABLE run_next RENAME TO run");
-      }
-      const broken = db.prepare("PRAGMA foreign_key_check").all();
-      if (broken.length > 0) {
-        throw new Error(`schema rebuild left ${broken.length} dangling foreign key(s)`);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
 }
 
 /**
@@ -7866,6 +5158,80 @@ function moveRoutinesToFlows(db: Database, now: Date): void {
     addTrigger.run(flow, JSON.stringify({ kind: "schedule", schedule: String(row["schedule"]), title: name, description: null, zone: "build", order }), on ? "active" : "paused",
       text(row["next_fire_at"]), last === undefined ? null : String(last["created_at"]), lastOutcome, by, made, changed);
   }
+}
+
+/**
+ * v117 (D5): one AI concept, the lead. The mate's tables become the lead's and the teammates' become its subagents'
+ * (V117_RENAMED_TABLES), their rows' teammate column becomes subagent (V117_RENAMED_COLUMNS), each index takes its
+ * table's new name, and the internal kinds that said 'teammate' say
+ * 'subagent' (V117_KINDS; their CHECKs first, by SQLite's documented procedure for changing a constraint in place). It
+ * runs once, in one transaction, before every older step (which all speak today's names): SQLite's own RENAME carries
+ * every row, id, foreign key and trigger whole. A database with a renamed table under both names is a shape this build
+ * cannot name, and is refused; a rename that leaves a row pointing nowhere it didn't before rolls back.
+ */
+function renameForV117(db: Database): void {
+  const tables = Object.entries(V117_RENAMED_TABLES).filter(([old]) => tableExists(db, old));
+  const renamedIndex = (name: string) => /^mate_turn_(?!evidence)/.test(name) ? name : name.replace(/^mate_/, "lead_").replace(/^teammate(?=_|$)/, "subagent");
+  const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL").all() as { name: string }[])
+    .map(row => row.name).filter(name => renamedIndex(name) !== name);
+  const ddlOf = (table: string) => String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.["sql"] ?? "");
+  const kindTables = ["flow_step_run", "budget", "subagent_memory"].filter(table => /'teammate'/.test(ddlOf(presentTable(db, table))));
+  const columns = V117_RENAMED_COLUMNS.filter(([table, from]) => tableExists(db, presentTable(db, table)) && hasColumn(db, presentTable(db, table), from));
+  const kinds = V117_KINDS.filter(([table, column]) => tableExists(db, presentTable(db, table)) && hasColumn(db, presentTable(db, table), column)
+    && db.prepare(`SELECT 1 FROM "${presentTable(db, table)}" WHERE "${column}" = 'teammate' LIMIT 1`).get() !== undefined);
+  if (tables.length === 0 && indexes.length === 0 && kindTables.length === 0 && columns.length === 0 && kinds.length === 0) return;
+  for (const [old, now] of tables) if (tableExists(db, now)) throw new Error(`both ${old} and ${now} are here; refusing to merge them`);
+  // Rows already pointing nowhere are the install's own (by today's names, orphanKey); only ones the renames make refuse.
+  const orphans = () => new Set(db.prepare("PRAGMA foreign_key_check").all().map(orphanKey));
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("PRAGMA legacy_alter_table = OFF");
+  try {
+    const before = orphans();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const [old, now] of tables) db.exec(`ALTER TABLE "${old}" RENAME TO "${now}"`);
+      for (const [table, from, to] of V117_RENAMED_COLUMNS) {
+        if (tableExists(db, table) && hasColumn(db, table, from) && !hasColumn(db, table, to)) db.exec(`ALTER TABLE "${table}" RENAME COLUMN "${from}" TO "${to}"`);
+      }
+      // An index keeps its definition (RENAME has already pointed it at the new names) under its table's new name.
+      for (const name of indexes) {
+        const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)?.["sql"] ?? "");
+        const renamed = renamedIndex(name);
+        db.exec(`DROP INDEX "${name.replace(/"/g, '""')}"`);
+        if (sql !== "" && db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(renamed) === undefined) {
+          db.exec(sql.replace(/^(\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:"[^"]+"|[A-Za-z0-9_]+)/i, `$1"${renamed}"`));
+        }
+      }
+      if (kindTables.length > 0) {
+        // The CHECKs that name 'teammate' name 'subagent' instead, then the rows move to it. Node 24's SQLite opens in
+        // defensive mode, which forbids this documented procedure; it is lifted for the rewrite only (as v115 does).
+        const version = Number(db.prepare("PRAGMA schema_version").get()?.["schema_version"]);
+        const defensive = (db as unknown as { enableDefensive?: (active: boolean) => void }).enableDefensive?.bind(db);
+        defensive?.(false);
+        db.exec("PRAGMA writable_schema = ON");
+        try {
+          const rewrite = db.prepare("UPDATE sqlite_master SET sql = replace(sql, ?, ?) WHERE type = 'table' AND name = ?");
+          for (const table of kindTables) rewrite.run("'teammate'", "'subagent'", table);
+          db.exec(`PRAGMA schema_version = ${version + 1}`);
+        } finally {
+          db.exec("PRAGMA writable_schema = OFF");
+          defensive?.(true);
+        }
+      }
+      for (const [table, column] of V117_KINDS) {
+        if (tableExists(db, table) && hasColumn(db, table, column)) db.prepare(`UPDATE "${table}" SET "${column}" = 'subagent' WHERE "${column}" = 'teammate'`).run();
+      }
+      if ([...orphans()].some(row => !before.has(row))) throw new Error("foreign keys did not survive the v117 renames");
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+  const check = db.prepare("PRAGMA integrity_check").all().map(row => String(row["integrity_check"]));
+  if (check.length !== 1 || check[0] !== "ok") throw new Error(`the v117 renames left the database damaged (${check.slice(0, 3).join("; ")})`);
 }
 
 function migrateToV115(db: Database): void {
@@ -8166,6 +5532,20 @@ export function openStoreReadOnly(file: string): Store | null {
   }
 }
 
+/**
+ * Loaded through `createRequire` rather than a top-level import so that the
+ * cost — and the experimental warning — falls only on a command that actually
+ * opens the database. `import()` would work too, but it would make opening the
+ * store async for every caller in order to save nothing.
+ *
+ * Node prints `ExperimentalWarning: SQLite is an experimental feature` to
+ * stderr the first time this runs. It is left alone: an earlier version
+ * filtered it by swapping the process-wide `warning` listeners, which turned
+ * every `process.once("warning")` anyone else had registered into a permanent
+ * one and re-emitted the rest in a format Node does not use. Hiding one line
+ * of stderr is not worth breaking a global for. The right fix belongs in the
+ * launcher — `--disable-warning=ExperimentalWarning` — not in a library.
+ */
 function defaultConnect(file: string): Database {
   const require = createRequire(import.meta.url);
   const { DatabaseSync } = require("node:sqlite") as {
@@ -9910,7 +7290,7 @@ export class Store {
           scope.candidate ?? null,
         );
       // Who wrote THIS text (mate arc, ruling 2): set per write, so a human
-      // rewrite clears the mate's mark and a mate rewrite sets it.
+      // rewrite clears the lead's mark and a mate rewrite sets it.
       this.db.prepare("UPDATE task_scope SET proposed_via = ? WHERE task_id = ?").run(options.proposedVia ?? null, scope.taskId);
       return null;
     }));
@@ -9959,19 +7339,19 @@ export class Store {
             .get(BUILT_IN, taskId);
           if (filedByCoordinator !== undefined) return false;
           // THE MATE QUARANTINE (mate arc, ruling 2): a scope a confirmed
-          // mate proposal wrote is model-authored text; mode coverage never
+          // lead proposal wrote is model-authored text; mode coverage never
           // seals it. Only the password ceremony — which shows the operator
           // every word — approves it.
-          const writtenByMate = this.db
+          const writtenByLead = this.db
             .prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND proposed_via IN ('mate','coordinator','scout')")
             .get(taskId);
-          if (writtenByMate !== undefined) return false;
+          if (writtenByLead !== undefined) return false;
         }
         // SEPARATION OF DUTIES (v102), enforced in the primitive so no road
         // around it exists: a project's rules can refuse the requester, and
         // protected work seals only once two people approved these exact
         // bytes (the ceremony records each vote first) — never on a mode,
-        // a schedule or an AI teammate's word.
+        // a schedule or a subagent's word.
         const kind: ApproverKind = approverKind ?? (basis !== undefined ? "mode" : by.endsWith(" (AI)") ? "ai" : "person");
         if (this.approvalGate(taskId, by, kind).verdict !== "seal") return false;
         // Sprint 8: the organisation policy, on every road that seals (a person's yes says why first).
@@ -10401,12 +7781,12 @@ export class Store {
         this.recordAction({ at: stamp, actor: by, repo: null, taskId: null, runId: null, action: `coordinator revoked: ${String(row["name"])}`, outcome: "revoked", source: "access", detail: `made by ${approver}` });
       }
     }
-    // The mate (ruling 10; slice-2 review finding 1): a credential rotation
+    // The lead (ruling 10; slice-2 review finding 1): a credential rotation
     // or a revocation ends every session the old standing minted, its live
     // turns (charged whole), and its thread with every proposal in it.
-    this.failLiveMateTurnsFor(approver, by === "credential-rotation" ? "rotated" : "revoked", now);
-    this.endMateSessionsFor(approver, by, now);
-    this.closeMateThreadsFor(approver, now);
+    this.failLiveLeadTurnsFor(approver, by === "credential-rotation" ? "rotated" : "revoked", now);
+    this.endLeadSessionsFor(approver, by, now);
+    this.closeLeadThreadsFor(approver, now);
     // Every chat app's pairing is derived authority: each of this person's ends, with everything its chat could
     // still do, and no code they minted still opens a door.
     for (const provider of CHAT_PROVIDERS) {
@@ -13141,7 +10521,7 @@ export class Store {
       child: { id?: string; title: string; repair: string };
       /** Comments to consume, or null when the brief has no comment batch (CI / criterion repair). */
       commentIds: readonly number[] | null;
-      /** v102: who asked for this revision (a person, an AI teammate's "Name (AI)", or none for machine repairs): its filer. */
+      /** v102: who asked for this revision (a person, a subagent's "Name (AI)", or none for machine repairs): its filer. */
       requestedBy?: string | null;
       /** Fresh mode filing coverage, re-proved by the caller INSIDE this
        * transaction (never carried across one): its budget default may only
@@ -15419,14 +12799,14 @@ export class Store {
         .get(args.credentialKey);
       if (latched !== undefined) return { ok: false as const, reason: "latched" as const };
       // v105: a monthly budget this person's spend counts toward, used up (a subscription chat costs nothing extra).
-      if (this.budgetGate(now)({ project: null, person: args.approver, teammate: null, agents: this.agentsFor([args.provider]) }).over !== null) return { ok: false as const, reason: "monthly-budget" as const };
+      if (this.budgetGate(now)({ project: null, person: args.approver, subagent: null, agents: this.agentsFor([args.provider]) }).over !== null) return { ok: false as const, reason: "monthly-budget" as const };
       const live = this.db
         .prepare("SELECT 1 AS hit FROM chat_turn WHERE approver = ? AND state IN ('queued','running') LIMIT 1")
         .get(args.approver);
-      const liveMate = this.db
+      const liveLead = this.db
         .prepare("SELECT 1 AS hit FROM mate_turn WHERE approver = ? AND state IN ('queued','running') LIMIT 1")
         .get(args.approver);
-      if (live !== undefined || liveMate !== undefined) return { ok: false as const, reason: "concurrent" as const };
+      if (live !== undefined || liveLead !== undefined) return { ok: false as const, reason: "concurrent" as const };
       if (this.chatTurnsToday(args.approver, now) >= args.dailyTurns) return { ok: false as const, reason: "daily-cap" as const };
       if (this.chatWeeklySpendMicrousd(args.credentialKey, now) + args.reservedMicrousd > args.weeklyCeilingMicrousd) {
         return { ok: false as const, reason: "over-budget" as const };
@@ -15542,13 +12922,13 @@ export class Store {
    * where not — the same arithmetic the admission transaction uses. */
   chatWeeklySpendMicrousd(credentialKey: string, now: Date): number {
     const since7 = new Date(now.getTime() - 7 * 24 * 3_600_000).toISOString();
-    const liveMate = this.db
+    const liveLead = this.db
       .prepare("SELECT COALESCE(SUM(reserved_microusd), 0) AS n FROM mate_turn WHERE credential_key = ? AND state IN ('queued','running') AND created_at >= ?")
       .get(credentialKey, since7);
-    const settledMate = this.db
+    const settledLead = this.db
       .prepare("SELECT COALESCE(SUM(settled_microusd), 0) AS n FROM mate_turn WHERE credential_key = ? AND state IN ('answered','failed') AND created_at >= ?")
       .get(credentialKey, since7);
-    return this.chatOnlyWeeklySpendMicrousd(credentialKey, now) + Number(liveMate?.["n"] ?? 0) + Number(settledMate?.["n"] ?? 0);
+    return this.chatOnlyWeeklySpendMicrousd(credentialKey, now) + Number(liveLead?.["n"] ?? 0) + Number(settledLead?.["n"] ?? 0);
   }
 
   private chatOnlyWeeklySpendMicrousd(credentialKey: string, now: Date): number {
@@ -15562,7 +12942,7 @@ export class Store {
     return Number(row?.["spent"] ?? 0);
   }
 
-  /** The day's turns: fleet chat turns plus mate turns — a mate turn is
+  /** The day's turns: fleet chat turns plus lead turns — a lead turn is
    * one turn however many steps it took (slice-1 review, finding 11). */
   chatTurnsToday(approver: string, now: Date): number {
     const dayStart = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
@@ -16979,7 +14359,7 @@ export class Store {
     return approvalRefusal(policy, profiles, legs);
   }
 
-  /** Why the policy stops an agent on a provider and model now, or null (chats, teammates, flow steps). */
+  /** Why the policy stops an agent on a provider and model now, or null (chats, subagents, flow steps). */
   agentPolicyRefusal(provider: string, model: string | null): string | null {
     return agentRefusal(this.orgPolicy(), provider, model);
   }
@@ -17128,7 +14508,7 @@ export class Store {
    * it runs on, billed how), the hard-stop budget that holds it, or none. Budgets are dollars: work that runs only on
    * plans passes; API work waits when a covering budget is used up, or when it can't be priced at all (never free).
    * Built once and asked many times; the month's spend behind it is cached for a few seconds. */
-  budgetGate(now: Date): (work: { project: string | null; person: string | null; teammate: number | null; agents?: readonly BudgetAgent[] }) => BudgetHold {
+  budgetGate(now: Date): (work: { project: string | null; person: string | null; subagent: number | null; agents?: readonly BudgetAgent[] }) => BudgetHold {
     const none: BudgetHold = { over: null, why: null, unpricedProvider: null, remainingMicrousd: null };
     const hard = this.budgets().filter(one => one.hardStop);
     if (hard.length === 0) return () => none;
@@ -17137,7 +14517,7 @@ export class Store {
     return work => {
       const keyed = work.agents?.filter(agent => agent.billing === "api-key");
       if (keyed !== undefined && keyed.length === 0) return none;
-      const item: SpendItem = { project: work.project, person: work.person, teammate: work.teammate, kind: "run", at: "", microusd: 0, source: "reported", provider: "", model: null, tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: null };
+      const item: SpendItem = { project: work.project, person: work.person, subagent: work.subagent, kind: "run", at: "", microusd: 0, source: "reported", provider: "", model: null, tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: null };
       const mine = states.filter(budget => countsToward(item, budget));
       if (mine.length === 0) return none;
       const remaining = Math.min(...mine.map(budget => budget.limitMicrousd - budget.spentMicrousd));
@@ -17182,11 +14562,11 @@ export class Store {
   }
 
   /** What a task's new work counts toward: its project, its filer (a person, or the person behind a coordinator), and
-   * the teammate that filed it. A revision (an automatic repair included) counts as its source task's. */
-  budgetSubject(taskRef: number): { project: string | null; person: string | null; teammate: number | null } {
+   * the subagent that filed it. A revision (an automatic repair included) counts as its source task's. */
+  budgetSubject(taskRef: number): { project: string | null; person: string | null; subagent: number | null } {
     const filer = filersOf(this.db)(taskRef);
     return { project: filer.repo, person: (filer.kind === "person" || filer.kind === "coordinator") && filer.filedBy !== null ? filer.filedBy : null,
-      teammate: teammateFilers(this.db)(filer.repo, filer.filedBy, filer.kind) };
+      subagent: subagentFilers(this.db)(filer.repo, filer.filedBy, filer.kind) };
   }
 
   /**
@@ -18334,7 +15714,7 @@ export class Store {
   /**
    * Every live binding for a bot, oldest first — and only while each approver's credential generation still matches.
    * A rotation that somehow missed the sweep reads as no binding at all, which is the failure direction that fails
-   * closed. Several teammates may each hold one (v72); nothing here ranks them.
+   * closed. Several subagents may each hold one (v72); nothing here ranks them.
    */
   liveTelegramBindings(botId: string): TelegramBinding[] {
     return this.telegramChat().liveBindings(botId).map(telegramBindingOf);
@@ -18359,7 +15739,7 @@ export class Store {
   }
 
   /** Revoke every live binding one person holds with a bot, and everything
-   * those chats could still do. Teammates' bindings are untouched. */
+   * those chats could still do. Subagents' bindings are untouched. */
   unpairTelegram(botId: string, by: string, now: Date): boolean {
     return this.transact(() => {
       const chat = this.telegramChat();
@@ -18431,7 +15811,7 @@ export class Store {
     this.retireTelegramFlowVisit(card, entry, now);
   }
 
-  // ---- v93: a teammate's question on Telegram ------------------------------------------
+  // ---- v93: a subagent's question on Telegram ------------------------------------------
 
   createTelegramQuestionActions(...args: Parameters<ChatMessages["createQuestionActions"]>): ReturnType<ChatMessages["createQuestionActions"]> { return this.telegramChat().createQuestionActions(...args); }
 
@@ -19062,23 +16442,23 @@ export class Store {
       }));
   }
 
-  // ---- the mate (v32) --------------------------------------------------------
+  // ---- the lead (v32) --------------------------------------------------------
 
-  /** Delegated chat spend, signed once: the row every mate turn debits. */
-  mintMateSession(
+  /** Delegated chat spend, signed once: the row every lead turn debits. */
+  mintLeadSession(
     args: { approver: string; approverGeneration: number; credentialKey: string; ceilingMicrousd: number; ceilingDigest: string; termsDigest: string },
     now: Date,
   ): number {
     return this.transact(() => {
       // One live session per approver: minting ends the previous one and
       // fences any turn still in flight under it (slice-2 review, finding 7).
-      this.failLiveMateTurnsFor(args.approver, "superseded", now, true);
+      this.failLiveLeadTurnsFor(args.approver, "superseded", now, true);
       this.db
-        .prepare("UPDATE mate_session SET ended_at = ?, ended_by = ? WHERE approver = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_mate_session tm WHERE tm.session=mate_session.id)")
+        .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE approver = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_mate_session tm WHERE tm.session=lead_session.id)")
         .run(now.toISOString(), args.approver, args.approver);
       const inserted = this.db
         .prepare(
-          `INSERT INTO mate_session (approver, approver_generation, credential_key, ceiling_microusd, ceiling_digest, terms_digest, minted_at)
+          `INSERT INTO lead_session (approver, approver_generation, credential_key, ceiling_microusd, ceiling_digest, terms_digest, minted_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(args.approver, args.approverGeneration, args.credentialKey, args.ceilingMicrousd, args.ceilingDigest, args.termsDigest, now.toISOString());
@@ -19093,9 +16473,9 @@ export class Store {
       const existing = this.teamMateSession(args.approver, args.thread);
       if (existing !== null) {
         if (this.db.prepare("SELECT 1 FROM mate_turn WHERE session=? AND state IN ('queued','running')").get(existing.id)) throw new Error("Stop the active conversation turn before renewing its session.");
-        this.endMateSession(existing.id, args.approver, now);
+        this.endLeadSession(existing.id, args.approver, now);
       }
-      const row = this.db.prepare("INSERT INTO mate_session(approver,approver_generation,credential_key,ceiling_microusd,ceiling_digest,terms_digest,minted_at) VALUES(?,?,?,?,?,?,?)")
+      const row = this.db.prepare("INSERT INTO lead_session(approver,approver_generation,credential_key,ceiling_microusd,ceiling_digest,terms_digest,minted_at) VALUES(?,?,?,?,?,?,?)")
         .run(args.approver,args.approverGeneration,args.credentialKey,args.ceilingMicrousd,args.ceilingDigest,args.termsDigest,now.toISOString());
       const id = Number(row.lastInsertRowid);
       this.db.prepare("INSERT INTO team_mate_session(session,thread) VALUES(?,?)").run(id,args.thread);
@@ -19103,14 +16483,14 @@ export class Store {
     });
   }
 
-  teamMateSession(approver: string, thread: number): MateSession | null {
-    const row = this.db.prepare("SELECT ms.* FROM mate_session ms JOIN team_mate_session tm ON tm.session=ms.id WHERE ms.approver=? AND tm.thread=? AND ms.ended_at IS NULL ORDER BY ms.id DESC LIMIT 1").get(approver,thread);
-    return row === undefined ? null : readMateSession(row);
+  teamMateSession(approver: string, thread: number): LeadSession | null {
+    const row = this.db.prepare("SELECT ms.* FROM lead_session ms JOIN team_mate_session tm ON tm.session=ms.id WHERE ms.approver=? AND tm.thread=? AND ms.ended_at IS NULL ORDER BY ms.id DESC LIMIT 1").get(approver,thread);
+    return row === undefined ? null : readLeadSession(row);
   }
 
-  openTeamMateThread(approver: string, ceilingDigest: string, now: Date): MateThread {
-    const result = this.db.prepare("INSERT INTO mate_thread(approver,ceiling_digest,opened_at) VALUES(?,?,?)").run(approver,ceilingDigest,now.toISOString());
-    return this.getMateThread(Number(result.lastInsertRowid))!;
+  openTeamMateThread(approver: string, ceilingDigest: string, now: Date): LeadThread {
+    const result = this.db.prepare("INSERT INTO lead_thread(approver,ceiling_digest,opened_at) VALUES(?,?,?)").run(approver,ceilingDigest,now.toISOString());
+    return this.getLeadThread(Number(result.lastInsertRowid))!;
   }
 
   canUseTeamMateThread(approver: string, generation: number, thread: number): boolean { return this.teamMateThreadAllows(thread, approver, generation); }
@@ -19130,29 +16510,29 @@ export class Store {
   }
 
   /** The live session — explicitly ended or still active. Exhaustion is the caller's arithmetic. */
-  activeMateSession(approver: string): MateSession | null {
+  activeLeadSession(approver: string): LeadSession | null {
     const row = this.db
-      .prepare("SELECT * FROM mate_session WHERE approver = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_mate_session tm WHERE tm.session=mate_session.id) ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT * FROM lead_session WHERE approver = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_mate_session tm WHERE tm.session=lead_session.id) ORDER BY id DESC LIMIT 1")
       .get(approver);
-    return row === undefined ? null : readMateSession(row);
+    return row === undefined ? null : readLeadSession(row);
   }
 
-  getMateSession(id: number): MateSession | null {
-    const row = this.db.prepare("SELECT * FROM mate_session WHERE id = ?").get(id);
-    return row === undefined ? null : readMateSession(row);
+  getLeadSession(id: number): LeadSession | null {
+    const row = this.db.prepare("SELECT * FROM lead_session WHERE id = ?").get(id);
+    return row === undefined ? null : readLeadSession(row);
   }
 
-  endMateSession(id: number, by: string, now: Date): boolean {
+  endLeadSession(id: number, by: string, now: Date): boolean {
     const changed = this.db
-      .prepare("UPDATE mate_session SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL")
+      .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL")
       .run(now.toISOString(), by, id);
     return Number(changed.changes) === 1;
   }
 
   /** Revocation's companion (ruling 10): an approver's standing ends every session it minted. */
-  endMateSessionsFor(approver: string, by: string, now: Date): number {
+  endLeadSessionsFor(approver: string, by: string, now: Date): number {
     const changed = this.db
-      .prepare("UPDATE mate_session SET ended_at = ?, ended_by = ? WHERE approver = ? AND ended_at IS NULL")
+      .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE approver = ? AND ended_at IS NULL")
       .run(now.toISOString(), by, approver);
     return Number(changed.changes);
   }
@@ -19160,45 +16540,45 @@ export class Store {
   /** The live thread for this approver and scope under THIS ceiling; a
    * thread under another ceiling is closed first (ruling 9) — the surface
    * says why. The lead conversation is the default scope. */
-  openMateThread(approver: string, ceilingDigest: string, now: Date, scope: MateThreadScope = LEAD_THREAD): { thread: MateThread; ceilingChanged: boolean } {
+  openLeadThread(approver: string, ceilingDigest: string, now: Date, scope: LeadThreadScope = LEAD_THREAD): { thread: LeadThread; ceilingChanged: boolean } {
     const key = scope.kind === "lead" ? null : scope.key;
     return this.transact(() => {
-      const live = this.db.prepare("SELECT * FROM mate_thread WHERE approver = ? AND scope_kind = ? AND scope_key IS ? AND closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_thread.id) ORDER BY id DESC LIMIT 1").get(approver, scope.kind, key);
+      const live = this.db.prepare("SELECT * FROM lead_thread WHERE approver = ? AND scope_kind = ? AND scope_key IS ? AND closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=lead_thread.id) ORDER BY id DESC LIMIT 1").get(approver, scope.kind, key);
       let ceilingChanged = false;
       if (live !== undefined && String(live["ceiling_digest"]) !== ceilingDigest) {
-        this.db.prepare("UPDATE mate_thread SET closed_at = ? WHERE id = ?").run(now.toISOString(), Number(live["id"]));
+        this.db.prepare("UPDATE lead_thread SET closed_at = ? WHERE id = ?").run(now.toISOString(), Number(live["id"]));
         this.db
-          .prepare("UPDATE mate_proposal SET state = 'expired', resolved_at = ? WHERE thread = ? AND state IN ('drafting','pending')")
+          .prepare("UPDATE lead_proposal SET state = 'expired', resolved_at = ? WHERE thread = ? AND state IN ('drafting','pending')")
           .run(now.toISOString(), Number(live["id"]));
         ceilingChanged = true;
       } else if (live !== undefined) {
-        return { thread: readMateThread(live), ceilingChanged: false };
+        return { thread: readLeadThread(live), ceilingChanged: false };
       }
       const inserted = this.db
-        .prepare("INSERT INTO mate_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES (?, ?, ?, ?, ?)")
+        .prepare("INSERT INTO lead_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES (?, ?, ?, ?, ?)")
         .run(approver, ceilingDigest, now.toISOString(), scope.kind, key);
-      const row = this.db.prepare("SELECT * FROM mate_thread WHERE id = ?").get(Number(inserted.lastInsertRowid));
-      return { thread: readMateThread(row as Record<string, unknown>), ceilingChanged };
+      const row = this.db.prepare("SELECT * FROM lead_thread WHERE id = ?").get(Number(inserted.lastInsertRowid));
+      return { thread: readLeadThread(row as Record<string, unknown>), ceilingChanged };
     });
   }
 
   /** The approver's live thread for one scope, read only — null when none is open. */
-  liveMateThreadFor(approver: string, scope: MateThreadScope = LEAD_THREAD): MateThread | null {
-    const row = this.db.prepare("SELECT * FROM mate_thread WHERE approver = ? AND scope_kind = ? AND scope_key IS ? AND closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_thread.id) ORDER BY id DESC LIMIT 1").get(approver, scope.kind, scope.kind === "lead" ? null : scope.key);
-    return row === undefined ? null : readMateThread(row);
+  liveLeadThreadFor(approver: string, scope: LeadThreadScope = LEAD_THREAD): LeadThread | null {
+    const row = this.db.prepare("SELECT * FROM lead_thread WHERE approver = ? AND scope_kind = ? AND scope_key IS ? AND closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=lead_thread.id) ORDER BY id DESC LIMIT 1").get(approver, scope.kind, scope.kind === "lead" ? null : scope.key);
+    return row === undefined ? null : readLeadThread(row);
   }
 
   /** The lead thread a ceiling change closed just before `current` (ruling 9),
    * read only and for display only: it never continues and never reaches the
    * model. Null when there is none, when it was ended or revoked (its text is
    * gone), or when it closed under the same ceiling. */
-  replacedLeadThread(current: MateThread): MateThread | null {
+  replacedLeadThread(current: LeadThread): LeadThread | null {
     if (current.scope.kind !== "lead") return null;
-    const row = this.db.prepare(`SELECT * FROM mate_thread WHERE approver = ? AND scope_kind = 'lead' AND scope_key IS NULL AND id < ? AND closed_at IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_thread.id) ORDER BY id DESC LIMIT 1`).get(current.approver, current.id);
+    const row = this.db.prepare(`SELECT * FROM lead_thread WHERE approver = ? AND scope_kind = 'lead' AND scope_key IS NULL AND id < ? AND closed_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=lead_thread.id) ORDER BY id DESC LIMIT 1`).get(current.approver, current.id);
     if (row === undefined || String(row["ceiling_digest"]) === current.ceilingDigest) return null;
-    const previous = readMateThread(row);
-    return this.db.prepare("SELECT 1 FROM mate_message WHERE thread = ? LIMIT 1").get(previous.id) === undefined ? null : previous;
+    const previous = readLeadThread(row);
+    return this.db.prepare("SELECT 1 FROM lead_message WHERE thread = ? LIMIT 1").get(previous.id) === undefined ? null : previous;
   }
 
   /** The task a paired chat is talking about (v78), or null for the lead conversation. */
@@ -19367,180 +16747,180 @@ export class Store {
       .run(change.cursor, change.nextAt, change.failures, change.lastOutcome, now.toISOString());
   }
 
-  // ---- v92: AI teammates ---------------------------------------------------------------
+  // ---- v92: subagents ---------------------------------------------------------------
 
-  createTeammate(mate: { repo: string; handle: string; soul: string; model: string | null; manager: string; by: string }, now: Date): number {
+  createSubagent(mate: { repo: string; handle: string; soul: string; model: string | null; manager: string; by: string }, now: Date): number {
     return this.transact(() => {
       const stamp = now.toISOString();
-      const id = Number(this.db.prepare("INSERT INTO teammate (repo, handle, state, version, soul, model, manager, created_by, created_at, updated_by, updated_at) VALUES (?, ?, 'active', 1, ?, ?, ?, ?, ?, ?, ?)")
+      const id = Number(this.db.prepare("INSERT INTO subagent (repo, handle, state, version, soul, model, manager, created_by, created_at, updated_by, updated_at) VALUES (?, ?, 'active', 1, ?, ?, ?, ?, ?, ?, ?)")
         .run(mate.repo, mate.handle, mate.soul, mate.model, mate.manager, mate.by, stamp, mate.by, stamp).lastInsertRowid);
-      this.db.prepare("INSERT INTO teammate_version (teammate, version, soul, saved_by, saved_at) VALUES (?, 1, ?, ?, ?)").run(id, mate.soul, mate.by, stamp);
+      this.db.prepare("INSERT INTO subagent_version (subagent, version, soul, saved_by, saved_at) VALUES (?, 1, ?, ?, ?)").run(id, mate.soul, mate.by, stamp);
       return id;
     });
   }
 
-  getTeammate(id: number): TeammateRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate WHERE id = ?").get(id);
-    return row === undefined ? null : readTeammateRow(row);
+  getSubagent(id: number): SubagentRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent WHERE id = ?").get(id);
+    return row === undefined ? null : readSubagentRow(row);
   }
 
-  /** The teammate a zone names in a project (paused ones too; never a removed one). */
-  teammateByHandle(repo: string, handle: string): TeammateRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate WHERE repo = ? AND handle = ? AND state <> 'removed'").get(repo, handle);
-    return row === undefined ? null : readTeammateRow(row);
+  /** The subagent a zone names in a project (paused ones too; never a removed one). */
+  subagentByHandle(repo: string, handle: string): SubagentRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent WHERE repo = ? AND handle = ? AND state <> 'removed'").get(repo, handle);
+    return row === undefined ? null : readSubagentRow(row);
   }
 
-  teammates(repos: readonly string[]): TeammateRow[] {
+  subagents(repos: readonly string[]): SubagentRow[] {
     if (repos.length === 0) return [];
-    return this.db.prepare(`SELECT * FROM teammate WHERE state <> 'removed' AND repo IN (${repos.map(() => "?").join(", ")}) ORDER BY handle`).all(...repos).map(readTeammateRow);
+    return this.db.prepare(`SELECT * FROM subagent WHERE state <> 'removed' AND repo IN (${repos.map(() => "?").join(", ")}) ORDER BY handle`).all(...repos).map(readSubagentRow);
   }
 
-  /** A new version of a teammate's soul file; false when nothing changed. */
-  saveTeammateSoul(id: number, soul: string, by: string, now: Date): boolean {
+  /** A new version of a subagent's soul file; false when nothing changed. */
+  saveSubagentSoul(id: number, soul: string, by: string, now: Date): boolean {
     return this.transact(() => {
-      const mate = this.getTeammate(id);
+      const mate = this.getSubagent(id);
       if (mate === null || mate.soul === soul) return false;
       const stamp = now.toISOString();
-      this.db.prepare("UPDATE teammate SET soul = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ?").run(soul, by, stamp, id);
-      this.db.prepare("INSERT INTO teammate_version (teammate, version, soul, saved_by, saved_at) VALUES (?, ?, ?, ?, ?)").run(id, mate.version + 1, soul, by, stamp);
+      this.db.prepare("UPDATE subagent SET soul = ?, version = version + 1, updated_by = ?, updated_at = ? WHERE id = ?").run(soul, by, stamp, id);
+      this.db.prepare("INSERT INTO subagent_version (subagent, version, soul, saved_by, saved_at) VALUES (?, ?, ?, ?, ?)").run(id, mate.version + 1, soul, by, stamp);
       return true;
     });
   }
 
-  teammateVersions(id: number): { version: number; soul: string; savedBy: string; savedAt: string }[] {
-    return this.db.prepare("SELECT * FROM teammate_version WHERE teammate = ? ORDER BY version DESC LIMIT 50").all(id).map(row => ({ version: Number(row["version"]), soul: String(row["soul"]), savedBy: String(row["saved_by"]), savedAt: String(row["saved_at"]) }));
+  subagentVersions(id: number): { version: number; soul: string; savedBy: string; savedAt: string }[] {
+    return this.db.prepare("SELECT * FROM subagent_version WHERE subagent = ? ORDER BY version DESC LIMIT 50").all(id).map(row => ({ version: Number(row["version"]), soul: String(row["soul"]), savedBy: String(row["saved_by"]), savedAt: String(row["saved_at"]) }));
   }
 
-  updateTeammate(id: number, change: { state?: TeammateRow["state"]; model?: string | null; dailyTurns?: number; manager?: string; summaryAt?: string; weeklyAt?: string }, by: string, now: Date): void {
-    const mate = this.getTeammate(id);
+  updateSubagent(id: number, change: { state?: SubagentRow["state"]; model?: string | null; dailyTurns?: number; manager?: string; summaryAt?: string; weeklyAt?: string }, by: string, now: Date): void {
+    const mate = this.getSubagent(id);
     if (mate === null) return;
-    this.db.prepare("UPDATE teammate SET state = ?, model = ?, daily_turns = ?, manager = ?, summary_at = ?, weekly_at = ?, updated_by = ?, updated_at = ? WHERE id = ?").run(
+    this.db.prepare("UPDATE subagent SET state = ?, model = ?, daily_turns = ?, manager = ?, summary_at = ?, weekly_at = ?, updated_by = ?, updated_at = ? WHERE id = ?").run(
       change.state ?? mate.state, change.model === undefined ? mate.model : change.model, change.dailyTurns ?? mate.dailyTurns, change.manager ?? mate.manager,
       change.summaryAt ?? mate.summaryAt, change.weeklyAt ?? mate.weeklyAt, by, now.toISOString(), id);
   }
 
-  addTeammateEvent(event: { teammate: number; card?: number | null; entry?: number | null; kind: TeammateEventKind; said: string; detail?: Record<string, unknown> | null; by?: string | null }, now: Date): number {
-    return Number(this.db.prepare("INSERT INTO teammate_event (teammate, card, entry, kind, said, detail_json, by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(event.teammate, event.card ?? null, event.entry ?? null, event.kind, event.said, event.detail === undefined || event.detail === null ? null : JSON.stringify(event.detail), event.by ?? null, now.toISOString()).lastInsertRowid);
+  addSubagentEvent(event: { subagent: number; card?: number | null; entry?: number | null; kind: SubagentEventKind; said: string; detail?: Record<string, unknown> | null; by?: string | null }, now: Date): number {
+    return Number(this.db.prepare("INSERT INTO subagent_event (subagent, card, entry, kind, said, detail_json, by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(event.subagent, event.card ?? null, event.entry ?? null, event.kind, event.said, event.detail === undefined || event.detail === null ? null : JSON.stringify(event.detail), event.by ?? null, now.toISOString()).lastInsertRowid);
   }
 
-  /** A teammate's log, newest first; `since` bounds it (a day's summary). */
-  teammateEvents(teammate: number, limit: number, since: string | null = null): TeammateEventRow[] {
-    return this.db.prepare(`SELECT * FROM teammate_event WHERE teammate = ? ${since === null ? "" : "AND at >= ?"} ORDER BY id DESC LIMIT ?`).all(...(since === null ? [teammate, limit] : [teammate, since, limit])).map(row => ({
-      id: Number(row["id"]), teammate: Number(row["teammate"]), card: row["card"] === null ? null : Number(row["card"]), entry: row["entry"] === null ? null : Number(row["entry"]),
-      kind: String(row["kind"]) as TeammateEventKind, said: String(row["said"]), detail: row["detail_json"] === null ? null : parseStoreColumn("teammate_event.detail_json", row["detail_json"]),
+  /** A subagent's log, newest first; `since` bounds it (a day's summary). */
+  subagentEvents(subagent: number, limit: number, since: string | null = null): SubagentEventRow[] {
+    return this.db.prepare(`SELECT * FROM subagent_event WHERE subagent = ? ${since === null ? "" : "AND at >= ?"} ORDER BY id DESC LIMIT ?`).all(...(since === null ? [subagent, limit] : [subagent, since, limit])).map(row => ({
+      id: Number(row["id"]), subagent: Number(row["subagent"]), card: row["card"] === null ? null : Number(row["card"]), entry: row["entry"] === null ? null : Number(row["entry"]),
+      kind: String(row["kind"]) as SubagentEventKind, said: String(row["said"]), detail: row["detail_json"] === null ? null : parseStoreColumn("subagent_event.detail_json", row["detail_json"]),
       by: row["by"] === null ? null : String(row["by"]), at: String(row["at"]) }));
   }
 
-  /** How many turns (decisions, handled cards, hand-offs, questions, failures, and v94 tool calls) a teammate took since a time: its daily limit. */
-  teammateTurnsSince(teammate: number, since: string): number {
-    return Number(this.db.prepare("SELECT COUNT(*) AS n FROM teammate_event WHERE teammate = ? AND at >= ? AND kind IN ('decided','handled','handed','asked','failed')").get(teammate, since)?.["n"] ?? 0)
-      + Number(this.db.prepare("SELECT COUNT(*) AS n FROM teammate_call WHERE teammate = ? AND created_at >= ?").get(teammate, since)?.["n"] ?? 0);
+  /** How many turns (decisions, handled cards, hand-offs, questions, failures, and v94 tool calls) a subagent took since a time: its daily limit. */
+  subagentTurnsSince(subagent: number, since: string): number {
+    return Number(this.db.prepare("SELECT COUNT(*) AS n FROM subagent_event WHERE subagent = ? AND at >= ? AND kind IN ('decided','handled','handed','asked','failed')").get(subagent, since)?.["n"] ?? 0)
+      + Number(this.db.prepare("SELECT COUNT(*) AS n FROM subagent_call WHERE subagent = ? AND created_at >= ?").get(subagent, since)?.["n"] ?? 0);
   }
 
   /** Ask a person about one visit of a card (v94: or to approve one tool call); null when that visit, or that call, already has its question. */
-  openTeammateQuestion(question: { teammate: number; card: number; entry: number; question: string; options: { id: string; label: string }[]; askedOf: string; toolCall?: number; suggestion?: number }, now: Date): number | null {
-    const { changes, lastInsertRowid } = this.db.prepare("INSERT OR IGNORE INTO teammate_question (teammate, card, entry, question, options_json, asked_of, state, created_at, tool_call, suggestion) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)")
-      .run(question.teammate, question.card, question.entry, question.question, JSON.stringify(question.options), question.askedOf, now.toISOString(), question.toolCall ?? null, question.suggestion ?? null);
+  openSubagentQuestion(question: { subagent: number; card: number; entry: number; question: string; options: { id: string; label: string }[]; askedOf: string; toolCall?: number; suggestion?: number }, now: Date): number | null {
+    const { changes, lastInsertRowid } = this.db.prepare("INSERT OR IGNORE INTO subagent_question (subagent, card, entry, question, options_json, asked_of, state, created_at, tool_call, suggestion) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)")
+      .run(question.subagent, question.card, question.entry, question.question, JSON.stringify(question.options), question.askedOf, now.toISOString(), question.toolCall ?? null, question.suggestion ?? null);
     return Number(changes) === 1 ? Number(lastInsertRowid) : null;
   }
 
   /** v94: the first question still open on one visit of a card: its own, or a tool call's approval. */
-  openTeammateQuestionOn(card: number, entry: number): TeammateQuestionRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_question WHERE card = ? AND entry = ? AND state = 'open' AND suggestion IS NULL ORDER BY id LIMIT 1").get(card, entry);
-    return row === undefined ? null : readTeammateQuestion(row);
+  openSubagentQuestionOn(card: number, entry: number): SubagentQuestionRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_question WHERE card = ? AND entry = ? AND state = 'open' AND suggestion IS NULL ORDER BY id LIMIT 1").get(card, entry);
+    return row === undefined ? null : readSubagentQuestion(row);
   }
 
   /** v94: the approval question of one tool call. */
-  teammateQuestionForCall(call: number): TeammateQuestionRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_question WHERE tool_call = ?").get(call);
-    return row === undefined ? null : readTeammateQuestion(row);
+  subagentQuestionForCall(call: number): SubagentQuestionRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_question WHERE tool_call = ?").get(call);
+    return row === undefined ? null : readSubagentQuestion(row);
   }
 
-  /** v96: the flow a teammate's desk is. */
-  setTeammateDesk(id: number, flow: number): void {
-    this.db.prepare("UPDATE teammate SET desk_flow = ? WHERE id = ?").run(flow, id);
+  /** v96: the flow a subagent's desk is. */
+  setSubagentDesk(id: number, flow: number): void {
+    this.db.prepare("UPDATE subagent SET desk_flow = ? WHERE id = ?").run(flow, id);
   }
 
-  // ---- v95: what a teammate remembers, and the rule changes it suggests ----------------
+  // ---- v95: what a subagent remembers, and the rule changes it suggests ----------------
 
-  addTeammateMemory(memory: { teammate: number; text: string; source: TeammateMemoryRow["source"]; card?: number | null; by: string }, now: Date): number {
+  addSubagentMemory(memory: { subagent: number; text: string; source: SubagentMemoryRow["source"]; card?: number | null; by: string }, now: Date): number {
     const stamp = now.toISOString();
-    return Number(this.db.prepare("INSERT INTO teammate_memory (teammate, text, source, card, state, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)")
-      .run(memory.teammate, memory.text, memory.source, memory.card ?? null, memory.by, stamp, memory.by, stamp).lastInsertRowid);
+    return Number(this.db.prepare("INSERT INTO subagent_memory (subagent, text, source, card, state, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)")
+      .run(memory.subagent, memory.text, memory.source, memory.card ?? null, memory.by, stamp, memory.by, stamp).lastInsertRowid);
   }
 
-  teammateMemory(id: number): TeammateMemoryRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_memory WHERE id = ? AND state = 'active'").get(id);
-    return row === undefined ? null : readTeammateMemory(row);
+  subagentMemory(id: number): SubagentMemoryRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_memory WHERE id = ? AND state = 'active'").get(id);
+    return row === undefined ? null : readSubagentMemory(row);
   }
 
-  /** What a teammate remembers now, newest first: one source, and every word of `words` (any case), when given. */
-  teammateMemories(teammate: number, options: { source?: TeammateMemoryRow["source"]; words?: readonly string[]; limit?: number } = {}): TeammateMemoryRow[] {
+  /** What a subagent remembers now, newest first: one source, and every word of `words` (any case), when given. */
+  subagentMemories(subagent: number, options: { source?: SubagentMemoryRow["source"]; words?: readonly string[]; limit?: number } = {}): SubagentMemoryRow[] {
     const words = (options.words ?? []).filter(one => one !== "").slice(0, 8);
-    return this.db.prepare(`SELECT * FROM teammate_memory WHERE teammate = ? AND state = 'active' ${options.source === undefined ? "" : "AND source = ?"} ${words.map(() => "AND instr(lower(text), ?) > 0").join(" ")} ORDER BY id DESC LIMIT ?`)
-      .all(teammate, ...(options.source === undefined ? [] : [options.source]), ...words.map(one => one.toLowerCase()), options.limit ?? 500).map(readTeammateMemory);
+    return this.db.prepare(`SELECT * FROM subagent_memory WHERE subagent = ? AND state = 'active' ${options.source === undefined ? "" : "AND source = ?"} ${words.map(() => "AND instr(lower(text), ?) > 0").join(" ")} ORDER BY id DESC LIMIT ?`)
+      .all(subagent, ...(options.source === undefined ? [] : [options.source]), ...words.map(one => one.toLowerCase()), options.limit ?? 500).map(readSubagentMemory);
   }
 
-  editTeammateMemory(id: number, text: string, by: string, now: Date): boolean {
-    return Number(this.db.prepare("UPDATE teammate_memory SET text = ?, updated_by = ?, updated_at = ? WHERE id = ? AND state = 'active'").run(text, by, now.toISOString(), id).changes) === 1;
+  editSubagentMemory(id: number, text: string, by: string, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE subagent_memory SET text = ?, updated_by = ?, updated_at = ? WHERE id = ? AND state = 'active'").run(text, by, now.toISOString(), id).changes) === 1;
   }
 
-  forgetTeammateMemory(id: number, by: string, now: Date): boolean {
-    return Number(this.db.prepare("UPDATE teammate_memory SET state = 'forgotten', updated_by = ?, updated_at = ? WHERE id = ? AND state = 'active'").run(by, now.toISOString(), id).changes) === 1;
+  forgetSubagentMemory(id: number, by: string, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE subagent_memory SET state = 'forgotten', updated_by = ?, updated_at = ? WHERE id = ? AND state = 'active'").run(by, now.toISOString(), id).changes) === 1;
   }
 
-  markTeammateMemoriesUsed(ids: readonly number[], now: Date): void {
+  markSubagentMemoriesUsed(ids: readonly number[], now: Date): void {
     if (ids.length === 0) return;
-    this.db.prepare(`UPDATE teammate_memory SET used_at = ? WHERE id IN (${ids.map(() => "?").join(", ")})`).run(now.toISOString(), ...ids);
+    this.db.prepare(`UPDATE subagent_memory SET used_at = ? WHERE id IN (${ids.map(() => "?").join(", ")})`).run(now.toISOString(), ...ids);
   }
 
-  addTeammateSuggestion(suggestion: { teammate: number; tool: string; action: string; rule: ToolRule; was: ToolRule; evidence: number[]; said: string }, now: Date): number {
-    return Number(this.db.prepare("INSERT INTO teammate_suggestion (teammate, tool, action, rule_json, was_json, evidence_json, said, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)")
-      .run(suggestion.teammate, suggestion.tool, suggestion.action, JSON.stringify(suggestion.rule), JSON.stringify(suggestion.was), JSON.stringify(suggestion.evidence), suggestion.said, now.toISOString()).lastInsertRowid);
+  addSubagentSuggestion(suggestion: { subagent: number; tool: string; action: string; rule: ToolRule; was: ToolRule; evidence: number[]; said: string }, now: Date): number {
+    return Number(this.db.prepare("INSERT INTO subagent_suggestion (subagent, tool, action, rule_json, was_json, evidence_json, said, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)")
+      .run(suggestion.subagent, suggestion.tool, suggestion.action, JSON.stringify(suggestion.rule), JSON.stringify(suggestion.was), JSON.stringify(suggestion.evidence), suggestion.said, now.toISOString()).lastInsertRowid);
   }
 
-  teammateSuggestion(id: number): TeammateSuggestionRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_suggestion WHERE id = ?").get(id);
-    return row === undefined ? null : readTeammateSuggestion(row);
+  subagentSuggestion(id: number): SubagentSuggestionRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_suggestion WHERE id = ?").get(id);
+    return row === undefined ? null : readSubagentSuggestion(row);
   }
 
-  /** A teammate's suggestions about one action, newest first. */
-  teammateSuggestionsFor(teammate: number, tool: string, action: string): TeammateSuggestionRow[] {
-    return this.db.prepare("SELECT * FROM teammate_suggestion WHERE teammate = ? AND tool = ? AND action = ? ORDER BY id DESC LIMIT 20").all(teammate, tool, action).map(readTeammateSuggestion);
+  /** A subagent's suggestions about one action, newest first. */
+  subagentSuggestionsFor(subagent: number, tool: string, action: string): SubagentSuggestionRow[] {
+    return this.db.prepare("SELECT * FROM subagent_suggestion WHERE subagent = ? AND tool = ? AND action = ? ORDER BY id DESC LIMIT 20").all(subagent, tool, action).map(readSubagentSuggestion);
   }
 
-  teammateSuggestions(teammate: number, limit = 20): TeammateSuggestionRow[] {
-    return this.db.prepare("SELECT * FROM teammate_suggestion WHERE teammate = ? ORDER BY id DESC LIMIT ?").all(teammate, limit).map(readTeammateSuggestion);
+  subagentSuggestions(subagent: number, limit = 20): SubagentSuggestionRow[] {
+    return this.db.prepare("SELECT * FROM subagent_suggestion WHERE subagent = ? ORDER BY id DESC LIMIT ?").all(subagent, limit).map(readSubagentSuggestion);
   }
 
   /** Decide a suggestion, once: false when it was already decided. */
-  decideTeammateSuggestion(id: number, state: "accepted" | "dismissed" | "stale", by: string | null, now: Date): boolean {
-    return Number(this.db.prepare("UPDATE teammate_suggestion SET state = ?, decided_by = ?, decided_at = ? WHERE id = ? AND state = 'open'").run(state, by, now.toISOString(), id).changes) === 1;
+  decideSubagentSuggestion(id: number, state: "accepted" | "dismissed" | "stale", by: string | null, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE subagent_suggestion SET state = ?, decided_by = ?, decided_at = ? WHERE id = ? AND state = 'open'").run(state, by, now.toISOString(), id).changes) === 1;
   }
 
   /** v95: the question that offers a suggestion to its manager. */
-  teammateQuestionForSuggestion(suggestion: number): TeammateQuestionRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_question WHERE suggestion = ?").get(suggestion);
-    return row === undefined ? null : readTeammateQuestion(row);
+  subagentQuestionForSuggestion(suggestion: number): SubagentQuestionRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_question WHERE suggestion = ?").get(suggestion);
+    return row === undefined ? null : readSubagentQuestion(row);
   }
 
-  // ---- v94: the tools a teammate may use, and its receipts ------------------------------
+  // ---- v94: the tools a subagent may use, and its receipts ------------------------------
 
-  teammateGrants(teammate: number): TeammateGrantRow[] {
-    return this.db.prepare("SELECT * FROM teammate_tool WHERE teammate = ? ORDER BY tool").all(teammate).map(readTeammateGrant);
+  subagentGrants(subagent: number): SubagentGrantRow[] {
+    return this.db.prepare("SELECT * FROM subagent_tool WHERE subagent = ? ORDER BY tool").all(subagent).map(readSubagentGrant);
   }
 
-  teammateGrant(teammate: number, tool: string): TeammateGrantRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_tool WHERE teammate = ? AND tool = ?").get(teammate, tool);
-    return row === undefined ? null : readTeammateGrant(row);
+  subagentGrant(subagent: number, tool: string): SubagentGrantRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_tool WHERE subagent = ? AND tool = ?").get(subagent, tool);
+    return row === undefined ? null : readSubagentGrant(row);
   }
 
   /** Grant a tool, or change what it offers and the rules: the whole row is written. `listedAt` undefined keeps it. */
-  saveTeammateGrant(grant: { teammate: number; tool: string; actions: ToolActionInfo[]; rules: Record<string, ToolRule>; listedAt?: string | null }, by: string, now: Date): void {
-    // v99: what the teammate may now do with the tool, action by action.
-    const was = this.teammateGrant(grant.teammate, grant.tool);
-    const mate = this.getTeammate(grant.teammate);
+  saveSubagentGrant(grant: { subagent: number; tool: string; actions: ToolActionInfo[]; rules: Record<string, ToolRule>; listedAt?: string | null }, by: string, now: Date): void {
+    // v99: what the subagent may now do with the tool, action by action.
+    const was = this.subagentGrant(grant.subagent, grant.tool);
+    const mate = this.getSubagent(grant.subagent);
     const words = (rule: ToolRule | undefined) => rule === undefined ? "not offered" : rule.use === "never" ? "never" : rule.use === "ask" ? "ask first"
       : rule.limit === undefined ? "do it" : `do it up to ${rule.limit.over} (${rule.limit.field})`;
     const changes = [...new Set([...Object.keys(was?.rules ?? {}), ...Object.keys(grant.rules)])]
@@ -19548,74 +16928,74 @@ export class Store {
       .map(action => `${action}: ${words(was?.rules[action])} → ${words(grant.rules[action])}`);
     if (was === null || changes.length > 0) {
       this.recordAction({ at: now.toISOString(), actor: by, repo: mate?.repo ?? null, taskId: null, runId: null, source: "policy",
-        action: `${was === null ? "tool given" : "tool rules changed"}: ${mate?.handle ?? `teammate ${grant.teammate}`} · ${grant.tool}`, outcome: was === null ? "granted" : "changed",
+        action: `${was === null ? "tool given" : "tool rules changed"}: ${mate?.handle ?? `subagent ${grant.subagent}`} · ${grant.tool}`, outcome: was === null ? "granted" : "changed",
         detail: was === null ? Object.entries(grant.rules).map(([action, rule]) => `${action}: ${words(rule)}`).join("; ") : changes.join("; ") });
     }
-    this.db.prepare(`INSERT INTO teammate_tool (teammate, tool, actions_json, rules_json, listed_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(teammate, tool) DO UPDATE SET actions_json = excluded.actions_json, rules_json = excluded.rules_json, listed_at = ${grant.listedAt === undefined ? "teammate_tool.listed_at" : "excluded.listed_at"}, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
-      .run(grant.teammate, grant.tool, JSON.stringify(grant.actions), JSON.stringify(grant.rules), grant.listedAt ?? null, by, now.toISOString());
+    this.db.prepare(`INSERT INTO subagent_tool (subagent, tool, actions_json, rules_json, listed_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(subagent, tool) DO UPDATE SET actions_json = excluded.actions_json, rules_json = excluded.rules_json, listed_at = ${grant.listedAt === undefined ? "subagent_tool.listed_at" : "excluded.listed_at"}, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+      .run(grant.subagent, grant.tool, JSON.stringify(grant.actions), JSON.stringify(grant.rules), grant.listedAt ?? null, by, now.toISOString());
   }
 
-  dropTeammateGrant(teammate: number, tool: string, by: string, now: Date): boolean {
-    const dropped = Number(this.db.prepare("DELETE FROM teammate_tool WHERE teammate = ? AND tool = ?").run(teammate, tool).changes) === 1;
-    const mate = this.getTeammate(teammate);
+  dropSubagentGrant(subagent: number, tool: string, by: string, now: Date): boolean {
+    const dropped = Number(this.db.prepare("DELETE FROM subagent_tool WHERE subagent = ? AND tool = ?").run(subagent, tool).changes) === 1;
+    const mate = this.getSubagent(subagent);
     if (dropped) this.recordAction({ at: now.toISOString(), actor: by, repo: mate?.repo ?? null, taskId: null, runId: null, source: "policy",
-      action: `tool taken away: ${mate?.handle ?? `teammate ${teammate}`} · ${tool}`, outcome: "removed" });
+      action: `tool taken away: ${mate?.handle ?? `subagent ${subagent}`} · ${tool}`, outcome: "removed" });
     return dropped;
   }
 
-  addTeammateCall(call: { teammate: number; card: number; entry: number; tool: string; action: string; input: Record<string, unknown>; rule: ToolRule["use"]; why: string; state: TeammateCallState; result?: string | null; undoOf?: number; decidedBy?: string }, now: Date): number {
+  addSubagentCall(call: { subagent: number; card: number; entry: number; tool: string; action: string; input: Record<string, unknown>; rule: ToolRule["use"]; why: string; state: SubagentCallState; result?: string | null; undoOf?: number; decidedBy?: string }, now: Date): number {
     return this.transact(() => {
-      const id = Number(this.db.prepare("INSERT INTO teammate_call (teammate, card, entry, tool, action, input_json, rule, why, state, result, created_at, done_at, undo_of, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(call.teammate, call.card, call.entry, call.tool, call.action, JSON.stringify(call.input), call.rule, call.why, call.state, call.result ?? null, now.toISOString(),
+      const id = Number(this.db.prepare("INSERT INTO subagent_call (subagent, card, entry, tool, action, input_json, rule, why, state, result, created_at, done_at, undo_of, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(call.subagent, call.card, call.entry, call.tool, call.action, JSON.stringify(call.input), call.rule, call.why, call.state, call.result ?? null, now.toISOString(),
           call.state === "refused" ? now.toISOString() : null, call.undoOf ?? null, call.decidedBy ?? null, call.decidedBy === undefined ? null : now.toISOString()).lastInsertRowid);
-      this.recordTeammateCall(id, call.decidedBy ?? null, "", call.state, `rule: ${call.rule}${call.undoOf === undefined ? "" : ` · undoes call ${call.undoOf}`}`, now);
+      this.recordSubagentCall(id, call.decidedBy ?? null, "", call.state, `rule: ${call.rule}${call.undoOf === undefined ? "" : ` · undoes call ${call.undoOf}`}`, now);
       return id;
     });
   }
 
-  /** v103: a teammate's tool call in the ledger, as the teammate (or the person who decided it), on its card's task. */
-  private recordTeammateCall(id: number, person: string | null, verb: string, outcome: string, detail: string | null, now: Date): void {
-    const row = this.db.prepare(`SELECT c.tool, c.action, m.handle, m.repo, f.task FROM teammate_call c LEFT JOIN teammate m ON m.id = c.teammate LEFT JOIN flow_card f ON f.id = c.card WHERE c.id = ?`).get(id);
+  /** v103: a subagent's tool call in the ledger, as the subagent (or the person who decided it), on its card's task. */
+  private recordSubagentCall(id: number, person: string | null, verb: string, outcome: string, detail: string | null, now: Date): void {
+    const row = this.db.prepare(`SELECT c.tool, c.action, m.handle, m.repo, f.task FROM subagent_call c LEFT JOIN subagent m ON m.id = c.subagent LEFT JOIN flow_card f ON f.id = c.card WHERE c.id = ?`).get(id);
     if (row === undefined) return;
-    this.recordAction({ at: now.toISOString(), actor: person ?? `${row["handle"] == null ? "teammate" : String(row["handle"])} (AI)`, repo: row["repo"] == null ? null : String(row["repo"]),
-      taskId: row["task"] == null ? null : String(row["task"]), runId: null, action: `teammate tool call${verb}: ${String(row["tool"])} ${String(row["action"])}`, outcome, source: "work", detail });
+    this.recordAction({ at: now.toISOString(), actor: person ?? `${row["handle"] == null ? "subagent" : String(row["handle"])} (AI)`, repo: row["repo"] == null ? null : String(row["repo"]),
+      taskId: row["task"] == null ? null : String(row["task"]), runId: null, action: `subagent tool call${verb}: ${String(row["tool"])} ${String(row["action"])}`, outcome, source: "work", detail });
   }
 
   /** v97: a call was undone by a person; false when it already was. */
-  markTeammateCallUndone(id: number, by: string, now: Date): boolean {
+  markSubagentCallUndone(id: number, by: string, now: Date): boolean {
     return this.transact(() => {
-      const marked = Number(this.db.prepare("UPDATE teammate_call SET undone_by = ?, undone_at = ? WHERE id = ? AND undone_by IS NULL").run(by, now.toISOString(), id).changes) === 1;
-      if (marked) this.recordTeammateCall(id, by, " undone", "undone", null, now);
+      const marked = Number(this.db.prepare("UPDATE subagent_call SET undone_by = ?, undone_at = ? WHERE id = ? AND undone_by IS NULL").run(by, now.toISOString(), id).changes) === 1;
+      if (marked) this.recordSubagentCall(id, by, " undone", "undone", null, now);
       return marked;
     });
   }
 
-  /** v97: cards someone moved by hand right after this actor (a teammate) moved them, since a time: what people overrode. */
-  flowMovesOverridden(actor: string, since: string): { card: number; flow: number; title: string; teammateTo: string; personTo: string; by: string; at: string }[] {
+  /** v97: cards someone moved by hand right after this actor (a subagent) moved them, since a time: what people overrode. */
+  flowMovesOverridden(actor: string, since: string): { card: number; flow: number; title: string; subagentTo: string; personTo: string; by: string; at: string }[] {
     return this.db.prepare(`SELECT c.id AS card, c.flow AS flow, c.title AS title, mine.to_stage AS mine_to, later.to_stage AS later_to, later.actor AS later_actor, later.at AS later_at
       FROM flow_event mine JOIN flow_event later ON later.card = mine.card AND later.id = (SELECT MIN(id) FROM flow_event WHERE card = mine.card AND id > mine.id)
       JOIN flow_card c ON c.id = mine.card WHERE mine.actor = ? AND later.outcome = 'moved' AND later.actor <> ? AND later.at >= ? ORDER BY later.id DESC LIMIT 100`).all(actor, actor, since).map(row => ({
-      card: Number(row["card"]), flow: Number(row["flow"]), title: String(row["title"]), teammateTo: String(row["mine_to"]), personTo: String(row["later_to"]), by: String(row["later_actor"]), at: String(row["later_at"]) }));
+      card: Number(row["card"]), flow: Number(row["flow"]), title: String(row["title"]), subagentTo: String(row["mine_to"]), personTo: String(row["later_to"]), by: String(row["later_actor"]), at: String(row["later_at"]) }));
   }
 
   /** v97: undo calls a person asked for that aren't made yet. */
-  pendingTeammateUndos(): TeammateCallRow[] {
-    return this.db.prepare("SELECT * FROM teammate_call WHERE undo_of IS NOT NULL AND state = 'approved' ORDER BY id LIMIT 50").all().map(readTeammateCall);
+  pendingSubagentUndos(): SubagentCallRow[] {
+    return this.db.prepare("SELECT * FROM subagent_call WHERE undo_of IS NOT NULL AND state = 'approved' ORDER BY id LIMIT 50").all().map(readSubagentCall);
   }
 
   /** v97: an undo that failed leaves the call as it was. */
-  clearTeammateCallUndone(id: number, now: Date): void {
+  clearSubagentCallUndone(id: number, now: Date): void {
     this.transact(() => {
-      const cleared = Number(this.db.prepare("UPDATE teammate_call SET undone_by = NULL, undone_at = NULL WHERE id = ? AND undone_by IS NOT NULL").run(id).changes) === 1;
-      if (cleared) this.recordTeammateCall(id, null, " undo failed", "failed", null, now);
+      const cleared = Number(this.db.prepare("UPDATE subagent_call SET undone_by = NULL, undone_at = NULL WHERE id = ? AND undone_by IS NOT NULL").run(id).changes) === 1;
+      if (cleared) this.recordSubagentCall(id, null, " undo failed", "failed", null, now);
     });
   }
 
-  /** v97: one model turn a teammate took, with what it cost. */
-  addTeammateTurn(turn: { teammate: number; card: number | null; model: string; ok: boolean; ms: number; costUsd?: number | null; tokensIn?: number | null; tokensOut?: number | null }, now: Date): void {
-    this.db.prepare("INSERT INTO teammate_turn (teammate, card, model, ok, ms, cost_usd, tokens_in, tokens_out, at, billing) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(turn.teammate, turn.card, turn.model, turn.ok ? 1 : 0, Math.round(turn.ms), turn.costUsd ?? null, turn.tokensIn ?? null, turn.tokensOut ?? null, now.toISOString(), claudeMachineBilling(this.db));
+  /** v97: one model turn a subagent took, with what it cost. */
+  addSubagentTurn(turn: { subagent: number; card: number | null; model: string; ok: boolean; ms: number; costUsd?: number | null; tokensIn?: number | null; tokensOut?: number | null }, now: Date): void {
+    this.db.prepare("INSERT INTO subagent_turn (subagent, card, model, ok, ms, cost_usd, tokens_in, tokens_out, at, billing) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(turn.subagent, turn.card, turn.model, turn.ok ? 1 : 0, Math.round(turn.ms), turn.costUsd ?? null, turn.tokensIn ?? null, turn.tokensOut ?? null, now.toISOString(), claudeMachineBilling(this.db));
     this.spendCache = null;
   }
 
@@ -19626,67 +17006,67 @@ export class Store {
     this.spendCache = null;
   }
 
-  teammateTurns(teammate: number, since: string): TeammateTurnRow[] {
-    return this.db.prepare("SELECT * FROM teammate_turn WHERE teammate = ? AND at >= ? ORDER BY id").all(teammate, since).map(row => ({
-      id: Number(row["id"]), teammate: Number(row["teammate"]), card: row["card"] === null ? null : Number(row["card"]), model: String(row["model"]), ok: Number(row["ok"]) === 1, ms: Number(row["ms"]),
+  subagentTurns(subagent: number, since: string): SubagentTurnRow[] {
+    return this.db.prepare("SELECT * FROM subagent_turn WHERE subagent = ? AND at >= ? ORDER BY id").all(subagent, since).map(row => ({
+      id: Number(row["id"]), subagent: Number(row["subagent"]), card: row["card"] === null ? null : Number(row["card"]), model: String(row["model"]), ok: Number(row["ok"]) === 1, ms: Number(row["ms"]),
       costUsd: row["cost_usd"] === null ? null : Number(row["cost_usd"]), tokensIn: row["tokens_in"] === null ? null : Number(row["tokens_in"]), tokensOut: row["tokens_out"] === null ? null : Number(row["tokens_out"]), at: String(row["at"]) }));
   }
 
-  teammateCall(id: number): TeammateCallRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_call WHERE id = ?").get(id);
-    return row === undefined ? null : readTeammateCall(row);
+  subagentCall(id: number): SubagentCallRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_call WHERE id = ?").get(id);
+    return row === undefined ? null : readSubagentCall(row);
   }
 
   /** Move a call on, only from the state it is known to be in: false when someone else moved it first. */
-  moveTeammateCall(id: number, from: readonly TeammateCallState[], change: { state: TeammateCallState; result?: string | null; decidedBy?: string }, now: Date): boolean {
+  moveSubagentCall(id: number, from: readonly SubagentCallState[], change: { state: SubagentCallState; result?: string | null; decidedBy?: string }, now: Date): boolean {
     const stamp = now.toISOString();
     const done = ["denied", "refused", "done", "failed"].includes(change.state);
     return this.transact(() => {
-      const moved = Number(this.db.prepare(`UPDATE teammate_call SET state = ?, result = COALESCE(?, result), decided_by = COALESCE(?, decided_by), decided_at = CASE WHEN ? IS NULL THEN decided_at ELSE ? END,
+      const moved = Number(this.db.prepare(`UPDATE subagent_call SET state = ?, result = COALESCE(?, result), decided_by = COALESCE(?, decided_by), decided_at = CASE WHEN ? IS NULL THEN decided_at ELSE ? END,
         done_at = CASE WHEN ? THEN ? ELSE done_at END WHERE id = ? AND state IN (${from.map(() => "?").join(", ")})`)
         .run(change.state, change.result ?? null, change.decidedBy ?? null, change.decidedBy ?? null, stamp, done ? 1 : 0, stamp, id, ...from).changes) === 1;
-      // A person's yes or no is theirs; everything else the call does is the teammate's.
-      if (moved) this.recordTeammateCall(id, change.state === "approved" || change.state === "denied" ? change.decidedBy ?? null : null, "", change.state, null, now);
+      // A person's yes or no is theirs; everything else the call does is the subagent's.
+      if (moved) this.recordSubagentCall(id, change.state === "approved" || change.state === "denied" ? change.decidedBy ?? null : null, "", change.state, null, now);
       return moved;
     });
   }
 
   /** A card's receipts, oldest first: one visit (`entry`), or every visit. */
-  teammateCallsOn(card: number, entry: number | null = null): TeammateCallRow[] {
-    return (entry === null ? this.db.prepare("SELECT * FROM teammate_call WHERE card = ? ORDER BY id").all(card) : this.db.prepare("SELECT * FROM teammate_call WHERE card = ? AND entry = ? ORDER BY id").all(card, entry)).map(readTeammateCall);
+  subagentCallsOn(card: number, entry: number | null = null): SubagentCallRow[] {
+    return (entry === null ? this.db.prepare("SELECT * FROM subagent_call WHERE card = ? ORDER BY id").all(card) : this.db.prepare("SELECT * FROM subagent_call WHERE card = ? AND entry = ? ORDER BY id").all(card, entry)).map(readSubagentCall);
   }
 
-  /** A teammate's receipts, newest first; `since` bounds them (a day's summary). */
-  teammateCallsOf(teammate: number, limit: number, since: string | null = null): TeammateCallRow[] {
-    return this.db.prepare(`SELECT * FROM teammate_call WHERE teammate = ? ${since === null ? "" : "AND created_at >= ?"} ORDER BY id DESC LIMIT ?`).all(...(since === null ? [teammate, limit] : [teammate, since, limit])).map(readTeammateCall);
+  /** A subagent's receipts, newest first; `since` bounds them (a day's summary). */
+  subagentCallsOf(subagent: number, limit: number, since: string | null = null): SubagentCallRow[] {
+    return this.db.prepare(`SELECT * FROM subagent_call WHERE subagent = ? ${since === null ? "" : "AND created_at >= ?"} ORDER BY id DESC LIMIT ?`).all(...(since === null ? [subagent, limit] : [subagent, since, limit])).map(readSubagentCall);
   }
 
-  teammateQuestion(id: number): TeammateQuestionRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_question WHERE id = ?").get(id);
-    return row === undefined ? null : readTeammateQuestion(row);
+  subagentQuestion(id: number): SubagentQuestionRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_question WHERE id = ?").get(id);
+    return row === undefined ? null : readSubagentQuestion(row);
   }
 
-  /** The question a teammate asked of its own on one visit (never a tool call's approval). */
-  teammateQuestionFor(card: number, entry: number): TeammateQuestionRow | null {
-    const row = this.db.prepare("SELECT * FROM teammate_question WHERE card = ? AND entry = ? AND tool_call IS NULL AND suggestion IS NULL").get(card, entry);
-    return row === undefined ? null : readTeammateQuestion(row);
+  /** The question a subagent asked of its own on one visit (never a tool call's approval). */
+  subagentQuestionFor(card: number, entry: number): SubagentQuestionRow | null {
+    const row = this.db.prepare("SELECT * FROM subagent_question WHERE card = ? AND entry = ? AND tool_call IS NULL AND suggestion IS NULL").get(card, entry);
+    return row === undefined ? null : readSubagentQuestion(row);
   }
 
-  /** Open questions for these teammates, oldest first. */
-  openTeammateQuestions(teammates: readonly number[]): TeammateQuestionRow[] {
-    if (teammates.length === 0) return [];
-    return this.db.prepare(`SELECT * FROM teammate_question WHERE state = 'open' AND teammate IN (${teammates.map(() => "?").join(", ")}) ORDER BY id`).all(...teammates).map(readTeammateQuestion);
+  /** Open questions for these subagents, oldest first. */
+  openSubagentQuestions(subagents: readonly number[]): SubagentQuestionRow[] {
+    if (subagents.length === 0) return [];
+    return this.db.prepare(`SELECT * FROM subagent_question WHERE state = 'open' AND subagent IN (${subagents.map(() => "?").join(", ")}) ORDER BY id`).all(...subagents).map(readSubagentQuestion);
   }
 
   /** The answer, once: false when it was already answered (or dropped). */
-  answerTeammateQuestion(id: number, answer: { choice: string | null; text: string | null; by: string; via: string }, now: Date): boolean {
-    const { changes } = this.db.prepare("UPDATE teammate_question SET state = 'answered', choice = ?, answer = ?, answered_by = ?, answered_via = ?, answered_at = ? WHERE id = ? AND state = 'open'")
+  answerSubagentQuestion(id: number, answer: { choice: string | null; text: string | null; by: string; via: string }, now: Date): boolean {
+    const { changes } = this.db.prepare("UPDATE subagent_question SET state = 'answered', choice = ?, answer = ?, answered_by = ?, answered_via = ?, answered_at = ? WHERE id = ? AND state = 'open'")
       .run(answer.choice, answer.text, answer.by, answer.via, now.toISOString(), id);
     return Number(changes) === 1;
   }
 
-  dropTeammateQuestion(id: number, now: Date): void {
-    this.db.prepare("UPDATE teammate_question SET state = 'dropped', answered_at = ? WHERE id = ? AND state = 'open'").run(now.toISOString(), id);
+  dropSubagentQuestion(id: number, now: Date): void {
+    this.db.prepare("UPDATE subagent_question SET state = 'dropped', answered_at = ? WHERE id = ? AND state = 'open'").run(now.toISOString(), id);
   }
 
   /** A step waiting on a person's answer becomes due now (the answer came). */
@@ -20039,57 +17419,57 @@ export class Store {
 
   /** The approver's live personal threads that have messages, most recent
    * first — the chat list. Team conversations list themselves. */
-  listMateThreads(approver: string, limit = 30): MateThreadSummary[] {
+  listLeadThreads(approver: string, limit = 30): LeadThreadSummary[] {
     const rows = this.db.prepare(
-      `SELECT t.*, (SELECT MAX(m.created_at) FROM mate_message m WHERE m.thread = t.id) AS last_message_at,
-         (SELECT m.text FROM mate_message m WHERE m.thread = t.id ORDER BY m.id DESC LIMIT 1) AS last_message,
-         (SELECT COUNT(*) FROM mate_message m WHERE m.thread = t.id) AS messages
-       FROM mate_thread t
+      `SELECT t.*, (SELECT MAX(m.created_at) FROM lead_message m WHERE m.thread = t.id) AS last_message_at,
+         (SELECT m.text FROM lead_message m WHERE m.thread = t.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+         (SELECT COUNT(*) FROM lead_message m WHERE m.thread = t.id) AS messages
+       FROM lead_thread t
        WHERE t.approver = ? AND t.closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread = t.id)
-         AND EXISTS (SELECT 1 FROM mate_message m WHERE m.thread = t.id)
+         AND EXISTS (SELECT 1 FROM lead_message m WHERE m.thread = t.id)
        ORDER BY last_message_at DESC, t.id DESC LIMIT ?`,
     ).all(approver, Math.max(1, Math.min(100, limit)));
-    return rows.map(row => ({ ...readMateThread(row), lastMessageAt: row["last_message_at"] === null ? null : String(row["last_message_at"]), lastMessage: row["last_message"] === null ? null : String(row["last_message"]), messages: Number(row["messages"]) }));
+    return rows.map(row => ({ ...readLeadThread(row), lastMessageAt: row["last_message_at"] === null ? null : String(row["last_message_at"]), lastMessage: row["last_message"] === null ? null : String(row["last_message"]), messages: Number(row["messages"]) }));
   }
 
-  getMateThread(id: number): MateThread | null {
-    const row = this.db.prepare("SELECT * FROM mate_thread WHERE id = ?").get(id);
-    return row === undefined ? null : readMateThread(row);
+  getLeadThread(id: number): LeadThread | null {
+    const row = this.db.prepare("SELECT * FROM lead_thread WHERE id = ?").get(id);
+    return row === undefined ? null : readLeadThread(row);
   }
 
   /** `--end` and revocation: the thread's text and every proposal in it are
    * deleted; the thread row stays as closed metadata (when, whose). */
-  closeMateThreadsFor(approver: string, now: Date): number {
+  closeLeadThreadsFor(approver: string, now: Date): number {
     return this.transact(() => {
-      const rows = this.db.prepare("SELECT id FROM mate_thread WHERE approver = ? AND closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_thread.id)").all(approver);
+      const rows = this.db.prepare("SELECT id FROM lead_thread WHERE approver = ? AND closed_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=lead_thread.id)").all(approver);
       for (const row of rows) {
         const id = Number(row["id"]);
-        this.db.prepare("DELETE FROM mate_message WHERE thread = ?").run(id);
-        this.db.prepare("DELETE FROM mate_proposal WHERE thread = ?").run(id);
-        this.db.prepare("UPDATE mate_thread SET closed_at = ? WHERE id = ?").run(now.toISOString(), id);
+        this.db.prepare("DELETE FROM lead_message WHERE thread = ?").run(id);
+        this.db.prepare("DELETE FROM lead_proposal WHERE thread = ?").run(id);
+        this.db.prepare("UPDATE lead_thread SET closed_at = ? WHERE id = ?").run(now.toISOString(), id);
       }
       return rows.length;
     });
   }
 
-  appendMateMessage(message: { thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity?: string | null }, now: Date): number {
+  appendLeadMessage(message: { thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity?: string | null }, now: Date): number {
     const inserted = this.db
-      .prepare("INSERT INTO mate_message (thread, turn, role, text, activity, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO lead_message (thread, turn, role, text, activity, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(message.thread, message.turn, message.role, message.text, message.activity ?? null, now.toISOString());
-    this.db.prepare("UPDATE mate_thread SET last_turn_at = ? WHERE id = ?").run(now.toISOString(), message.thread);
+    this.db.prepare("UPDATE lead_thread SET last_turn_at = ? WHERE id = ?").run(now.toISOString(), message.thread);
     return Number(inserted.lastInsertRowid);
   }
 
   /** The last `limit` messages, oldest first. */
-  listMateMessages(thread: number, limit: number): MateMessage[] {
+  listLeadMessages(thread: number, limit: number): LeadMessage[] {
     return this.db
-      .prepare("SELECT * FROM (SELECT * FROM mate_message WHERE thread = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
+      .prepare("SELECT * FROM (SELECT * FROM lead_message WHERE thread = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
       .all(thread, limit)
       .map(row => ({
         id: Number(row["id"]),
         thread: Number(row["thread"]),
         turn: row["turn"] === null ? null : Number(row["turn"]),
-        role: String(row["role"]) as MateMessage["role"],
+        role: String(row["role"]) as LeadMessage["role"],
         text: String(row["text"]),
         activity: row["activity"] === null ? null : String(row["activity"]),
         createdAt: String(row["created_at"]),
@@ -20097,9 +17477,9 @@ export class Store {
   }
 
   /** A proposal is inert (`drafting`) until its turn finalizes. */
-  draftMateProposal(proposal: { thread: number; turn: number; kind: MateProposalKind; payload: Record<string, unknown>; ceilingDigest: string }, now: Date): number {
+  draftLeadProposal(proposal: { thread: number; turn: number; kind: LeadProposalKind; payload: Record<string, unknown>; ceilingDigest: string }, now: Date): number {
     const inserted = this.db
-      .prepare("INSERT INTO mate_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (?, ?, ?, ?, ?, 'drafting', ?)")
+      .prepare("INSERT INTO lead_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at) VALUES (?, ?, ?, ?, ?, 'drafting', ?)")
       .run(proposal.thread, proposal.turn, proposal.kind, JSON.stringify(proposal.payload), proposal.ceilingDigest, now.toISOString());
     return Number(inserted.lastInsertRowid);
   }
@@ -20107,45 +17487,45 @@ export class Store {
   // ---- the lead's question to its owner (ask_owner) -----------------------------
 
   /** Record this turn's one question; false when the turn already asked one. */
-  recordMateAsk(ask: { turn: number; thread: number; question: string; options: readonly string[] }, now: Date): boolean {
-    const inserted = this.db.prepare("INSERT OR IGNORE INTO mate_ask (turn, thread, question, options_json, created_at) VALUES (?, ?, ?, ?, ?)")
+  recordLeadAsk(ask: { turn: number; thread: number; question: string; options: readonly string[] }, now: Date): boolean {
+    const inserted = this.db.prepare("INSERT OR IGNORE INTO lead_ask (turn, thread, question, options_json, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(ask.turn, ask.thread, ask.question, JSON.stringify(ask.options), now.toISOString());
     return Number(inserted.changes) === 1;
   }
 
   /** A failed turn keeps no question, as it keeps no drafts. */
-  dropMateAsk(turn: number): void {
-    this.db.prepare("DELETE FROM mate_ask WHERE turn = ?").run(turn);
+  dropLeadAsk(turn: number): void {
+    this.db.prepare("DELETE FROM lead_ask WHERE turn = ?").run(turn);
   }
 
   /** The question an ANSWERED turn asked; null when it asked none or did not answer. */
-  mateAsk(turn: number): MateAsk | null {
-    const row = this.db.prepare("SELECT a.* FROM mate_ask a JOIN mate_turn t ON t.id = a.turn WHERE a.turn = ? AND t.state = 'answered'").get(turn);
+  leadAsk(turn: number): LeadAsk | null {
+    const row = this.db.prepare("SELECT a.* FROM lead_ask a JOIN mate_turn t ON t.id = a.turn WHERE a.turn = ? AND t.state = 'answered'").get(turn);
     if (row === undefined) return null;
-    const options = parseStoreColumn("mate_ask.options_json", row["options_json"]);
+    const options = parseStoreColumn("lead_ask.options_json", row["options_json"]);
     return { turn: Number(row["turn"]), thread: Number(row["thread"]), question: String(row["question"]), options: Array.isArray(options) ? options.map(String) : [], createdAt: String(row["created_at"]) };
   }
 
   /** What a tap on the question finds: open; answered (its owner has written in its thread since the reply that asked
    * it, typed or tapped; a turn the lead started itself, or another person's message, is no answer); or expired (older
-   * than MATE_ASK_TTL_MS, or the question or the reply that asked it is gone, as after a retention purge). */
-  mateAskState(turn: number, now: Date): { state: "open"; ask: MateAsk } | { state: "answered" | "expired" } {
-    const ask = this.mateAsk(turn);
+   * than LEAD_ASK_TTL_MS, or the question or the reply that asked it is gone, as after a retention purge). */
+  leadAskState(turn: number, now: Date): { state: "open"; ask: LeadAsk } | { state: "answered" | "expired" } {
+    const ask = this.leadAsk(turn);
     if (ask === null) return { state: "expired" };
-    const asking = this.db.prepare("SELECT MAX(id) AS id FROM mate_message WHERE thread = ? AND turn = ? AND role = 'assistant'").get(ask.thread, turn);
+    const asking = this.db.prepare("SELECT MAX(id) AS id FROM lead_message WHERE thread = ? AND turn = ? AND role = 'assistant'").get(ask.thread, turn);
     if (asking === undefined || asking["id"] === null) return { state: "expired" };
-    const owner = String(this.getMateTurn(turn)!.approver);
-    const later = this.db.prepare(`SELECT 1 AS hit FROM mate_message m LEFT JOIN mate_turn t ON t.id = m.turn LEFT JOIN team_message tm ON tm.message = m.id
+    const owner = String(this.getLeadTurn(turn)!.approver);
+    const later = this.db.prepare(`SELECT 1 AS hit FROM lead_message m LEFT JOIN mate_turn t ON t.id = m.turn LEFT JOIN team_message tm ON tm.message = m.id
         WHERE m.thread = ? AND m.role = 'operator' AND m.id > ? AND m.text <> ? AND COALESCE(tm.author, t.approver, ?) = ? LIMIT 1`)
       .get(ask.thread, Number(asking["id"]), LEAD_FOLLOW_MESSAGE, owner, owner);
     if (later !== undefined) return { state: "answered" };
-    if (new Date(ask.createdAt).getTime() + MATE_ASK_TTL_MS <= now.getTime()) return { state: "expired" };
+    if (new Date(ask.createdAt).getTime() + LEAD_ASK_TTL_MS <= now.getTime()) return { state: "expired" };
     return { state: "open", ask };
   }
 
-  /** The question while it is open (see mateAskState); null otherwise. */
-  mateAskOpen(turn: number, now: Date): MateAsk | null {
-    const found = this.mateAskState(turn, now);
+  /** The question while it is open (see leadAskState); null otherwise. */
+  leadAskOpen(turn: number, now: Date): LeadAsk | null {
+    const found = this.leadAskState(turn, now);
     return found.state === "open" ? found.ask : null;
   }
 
@@ -20159,19 +17539,19 @@ export class Store {
    * before upload. A turn holds at most `cap` images; the same artifact is
    * recorded once. Returns how many of THESE rows are recorded after the call.
    */
-  recordMateTurnEvidence(turn: number, rows: readonly Omit<MateTurnEvidence, "turn" | "ordinal" | "createdAt">[], cap: number, now: Date): number {
+  recordLeadTurnEvidence(turn: number, rows: readonly Omit<LeadTurnEvidence, "turn" | "ordinal" | "createdAt">[], cap: number, now: Date): number {
     return this.transact(() => {
       const live = this.db.prepare("SELECT 1 AS hit FROM mate_turn WHERE id = ? AND state = 'running'").get(turn);
       if (live === undefined) return 0;
-      let ordinal = Number(this.db.prepare("SELECT COUNT(*) AS n FROM mate_turn_evidence WHERE turn = ?").get(turn)?.["n"] ?? 0);
+      let ordinal = Number(this.db.prepare("SELECT COUNT(*) AS n FROM lead_turn_evidence WHERE turn = ?").get(turn)?.["n"] ?? 0);
       let recorded = 0;
       for (const row of rows) {
-        const seen = this.db.prepare("SELECT 1 AS hit FROM mate_turn_evidence WHERE turn = ? AND artifact = ?").get(turn, row.artifact);
+        const seen = this.db.prepare("SELECT 1 AS hit FROM lead_turn_evidence WHERE turn = ? AND artifact = ?").get(turn, row.artifact);
         if (seen !== undefined) { recorded++; continue; }
         if (ordinal >= cap) continue;
         this.db
           .prepare(
-            `INSERT INTO mate_turn_evidence (turn, ordinal, task_id, task_ref, run, artifact, sha256, format, bytes, caption, created_at)
+            `INSERT INTO lead_turn_evidence (turn, ordinal, task_id, task_ref, run, artifact, sha256, format, bytes, caption, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(turn, ordinal, row.taskId, row.taskRef, row.run, row.artifact, row.sha256, row.format, row.bytes, row.caption, now.toISOString());
@@ -20183,8 +17563,8 @@ export class Store {
   }
 
   /** The screenshots a turn selected, in selection order — meaningful only for a turn that ANSWERED (a failed turn's rows are deleted). */
-  listMateTurnEvidence(turn: number): MateTurnEvidence[] {
-    return this.db.prepare("SELECT * FROM mate_turn_evidence WHERE turn = ? ORDER BY ordinal").all(turn).map(row => ({
+  listLeadTurnEvidence(turn: number): LeadTurnEvidence[] {
+    return this.db.prepare("SELECT * FROM lead_turn_evidence WHERE turn = ? ORDER BY ordinal").all(turn).map(row => ({
       turn: Number(row["turn"]),
       ordinal: Number(row["ordinal"]),
       taskId: String(row["task_id"]),
@@ -20192,7 +17572,7 @@ export class Store {
       run: Number(row["run"]),
       artifact: Number(row["artifact"]),
       sha256: String(row["sha256"]),
-      format: String(row["format"]) as MateTurnEvidence["format"],
+      format: String(row["format"]) as LeadTurnEvidence["format"],
       bytes: Number(row["bytes"]),
       caption: String(row["caption"]),
       createdAt: String(row["created_at"]),
@@ -20200,45 +17580,45 @@ export class Store {
   }
 
   /** A failed turn's selection is DELETED with its drafts: nothing a failed turn selected is ever sent. */
-  discardMateTurnEvidence(turn: number): number {
-    return Number(this.db.prepare("DELETE FROM mate_turn_evidence WHERE turn = ?").run(turn).changes);
+  discardLeadTurnEvidence(turn: number): number {
+    return Number(this.db.prepare("DELETE FROM lead_turn_evidence WHERE turn = ?").run(turn).changes);
   }
 
   /** Drafts become confirmable only under a turn that ANSWERED (review finding 12). */
-  promoteMateProposals(turn: number): number {
+  promoteLeadProposals(turn: number): number {
     const changed = this.db
-      .prepare("UPDATE mate_proposal SET state = 'pending' WHERE turn = ? AND state = 'drafting' AND EXISTS (SELECT 1 FROM mate_turn WHERE id = ? AND state = 'answered')")
+      .prepare("UPDATE lead_proposal SET state = 'pending' WHERE turn = ? AND state = 'drafting' AND EXISTS (SELECT 1 FROM mate_turn WHERE id = ? AND state = 'answered')")
       .run(turn, turn);
     return Number(changed.changes);
   }
 
   /** A failed turn's drafts are DELETED — nothing a failed turn produced is durable (finding 4). */
-  discardMateProposals(turn: number): number {
-    const changed = this.db.prepare("DELETE FROM mate_proposal WHERE turn = ? AND state = 'drafting'").run(turn);
+  discardLeadProposals(turn: number): number {
+    const changed = this.db.prepare("DELETE FROM lead_proposal WHERE turn = ? AND state = 'drafting'").run(turn);
     return Number(changed.changes);
   }
 
-  getMateProposal(id: number): MateProposal | null {
-    const row = this.db.prepare("SELECT * FROM mate_proposal WHERE id = ?").get(id);
-    return row === undefined ? null : readMateProposal(row);
+  getLeadProposal(id: number): LeadProposal | null {
+    const row = this.db.prepare("SELECT * FROM lead_proposal WHERE id = ?").get(id);
+    return row === undefined ? null : readLeadProposal(row);
   }
 
-  listMateProposals(thread: number, states?: readonly MateProposalState[]): MateProposal[] {
+  listLeadProposals(thread: number, states?: readonly LeadProposalState[]): LeadProposal[] {
     const rows =
       states === undefined
-        ? this.db.prepare("SELECT * FROM mate_proposal WHERE thread = ? ORDER BY id ASC").all(thread)
+        ? this.db.prepare("SELECT * FROM lead_proposal WHERE thread = ? ORDER BY id ASC").all(thread)
         : this.db
-            .prepare(`SELECT * FROM mate_proposal WHERE thread = ? AND state IN (${states.map(() => "?").join(",")}) ORDER BY id ASC`)
+            .prepare(`SELECT * FROM lead_proposal WHERE thread = ? AND state IN (${states.map(() => "?").join(",")}) ORDER BY id ASC`)
             .all(thread, ...states);
-    return rows.map(readMateProposal);
+    return rows.map(readLeadProposal);
   }
 
   /** The state CAS confirmation rides on (ruling 7). */
-  casMateProposal(id: number, from: MateProposalState, to: MateProposalState, by: string | null, outcome: Record<string, unknown> | null, now: Date): boolean {
+  casLeadProposal(id: number, from: LeadProposalState, to: LeadProposalState, by: string | null, outcome: Record<string, unknown> | null, now: Date): boolean {
     const terminal = to === "confirmed" || to === "refused" || to === "dismissed" || to === "expired";
     const changed = this.db
       .prepare(
-        `UPDATE mate_proposal SET state = ?, resolved_at = CASE WHEN ? THEN ? ELSE resolved_at END,
+        `UPDATE lead_proposal SET state = ?, resolved_at = CASE WHEN ? THEN ? ELSE resolved_at END,
            resolved_by = COALESCE(?, resolved_by), outcome_json = COALESCE(?, outcome_json)
          WHERE id = ? AND state = ?`,
       )
@@ -20251,7 +17631,7 @@ export class Store {
    * weekly ledger, before any dispatch (ruling 5). One live turn per
    * approver serializes the console and the CLI.
    */
-  openMateTurn(
+  openLeadTurn(
     args: { approver: string; session: number; thread: number; credentialKey: string; reservedMicrousd: number; dailyTurns: number; weeklyCeilingMicrousd: number; deadlineMs: number; provider?: string },
     now: Date,
   ): { ok: true; id: number } | { ok: false; reason: "latched" | "concurrent" | "daily-cap" | "session-exhausted" | "session-ended" | "not-yours" | "thread-closed" | "over-budget" | "monthly-budget" } {
@@ -20259,8 +17639,8 @@ export class Store {
       // The binding (slice-1 review, finding 2): the session and the thread
       // are THIS approver's, under THIS credential, under one ceiling, and
       // the thread is open — a structural snapshot proves none of that.
-      const session = this.getMateSession(args.session);
-      const thread = this.getMateThread(args.thread);
+      const session = this.getLeadSession(args.session);
+      const thread = this.getLeadThread(args.thread);
       if (session === null || thread === null) return { ok: false as const, reason: "not-yours" as const };
       const teamBinding = this.db.prepare("SELECT 1 FROM team_mate_session WHERE session=? AND thread=?").get(args.session,args.thread) !== undefined;
       if (session.approver !== args.approver || (teamBinding ? !this.teamMateThreadAllows(args.thread,args.approver,session.approverGeneration) : thread.approver !== args.approver || this.db.prepare("SELECT 1 FROM team_conversation WHERE thread=?").get(args.thread) !== undefined) || session.credentialKey !== args.credentialKey) {
@@ -20271,8 +17651,8 @@ export class Store {
       // everything), used up; a subscription chat costs nothing extra.
       const threadScope = this.db.prepare(`SELECT CASE th.scope_kind WHEN 'project' THEN th.scope_key
           WHEN 'task' THEN (SELECT r.repo FROM task_ref r WHERE r.external_id = th.scope_key ORDER BY r.id DESC LIMIT 1) END AS project
-        FROM mate_thread th WHERE th.id = ?`).get(args.thread);
-      if (this.budgetGate(now)({ project: threadScope?.["project"] == null ? null : String(threadScope["project"]), person: args.approver, teammate: null,
+        FROM lead_thread th WHERE th.id = ?`).get(args.thread);
+      if (this.budgetGate(now)({ project: threadScope?.["project"] == null ? null : String(threadScope["project"]), person: args.approver, subagent: null,
         ...(args.provider === undefined ? {} : { agents: this.agentsFor([args.provider]) }) }).over !== null) {
         return { ok: false as const, reason: "monthly-budget" as const };
       }
@@ -20305,7 +17685,7 @@ export class Store {
     });
   }
 
-  startMateTurn(id: number, now: Date): { ok: true; generation: number } | { ok: false } {
+  startLeadTurn(id: number, now: Date): { ok: true; generation: number } | { ok: false } {
     const changed = this.db
       .prepare("UPDATE mate_turn SET state = 'running', generation = generation + 1 WHERE id = ? AND state = 'queued'")
       .run(id);
@@ -20315,11 +17695,11 @@ export class Store {
     return { ok: true, generation: Number(row?.["generation"] ?? 0) };
   }
 
-  /** One provider request of a mate turn: a chat_turn row of kind
+  /** One provider request of a lead turn: a chat_turn row of kind
    * 'mate-step', reserved at zero (the turn holds the reservation), with
    * the same dispatch CAS, terminal CAS, and crash latch as fleet chat. */
-  openMateStep(
-    args: { mateTurn: number; generation: number; approver: string; credentialKey: string; provider: ChatProviderId; model: string; deadlineMs: number },
+  openLeadStep(
+    args: { leadTurn: number; generation: number; approver: string; credentialKey: string; provider: ChatProviderId; model: string; deadlineMs: number },
     now: Date,
   ): { ok: true; id: number } | { ok: false; reason: "latched" | "gone" } {
     return this.transact(() => {
@@ -20332,15 +17712,15 @@ export class Store {
       if (latched !== undefined) return { ok: false as const, reason: "latched" as const };
       const parent = this.db
         .prepare("SELECT 1 AS hit FROM mate_turn WHERE id = ? AND generation = ? AND state = 'running'")
-        .get(args.mateTurn, args.generation);
+        .get(args.leadTurn, args.generation);
       if (parent === undefined) return { ok: false as const, reason: "gone" as const };
       const inserted = this.db
         .prepare(
           `INSERT INTO chat_turn (approver, credential_key, provider, model, state, created_at, deadline_at, reserved_microusd, kind, mate_turn)
            VALUES (?, ?, ?, ?, 'queued', ?, ?, 0, 'mate-step', ?)`,
         )
-        .run(args.approver, args.credentialKey, args.provider, args.model, now.toISOString(), new Date(now.getTime() + args.deadlineMs).toISOString(), args.mateTurn);
-      this.db.prepare("UPDATE mate_turn SET steps = steps + 1 WHERE id = ?").run(args.mateTurn);
+        .run(args.approver, args.credentialKey, args.provider, args.model, now.toISOString(), new Date(now.getTime() + args.deadlineMs).toISOString(), args.leadTurn);
+      this.db.prepare("UPDATE mate_turn SET steps = steps + 1 WHERE id = ?").run(args.leadTurn);
       return { ok: true as const, id: Number(inserted.lastInsertRowid) };
     });
   }
@@ -20353,7 +17733,7 @@ export class Store {
    * releases money it cannot prove was not spent; acknowledging the step
    * later does not refund it.
    */
-  finalizeMateTurn(
+  finalizeLeadTurn(
     id: number,
     generation: number,
     outcome: {
@@ -20382,18 +17762,18 @@ export class Store {
         )
         .run(outcome.state, settled, outcome.tokensIn, outcome.tokensOut, outcome.failureReason ?? null, now.toISOString(), id, generation);
       if (Number(changed.changes) !== 1) return false;
-      this.db.prepare("UPDATE mate_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(settled, Number(before["session"]));
+      this.db.prepare("UPDATE lead_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(settled, Number(before["session"]));
       if (outcome.state === "answered") {
-        this.promoteMateProposals(id);
+        this.promoteLeadProposals(id);
         if (outcome.message !== undefined) {
-          this.appendMateMessage({ thread: Number(before["thread"]), turn: id, role: "assistant", text: outcome.message.text, activity: outcome.message.activity }, now);
+          this.appendLeadMessage({ thread: Number(before["thread"]), turn: id, role: "assistant", text: outcome.message.text, activity: outcome.message.activity }, now);
         }
       } else {
-        if (outcome.keepProposals === true) this.keepTimedOutMateProposals(id);
-        else this.discardMateProposals(id);
-        this.discardMateTurnEvidence(id);
+        if (outcome.keepProposals === true) this.keepTimedOutLeadProposals(id);
+        else this.discardLeadProposals(id);
+        this.discardLeadTurnEvidence(id);
         if (outcome.message !== undefined) {
-          this.appendMateMessage({ thread: Number(before["thread"]), turn: id, role: "assistant", text: outcome.message.text, activity: outcome.message.activity }, now);
+          this.appendLeadMessage({ thread: Number(before["thread"]), turn: id, role: "assistant", text: outcome.message.text, activity: outcome.message.activity }, now);
         }
       }
       return true;
@@ -20402,14 +17782,14 @@ export class Store {
 
   /** A turn stopped at its deadline: the proposals its completed tool calls drafted (each validated when drafted) go pending, as an
    * answered turn's do; anything the provider sent after them was never acted on. Every other failure still deletes its drafts. */
-  private keepTimedOutMateProposals(turn: number): number {
-    return Number(this.db.prepare("UPDATE mate_proposal SET state = 'pending' WHERE turn = ? AND state = 'drafting'").run(turn).changes);
+  private keepTimedOutLeadProposals(turn: number): number {
+    return Number(this.db.prepare("UPDATE lead_proposal SET state = 'pending' WHERE turn = ? AND state = 'drafting'").run(turn).changes);
   }
 
   /** Revocation's companion for a loop in flight (finding 5): every live
    * turn of the approver fails NOW, charged its whole reservation, its
    * generation moved so the returning loop's terminal CAS loses. */
-  failLiveMateTurnsFor(approver: string, reason: string, now: Date, privateOnly = false): number {
+  failLiveLeadTurnsFor(approver: string, reason: string, now: Date, privateOnly = false): number {
     return this.transact(() => {
       const rows = this.db.prepare("SELECT id, session, reserved_microusd AS reserved FROM mate_turn WHERE approver = ? AND state IN ('queued','running') AND (?=0 OR NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_turn.thread))").all(approver, privateOnly ? 1 : 0);
       for (const row of rows) {
@@ -20417,9 +17797,9 @@ export class Store {
         this.db
           .prepare("UPDATE mate_turn SET state = 'failed', failure_reason = ?, generation = generation + 1, settled_microusd = ?, finished_at = ? WHERE id = ?")
           .run(reason, Number(row["reserved"]), now.toISOString(), id);
-        this.db.prepare("UPDATE mate_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(Number(row["reserved"]), Number(row["session"]));
-        this.discardMateProposals(id);
-        this.discardMateTurnEvidence(id);
+        this.db.prepare("UPDATE lead_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(Number(row["reserved"]), Number(row["session"]));
+        this.discardLeadProposals(id);
+        this.discardLeadTurnEvidence(id);
       }
       return rows.length;
     });
@@ -20431,7 +17811,7 @@ export class Store {
    * the WHOLE reservation is charged (finding 1). Like a turn that stopped
    * at its own deadline, it keeps the proposals its completed tool calls
    * drafted and says, in the thread, that the reply took too long. */
-  sweepStaleMateTurns(now: Date): number {
+  sweepStaleLeadTurns(now: Date): number {
     return this.transact(() => {
       this.sweepStaleChatTurns(now);
       const rows = this.db
@@ -20449,12 +17829,12 @@ export class Store {
         this.db
           .prepare("UPDATE mate_turn SET state = 'failed', failure_reason = 'crashed', generation = generation + 1, settled_microusd = ?, finished_at = ? WHERE id = ?")
           .run(spent, now.toISOString(), id);
-        this.db.prepare("UPDATE mate_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(spent, Number(row["session"]));
-        const kept = this.keepTimedOutMateProposals(id);
-        this.discardMateTurnEvidence(id);
+        this.db.prepare("UPDATE lead_session SET spent_microusd = spent_microusd + ? WHERE id = ?").run(spent, Number(row["session"]));
+        const kept = this.keepTimedOutLeadProposals(id);
+        this.discardLeadTurnEvidence(id);
         const latched = this.db.prepare("SELECT 1 AS hit FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1 AND acknowledged_at IS NULL LIMIT 1").get(id) !== undefined;
-        const open = this.db.prepare("SELECT 1 AS hit FROM mate_thread WHERE id = ? AND closed_at IS NULL").get(Number(row["thread"])) !== undefined;
-        if (open) this.appendMateMessage({ thread: Number(row["thread"]), turn: id, role: "assistant", text: mateTimeoutNotice(kept > 0, latched), activity: null }, now);
+        const open = this.db.prepare("SELECT 1 AS hit FROM lead_thread WHERE id = ? AND closed_at IS NULL").get(Number(row["thread"])) !== undefined;
+        if (open) this.appendLeadMessage({ thread: Number(row["thread"]), turn: id, role: "assistant", text: leadTimeoutNotice(kept > 0, latched), activity: null }, now);
       }
       return rows.length;
     });
@@ -20535,25 +17915,25 @@ export class Store {
     return Number(changed.changes);
   }
 
-  recentMateTurns(approver: string, limit = 10): MateTurn[] {
+  recentLeadTurns(approver: string, limit = 10): LeadTurn[] {
     return this.db
       .prepare("SELECT * FROM mate_turn WHERE approver = ? ORDER BY id DESC LIMIT ?")
       .all(approver, Math.max(1, Math.min(limit, 100)))
-      .map(readMateTurn);
+      .map(readLeadTurn);
   }
 
-  getMateTurn(id: number): MateTurn | null {
+  getLeadTurn(id: number): LeadTurn | null {
     const row = this.db.prepare("SELECT * FROM mate_turn WHERE id = ?").get(id);
-    return row === undefined ? null : readMateTurn(row);
+    return row === undefined ? null : readLeadTurn(row);
   }
 
-  liveMateTurnFor(approver: string): MateTurn | null {
+  liveLeadTurnFor(approver: string): LeadTurn | null {
     const row = this.db.prepare("SELECT * FROM mate_turn WHERE approver = ? AND state IN ('queued','running') ORDER BY id DESC LIMIT 1").get(approver);
-    return row === undefined ? null : readMateTurn(row);
+    return row === undefined ? null : readLeadTurn(row);
   }
 
-  mateStepsOf(mateTurn: number): ChatTurn[] {
-    return this.db.prepare("SELECT * FROM chat_turn WHERE mate_turn = ? ORDER BY id ASC").all(mateTurn).map(readChatTurn);
+  leadStepsOf(leadTurn: number): ChatTurn[] {
+    return this.db.prepare("SELECT * FROM chat_turn WHERE mate_turn = ? ORDER BY id ASC").all(leadTurn).map(readChatTurn);
   }
 
   // ---- projects ------------------------------------------------------------
@@ -23191,7 +20571,7 @@ export class Store {
 
   /** A chat send receipt contains no message text. The session is part of
    * its namespace; callers must prove that session before reading it. */
-  mateRequestReceipt(session: number, request: string): { digest: string; turn: number } | null {
+  leadRequestReceipt(session: number, request: string): { digest: string; turn: number } | null {
     const row = this.db.prepare("SELECT result FROM mutation WHERE idempotency_key = ? AND operation = 'mate-send'")
       .get(`mate-send:${session}:${request}`);
     return row === undefined ? null : parseStoreColumn("mutation.result", row["result"]) as { digest: string; turn: number };
@@ -23715,11 +21095,11 @@ function readChatTurn(row: Record<string, unknown>): ChatTurn {
     replyBytes: maybeN("reply_bytes"),
     candidateCount: maybeN("candidate_count"),
     kind: (maybe("kind") ?? "chat") as ChatTurn["kind"],
-    mateTurn: maybeN("mate_turn"),
+    leadTurn: maybeN("mate_turn"),
   };
 }
 
-function readMateSession(row: Record<string, unknown>): MateSession {
+function readLeadSession(row: Record<string, unknown>): LeadSession {
   const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
   return {
     id: Number(row["id"]),
@@ -23736,7 +21116,7 @@ function readMateSession(row: Record<string, unknown>): MateSession {
   };
 }
 
-function readMateThread(row: Record<string, unknown>): MateThread {
+function readLeadThread(row: Record<string, unknown>): LeadThread {
   const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
   return {
     id: Number(row["id"]),
@@ -23749,7 +21129,7 @@ function readMateThread(row: Record<string, unknown>): MateThread {
   };
 }
 
-function scopeOfThread(kind: string | null, key: string | null): MateThreadScope {
+function scopeOfThread(kind: string | null, key: string | null): LeadThreadScope {
   return (kind === "project" || kind === "task") && key !== null ? { kind, key } : LEAD_THREAD;
 }
 
@@ -23769,25 +21149,25 @@ function readCoordinatorProposal(row: Record<string, unknown>): CoordinatorPropo
   };
 }
 
-function readMateProposal(row: Record<string, unknown>): MateProposal {
+function readLeadProposal(row: Record<string, unknown>): LeadProposal {
   const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
   const outcome = maybe("outcome_json");
   return {
     id: Number(row["id"]),
     thread: Number(row["thread"]),
     turn: Number(row["turn"]),
-    kind: String(row["kind"]) as MateProposalKind,
-    payload: parseStoreColumn("mate_proposal.payload_json", row["payload_json"]),
+    kind: String(row["kind"]) as LeadProposalKind,
+    payload: parseStoreColumn("lead_proposal.payload_json", row["payload_json"]),
     ceilingDigest: String(row["ceiling_digest"]),
-    state: String(row["state"]) as MateProposalState,
+    state: String(row["state"]) as LeadProposalState,
     createdAt: String(row["created_at"]),
     resolvedAt: maybe("resolved_at"),
     resolvedBy: maybe("resolved_by"),
-    outcome: outcome === null ? null : parseStoreColumn("mate_proposal.outcome_json", outcome),
+    outcome: outcome === null ? null : parseStoreColumn("lead_proposal.outcome_json", outcome),
   };
 }
 
-function readMateTurn(row: Record<string, unknown>): MateTurn {
+function readLeadTurn(row: Record<string, unknown>): LeadTurn {
   const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
   const maybeN = (key: string): number | null => (row[key] === null || row[key] === undefined ? null : Number(row[key]));
   return {
@@ -23796,7 +21176,7 @@ function readMateTurn(row: Record<string, unknown>): MateTurn {
     session: Number(row["session"]),
     thread: Number(row["thread"]),
     credentialKey: String(row["credential_key"]),
-    state: String(row["state"]) as MateTurn["state"],
+    state: String(row["state"]) as LeadTurn["state"],
     generation: Number(row["generation"]),
     createdAt: String(row["created_at"]),
     deadlineAt: String(row["deadline_at"]),
@@ -24264,7 +21644,7 @@ export function scopeTermsProblem(row: Record<string, unknown>): string | null {
   if (row["approval_kind"] !== "profile" && row["approval_kind"] !== "chain") return "the approval kind is not one this code writes";
   if (row["profile_state"] !== "resolved" && row["profile_state"] !== "unresolved") return "the profile state is not one this code writes";
   if (row["digest_version"] !== 1 && row["digest_version"] !== 2) return "the digest version is not one this code writes";
-  // Who wrote the text is a term the mate quarantine reads (atomic
+  // Who wrote the text is a term the lead quarantine reads (atomic
   // authority closure): a word outside the three this code writes (or
   // null for a person) is corruption, never a value that slips past the
   // quarantine because it is not literally 'mate'.

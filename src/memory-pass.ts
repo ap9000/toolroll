@@ -18,8 +18,8 @@ import type { Store } from './store.js';
 import { scanForSecrets, readVerifiedArtifact } from './evidence.js';
 import { changeKnowledge, knowledgeView } from './project-knowledge.js';
 import { listDecisions, recordDecision } from './project-memory.js';
-import { composeMateRequest, performMateRequest, isDirectChatProvider, CHAT_KEY_ENV } from './converse.js';
-import { performSubscriptionMateRequest } from './subscription-chat.js';
+import { composeLeadRequest, performLeadRequest, isDirectChatProvider, CHAT_KEY_ENV } from './converse.js';
+import { performSubscriptionLeadRequest } from './subscription-chat.js';
 import type { DirectChatProviderId, SubscriptionChatProviderId } from './store.js';
 import { TEXT_LIMITS } from './text-limits.js';
 import { contractError, parseContract } from './contracts/contract.js';
@@ -118,12 +118,12 @@ function fileSources(repo: string, kind: 'claude' | 'codex', home: string): Memo
 /** The plane's own sessions: lead threads that touched the project, and finished crew runs with their handoff and check output. */
 function planeSources(store: Store, repo: string, evidenceRoot: string | undefined): MemorySource[] {
   const out: MemorySource[] = [];
-  const threads = store.handle.prepare(`SELECT c.thread AS thread, c.id AS conversation, MAX(m.id) AS last, MAX(m.created_at) AS at FROM team_conversation c JOIN mate_message m ON m.thread=c.thread
+  const threads = store.handle.prepare(`SELECT c.thread AS thread, c.id AS conversation, MAX(m.id) AS last, MAX(m.created_at) AS at FROM team_conversation c JOIN lead_message m ON m.thread=c.thread
     WHERE EXISTS (SELECT 1 FROM json_each(c.projects_json) WHERE value=?) GROUP BY c.thread`).all(repo);
   for (const row of threads) {
     const thread = Number(row['thread']);
     out.push({ id: `lead:${thread}:${Number(row['last'])}`, repo, kind: 'lead', source: `conversation:${String(row['conversation'])}`, at: String(row['at']), trace: () => redact(
-      store.handle.prepare('SELECT role,text FROM mate_message WHERE thread=? ORDER BY id LIMIT 400').all(thread).map(m => `${m['role']}: ${clip(String(m['text']), 4000)}`).join('\n')) });
+      store.handle.prepare('SELECT role,text FROM lead_message WHERE thread=? ORDER BY id LIMIT 400').all(thread).map(m => `${m['role']}: ${clip(String(m['text']), 4000)}`).join('\n')) });
   }
   const runs = store.handle.prepare(`SELECT r.id, r.role, r.finished_at, r.handoff, t.external_id FROM run r JOIN task_ref t ON t.id=r.task_ref WHERE t.repo=? AND r.role IN ('builder','repair') AND r.outcome IS NOT NULL ORDER BY r.id DESC LIMIT 100`).all(repo);
   for (const row of runs) {
@@ -175,7 +175,7 @@ export function analysisPrompt(surface: MemorySurface, openGaps: { key: string; 
 }
 
 /** The production analyser: one call through the configured chat provider, no tools, no history. */
-export function defaultAnalyzer(store: Store, options: { configDir?: string; env?: NodeJS.ProcessEnv; fetcher?: typeof fetch; timeoutMs?: number; runner?: Parameters<typeof performSubscriptionMateRequest>[1] }): MemoryAnalyzer {
+export function defaultAnalyzer(store: Store, options: { configDir?: string; env?: NodeJS.ProcessEnv; fetcher?: typeof fetch; timeoutMs?: number; runner?: Parameters<typeof performSubscriptionLeadRequest>[1] }): MemoryAnalyzer {
   return async input => {
     const config = store.getChatConfig();
     if (config === null) return { ok: false, problem: 'Chat is not configured; the backward pass uses the chat model.' };
@@ -187,12 +187,12 @@ export function defaultAnalyzer(store: Store, options: { configDir?: string; env
       let key = env[CHAT_KEY_ENV[config.provider as DirectChatProviderId]] ?? '';
       if (!key && options.configDir !== undefined) { try { key = readFileSync(join(options.configDir, `chat-key-${config.provider}`), 'utf8').trim(); } catch { key = ''; } }
       if (!key) return { ok: false, problem: `No ${config.provider} key is available for the backward pass.` };
-      const request = composeMateRequest({ provider: config.provider as DirectChatProviderId, model: config.model, key, system, dataDocument, history, tools: [] });
-      const answer = await performMateRequest(request, config.provider as DirectChatProviderId, AbortSignal.timeout(options.timeoutMs ?? 120_000), options.fetcher);
+      const request = composeLeadRequest({ provider: config.provider as DirectChatProviderId, model: config.model, key, system, dataDocument, history, tools: [] });
+      const answer = await performLeadRequest(request, config.provider as DirectChatProviderId, AbortSignal.timeout(options.timeoutMs ?? 120_000), options.fetcher);
       return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
     }
     // The verdict's own schema is the harness's structured output, so the answer is the verdict itself.
-    const answer = await performSubscriptionMateRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system, dataDocument, history, tools: [], outputSchema: MEMORY_VERDICT_MODEL_SCHEMA, timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
+    const answer = await performSubscriptionLeadRequest({ provider: config.provider as SubscriptionChatProviderId, model: config.model, system, dataDocument, history, tools: [], outputSchema: MEMORY_VERDICT_MODEL_SCHEMA, timeoutMs: options.timeoutMs ?? 180_000 }, options.runner);
     return answer.ok ? { ok: true, text: answer.answer.text } : { ok: false, problem: answer.problem };
   };
 }

@@ -7,7 +7,7 @@ import { claimNotifications, finalizeNotification } from "./notification-deliver
  */
 
 import { describe, test, expect, beforeEach } from "vitest";
-import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS } from "./telegram.js";
 
@@ -175,48 +175,5 @@ describe("episode notifications (finding 23)", () => {
     expect(store.enqueueEpisode("merge:alex/thing:7", { kind: "merge", subject: "s", body: "b" }, "e2", later(1_000))).toBe(false);
     expect(store.resolveEpisodes("merge:alex/thing:7", later(2_000))).toBe(1);
     expect(store.enqueueEpisode("merge:alex/thing:7", { kind: "merge", subject: "s", body: "b" }, "e3", later(3_000))).toBe(true);
-  });
-});
-
-describe("the v22 → v23 migration", () => {
-  test("an existing database gains the push tables and columns, reopened twice", async () => {
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-v23-"));
-    const file = join(dir, "orders.db");
-    try {
-      openStore(file).close();
-      const { createRequire } = await import("node:module");
-      const require = createRequire(import.meta.url);
-      const { DatabaseSync } = require("node:sqlite");
-      const raw = new DatabaseSync(file);
-      raw.exec(
-        "DROP TABLE service_cursor; DROP INDEX IF EXISTS push_delivery_due; DROP TABLE IF EXISTS push_delivery;" +
-          "DROP INDEX IF EXISTS push_subscription_live; DROP TABLE IF EXISTS push_subscription;" +
-          "UPDATE schema_version SET version = 22;",
-      );
-      raw.close();
-      openStore(file).close();
-      const migrated = openStore(file);
-      try {
-        const added = addApprover(migrated, "casey", T0);
-        if (!added.ok) throw new Error("approver");
-        expect(
-          migrated.enrollPushSubscription(
-            { endpoint: "https://updates.push.services.mozilla.com/x", p256dh: "B", auth: "a", approver: "casey", approverGeneration: 1, uaWords: "w", vapidFingerprint: "fp" },
-            T0,
-          ),
-        ).toMatchObject({ ok: true });
-        const version = (migrated as unknown as { db: { prepare(sql: string): { get(): Record<string, unknown> } } }).db
-          .prepare("SELECT version FROM schema_version")
-          .get();
-        expect(Number(version["version"])).toBe(SCHEMA_VERSION);
-      } finally {
-        migrated.close();
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

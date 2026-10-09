@@ -5,7 +5,7 @@
  * - The person who filed a task can't approve it ("not the requester").
  * - Protected work (the whole project, or tasks that touch protected paths)
  *   needs two different people to approve the same exact scope, and an AI
- *   teammate or an operating mode can never decide it.
+ *   subagent or an operating mode can never decide it.
  *
  * The store enforces these at the one place every approval is sealed
  * (`Store.sealScopeApproval`); this module holds the pure parts.
@@ -13,15 +13,15 @@
 
 /** Who filed a task, as far as anyone can tell: a person (browser, chat, a
  * revision), a coordinator acting for the person who made it, an AI
- * teammate, or automation that names no person (a schedule, the CLI, a flow
+ * subagent, or automation that names no person (a schedule, the CLI, a flow
  * with no owner). The requester rule binds only a named person. */
-export type FilerKind = "person" | "coordinator" | "teammate" | "automation";
+export type FilerKind = "person" | "coordinator" | "subagent" | "automation";
 export type Filer = { name: string | null; kind: FilerKind };
 
-/** A filer from a name as the ledger writes it: an AI teammate's ends " (AI)"; a coordinator's starts "coordinator:"; none is automation. */
+/** A filer from a name as the ledger writes it: a subagent's ends " (AI)"; a coordinator's starts "coordinator:"; none is automation. */
 export function filerFor(name: string | null | undefined): Filer {
   if (name == null || name === "") return { name: null, kind: "automation" };
-  if (name.endsWith(" (AI)")) return { name, kind: "teammate" };
+  if (name.endsWith(" (AI)")) return { name, kind: "subagent" };
   if (name.startsWith("coordinator:")) return { name, kind: "coordinator" };
   return { name, kind: "person" };
 }
@@ -29,7 +29,7 @@ export function filerFor(name: string | null | undefined): Filer {
 export type ApprovalRules = { notRequester: boolean; protectProject: boolean; protectedPaths: string[] };
 export const NO_RULES: ApprovalRules = { notRequester: false, protectProject: false, protectedPaths: [] };
 
-/** Who is sealing: a person at a ceremony, an operating mode, an AI teammate, or automation. */
+/** Who is sealing: a person at a ceremony, an operating mode, a subagent, or automation. */
 export type ApproverKind = "person" | "mode" | "ai" | "automation";
 export type ApprovalGate =
   | { verdict: "seal"; protectedWork: boolean }
@@ -128,5 +128,5 @@ export function gateWords(gate: Exclude<ApprovalGate, { verdict: "seal" }>): str
     : `Your approval is recorded (${gate.have} of ${gate.need}). This work is protected, so a second person needs to approve it.`;
   return gate.reason === "requester"
     ? "You filed this task, and this project needs someone else to approve it."
-    : "This work is protected: a person has to approve it, not an operating mode, a schedule or an AI teammate.";
+    : "This work is protected: a person has to approve it, not an operating mode, a schedule or a subagent.";
 }

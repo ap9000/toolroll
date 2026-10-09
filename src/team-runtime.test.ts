@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { credentialKeyOf, TURN_WALL_CLOCK_MS } from "./converse.js";
-import { proposalActGate, PROPOSAL_CHAT_REASON } from './mate-doors.js';
-import { MATE_ABORT_GRACE_MS } from "./mate.js";
+import { proposalActGate, PROPOSAL_CHAT_REASON } from './lead-doors.js';
+import { LEAD_ABORT_GRACE_MS } from "./lead.js";
 import { fileTaskProposal } from "./proposal.js";
-import { mateTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
-import type { SubscriptionMateRunner } from "./subscription-chat.js";
+import { leadTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
+import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { createTeamRuntime } from "./team-runtime.js";
 import type { TeamActor } from "./team-contract.js";
 
@@ -53,11 +53,11 @@ describe("a shared conversation's turn that never finishes", () => {
       // No live credential resolver means direct grants fail closed.
       expect(proposalActGate(store, actor, conversation.threadId, T0)).toMatchObject({ ok: false, said: PROPOSAL_CHAT_REASON });
       const session = store.teamMateSession(actor.name, conversation.threadId)!;
-      if (change === 'ended') store.handle.prepare('UPDATE mate_session SET ended_at=? WHERE id=?').run(T0.toISOString(), session.id);
-      if (change === 'generation') store.handle.prepare('UPDATE mate_session SET approver_generation=approver_generation+1 WHERE id=?').run(session.id);
-      if (change === 'credential') store.handle.prepare('UPDATE mate_session SET credential_key=? WHERE id=?').run(credentialKeyOf('anthropic-api', 'other-key'), session.id);
-      if (change === 'ceiling') store.handle.prepare('UPDATE mate_session SET ceiling_digest=? WHERE id=?').run('different-projects', session.id);
-      if (change === 'terms') store.handle.prepare('UPDATE mate_session SET terms_digest=? WHERE id=?').run('old-terms', session.id);
+      if (change === 'ended') store.handle.prepare('UPDATE lead_session SET ended_at=? WHERE id=?').run(T0.toISOString(), session.id);
+      if (change === 'generation') store.handle.prepare('UPDATE lead_session SET approver_generation=approver_generation+1 WHERE id=?').run(session.id);
+      if (change === 'credential') store.handle.prepare('UPDATE lead_session SET credential_key=? WHERE id=?').run(credentialKeyOf('anthropic-api', 'other-key'), session.id);
+      if (change === 'ceiling') store.handle.prepare('UPDATE lead_session SET ceiling_digest=? WHERE id=?').run('different-projects', session.id);
+      if (change === 'terms') store.handle.prepare('UPDATE lead_session SET terms_digest=? WHERE id=?').run('old-terms', session.id);
       if (change === 'daily') live.config.dailyTurns++;
       if (change === 'model') live.config.model = 'different-model';
       if (change === 'weekly') live.config.weeklyCeilingMicrousd++;
@@ -74,7 +74,7 @@ describe("a shared conversation's turn that never finishes", () => {
     const signals: AbortSignal[] = [];
     let hung!: () => void;
     const hanging = new Promise<void>(resolve => { hung = resolve; });
-    const subscriptionRunner: SubscriptionMateRunner = request => {
+    const subscriptionRunner: SubscriptionLeadRunner = request => {
       signals.push(request.signal!);
       if (signals.length === 1) return Promise.resolve(reply("Holding it.", [{ id: "h1", name: "propose_hold", args: { task: "digest", reason: "not this week" } }]));
       if (signals.length === 2) { hung(); return new Promise(() => undefined); }
@@ -100,11 +100,11 @@ describe("a shared conversation's turn that never finishes", () => {
 
     await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS);
     expect(signals[1]?.aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(MATE_ABORT_GRACE_MS);
+    await vi.advanceTimersByTimeAsync(LEAD_ABORT_GRACE_MS);
     // One plain notice in the thread (none repeated on the message), and the proposal it made.
     expect(statuses()).toEqual([["operator", "failed", null], ["operator", "queued", null], ["assistant", "answered", null]]);
     const view = runtime.domain.snapshot(actor, conversationId);
-    expect(view.messages[2]).toMatchObject({ text: mateTimeoutNotice(true), turnId: view.messages[0]?.turnId });
+    expect(view.messages[2]).toMatchObject({ text: leadTimeoutNotice(true), turnId: view.messages[0]?.turnId });
     const proposals = (await runtime.execute(actor, { operation: "send", args: { conversationId, text: "anything else?", requestId: "second" } })).snapshot?.proposals;
     expect(proposals).toMatchObject([{ state: "pending", href: expect.stringContaining("proposal=") }]);
 

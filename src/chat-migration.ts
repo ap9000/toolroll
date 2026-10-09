@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS chat_event (
  kind TEXT NOT NULL CHECK(kind IN ('message','action','pair','notice')),
  channel TEXT NOT NULL, member TEXT NOT NULL, ts TEXT NOT NULL, thread TEXT NOT NULL,
  payload TEXT NOT NULL, created TEXT NOT NULL,
- session INTEGER REFERENCES mate_session(id), state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','done','dropped')),
+ session INTEGER REFERENCES lead_session(id), state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','done','dropped')),
  next_at TEXT, problem TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_pending_event ON chat_event(installation,state,next_at);
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS chat_part (
 );
 CREATE TABLE IF NOT EXISTS chat_action (
  token TEXT PRIMARY KEY, part INTEGER NOT NULL REFERENCES chat_part(id),
- proposal INTEGER NOT NULL REFERENCES mate_proposal(id), phase TEXT NOT NULL CHECK(phase IN ('confirm','dismiss','yes','cancel')),
+ proposal INTEGER NOT NULL REFERENCES lead_proposal(id), phase TEXT NOT NULL CHECK(phase IN ('confirm','dismiss','yes','cancel')),
  expires TEXT NOT NULL, consumed TEXT
 );
 CREATE TABLE IF NOT EXISTS chat_progress (
@@ -109,19 +109,19 @@ CREATE TABLE IF NOT EXISTS chat_flow_note (
 );
 CREATE INDEX IF NOT EXISTS chat_flow_note_visit ON chat_flow_note(card, entry);
 `;
-/** v93: a teammate's question in the chat app. One button per option (choice)
+/** v93: a subagent's question in the chat app. One button per option (choice)
  * and one to answer in words (choice NULL); that one opens a prompt the
  * person's next message in their DM answers. Never in CHAT_TABLES: an older
  * database has no such tables until this schema creates them. */
 const LEGACY_APP_QUESTION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_question_action (
  token TEXT PRIMARY KEY, part INTEGER NOT NULL REFERENCES chat_part(id),
- question INTEGER NOT NULL REFERENCES teammate_question(id), choice TEXT, expires TEXT NOT NULL, consumed TEXT
+ question INTEGER NOT NULL REFERENCES subagent_question(id), choice TEXT, expires TEXT NOT NULL, consumed TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_question_action_question ON chat_question_action(question);
 CREATE TABLE IF NOT EXISTS chat_question_prompt (
  id INTEGER PRIMARY KEY AUTOINCREMENT, binding INTEGER NOT NULL REFERENCES chat_binding(id),
- question INTEGER NOT NULL REFERENCES teammate_question(id), created TEXT NOT NULL, expires TEXT NOT NULL, consumed TEXT
+ question INTEGER NOT NULL REFERENCES subagent_question(id), created TEXT NOT NULL, expires TEXT NOT NULL, consumed TEXT
 );
 CREATE INDEX IF NOT EXISTS chat_question_prompt_open ON chat_question_prompt(binding, consumed);
 `;
@@ -314,13 +314,13 @@ CREATE TABLE IF NOT EXISTS telegram_flow_action (
   consumed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS telegram_flow_action_visit ON telegram_flow_action (card, entry);
--- v93: a teammate's question on Telegram. One button per option (choice)
+-- v93: a subagent's question on Telegram. One button per option (choice)
 -- and one to reply in words (choice NULL), placed on the message it rides;
 -- a reply to the prompt the Reply button sends is the answer.
 CREATE TABLE IF NOT EXISTS telegram_question_action (
   token       TEXT PRIMARY KEY,
   binding     INTEGER NOT NULL REFERENCES telegram_binding(id) ON DELETE RESTRICT,
-  question    INTEGER NOT NULL REFERENCES teammate_question(id),
+  question    INTEGER NOT NULL REFERENCES subagent_question(id),
   choice      TEXT,
   chat_id     TEXT NOT NULL,
   message_id  TEXT,
@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS telegram_question_prompt (
   chat_id     TEXT NOT NULL,
   message_id  TEXT NOT NULL,
   binding     INTEGER NOT NULL REFERENCES telegram_binding(id) ON DELETE RESTRICT,
-  question    INTEGER NOT NULL REFERENCES teammate_question(id),
+  question    INTEGER NOT NULL REFERENCES subagent_question(id),
   created_at  TEXT NOT NULL,
   expires_at  TEXT NOT NULL,
   consumed_at TEXT,
@@ -422,7 +422,7 @@ CREATE TABLE IF NOT EXISTS telegram_conversation (
 );
 CREATE INDEX IF NOT EXISTS telegram_conversation_queue ON telegram_conversation (bot_id, state, id);
 
--- v62: opaque one-tap tokens for the mate's proposal cards, the same shape
+-- v62: opaque one-tap tokens for the lead's proposal cards, the same shape
 -- as telegram_action for decisions: callback_data carries only the token,
 -- and what a tap MEANS (which binding, which proposal, which phase) lives
 -- here. Consumed exactly once; an irreversible answer arms a yes/cancel
@@ -430,7 +430,7 @@ CREATE INDEX IF NOT EXISTS telegram_conversation_queue ON telegram_conversation 
 CREATE TABLE IF NOT EXISTS telegram_proposal_action (
   token       TEXT PRIMARY KEY,
   binding     INTEGER NOT NULL REFERENCES telegram_binding(id) ON DELETE RESTRICT,
-  proposal    INTEGER NOT NULL REFERENCES mate_proposal(id) ON DELETE CASCADE,
+  proposal    INTEGER NOT NULL REFERENCES lead_proposal(id) ON DELETE CASCADE,
   phase       TEXT NOT NULL CHECK (phase IN ('confirm','dismiss','yes','cancel')),
   chat_id     TEXT NOT NULL,
   message_id  TEXT,
@@ -464,7 +464,7 @@ CREATE TABLE IF NOT EXISTS telegram_conversation_part (
   kind            TEXT NOT NULL CHECK (kind IN ('reply','card','image')),
   text            TEXT NOT NULL,
   reply_to        TEXT,
-  proposal        INTEGER REFERENCES mate_proposal(id) ON DELETE SET NULL,
+  proposal        INTEGER REFERENCES lead_proposal(id) ON DELETE SET NULL,
   keyboard_json   TEXT,
   state           TEXT NOT NULL CHECK (state IN ('pending','sent','dropped')),
   message_id      TEXT,

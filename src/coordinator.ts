@@ -19,7 +19,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { canonicalRepos } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { describeScope } from "./scope.js";
-import { reportSummaryFor } from "./mate-tools.js";
+import { reportSummaryFor } from "./lead-tools.js";
 import type { Store } from "./store.js";
 import { taskWorkSummaryOf, type WorkSummary } from "./work-summary.js";
 import { assignmentOf, assignmentBrief } from "./assignment.js";

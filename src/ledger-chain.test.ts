@@ -2,7 +2,7 @@
  * The ledger as a hash chain (v103): every entry sealed with the one before
  * it; changing, removing or slipping in an entry is found and named; a
  * checkpoint copied off the machine catches a chain rebuilt from scratch;
- * teammate tool calls and minted coordinators are in the ledger too.
+ * subagent tool calls and minted coordinators are in the ledger too.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -267,27 +267,27 @@ test("a chain rebuilt from scratch still verifies on its own, but not against a 
   expect(matchesOutsideCheckpoint(store.handle, "nonsense").ok).toBe(false);
 });
 
-test("teammate tool calls, their decisions and undos are in the ledger, as the teammate or the person who decided", () => {
+test("subagent tool calls, their decisions and undos are in the ledger, as the subagent or the person who decided", () => {
   const repo = "/repo/a";
-  const mate = store.createTeammate({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, T0);
+  const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, T0);
   const flow = store.createFlow({ repo, name: "Support", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: "alex" }, T0);
   const card = store.addFlowCard({ flow, title: "Refund it", description: null, stage: "inbox", by: "alex" }, T0);
-  const call = store.addTeammateCall({ teammate: mate, card, entry: 1, tool: "shop", action: "refund_order", input: { order: "54" }, rule: "ask", why: "Over the limit.", state: "asked" }, T0);
-  expect(store.moveTeammateCall(call, ["asked"], { state: "approved", decidedBy: "alex" }, new Date(T0.getTime() + 1000))).toBe(true);
-  expect(store.moveTeammateCall(call, ["approved"], { state: "done", result: "refunded" }, new Date(T0.getTime() + 2000))).toBe(true);
-  expect(store.markTeammateCallUndone(call, "sam", new Date(T0.getTime() + 3000))).toBe(true);
-  const rows = store.actionLedger({ repos: [repo], limit: 20 }).filter(one => one.action.startsWith("teammate tool call")).reverse();
+  const call = store.addSubagentCall({ subagent: mate, card, entry: 1, tool: "shop", action: "refund_order", input: { order: "54" }, rule: "ask", why: "Over the limit.", state: "asked" }, T0);
+  expect(store.moveSubagentCall(call, ["asked"], { state: "approved", decidedBy: "alex" }, new Date(T0.getTime() + 1000))).toBe(true);
+  expect(store.moveSubagentCall(call, ["approved"], { state: "done", result: "refunded" }, new Date(T0.getTime() + 2000))).toBe(true);
+  expect(store.markSubagentCallUndone(call, "sam", new Date(T0.getTime() + 3000))).toBe(true);
+  const rows = store.actionLedger({ repos: [repo], limit: 20 }).filter(one => one.action.startsWith("subagent tool call")).reverse();
   expect(rows.map(one => [one.actor, one.action, one.outcome])).toEqual([
-    ["maya (AI)", "teammate tool call: shop refund_order", "asked"],
-    ["alex", "teammate tool call: shop refund_order", "approved"],
-    ["maya (AI)", "teammate tool call: shop refund_order", "done"],
-    ["sam", "teammate tool call undone: shop refund_order", "undone"],
+    ["maya (AI)", "subagent tool call: shop refund_order", "asked"],
+    ["alex", "subagent tool call: shop refund_order", "approved"],
+    ["maya (AI)", "subagent tool call: shop refund_order", "done"],
+    ["sam", "subagent tool call undone: shop refund_order", "undone"],
   ]);
   expect(rows[0]!.detail).toBe("rule: ask");
   expect(rows[2]!.at).toBe(new Date(T0.getTime() + 2000).toISOString());
   // An undo that failed says so; the call stands.
-  store.clearTeammateCallUndone(call, new Date(T0.getTime() + 4000));
-  expect(store.actionLedger({ repos: [repo], limit: 1 })[0]).toMatchObject({ actor: "maya (AI)", action: "teammate tool call undo failed: shop refund_order", outcome: "failed" });
+  store.clearSubagentCallUndone(call, new Date(T0.getTime() + 4000));
+  expect(store.actionLedger({ repos: [repo], limit: 1 })[0]).toMatchObject({ actor: "maya (AI)", action: "subagent tool call undo failed: shop refund_order", outcome: "failed" });
 });
 
 test("minting a coordinator is in the ledger, with its projects", () => {

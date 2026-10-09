@@ -33,7 +33,7 @@ import { chooseFlowCard, flowChoiceAt, flowSendPaths, flowSendTail, FLOW_CHOOSE_
 import { cleanFlowMessage, fitFlowMessage } from "./flow-items.js";
 import { renderReply } from "./reply-shape.js";
 import { deciderOf, replyTarget } from "./flows.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { verifyApproverStanding } from "./principal.js";
 import { chatHash, partContent, savedChatPart, type ChatBinding, type ChatContent, type ChatEvent, type ChatState } from "./chat-delivery-state.js";
 import { readHeldWords } from "./contracts/chat-content.js";
@@ -242,7 +242,7 @@ function applyChatChoiceTap(options: { store: Store; state: ChatState; label: st
 function replyAsNote(options: { store: Store; state: ChatState; label: string }, binding: ChatBinding, said: string, cutShort: boolean, visit: { card: number; entry: number }, repos: readonly string[], now: Date): { ok: true; said: string } | { ok: false; said: string } | null {
   const { store } = options;
   if (said === "") return { ok: false, said: "Say what you'd change." };
-  if (cutShort || said.length > LIMITS.note) return { ok: false, said: `That's too long to take from here. Keep it to ${Math.min(LIMITS.note, MATE_MESSAGE_MAX_CHARS).toLocaleString("en-US")} characters, or reply in Toolroll.` };
+  if (cutShort || said.length > LIMITS.note) return { ok: false, said: `That's too long to take from here. Keep it to ${Math.min(LIMITS.note, LEAD_MESSAGE_MAX_CHARS).toLocaleString("en-US")} characters, or reply in Toolroll.` };
   if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) return null;
   const chosen = chooseFlowCard(store, { card: visit.card, entry: visit.entry, choice: null, note: said, actor: binding.approver, where: options.label, repos }, now);
   return chosen.ok ? { ok: true, said: chosen.said } : { ok: false, said: chosen.message };
@@ -357,7 +357,7 @@ export function answerChatFlowPrompt(options: { store: Store; state: ChatState; 
     // An edit is a draft (DRAFT_LIMIT); a send-back is a note (LIMITS.note). Over it is refused with the limit, never cut.
     const cutShort = (input.originalLength ?? 0) > input.text.length;
     const most = mode === "edit" ? DRAFT_LIMIT : LIMITS.note;
-    const limit = cutShort ? Math.min(MATE_MESSAGE_MAX_CHARS, most) : most;
+    const limit = cutShort ? Math.min(LEAD_MESSAGE_MAX_CHARS, most) : most;
     if (cutShort || said.length > most) { say(`That's too long to take from here. Keep it to ${limit.toLocaleString("en-US")} characters, or ${mode === "edit" ? "change it" : "send it back"} in Toolroll.`); return true; }
     if (!verifyApproverStanding(store, binding.approver, binding.generation, repos).ok) { close(); state.finish(event.id, true); return true; }
     if (mode === "edit") {

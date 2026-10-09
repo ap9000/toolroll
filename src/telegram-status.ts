@@ -39,7 +39,7 @@ export const PHONE_HELP = [
   "/task <name or number> — the same, by a word from its name",
   "/lead — back to talking about everything",
   "/status — what's happening across your projects",
-  "/team — team conversations; /team <number> to talk in one, /team off to leave",
+  // D5: /team (the central team service's conversations) is deprecated: it still answers this release, unlisted.
   "/help — this message",
   "",
   "To answer an agent's question, tap its buttons; reply to the question to add a note. Approvals that need your password, cancelling and publishing finish in the Toolroll console, and a console button only takes you there. The computer must be awake and connected to reply.",

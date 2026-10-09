@@ -9,6 +9,6 @@ export const EXPORT_CSS = `.data-export{max-width:720px;min-width:0}.data-export
 
 export function dataExportHtml(notice: { problem?: string | null }): Html {
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : "";
-  return html`<section class="data-export">${note}<p>Everything Toolroll knows, as one .zip: projects, tasks, runs and cost, the action ledger, evidence packs, chats, flows, teammates and settings. Passwords, keys and tokens are never included.</p>${
+  return html`<section class="data-export">${note}<p>Everything Toolroll knows, as one .zip: projects, tasks, runs and cost, the action ledger, evidence packs, chats, flows, subagents and settings. Passwords, keys and tokens are never included.</p>${
     postForm("/settings/data", html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Download export</button>`)}<p class="meta">The same export from the command line: <code>toolroll export --out &lt;path&gt; [--zip]</code></p></section>`;
 }

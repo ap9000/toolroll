@@ -1,5 +1,5 @@
 /** Discord messages and buttons transport the shared assistant's saved actions. */
-import { chatQuestionButtons } from "./teammate-question.js";
+import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
@@ -25,7 +25,7 @@ import {
   planRoomMessages,
 } from "./chat-delivery.js";
 import { chatResultHref } from "./chat-controls.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { discordPlain, renderReply } from "./reply-shape.js";
 import { WARM_EMOJI } from "./chat-warmth.js";
 import {
@@ -115,7 +115,7 @@ export function receiveDiscord(
     payload = pair
       ? { hash: chatHash(pair[1]!) }
       : {
-          text: body.content.slice(0, MATE_MESSAGE_MAX_CHARS + 1),
+          text: body.content.slice(0, LEAD_MESSAGE_MAX_CHARS + 1),
           originalLength: body.content.length,
           ...(Array.isArray(body.attachments) && body.attachments.length
             ? {
@@ -282,7 +282,7 @@ export async function deliverDiscordPart(
   }
   try {
     const session =
-        event.session === null ? null : store.getMateSession(event.session),
+        event.session === null ? null : store.getLeadSession(event.session),
       repos = await channelAccess(shared, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
@@ -342,7 +342,7 @@ export async function deliverDiscordPart(
       });
     }
     if (content.proposal) {
-      const proposal = store.getMateProposal(content.proposal);
+      const proposal = store.getLeadProposal(content.proposal);
       if (!proposal) text = "This proposal is unavailable.";
       else if (proposal.state !== "pending")
         text = proposalOutcomeText(proposal);
@@ -402,7 +402,7 @@ export async function deliverDiscordPart(
               custom_id: `so_${one.token}`,
             }))
           : []),
-        // A teammate's question (v93): its options, then "Answer in words".
+        // A subagent's question (v93): its options, then "Answer in words".
         ...(content.question
           ? chatQuestionButtons(state, row.id, now).map((one) => ({
               type: 2,

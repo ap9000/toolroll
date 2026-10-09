@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { addApprover, approve, digestOf, propose } from "./scope.js";
-
 
 /** The exact route authority a fixture PRESENTS at admission (v48 authority repair): the
  * store dictates nothing, so a routed row presents the leg it holds, exactly
@@ -84,50 +80,5 @@ describe("two quality modes", () => {
     store.setQualityDefault("default", "alex", new Date(T0.getTime() + 1_000));
     expect(store.getScope("fast")?.digest).toBe(before?.digest);
     expect(store.getScope("fast")?.qualityMode).toBe("default");
-  });
-
-  test("a v40 database upgrades additively and historical rows read as Default", () => {
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-v41-"));
-    const file = join(dir, "orders.db");
-    let legacy: Store | null = null;
-    try {
-      legacy = openStore(file);
-      legacy.setPhaseConfig("installation", "build", "claude", "sonnet", "test", T0);
-      legacy.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", T0); // v47: every phase names an exact model
-      legacy.setPhaseConfig("installation", "review", "claude", "sonnet", "test", T0);
-      legacy.createTask({ id: "old", title: "old task" }, T0);
-      propose(legacy, { taskId: "old", goal: "keep the old workflow", now: T0 });
-      sealScope(legacy, "old");
-      const ref = legacy.refFor("built-in", "old");
-      legacy.startRun({ taskRef: ref.id, leaseId: "legacy", runner: "builder", branch: "old", worktree: "/old", now: T0, ...presented(legacy, ref.id, "builder") });
-      // A v40 fixture predates v44's plan_revision/authority_digest columns
-      // too — drop them along with quality_mode so this reopen genuinely
-      // exercises the v41 recognizer against the exact v34 shape it expects,
-      // not today's schema with only one column missing.
-      // v50's review_attempt (and its partial uniques) came after v49's
-      // watch_incarnation; both are dropped so the file is a true v40 shape.
-      for (const index of ["root_review_attempt_ordinal", "one_live_root_review_per_source", "one_successful_root_review_per_source", "one_correction_per_reviewer"]) legacy.raw().exec(`DROP INDEX IF EXISTS ${index}`);
-      legacy.raw().exec("ALTER TABLE run DROP COLUMN review_attempt");
-      legacy.raw().exec("ALTER TABLE run DROP COLUMN plan_revision");
-      legacy.raw().exec("ALTER TABLE run DROP COLUMN authority_digest");
-      legacy.raw().exec("ALTER TABLE run DROP COLUMN watch_incarnation");
-      legacy.raw().exec("ALTER TABLE run DROP COLUMN quality_mode");
-      legacy.raw().exec("ALTER TABLE task_scope DROP COLUMN quality_mode");
-      legacy.raw().exec("ALTER TABLE task_ref DROP COLUMN quality_mode");
-      legacy.raw().exec("DROP TABLE quality_default");
-      legacy.raw().exec("DROP TABLE service_cursor");
-      legacy.raw().prepare("UPDATE schema_version SET version = 40").run();
-      legacy.close();
-      legacy = null;
-      legacy = openStore(file);
-
-      expect(legacy.raw().prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
-      expect(legacy.getScope("old")?.qualityMode).toBe("default");
-      expect(legacy.getRun(1)?.qualityMode).toBe("default");
-      expect(legacy.qualityDefault().mode).toBe("default");
-    } finally {
-      legacy?.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

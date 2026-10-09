@@ -306,13 +306,13 @@ describe("the scripted provider", () => {
   const LEAD_SCHEMA = JSON.stringify({ type: "object", properties: { text: {}, calls: {} } });
   const conversation = (...history: object[]) => `CONTRACT\n\nAVAILABLE HOST TOOLS:\n[]\n\nDATA:\n{}\n\nCONVERSATION:\n${JSON.stringify(history)}`;
 
-  test("answers a teammate turn as buffered JSON and a lead's steps as stream-json, with structured output; each lead step reads the same answer", () => {
+  test("answers a subagent turn as buffered JSON and a lead's steps as stream-json, with structured output; each lead step reads the same answer", () => {
     const provider = make();
-    provider.add("Maya's journey", { role: "teammate", when: [/Title: Where is my order/], answer: { action: "route", answer: "Just a question", text: "It ships today.", input: { order: "1201" } } });
+    provider.add("Maya's journey", { role: "subagent", when: [/Title: Where is my order/], answer: { action: "route", answer: "Just a question", text: "It ships today.", input: { order: "1201" } } });
     provider.add("the lead's journey", { role: "lead", when: [/File a task/], times: 1, answer: { steps: [{ text: "Filing it.", calls: [{ name: "propose_task", arguments: { repo: "r1" } }] }, { text: "Filed.", calls: [] }] } });
-    const teammate = call(provider.shims.claude, ["-p", "--output-format", "json", "--json-schema", TURN_SCHEMA, "--tools", ""], { input: "You are Maya\nTHE CARD\nTitle: Where is my order #1201?" });
-    expect(teammate.status).toBe(0);
-    const [answer] = lines(teammate.stdout);
+    const subagent = call(provider.shims.claude, ["-p", "--output-format", "json", "--json-schema", TURN_SCHEMA, "--tools", ""], { input: "You are Maya\nTHE CARD\nTitle: Where is my order #1201?" });
+    expect(subagent.status).toBe(0);
+    const [answer] = lines(subagent.stdout);
     expect(answer).toMatchObject({ type: "result", subtype: "success", is_error: false });
     expect(answer!["structured_output"]).toEqual({ action: "route", answer: "Just a question", text: "It ships today.", note: "", question: "", options: [], reason: "Scripted for this journey.", tool: "", input: '{"order":"1201"}', remember: "" });
     const first = lines(call(provider.shims.claude, ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--json-schema", LEAD_SCHEMA], { input: conversation({ role: "operator", text: "File a task for this" }) }).stdout);
@@ -323,7 +323,7 @@ describe("the scripted provider", () => {
     const second = lines(call(provider.shims.claude, ["-p", "--output-format", "json", "--json-schema", LEAD_SCHEMA], { input: conversation({ role: "operator", text: "File a task for this" }, { role: "assistant", text: "Filing it.", calls: [] }, { role: "tool", callId: "call-1-1", name: "propose_task", result: "{}" }) }).stdout);
     expect(second[0]!["structured_output"]).toEqual({ text: "Filed.", calls: [] });
     const journal = provider.journal();
-    expect(journal.map(one => [one.role, one.journey, one.step, one.ok])).toEqual([["teammate", "Maya's journey", 0, true], ["lead", "the lead's journey", 0, true], ["lead", "the lead's journey", 1, true]]);
+    expect(journal.map(one => [one.role, one.journey, one.step, one.ok])).toEqual([["subagent", "Maya's journey", 0, true], ["lead", "the lead's journey", 0, true], ["lead", "the lead's journey", 1, true]]);
     expect(turnsOf(journal)).toEqual({ turns: 3, scripted: 3, real: 0, unscripted: 0 });
   });
 

@@ -14,13 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { addApprover, propose, approve } from "./scope.js";
 import { register } from "./runner.js";
 import { createDecisionServer } from "./serve.js";
 import { storeEvidence } from "./evidence.js";
 import { verifyApproverStanding } from "./principal.js";
-import { executeMateTool } from "./mate-tools.js";
+import { executeLeadTool } from "./lead-tools.js";
 import { chatControlHref } from "./chat-controls.js";
 import {
   changeSkills,
@@ -487,55 +487,30 @@ describe("managed project skills", () => {
         return cards.length;
       },
     };
-    const index = executeMateTool(ctx, "get_skills", { repo: "r1" });
+    const index = executeLeadTool(ctx, "get_skills", { repo: "r1" });
     expect(JSON.stringify(index)).toContain(skill.sha.slice(0, 20));
     expect(JSON.stringify(index)).not.toContain("Use short button");
     expect(
       JSON.stringify(
-        executeMateTool(ctx, "get_skills", {
+        executeLeadTool(ctx, "get_skills", {
           repo: "r1",
           version: skill.sha.slice(0, 20),
         }),
       ),
     ).toContain("Use short button");
-    expect(executeMateTool(ctx, "get_skills", { repo: "r2" }).ok).toBe(false);
+    expect(executeLeadTool(ctx, "get_skills", { repo: "r2" }).ok).toBe(false);
     expect(
-      executeMateTool(ctx, "show_control", { control: "skills", repo: "r1" })
+      executeLeadTool(ctx, "show_control", { control: "skills", repo: "r1" })
         .ok,
     ).toBe(true);
     expect(cards).toHaveLength(1);
     expect(chatControlHref("skills", "", undefined, cards[0]!["project"])).toBe(
       "/settings/skills?repo=" + encodeURIComponent(repo),
     );
-    expect(executeMateTool(ctx, "show_control", { control: "skills" }).ok).toBe(
+    expect(executeLeadTool(ctx, "show_control", { control: "skills" }).ok).toBe(
       false,
     );
     expect(() => conversationSkills(store, repo, "unknown")).toThrow(/access/);
-  });
-  test("v64 migration preserves existing rows and refuses missing v65 history", () => {
-    add();
-    for (const table of [
-      "skill_test",
-      "skill_snapshot",
-      "project_skill_change",
-      "skill_owner",
-      "skill_package",
-    ])
-      store.handle.exec(`DROP TABLE ${table}`);
-    store.handle.exec("DROP TABLE service_cursor; UPDATE schema_version SET version=64");
-    store.close();
-    store = openStore(db);
-    expect(view().library).toEqual([]);
-    expect(store.accountOf("alex")).not.toBeNull();
-    expect(
-      store.handle.prepare("SELECT version FROM schema_version").get()?.[
-        "version"
-      ],
-    ).toBe(SCHEMA_VERSION);
-    store.handle.exec("DROP TABLE skill_snapshot");
-    store.close();
-    expect(() => openStore(db)).toThrow(/skills are missing/);
-    store = openStore(":memory:");
   });
   test("HTTP protects writes, retains a failed draft, and imports before enabling", async () => {
     const server = createDecisionServer({

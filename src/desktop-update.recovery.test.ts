@@ -284,7 +284,7 @@ test("SQLite gate refuses racing admissions, lets an owned conversation finish, 
     expect(() => db.exec("INSERT INTO claim(lease_id) VALUES('new')")).toThrow(UPDATE_PAUSED);
     expect(() => db.exec("INSERT INTO mate_turn(id) VALUES(1)")).toThrow(UPDATE_PAUSED);
     expect(() => db.exec("INSERT INTO chat_turn(id) VALUES(1)")).toThrow(UPDATE_PAUSED);
-    // A mate's follow-up step is permitted by the gate; ordinary NOT NULL
+    // A lead's follow-up step is permitted by the gate; ordinary NOT NULL
     // constraints still refuse this deliberately incomplete fixture row.
     expect(() => db.exec("INSERT INTO chat_turn(id,mate_turn) VALUES(1,1)")).not.toThrow(UPDATE_PAUSED);
     expect(() => removeUpdateGate(db, randomUUID())).toThrow(/does not own/);

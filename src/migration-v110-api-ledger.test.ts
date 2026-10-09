@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
-import { LEDGER_SCHEMA, LEDGER_V54_COLUMNS, LEDGER_V99_TABLE, installLedgerTriggers } from "./action-ledger.js";
+import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_V99_TABLE, installLedgerTriggers } from "./action-ledger.js";
 
 let dir: string, store: Store | undefined;
 afterEach(() => { store?.close(); store = undefined; if (dir) rmSync(dir, { recursive: true, force: true }); });
@@ -26,7 +26,7 @@ test.each([109, -109])("v%s: every ledger row, id, detail and seal carries over,
   // The v109 shape: the v99 ledger table, with its append-only and work triggers in place.
   const db = new DatabaseSync(file);
   for (const trigger of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%action_ledger%'").all()) db.exec(`DROP TRIGGER "${String(trigger["name"])}"`);
-  const columns = [...LEDGER_V54_COLUMNS, "detail"].join(",");
+  const columns = LEDGER_COLUMNS.join(",");
   db.exec(LEDGER_V99_TABLE("action_ledger_old"));
   db.exec(`INSERT INTO action_ledger_old (${columns}) SELECT ${columns} FROM action_ledger; DROP TABLE action_ledger; ALTER TABLE action_ledger_old RENAME TO action_ledger`);
   db.exec(LEDGER_SCHEMA);
@@ -36,7 +36,7 @@ test.each([109, -109])("v%s: every ledger row, id, detail and seal carries over,
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
   expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);
   // Every row, with its id and detail, as it was; the chain over them still proves.
   expect(store.actionLedger({ repos: null, limit: 101 })).toEqual(before);

@@ -60,7 +60,7 @@ export function projectDeleteConfirmHtml(view: ProjectSettingsView, problem: str
     "The checkouts and branches Toolroll made",
     ...(h.chats > 0 ? [count(h.chats, "chat")] : []),
     ...(h.flows > 0 ? [`${count(h.flows, "flow")} and ${count(h.cards, "card")}`] : []),
-    ...(h.teammates > 0 ? [count(h.teammates, "teammate")] : []),
+    ...(h.subagents > 0 ? [count(h.subagents, "subagent")] : []),
     "Its budgets, settings and knowledge",
   ];
   return html`<section class="project-delete">${problem === null ? "" : html`<p class="problem" role="alert">${problem}</p>`}<p>This removes:</p><ul class="removes">${items.map(one => html`<li>${one}</li>`)}</ul><p>The repository at <span class="path">${view.repo}</span> and its own branches stay. The ledger keeps its history. There's no undo.</p>${

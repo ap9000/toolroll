@@ -1,8 +1,8 @@
 /**
- * Starter kits: a working setup in one click — an AI teammate, the flow
+ * Starter kits: a working setup in one click — a subagent, the flow
  * it works, and the triggers that are safe to add straight away — plus a
  * checklist of what's left (connect email, connect a tool) and a sample card
- * that shows the teammate at work within seconds.
+ * that shows the subagent at work within seconds.
  *
  * A kit adds nothing a person couldn't add by hand, and nothing that acts
  * outside: replies go out only after you approve them, a code change is filed
@@ -16,17 +16,17 @@ import { googleConnected } from "./google-mail.js";
 import { readEmailSettings } from "./email-settings.js";
 import { mailboxReady } from "./mailbox.js";
 import { projectToolsOf } from "./project-tools.js";
-import type { FlowRow, Store, TeammateRow } from "./store.js";
-import { createTeammateFrom, nameOf } from "./teammate-admin.js";
-import { grantListed, grantTool, type ToolIo } from "./teammate-tools.js";
-import { TEAMMATE_TEMPLATES } from "./teammates.js";
+import type { FlowRow, Store, SubagentRow } from "./store.js";
+import { createSubagentFrom, nameOf } from "./subagent-admin.js";
+import { grantListed, grantTool, type ToolIo } from "./subagent-tools.js";
+import { SUBAGENT_TEMPLATES } from "./subagents.js";
 
-/** A tool a kit's teammate works better with: the catalog entry that connects it, and why. */
+/** A tool a kit's subagent works better with: the catalog entry that connects it, and why. */
 export type KitTool = { tool: string; label: string; why: string };
 export type Kit = {
   id: string; name: string; promise: string;
-  /** The teammate it hires: a template, and the name it starts with. */
-  teammate: { template: string; handle: string };
+  /** The subagent it hires: a template, and the name it starts with. */
+  subagent: { template: string; handle: string };
   flowName: string;
   steps: FlowStepInput[];
   /** Triggers safe to add at once: buttons (they fire only when pressed). */
@@ -41,10 +41,10 @@ export const KITS: readonly Kit[] = [
   {
     id: "support-desk", name: "Support desk",
     promise: "Maya answers customer emails, looks orders up and refunds within limits you set. You approve each reply before it goes out.",
-    teammate: { template: "support", handle: "maya" },
+    subagent: { template: "support", handle: "maya" },
     flowName: "Support desk",
     steps: [
-      { id: "answer", title: "Maya answers", kind: "teammate", teammate: "maya",
+      { id: "answer", title: "Maya answers", kind: "subagent", subagent: "maya",
         instructions: "Read the customer's message. Look things up (and refund, within your rules) with your tools when it helps. Write the reply we'd send in \"text\". Pick Reply when it's ready for the customer, or Needs a person when your rules say to ask first or you can't help.",
         routes: [{ answer: "Reply", goesTo: "You check the reply" }, { answer: "Needs a person", goesTo: "For you" }], ifFails: "For you" },
       { id: "check", title: "You check the reply", kind: "approval", decider: "owner", next: "Send it", ifFails: "Maya answers" },
@@ -62,10 +62,10 @@ export const KITS: readonly Kit[] = [
   {
     id: "bug-triage", name: "Bug triage",
     promise: "Theo reads every new issue, says what it is and how urgent, answers questions, and turns real bugs into fixes you approve.",
-    teammate: { template: "triage", handle: "theo" },
+    subagent: { template: "triage", handle: "theo" },
     flowName: "Bug triage",
     steps: [
-      { id: "sort", title: "Theo sorts it", kind: "teammate", teammate: "theo",
+      { id: "sort", title: "Theo sorts it", kind: "subagent", subagent: "theo",
         instructions: "Read the report. In \"text\", say in one or two sentences what it is and how urgent (for a bug, add what you'd check first; for a question, write the answer). Pick Bug for something broken in this project's code, Question for someone asking how something works, or Duplicate or noise for anything else, saying why.",
         routes: [{ answer: "Bug", goesTo: "Fix it" }, { answer: "Question", goesTo: "Answered" }, { answer: "Duplicate or noise", goesTo: "Closed" }], ifFails: "For you" },
       { id: "fix", title: "Fix it", kind: "task", planning: "auto", instructions: "Fix the bug this card reports. Theo's notes on it: {{stage.sort}}", next: "You review the fix" },
@@ -85,10 +85,10 @@ export const KITS: readonly Kit[] = [
   {
     id: "sales-follow-up", name: "Sales follow-up",
     promise: "Leo writes back to every new lead within minutes, you approve the email, and it waits for their answer, so no lead goes cold.",
-    teammate: { template: "sales", handle: "leo" },
+    subagent: { template: "sales", handle: "leo" },
     flowName: "Sales follow-up",
     steps: [
-      { id: "write", title: "Leo writes back", kind: "teammate", teammate: "leo",
+      { id: "write", title: "Leo writes back", kind: "subagent", subagent: "leo",
         instructions: "Read the lead. In \"text\", write a short, friendly first reply that answers what they asked and suggests one clear next step. Pick Write back, or Not a fit (say why).",
         routes: [{ answer: "Write back", goesTo: "You check it" }, { answer: "Not a fit", goesTo: "Not a fit" }], ifFails: "Not a fit" },
       { id: "check", title: "You check it", kind: "approval", decider: "owner", next: "Send it", ifFails: "Leo writes back" },
@@ -105,10 +105,10 @@ export const KITS: readonly Kit[] = [
   {
     id: "ops-requests", name: "Ops requests",
     promise: "Ada approves routine requests under $200 without you and brings you everything else, so the team gets answers the same day.",
-    teammate: { template: "ops", handle: "ada" },
+    subagent: { template: "ops", handle: "ada" },
     flowName: "Ops requests",
     steps: [
-      { id: "decide", title: "Ada decides", kind: "approval", teammate: "ada", decider: "owner", next: "Tell the team", ifFails: "Needs more" },
+      { id: "decide", title: "Ada decides", kind: "approval", subagent: "ada", decider: "owner", next: "Tell the team", ifFails: "Needs more" },
       { id: "tell", title: "Tell the team", kind: "notify", message: "Approved: {{card.title}}", next: "Done" },
       { id: "more", title: "Needs more", kind: "inbox" },
       { id: "done", title: "Done", kind: "done" },
@@ -124,24 +124,24 @@ export const KITS: readonly Kit[] = [
 
 export const kitOf = (id: string): Kit | null => KITS.find(one => one.id === id) ?? null;
 
-type Done = { ok: true; said: string; flow: number; teammate: number } | { ok: false; said: string };
+type Done = { ok: true; said: string; flow: number; subagent: number } | { ok: false; said: string };
 
-/** A kit set up in a project: its flow (by name) and its teammate, when both are there. */
-export function kitInstalled(store: Store, kit: Kit, repo: string): { flow: FlowRow; mate: TeammateRow } | null {
-  const mate = store.teammateByHandle(repo, kit.teammate.handle);
+/** A kit set up in a project: its flow (by name) and its subagent, when both are there. */
+export function kitInstalled(store: Store, kit: Kit, repo: string): { flow: FlowRow; mate: SubagentRow } | null {
+  const mate = store.subagentByHandle(repo, kit.subagent.handle);
   const flow = store.listFlows([repo]).find(one => one.name === kit.flowName && one.state === "active") ?? null;
   return mate === null || flow === null ? null : { flow, mate };
 }
 
 /**
- * Set a kit up: its teammate (kept if one of that name is already there), its
- * flow, and its button triggers; then its teammate may use whichever of the
+ * Set a kit up: its subagent (kept if one of that name is already there), its
+ * flow, and its button triggers; then its subagent may use whichever of the
  * kit's tools the project already has (reading free, writing asking first).
  */
 export async function setUpKit(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null, io: ToolIo = {}): Promise<Done> {
   const made = setUpKitNow(store, kit, repo, by, now, dir);
   if (!made.ok || made.said.endsWith("already set up here.")) return made;
-  const mate = store.getTeammate(made.teammate)!;
+  const mate = store.getSubagent(made.subagent)!;
   const present = new Set(projectToolsOf(store, repo).map(one => one.name));
   for (const tool of kit.tools.filter(one => present.has(one.tool))) {
     try { await grantTool(store, mate, tool.tool, by, now, io); } catch { /* it can be given the tool on its page */ }
@@ -149,17 +149,17 @@ export async function setUpKit(store: Store, kit: Kit, repo: string, by: string,
   return made;
 }
 
-/** The same, all at once (a chat confirmation can't wait on a tool): its teammate is given the kit's connected tools by the names their last test found, and each is listed properly on its first turn. */
+/** The same, all at once (a chat confirmation can't wait on a tool): its subagent is given the kit's connected tools by the names their last test found, and each is listed properly on its first turn. */
 export function setUpKitNow(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null, grantByName = false): Done {
   const had = kitInstalled(store, kit, repo);
-  if (had !== null) return { ok: true, said: `${kit.name} is already set up here.`, flow: had.flow.id, teammate: had.mate.id };
-  let mate = store.teammateByHandle(repo, kit.teammate.handle);
+  if (had !== null) return { ok: true, said: `${kit.name} is already set up here.`, flow: had.flow.id, subagent: had.mate.id };
+  let mate = store.subagentByHandle(repo, kit.subagent.handle);
   if (mate === null) {
-    const template = TEAMMATE_TEMPLATES.find(one => one.id === kit.teammate.template);
-    if (template === undefined) return { ok: false, said: "That kit's teammate template is missing." };
-    const made = createTeammateFrom(store, { repo, template: template.id, by }, now);
+    const template = SUBAGENT_TEMPLATES.find(one => one.id === kit.subagent.template);
+    if (template === undefined) return { ok: false, said: "That kit's subagent template is missing." };
+    const made = createSubagentFrom(store, { repo, template: template.id, by }, now);
     if (!made.ok) return { ok: false, said: made.said };
-    mate = store.getTeammate((made as { id: number }).id)!;
+    mate = store.getSubagent((made as { id: number }).id)!;
   }
   let definition;
   try { definition = flowFromSteps(kit.steps, null); } catch (error) { return { ok: false, said: `The kit's flow didn't fit: ${error instanceof Error ? error.message : "unknown"}` }; }
@@ -167,7 +167,7 @@ export function setUpKitNow(store: Store, kit: Kit, repo: string, by: string, no
   const flow = store.getFlow(flowId)!;
   for (const button of kit.buttons) addFlowTriggerTo(store, flow, { kind: "button", label: button.label, questions: button.questions, zone: definition.start }, by, now, dir);
   if (grantByName) for (const tool of projectToolsOf(store, repo).filter(one => kit.tools.some(each => each.tool === one.name))) grantListed(store, mate, tool, null, by, now);
-  return { ok: true, said: `${kit.name} is ready: ${nameOf(mate)} works its ${kit.flowName} flow.`, flow: flowId, teammate: mate.id };
+  return { ok: true, said: `${kit.name} is ready: ${nameOf(mate)} works its ${kit.flowName} flow.`, flow: flowId, subagent: mate.id };
 }
 
 /** One line of a kit's checklist: done, or the next step with where to take it. */
@@ -179,7 +179,7 @@ export function kitChecklist(store: Store, kit: Kit, repo: string, dir: string |
   if (set === null) return [];
   const name = nameOf(set.mate);
   const steps: KitStep[] = [
-    { id: "teammate", done: true, said: `${name} joined the team`, href: `/teammates/${set.mate.id}` },
+    { id: "subagent", done: true, said: `${name} joined the team`, href: `/settings/lead/subagents/${set.mate.id}` },
     { id: "flow", done: true, said: `The ${kit.flowName} flow is ready`, href: `/flows/${set.flow.id}` },
   ];
   if (kit.email === true) {
@@ -195,11 +195,11 @@ export function kitChecklist(store: Store, kit: Kit, repo: string, dir: string |
   const tools = projectToolsOf(store, repo);
   for (const tool of kit.tools) {
     const connected = tools.some(one => one.name === tool.tool);
-    const granted = store.teammateGrant(set.mate.id, tool.tool) !== null;
+    const granted = store.subagentGrant(set.mate.id, tool.tool) !== null;
     steps.push(connected && granted
-      ? { id: `tool-${tool.tool}`, done: true, said: `${name} can use ${tool.label}`, href: `/teammates/${set.mate.id}#tools` }
+      ? { id: `tool-${tool.tool}`, done: true, said: `${name} can use ${tool.label}`, href: `/settings/lead/subagents/${set.mate.id}#tools` }
       : connected
-        ? { id: `tool-${tool.tool}`, done: false, said: `Let ${name} use ${tool.label}, ${tool.why}`, href: `/teammates/${set.mate.id}#tools` }
+        ? { id: `tool-${tool.tool}`, done: false, said: `Let ${name} use ${tool.label}, ${tool.why}`, href: `/settings/lead/subagents/${set.mate.id}#tools` }
         : { id: `tool-${tool.tool}`, done: false, said: `Connect ${tool.label}, ${tool.why}`, href: `/settings/tools?repo=${encodeURIComponent(repo)}&kit=${kit.id}&connect=${tool.tool}#connect`, action: "connect", tool: tool.tool });
   }
   const tried = store.flowCards(set.flow.id, true).length > 0;
@@ -207,7 +207,7 @@ export function kitChecklist(store: Store, kit: Kit, repo: string, dir: string |
   return steps;
 }
 
-/** A sample card in the kit's first zone, so its teammate starts on it at once. */
+/** A sample card in the kit's first zone, so its subagent starts on it at once. */
 export function addKitSample(store: Store, kit: Kit, repo: string, by: string, now: Date): { ok: true; href: string } | { ok: false; said: string } {
   const set = kitInstalled(store, kit, repo);
   if (set === null) return { ok: false, said: `Set ${kit.name} up first.` };

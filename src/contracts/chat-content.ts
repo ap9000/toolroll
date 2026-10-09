@@ -41,7 +41,7 @@ export const chatContentShape = {
   choose: z.strictObject({ card: id, entry: z.int(), options: z.array(z.strictObject({ choice: z.int(), label: z.string() })) }).optional(),
   /** "Use this as your note?" Yes / No about the person's message `held` (an event id), for one choice's visit. */
   note: z.strictObject({ card: id, entry: z.int(), held: z.string() }).optional(),
-  /** A teammate's question's buttons ride this part (v93): each option, then one to answer in words (choice null). */
+  /** A subagent's question's buttons ride this part (v93): each option, then one to answer in words (choice null). */
   question: z.strictObject({ id, choices: z.array(z.strictObject({ choice: z.string().nullable(), label: z.string() })) }).optional(),
   /** The lead's question to its owner rides this part: its options, then "Something else". */
   ask: z.strictObject({ turn: id, options: z.array(z.string()) }).optional(),

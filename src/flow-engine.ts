@@ -18,8 +18,8 @@ import { readVerifiedReport, scanForSecrets } from "./evidence.js";
 import { cardFollowers, notifyPeople } from "./flow-people.js";
 import { DRAFT_CHARS, keptDraft } from "./flow-draft.js";
 import { chooseStep, flowPersonOf, sendStep } from "./flow-send.js";
-import { parseSoul, teammateLabel } from "./teammates.js";
-import type { FlowCardRow, FlowRow, Store, TeammateRow } from "./store.js";
+import { parseSoul, subagentLabel } from "./subagents.js";
+import type { FlowCardRow, FlowRow, Store, SubagentRow } from "./store.js";
 import { withStageHandoff, type StageHandoff } from "./contracts/stage-output.js";
 
 export type FlowAdvance = { moved: number; filed: string[]; problems: string[] };
@@ -46,16 +46,16 @@ function fill(template: string, card: FlowCardRow): string {
 const titleIn = (definition: FlowDefinition, id: string) => definition.stages.find(one => one.id === id)?.title ?? id;
 const flowDefinitionStage = (definition: FlowDefinition, id: string) => definition.stages.find(one => one.id === id);
 
-/** A teammate's name as its soul file gives it (its handle when the file can't be read). */
-function teammateName(mate: TeammateRow): string {
+/** A subagent's name as its soul file gives it (its handle when the file can't be read). */
+function subagentName(mate: SubagentRow): string {
   const read = parseSoul(mate.soul);
   return read.ok ? read.soul.name : mate.handle;
 }
 
-/** What a teammate said when it handed a card to its person, or why it couldn't decide. */
-function handoffWords(mate: TeammateRow, turn: { state: string; result: string | null; decisionJson: string | null }): { label: string; said: string } {
+/** What a subagent said when it handed a card to its person, or why it couldn't decide. */
+function handoffWords(mate: SubagentRow, turn: { state: string; result: string | null; decisionJson: string | null }): { label: string; said: string } {
   const read = parseSoul(mate.soul);
-  const label = read.ok ? teammateLabel(read.soul) : mate.handle;
+  const label = read.ok ? subagentLabel(read.soul) : mate.handle;
   let note = "";
   try { const decided = JSON.parse(turn.decisionJson ?? "{}") as { note?: unknown }; note = typeof decided.note === "string" ? decided.note : ""; } catch { note = ""; }
   return { label, said: turn.state === "failed" ? `${label} couldn't decide this one (${turn.result ?? "it didn't finish"}), so it's yours.` : `${label}: ${note || "Over to you on this one."}` };
@@ -170,19 +170,19 @@ function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | n
     case "approval": {
       const decider = deciderOf(stage, flow);
       const who = decider ?? "an approver";
-      // v92: a zone an active teammate staffs is its to decide first (the step pass runs it). A person hears
-      // about the card only when the teammate hands it over, can't decide, or is paused or gone.
-      // v102: on a protected project an AI teammate never decides; the person does.
-      const mate = stage.teammate === undefined || store.approvalRules(flow.repo).protectProject ? null : store.teammateByHandle(flow.repo, stage.teammate);
+      // v92: a zone an active subagent staffs is its to decide first (the step pass runs it). A person hears
+      // about the card only when the subagent hands it over, can't decide, or is paused or gone.
+      // v102: on a protected project a subagent never decides; the person does.
+      const mate = stage.subagent === undefined || store.approvalRules(flow.repo).protectProject ? null : store.subagentByHandle(flow.repo, stage.subagent);
       const turn = mate === null ? null : store.flowStepRun(card.id, card.entry);
-      const handed = turn !== null && turn.kind === "teammate" && (turn.state === "failed" || turn.state === "passed");
+      const handed = turn !== null && turn.kind === "subagent" && (turn.state === "failed" || turn.state === "passed");
       if (mate !== null && mate.state === "active" && !handed) {
-        const name = teammateName(mate);
+        const name = subagentName(mate);
         if (card.waiting !== `${name} is deciding`) store.updateFlowCard(card.id, { waiting: `${name} is deciding` }, now);
         return;
       }
       const handoff = handed && mate !== null ? handoffWords(mate, turn!) : null;
-      if (card.waiting === null || (mate !== null && card.waiting === `${teammateName(mate)} is deciding`)) {
+      if (card.waiting === null || (mate !== null && card.waiting === `${subagentName(mate)} is deciding`)) {
         // A named decider hears it alone; "anyone who approves" pages everyone who can.
         // With a draft in front of it, the decision carries the draft itself: it can be read (and answered) where it arrives.
         const draft = draftFor(definition, stage);
@@ -404,8 +404,8 @@ export type FlowDecision = { ok: true; said: string } | { ok: false; message: st
 /** The draft a decision is about: the draft zone that sends its cards to this one. */
 export function draftFor(definition: FlowDefinition, stage: FlowStage): FlowStage | null {
   return definition.stages.find(one => one.kind === "draft" && one.next === stage.id)
-    // A teammate's zone that leads here (by its next, or one of its answers) wrote the draft this decision checks (starter kits).
-    ?? definition.stages.find(one => one.kind === "teammate" && (one.next === stage.id || (one.routes ?? []).some(route => route.to === stage.id))) ?? null;
+    // A subagent's zone that leads here (by its next, or one of its answers) wrote the draft this decision checks (starter kits).
+    ?? definition.stages.find(one => one.kind === "subagent" && (one.next === stage.id || (one.routes ?? []).some(route => route.to === stage.id))) ?? null;
 }
 
 /** Back to a build zone with a finished result: a revision of that same work, carrying the note; null when it isn't one. */
@@ -430,8 +430,8 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   draft?: string | null;
   /** The visit the person saw (a chat button's): a card that moved on since is refused. */
   entry?: number;
-  /** v92: the AI teammate (by handle) deciding a zone it staffs; `actor` is then how it reads in history. */
-  teammate?: string;
+  /** v92: the subagent (by handle) deciding a zone it staffs; `actor` is then how it reads in history. */
+  subagent?: string;
   /** Where the decision was made, for its ledger line: "the console", "the command line", "Telegram". */
   where?: string }, now: Date): FlowDecision {
   const card = store.getFlowCard(input.card);
@@ -440,19 +440,19 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
   if (card === null || flow === null || definition === null || card.state !== "active" || !input.repos.includes(flow.repo)) return { ok: false, message: "That card is no longer waiting." };
   const stage = definition.stages.find(one => one.id === card.stage);
   if (stage === undefined || stage.kind !== "approval" || (input.entry !== undefined && input.entry !== card.entry)) return { ok: false, message: "That card has moved on since; nothing was changed." };
-  // A teammate decides only a zone it staffs; its person (and only them) can always decide instead.
+  // A subagent decides only a zone it staffs; its person (and only them) can always decide instead.
   const decider = deciderOf(stage, flow);
-  if (input.teammate !== undefined ? stage.teammate !== input.teammate : decider !== null && decider !== input.actor) return { ok: false, message: `Only ${decider ?? "an approver"} decides here.` };
-  // v102: a protected project's decisions are a person's, never an AI teammate's.
-  if (input.teammate !== undefined && store.approvalRules(flow.repo).protectProject) return { ok: false, message: "This project is protected: a person decides here." };
+  if (input.subagent !== undefined ? stage.subagent !== input.subagent : decider !== null && decider !== input.actor) return { ok: false, message: `Only ${decider ?? "an approver"} decides here.` };
+  // v102: a protected project's decisions are a person's, never a subagent's.
+  if (input.subagent !== undefined && store.approvalRules(flow.repo).protectProject) return { ok: false, message: "This project is protected: a person decides here." };
   // Every decision is one ledger line, the same wherever it was made; only `via` says where.
   const ledger = (outcome: "approved" | "sent-back") => store.recordAction({ at: now.toISOString(), actor: input.actor, repo: flow.repo, taskId: card.primaryTask, runId: null,
-    action: "flow decision", outcome, source: "request", detail: `${flow.name} · card ${card.id} · ${stage.title}${input.teammate === undefined ? "" : ` · teammate ${input.teammate}`} · via ${input.where ?? "Toolroll"}` });
+    action: "flow decision", outcome, source: "request", detail: `${flow.name} · card ${card.id} · ${stage.title}${input.subagent === undefined ? "" : ` · subagent ${input.subagent}`} · via ${input.where ?? "Toolroll"}` });
   if (input.decision === "approve") {
     // An edited draft replaces the one Claude wrote, so the steps after this send what the person approved.
     const draft = draftFor(definition, stage);
-    // A person's edit over the draft limit is refused with it, never cut. (A teammate's was asked once to shorten and is kept whole.)
-    if (draft !== null && input.teammate === undefined && typeof input.draft === "string" && input.draft.trim().length > DRAFT_CHARS) {
+    // A person's edit over the draft limit is refused with it, never cut. (A subagent's was asked once to shorten and is kept whole.)
+    if (draft !== null && input.subagent === undefined && typeof input.draft === "string" && input.draft.trim().length > DRAFT_CHARS) {
       return { ok: false, message: `Keep the draft to ${DRAFT_CHARS.toLocaleString("en-US")} characters; this is ${input.draft.trim().length.toLocaleString("en-US")}.` };
     }
     if (draft !== null && typeof input.draft === "string" && input.draft.trim() !== "" && input.draft.trim() !== card.outputs[draft.id]?.trim()) {

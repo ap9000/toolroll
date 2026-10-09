@@ -67,29 +67,29 @@ const LIST_COLUMNS = STORE_COLUMNS.filter(column => !CAST_COLUMNS.includes(colum
 
 /** Writer-shaped synthetic examples, not exports from the live database. */
 const SHAPED_SAMPLES: Partial<Record<StoreColumn, unknown>> = {
-  "teammate_suggestion.rule_json": { use: "free", limit: { field: "amount", over: 20, extra: true }, undo: "cancel", extra: 1 },
-  "teammate_suggestion.was_json": { use: "ask" },
-  "teammate_suggestion.evidence_json": [1, 4],
-  "teammate_tool.actions_json": [{ name: "search", about: "Find an item", input: null, readOnly: true, extra: 1 }],
-  "teammate_tool.rules_json": { search: { use: "never" } },
-  "teammate_question.options_json": [{ id: "yes", label: "Go ahead", extra: 1 }],
+  "subagent_suggestion.rule_json": { use: "free", limit: { field: "amount", over: 20, extra: true }, undo: "cancel", extra: 1 },
+  "subagent_suggestion.was_json": { use: "ask" },
+  "subagent_suggestion.evidence_json": [1, 4],
+  "subagent_tool.actions_json": [{ name: "search", about: "Find an item", input: null, readOnly: true, extra: 1 }],
+  "subagent_tool.rules_json": { search: { use: "never" } },
+  "subagent_question.options_json": [{ id: "yes", label: "Go ahead", extra: 1 }],
   "decision.options": [{ id: "go", label: "Go ahead", consequence: "Create the item", reversible: true, extra: 1 }],
   "operating_mode.terms_json": { dailyRunCap: null, reviewAuto: false, quickMint: true, publication: "automerge", extra: 1 },
   "run_tool.tools_json": { tools: [], skipped: [], fence: { method: "native", paths: 3, extra: true }, extra: 1 },
   "run_tool.tools_json.fence": { method: "native", paths: 3, extra: true },
-  "mate_ask.options_json": ["Continue", "Stop"],
+  "lead_ask.options_json": ["Continue", "Stop"],
   "plan_revision.changed_fields": ["goal", "touches"],
   "run_checkpoint.snapshot_json": { revisionHash: "abc", milestones: [{ id: "m1", state: "completed", note: null, extra: 1 }], extra: 1 },
   "publication_grant.capabilities": ["push-branch", "open-pr"],
   "task_scope.touches": ["src/example.ts"],
   "task_scope.acceptance_json": [{ id: "c1", statement: "Reads saved data", evidence: ["check"] }],
   "proof_verdict.matrix_json": [{ id: "c1", statement: "Reads saved data", requiredEvidence: ["check"], state: "pass", detail: [], extra: 1 }],
-  "teammate_call.input_json": { query: "saved query", nested: { extra: null } },
-  "teammate_event.detail_json": { event: "saved", extra: null },
+  "subagent_call.input_json": { query: "saved query", nested: { extra: null } },
+  "subagent_event.detail_json": { event: "saved", extra: null },
   "coordinator_proposal.payload_json": { task: "t1", queueRevision: 4 },
   "coordinator_proposal.outcome_json": { ok: false, reason: "changed" },
-  "mate_proposal.payload_json": { version: 1, operation: "skill_disable", request: { repo: "/repo", version: "abc" }, repo: "/repo", title: "Disable skill", terms: [], stamp: "saved", state: {} },
-  "mate_proposal.outcome_json": { ok: true, extra: null },
+  "lead_proposal.payload_json": { version: 1, operation: "skill_disable", request: { repo: "/repo", version: "abc" }, repo: "/repo", title: "Disable skill", terms: [], stamp: "saved", state: {} },
+  "lead_proposal.outcome_json": { ok: true, extra: null },
 };
 
 const verdict = (column: StoreColumn) => (input: unknown) => {
@@ -106,7 +106,7 @@ describe("store JSON columns", () => {
         expect(extra, column).toBeUndefined();
         expect(store.raw().prepare("SELECT name FROM pragma_table_info(?)").all(table).map(row => row["name"]), column).toContain(field);
       }
-      expect(STORE_COLUMNS).toEqual(expect.arrayContaining(["teammate_tool.actions_json", "teammate_tool.rules_json", "backend_grant.paths", "backend_grant.mutations"]));
+      expect(STORE_COLUMNS).toEqual(expect.arrayContaining(["subagent_tool.actions_json", "subagent_tool.rules_json", "backend_grant.paths", "backend_grant.mutations"]));
       expect(STORE_COLUMNS).not.toContain("run_tool.tools_json.fence");
       expect(STORE_PROJECTIONS).toEqual(["run_tool.tools_json.fence"]);
       expect(LIST_COLUMNS.length + CAST_COLUMNS.length + 1).toBe(STORE_COLUMNS.length + STORE_PROJECTIONS.length);
@@ -132,12 +132,12 @@ describe("store JSON columns", () => {
   });
 
   test("legacy shape issues are named without replacing the old value or turning it into a thrown error", () => {
-    const read = readStoreColumn("teammate_suggestion.rule_json", '{"use":"later","limit":null,"extra":1}');
+    const read = readStoreColumn("subagent_suggestion.rule_json", '{"use":"later","limit":null,"extra":1}');
     expect(read).toMatchObject({ ok: true, value: { use: "later", limit: null, extra: 1 }, legacyIssues: [{ path: "use" }, { path: "limit" }] });
     expect(parseStoreColumn("decision.options", "null")).toBeNull();
-    expect(parseStoreColumn("teammate_tool.actions_json", '[{"readOnly":"yes"},null]')).toEqual([{ readOnly: "yes" }, null]);
-    expect(readStoreColumn("teammate_suggestion.rule_json", "not json")).toMatchObject({ ok: false, malformed: true });
-    expect(() => parseStoreColumn("teammate_question.options_json", "not json")).toThrow(SyntaxError);
+    expect(parseStoreColumn("subagent_tool.actions_json", '[{"readOnly":"yes"},null]')).toEqual([{ readOnly: "yes" }, null]);
+    expect(readStoreColumn("subagent_suggestion.rule_json", "not json")).toMatchObject({ ok: false, malformed: true });
+    expect(() => parseStoreColumn("subagent_question.options_json", "not json")).toThrow(SyntaxError);
   });
 
   test("saved decisions do not acquire write-time length or identifier restrictions", () => {
@@ -223,29 +223,29 @@ describe("store JSON columns", () => {
     }
   });
 
-  test("teammate row reads preserve saved bytes, nulls and the old malformed-JSON fallbacks", () => {
+  test("subagent row reads preserve saved bytes, nulls and the old malformed-JSON fallbacks", () => {
     const store = openStore(":memory:");
     try {
       const now = new Date("2026-10-06T12:00:00.000Z");
-      const teammate = store.createTeammate({ repo: "/repo", handle: "helper", soul: "Helper", model: null, manager: "owner", by: "owner" }, now);
+      const subagent = store.createSubagent({ repo: "/repo", handle: "helper", soul: "Helper", model: null, manager: "owner", by: "owner" }, now);
       const actions = [{ readOnly: true, name: "search", input: null, about: "Find an item", extra: "kept" }];
       const rules = { search: { undo: "cancel", use: "ask" as const, extra: null } };
-      store.saveTeammateGrant({ teammate, tool: "catalog", actions, rules }, "owner", now);
-      const bytes = () => store.raw().prepare("SELECT actions_json, rules_json FROM teammate_tool WHERE teammate = ?").get(teammate);
+      store.saveSubagentGrant({ subagent, tool: "catalog", actions, rules }, "owner", now);
+      const bytes = () => store.raw().prepare("SELECT actions_json, rules_json FROM subagent_tool WHERE subagent = ?").get(subagent);
       expect(bytes()).toEqual({
         actions_json: '[{"readOnly":true,"name":"search","input":null,"about":"Find an item","extra":"kept"}]',
         rules_json: '{"search":{"undo":"cancel","use":"ask","extra":null}}',
       });
       const written = bytes();
-      expect(store.teammateGrant(teammate, "catalog")).toMatchObject({ actions, rules });
+      expect(store.subagentGrant(subagent, "catalog")).toMatchObject({ actions, rules });
       expect(bytes()).toEqual(written);
-      store.raw().prepare("UPDATE teammate_tool SET actions_json = 'null', rules_json = 'not json' WHERE teammate = ?").run(teammate);
-      expect(store.teammateGrant(teammate, "catalog")).toMatchObject({ actions: null, rules: {} });
+      store.raw().prepare("UPDATE subagent_tool SET actions_json = 'null', rules_json = 'not json' WHERE subagent = ?").run(subagent);
+      expect(store.subagentGrant(subagent, "catalog")).toMatchObject({ actions: null, rules: {} });
       expect(bytes()).toEqual({ actions_json: "null", rules_json: "not json" });
 
-      const suggestion = store.addTeammateSuggestion({ teammate, tool: "catalog", action: "search", rule: { use: "free" }, was: { use: "ask" }, evidence: [1], said: "Allow searches" }, now);
-      store.raw().prepare("UPDATE teammate_suggestion SET rule_json = 'null', was_json = 'not json', evidence_json = '7' WHERE id = ?").run(suggestion);
-      expect(store.teammateSuggestion(suggestion)).toMatchObject({ rule: null, was: { use: "ask" }, evidence: 7 });
+      const suggestion = store.addSubagentSuggestion({ subagent, tool: "catalog", action: "search", rule: { use: "free" }, was: { use: "ask" }, evidence: [1], said: "Allow searches" }, now);
+      store.raw().prepare("UPDATE subagent_suggestion SET rule_json = 'null', was_json = 'not json', evidence_json = '7' WHERE id = ?").run(suggestion);
+      expect(store.subagentSuggestion(suggestion)).toMatchObject({ rule: null, was: { use: "ask" }, evidence: 7 });
     } finally { store.close(); }
   });
 

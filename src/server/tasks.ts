@@ -1,4 +1,5 @@
 import { handlersOf } from './handler-registry.js';
+import { DEPRECATED_PAGE } from "../deprecations.js";
 /** tasks handlers, moved without changing their route bodies. */
 import { html,htmlString,joinHtml,postForm,textHtml,type Html } from "../html.js";
 import { createHash,randomBytes,randomUUID } from "node:crypto";
@@ -57,7 +58,7 @@ modeFilingCoverage,PLACEHOLDER_RUBRIC,
 proposeGuarded,
 type UnattendedPermissionMode
 } from "../scope.js";
-import { teammateNames as teammateNamesOf } from "../spend.js";
+import { subagentNames as subagentNamesOf } from "../spend.js";
 import {
 verifiedAuthor,
 type Artifact,
@@ -84,7 +85,7 @@ import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQue
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
-  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, matePrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, taskRooms, identify, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
+  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, taskRooms, identify, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
   /** A row admitted the address but its path parameter does not parse: the console's unknown page. */
   function noPage(who: Who, response: ServerResponse): void {
@@ -119,7 +120,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const codeProject = selected?.repo ?? requestedProject ?? project;
       const chrome = chromeFor(codeProject, 'code');
       const content = codingWorkspaceHtml({ owner: who.name, projects: chrome.projects ?? [], sessions: runtime.coding?.list(actor).filter(s => codingProjectAllowed(s.repo)) ?? [], selected: selected && runtime.coding ? runtime.coding.snapshot(selected.id, actor) : null, csrf: who.session.csrf, project: codeProject, available: runtime.coding !== null, ...(runtime.codingProblem ? { error: runtime.codingProblem } : {}) });
-      return sendScreen(response, 200, screen('Code', content, { chrome, functional: { script: codingWorkspaceScript(), fetches: true } }));
+      return sendScreen(response, 200, screen('Code', html`<p class="problem" role="status" data-deprecated="session">${DEPRECATED_PAGE.session}</p>${content}`, { chrome, functional: { script: codingWorkspaceScript(), fetches: true } }));
     } catch (error) {
       if (!codingActorAllowed(actor)) return read !== null
         ? respond(response, 403, 'application/json', JSON.stringify({ ok: false, error: 'Your access changed. Sign in again.' }))
@@ -261,7 +262,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       now,
       // v105: subscription windows and monthly budgets, for whoever runs the installation.
       limits: store.isInstanceOperator(who.name)
-        ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, teammate: id => teammateNamesOf(store.handle).get(id) ?? `Teammate ${id}` }, now)
+        ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, subagent: id => subagentNamesOf(store.handle).get(id) ?? `Subagent ${id}` }, now)
         : null,
     });
     // One project's Tasks dock that project's own conversation (v77).
@@ -2305,7 +2306,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       case "complete": {
         const body = readForm(posted, CONSOLE_FORMS.taskComplete);
         // The row admits only an approver's browser session; the principal re-proves that session's standing.
-        const principal = who.via === "cookie" ? matePrincipal(who) : null;
+        const principal = who.via === "cookie" ? leadPrincipal(who) : null;
         if (principal === null) return refuse(response, who, 403, "Your access changed. Sign in again.");
         const digest = body.get("receipt") ?? "";
         const namedRun = body.get("run") ?? "";

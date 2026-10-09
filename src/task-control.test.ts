@@ -8,9 +8,8 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import * as childProcess from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { hostname } from "node:os";
+import { resolve } from "node:path";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, approve, propose } from "./scope.js";
@@ -242,7 +241,7 @@ describe("safe task stop and resume (v52)", () => {
   });
 
   test("a fresh file is born at the current schema with the run_stop table and a hold that admits the stop owner", () => {
-    expect(SCHEMA_VERSION).toBe(116);
+    expect(SCHEMA_VERSION).toBe(117);
     expect(Number(store.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
     expect(store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_stop'").get()).toBeDefined();
     const ddl = String(store.raw().prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hold'").get()?.["sql"]);
@@ -497,42 +496,6 @@ describe("safe task stop and resume (v52)", () => {
     expect(store.stopOf(a.runId)).toMatchObject({ settlement: "finished" });
   });
 
-  test("an upgraded v51 file admits the stop owner only after migration and keeps every hold row", () => {
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-v52-"));
-    try {
-      const file = join(dir, "old.db");
-      const fresh = openStore(file);
-      fresh.createTask({ id: "t", title: "t" }, T0);
-      const ref = fresh.refFor("built-in", "t").id;
-      fresh.hold(ref, "operator pause", null, T0);
-      fresh.holdOwned({ taskRef: ref, ownerKind: "revision", ownerId: "r1", reason: "revision pending", until: null }, T0);
-      const before = fresh.raw().prepare("SELECT * FROM hold ORDER BY id").all();
-      fresh.close();
-      // Wind the file back to the v51 shape: the hold CHECK without 'stop', no run_stop, version 51.
-      const legacy = openStore(file);
-      const raw = legacy.raw();
-      raw.exec("PRAGMA foreign_keys = OFF");
-      raw.exec(`CREATE TABLE hold_old (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_ref INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
-        owner_kind TEXT NOT NULL CHECK (owner_kind IN ('operator','decision','incident','backoff','contest','revision')),
-        owner_id TEXT NOT NULL, reason TEXT NOT NULL, until TEXT, held_at TEXT NOT NULL, UNIQUE (owner_kind, owner_id))`);
-      raw.exec("INSERT INTO hold_old (id, task_ref, owner_kind, owner_id, reason, until, held_at) SELECT id, task_ref, owner_kind, owner_id, reason, until, held_at FROM hold");
-      raw.exec("DROP TABLE service_cursor; DROP TABLE hold; ALTER TABLE hold_old RENAME TO hold; DROP TABLE run_stop; DROP TABLE run_process; UPDATE schema_version SET version = 51");
-      expect(() => raw.prepare("INSERT INTO hold (task_ref, owner_kind, owner_id, reason, held_at) VALUES (?, 'stop', '9', 'x', ?)").run(ref, T0.toISOString())).toThrow();
-      legacy.close();
-      const upgraded = openStore(file);
-      expect(Number(upgraded.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
-      expect(upgraded.raw().prepare("SELECT * FROM hold ORDER BY id").all()).toEqual(before);
-      upgraded.holdOwned({ taskRef: ref, ownerKind: "stop", ownerId: "9", reason: "stopped", until: null }, T0);
-      expect(upgraded.activeHolds(ref, T0).map(one => one.ownerKind)).toEqual(["operator", "revision", "stop"]);
-      expect(upgraded.releaseOwnedHold("stop", "9")).toBe(true);
-      expect(upgraded.activeHolds(ref, T0).map(one => one.ownerKind)).toEqual(["operator", "revision"]);
-      upgraded.close();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 /** Expire a lease the way the reaper would: the world moved past it. */

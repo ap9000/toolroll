@@ -2,7 +2,7 @@
  * Deleting a project: everything Toolroll holds for it goes, and
  * nothing else. Its tasks and their versions, runs and their evidence, the
  * checkouts and branches Toolroll made, its chats and threads, flows
- * and cards, teammates, budgets and settings. Never while any of its work is
+ * and cards, subagents, budgets and settings. Never while any of its work is
  * running. The project's own repository, its working copy and every branch
  * Toolroll didn't make stay exactly as they are. The action ledger
  * keeps every entry (its hash chain still verifies) and gains one: who
@@ -26,14 +26,14 @@ export const OWN_BRANCHES = BRANCH_PREFIXES;
 
 export type ProjectHoldings = {
   tasks: number; versions: number; runs: number; evidence: number; checkouts: number;
-  chats: number; flows: number; cards: number; teammates: number; budgets: number; settings: number;
+  chats: number; flows: number; cards: number; subagents: number; budgets: number; settings: number;
 };
 
 export type ProjectDeleteResult =
   | { ok: true; repo: string; removed: ProjectHoldings & { branches: number; rows: number }; left: string[]; ledgerId: number }
   | { ok: false; reason: "running" | "failed"; said: string; running?: string[] };
 
-type Doomed = { refs: number[]; tasks: string[]; runs: number[]; artifacts: number[]; threads: number[]; turns: number[]; flows: number[]; cards: number[]; teammates: number[] };
+type Doomed = { refs: number[]; tasks: string[]; runs: number[]; artifacts: number[]; threads: number[]; turns: number[]; flows: number[]; cards: number[]; subagents: number[] };
 
 const list = (db: Database, sql: string, ...params: unknown[]): unknown[] => db.prepare(sql).all(...params).map(row => Object.values(row)[0]);
 const ids = (db: Database, sql: string, ...params: unknown[]): number[] => list(db, sql, ...params).map(Number);
@@ -50,13 +50,13 @@ function doomed(db: Database, repo: string): Doomed {
   const runs = ids(db, "SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(?))", json(refs));
   const artifacts = ids(db, "SELECT id FROM artifact WHERE run IN (SELECT value FROM json_each(?))", json(runs));
   // A team conversation's thread is the team's, whatever it talked about.
-  const threads = ids(db, `SELECT id FROM mate_thread WHERE ((scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'task' AND scope_key IN (SELECT value FROM json_each(?))))
+  const threads = ids(db, `SELECT id FROM lead_thread WHERE ((scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'task' AND scope_key IN (SELECT value FROM json_each(?))))
     AND id NOT IN (SELECT thread FROM team_conversation WHERE thread IS NOT NULL)`, repo, json(tasks));
   const turns = ids(db, "SELECT id FROM mate_turn WHERE thread IN (SELECT value FROM json_each(?))", json(threads));
   const flows = ids(db, "SELECT id FROM flow WHERE repo = ?", repo);
   const cards = ids(db, "SELECT id FROM flow_card WHERE flow IN (SELECT value FROM json_each(?))", json(flows));
-  const teammates = ids(db, "SELECT id FROM teammate WHERE repo = ?", repo);
-  return { refs, tasks, runs, artifacts, threads, turns, flows, cards, teammates };
+  const subagents = ids(db, "SELECT id FROM subagent WHERE repo = ?", repo);
+  return { refs, tasks, runs, artifacts, threads, turns, flows, cards, subagents };
 }
 
 /** A project's settings: one row per thing someone set for it. */
@@ -77,8 +77,8 @@ export function projectHoldings(store: Store, repo: string): ProjectHoldings {
     tasks: count("SELECT COUNT(DISTINCT external_id) AS n FROM task_ref WHERE repo = ?", repo) - versions, versions,
     runs: d.runs.length, evidence: d.artifacts.length,
     checkouts: count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ?", repo),
-    chats: d.threads.length, flows: d.flows.length, cards: d.cards.length, teammates: d.teammates.length,
-    budgets: count(`SELECT COUNT(*) AS n FROM budget WHERE removed_at IS NULL AND ((scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'teammate' AND scope_key IN (SELECT CAST(value AS TEXT) FROM json_each(?))))`, repo, json(d.teammates)),
+    chats: d.threads.length, flows: d.flows.length, cards: d.cards.length, subagents: d.subagents.length,
+    budgets: count(`SELECT COUNT(*) AS n FROM budget WHERE removed_at IS NULL AND ((scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'subagent' AND scope_key IN (SELECT CAST(value AS TEXT) FROM json_each(?))))`, repo, json(d.subagents)),
     settings: SETTINGS.filter(([table]) => tableExists(db, table)).reduce((sum, [table, column]) => sum + count(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`, repo), 0),
   };
 }
@@ -89,7 +89,7 @@ export function holdingsWords(held: ProjectHoldings & { branches?: number }): st
     plural(held.tasks, "task"), ...(held.versions > 0 ? [plural(held.versions, "version")] : []), plural(held.runs, "run"),
     ...(held.evidence > 0 ? [plural(held.evidence, "evidence file")] : []), ...(held.checkouts > 0 ? [plural(held.checkouts, "checkout")] : []),
     ...(held.branches ? [plural(held.branches, "branch", "branches")] : []), ...(held.chats > 0 ? [plural(held.chats, "chat")] : []),
-    ...(held.flows > 0 ? [`${plural(held.flows, "flow")} with ${plural(held.cards, "card")}`] : []), ...(held.teammates > 0 ? [plural(held.teammates, "teammate")] : []),
+    ...(held.flows > 0 ? [`${plural(held.flows, "flow")} with ${plural(held.cards, "card")}`] : []), ...(held.subagents > 0 ? [plural(held.subagents, "subagent")] : []),
     ...(held.budgets > 0 ? [plural(held.budgets, "budget")] : []), ...(held.settings > 0 ? [plural(held.settings, "setting")] : []),
   ];
   return parts.join(", ");
@@ -105,7 +105,7 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
   const slots = count("SELECT COUNT(*) AS n FROM execution_slot WHERE state IN ('reserved','running') AND run IN (SELECT value FROM json_each(?))", json(d.runs));
   const chats = count("SELECT COUNT(*) AS n FROM mate_turn WHERE state IN ('queued','running') AND id IN (SELECT value FROM json_each(?))", json(d.turns));
   const steps = count("SELECT COUNT(*) AS n FROM flow_step_run WHERE state = 'running' AND card IN (SELECT value FROM json_each(?))", json(d.cards));
-  const calls = count("SELECT COUNT(*) AS n FROM teammate_call WHERE state = 'running' AND teammate IN (SELECT value FROM json_each(?))", json(d.teammates));
+  const calls = count("SELECT COUNT(*) AS n FROM subagent_call WHERE state = 'running' AND subagent IN (SELECT value FROM json_each(?))", json(d.subagents));
   const merges = count(`SELECT COUNT(*) AS n FROM merge_intent WHERE state IN ('claimed','firing') AND publication IN (SELECT id FROM publication WHERE task_ref IN (SELECT value FROM json_each(?)))`, json(d.refs));
   const checkouts = count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ? AND runner IS NOT NULL AND released_at IS NULL", repo);
   return [
@@ -113,7 +113,7 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
     ...(slots > 0 ? ["an agent is working"] : []),
     ...(chats > 0 ? ["a chat is answering"] : []),
     ...(steps > 0 ? ["a flow step is running"] : []),
-    ...(calls > 0 ? ["a teammate is working"] : []),
+    ...(calls > 0 ? ["a subagent is working"] : []),
     ...(merges > 0 ? ["a merge is in progress"] : []),
     ...(checkouts > 0 && building === 0 ? [`${plural(checkouts, "checkout")} ${checkouts === 1 ? "is" : "are"} in use`] : []),
   ];
@@ -207,12 +207,12 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
     rows += Number(db.prepare(`DELETE FROM ${table} WHERE ${where}`).run(...params).changes);
   };
   const IN = (column: string) => `${column} IN (SELECT value FROM json_each(?))`;
-  const R = json(d.runs), T = json(d.refs), K = json(d.tasks), A = json(d.artifacts), H = json(d.threads), U = json(d.turns), F = json(d.flows), C = json(d.cards), M = json(d.teammates);
+  const R = json(d.runs), T = json(d.refs), K = json(d.tasks), A = json(d.artifacts), H = json(d.threads), U = json(d.turns), F = json(d.flows), C = json(d.cards), M = json(d.subagents);
   const decisions = json(ids(db, `SELECT id FROM decision WHERE ${IN("run")}`, R));
   const publications = json(ids(db, `SELECT id FROM publication WHERE ${IN("task_ref")} OR ${IN("run")}`, T, R));
   const notifications = json(ids(db, `SELECT id FROM notification WHERE project = ? OR ${IN("task_ref")} OR ${IN("source_run")}`, repo, T, R));
-  const questions = json(ids(db, `SELECT id FROM teammate_question WHERE ${IN("teammate")} OR ${IN("card")}`, M, C));
-  const proposals = json(ids(db, `SELECT id FROM mate_proposal WHERE ${IN("thread")}`, H));
+  const questions = json(ids(db, `SELECT id FROM subagent_question WHERE ${IN("subagent")} OR ${IN("card")}`, M, C));
+  const proposals = json(ids(db, `SELECT id FROM lead_proposal WHERE ${IN("thread")}`, H));
   // A chat message about one of the project's tasks (its turn named it), with its reply. Event ids are text ('m123'),
   // and the same id can be another app's: each is kept whole, as provider:id.
   const conversations = json(list(db, `SELECT provider || ':' || id FROM chat_event WHERE kind = 'message' AND json_extract(payload, '$.about.task') IN (SELECT value FROM json_each(?))`, K));
@@ -248,13 +248,13 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("chat_focus", IN("task"), K);
   del("team_task_owner", IN("task_ref"), T);
   del("team_mate_session", IN("thread"), H);
-  del("mate_turn_evidence", `${IN("turn")} OR ${IN("run")} OR ${IN("task_ref")} OR ${IN("artifact")}`, U, R, T, A);
+  del("lead_turn_evidence", `${IN("turn")} OR ${IN("run")} OR ${IN("task_ref")} OR ${IN("artifact")}`, U, R, T, A);
   del("chat_turn", IN("mate_turn"), U);
-  del("mate_ask", IN("turn"), U);
+  del("lead_ask", IN("turn"), U);
   del("mate_turn", IN("id"), U);
-  del("mate_proposal", IN("id"), proposals);
-  del("mate_message", IN("thread"), H);
-  del("mate_thread", IN("id"), H);
+  del("lead_proposal", IN("id"), proposals);
+  del("lead_message", IN("thread"), H);
+  del("lead_thread", IN("id"), H);
 
   // Runs and their evidence.
   del("run_decision", `${IN("run")} OR ${IN("decision")}`, R, decisions);
@@ -294,16 +294,16 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   del("task_edge", `${IN("blocked")} OR ${IN("blocker")}`, K, K);
   del("task", IN("id"), K);
 
-  // Flows, cards and teammates.
+  // Flows, cards and subagents.
   del("flow_trigger_event", `${IN("card")} OR trigger IN (SELECT id FROM flow_trigger WHERE ${IN("flow")})`, C, F);
   del("flow_trigger", IN("flow"), F);
   for (const table of ["flow_card_watcher", "flow_comment", "flow_event", "flow_mail", "flow_step_run"]) del(table, IN("card"), C);
-  del("teammate_question", IN("id"), questions);
-  del("teammate_call", `${IN("teammate")} OR ${IN("card")}`, M, C);
-  for (const table of ["teammate_event", "teammate_memory", "teammate_turn"]) del(table, `${IN("teammate")} OR ${IN("card")}`, M, C);
-  for (const table of ["teammate_suggestion", "teammate_tool", "teammate_version"]) del(table, IN("teammate"), M);
-  del("budget", `(scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'teammate' AND scope_key IN (SELECT CAST(value AS TEXT) FROM json_each(?)))`, repo, M);
-  del("teammate", IN("id"), M);
+  del("subagent_question", IN("id"), questions);
+  del("subagent_call", `${IN("subagent")} OR ${IN("card")}`, M, C);
+  for (const table of ["subagent_event", "subagent_memory", "subagent_turn"]) del(table, `${IN("subagent")} OR ${IN("card")}`, M, C);
+  for (const table of ["subagent_suggestion", "subagent_tool", "subagent_version"]) del(table, IN("subagent"), M);
+  del("budget", `(scope_kind = 'project' AND scope_key = ?) OR (scope_kind = 'subagent' AND scope_key IN (SELECT CAST(value AS TEXT) FROM json_each(?)))`, repo, M);
+  del("subagent", IN("id"), M);
   del("flow_card", IN("id"), C);
   del("flow", IN("id"), F);
 

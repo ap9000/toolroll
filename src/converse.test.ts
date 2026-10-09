@@ -4,7 +4,7 @@ import {
   parseAssistantEnvelope,
   parseProviderWrapper,
   performChatRequest,
-  performMateRequest,
+  performLeadRequest,
   composeRequest,
   worstCaseMicrousd,
   settleMicrousd,
@@ -163,15 +163,15 @@ describe("the one network call", () => {
   test.each(["anthropic-api", "openrouter-api"] as const)("%s tool chat refuses auth, quota, service, and connection failures", async provider => {
     const request = { url: "https://provider.invalid/chat", headers: {}, body: "{}" };
     for (const status of [401, 429, 503]) {
-      expect(await performMateRequest(request, provider, new AbortController().signal, async () => new Response("{}", { status })))
+      expect(await performLeadRequest(request, provider, new AbortController().signal, async () => new Response("{}", { status })))
         .toEqual({ ok: false, problem: `status-${status}` });
     }
     const failedFetch: typeof fetch = async () => { throw new Error("connection closed"); };
-    expect(await performMateRequest(request, provider, new AbortController().signal, failedFetch))
+    expect(await performLeadRequest(request, provider, new AbortController().signal, failedFetch))
       .toEqual({ ok: false, problem: "network" });
     const aborted = new AbortController();
     aborted.abort();
-    expect(await performMateRequest(request, provider, aborted.signal, failedFetch))
+    expect(await performLeadRequest(request, provider, aborted.signal, failedFetch))
       .toEqual({ ok: false, problem: "timeout" });
   });
 

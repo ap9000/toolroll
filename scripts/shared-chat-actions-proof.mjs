@@ -37,10 +37,10 @@ const browser = await pw.chromium.launch({ channel: "chrome" }),
   report = { synthetic: true, checks: [], screenshots: [], source: {} };
 for (const file of [
   "src/chat-actions.ts",
-  "src/mate-doors.ts",
-  "src/mate-tools.ts",
+  "src/lead-doors.ts",
+  "src/lead-tools.ts",
   "src/serve.ts",
-  "src/telegram-mate.ts",
+  "src/telegram-lead.ts",
   "src/store.ts",
   "src/telegram-progress.ts",
   "src/telegram.ts",
@@ -132,9 +132,9 @@ try {
       if (!verified.ok) throw Error("principal");
       const who = verified.who,
         credentialKey = subscriptionCredentialKey("codex-subscription");
-      let session = store.activeMateSession(f.name);
+      let session = store.activeLeadSession(f.name);
       if (!session) {
-        store.mintMateSession(
+        store.mintLeadSession(
           {
             approver: f.name,
             approverGeneration: who.generation,
@@ -145,11 +145,11 @@ try {
           },
           now,
         );
-        session = store.activeMateSession(f.name);
+        session = store.activeLeadSession(f.name);
       }
-      const thread = store.openMateThread(f.name, who.ceilingDigest, now).thread
+      const thread = store.openLeadThread(f.name, who.ceilingDigest, now).thread
           .id,
-        turn = store.openMateTurn(
+        turn = store.openLeadTurn(
           {
             approver: f.name,
             session: session.id,
@@ -163,7 +163,7 @@ try {
           now,
         );
       if (!turn.ok) throw Error(turn.reason);
-      const started = store.startMateTurn(turn.id, now);
+      const started = store.startLeadTurn(turn.id, now);
       const action = prepareSharedAction(
           store,
           who,
@@ -172,7 +172,7 @@ try {
           root,
           now,
         ),
-        id = store.draftMateProposal(
+        id = store.draftLeadProposal(
           {
             thread,
             turn: turn.id,
@@ -182,7 +182,7 @@ try {
           },
           now,
         );
-      store.finalizeMateTurn(
+      store.finalizeLeadTurn(
         turn.id,
         started.generation,
         {
@@ -258,7 +258,7 @@ try {
         .waitFor();
       check(
         name + " shared receipt records actual completion",
-        store.getMateProposal(action)?.state === "confirmed" &&
+        store.getLeadProposal(action)?.state === "confirmed" &&
           assignmentOf(store, f.tasks.done, new Date(), { principal: "operator", repos: null, includeUnplaced: true })?.state === "complete",
       );
       await shot(page, name + "-receipt");

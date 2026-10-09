@@ -23,8 +23,8 @@ test("a store from before lead_commitment gains the table on its next upgrade, k
   dir = mkdtempSync(join(tmpdir(), "so-commitment-"));
   const file = join(dir, "state.db");
   const first = openStore(file);
-  const thread = first.openMateThread("alex", "ceiling", T0).thread.id;
-  first.appendMateMessage({ thread, turn: null, role: "operator", text: "tell me at noon" }, T0);
+  const thread = first.openLeadThread("alex", "ceiling", T0).thread.id;
+  first.appendLeadMessage({ thread, turn: null, role: "operator", text: "tell me at noon" }, T0);
   first.close();
   // The shape an older build left (lead_commitment came without a version bump): no table or indexes, an older stamp.
   // Since v114 every DDL change bumps the version, so such a file always reads older and the upgrade adds it once.
@@ -34,11 +34,11 @@ test("a store from before lead_commitment gains the table on its next upgrade, k
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(116);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(116);
+  expect(SCHEMA_VERSION).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lead_commitment%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["lead_commitment", "lead_commitment_due", "lead_commitment_owner"]);
-  expect(store.listMateMessages(thread, 10).map(one => one.text)).toEqual(["tell me at noon"]);
+  expect(store.listLeadMessages(thread, 10).map(one => one.text)).toEqual(["tell me at noon"]);
   const made = promise(store, thread);
   expect(made).toMatchObject({ state: "open", channel: "chat", expiresAt: "2026-10-09T12:00:00.000Z" });
   store.close();
@@ -55,7 +55,7 @@ test("the release before lead_commitment (schema v109) refuses a store this buil
   dir = mkdtempSync(join(tmpdir(), "so-commitment-older-"));
   const file = join(dir, "state.db");
   store = openStore(file);
-  const thread = store.openMateThread("alex", "ceiling", T0).thread.id;
+  const thread = store.openLeadThread("alex", "ceiling", T0).thread.id;
   const made = promise(store, thread);
   store.close();
   store = undefined;
@@ -67,10 +67,10 @@ test("the release before lead_commitment (schema v109) refuses a store this buil
   symlinkSync(join(REPO, "node_modules"), join(older, "node_modules"));
   writeFileSync(join(older, "read.ts"), `import { openStore, SCHEMA_VERSION } from "./src/store.ts";
 const store = openStore(process.argv[2]!);
-const thread = store.openMateThread("sam", "other", new Date("2026-10-02T13:00:00.000Z")).thread.id;
-store.appendMateMessage({ thread, turn: null, role: "operator", text: "written by the older build" }, new Date("2026-10-02T13:00:00.000Z"));
+const thread = store.openLeadThread("sam", "other", new Date("2026-10-02T13:00:00.000Z")).thread.id;
+store.appendLeadMessage({ thread, turn: null, role: "operator", text: "written by the older build" }, new Date("2026-10-02T13:00:00.000Z"));
 const count = (sql: string) => Number(store.handle.prepare(sql).get()?.["n"]);
-console.log(JSON.stringify({ speaks: SCHEMA_VERSION, threads: count("SELECT COUNT(*) AS n FROM mate_thread"), promises: count("SELECT COUNT(*) AS n FROM lead_commitment") }));
+console.log(JSON.stringify({ speaks: SCHEMA_VERSION, threads: count("SELECT COUNT(*) AS n FROM lead_thread"), promises: count("SELECT COUNT(*) AS n FROM lead_commitment") }));
 store.close();
 `);
   // v110 and later (the ledger's remote sources, v111's token terms, v112's request budgets, v113's MCP sign-in, v114's single shape, v115's removals) are newer than it speaks: it refuses to open rather than alter what it can't name.
@@ -79,5 +79,5 @@ store.close();
 
   store = openStore(file);
   expect(getCommitment(store, made.id)).toEqual(made);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(116);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
 }, 60_000);

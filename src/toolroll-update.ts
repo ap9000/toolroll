@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { updateSafeSchema } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -335,15 +335,16 @@ export function durableRename(temp: string, target: string): void {
  * only when every saved value is null, or, with `carried`, when the receiving table gained exactly one receipt under
  * that destination per row holding a value, and as many non-null values per column as the dropped columns held.
  * `receives`: the only rows the table may gain are those receipts. `compacted`: rows may go only into summary rows,
- * whose `sum` grows by exactly as many. `retired`: a removed feature's table, which may go whole. `fromRoutines`: rows
+ * whose `sum` grows by exactly as many. `summarizes`: old summaries stay identical by run key; new ones account for
+ * that run's compacted witnesses, even below the previous maximum key. `retired`: a removed feature's table, which may go whole. `fromRoutines`: rows
  * kept as they were, and the only rows the table may gain are one per saved routine, moved into a scheduled flow (its
  * flow, or its schedule trigger naming that routine) — on only when the routine was approved and running. `moved`:
  * the table may go only when every row it had (or the ones `rows` counts) arrived in `into`: the rows there that
  * `where` picks grew by exactly that many. */
 const LEGACY_DESTINATION = "legacy:single-destination";
 type Moved = { into: string; where: string; rows?: string };
-type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string };
-  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved };
+type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string }; summarizes?: string;
+  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved; renamed?: Record<string, string> };
 /** v116: every old per-app chat table into the shared chat tables, keyed by provider (chat-migration.ts). Several old
  * tables fan into one shared table; each picks out only its own rows there, so every count is checked on its own. */
 const TELEGRAM_MOVES: Record<string, Moved> = {
@@ -382,7 +383,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   ...Object.fromEntries(Object.entries(CHAT_MOVES).map(([table, moved]) => [table, { moved }])),
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
   // v114: a finished run whose process witnesses have all exited keeps one summary row in place of them.
-  run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { appendOnly: true },
+  run_process: { compacted: { into: "run_process_summary", sum: "witnesses" } }, run_process_summary: { summarizes: "run_process" },
   // v114: single-destination delivery columns may be dropped only once their values are legacy receipts.
   notification: { dropped: ["attempts", "last_attempt_at", "last_error", "delivered_at", "receipt", "claim_owner", "claim_expires_at"], carried: { into: "notification_delivery", destination: LEGACY_DESTINATION } },
   notification_delivery: { receives: LEGACY_DESTINATION },
@@ -393,15 +394,39 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   fallback_config: { retired: true }, fallback_cycle: { retired: true }, fallback_transition: { retired: true },
   // v115: each routine becomes one scheduled flow and its schedule trigger.
   flow: { fromRoutines: "flow" }, flow_trigger: { fromRoutines: "trigger" },
+  // v117 (D5): the lead's and the subagents' tables keep every row under their new names (mate_* → lead_*, teammate* →
+  // subagent*); a column renamed in a table that keeps its name keeps its values under the new one.
+  ...Object.fromEntries(Object.entries(V117_RENAMED_TABLES).map(([old, now]) => [old, { moved: { into: now, where: "1" } }])),
+  ...Object.fromEntries(V117_RENAMED_COLUMNS.filter(([table]) => !Object.values(V117_RENAMED_TABLES).includes(table)).map(([table, from, to]) => [table, { renamed: { [from]: to } }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));
 /** A saved routine, as its move into a scheduled flow must account for it. */
 type RoutineDigest = { id: number; repo: string; name: string; live: boolean };
 export type TableDigest = { name: string; columns: string[]; rowid: boolean; count: number; last: number; hash?: string; summed?: number; nonNull?: Record<string, number>; carry?: number;
-  received?: { count: number; nonNull: Record<string, number> }; routines?: RoutineDigest[]; moved?: { rows: number; found: number } };
+  received?: { count: number; nonNull: Record<string, number> }; routines?: RoutineDigest[]; moved?: { rows: number; found: number };
+  compactedRuns?: { run: number; count: number }[]; summaries?: { run: number; hash: string }[] };
 const tableColumns = (db: DatabaseSync, name: string) => db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => String(r["name"]));
 const plainValue = (_: string, v: unknown) => v instanceof Uint8Array ? Buffer.from(v).toString("hex") : typeof v === "bigint" ? String(v) : v;
+const rowHash = (row: Record<string, unknown>) => createHash("sha256").update(JSON.stringify(Object.values(row), plainValue)).digest("hex");
+const summaryRows = (db: DatabaseSync, name: string, columns: string[]) =>
+  db.prepare("SELECT " + columns.map(quote).join(",") + " FROM " + quote(name) + " ORDER BY run").iterate();
+/** Keep every saved summary byte-identical. A new key must replace all witnesses saved for that same run. */
+function keptSummaries(db: DatabaseSync, name: string, before: TableDigest | undefined, source: TableDigest | undefined): boolean {
+  const saved = new Map(before?.summaries?.map(row => [row.run, row.hash]));
+  const witnesses = new Map(source?.compactedRuns?.map(row => [row.run, row.count]));
+  const from = HISTORY_RULES[name]!.summarizes!, sum = HISTORY_RULES[from]!.compacted!.sum;
+  const remaining = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(from)
+    ? db.prepare("SELECT 1 FROM " + quote(from) + " WHERE run = ? LIMIT 1") : undefined;
+  for (const row of summaryRows(db, name, before?.columns ?? tableColumns(db, name))) {
+    const run = Number(row["run"]), hash = saved.get(run);
+    if (hash !== undefined) {
+      if (rowHash(row) !== hash) return false;
+      saved.delete(run);
+    } else if (!witnesses.has(run) || Number(row[sum]) !== witnesses.get(run) || !remaining || remaining.get(run)) return false;
+  }
+  return saved.size === 0;
+}
 /** Rows streamed into a sha256, never held together: through a rowid in rowid order, or a WITHOUT ROWID table whole. */
 function rowsHash(db: DatabaseSync, name: string, columns: string[], through?: number): { count: number; hash: string } {
   const select = "SELECT " + (through === undefined ? "" : 'rowid AS "rowid:", ') + columns.map(quote).join(",") + " FROM " + quote(name);
@@ -438,7 +463,12 @@ export function historySnapshot(db: DatabaseSync): TableDigest[] {
       }
       if (rule?.receives) t.received = receipts(db, name, rule.receives, columns.filter(column => column !== "notification" && column !== "destination"));
       if (rule?.appendOnly || rule?.fromRoutines) t.hash = rowsHash(db, name, columns, t.last).hash;
-      if (rule?.compacted) t.summed = summed(db, rule.compacted);
+      if (rule?.compacted) {
+        t.summed = summed(db, rule.compacted);
+        t.compactedRuns = db.prepare("SELECT run, count(*) AS n FROM " + quote(name) + " GROUP BY run ORDER BY run").all()
+          .map(r => ({ run: Number(r["run"]), count: Number(r["n"]) }));
+      }
+      if (rule?.summarizes) t.summaries = [...summaryRows(db, name, columns)].map(row => ({ run: Number(row["run"]), hash: rowHash(row) }));
       if (rule?.fromRoutines) t.routines = savedRoutines(db);
       if (rule?.moved) t.moved = { found: arrived(db, rule.moved),
         rows: rule.moved.rows === undefined ? t.count : Number(db.prepare("SELECT count(*) AS n FROM " + quote(name) + " WHERE " + rule.moved.rows).get()!["n"]) };
@@ -506,13 +536,17 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
       return move === undefined || t.moved === undefined || arrived(db, move) - t.moved.found !== t.moved.rows;
     }
     const rule = HISTORY_RULES[t.name], present = new Set(tableColumns(db, t.name));
-    if (t.columns.some(c => !present.has(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
+    const kept = (c: string) => present.has(c) || (rule?.renamed?.[c] !== undefined && present.has(rule.renamed[c]!));
+    if (t.columns.some(c => !kept(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));
     if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
     if (rule?.fromRoutines) { const kept = rowsHash(db, t.name, columns, t.last); return kept.count !== t.count || kept.hash !== t.hash || !movedRoutines(db, t, before); }
     if (rule?.appendOnly) { const after = rowsHash(db, t.name, columns, t.last); return after.count !== t.count || after.hash !== t.hash; }
+    if (rule?.summarizes) return !keptSummaries(db, t.name, t, before.find(one => one.name === rule.summarizes));
     const r = db.prepare("SELECT count(*) AS n, coalesce(max(rowid),0) AS last FROM " + quote(t.name)).get()!, count = Number(r["n"]), last = Number(r["last"]);
-    if (rule?.compacted) return count > t.count || last > t.last || t.count - count !== summed(db, rule.compacted) - (t.summed ?? 0);
+    if (rule?.compacted) return count > t.count || last > t.last || t.count - count !== summed(db, rule.compacted) - (t.summed ?? 0)
+      // A newly created summary table has no digest of its own; check its keys here too.
+      || (!before.some(one => one.name === rule.compacted!.into) && tables.has(rule.compacted.into) && !keptSummaries(db, rule.compacted.into, undefined, t));
     if (rule?.receives) { const added = gained.get(t.name)?.count ?? 0; return count - t.count !== added || (added > 0 && added !== owed.get(t.name)?.count) || last < t.last; }
     return count !== t.count || last !== t.last;
   }).map(t => t.name);
@@ -523,8 +557,9 @@ async function rehearse(j: RuntimeUpdateJournal, system: UpdateSystem, source: s
   copyFileSync(source, copy); chmodSync(copy, 0o600);
   try {
     let db = new (sqlite().DatabaseSync)(copy, { readOnly: true });
-    // Rows already pointing nowhere before the update are the install's own; only ones the migration makes refuse.
-    const orphans = (): Set<string> => new Set([...db.prepare("PRAGMA foreign_key_check").iterate()].map(row => JSON.stringify(row)));
+    // Rows already pointing nowhere before the update are the install's own; only ones the migration makes refuse. (By
+    // today's table names: a renamed table's old orphan is the same row under its new name, orphanKey.)
+    const orphans = (): Set<string> => new Set([...db.prepare("PRAGMA foreign_key_check").iterate()].map(row => orphanKey(row)));
     const before = historySnapshot(db), orphaned = orphans(); db.close();
     await system.rehearse(j.to.dist, copy);
     db = new (sqlite().DatabaseSync)(copy, { readOnly: true });

@@ -22,7 +22,7 @@ import { ChatCore } from "./chat-core.js";
 import { ChatState, partContent } from "./chat-delivery-state.js";
 import { CHAT_PROVIDERS, CHAT_TABLES } from "./contracts/chat-tables.js";
 import { LEGACY_CHAT_APPS, LEGACY_TELEGRAM_TABLES, legacyAppTables } from "./chat-migration.js";
-import { telegramRequestId } from "./telegram-mate.js";
+import { telegramRequestId } from "./telegram-lead.js";
 import { CHAT_HARNESSES, type ChatHarness } from "../test/chat-providers.js";
 import { addLegacyChatTables, OWNER_V114, ownerShapedV114, windChatsBack } from "../test/legacy-chat.js";
 import { changedHistory, historySnapshot, CHAT_MOVES } from "./toolroll-update.js";
@@ -208,8 +208,8 @@ describe("v116 moves every chat app onto the shared chat tables", () => {
     store = openStore(file);
     const took = Date.now() - started;
     expect(took).toBeLessThan(30_000);
-    expect(SCHEMA_VERSION).toBe(116);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(116);
+    expect(SCHEMA_VERSION).toBe(117);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
     for (const table of [...LEGACY_TELEGRAM_TABLES, ...LEGACY_CHAT_APPS.flatMap(legacyAppTables)])
       expect(store.handle.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table), table).toBeUndefined();
     expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -296,7 +296,7 @@ describe("v116 moves every chat app onto the shared chat tables", () => {
     inspect.exec("DELETE FROM telegram_conversation_part WHERE conversation = 999999");
     inspect.close();
     store = openStore(file);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(116);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(117);
     expect(store.listTelegramConversations(BOT)).toEqual(telegram);
   });
 
@@ -317,7 +317,7 @@ describe("v116 moves every chat app onto the shared chat tables", () => {
     raw.exec("UPDATE schema_version SET version = -113");
     raw.close();
     store = openStore(file);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(116);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(117);
     expect(chatRows(store.handle)).toEqual(moved);
     for (const table of LEGACY_TELEGRAM_TABLES) expect(store.handle.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table)).toBeUndefined();
     store.close();

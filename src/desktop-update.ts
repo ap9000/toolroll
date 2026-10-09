@@ -9,6 +9,7 @@ import { readDesktopConfig, desktopServiceCommand, desktopServiceDefinition, ver
 import { daemonStatus } from "./daemon.js";
 import { run } from "./exec.js";
 import { readSchemaVersion, SCHEMA_VERSION, Store } from "./store.js";
+import { BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate, updateAdmissionPaused } from "./desktop-update-gate.js";
 import { currentDesktopAccess } from "./desktop-access.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, type ReleasedCodingOwner } from "./coding-update.js";
@@ -118,7 +119,11 @@ function connect(file: string, readOnly = false, accepts: SchemaAccepted = curre
   if (!existsSync(file) || lstatSync(file).isSymbolicLink()) throw Error("The task database is missing or linked. It was not recreated.");
   const db = new (sqlite().DatabaseSync)(file, { readOnly }); db.exec("PRAGMA busy_timeout=1000");
   const schema = readSchemaVersion(db);
-  if (!schema.ok || !accepts(schema.version)) { db.close(); throw Error("This update needs the current database schema. Use the separate verified migration procedure; the installed app is unchanged."); }
+  if (!schema.ok || !accepts(schema.version)) {
+    db.close();
+    if (schema.ok && schema.version !== null && Math.abs(schema.version) < BASELINE_SCHEMA_VERSION) throw Error(`This database is schema v${Math.abs(schema.version)}, older than v${BASELINE_SCHEMA_VERSION}: update through 0.9.x first (Toolroll 0.9.54 brings it up to date). The installed app is unchanged.`);
+    throw Error("This update needs the current database schema. Use the separate verified migration procedure; the installed app is unchanged.");
+  }
   return db;
 }
 const resources = (app: DesktopBundle) => join(app.path, "Contents", "Resources");
@@ -368,7 +373,9 @@ function assertConfig(j: UpdateJournal): void {
 }
 function snapshot(db: DatabaseSync): string {
   const result: Record<string, unknown> = {};
-  for (const table of ["task", "task_scope", "approver", "run", "artifact", "mate_message", "project"]) {
+  // The lead's messages were mate_message before v117 (D5); a desktop update never migrates, so read whichever is here.
+  const messages = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lead_message'").get() === undefined ? "mate_message" : "lead_message";
+  for (const table of ["task", "task_scope", "approver", "run", "artifact", messages, "project"]) {
     const rows = db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all();
     result[table] = rows;
   }

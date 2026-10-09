@@ -8,9 +8,6 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import type { Server } from "node:http";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join as joinPath } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, authenticateAccount, authenticateApprover, fileAndSealUnderMode, hashPassword, type AcceptanceCriterion } from "./scope.js";
 
@@ -30,11 +27,6 @@ const bareLegacy = (phase: "build" | "plan" | "repair" | "review", provider: str
 const T0 = new Date("2026-08-27T12:00:00.000Z");
 const REPO = "/repos/thing";
 const later = (hours: number) => new Date(T0.getTime() + hours * 60 * 60_000);
-
-
-function evidenceRootOf(): string {
-  return mkdtempSync(joinPath(tmpdir(), "so-live-shape-"));
-}
 
 describe("invites in the store", () => {
   let store: Store;
@@ -156,40 +148,6 @@ describe("the severing revocation (D7)", () => {
     expect(store.revokeAccount("alex", "dana", T0).ok).toBe(true);
     expect(store.revokeAccount("nobody", "dana", T0)).toEqual({ ok: false, reason: "unknown" });
     expect(store.revokeAccount("alex", "dana", T0)).toEqual({ ok: false, reason: "already-revoked" });
-  });
-
-  test("the v29 rebuild accepts SQLite's real ALTER-appended shape (found on the live console)", () => {
-    // A v28 database whose merge_blocker gained lifted_at/lifted_by via
-    // ALTER TABLE stores them as "…NOT NULL\n, lifted_at TEXT…" — newline
-    // BEFORE the comma. The recognizer must accept exactly that text.
-    const file = `${evidenceRootOf()}/live-shape.db`;
-    {
-      const old = openStore(file);
-      old.close();
-    }
-    {
-      const raw = openStore(file);
-      raw.raw().exec("PRAGMA foreign_keys = OFF");
-      raw.raw().exec("DROP TABLE merge_blocker");
-      raw.raw().exec(
-        "CREATE TABLE merge_blocker (\n" +
-          "  publication INTEGER NOT NULL UNIQUE REFERENCES publication(id),\n" +
-          "  reason      TEXT NOT NULL CHECK (reason IN ('repair-open')),\n" +
-          "  task_id     TEXT,\n" +
-          "  created_at  TEXT NOT NULL\n" +
-          ", lifted_at TEXT, lifted_by TEXT)",
-      );
-      raw.raw().exec("DROP TABLE service_cursor; UPDATE schema_version SET version = 28");
-      raw.close();
-    }
-    const reopened = openStore(file);
-    const ddl = reopened
-      .raw()
-      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'merge_blocker'")
-      .get();
-    expect(String(ddl?.["sql"])).toContain("lifted_at");
-    expect(String(ddl?.["sql"])).not.toContain("UNIQUE");
-    reopened.close();
   });
 
   test("merge blocker lifts are stamps with a name — and the block can recur", () => {

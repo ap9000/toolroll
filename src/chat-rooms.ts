@@ -9,7 +9,7 @@ import type { Store } from "./store.js";
 import { TeamLeads } from "./team-leads.js";
 import type { TeamActor, TeamConversation } from "./team-contract.js";
 import { tooLongText, type PhoneLink } from "./chat-channel.js";
-import { MATE_MESSAGE_MAX_CHARS } from "./mate.js";
+import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { phoneText } from "./telegram-status.js";
 
 export type RoomCommand = { kind: "list" } | { kind: "select"; index: number } | { kind: "off" };
@@ -158,7 +158,7 @@ export function applyRoomInbound(input: RoomInbound): boolean {
   }
   const trimmed = input.text.trim();
   if (trimmed === "") { report.ignored++; return true; }
-  if (trimmed.length > MATE_MESSAGE_MAX_CHARS) { say(tooLongText(trimmed.length)); report.chatRefused = (report.chatRefused ?? 0) + 1; return true; }
+  if (trimmed.length > LEAD_MESSAGE_MAX_CHARS) { say(tooLongText(trimmed.length)); report.chatRefused = (report.chatRefused ?? 0) + 1; return true; }
   const row = conversationRow(store, room.conversation);
   if (row === null) { backend.unbind(chatId, "system"); report.ignored++; return true; }
   // A current sender must not queue into a destination whose sharing grant
@@ -204,7 +204,7 @@ export type RoomMessage = { id: number; role: "assistant" | "operator"; text: st
 
 /** The conversation messages a room has not received yet, oldest first. */
 export function roomMessagesAfter(store: Store, thread: number, cursor: number, limit = 20): RoomMessage[] {
-  return store.handle.prepare(`SELECT m.id, m.role, m.text, m.turn, q.author, q.request_id, q.status FROM mate_message m
+  return store.handle.prepare(`SELECT m.id, m.role, m.text, m.turn, q.author, q.request_id, q.status FROM lead_message m
     LEFT JOIN team_message q ON q.message = m.id WHERE m.thread = ? AND m.id > ? ORDER BY m.id LIMIT ?`).all(thread, cursor, limit)
     .map(row => ({ id: Number(row["id"]), role: row["role"] === "assistant" ? "assistant" as const : "operator" as const, text: String(row["text"]), turn: row["turn"] === null ? null : Number(row["turn"]),
       author: row["author"] === null || row["author"] === undefined ? null : String(row["author"]), requestId: row["request_id"] === null || row["request_id"] === undefined ? null : String(row["request_id"]), status: row["status"] === null || row["status"] === undefined ? null : String(row["status"]) }));

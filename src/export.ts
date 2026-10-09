@@ -2,7 +2,7 @@
  * Full export (v105): everything Toolroll knows, for an instance
  * operator to take away — every table of the database as JSON Lines, grouped
  * by what it's about (projects, tasks, runs, the ledger, chats, flows,
- * teammates, people, settings), an evidence pack per task, the settings kept
+ * subagents, people, settings), an evidence pack per task, the settings kept
  * in files beside the database, a README explaining the layout, and a
  * manifest with each file's SHA-256. One folder, or the same files in a .zip.
  *
@@ -53,7 +53,7 @@ const DERIVED_TABLE = /^(sqlite_|memory_search)/;
 const SECRET_COLUMNS = new Set([
   "api_token.secret_hash", "lead_credential.secret_hash", "approver.credential_hash", "coordinator_credential.credential_hash", "runner.credential_hash", "invite.token_hash",
   "flow_trigger.hook_hash", "push_subscription.endpoint", "push_subscription.p256dh", "push_subscription.auth",
-  "chat_turn.credential_key", "mate_session.credential_key", "mate_turn.credential_key", "chat_runtime.push_url", "workflow_preview.token",
+  "chat_turn.credential_key", "lead_session.credential_key", "mate_turn.credential_key", "chat_runtime.push_url", "workflow_preview.token",
   "quota.credential_fp", "oauth_grant.renew_hash", "oauth_client.source_hash",
 ]);
 
@@ -61,7 +61,7 @@ const SECRET_COLUMNS = new Set([
 const SECRET_NAME = /hash|secret|token|passw|cookie|csrf|credential|p256dh|^auth$|key|nonce|endpoint|url/i;
 /** Reviewed: named like a secret, but it isn't one (a seal, a digest, a lookup name, an address with no key). */
 const REVIEWED_COLUMNS = new Set([
-  "artifact.key", "budget.scope_key", "mate_thread.scope_key", "diff_comment.source_key", "chat_meta.key",
+  "artifact.key", "budget.scope_key", "lead_thread.scope_key", "diff_comment.source_key", "chat_meta.key",
   "flow_trigger_event.key", "installation_fact.key", "mcp_idempotency.key", "memory_gap.key", "mutation.idempotency_key", "notification.dedupe_key",
   "service_cursor.key", "ledger_checkpoint.hash", "ledger_seal.hash", "merge_intent.grant_terms_hash", "plan_revision.parent_hash",
   "publication.body_hash", "publication.pr_url", "team_message.payload_hash", "team_request.payload_hash", "backend_grant.credential_scope",
@@ -73,9 +73,9 @@ const USAGE_COLUMN = /(^|_)tokens(_|$)|output_tokens/;
 export function categoryOf(table: string): string {
   const rules: [RegExp, string][] = [
     [/^(action_ledger|ledger_seal|ledger_checkpoint|sync_ledger)$/, "ledger"],
-    [/^teammate/, "teammates"],
+    [/^subagent/, "subagents"],
     [/^(flow|workflow_)/, "flows"],
-    [/^(chat_|mate_|team_|notification|push_)/, "chats"],
+    [/^(chat_|lead_|team_|notification|push_)/, "chats"],
     [/^(approver|api_token|lead_credential|invite|sso_identity|coordinator_|oauth_)/, "people"],
     [/^(run|artifact|claim|worktree$|execution_slot|criterion_review|diff_comment|proof_|review_request|repair_chain|incident|publication$|merge_|side_spend|knowledge_snapshot|learning_snapshot|skill_snapshot)/, "runs"],
     [/^(task|hold$|plan_|scope_|tool_seal|decision|external_|skill_test)/, "tasks"],
@@ -222,9 +222,9 @@ Everything this installation knew on ${now.toISOString().slice(0, 16).replace("T
 - \`runs/\`: agent runs with usage and cost (\`run\`, \`run_spend\`), their records of artifacts, proofs, reviews and publications.
 - \`ledger/\`: the action ledger (\`action_ledger\`), each entry's seal (\`ledger_seal\`) and the checkpoints (\`ledger_checkpoint\`).
 - \`evidence-packs/\`: one JSON file per task: who asked, the exact terms and who approved them, runs and cost, checks, completion and its ledger entries.
-- \`chats/\`: conversations with the lead and teammates, and Telegram, Slack, Discord and Teams messages and notifications.
+- \`chats/\`: conversations with the lead and subagents, and Telegram, Slack, Discord and Teams messages and notifications.
 - \`flows/\`: flows, their cards, scripts and triggers (schedules included) and saved recipes.
-- \`teammates/\`: teammates, their versions, memory, tools and turns.
+- \`subagents/\`: subagents, their versions, memory, tools and turns.
 - \`people/\`: accounts, API token names and invitations (no passwords or tokens).
 - \`settings/\`: models, budgets, spend and permission defaults, provider readings; \`files.json\` holds the settings kept in files.
 - \`other/\`: everything else the database keeps (workers, leases, queues).

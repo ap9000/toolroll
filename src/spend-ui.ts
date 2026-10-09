@@ -22,8 +22,8 @@ export const SPEND_CSS = `.spend{max-width:960px;min-width:0}.spend-head{display
 export type SpendView = {
   month: string; previous: string; next: string | null;
   items: SpendItem[]; budgets: BudgetState[];
-  targets: { value: string; label: string; group: "Everything" | "Projects" | "People" | "Teammates" }[];
-  teammateNames: Map<number, string>;
+  targets: { value: string; label: string; group: "Everything" | "Projects" | "People" | "Subagents" }[];
+  subagentNames: Map<number, string>;
   csrf: string;
 };
 
@@ -51,18 +51,18 @@ export function spendHtml(view: SpendView, notice: { said?: string | null; probl
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const total = view.items.reduce((sum, item) => sum + (item.microusd ?? 0), 0);
   const unpriced = view.items.filter(item => item.microusd === null && (item.tokensIn !== null || item.kind !== "run")).length;
-  const counts = { run: view.items.filter(item => item.kind === "run").length, teammate: view.items.filter(item => item.kind === "teammate").length, chat: view.items.filter(item => item.kind === "chat").length, sort: view.items.filter(item => item.kind === "sort").length };
-  const parts = [`${counts.run} ${counts.run === 1 ? "run" : "runs"}`, ...(counts.teammate > 0 ? [`${counts.teammate} teammate turns`] : []), ...(counts.chat > 0 ? [`${counts.chat} chat turns`] : []), ...(counts.sort > 0 ? [`${counts.sort} ${counts.sort === 1 ? "sort" : "sorts"}`] : [])];
-  const nameOfTeammate = (key: string) => view.teammateNames.get(Number(key)) ?? `Teammate ${key}`;
+  const counts = { run: view.items.filter(item => item.kind === "run").length, subagent: view.items.filter(item => item.kind === "subagent").length, chat: view.items.filter(item => item.kind === "chat").length, sort: view.items.filter(item => item.kind === "sort").length };
+  const parts = [`${counts.run} ${counts.run === 1 ? "run" : "runs"}`, ...(counts.subagent > 0 ? [`${counts.subagent} subagent turns`] : []), ...(counts.chat > 0 ? [`${counts.chat} chat turns`] : []), ...(counts.sort > 0 ? [`${counts.sort} ${counts.sort === 1 ? "sort" : "sorts"}`] : [])];
+  const nameOfSubagent = (key: string) => view.subagentNames.get(Number(key)) ?? `Subagent ${key}`;
   const budgets = view.budgets.map(budget => {
     const width = Math.min(100, Math.max(0, budget.percent));
     const over = budget.spentMicrousd >= budget.limitMicrousd;
-    const label = budgetLabel(budget, budget.scope === "teammate" ? nameOfTeammate(budget.key) : undefined).replace(/'s$/, "");
+    const label = budgetLabel(budget, budget.scope === "subagent" ? nameOfSubagent(budget.key) : undefined).replace(/'s$/, "");
     return html`<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${label}</span><span class="figures">${usd(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span><span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span><span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher budget." : budget.hardStop ? "Stops API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} unpriced` : ""}</span><details><summary>Change</summary>${
       postForm("/spend/budget", html`<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" value="${Math.round(budget.limitMicrousd / 1_000_000)}" required></label><label class="choice"><input type="checkbox" name="stop" value="1"${budget.hardStop ? html` checked` : ""}> Stop new work at 100%</label><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><button type="submit" name="action" value="save">Save</button> <button type="submit" name="action" value="remove">Remove</button>`,
         { attrs: { class: "budget-form" }, hidden: { target: `${budget.scope}:${budget.key}` } })}</details></div>`;
   });
-  const groups = ["Everything", "Projects", "People", "Teammates"] as const;
+  const groups = ["Everything", "Projects", "People", "Subagents"] as const;
   const options = groups.map(group => {
     const members = view.targets.filter(one => one.group === group);
     return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}">${one.label}</option>`)}</optgroup>`;
@@ -71,19 +71,19 @@ export function spendHtml(view: SpendView, notice: { said?: string | null; probl
   return html`<article class="spend"><div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend?month=${view.previous}">← ${view.previous}</a><strong>${view.month}</strong>${view.next === null ? "" : html`<a href="/spend?month=${view.next}">${view.next} →</a>`}<a href="/spend?month=${view.month}&amp;format=csv" download>CSV</a></p></div>${note}<p class="spend-total" data-spend-total="${total}">${usd(total)}</p><p class="meta">${parts.join(" · ")}${unpriced > 0 ? ` · ${unpriced} unpriced (no reported cost or catalogue price)` : ""} · UTC month</p><section><h2>Budgets</h2>${budgets.length === 0 ? html`<p class="meta">No budgets yet.</p>` : budgets}${add}</section><div class="spend-grid">${
     table("By project", breakdown(view.items, item => item.project), projectName)}${
     table("By person", breakdown(view.items, item => item.person), key => key)}${
-    table("By teammate", breakdown(view.items, item => item.teammate === null ? null : String(item.teammate)), nameOfTeammate)}${
+    table("By subagent", breakdown(view.items, item => item.subagent === null ? null : String(item.subagent)), nameOfSubagent)}${
     table("By model", breakdown(view.items, item => `${item.provider}${item.model === null ? "" : ` · ${item.model}`}`), key => key)}</div><p class="meta">Subscription work is $0; its limits are on Tasks. API work is what the provider reported, or its tokens at the prices in Settings → Models.</p></article>`;
 }
 
 /** One row per piece of spend, for a spreadsheet. */
-export function spendCsv(items: readonly SpendItem[], teammateNames: Map<number, string>): string {
+export function spendCsv(items: readonly SpendItem[], subagentNames: Map<number, string>): string {
   const cell = (value: unknown) => {
     const text = value === null || value === undefined ? "" : String(value);
     const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
     return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
   };
-  const head = ["time_utc", "kind", "project", "person", "teammate", "task", "run", "provider", "model", "tokens_in", "tokens_out", "cost_usd", "priced_by", "billing"];
-  const rows = items.map(item => [item.at, item.kind, item.project, item.person, item.teammate === null ? null : teammateNames.get(item.teammate) ?? item.teammate,
+  const head = ["time_utc", "kind", "project", "person", "subagent", "task", "run", "provider", "model", "tokens_in", "tokens_out", "cost_usd", "priced_by", "billing"];
+  const rows = items.map(item => [item.at, item.kind, item.project, item.person, item.subagent === null ? null : subagentNames.get(item.subagent) ?? item.subagent,
     item.taskId, item.runId, item.provider, item.model, item.tokensIn, item.tokensOut, item.microusd === null ? null : (item.microusd / 1_000_000).toFixed(6), item.source, item.authMode].map(cell).join(","));
   return `﻿${head.join(",")}\r\n${rows.map(row => `${row}\r\n`).join("")}`;
 }

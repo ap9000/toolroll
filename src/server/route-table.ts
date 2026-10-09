@@ -227,9 +227,11 @@ get("flows", "flows.gallery", "^\\/flows\\/new\\/[a-z-]{1,40}$", { limited: "res
 get("flows", "flows.page", "/flows", { limited: "resource", ...free });
 get("flows", "kits", "/kits");
 get("flows", "kit.page", "^\\/kits\\/[a-z-]{1,40}$", { sample: "/kits/support" });
-get("flows", "teammates", "/teammates", free);
-get("flows", "teammate.page", `^\\/teammates\\/[1-9][0-9]{0,9}$`, { ...free, sample: "/teammates/1" });
-get("flows", "teammate.soul-file", `^\\/teammates\\/[1-9][0-9]{0,9}\\/soul\\.md$`, { ...free, sample: "/teammates/1/soul.md" });
+get("flows", "subagents", "/settings/lead/subagents", free);
+// D5: subagents were teammates; old links to them land on the same pages under Settings → Lead.
+get("flows", "subagents.legacy", "^\\/teammates(\\/[1-9][0-9]{0,9}(\\/soul\\.md)?)?$", { ...free, sample: "/teammates/1" });
+get("flows", "subagent.page", `^\\/settings\\/lead\\/subagents\\/[1-9][0-9]{0,9}$`, { ...free, sample: "/settings/lead/subagents/1" });
+get("flows", "subagent.soul-file", `^\\/settings\\/lead\\/subagents\\/[1-9][0-9]{0,9}\\/soul\\.md$`, { ...free, sample: "/settings/lead/subagents/1/soul.md" });
 get("flows", "flow.insights", `^\\/flows\\/${FLOW}\\/insights$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/insights" });
 get("flows", "flow.run", `^\\/flows\\/${FLOW}\\/runs\\/${FLOW}\\/${FLOW}$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/runs/2/3" });
 get("flows", "flow.export", `^\\/flows\\/${FLOW}\\/export$`, { project: "flow", limited: "resource", ...free, sample: "/flows/1/export" });
@@ -298,10 +300,10 @@ post("settings", "settings.skills-revise", "/settings/skills/revise", { project:
 post("settings", "settings.skills-import", "/settings/skills/import", { project: "form", limited: "unscoped", bodyCap: 2 * 1024 * 1024, ...approver("Sign in as an approver to manage skills.", "/settings/skills") });
 post("settings", "settings.skills-change", "/settings/skills/change", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to manage skills.", "/settings/skills") });
 for (const one of ["setup", "sample", "github"]) post("flows", `kit.${one}`, `^\\/kits\\/[a-z-]{1,40}\\/${one}$`, { project: "form", sample: `/kits/support/${one}`, ...approver("Sign in as an approver to set kits up.", "/kits") });
-const TEAMMATES = anyApprover("Sign in as an approver to look after teammates.", "/teammates");
-post("flows", "teammate.new", "/teammates/new", { project: "form", ...TEAMMATES });
-for (const one of ["soul", "state", "note", "settings", "summary", "tools", "memory", "routines", "week"]) post("flows", `teammate.${one}`, `^\\/teammates\\/[1-9][0-9]{0,9}\\/${one}$`, { sample: `/teammates/1/${one}`, ...TEAMMATES });
-post("flows", "teammate.answer", "^\\/teammates\\/questions\\/[1-9][0-9]{0,9}\\/answer$", { sample: "/teammates/questions/1/answer" });
+const SUBAGENTS = anyApprover("Sign in as an approver to look after subagents.", "/settings/lead/subagents");
+post("flows", "subagent.new", "/settings/lead/subagents/new", { project: "form", ...SUBAGENTS });
+for (const one of ["soul", "state", "note", "settings", "summary", "tools", "memory", "routines", "week"]) post("flows", `subagent.${one}`, `^\\/settings\\/lead\\/subagents\\/[1-9][0-9]{0,9}\\/${one}$`, { sample: `/settings/lead/subagents/1/${one}`, ...SUBAGENTS });
+post("flows", "subagent.answer", "^\\/settings\\/lead\\/subagents\\/questions\\/[1-9][0-9]{0,9}\\/answer$", { sample: "/settings/lead/subagents/questions/1/answer" });
 post("flows", "flows.gallery-create", "^\\/flows\\/new\\/[a-z-]{1,40}$", { project: "form", limited: "resource", sample: "/flows/new/triage" });
 // Flow editing answers JSON: a caller without approver standing hears it in the editor's own format.
 const CREATE_FLOWS = approver("Sign in as an approver to create flows.", "/flows");

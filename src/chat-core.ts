@@ -224,7 +224,7 @@ export class ChatCore {
       this.prepare("UPDATE chat_room SET revoked = ?, revoked_by = ? WHERE provider = :provider AND installation = ? AND chat = ? AND revoked IS NULL").run(stamp, args.by, args.installation, args.chat);
       const thread = this.db.prepare("SELECT thread FROM team_conversation WHERE id = ?").get(args.conversation);
       if (thread === undefined) throw new Error("no such team conversation");
-      const cursor = Number(this.db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM mate_message WHERE thread = ?").get(Number(thread["thread"]))?.["n"] ?? 0);
+      const cursor = Number(this.db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM lead_message WHERE thread = ?").get(Number(thread["thread"]))?.["n"] ?? 0);
       this.prepare("INSERT INTO chat_room (provider, id, installation, chat, kind, conversation, binding, bound_by, bound, cursor) VALUES (:provider, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(this.nextId("chat_room"), args.installation, args.chat, args.kind, args.conversation, args.binding, args.by, stamp, cursor);
       return { ok: true as const, room: this.room(args.installation, args.chat)! };

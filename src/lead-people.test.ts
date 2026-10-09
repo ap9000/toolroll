@@ -1,6 +1,6 @@
 /**
  * The lead knows you and the people you work with: what it knows about its owner (confirmed about-you lines, from
- * remember cards or Settings → Lead), the people index in each turn's bundle (people, AI teammates, team chats; within
+ * remember cards or Settings → Lead), the people index in each turn's bundle (people, subagents, team chats; within
  * 8 KB, people dropping before decisions), and get_person.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -11,12 +11,12 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { fileTaskProposal } from "./proposal.js";
-import { confirmMateProposal } from "./mate-doors.js";
-import { executeMateTool, MATE_TOOL_SCHEMAS, type MateToolContext } from "./mate-tools.js";
+import { confirmLeadProposal } from "./lead-doors.js";
+import { executeLeadTool, LEAD_TOOL_SCHEMAS, type LeadToolContext } from "./lead-tools.js";
 import { leadContext, LEAD_CONTEXT_MAX_BYTES } from "./lead-context.js";
 import { ABOUT_YOU_MAX_LINES, checkAboutYou, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { DEFAULT_LEAD_NAME, DEFAULT_LEAD_PERSONA, leadIdentityOf } from "./lead-identity.js";
-import { MATE_CONTRACT } from "./mate-contract.js";
+import { LEAD_CONTRACT } from "./lead-contract.js";
 import { TeamLeads } from "./team-leads.js";
 import { personEntry } from "./lead-people.js";
 import { withActor } from "./actor.js";
@@ -35,23 +35,23 @@ describe("the lead knows you and the people you work with", () => {
     const verified = verifyApproverStanding(store, "alex.pelletier", store.accountOf("alex.pelletier")!.generation, [web, api]);
     if (!verified.ok) throw Error("identity");
     who = verified.who;
-    session = store.mintMateSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "fixture", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, t0);
-    thread = store.openMateThread(who.name, who.ceilingDigest, t0).thread.id;
+    session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "fixture", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, t0);
+    thread = store.openLeadThread(who.name, who.ceilingDigest, t0).thread.id;
   });
   afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 
-  function turn(now: Date, calls: (ctx: MateToolContext) => void) {
-    const opened = store.openMateTurn({ approver: who.name, session, thread, credentialKey: "fixture", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, now);
+  function turn(now: Date, calls: (ctx: LeadToolContext) => void) {
+    const opened = store.openLeadTurn({ approver: who.name, session, thread, credentialKey: "fixture", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, now);
     if (!opened.ok) throw Error(opened.reason);
-    const started = store.startMateTurn(opened.id, now);
+    const started = store.startLeadTurn(opened.id, now);
     if (!started.ok) throw Error("start");
-    const ctx: MateToolContext = { store, who, now, step: 1, readDecisions: new Map(), thread, turn: opened.id, evidenceRoot: root,
-      draft: (kind, payload) => store.draftMateProposal({ thread, turn: opened.id, kind, payload, ceilingDigest: who.ceilingDigest }, now) };
+    const ctx: LeadToolContext = { store, who, now, step: 1, readDecisions: new Map(), thread, turn: opened.id, evidenceRoot: root,
+      draft: (kind, payload) => store.draftLeadProposal({ thread, turn: opened.id, kind, payload, ceilingDigest: who.ceilingDigest }, now) };
     calls(ctx);
-    store.finalizeMateTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Noted.", activity: "" } }, now);
+    store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Noted.", activity: "" } }, now);
   }
-  const call = (ctx: MateToolContext, name: string, args: Record<string, unknown>) => {
-    const result = executeMateTool(ctx, name, args);
+  const call = (ctx: LeadToolContext, name: string, args: Record<string, unknown>) => {
+    const result = executeLeadTool(ctx, name, args);
     if (!result.ok) throw Error(result.message);
     return result.body as Record<string, unknown>;
   };
@@ -65,15 +65,15 @@ describe("the lead knows you and the people you work with", () => {
       expect(body).toMatchObject({ awaiting: "confirmation", executed: false });
       card = Number(body["proposal"]);
       // The same line twice is one card.
-      expect(executeMateTool(ctx, "remember", { kind: "about-you", text: "keep copy terse." })).toMatchObject({ ok: false, message: expect.stringContaining(`Card ${card}`) });
+      expect(executeLeadTool(ctx, "remember", { kind: "about-you", text: "keep copy terse." })).toMatchObject({ ok: false, message: expect.stringContaining(`Card ${card}`) });
     });
-    expect(store.getMateProposal(card)).toMatchObject({ kind: "action", state: "pending", payload: { operation: "lead_about_you", repo: "", title: "Remember about you",
+    expect(store.getLeadProposal(card)).toMatchObject({ kind: "action", state: "pending", payload: { operation: "lead_about_you", repo: "", title: "Remember about you",
       terms: ["Keep copy terse.", expect.stringContaining("Settings → Lead")] } });
     // A proposal is not a memory: nothing is stored and the bundle knows nothing yet.
     expect(store.leadAbout(who.name)).toEqual([]);
     expect(bundle(at(1)).aboutYou).toEqual([]);
 
-    expect(confirmMateProposal(store, who, card, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
+    expect(confirmLeadProposal(store, who, card, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
     expect(store.leadAbout(who.name)).toEqual(["Keep copy terse."]);
     // Stored beside the lead's name and persona, which stay the defaults when never named: nothing frozen.
     expect(store.leadConfig(who.name)).toBeNull();
@@ -96,16 +96,16 @@ describe("the lead knows you and the people you work with", () => {
       replacing = Number(replacingBody["proposal"]);
       expect(replacingBody["replaces"]).toEqual({ line: 1, was: "Keep copy terse." });
       named = Number(call(ctx, "remember", { kind: "about-you", text: "Copy can be long.", replaces: 1 })["proposal"]);
-      expect(executeMateTool(ctx, "remember", { kind: "about-you", text: "Something", replaces: 9 })).toMatchObject({ ok: false });
+      expect(executeLeadTool(ctx, "remember", { kind: "about-you", text: "Something", replaces: 9 })).toMatchObject({ ok: false });
     });
-    expect(store.getMateProposal(added)!.payload).toMatchObject({ title: "Remember about you", terms: ["Write copy in full sentences, not terse notes.", expect.any(String)] });
-    expect(store.getMateProposal(replacing)!.payload).toMatchObject({ title: "Update what your lead knows about you",
+    expect(store.getLeadProposal(added)!.payload).toMatchObject({ title: "Remember about you", terms: ["Write copy in full sentences, not terse notes.", expect.any(String)] });
+    expect(store.getLeadProposal(replacing)!.payload).toMatchObject({ title: "Update what your lead knows about you",
       terms: ["Was: Keep copy terse.", "Now: Copy for the store can be playful.", expect.any(String)] });
-    expect(confirmMateProposal(store, who, replacing, at(1), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, replacing, at(1), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(store.leadAbout(who.name)).toEqual(["Copy for the store can be playful.", "I test changes myself."]);
     // A card replacing a line that changed since is refused, not applied to the wrong line; an added line still saves.
-    expect(confirmMateProposal(store, who, named, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: false, reason: "stale" });
-    expect(confirmMateProposal(store, who, added, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, named, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: false, reason: "stale" });
+    expect(confirmLeadProposal(store, who, added, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(store.leadAbout(who.name)).toEqual(["Copy for the store can be playful.", "I test changes myself.", "Write copy in full sentences, not terse notes."]);
   });
 
@@ -117,16 +117,16 @@ describe("the lead knows you and the people you work with", () => {
       second = Number(call(ctx, "remember", { kind: "about-you", text: "I review on my phone." })["proposal"]);
       replacing = Number(call(ctx, "remember", { kind: "about-you", text: "Run the full checks for me.", replaces: 2 })["proposal"]);
     });
-    expect(confirmMateProposal(store, who, first, at(1), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
-    expect(confirmMateProposal(store, who, second, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
+    expect(confirmLeadProposal(store, who, first, at(1), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
+    expect(confirmLeadProposal(store, who, second, at(2), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Your lead will remember this." });
     // Added lines go on the end, so the line a replacing card names is still the line it showed.
-    expect(confirmMateProposal(store, who, replacing, at(3), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Updated what your lead knows about you." });
+    expect(confirmLeadProposal(store, who, replacing, at(3), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true, said: "Updated what your lead knows about you." });
     expect(store.leadAbout(who.name)).toEqual(["Keep copy terse.", "Run the full checks for me.", "Don't ping me for releases.", "I review on my phone."]);
     // An edit in Settings → Lead between drafting and confirming doesn't stop an added line either.
     let third = 0;
     turn(at(4), ctx => { third = Number(call(ctx, "remember", { kind: "about-you", text: "Mornings are best." })["proposal"]); });
     saveAboutYou(store, who.name, ["Keep copy terse."], at(5));
-    expect(confirmMateProposal(store, who, third, at(6), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
+    expect(confirmLeadProposal(store, who, third, at(6), { via: "web", evidenceRoot: root })).toMatchObject({ ok: true });
     expect(store.leadAbout(who.name)).toEqual(["Keep copy terse.", "Mornings are best."]);
   });
 
@@ -164,7 +164,7 @@ describe("the lead knows you and the people you work with", () => {
     store.saveApprover("pat", "h".repeat(64), t0);
     store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'pat'").run(JSON.stringify(["/elsewhere"]));
     store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'jo'").run(JSON.stringify([api]));
-    store.createTeammate({ repo: web, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, t0);
+    store.createSubagent({ repo: web, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, t0);
     const domain = new TeamLeads(store, () => [web, api]);
     const actor = { name: who.name, generation: who.generation };
     const leadId = (domain.execute(actor, { operation: "create-lead", args: { name: "Launch lead", projects: [web], instructions: "Get the spring launch out the door.\nMore detail." } }, t0).result as { leadId: string }).leadId;
@@ -178,7 +178,7 @@ describe("the lead knows you and the people you work with", () => {
     // Only people who share a project; their first names are shown on purpose, projects by the ids the bundle names.
     expect(data.people).toEqual({
       people: [expect.stringMatching(/^p[0-9a-f]{8} Jo: approves work; r2$/), expect.stringMatching(/^p[0-9a-f]{8} Sam: approves work; r1, r2$/)],
-      teammates: [expect.stringMatching(/^t\d+ Maya: Support \(r1\)$/)],
+      subagents: [expect.stringMatching(/^t\d+ Maya: Support \(r1\)$/)],
       teams: [expect.stringMatching(/^c[0-9a-f]{8} Spring launch: you, Sam; Get the spring launch out the door\.$/)],
     });
     // Ids come from the account or team chat, not the list position: someone new ahead in the list moves no one.
@@ -196,7 +196,7 @@ describe("the lead knows you and the people you work with", () => {
     const roomThread = Number(store.handle.prepare("SELECT thread FROM team_conversation WHERE id = ?").get(conversationId)!["thread"]);
     const room = bundle(at(3), { leadName: "Launch lead", thread: roomThread });
     expect(room.aboutYou).toEqual([]);
-    expect(room.people).toEqual({ people: [data.people.people[1]], teammates: [], teams: data.people.teams });
+    expect(room.people).toEqual({ people: [data.people.people[1]], subagents: [], teams: data.people.teams });
     // Even without the room's lead name, the room's own thread is enough.
     expect(bundle(at(3), { thread: roomThread }).people.people).toEqual([data.people.people[1]]);
     // get_person in the room looks up the same people.
@@ -242,7 +242,7 @@ describe("the lead knows you and the people you work with", () => {
       if (!filed.ok) throw Error(filed.reason);
     }
     expect(store.cancelTask("old-thing", t0, "Not needed")).toEqual({ ok: true });
-    const mate = store.createTeammate({ repo: web, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, t0);
+    const mate = store.createSubagent({ repo: web, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, t0);
     const samId = (bundle(at(1)).people.people[0] as string).split(" ")[0]!;
     expect(samId).toMatch(/^p[0-9a-f]{8}$/);
     turn(at(1), ctx => {
@@ -253,13 +253,13 @@ describe("the lead knows you and the people you work with", () => {
       expect(call(ctx, "get_person", { name: "sam" })["person"]).toMatchObject({ id: samId });
       for (const id of ["invalid", null, 42, {}]) expect(call(ctx, "get_person", { id, name: "sam" })["person"]).toEqual(sam);
       for (const name of ["", " ".repeat(81), null, 42, {}]) expect(call(ctx, "get_person", { id: samId, name })["person"]).toEqual(sam);
-      expect(executeMateTool(ctx, "get_person", { id: "invalid", name: null })).toEqual({ ok: false, message: "Give an id from your catch-up's people index or a name." });
-      expect(executeMateTool(ctx, "get_person", { id: "p1" })).toMatchObject({ ok: false });
-      expect(call(ctx, "get_person", { name: "Maya" })["person"]).toMatchObject({ id: `t${mate}`, kind: "AI teammate", name: "Maya", role: "Support", project: "r1", openTasks: [] });
-      expect(executeMateTool(ctx, "get_person", { name: "Nobody" })).toMatchObject({ ok: false });
-      expect(executeMateTool(ctx, "get_person", {})).toMatchObject({ ok: false });
+      expect(executeLeadTool(ctx, "get_person", { id: "invalid", name: null })).toEqual({ ok: false, message: "Give an id from your catch-up's people index or a name." });
+      expect(executeLeadTool(ctx, "get_person", { id: "p1" })).toMatchObject({ ok: false });
+      expect(call(ctx, "get_person", { name: "Maya" })["person"]).toMatchObject({ id: `t${mate}`, kind: "subagent", name: "Maya", role: "Support", project: "r1", openTasks: [] });
+      expect(executeLeadTool(ctx, "get_person", { name: "Nobody" })).toMatchObject({ ok: false });
+      expect(executeLeadTool(ctx, "get_person", {})).toMatchObject({ ok: false });
     });
-    expect(MATE_TOOL_SCHEMAS.map(one => one.name)).toContain("get_person");
-    expect(MATE_CONTRACT).toContain("Before answering a question about a person, an AI teammate or a team chat, read get_person for them first");
+    expect(LEAD_TOOL_SCHEMAS.map(one => one.name)).toContain("get_person");
+    expect(LEAD_CONTRACT).toContain("Before answering a question about a person, a subagent or a team chat, read get_person for them first");
   });
 });

@@ -5,7 +5,7 @@ import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
 import { gateWords } from "./approval-policy.js";
 import { createHash, randomBytes } from "node:crypto";
-import { mateTurnKeepsProposals, verifiedAuthor, type Store } from "./store.js";
+import { leadTurnKeepsProposals, verifiedAuthor, type Store } from "./store.js";
 import {
   isVerifiedApprover,
   reproveApprover,
@@ -49,15 +49,15 @@ import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCar
 import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, scheduleFromWords, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
 import { describeSchedule, parseSchedule } from "./flow-schedule.js";
 import { dirname } from "node:path";
-import { handleOf, parseSoul, SOUL_CHARS, TEAMMATE_TEMPLATES, teammateLabel } from "./teammates.js";
-import { createTeammateFrom, labelOf, nameOf, renamedSoul, saveSoul, setTeammateState } from "./teammate-admin.js";
-import { cleanMemory, editMemory, forgetMemory, tellTeammate } from "./teammate-memory.js";
-import { addRoutine, removeRoutine, routineSchedule, routinesOf } from "./teammate-desk.js";
-import { requestUndo, undoFor } from "./teammate-week.js";
+import { handleOf, parseSoul, SOUL_CHARS, SUBAGENT_TEMPLATES, subagentLabel } from "./subagents.js";
+import { createSubagentFrom, labelOf, nameOf, renamedSoul, saveSoul, setSubagentState } from "./subagent-admin.js";
+import { cleanMemory, editMemory, forgetMemory, tellSubagent } from "./subagent-memory.js";
+import { addRoutine, askSubagent, removeRoutine, routineSchedule, routinesOf } from "./subagent-desk.js";
+import { requestUndo, undoFor } from "./subagent-week.js";
 import { kitInstalled, kitOf, KITS, setUpKitNow } from "./kits.js";
 import { starterFlowOf, starterOf, startersFor, starterTerms, STARTER_FLOWS, switchOnStarter } from "./flow-starters.js";
-import { answerTeammateQuestion } from "./teammate-work.js";
-import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleWords, setToolRules } from "./teammate-tools.js";
+import { answerSubagentQuestion } from "./subagent-work.js";
+import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleWords, setToolRules } from "./subagent-tools.js";
 import { aboutYouOf, checkAboutYouLine, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { CHAT_ACTION_FIELDS, readChatActionRequest, readSharedAction, SHARED_ACTION_VERSION, type ChatActionOperation, type SharedAction } from "./contracts/chat-actions.js";
 
@@ -127,15 +127,16 @@ export const CHAT_ACTIONS = {
   flow_trigger_pause: { label: "Pause trigger", protected: false, password: false },
   flow_trigger_resume: { label: "Turn trigger on", protected: false, password: false },
   flow_trigger_remove: { label: "Remove trigger", protected: false, password: false },
-  teammate_create: { label: "Add teammate", protected: false, password: false },
-  teammate_soul: { label: "Update soul file", protected: false, password: false },
-  teammate_state: { label: "Change teammate", protected: false, password: false },
-  teammate_note: { label: "Tell teammate", protected: false, password: false },
-  teammate_answer: { label: "Answer teammate", protected: false, password: false },
-  teammate_tools: { label: "Change teammate's tools", protected: false, password: false },
-  teammate_memory: { label: "Change teammate's memory", protected: false, password: false },
-  teammate_routine: { label: "Change teammate's routines", protected: false, password: false },
-  teammate_undo: { label: "Undo teammate's call", protected: false, password: false },
+  subagent_create: { label: "Add subagent", protected: false, password: false },
+  subagent_soul: { label: "Update soul file", protected: false, password: false },
+  subagent_state: { label: "Change subagent", protected: false, password: false },
+  subagent_note: { label: "Tell subagent", protected: false, password: false },
+  subagent_ask: { label: "Ask subagent", protected: false, password: false },
+  subagent_answer: { label: "Answer subagent", protected: false, password: false },
+  subagent_tools: { label: "Change subagent's tools", protected: false, password: false },
+  subagent_memory: { label: "Change subagent's memory", protected: false, password: false },
+  subagent_routine: { label: "Change subagent's routines", protected: false, password: false },
+  subagent_undo: { label: "Undo subagent's call", protected: false, password: false },
   kit_setup: { label: "Set up kit", protected: false, password: false },
   decision_record: { label: "Record decision", protected: false, password: false },
   decision_retire: { label: "Retire decision", protected: false, password: false },
@@ -307,18 +308,18 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("teammate_") || operation.startsWith("kit_")
+    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
-  // v92: a teammate names its project; a question names it through its card's flow.
-  const mateTarget = operation.startsWith("teammate_") && operation !== "teammate_create" && operation !== "teammate_answer" ? store.getTeammate(integer(input, "teammate")) : null;
-  if (mateTarget !== null && mateTarget.state === "removed") throw Error("That teammate is off the team.");
-  const questionTarget = operation === "teammate_answer" ? store.teammateQuestion(integer(input, "question")) : null;
+  // v92: a subagent names its project; a question names it through its card's flow.
+  const subagentTarget = operation.startsWith("subagent_") && operation !== "subagent_create" && operation !== "subagent_answer" ? store.getSubagent(integer(input, "subagent")) : null;
+  if (subagentTarget !== null && subagentTarget.state === "removed") throw Error("That subagent is off the team.");
+  const questionTarget = operation === "subagent_answer" ? store.subagentQuestion(integer(input, "question")) : null;
   const questionFlow = questionTarget === null ? null : store.getFlow(store.getFlowCard(questionTarget.card)?.flow ?? -1);
-  if (operation === "teammate_answer" && (questionTarget === null || questionFlow === null)) throw Error("That question isn't open any more.");
+  if (operation === "subagent_answer" && (questionTarget === null || questionFlow === null)) throw Error("That question isn't open any more.");
   const repo =
-    flowTarget !== null ? flowTarget.flow.repo : mateTarget !== null ? mateTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
+    flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
   if (!repo) throw Error("Choose an available project.");
   requireActor(store, who, repo);
   const request = structuredClone(input),
@@ -421,53 +422,53 @@ export function prepareSharedAction(
       terms.push("Builds stop using it right away. Its stored secrets are deleted.");
     }
   } else if (operation === "kit_setup") {
-    // a starter kit — its teammate, its flow and its buttons.
+    // a starter kit — its subagent, its flow and its buttons.
     const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
     const kit = kitOf(String(input["kit"] ?? ""));
     if (kit === null) throw Error(`Choose a kit: ${KITS.map(one => one.id).join(", ")}.`);
     if (kitInstalled(store, kit, repo) !== null) throw Error(`${kit.name} is already set up in ${project}.`);
-    const template = TEAMMATE_TEMPLATES.find(one => one.id === kit.teammate.template);
+    const template = SUBAGENT_TEMPLATES.find(one => one.id === kit.subagent.template);
     title = `Set up ${kit.name} in ${project}`;
-    terms.push(kit.promise, `Adds ${kit.teammate.handle.charAt(0).toUpperCase()}${kit.teammate.handle.slice(1)} (${template?.label.toLowerCase() ?? "a teammate"}) and the ${kit.flowName} flow${kit.buttons.length === 0 ? "" : ` with its ${kit.buttons.map(one => `“${one.label}”`).join(" and ")} button`}. Nothing goes out without your approval.`);
+    terms.push(kit.promise, `Adds ${kit.subagent.handle.charAt(0).toUpperCase()}${kit.subagent.handle.slice(1)} (${template?.label.toLowerCase() ?? "a subagent"}) and the ${kit.flowName} flow${kit.buttons.length === 0 ? "" : ` with its ${kit.buttons.map(one => `“${one.label}”`).join(" and ")} button`}. Nothing goes out without your approval.`);
     state = {};
-  } else if (operation.startsWith("teammate_")) {
+  } else if (operation.startsWith("subagent_")) {
     const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
-    const mate = mateTarget;
-    if (operation === "teammate_create") {
-      const template = TEAMMATE_TEMPLATES.find(one => one.id === input["template"]);
+    const mate = subagentTarget;
+    if (operation === "subagent_create") {
+      const template = SUBAGENT_TEMPLATES.find(one => one.id === input["template"]);
       const given = typeof input["soul"] === "string" && input["soul"].trim() !== "" ? text(input, "soul", SOUL_CHARS) : null;
       if ((template === undefined) === (given === null)) throw Error("Start from a template, or write the whole soul file, not both.");
       let soul = given ?? template!.soul;
       if (typeof input["name"] === "string" && input["name"].trim() !== "") soul = renamedSoul(soul, text(input, "name", 40));
       const read = parseSoul(soul);
       if (!read.ok) throw Error(read.problem);
-      if (store.teammateByHandle(repo, handleOf(read.soul.name)) !== null) throw Error(`There's already a teammate called ${read.soul.name} in ${project}.`);
+      if (store.subagentByHandle(repo, handleOf(read.soul.name)) !== null) throw Error(`There's already a subagent called ${read.soul.name} in ${project}.`);
       Object.assign(request, { soul }); delete request["template"]; delete request["name"];
       state = { handle: handleOf(read.soul.name) };
-      title = `Add ${teammateLabel(read.soul)} to the team in ${project}`;
-      terms.push(soul.trim(), `${read.soul.name} decides only within these rules and asks you when they say to. Teammates never approve code tasks or merges.`);
-    } else if (operation === "teammate_soul") {
+      title = `Add ${subagentLabel(read.soul)} to the team in ${project}`;
+      terms.push(soul.trim(), `${read.soul.name} decides only within these rules and asks you when they say to. Subagents never approve code tasks or merges.`);
+    } else if (operation === "subagent_soul") {
       const soul = text(input, "soul", SOUL_CHARS);
       const read = parseSoul(soul);
       if (!read.ok) throw Error(read.problem);
-      if (handleOf(read.soul.name) !== mate!.handle) throw Error("Keep the teammate's name; make a new teammate for another name.");
+      if (handleOf(read.soul.name) !== mate!.handle) throw Error("Keep the subagent's name; make a new subagent for another name.");
       if (soul.trim() === mate!.soul.trim()) throw Error("That's already its soul file.");
       state = { version: mate!.version };
-      title = `Update ${teammateLabel(read.soul)}'s soul file`;
+      title = `Update ${subagentLabel(read.soul)}'s soul file`;
       terms.push(soul.trim(), `Replaces version ${mate!.version}. Its next turn reads this.`);
-    } else if (operation === "teammate_state") {
+    } else if (operation === "subagent_state") {
       const wanted = input["state"];
       if (wanted !== "active" && wanted !== "paused" && wanted !== "removed") throw Error("Choose pause, resume or remove.");
       state = { state: mate!.state };
       title = `${wanted === "paused" ? "Pause" : wanted === "active" ? "Resume" : "Remove"} ${labelOf(mate!)}`;
       terms.push(wanted === "paused" ? "Its decisions go to people and the zones it handles wait until you resume it." : wanted === "active" ? "It picks up its zones' cards again." : "It leaves the team: zones that name it go to people.");
-    } else if (operation === "teammate_tools") {
+    } else if (operation === "subagent_tools") {
       // v94: which project tools it may use, and its rule for one action.
       const tool = text(input, "tool", 40);
       const change = input["change"];
-      const grant = store.teammateGrant(mate!.id, tool);
+      const grant = store.subagentGrant(mate!.id, tool);
       const name = nameOf(mate!);
-      const grants = store.teammateGrants(mate!.id);
+      const grants = store.subagentGrants(mate!.id);
       const uses = grants.length === 0 ? ` ${name} doesn't use any tools yet.` : ` ${name} uses ${grants.map(one => `${one.tool} (actions: ${one.actions.map(each => each.name).join(", ")})`).join("; ")}.`;
       if (change === "grant") {
         const found = projectToolsOf(store, repo).find(one => one.name === tool);
@@ -496,15 +497,15 @@ export function prepareSharedAction(
         terms.push(`${tool} → ${action}: ${ruleWords(checked.rule)}.`, `Was: ${ruleWords(grant.rules[action] ?? { use: "ask" })}.`,
           ...(checked.rule.undo === undefined ? [] : [`A person can undo it with ${checked.rule.undo}, called with the same input.`]));
       } else throw Error("Choose grant, revoke or rule.");
-    } else if (operation === "teammate_undo") {
+    } else if (operation === "subagent_undo") {
       // v97: undo one of its tool calls with the action its manager named for that.
-      const call = store.teammateCall(integer(input, "call"));
-      const undo = call === null || call.teammate !== mate!.id ? null : undoFor(store, call);
-      if (call === null || undo === null) throw Error(call?.undoneBy ? `${call.undoneBy} already undid it.` : "That call can't be undone: its action has no undo set on the teammate's Tools.");
+      const call = store.subagentCall(integer(input, "call"));
+      const undo = call === null || call.subagent !== mate!.id ? null : undoFor(store, call);
+      if (call === null || undo === null) throw Error(call?.undoneBy ? `${call.undoneBy} already undid it.` : "That call can't be undone: its action has no undo set on the subagent's Tools.");
       title = `Undo ${nameOf(mate!)}'s ${call.action}`;
       terms.push(`Undoes: ${callWords(call.tool, call.action, call.input, 300)}`, `By calling: ${callWords(call.tool, undo, call.input, 300)}`, "It's made as you, with the same input, and both calls keep their receipts.");
       state = { call: call.id };
-    } else if (operation === "teammate_routine") {
+    } else if (operation === "subagent_routine") {
       // v96: a routine: on a schedule, a card on its desk saying what to do; its answer goes to its manager.
       const name = nameOf(mate!);
       if (input["change"] === "add") {
@@ -523,10 +524,10 @@ export function prepareSharedAction(
         terms.push(`${describeSchedule(parseSchedule(routine.schedule) ?? { kind: "every", minutes: 60 })}: ${routine.text}`);
         state = { routine: routine.id };
       } else throw Error("Choose add or remove.");
-    } else if (operation === "teammate_memory") {
+    } else if (operation === "subagent_memory") {
       // v95: edit or forget one thing it remembers.
-      const memory = store.teammateMemory(integer(input, "memory"));
-      if (memory === null || memory.teammate !== mate!.id) throw Error(`${nameOf(mate!)} doesn't remember that any more.`);
+      const memory = store.subagentMemory(integer(input, "memory"));
+      if (memory === null || memory.subagent !== mate!.id) throw Error(`${nameOf(mate!)} doesn't remember that any more.`);
       if (input["change"] === "forget") {
         title = `${nameOf(mate!)} forgets: ${memory.text.slice(0, 60)}`;
         terms.push(memory.text);
@@ -538,11 +539,20 @@ export function prepareSharedAction(
         terms.push(`Was: ${memory.text}`, `Now: ${clean.text}`);
       } else throw Error("Choose edit or forget.");
       state = { text: memory.text };
-    } else if (operation === "teammate_note") {
+    } else if (operation === "subagent_ask") {
+      // D5: the lead delegates. The card says exactly what goes to the subagent, which works it within its own rules.
+      const asked = text(input, "text", 4000).replace(/\r\n?/g, "\n").trim();
+      if (asked === "") throw Error(`Say what to ask ${nameOf(mate!)}.`);
+      if (mate!.state !== "active") throw Error(`${nameOf(mate!)} is paused. Resume it first.`);
+      request["text"] = asked;
+      state = { subagent: mate!.id, version: mate!.version };
+      title = `Ask ${nameOf(mate!)}`;
+      terms.push(asked, `${nameOf(mate!)} works on it within its own rules and tools, asks you first where they say to, and its answer comes back to you. It never approves code tasks or merges.`);
+    } else if (operation === "subagent_note") {
       const note = cleanMemory(text(input, "note", 1000));
       if (!note.ok) throw Error(note.said);
       request["note"] = note.text;
-      state = { teammate: mate!.id };
+      state = { subagent: mate!.id };
       title = `Tell ${nameOf(mate!)}`;
       terms.push(note.text, "It keeps this in its memory: every turn reads the latest ten things people told it.");
     } else {
@@ -554,8 +564,8 @@ export function prepareSharedAction(
       if (choice === null && said === "") throw Error("Pick one of its options or say the answer.");
       Object.assign(request, { choice: choice?.id ?? null, text: said || null });
       state = { question: question.id };
-      const mateOf = store.getTeammate(question.teammate);
-      title = `Answer ${mateOf === null ? "the teammate" : nameOf(mateOf)}`;
+      const subagentOf = store.getSubagent(question.subagent);
+      title = `Answer ${subagentOf === null ? "the subagent" : nameOf(subagentOf)}`;
       terms.push(question.question, `Your answer: ${[choice?.label, said].filter(Boolean).join(" — ")}`);
     }
   } else if (operation.startsWith("flow_")) {
@@ -729,7 +739,7 @@ export function prepareSharedAction(
     }
   } else if (operation.startsWith("decision_")) {
     // The staleness fence: the newest decision id and the active count, so a
-    // card drafted before a teammate recorded or retired one is refused.
+    // card drafted before a subagent recorded or retired one is refused.
     const stamp = store.handle.prepare("SELECT COALESCE(MAX(id),0) AS newest, COUNT(*) AS active FROM project_decision WHERE repo=? AND status='active'").get(repo);
     state = { newest: Number(stamp?.["newest"] ?? 0), active: Number(stamp?.["active"] ?? 0) };
     if (operation === "decision_record") {
@@ -961,19 +971,19 @@ function savedActionContext(
 ) {
   if (!isVerifiedApprover(who) || !reproveApprover(store, who).ok)
     throw Error("Your access changed. Sign in again.");
-  const proposal = store.getMateProposal(id),
+  const proposal = store.getLeadProposal(id),
     payload =
       proposal?.kind === "action"
         ? sharedActionPayload(proposal.payload)
         : null;
   const shared=proposal&&store.handle.prepare('SELECT id FROM team_conversation WHERE thread=?').get(proposal.thread);
-  const session = shared&&proposal ? store.teamMateSession(who.name,proposal.thread) : store.activeMateSession(who.name),
-    turn = proposal ? store.getMateTurn(proposal.turn) : null;
+  const session = shared&&proposal ? store.teamMateSession(who.name,proposal.thread) : store.activeLeadSession(who.name),
+    turn = proposal ? store.getLeadTurn(proposal.turn) : null;
   if (
     !proposal ||
     !payload ||
     proposal.state !== state ||
-    (shared ? !store.canUseTeamMateThread(who.name,who.generation,proposal.thread) : store.getMateThread(proposal.thread)?.approver !== who.name)
+    (shared ? !store.canUseTeamMateThread(who.name,who.generation,proposal.thread) : store.getLeadThread(proposal.thread)?.approver !== who.name)
   )
     throw Error("This action is no longer waiting for your review.");
   if (
@@ -982,7 +992,7 @@ function savedActionContext(
     session.ceilingDigest !== who.ceilingDigest ||
     proposal.ceilingDigest !== who.ceilingDigest ||
     (!shared && turn?.session !== session.id) ||
-    !mateTurnKeepsProposals(turn)
+    !leadTurnKeepsProposals(turn)
   )
     throw Error(
       "This conversation ended or its project access changed. Ask for a fresh proposal.",
@@ -1180,8 +1190,8 @@ export function executeSharedAction(
         if (!made.ok) throw Error(made.said);
         return { ok: true as const, taskId: null, said: `${made.said} Try it with a sample card from its page.`, href: `/kits/${kit.id}?repo=${encodeURIComponent(repo)}` };
       }
-      else if (payload.operation.startsWith("teammate_")) {
-        const done = runTeammateAction(store, payload, actor, now);
+      else if (payload.operation.startsWith("subagent_")) {
+        const done = runSubagentAction(store, payload, actor, now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
       else if (payload.operation === "tool_add") {
@@ -1302,43 +1312,50 @@ export function executeSharedAction(
   }
 }
 
-/** A confirmed teammate action (v92), through the same helpers the Teammates pages use. */
-function runTeammateAction(store: Store, payload: SharedAction, actor: string, now: Date): { said: string; href: string } {
+/** A confirmed subagent action (v92), through the same helpers the Subagents pages use. */
+function runSubagentAction(store: Store, payload: SharedAction, actor: string, now: Date): { said: string; href: string } {
   const req = payload.request;
-  if (payload.operation === "teammate_create") {
-    const made = createTeammateFrom(store, { repo: payload.repo, soul: String(req["soul"]), by: actor }, now);
+  if (payload.operation === "subagent_create") {
+    const made = createSubagentFrom(store, { repo: payload.repo, soul: String(req["soul"]), by: actor }, now);
     if (!made.ok) throw Error(made.said);
-    return { said: made.said, href: `/teammates/${made.id}` };
+    return { said: made.said, href: `/settings/lead/subagents/${made.id}` };
   }
-  if (payload.operation === "teammate_answer") {
-    const question = store.teammateQuestion(Number(req["question"]));
-    const answered = answerTeammateQuestion(store, Number(req["question"]), { choice: req["choice"] === null ? null : String(req["choice"]), text: req["text"] === null ? null : String(req["text"]), by: actor, via: "chat" }, now);
+  if (payload.operation === "subagent_answer") {
+    const question = store.subagentQuestion(Number(req["question"]));
+    const answered = answerSubagentQuestion(store, Number(req["question"]), { choice: req["choice"] === null ? null : String(req["choice"]), text: req["text"] === null ? null : String(req["text"]), by: actor, via: "chat" }, now);
     if (!answered.ok) throw Error(answered.said);
-    return { said: answered.said, href: question === null ? "/teammates" : `/teammates/${question.teammate}` };
+    return { said: answered.said, href: question === null ? "/settings/lead/subagents" : `/settings/lead/subagents/${question.subagent}` };
   }
-  const mate = store.getTeammate(Number(req["teammate"]));
-  if (mate === null || mate.state === "removed") throw Error("That teammate is off the team.");
-  if (payload.operation === "teammate_undo") {
+  const mate = store.getSubagent(Number(req["subagent"]));
+  if (mate === null || mate.state === "removed") throw Error("That subagent is off the team.");
+  if (payload.operation === "subagent_ask") {
+    // One card per confirmed proposal: the confirmation runs once, so a retried tap never asks twice.
+    if (mate.version !== payload.state["version"]) throw Error("Someone changed its soul file since. Ask for a fresh proposal.");
+    const asked = askSubagent(store, mate, { who: actor, via: "the lead" }, String(req["text"]), now);
+    if (!asked.ok) throw Error(asked.said);
+    return { said: asked.said, href: asked.link.path };
+  }
+  if (payload.operation === "subagent_undo") {
     const asked = requestUndo(store, mate, Number(req["call"]), actor, now);
     if (!asked.ok) throw Error(asked.said);
-    return { said: `${asked.said} The receipt on the card shows how it went.`, href: `/teammates/${mate.id}#week` };
+    return { said: `${asked.said} The receipt on the card shows how it went.`, href: `/settings/lead/subagents/${mate.id}#week` };
   }
-  if (payload.operation === "teammate_routine") {
+  if (payload.operation === "subagent_routine") {
     const done = req["change"] === "add" ? addRoutine(store, mate, String(req["schedule"]), String(req["text"]), actor, now, null)
       : removeRoutine(store, mate, Number(req["routine"]), now, null);
     if (!done.ok) throw Error(done.said);
-    return { said: done.said, href: `/teammates/${mate.id}#desk` };
+    return { said: done.said, href: `/settings/lead/subagents/${mate.id}#desk` };
   }
-  if (payload.operation === "teammate_memory") {
-    const memory = store.teammateMemory(Number(req["memory"]));
+  if (payload.operation === "subagent_memory") {
+    const memory = store.subagentMemory(Number(req["memory"]));
     if (memory === null || memory.text !== payload.state["text"]) throw Error("That memory changed since. Ask for a fresh proposal.");
     const done = req["change"] === "forget" ? forgetMemory(store, mate, memory.id, actor, now) : editMemory(store, mate, memory.id, String(req["text"]), actor, now);
     if (!done.ok) throw Error(done.said);
-    return { said: done.said, href: `/teammates/${mate.id}#memory` };
+    return { said: done.said, href: `/settings/lead/subagents/${mate.id}#memory` };
   }
-  if (payload.operation === "teammate_tools") {
+  if (payload.operation === "subagent_tools") {
     const tool = String(req["tool"]);
-    const grant = store.teammateGrant(mate.id, tool);
+    const grant = store.subagentGrant(mate.id, tool);
     if ((grant === null ? "" : JSON.stringify(grant.rules)) !== payload.state["rules"]) throw Error("Someone changed its tools since. Ask for a fresh proposal.");
     const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
     const done = req["change"] === "grant" ? found === undefined ? { ok: false as const, said: `There's no tool called ${tool} any more.` } : grantListed(store, mate, found, null, actor, now)
@@ -1346,14 +1363,14 @@ function runTeammateAction(store: Store, payload: SharedAction, actor: string, n
       : setToolRules(store, mate, tool, { [String(req["action"])]: { use: req["use"], limit: req["limitField"] === undefined || req["limitField"] === null || req["limitField"] === "" ? null : { field: req["limitField"], over: req["limitOver"] },
         undo: req["undoWith"] ?? grant?.rules[String(req["action"])]?.undo ?? "" } }, actor, now);
     if (!done.ok) throw Error(done.said);
-    return { said: done.said, href: `/teammates/${mate.id}#tools` };
+    return { said: done.said, href: `/settings/lead/subagents/${mate.id}#tools` };
   }
-  if (payload.operation === "teammate_soul" && mate.version !== payload.state["version"]) throw Error("Someone changed its soul file since. Ask for a fresh proposal.");
-  const done = payload.operation === "teammate_soul" ? saveSoul(store, mate, String(req["soul"]), actor, now)
-    : payload.operation === "teammate_state" ? setTeammateState(store, mate, req["state"] as "active" | "paused" | "removed", actor, now)
-    : tellTeammate(store, mate, String(req["note"]), actor, now);
+  if (payload.operation === "subagent_soul" && mate.version !== payload.state["version"]) throw Error("Someone changed its soul file since. Ask for a fresh proposal.");
+  const done = payload.operation === "subagent_soul" ? saveSoul(store, mate, String(req["soul"]), actor, now)
+    : payload.operation === "subagent_state" ? setSubagentState(store, mate, req["state"] as "active" | "paused" | "removed", actor, now)
+    : tellSubagent(store, mate, String(req["note"]), actor, now);
   if (!done.ok) throw Error(done.said);
-  return { said: done.said, href: payload.operation === "teammate_state" && req["state"] === "removed" ? "/teammates" : `/teammates/${mate.id}` };
+  return { said: done.said, href: payload.operation === "subagent_state" && req["state"] === "removed" ? "/settings/lead/subagents" : `/settings/lead/subagents/${mate.id}` };
 }
 
 /** A confirmed flow action, through the same helpers the canvas uses; then

@@ -681,7 +681,7 @@ export function planeStatusLink(config: TriggerConfig | null, status: string | n
   return config?.kind === "plane-review" && status !== null && /waited over \d+ days for you\.$/.test(status) ? { label: "Needs you", href: NEEDS_YOU_HREF } : null;
 }
 
-/** v96: a schedule (a teammate's routine) makes its card now, once per press, and keeps its own times. */
+/** v96: a schedule (a subagent's routine) makes its card now, once per press, and keeps its own times. */
 export function runScheduleNow(store: Store, trigger: FlowTriggerRow, actor: string, now: Date): { ok: true; card: number } | { ok: false; said: string } {
   const config = triggerConfigOf(trigger);
   if (config?.kind !== "schedule" || config.script !== undefined) return { ok: false, said: "Only a schedule without a script runs this way." };

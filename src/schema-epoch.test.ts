@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, Store, type Database } from "./store.js";
 import { mintCoordinator } from "./coordinator.js";
 import { MODERN, serveMcp } from "./mcp.js";
+import { baselineFile } from "../test/baseline.js";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => Database };
@@ -19,12 +20,6 @@ function scratch(): string {
 afterEach(() => {
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-
-function loadV47(file: string): void {
-  const db = new DatabaseSync(file);
-  try { db.exec(readFileSync(join(import.meta.dirname, "fixtures/v47-authentic.sql"), "utf8")); }
-  finally { db.close(); }
-}
 
 /**
  * The migration epoch + the non-migrating door (MCP gateway spec v6,
@@ -50,13 +45,12 @@ describe("the non-migrating door", () => {
     expect(opened.store.schemaCurrent()).toBe(true);
     opened.store.close();
 
-    // A real predecessor shape with a committed epoch, as left by a
-    // migrator that died before its first DDL. No newer fields are relabeled
-    // as an older schema.
+    // A real predecessor shape (the v107 baseline, as 0.5.0 made it) with a
+    // committed epoch, as left by a migrator that died before its first DDL.
+    // No newer fields are relabeled as an older schema.
     const interrupted = join(dir, "interrupted.db");
-    loadV47(interrupted);
+    baselineFile(interrupted, -107);
     const prior = new Store(new DatabaseSync(interrupted));
-    prior.handle.prepare("UPDATE schema_version SET version = -47").run();
     expect(prior.schemaCurrent()).toBe(false);
     prior.close();
 
@@ -75,20 +69,18 @@ describe("the non-migrating door", () => {
   test.each(["status", "file_proposal"])("MCP %s refuses while the real migrator is paused after its first DDL", tool => {
     const dir = scratch();
     const file = join(dir, "orders.db");
-    loadV47(file);
-    // Model the already-running v47 build's version constant, keeping the
-    // real strict reader, MCP dispatcher, credential verification, and SQL
-    // connection. Production gains no version-override or test hook.
-    class V47Reader extends Store {
+    baselineFile(file);
+    // Model the already-running 0.5.0 build's version constant (v107),
+    // keeping the real strict reader, MCP dispatcher, credential
+    // verification, and SQL connection. Production gains no
+    // version-override or test hook.
+    class V107Reader extends Store {
       override schemaCurrent(): boolean {
         const version = readSchemaVersion(this.handle);
-        return version.ok && version.version === 47;
+        return version.ok && version.version === 107;
       }
     }
-    const reader = new V47Reader(new DatabaseSync(file));
-    // The fixture credential is minted with today's code, which writes the
-    // v101 expiry; the migrator's addColumn leaves an existing column alone.
-    reader.handle.exec("ALTER TABLE coordinator_credential ADD COLUMN expires_at TEXT");
+    const reader = new V107Reader(new DatabaseSync(file));
     let migrated: Store | undefined;
     try {
       const now = new Date("2026-09-17T12:00:00Z");
@@ -120,7 +112,7 @@ describe("the non-migrating door", () => {
               paused = true;
               // Independent connection: the marker must already be
               // committed while the migrator has completed just one DDL.
-              expect(readSchemaVersion(reader.handle)).toMatchObject({ ok: true, version: -47 });
+              expect(readSchemaVersion(reader.handle)).toMatchObject({ ok: true, version: -107 });
               receive(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {
                 _meta: meta, name: tool, arguments: tool === "status" ? {} : {
                   repo: "/repo/app", title: "Must not file during migration", idempotency_key: "epoch-file-refused",

@@ -317,7 +317,7 @@ async function statusPass() {
     await page.keyboard.press('Enter');
     await page.waitForFunction(selector => document.querySelector(selector)?.open === true, menuSelector);
     const menu = await menuBounds(page, viewport, name === 'desktop');
-    check(`shell ${name}: keyboard opens Tools inside the viewport, including Code and the legacy inbox`, menu.open && menu.positiveSize && menu.insideViewport && !menu.overflow && menu.links.some(one => one.href === '/code') && menu.links.some(one => one.href === '/inbox'), JSON.stringify(menu.links));
+    check(`shell ${name}: keyboard opens Tools inside the viewport, including the legacy inbox`, menu.open && menu.positiveSize && menu.insideViewport && !menu.overflow && menu.links.some(one => one.href === '/inbox'), JSON.stringify(menu.links));
     await shot(page, `${name}-tools`, `${viewport.width}×${viewport.height}: secondary tools opened by keyboard (synthetic fixture)`);
     await page.focus(menuSelector + ' > summary');
     await page.keyboard.press('Enter');

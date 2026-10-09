@@ -22,8 +22,8 @@ import { verifyApproverByPassword } from "./principal.js";
 import { completeAndOpenPullRequest, mergePullRequest, pullRequestViewOf, savePublishing } from "./pull-request-flow.js";
 import { runOperate, EXIT } from "./operate.js";
 import { applyChatTaskAction, chatTaskStamp } from "./chat-task-actions.js";
-import { MATE_TOOLS } from "./mate-tools.js";
-import { confirmMateProposal } from "./mate-doors.js";
+import { LEAD_TOOLS } from "./lead-tools.js";
+import { confirmLeadProposal } from "./lead-doors.js";
 import {
   checkCommandFor, checkLevelFromWords, effectiveCheckLevel, projectCheckLevel, quickVerifyKey, recordRunCheckLevel, setProjectCheckLevel,
   setTaskCheckLevel, suggestQuickCommand, taskCheckLevel, type CheckLevel,
@@ -183,23 +183,23 @@ describe("c1: a project is Quick, Full or Off, and a task can override it", () =
     const who = verifyApproverByPassword(store, "sam", password, [REPO]);
     if (!who.ok) throw new Error("who");
     // The lead drafts the card under a real turn; the person confirms it through the door.
-    const session = store.mintMateSession({ approver: "sam", approverGeneration: who.who.generation, credentialKey: "fixture", ceilingMicrousd: 10_000_000, ceilingDigest: who.who.ceilingDigest, termsDigest: "fixture" }, NOW);
-    const thread = store.openMateThread("sam", who.who.ceilingDigest, NOW).thread.id;
-    const turn = store.openMateTurn({ approver: "sam", session, thread, credentialKey: "fixture", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, NOW);
+    const session = store.mintLeadSession({ approver: "sam", approverGeneration: who.who.generation, credentialKey: "fixture", ceilingMicrousd: 10_000_000, ceilingDigest: who.who.ceilingDigest, termsDigest: "fixture" }, NOW);
+    const thread = store.openLeadThread("sam", who.who.ceilingDigest, NOW).thread.id;
+    const turn = store.openLeadTurn({ approver: "sam", session, thread, credentialKey: "fixture", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, NOW);
     if (!turn.ok) throw new Error(turn.reason);
-    const started = store.startMateTurn(turn.id, NOW);
+    const started = store.startLeadTurn(turn.id, NOW);
     if (!started.ok) throw new Error("start");
     const drafts: number[] = [];
-    const tool = MATE_TOOLS.find(one => one.name === "propose_task")!;
+    const tool = LEAD_TOOLS.find(one => one.name === "propose_task")!;
     const ctx = { store, who: who.who, now: NOW, step: 1, readDecisions: new Map(),
-      draft: (kind: string, payload: Record<string, unknown>) => { const id = store.draftMateProposal({ thread, turn: turn.id, kind: kind as never, payload, ceilingDigest: who.who.ceilingDigest }, NOW); drafts.push(id); return id; } };
+      draft: (kind: string, payload: Record<string, unknown>) => { const id = store.draftLeadProposal({ thread, turn: turn.id, kind: kind as never, payload, ceilingDigest: who.who.ceilingDigest }, NOW); drafts.push(id); return id; } };
     const args = { repo: "r1", title: "Rename the footer link", goal: "Rename the footer's Help link to Support.", acceptance: [{ id: "c1", statement: "The footer says Support", evidence: ["manual-review"] }] };
     expect(tool.handle(ctx as never, { ...args, checks: "whenever" })).toMatchObject({ ok: false });
     expect(tool.handle(ctx as never, { ...args, checks: "skip the tests" })).toMatchObject({ ok: true });
-    expect(store.getMateProposal(drafts.at(-1)!)!.payload["checks"]).toBe("off");
-    store.finalizeMateTurn(turn.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Here's the task.", activity: "" } }, NOW);
+    expect(store.getLeadProposal(drafts.at(-1)!)!.payload["checks"]).toBe("off");
+    store.finalizeLeadTurn(turn.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Here's the task.", activity: "" } }, NOW);
     // The card shows the checks before the yes; confirming files the task with them.
-    const filed = confirmMateProposal(store, who.who, drafts.at(-1)!, NOW, { via: "web", evidenceRoot: root });
+    const filed = confirmLeadProposal(store, who.who, drafts.at(-1)!, NOW, { via: "web", evidenceRoot: root });
     expect(filed).toMatchObject({ ok: true, kind: "task" });
     expect(taskCheckLevel(store, (filed as { taskId: string }).taskId)).toBe("off");
   });

@@ -4,6 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { DEPRECATED_PAGE } from "./deprecations.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -267,6 +268,10 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       expect(activeOf(html), path).toBe(expected);
       expect(html, path).toContain('<a class="mobile-more" href="/menu" aria-label="tools and settings"');
       for (const gone of [">inbox</a>", ">builds</a>", ">board</a>"]) expect(/<nav>(.*?)<\/nav>/s.exec(html)?.[1] ?? "", path).not.toContain(gone);
+      // D5: coding sessions and team chat are deprecated: /code says so first, and nothing links to either.
+      if (path === "/code") expect(html).toContain(`data-deprecated="session">${DEPRECATED_PAGE.session}</p>`);
+      expect(html, path).not.toContain('href="/code"');
+      expect(html, path).not.toContain('href="/chat?team=1"');
     }
     // The settings group lights on its own pages, with the same rows the
     // admin group carried before.
@@ -274,7 +279,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(/<details class="nav-group" data-group="settings"([^>]*)>/.exec(fleet)?.[1]).toBe(" open");
     expect(fleet).toContain('<a href="/fleet" aria-label="Fleet" title="Fleet" class="active">Fleet</a>');
     const menu = await page(cookie, "/menu");
-    expect([...menu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1])).toEqual(["/code", "/inbox", "/board", "/tasks", "/recipes", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
+    expect([...menu.matchAll(/<a class="menu-row" href="([^"]+)">/g)].map(m => m[1])).toEqual(["/inbox", "/board", "/tasks", "/recipes", "/workbench", "/ledger", "/spend", "/settings", "/fleet", "/caps", "/people", "/mode", "/system"]);
     // The queue's old address still answers as before.
     const queue = await fetch(url("/queue"), { headers: { cookie }, redirect: "manual" });
     expect(queue.status).toBe(303);
@@ -1183,7 +1188,8 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(css).toContain("    .work-tools { display: block; }");
     expect(css).not.toMatch(/\.work-tools-menu\s*\{[^}]*left:/);
     expect(work).toContain('<details class="work-tools"><summary>Work tools');
-    expect([...work.matchAll(/<nav class="work-tools-menu">([\s\S]*?)<\/nav>/g)][0]?.[1]?.match(/<a href="/g)).toHaveLength(8);
+    // D5: coding sessions are deprecated, so the tools menu no longer links /code.
+    expect([...work.matchAll(/<nav class="work-tools-menu">([\s\S]*?)<\/nav>/g)][0]?.[1]?.match(/<a href="/g)).toHaveLength(7);
     // The visible meta is age/project; exact task identity stays in the
     // title link and row data attribute instead of repeating diagnostics.
     const row = /<article class="work-row" data-task="t-checks"[^>]*>([\s\S]*?)<\/article>/.exec(work)?.[1] ?? "";

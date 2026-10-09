@@ -45,8 +45,8 @@ export const leadContextSchema = z.strictObject({
   you: z.strictObject({ firstName: z.string().nullable(), timeZone: z.string(), today: z.string() }),
   /** Lines the person confirmed about themselves. */
   aboutYou: z.array(z.string()),
-  /** The people, AI teammates and team chats the lead works with, one line each. */
-  people: z.strictObject({ people: z.array(z.string()), teammates: z.array(z.string()), teams: z.array(z.string()) }),
+  /** The people, subagents and team chats the lead works with, one line each. */
+  people: z.strictObject({ people: z.array(z.string()), subagents: z.array(z.string()), teams: z.array(z.string()) }),
   channel: z.strictObject({ id: z.enum(LEAD_CHANNELS), fit: z.string(), replyLimit: z.int().nullable() }).nullable(),
   needsYou: z.array(leadTaskSchema),
   /** This conversation's follow-through; absent outside one. */

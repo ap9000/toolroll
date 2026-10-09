@@ -26,7 +26,7 @@ import {
   taskDetailFor,
   type VerifiedCoordinator,
 } from "./coordinator.js";
-import { ISO_STAMP_RULE, decisionOver, decisionsOver, labelRepos, queueOver, recapOver } from "./mate-tools.js";
+import { ISO_STAMP_RULE, decisionOver, decisionsOver, labelRepos, queueOver, recapOver } from "./lead-tools.js";
 import { proposeAsCoordinator } from "./coordinator-proposals.js";
 import type { CoordinatorProposalKind } from "./store.js";
 

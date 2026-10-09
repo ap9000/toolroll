@@ -30,7 +30,6 @@ export const CAPABILITIES: readonly string[] = [
   "output-file", //         -o <file> writes the same envelope to a file
   "command-schema/1", //    contract --commands dumps the declared command guide
   "skill-guides/1", //      skills list / skills get serve version-matched guides
-  "session-client/1", //    typed operator transport; query the service for actual availability
 ];
 
 /**

@@ -12,11 +12,11 @@
  */
 import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
 import { chatHash, partContent, savedChatPart } from "./chat-delivery-state.js";
-import { MATE_ASK_OTHER, type MateAsk, type Store } from "./store.js";
+import { LEAD_ASK_OTHER, type LeadAsk, type Store } from "./store.js";
 
 /** The question as text with its options, where no buttons are drawn. */
-export function chatAskText(ask: Pick<MateAsk, "question" | "options">): string {
-  return [ask.question, ...ask.options.map(one => `• ${one}`), `• ${MATE_ASK_OTHER}: say it in your own words`].join("\n");
+export function chatAskText(ask: Pick<LeadAsk, "question" | "options">): string {
+  return [ask.question, ...ask.options.map(one => `• ${one}`), `• ${LEAD_ASK_OTHER}: say it in your own words`].join("\n");
 }
 
 /** The live buttons on one part, in the order they were minted: the options, then "Something else". None when the part
@@ -29,7 +29,7 @@ export function chatAskButtons(state: ChatState, part: number, now: Date): Array
   const options = content.ask?.options ?? [];
   return (state.prepare("SELECT token,choice FROM chat_ask_action WHERE provider=:provider AND part=? AND consumed IS NULL AND expires>? ORDER BY rowid").all(part, now.toISOString()) as Array<{ token: string; choice: number | null }>)
     .map(one => {
-      const label = one.choice === null ? MATE_ASK_OTHER : options[Number(one.choice)] ?? null;
+      const label = one.choice === null ? LEAD_ASK_OTHER : options[Number(one.choice)] ?? null;
       return label === null ? null : { token: String(one.token), label: label.slice(0, 75), words: one.choice === null };
     })
     .filter((one): one is { token: string; label: string; words: boolean } => one !== null);
@@ -66,12 +66,12 @@ export function applyChatAskTap(options: { store: Store; state: ChatState }, eve
   }
   const turn = Number(action["turn"]), part = Number(action["part"]);
   // Only the person the lead asked answers it: anyone else's tap changes nothing and says nothing.
-  const asker = store.getMateTurn(turn)?.approver;
+  const asker = store.getLeadTurn(turn)?.approver;
   if (asker !== undefined && asker !== binding.approver) {
     state.finish(event.id);
     return true;
   }
-  const found = asker === undefined ? { state: "expired" as const } : store.mateAskState(turn, now);
+  const found = asker === undefined ? { state: "expired" as const } : store.leadAskState(turn, now);
   const expired = found.state === "expired" || String(action["expires"]) <= now.toISOString();
   // A question already settled was shown so once (or is being): a later tap says nothing more.
   if (action["consumed"] !== null) {
