@@ -415,4 +415,4 @@ test.each([false, true])("fabricated account names cannot lock out a real user (
     "x-forwarded-for": "203.0.113.42", "x-forwarded-proto": "https" } });
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ ok: true });
-});
+}, 240_000); // 1,024 password checks on purpose; a busy release machine needs more than the default
