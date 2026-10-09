@@ -17,7 +17,6 @@
     "prepublishOnly": "npm run typecheck && npm run build",
     "nul-scan": "node scripts/nul-scan.mjs",
     "proof-preflight": "node scripts/proof-preflight.mjs",
-    "fixture:v47": "node scripts/derive-v47-fixture.mjs",
     "build:desktop": "node scripts/build-desktop.mjs",
     "certify:restart": "npm run build && node scripts/restart-certification.mjs",
     "certify:launchd": "npm run build && node scripts/launchd-certification.mjs",

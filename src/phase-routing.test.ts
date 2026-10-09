@@ -5,7 +5,7 @@
  * and every one of those choices is sealed with its reason. v1 routes still
  * read back exactly.
  */
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +26,10 @@ import {
   type RouteInput,
   type TaskSizing,
 } from "./phase-routing.js";
-import { openStore } from "./store.js";
+import { openStore, type Store } from "./store.js";
+import { addApprover, approve, propose } from "./scope.js";
+import { proveApprovedProfile } from "./builder.js";
+import { register } from "./runner.js";
 import { agentChoicesFor, resolveRouteCandidates } from "./agentconfig.js";
 
 const T0 = new Date("2026-10-04T12:00:00.000Z");
@@ -341,5 +344,114 @@ describe("the store", () => {
     } finally {
       store.close();
     }
+  });
+});
+
+const ROUTED_T0 = new Date("2026-09-10T12:00:00.000Z");
+
+/** A task filed and proposed on the given store: the route it files is sealed with its scope. */
+function fileRouted(store: Store, taskId: string, size?: "small" | "medium" | "large"): void {
+  store.createTask({ id: taskId, title: taskId }, ROUTED_T0);
+  const ref = store.refFor("built-in", taskId);
+  store.placeTask(ref.id, "/repo/app");
+  if (size !== undefined) store.writeSizing(ref.id, { size, risky: false, source: "person", reason: "" });
+  propose(store, {
+    taskId,
+    goal: "ship it",
+    acceptance: [{ id: "c1", statement: "it ships", how: null, evidence: ["check"] }],
+    now: ROUTED_T0,
+  });
+}
+
+describe("sealed routes and runner readiness in the store", () => {
+  let dir: string | undefined;
+  let store: Store | null = null;
+
+  afterEach(() => {
+    store?.close();
+    store = null;
+    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  test("a routed row that loses its route data fails closed — never a downgrade to the legacy road", () => {
+    store = openStore(":memory:");
+    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", ROUTED_T0);
+    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", ROUTED_T0);
+    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", ROUTED_T0);
+    const added = addApprover(store, "alex", ROUTED_T0, undefined, () => "tok-alex");
+    expect(added.ok).toBe(true);
+    fileRouted(store, "routed");
+    const filed = store.getScope("routed")!;
+    expect(approve(store, "routed", "alex", ROUTED_T0, filed.digest, "tok-alex").ok).toBe(true);
+    expect(store.sealedRouteOf("routed").ok).toBe(true);
+    const sealedProfile = { provider: "claude" as const, model: "sonnet", maxTurns: undefined, timeoutMs: undefined, skipPermissions: false };
+    expect(proveApprovedProfile(store.getScope("routed"), sealedProfile).ok).toBe(true);
+    // Removed route data: the approval no longer proves anything.
+    store.raw().prepare("UPDATE task_scope SET approved_route_json = NULL WHERE task_id = 'routed'").run();
+    expect(store.sealedRouteOf("routed")).toMatchObject({ ok: false, reason: "unreadable" });
+    const removed = proveApprovedProfile(store.getScope("routed"), sealedProfile);
+    expect(removed.ok).toBe(false);
+    if (!removed.ok) expect(removed.message).toContain("stale-approval");
+    // Malformed route data: the same closed door.
+    store.raw().prepare("UPDATE task_scope SET approved_route_json = '{\"version\":1,\"legs\":[]}' WHERE task_id = 'routed'").run();
+    expect(store.sealedRouteOf("routed")).toMatchObject({ ok: false, reason: "unreadable" });
+    expect(proveApprovedProfile(store.getScope("routed"), sealedProfile).ok).toBe(false);
+    // A sealed route whose build leg disagrees with the sealed profile.
+    store.raw().prepare("UPDATE task_scope SET approved_route_json = proposed_route_json, approved_profile_json = REPLACE(approved_profile_json, '\"model\":\"sonnet\"', '\"model\":\"haiku\"') WHERE task_id = 'routed'").run();
+    expect(store.sealedRouteOf("routed")).toMatchObject({ ok: false, reason: "unreadable" });
+  });
+
+  test("a scope files a canonical, exact route with the era marker; the same terms digest the same; size moves the digest", () => {
+    store = openStore(":memory:");
+    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", ROUTED_T0);
+    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", ROUTED_T0);
+    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", ROUTED_T0);
+    fileRouted(store, "plain");
+    const plain = store.getScope("plain")!;
+    const route = routeFromJson(plain.proposedRouteJson ?? null);
+    expect(route).not.toBeNull();
+    expect(plain.routeEra).toBe(1);
+    expect(route!.legs.map(leg => [leg.phase, leg.provider, leg.model])).toEqual([
+      ["plan", "claude", "sonnet"],
+      ["build", "claude", "sonnet"],
+      ["repair", "claude", "sonnet"],
+      ["review", "claude", "sonnet"],
+    ]);
+    // Same terms, same route, same digest — deterministic.
+    fileRouted(store, "twin");
+    expect(store.getScope("twin")!.digest).toBe(plain.digest);
+    // The size rides the route, a signed term: the digest moves. Every route files at routine risk.
+    fileRouted(store, "large", "large");
+    const large = store.getScope("large")!;
+    expect(large.riskLevel).toBe("routine");
+    expect(large.digest).not.toBe(plain.digest);
+  });
+
+  test("runner readiness rows are per runner and survive reopen; a cascade removes a retired runner's rows", () => {
+    dir = mkdtempSync(join(tmpdir(), "standing-orders-readiness-"));
+    const db = join(dir, "orders.db");
+    store = openStore(db);
+    register(store, { name: "mac-mini", host: "h", repos: ["/repo/app"], now: ROUTED_T0 });
+    store.recordProviderReadiness(
+      "mac-mini",
+      [
+        { provider: "codex", state: "unavailable", reason: "not logged in", probe: "identity" },
+        { provider: "claude", state: "unknown", reason: "no non-spending login check exists", probe: "version" },
+      ],
+      ROUTED_T0,
+    );
+    store.close();
+    store = openStore(db);
+    expect(store.runnerReadinessOf("mac-mini", "codex")).toMatchObject({ state: "unavailable", reason: "not logged in", observedAt: ROUTED_T0.toISOString() });
+    expect(store.runnerReadinessOf("mac-mini", "gemini")).toBeNull();
+    const lookup = store.readinessLookupFor("/repo/app", null, ROUTED_T0);
+    expect(lookup("claude")?.state).toBe("unknown");
+    expect(lookup("codex")?.runner).toBe("mac-mini");
+    expect(lookup("openrouter")).toBeNull();
+    // A newer observation replaces the older one for the same runner.
+    store.recordProviderReadiness("mac-mini", [{ provider: "codex", state: "ready", reason: "logged in as ops", probe: "identity" }], new Date(ROUTED_T0.getTime() + 60_000));
+    expect(store.runnerReadinessOf("mac-mini", "codex")?.state).toBe("ready");
+    expect(store.providerReadiness("mac-mini")).toHaveLength(2);
   });
 });

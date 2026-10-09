@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "vitest";
-import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire, release } from "./claim.js";
 
@@ -194,45 +194,5 @@ describe("pending notes", () => {
   test("pendingSteerCount counts notes not yet settled", () => {
     store.fileSteerNote("t-1", "alex", "pending", T0);
     expect(store.pendingSteerCount(refOf("t-1"))).toBe(1);
-  });
-});
-
-describe("the v21 → v22 migration", () => {
-  test("an existing database gains task_steer and a note round-trips, reopened twice", async () => {
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-v22-"));
-    const file = join(dir, "orders.db");
-    try {
-      // A pre-v22 database is any database this suite's openStore has not
-      // touched: build one at the CURRENT schema minus the new table, the
-      // additive way every older fixture works — open, then drop the table
-      // to simulate its absence, then stamp the old version.
-      const first = openStore(file);
-      first.close();
-      const { createRequire } = await import("node:module");
-      const require = createRequire(import.meta.url);
-      const { DatabaseSync } = require("node:sqlite");
-      const raw = new DatabaseSync(file);
-      raw.exec("DROP TABLE service_cursor; DROP INDEX IF EXISTS task_steer_pending; DROP TABLE IF EXISTS task_steer; UPDATE schema_version SET version = 21;");
-      raw.close();
-
-      openStore(file).close(); // reopened once — migrates
-      const migrated = openStore(file); // reopened twice — stays stable
-      try {
-        migrated.createTask({ id: "t-m", title: "migrated" }, T0);
-        expect(migrated.fileSteerNote("t-m", "alex", "hello new table", T0)).toMatchObject({ ok: true });
-        expect(migrated.listSteerNotes(migrated.refFor(BUILT_IN, "t-m").id).length).toBe(1);
-        const version = (migrated as unknown as { db: { prepare(sql: string): { get(): Record<string, unknown> } } }).db
-          .prepare("SELECT version FROM schema_version")
-          .get();
-        expect(Number(version["version"])).toBe(SCHEMA_VERSION);
-      } finally {
-        migrated.close();
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

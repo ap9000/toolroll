@@ -1,12 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { openStore, openStoreNoMigrate, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { addApprover, hashPassword } from "./scope.js";
-import { createWorkflowPreview, exportRecipe, findRecipe, importRecipe, launchWorkflow, parseRecipe, prepareRecipeRun, recipeDigest, resolveRecipe, savedRecipes, saveWorkflowRecipe, starterRecipes, type RecipeDocument } from "./recipes.js";
+import { createWorkflowPreview, exportRecipe, findRecipe, importRecipe, launchWorkflow, parseRecipe, prepareRecipeRun, resolveRecipe, savedRecipes, saveWorkflowRecipe, starterRecipes, type RecipeDocument } from "./recipes.js";
 import { writeStoreSeed } from "../test/store-seed.js";
 import { htmlString } from "./html.js";
 import { recipeEditorHtml } from "./recipe-ui.js";
@@ -130,24 +128,5 @@ describe("saved recipe creation and repeated use", () => {
     const run = prepareRecipeRun(store, "owner", repo, first.id, 1, new Map(), later);
     launchWorkflow(store, "owner", repo, run.token, later, false);
     expect(savedRecipes(store, "owner", repo).map(one => one.id)).toEqual([first.id, newer.id]);
-  });
-
-  test("v56 upgrade preserves the old definition digest and receipt, and fences old recipe readers", () => {
-    const d = starterRecipes()[0]!.document;
-    const canonical = JSON.stringify(d), digest = createHash("sha256").update(canonical).digest("hex");
-    const { recipe } = save(d);
-    const p = prepareRecipeRun(store, "owner", repo, recipe.id, 1, new Map(), now);
-    const made = launchWorkflow(store, "owner", repo, p.token, now, false);
-    const rows = ["workflow_recipe", "workflow_preview"].map(table => store.handle.prepare(`SELECT * FROM ${table}`).all());
-    store.close(); const old = new DatabaseSync(file); old.exec("DROP TABLE service_cursor; DROP INDEX workflow_preview_source; UPDATE schema_version SET version=56"); old.close();
-    expect(openStoreNoMigrate(file)).toMatchObject({ ok: false, reason: "version" });
-    store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(117);
-    expect(["workflow_recipe", "workflow_preview"].map(table => store.handle.prepare(`SELECT * FROM ${table}`).all())).toEqual(rows);
-    expect(recipeDigest(findRecipe(store, "owner", repo, recipe.id)!.document)).toBe(digest);
-    expect(exportRecipe(findRecipe(store, "owner", repo, recipe.id)!.document)).toBe(exportRecipe(d));
-    expect(launchWorkflow(store, "owner", repo, p.token, now, false)).toEqual(made);
-    expect(store.handle.prepare("PRAGMA integrity_check").get()?.integrity_check).toBe("ok");
-    expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });

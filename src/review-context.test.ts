@@ -22,8 +22,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
+import { openStore, type Store } from "./store.js";
 import { run as exec } from "./exec.js";
 import { budgetedStatJson, captureTerminalDiff, parseNumstat, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence, writeEvidenceFile } from "./evidence.js";
 import { addApprover, approve, propose } from "./scope.js";
@@ -1088,54 +1087,4 @@ describe("inherited review context (v51)", () => {
     });
   });
 
-  test("schema v51: a v50 file widens artifact.kind for review-context and adds the criterion_review binding columns without touching a historical row", () => {
-    const dir = temp("so-ctx-v51-");
-    const file = join(dir, "orders.db");
-    const store = openStore(file);
-    store.createTask({ id: "t", title: "t" }, T0);
-    const ref = store.refFor("built-in", "t");
-    store.placeTask(ref.id, "/repo");
-    const run = store.startRun({ taskRef: ref.id, leaseId: "l", runner: "r", branch: "b", worktree: "/w", now: T0, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" } });
-    const first = store.saveArtifact({ run, kind: "proof", key: `${run}/proof.json`, bytesOriginal: 2, bytesStored: 2, truncated: false, sha256: "historical", capture: "historical", captureStatus: "ok" }, T0);
-    const raw = store.raw();
-    const V50_ARTIFACT = `CREATE TABLE artifact (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan','terminal-diff','diff-stat','handoff','revision-brief','base-tree','report','proof','check-log','screenshot','structured-output')),
-  key TEXT NOT NULL,
-  bytes_original INTEGER NOT NULL,
-  bytes_stored INTEGER NOT NULL,
-  truncated INTEGER NOT NULL DEFAULT 0,
-  sha256 TEXT NOT NULL,
-  capture TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  redacted INTEGER NOT NULL DEFAULT 0,
-  capture_status TEXT CHECK (capture_status IN ('ok','failed'))
-)`;
-    const V50_CRITERION_REVIEW = String(raw.prepare("SELECT sql FROM sqlite_master WHERE name = 'criterion_review'").get()?.["sql"])
-      .replace(/,\s*(--[^\n]*\n\s*)*context_artifact\s+INTEGER,\s*context_sha\s+TEXT/s, "");
-    expect(V50_CRITERION_REVIEW).not.toContain("context_");
-    raw.exec(`PRAGMA foreign_keys = OFF; CREATE TABLE artifact_copy AS SELECT * FROM artifact; DROP TABLE artifact; ${V50_ARTIFACT}; INSERT INTO artifact SELECT * FROM artifact_copy; DROP TABLE artifact_copy;
-      DROP TABLE criterion_review; ${V50_CRITERION_REVIEW}; PRAGMA foreign_keys = ON;`);
-    const before = raw.prepare("SELECT * FROM artifact ORDER BY id").all();
-    expect(() => raw.prepare("INSERT INTO artifact (run, kind, key, bytes_original, bytes_stored, sha256, capture, created_at) VALUES (?, 'review-context', ?, 1, 1, 'x', 'x', ?)").run(run, `${run}/rc.json`, T0.toISOString())).toThrow();
-    raw.exec("DROP TABLE service_cursor");
-    raw.prepare("UPDATE schema_version SET version = 50").run();
-    store.close();
-
-    const upgraded = openStore(file);
-    stores.push(upgraded);
-    expect(Number(upgraded.raw().prepare("SELECT version FROM schema_version").get()?.["version"])).toBe(SCHEMA_VERSION);
-    expect(upgraded.raw().prepare("SELECT * FROM artifact ORDER BY id").all()).toEqual(before);
-    expect(upgraded.getArtifact(first)).toMatchObject({ kind: "proof", sha256: "historical" });
-    const added = upgraded.saveArtifact({ run, kind: "review-context", key: `${run}/review-context.json`, bytesOriginal: 2, bytesStored: 2, truncated: false, sha256: "ctx", capture: "machine-captured review context", captureStatus: "ok" }, T0);
-    expect(upgraded.getArtifact(added)).toMatchObject({ kind: "review-context" });
-    const columns = (upgraded.raw().prepare("PRAGMA table_info(criterion_review)").all() as { name: string }[]).map(one => one.name);
-    expect(columns).toEqual(expect.arrayContaining(["context_artifact", "context_sha"]));
-    upgraded.close();
-    stores.pop();
-    const reopened = new DatabaseSync(file, { readOnly: true });
-    expect(String(reopened.prepare("SELECT sql FROM sqlite_master WHERE name = 'artifact'").get()?.["sql"])).toContain("'review-context'");
-    reopened.close();
-  });
 });

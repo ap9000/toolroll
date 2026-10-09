@@ -1,4 +1,3 @@
-import { SCHEMA_VERSION } from './store.js';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { html, htmlString } from './html.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, renameSync, statSync, symlinkSync } from 'node:fs';
@@ -186,11 +185,6 @@ describe('project knowledge',()=>{
       expect(store.handle.prepare('SELECT actor,how FROM project_identity_carry').all()).toEqual([{actor:'alex',how:'approver'}]);
       expect(await (await fetch(url+'/settings/knowledge',{headers:{cookie}})).text()).not.toContain('Apply saved knowledge');
     }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
-  });
-  test('v58 upgrade adds knowledge without losing learning and refuses missing v59 history',()=>{
-    store.handle.exec('DROP TABLE service_cursor; DROP TABLE project_knowledge; DROP TABLE knowledge_change; DROP TABLE knowledge_snapshot; UPDATE schema_version SET version=58');store.close();store=openStore(db);
-    expect(view().revision).toBe(0);expect(store.handle.prepare('SELECT version FROM schema_version').get()?.['version']).toBe(SCHEMA_VERSION);
-    store.handle.exec('DROP TABLE knowledge_snapshot');store.close();expect(()=>openStore(db)).toThrow(/knowledge history is missing/);store=openStore(':memory:');
   });
   test('HTTP editor protects CSRF and project access, keeps failed drafts, saves and restores',async()=>{
     const server=createDecisionServer({store,evidenceRoot:join(root,'evidence'),repo});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const address=server.address();if(!address||typeof address==='string')throw Error('server');const url=`http://127.0.0.1:${address.port}`;

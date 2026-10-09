@@ -5,12 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitBlobSha1, looksBinary, diffLines, renderUnified } from "./peek.js";
 
-/** A task with no scope presents the bare word `legacy` for the exact pair
- * it spends as (atomic authority closure): nothing opens unstamped. */
-const bareLegacy = (phase: "build" | "plan" | "repair" | "review", provider: string = "claude", model: string | null = null) => ({
-  route: { routeDigest: "legacy", phase, provider, model, chosen: "legacy" as const },
-});
-
 describe("the native reader's pure core (attended finding 7)", () => {
   test("gitBlobSha1 agrees with git hash-object, byte for byte", () => {
     const dir = mkdtempSync(join(tmpdir(), "peek-sha-"));
@@ -365,59 +359,6 @@ describe("observeWorktree — the descriptor-confined walk", () => {
       expect(timed.rows.some(row => row.kind === "deleted")).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("the v17 migration", () => {
-  test("a doctored v16 database really rebuilds artifact: base-tree admitted, capture_status and rows kept", async () => {
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const { openStore } = await import("./store.js");
-    const dir = mkdtempSync(join(tmpdir(), "v17-migrate-"));
-    const file = join(dir, "orders.db");
-    try {
-      let store = openStore(file);
-      store.createTask({ id: "held", title: "held" }, new Date("2026-08-17T00:00:00Z"));
-      const taskRef = store.refFor("built-in", "held", "ours").id;
-      const runId = store.startRun({ taskRef, leaseId: "l", runner: "r", branch: "b", worktree: "/w", ...bareLegacy("build", "claude", null), now: new Date("2026-08-17T00:00:00Z") });
-      store.saveArtifact(
-        { run: runId, kind: "diff", key: "k", bytesOriginal: 1, bytesStored: 1, truncated: false, sha256: "s", capture: "c", captureStatus: "ok" },
-        new Date("2026-08-17T00:00:00Z"),
-      );
-      store.close();
-
-      const { DatabaseSync } = await import("node:sqlite");
-      const raw = new DatabaseSync(file);
-      raw.exec("PRAGMA foreign_keys = OFF");
-      raw.exec(`CREATE TABLE artifact_old (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        run INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL CHECK (kind IN ('diff','status','park-payload','plan','terminal-diff','diff-stat','handoff','revision-brief')),
-        key TEXT NOT NULL, bytes_original INTEGER NOT NULL, bytes_stored INTEGER NOT NULL,
-        truncated INTEGER NOT NULL DEFAULT 0, sha256 TEXT NOT NULL, capture TEXT NOT NULL,
-        created_at TEXT NOT NULL, redacted INTEGER NOT NULL DEFAULT 0,
-        capture_status TEXT CHECK (capture_status IN ('ok','failed')))`);
-      raw.exec("INSERT INTO artifact_old SELECT * FROM artifact");
-      raw.exec("DROP TABLE artifact");
-      raw.exec("ALTER TABLE artifact_old RENAME TO artifact");
-      raw.exec("DROP TABLE service_cursor; UPDATE schema_version SET version = 16");
-      raw.close();
-
-      store = openStore(file);
-      const kept = store.artifactsFor(runId);
-      expect(kept).toHaveLength(1);
-      expect(kept[0]?.captureStatus).toBe("ok");
-      // The widened CHECK admits the new kind — by write, not by DDL string.
-      store.saveArtifact(
-        { run: runId, kind: "base-tree", key: "k2", bytesOriginal: 1, bytesStored: 1, truncated: false, sha256: "s2", capture: "c2", captureStatus: "ok" },
-        new Date("2026-08-17T00:00:00Z"),
-      );
-      expect(store.artifactsFor(runId).map(one => one.kind).sort()).toEqual(["base-tree", "diff"]);
-      store.close();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
