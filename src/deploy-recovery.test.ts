@@ -13,14 +13,14 @@ import { codingBackupBeforeSwap, restoreDeploymentBackup, stopProved } from '../
 import { fakePid } from '../test/fake-pid.js';
 
 /** The effects a failed browser deployment may take, recorded in order. */
-function effects(stopProved = false) {
+function effects(stopProved = false, gateHeld = true) {
   const done: string[] = [];
   return {
     done,
     stopProved: () => { done.push('prove stop'); return stopProved; },
     restoreBackup: () => { done.push('restore backup'); return '/stage/orders.kept.1.db'; },
     restoreService: () => { done.push('restore service'); },
-    removeGate: () => { done.push('remove gate'); },
+    removeGate: () => { done.push(gateHeld ? 'remove gate' : 'no gate held'); return gateHeld; },
     mark: (phase: string) => { done.push(`mark ${phase}`); },
   };
 }
@@ -70,7 +70,7 @@ test('a refusal before the swap only lifts the pause; an unproven stop or a star
     expect(recoverFailedDeployment(phase, e)).toMatch(/stopped before the swap/);
     expect(e.done).toEqual(['remove gate', 'mark released']);
   }
-  for (const phase of ['starting', 'started', 'healthy', 'deployed', 'released', 'preparing']) {
+  for (const phase of ['starting', 'started', 'healthy', 'deployed', 'released']) {
     const e = effects();
     expect(recoverFailedDeployment(phase, e)).toBeNull();
     expect(e.done).toEqual([]);
@@ -82,6 +82,17 @@ test('a refusal before the swap only lifts the pause; an unproven stop or a star
   const proven = effects(true);
   expect(recoverFailedDeployment('stopping', proven)).toMatch(/running again/);
   expect(proven.done).toEqual(['prove stop', 'restore service', 'mark restored', 'remove gate', 'mark released']);
+});
+
+test('a deploy that fails while preparing lifts only a pause it holds, and otherwise stays resumable', () => {
+  // Journaled before the pause was installed: a failure between the two still knows the pause's owner.
+  const held = effects();
+  expect(recoverFailedDeployment('preparing', held)).toMatch(/before the swap, and lifted its pause/);
+  expect(held.done).toEqual(['remove gate', 'mark released']);
+  // No pause of its own (never installed, or another update's): nothing is undone and the journal is not marked.
+  const none = effects(false, false);
+  expect(recoverFailedDeployment('preparing', none)).toBeNull();
+  expect(none.done).toEqual(['no gate held']);
 });
 
 test('the restored service counts only once it answers', () => {

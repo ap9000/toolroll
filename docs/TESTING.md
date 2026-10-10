@@ -114,9 +114,10 @@ Stops retain their step. Rerunning reconciles any completed merge, tag or
 publication. Interrupted deployments recover the saved staging directory
 before retrying; failed recovery stops the release. Both CLI names move to
 the deployer's runtime in their own step, put back together on failure. A
-deployment that stopped before its swap with new work still paused is lifted
-only through `toolroll release --release-gate <id>`, which proves the swap
-never began first. Every wait has a time
+deployment that fails before its swap lifts its own pause, including while
+installing it. One killed outright with new work still paused is lifted
+through `toolroll release --release-gate <id>`, which proves the swap never
+began first. Every wait has a time
 limit. `toolroll skills get release` has the details.
 
 ## Unit tests (`npm test`)

@@ -127,8 +127,8 @@ export function browserDeployment({
   }
 
   // A failed deployment must not leave the plane paused or down. A refusal before the swap stopped
-  // anything (a rehearsal that fails, a backup that doesn't verify) lifts this deployment's own
-  // pause. A failure after the old service was proved stopped (a coding check, a migration, a
+  // anything (a rehearsal that fails, a backup that doesn't verify, a failure while the pause was
+  // being installed) lifts this deployment's own pause. A failure after the old service was proved stopped (a coding check, a migration, a
   // service that will not load) starts the previous service again from its saved definition — on
   // the verified backup when the live database was migrated past what it reads — waits for it to
   // answer, and lifts the pause too. Ctrl-C and a kill take the same path. A restore that cannot
@@ -146,13 +146,18 @@ export function browserDeployment({
         restoreService: () => restorePriorService(r),
         removeGate: () => {
           const db = openDeploymentDatabase(database);
-          try { if (oldRt.gate.updateGateOwned(db, r.id)) oldRt.gate.removeUpdateGate(db, r.id); } finally { db.close(); }
+          try {
+            if (!oldRt.gate.updateGateOwned(db, r.id)) return false;
+            oldRt.gate.removeUpdateGate(db, r.id);
+            return true;
+          } finally { db.close(); }
         },
         mark: phase => { r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); },
       }, { previousRuntimeCompatible: r.schema === r.nextSchema && r.rehearsal?.previousRuntimeCompatible === true });
       if (words) console.error(words);
-      else if (!["preparing", "released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}.`);
-      return words !== null || ["released", "deployed"].includes(r.phase);
+      else if (r.phase === "preparing") console.error(`The deployment stopped while preparing, before it paused new work (update ${r.id}); nothing was paused. Rerun --phase prepare with --stage ${stageDir} to resume it.`);
+      else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}.`);
+      return words !== null || ["preparing", "released", "deployed"].includes(r.phase);
     } catch (error) {
       console.error(`✗ The previous service was not started again (update ${r.id}, at ${r.phase}): ${error.message}`);
       console.error(`  The previous service is not confirmed running and new work stays paused. Once the cause is fixed, run: node ${script} --run ${runId} --stage ${stageDir} --phase recover`);
@@ -242,6 +247,8 @@ export function browserDeployment({
           readFileSync(retained).equals(readFileSync(input)), `Saved configuration changed: ${input}`);
         else { copyFileSync(input, retained); chmodSync(retained, 0o600); }
       }
+      // The journal above names this pause's owner before it exists: a failure from here on lifts it (recoverJournal),
+      // and a hard kill leaves it for `toolroll release --release-gate <id>`, which proves the swap never began.
       oldRt.gate.installUpdateGate(db, r.id); save(r, "admission-paused");
       requireTrue(oldRt.gate.freezeUpdateGate(db, r.id), "Work raced admission; let it finish and rerun.");
       quiet(db); observeCodingDeployment(oldRt.coding, database, r); save(r, "frozen");

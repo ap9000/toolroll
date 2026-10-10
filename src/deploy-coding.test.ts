@@ -188,7 +188,7 @@ async function deployment({ codingCatalog = true } = {}) {
 
   const log: string[] = [];
   const journals: Record<string, Record<string, any>> = {};
-  const hooks: { stopped?: (pids: number[]) => void; sleep?: () => void; fetch?: () => void; install?: () => void; freeze?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
+  const hooks: { stopped?: (pids: number[]) => void; sleep?: () => void; fetch?: () => void; install?: () => void; installed?: () => void; freeze?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
   const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
   const services = {
     old: { supervisor: fakePid(1), children: [fakePid(2)], commands: [] as string[] },
@@ -205,7 +205,7 @@ async function deployment({ codingCatalog = true } = {}) {
   const installed = coding('installed'), candidate = coding('candidate');
   const gateEffects = {
     ...gate,
-    installUpdateGate: (db: DatabaseSync, id: string) => { hooks.install?.(); gate.installUpdateGate(db, id); },
+    installUpdateGate: (db: DatabaseSync, id: string) => { hooks.install?.(); gate.installUpdateGate(db, id); hooks.installed?.(); },
     freezeUpdateGate: (db: DatabaseSync, id: string) => { const frozen = gate.freezeUpdateGate(db, id); hooks.freeze?.(); return frozen; },
   };
   const paused = () => { const db = new DatabaseSync(database); try { return gate.updateAdmissionPaused(db) ? ' while paused' : ''; } finally { db.close(); } };
@@ -309,6 +309,56 @@ test('prepare refuses a result changed while the coding backup was copied, and r
     expect(resumed.journal()).toMatchObject({ id: first.id, phase: 'backup-verified' });
     expect(resumed.gateOwned()).toBe(true);
   } finally { resumed.close(); }
+});
+
+test('a deploy that fails between journaling preparing and the next marker lifts the pause it installed', async () => {
+  const d = await deployment();
+  try {
+    // The journal names the pause's owner before the pause exists.
+    let atInstall: Record<string, any> | undefined;
+    d.hooks.install = () => { atInstall = d.journal(); };
+    d.hooks.installed = () => { throw Error('killed after the pause was installed'); };
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('killed after the pause');
+    expect(atInstall).toMatchObject({ phase: 'preparing', id: expect.any(String), schema: expect.any(Number), priorRuntime: expect.any(String), nextRuntime: d.nextDist, completion: { digest: 'complete' }, gateDigest: 'check' });
+    expect([d.journal().phase, d.journal().id, d.gateOwned()]).toEqual(['preparing', atInstall!.id, true]);
+    // Exit recovery lifts exactly that pause, journals it, and leaves the old service as it was.
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect([d.journal().phase, d.gateOwned()]).toEqual(['released', false]);
+    expect(d.log.filter(one => /bootout|bootstrap/.test(one))).toEqual([]);
+    expect([readFileSync(d.plist, 'utf8'), d.services.running]).toEqual([d.livePlist, 'old']);
+  } finally { d.close(); }
+});
+
+test('a deploy that fails while preparing never lifts a pause another update holds', async () => {
+  const d = await deployment();
+  try {
+    const other = randomUUID();
+    const db = d.orders();
+    try { gate.installUpdateGate(db, other); } finally { db.close(); }
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('Another or unrecognized update');
+    expect(d.journal().phase).toBe('preparing');
+    // Nothing of its own to undo: the other update's pause stays and the journal stays resumable.
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect(d.journal().phase).toBe('preparing');
+    const after = d.orders();
+    try { expect(gate.updateGateOwned(after, other)).toBe(true); } finally { after.close(); }
+  } finally { d.close(); }
+});
+
+test('every refusal before the swap lifts the pause it holds and leaves the old service running', async () => {
+  for (const phase of ['admission-paused', 'frozen'] as const) {
+    const d = await deployment();
+    try {
+      // Fail right after the named phase is journaled.
+      const fail = () => { throw Error(`refused at ${phase}`); };
+      if (phase === 'admission-paused') d.hooks.freeze = fail; else d.hooks.facts = () => { if (existsSync(join(d.stage, 'deployment.json')) && d.journal().phase === 'frozen') fail(); };
+      await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow(`refused at ${phase}`);
+      expect([d.journal().phase, d.gateOwned()]).toEqual([phase, true]);
+      expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+      expect([d.journal().phase, d.gateOwned(), d.services.running]).toEqual(['released', false, 'old']);
+      expect(d.log.filter(one => /bootout|bootstrap/.test(one))).toEqual([]);
+    } finally { d.close(); }
+  }
 });
 
 test('a newly observed catalog is journaled before its backup is awaited', async () => {

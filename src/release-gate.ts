@@ -1,8 +1,7 @@
 /**
  * `toolroll release --release-gate <id>`: lift one update pause that a browser deployment (scripts/deploy-browser.mjs)
- * left behind when it stopped before the swap and its own recovery could not tell. The typical case is a deployment
- * killed between installing the pause and journaling that it had: the journal still says `preparing`, so
- * `--phase recover` leaves the pause alone, and new work stays paused.
+ * left behind when it stopped before the swap and its own exit recovery never ran. The typical case is a deployment
+ * killed outright (SIGKILL, a crash or power loss) while paused: nothing lifted the pause, and new work stays paused.
  *
  * The id alone proves nothing, and neither does the journal's phase. The pause is lifted only when every piece of
  * evidence agrees that the service was never swapped:
