@@ -58,7 +58,8 @@ function send(path: string, options: { method?: string; headers?: Record<string,
   });
 }
 const cli = (headers: Record<string, string> = {}) => send("/api/cli", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...headers }, body: JSON.stringify({ argv: ["status"] }) });
-const refused = (answer: Answer) => answer.status === 403 && answer.body === USE_HTTPS;
+// A password bearer's refusal also names its replacement (password-bearer.ts); the transport refusal comes first.
+const refused = (answer: Answer) => answer.status === 403 && (answer.body === USE_HTTPS || answer.body.startsWith(`${USE_HTTPS}\n`) && answer.body.includes("toolroll tokens create"));
 
 test("HSTS goes only to the public host reached over HTTPS through the same-host proxy", async () => {
   const proxied = await send("/login", { headers: { "x-forwarded-for": "203.0.113.10", "x-forwarded-proto": "https" } });

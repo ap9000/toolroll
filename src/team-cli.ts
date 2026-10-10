@@ -5,12 +5,12 @@ import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { envelopeJson } from './envelope.js';
-import { sessionServiceOrigin } from './session-cli.js';
 import { databasePath } from './store.js';
 import type { TeamChatAuthorization, TeamMessage, TeamOperation, TeamRequest, TeamResponse, TeamSnapshot } from './team-contract.js';
 import { configBase, namedPath } from './names.js';
 import { parseApiToken } from './api-tokens.js';
 import { deprecationWarning } from './deprecations.js';
+import { PASSWORD_PROFILE_WARNING } from './password-bearer.js';
 
 export type TeamCliOptions = {
   fetch?: typeof fetch; env?: NodeJS.ProcessEnv; home?: string; profileFile?: string;
@@ -52,6 +52,15 @@ Saved profiles select the central service for chat and brief. Use --local for th
 existing local commands. Credentials stay in a private file, never in URLs or arguments.
 Reads and attachment do not start model work. Server permissions remain authoritative.`;
 export class UsageError extends Error {}
+/** Credentials are never sent to a URL with embedded authority, an API path, query, fragment or an insecure remote
+ * host. Fetch cannot follow redirects. */
+export function serviceOrigin(raw: string): string {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new UsageError('The service origin must be HTTPS or loopback HTTP.'); }
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new UsageError('The service origin must contain only the origin, with no credentials, path, query or fragment.');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname))) throw new UsageError('The service origin requires HTTPS except for loopback HTTP.');
+  return url.origin;
+}
 type Profile = { origin: string; account: string; token: string };
 type Profiles = { version: 1; active: string; profiles: Record<string, Profile> };
 type Flags = Record<string, string | true | string[]>;
@@ -98,7 +107,7 @@ function profiles(options: TeamCliOptions): Profiles | null {
     const parsed: unknown = JSON.parse(raw);
     if (!record(parsed) || parsed.version !== 1 || typeof parsed.active !== 'string' || !record(parsed.profiles)) throw new Error();
     for (const [name, one] of Object.entries(parsed.profiles)) {
-      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || !record(one) || typeof one.origin !== 'string' || sessionServiceOrigin(one.origin) !== one.origin || typeof one.account !== 'string' || !accountValid(one.account) || typeof one.token !== 'string' || !tokenValid(one.token)) throw new Error();
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || !record(one) || typeof one.origin !== 'string' || serviceOrigin(one.origin) !== one.origin || typeof one.account !== 'string' || !accountValid(one.account) || typeof one.token !== 'string' || !tokenValid(one.token)) throw new Error();
     }
     if (!Object.hasOwn(parsed.profiles, parsed.active)) throw new Error();
     return parsed as Profiles;
@@ -277,7 +286,7 @@ export async function maybeRunTeamCommand(argv: readonly string[], write: (line:
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(profileName)) throw new UsageError('Profile names use 1–64 letters, digits, underscores or hyphens.');
     if (command === 'connect') {
       let origin: string;
-      try { origin = sessionServiceOrigin(parsed.positions[0]!); } catch { throw new UsageError('Use an HTTPS service origin (loopback HTTP is allowed), without credentials, paths, query or fragment.'); }
+      try { origin = serviceOrigin(parsed.positions[0]!); } catch { throw new UsageError('Use an HTTPS service origin (loopback HTTP is allowed), without credentials, paths, query or fragment.'); }
       if (['token-stdin', 'token-file', 'local-login'].filter(name => flags[name]).length !== 1) throw new UsageError('Choose one credential source: --token-stdin, --token-file or --local-login.');
       if (flags['login-file'] && !flags['local-login']) throw new UsageError('--login-file requires --local-login.');
       let account = value(flags, 'as');
@@ -287,6 +296,7 @@ export async function maybeRunTeamCommand(argv: readonly string[], write: (line:
         account = login[0]!; secret = login[1]!;
       } else secret = (flags['token-file'] ? privateFile(value(flags, 'token-file'), 8192) : await (options.readStdin ?? stdinSecret)()).trim();
       if (!accountValid(account) || !tokenValid(secret)) throw new UsageError('Provide an account name and a valid sign-in secret from your selected source.');
+      if (parseApiToken(secret) === null) stderr(PASSWORD_PROFILE_WARNING);
       const profile = { origin, account, token: secret }, checked = await perform(profile, { operation: 'list', args: {} }, options);
       if (!checked.ok) { emit(checked); return 1; }
       saveProfile(options, profileName, profile);
@@ -295,6 +305,7 @@ export async function maybeRunTeamCommand(argv: readonly string[], write: (line:
     const profile = saved?.profiles[profileName];
     if (!profile || !Object.hasOwn(saved!.profiles, profileName)) throw new UsageError('No saved connection. Use connect with your individual sign-in first.');
     secret = profile.token;
+    if (parseApiToken(secret) === null) stderr(PASSWORD_PROFILE_WARNING);
     const call: TeamCall = (operation, args, signal) => perform(profile, { operation, args }, { ...options, ...(signal === undefined ? {} : { signal }) });
     if (command === 'chat' || command === 'brief') return await chat(command, flags, profile.account, call, emit, options, stderr);
     let operation: TeamOperation, args: Record<string, unknown> = {};

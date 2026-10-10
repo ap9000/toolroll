@@ -18,6 +18,7 @@ import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
 import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG } from "./project-tools.js";
 import { isEdgeAddress,refuseEdge } from "./server/edge-refusal.js";
+import { announcePasswordBearer, isPasswordBearer, PASSWORD_BEARER_REFUSED, passwordBearerAccepted } from "./password-bearer.js";
 import { createSharedGuards } from "./server/guards.js";
 import { createHandlerRegistry } from "./server/handler-registry.js";
 import { type RemoteHookContext } from "./server/remote-hooks.js";
@@ -620,6 +621,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const matchedRoute = matchRoute(method, hook.pathname);
     const edgeRoute = matchedRoute?.stage === 'edge' ? matchedRoute : null;
     const wrongMethodEdge = edgeRoute === null ? ROUTES.find(row => row.stage === 'edge' && new RegExp(row.pattern).test(hook.pathname)) ?? null : null;
+    // D7: a password on a request still signs in this release, announced on every answer and named in every refusal;
+    // from the release that removes it, it is refused here before anything checks it.
+    if (isPasswordBearer(request.headers.authorization)) {
+      if (!(options.passwordBearerAccepted ?? passwordBearerAccepted())) {
+        request.resume();
+        return hook.pathname.startsWith('/api/')
+          ? respond(response, 401, 'application/json; charset=utf-8', JSON.stringify({ ...(hook.pathname.startsWith('/api/team') ? { version: 1 } : {}), ok: false, code: 'password-bearer-refused', message: PASSWORD_BEARER_REFUSED }))
+          : respond(response, 401, 'text/plain; charset=utf-8', PASSWORD_BEARER_REFUSED);
+      }
+      announcePasswordBearer(response);
+    }
     if (edgeRoute?.host === 'before') return dispatchEdge(edgeRoute, { url: hook, who: null, request, response, method });
     if (wrongMethodEdge?.host === 'before') return refuseEdge(request, response, hook.pathname, wrongMethodEdge);
     if (!allowedHost(request.headers.host)) {
@@ -673,6 +685,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
 
     if (who === null) {
+      // A password on a request that did not sign in is a machine's refusal, never a login page.
+      if (isPasswordBearer(request.headers.authorization)) return respond(response, 401, "text/plain; charset=utf-8", "authenticate first");
       // A GET to an exact task or result (a phone's deep link) signs in and
       // comes back to it — the destination is a same-site path only.
       return method === "GET"

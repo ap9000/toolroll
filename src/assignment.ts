@@ -114,7 +114,8 @@ function ownerOf(store: Store, rootId: string, repo: string | null): AssignmentS
   const origin = store.lookupRef(rootId)?.coordinatorCid;
   const id = claim === undefined ? origin : String(claim["actor"]).replace(/^coordinator:/, "");
   if (!id) return null;
-  const credential = store.handle.prepare("SELECT name,repos,revoked_at FROM coordinator_credential WHERE cid = ?").get(id);
+  // A ledger actor names a coordinator by the id it had when it acted (v118 keeps that as public_id).
+  const credential = store.handle.prepare("SELECT name,projects_json AS repos,revoked_at FROM credential WHERE kind = 'coordinator' AND (id = ? OR public_id = ?) ORDER BY id = ? DESC LIMIT 1").get(id, id, id);
   let repos: unknown = [];
   try { repos = JSON.parse(String(credential?.["repos"] ?? "[]")); } catch { /* unavailable owner stays inactive */ }
   return { kind: "coordinator", id, label: String(credential?.["name"] ?? "Former lead"),
@@ -384,7 +385,7 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
 type MutationResult = { ok: true; assignment: AssignmentSnapshot } | { ok: false; reason: string; message: string };
 function admittedOwner(store: Store, taskId: string, owner: AssignmentOwner, now: Date, root?: string): AssignmentSnapshot | null {
   if (owner.kind !== "coordinator") return null; // A stable lead is identity, not a bearer credential.
-  const row = store.handle.prepare("SELECT repos, revoked_at FROM coordinator_credential WHERE cid = ?").get(owner.id);
+  const row = store.handle.prepare("SELECT projects_json AS repos, revoked_at FROM credential WHERE id = ? AND kind = 'coordinator'").get(owner.id);
   if (row === undefined || row["revoked_at"] !== null) return null;
   let repos: unknown;
   try { repos = JSON.parse(String(row["repos"])); } catch { return null; }

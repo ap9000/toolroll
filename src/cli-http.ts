@@ -4,6 +4,8 @@ import type { Store } from './store.js';
 import type { Principal } from './operate.js';
 import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommandLookup } from './remote-command.js';
 import { limitWords, type Admission, type BudgetLimit } from './request-budget.js';
+import { TOKEN_REPLACEMENT } from './password-bearer.js';
+import type { SessionRunner } from './session-remote.js';
 
 /**
  * `POST /api/cli` (remote CLI, Phase 1): a teammate's laptop sends the argv it would have run locally, and the central
@@ -13,6 +15,10 @@ import { limitWords, type Admission, type BudgetLimit } from './request-budget.j
  *
  * Only `Authorization: Bearer so_…` is accepted — never a password, cookie or the owner's saved login — and a request
  * carrying a browser Origin is refused, so a page can never drive it.
+ *
+ * `session …` (D7) is the one command the server answers through its own owner rather than runOperateAs: native
+ * session operations need the server's live coding workspace (session-remote.ts). They are admitted, budgeted and
+ * refused here exactly like every other command.
  */
 
 /** Who a remote command runs as, and the runner: operate.ts's own types, so a change there breaks this build instead of
@@ -41,8 +47,12 @@ export type CliHttpOptions = {
   modeOf?: RemoteCommandLookup | undefined;
   /** The token's request budget (request-budget.ts), charged once per request before its body is read. */
   admit?: ((principal: Principal) => Admission) | undefined;
+  /** Native session operations (`session …`), run by the server's session owner; absent where none is ready. */
+  session?: SessionRunner | undefined;
   store: Store;
 };
+/** What a missing or unusable token hears: how to get one, and how to save it. */
+const SIGN_IN = `Sign in with an API token: ${TOKEN_REPLACEMENT.charAt(0).toLowerCase()}${TOKEN_REPLACEMENT.slice(1)}, then toolroll connect <origin> --token-stdin.`;
 
 function send(response: ServerResponse, status: number, value: CliReply | CliFailure, headers: Record<string, string> = {}): void {
   if (response.destroyed || response.writableEnded) return;
@@ -105,13 +115,13 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
   const count = names.filter(name => name === 'authorization').length;
   if (count > 1) return reject(400, 'ambiguous-credentials', 'Send one authorization header.');
   if (names.includes('cookie')) return reject(400, 'cookie-refused', 'Remote commands sign in with an API token only.');
-  if (!/^Bearer so_\S+$/.test(request.headers.authorization ?? '')) return reject(401, 'unauthenticated', 'Sign in with your API token: toolroll connect <origin> --token-stdin.');
+  if (!/^Bearer so_\S+$/.test(request.headers.authorization ?? '')) return reject(401, 'unauthenticated', SIGN_IN);
   if (request.headers['content-type']?.split(';')[0]?.trim() !== 'application/json') return reject(415, 'invalid-content-type', 'Send application/json.');
   if (Number(request.headers['content-length'] ?? 0) > CLI_REQUEST_BYTES) return reject(413, 'request-too-large', 'Files are limited to 256 KiB in total.');
   let principal: Principal | null;
   try { principal = options.authenticate(request); }
   catch { return reject(503, 'authentication-unavailable', 'Sign-in could not be checked.'); }
-  if (!principal) return reject(401, 'unauthenticated', 'This API token is not valid (expired, revoked or its person removed).');
+  if (!principal) return reject(401, 'unauthenticated', `This API token is not valid (expired, revoked or its person removed). ${TOKEN_REPLACEMENT}.`);
   // Counted once here, however long the command then holds the request (a task wait is one request).
   const admitted = options.admit === undefined ? { ok: true as const } : options.admit(principal);
   if (!admitted.ok && admitted.status === 503) return reject(503, 'limits-unavailable', 'Request limits could not be checked; nothing ran. Try again shortly.');
@@ -126,6 +136,7 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
   catch (error) { return reject(error instanceof Error && error.message === 'too-large' ? 413 : 400, 'invalid-body', 'Send a valid JSON request; files are limited to 256 KiB in total.'); }
   const parsed = cliRequest(value);
   if ('problem' in parsed) return reject(parsed.tooLarge ? 413 : 400, 'invalid-request', parsed.problem);
+  if (parsed.argv[0] === 'session') return runSession(response, options, principal, parsed);
   const row = (options.modeOf ?? contractRow)(parsed.argv);
   if (row?.mode === 'step-up') return reject(403, 'step-up', STEP_UP_MESSAGE);
   if (row?.mode !== 'yes') return reject(403, 'remote-refused', 'This command cannot run remotely.');
@@ -143,6 +154,20 @@ export async function handleCliHttp(request: IncomingMessage, response: ServerRe
   let exitCode: number;
   try { exitCode = await run([...parsed.argv], { principal, store: options.store, write: line => { out.push(`${line}\n`); }, files: parsed.files, source: 'api' }); }
   catch { return reject(500, 'command-failed', 'The command stopped unexpectedly on the server. Check its state before running it again.'); }
+  send(response, 200, { exitCode, stdout: out.join(''), stderr: '' });
+  return true;
+}
+
+/** `session …`: the prompt is the request's one file; the session owner answers one session envelope on stdout. */
+async function runSession(response: ServerResponse, options: CliHttpOptions, principal: Principal, parsed: CliRequest): Promise<true> {
+  const refuse = (status: number, code: string, message: string): true => { send(response, status, { ok: false, code, message }); return true; };
+  if (options.session === undefined) return refuse(501, 'remote-unavailable', 'This server cannot run session commands. Update it, or use the console.');
+  const at = parsed.argv.indexOf('--file'), file = at < 0 ? undefined : parsed.argv[at + 1];
+  if (Object.keys(parsed.files).some(path => path !== file)) return refuse(400, 'invalid-request', 'Each file must name a declared input file argument.');
+  const out: string[] = [];
+  let exitCode: number;
+  try { exitCode = await options.session(principal, parsed.argv, parsed.files, line => { out.push(`${line}\n`); }); }
+  catch { return refuse(500, 'command-failed', 'The command stopped unexpectedly on the server. Check its state before running it again.'); }
   send(response, 200, { exitCode, stdout: out.join(''), stderr: '' });
   return true;
 }

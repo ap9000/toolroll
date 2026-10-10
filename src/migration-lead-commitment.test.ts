@@ -34,8 +34,8 @@ test("a store from before lead_commitment gains the table on its next upgrade, k
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(118);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lead_commitment%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["lead_commitment", "lead_commitment_due", "lead_commitment_owner"]);
   expect(store.listLeadMessages(thread, 10).map(one => one.text)).toEqual(["tell me at noon"]);
@@ -79,5 +79,5 @@ store.close();
 
   store = openStore(file);
   expect(getCommitment(store, made.id)).toEqual(made);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(118);
 }, 60_000);

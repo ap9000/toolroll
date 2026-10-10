@@ -9,7 +9,6 @@ import { setLimitOverride } from '../request-budget.js';
 import { ROUTES, matchRoute } from './route-table.js';
 import * as cli from '../cli-http.js';
 import * as team from '../team-http.js';
-import * as sessions from '../session-http.js';
 import * as hooks from './remote-hooks.js';
 
 const REPO = '/repo/main';
@@ -102,16 +101,18 @@ test('a read bearer cannot enter any console act or step-up handler, even with a
 });
 
 test('edge unknown paths and wrong methods never invoke a protocol adapter', async () => {
-  const spies = [vi.spyOn(cli, 'handleCliHttp'), vi.spyOn(team, 'handleTeamHttp'), vi.spyOn(sessions, 'handleSessionHttp'), vi.spyOn(hooks, 'flowHook'), vi.spyOn(hooks, 'telegramHook')];
+  const spies = [vi.spyOn(cli, 'handleCliHttp'), vi.spyOn(team, 'handleTeamHttp'), vi.spyOn(hooks, 'flowHook'), vi.spyOn(hooks, 'telegramHook')];
   for (const path of ['/oauth/unknown', '/api/cli/unknown', '/api/sessions/unknown', '/api/team/unknown', '/hooks/flow/one/extra', '/hooks/unknown']) {
     for (const method of ['GET', 'POST']) {
       expect(matchRoute(method, path), path).toBeNull();
       expect((await send(path, method, act)).status, `${method} ${path}`).toBe(404);
     }
   }
-  for (const [path, method] of [['/api/cli', 'GET'], ['/api/sessions/start', 'GET'], ['/api/team', 'DELETE'], ['/hooks/flow/one', 'GET'], ['/hooks/telegram', 'GET']]) {
+  for (const [path, method] of [['/api/cli', 'GET'], ['/api/team', 'DELETE'], ['/hooks/flow/one', 'GET'], ['/hooks/telegram', 'GET']]) {
     expect((await send(path!, method!, act)).status, `${method} ${path}`).toBe(405);
   }
+  // D7: the session operations moved to /api/cli; their old addresses are a refusal, never an adapter.
+  for (const method of ['GET', 'POST']) expect((await send('/api/sessions/start', method, act)).status, method).toBe(404);
   for (const spy of spies) expect(spy).not.toHaveBeenCalled();
   expect(await send('/mcp', 'GET', act)).toMatchObject({ status: 405, type: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'the MCP gateway takes POST only — one JSON-RPC message per request' } }) });
 });

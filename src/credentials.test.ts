@@ -55,7 +55,7 @@ test("an API token is shown once, reads or acts as its person (never more), is n
   const reader = await makeToken(cookie, { name: "dashboard", access: "read", days: "30" });
   const actor = await makeToken(cookie, { name: "CI", access: "act", days: "90" });
   expect(store.apiTokens("alex").map(one => [one.name, one.access])).toEqual([["CI", "act"], ["dashboard", "read"]]);
-  expect(JSON.stringify(store.handle.prepare("SELECT * FROM api_token").all())).not.toContain(reader.slice(16));
+  expect(JSON.stringify(store.handle.prepare("SELECT * FROM credential").all())).not.toContain(reader.slice(16));
   // Read: reads, can't file work.
   expect((await fetch(`${base}/ledger?format=json`, { headers: { authorization: `Bearer ${reader}` } })).status).toBe(200);
   expect((await fetch(`${base}/tasks/add`, { method: "POST", headers: { authorization: `Bearer ${reader}` }, body: new URLSearchParams({ title: "from a reader", repo: "/repo/main" }), redirect: "manual" })).status).toBe(403);

@@ -78,10 +78,6 @@ CREATE TRIGGER IF NOT EXISTS ledger_task_placed AFTER UPDATE OF repo ON task_ref
 WHEN OLD.repo IS NOT NEW.repo BEGIN
   ${event("strftime('%Y-%m-%dT%H:%M:%fZ','now')", "'system'", "NEW.repo", "NEW.external_id", "NULL", "task placed", "'recorded'")}
 END;
-CREATE TRIGGER IF NOT EXISTS ledger_coordinator_minted AFTER INSERT ON coordinator_credential BEGIN
-  INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (NEW.created_at, NEW.created_by, NULL, NULL, NULL,
-    'coordinator minted: ' || NEW.name, 'minted', 'access', 'projects: ' || NEW.repos);
-END;
 CREATE TRIGGER IF NOT EXISTS ledger_task_registered AFTER INSERT ON task_ref BEGIN
   ${event("strftime('%Y-%m-%dT%H:%M:%fZ','now')", "'system'", "NEW.repo", "NEW.external_id", "NULL", "task registered", "'recorded'")}
 END;

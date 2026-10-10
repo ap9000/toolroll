@@ -148,8 +148,8 @@ const shape = () => {
 test("every routine arrives as an equivalent scheduled flow, its approval moved only as it was stamped", () => {
   const { profileJson, routeJson } = seedV114(SEEDS);
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(118);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'routine%'").all()).toEqual([]);
   // The history column stays (its foreign key is gone), so the earlier instance still names its routine.
   expect(store.handle.prepare("SELECT routine_id FROM task_ref WHERE external_id = 'nightly-deps-20261006-2000'").get()?.["routine_id"]).toBe(1);
@@ -241,7 +241,7 @@ test("a migration that dies part-way leaves the v114 routines whole, and the nex
   after.exec("DROP TRIGGER v115_dies");
   after.close();
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(118);
   expect(store.handle.prepare("SELECT name FROM flow ORDER BY id").all().map(row => row["name"])).toEqual(SEEDS.map(one => one.name));
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'routine%'").all()).toEqual([]);
 });

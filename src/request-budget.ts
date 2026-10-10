@@ -1,6 +1,6 @@
 /**
  * Request budgets for person API tokens (v112): how many requests one `so_` token may make across all accepting routes.
- * One budget per token, keyed by its api_token row id (never the secret, its name or an address), shared by those
+ * One budget per token, keyed by its credential row id (a person's API token, v118) (never the secret, its name or an address), shared by those
  * routes. A read token gets 120 requests in any sliding minute, an act token 30, and either 10,000 in a rolling day;
  * an instance operator may override any of these for the installation or for one token in the console (step-up).
  *

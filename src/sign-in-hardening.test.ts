@@ -49,8 +49,9 @@ test("five wrong passwords lock the name (even the right one waits), each sign-i
   expect(await locked.text()).toContain("Too many wrong passwords. Try again in 15 minutes.");
   // The lock holds on every road that takes a password: a request's bearer, and a step-up inside the console.
   const bearer = await fetch(`${base}/work`, { headers: { authorization: `Bearer alex:${password}` }, redirect: "manual" });
-  expect(bearer.status).toBe(303);
-  expect(bearer.headers.get("location")).toMatch(/^\/login/);
+  // A machine's refusal, never a login page, and it names the API token that replaces a password on a request (D7).
+  expect(bearer.status).toBe(401);
+  expect(await bearer.text()).toContain("toolroll tokens create");
   expect(authenticateApprover(store, "alex", password)).toEqual({ ok: false, reason: "not-an-approver" });
   // A name that isn't an account never lands in history as typed (it may be a password in the wrong box).
   expect((await signIn("hunter2-typed-as-a-name", "x")).status).toBe(403);
@@ -109,7 +110,7 @@ test("policy changes are ledger events with what changed, and a person's coordin
   const made = mintCoordinator(store, { name: "sams-bot", repos: ["/repo/main"], perHour: 6, by: "sam", now: T0 });
   if (!made.ok) throw new Error(JSON.stringify(made));
   expect(store.revokeAccount("sam", "alex", T0)).toMatchObject({ ok: true });
-  expect(store.handle.prepare("SELECT revoked_at FROM coordinator_credential WHERE name = 'sams-bot'").get()?.["revoked_at"]).toBe(T0.toISOString());
+  expect(store.handle.prepare("SELECT revoked_at FROM credential WHERE kind = 'coordinator' AND name = 'sams-bot'").get()?.["revoked_at"]).toBe(T0.toISOString());
   expect(store.actionLedger({ repos: null, source: "access" }).map(one => [one.action, one.detail])).toContainEqual(["coordinator revoked: sams-bot", "made by sam"]);
 });
 

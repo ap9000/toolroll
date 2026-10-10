@@ -57,7 +57,8 @@ test("a source that got the password wrong five times is locked; the owner signs
   // The attacker's lock stands, on every road from that source: a request's password bearer too.
   expect((await signIn("alex", password, "203.0.113.5")).status).toBe(429);
   const bearer = await fetch(`${base}/work`, { headers: { authorization: `Bearer alex:${password}`, "x-forwarded-for": "203.0.113.5", "x-forwarded-proto": "https" }, redirect: "manual" });
-  expect(bearer.headers.get("location")).toMatch(/^\/login/);
+  expect(bearer.status).toBe(401);
+  expect(await bearer.text()).toContain("toolroll tokens create");
   expect(events().filter(one => one[1] === "account locked")).toEqual([["alex", "account locked", "locked"]]);
 });
 

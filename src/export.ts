@@ -51,7 +51,7 @@ const DERIVED_TABLE = /^(sqlite_|memory_search)/;
 
 /** Columns that hold a secret (or what stands in for one): never exported. */
 const SECRET_COLUMNS = new Set([
-  "api_token.secret_hash", "lead_credential.secret_hash", "approver.credential_hash", "coordinator_credential.credential_hash", "runner.credential_hash", "invite.token_hash",
+  "credential.secret_hash", "approver.credential_hash", "runner.credential_hash", "invite.token_hash",
   "flow_trigger.hook_hash", "push_subscription.endpoint", "push_subscription.p256dh", "push_subscription.auth",
   "chat_turn.credential_key", "lead_session.credential_key", "mate_turn.credential_key", "chat_runtime.push_url", "workflow_preview.token",
   "quota.credential_fp", "oauth_grant.renew_hash", "oauth_client.source_hash",
@@ -76,7 +76,7 @@ export function categoryOf(table: string): string {
     [/^subagent/, "subagents"],
     [/^(flow|workflow_)/, "flows"],
     [/^(chat_|lead_|team_|notification|push_)/, "chats"],
-    [/^(approver|api_token|lead_credential|invite|sso_identity|coordinator_|oauth_)/, "people"],
+    [/^(approver|credential$|invite|sso_identity|coordinator_|oauth_)/, "people"],
     [/^(run|artifact|claim|worktree$|execution_slot|criterion_review|diff_comment|proof_|review_request|repair_chain|incident|publication$|merge_|side_spend|knowledge_snapshot|learning_snapshot|skill_snapshot)/, "runs"],
     [/^(task|hold$|plan_|scope_|tool_seal|decision|external_|skill_test)/, "tasks"],
     [/^(project|approval_policy|capability|verify_command|worktree_setup|backend_grant|intake_grant|publication_grant|operating_mode|knowledge_|learning_|memory_|skill_)/, "projects"],

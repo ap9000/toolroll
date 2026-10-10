@@ -11,7 +11,7 @@ rowVisible
 } from "../project.js";
 import { RequestBudget,SourceAdmission,type Admission } from "../request-budget.js";
 import { authenticateAccount } from "../scope.js";
-import { createSessionEndpoint } from '../session-server.js';
+import { createSessionRunner } from '../session-remote.js';
 import {
 type Store
 } from "../store.js";
@@ -119,16 +119,17 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     },
   });
+  // D7: native session operations are remote commands too (`session …` over /api/cli), run by the session owner.
+  const sessionRunner = createSessionRunner({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo), clock });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
     admit: principal => requestBudget.admit(principal.tokenId, "api"),
     authenticate: tokenPrincipalOf,
     run: async () => options.cliRunner ?? ((await import("../operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
     modeOf: options.cliModeOf,
+    session: sessionRunner,
     store,
   });
-  const sessionEndpoint = createSessionEndpoint({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo),
-    admit: admitPasswordSource, admitAuthenticated: admitBearer });
 
   const mcpHttp = createMcpHttp({ store, clock, evidenceRoot, ...(options.requestBudgetClock === undefined ? {} : { requestBudgetClock: options.requestBudgetClock }), signedIn: request => identify(request, true, true) !== null, admit: person => requestBudget.admit(person.principal.tokenId, "mcp"),
     resourceMetadata: request => { const origin = consoleOrigin(request.headers.host); return origin === null ? null : resourceMetadataUrl(origin); },
@@ -160,8 +161,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       admitSource: request => teamsSourceBudget.admit(joinSourceOf(request)), admitTenant: tenant => teamsTenantBudget.admit(tenant) })) return;
     return respond(response, 404, 'text/plain; charset=utf-8', 'No such address.');
   };
-  // D5: native coding sessions and the central team service are deprecated (still served this release); each
-  // answer says so in a Deprecation header (RFC 9745).
+  // D5: the central team service is deprecated (still served this release); each answer says so in a Deprecation
+  // header (RFC 9745).
   // Each protocol adapter keeps its own operation boundary; every row still names its own entry.
   const registrations = handlersOf("remote", {}, {
     "edge.telegram-hook": async ({ request, response }) => { await telegramHook(hookContext, request, response); },
@@ -174,14 +175,6 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     "edge.oauth-token": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
     "edge.oauth-authorize": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
     "edge.oauth-consent": async ({ request, response, url }) => { await oauthHttp(request, response, url); },
-    "edge.sessions-list": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-show": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-changes": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-start": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-send": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-stop": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-resume": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
-    "edge.sessions-recover": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await sessionEndpoint(request, response); },
     "edge.team-read": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await teamEndpoint(request, response); },
     "edge.team-send": async ({ request, response }) => { response.setHeader('Deprecation', 'true'); await teamEndpoint(request, response); },
     "edge.cli": async ({ request, response }) => { await cliEndpoint(request, response); },

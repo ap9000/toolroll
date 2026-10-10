@@ -133,8 +133,8 @@ export function isSessionResponse(value: unknown, operation: SessionOperation): 
 }
 
 export function sessionCapabilities() {
-  return { version: SESSION_PROTOCOL_VERSION, transport: 'POST /api/sessions/<operation>', authentication: 'operator account: Authorization Bearer name:token',
-    authority: 'Operator credentials are required for session reads and controls. External coordinator credentials have no session access.',
+  return { version: SESSION_PROTOCOL_VERSION, transport: 'POST /api/cli with argv session <operation> (the prompt travels as the request\'s one file)', authentication: 'API token: Authorization Bearer so_… (toolroll tokens create, saved by toolroll connect)',
+    authority: 'An instance operator\'s API token without a project limit reads sessions; changing one needs an act token. Lead and coordinator credentials have no session access.',
     operations: SESSION_DESCRIPTORS, brief: { supported: true, operation: 'show', defaultView: 'brief', source: 'Saved state and labeled agent reports, pinned to a revision; no additional model call.' },
     unsupported: ['events', 'review', 'continue'], limits: { promptBytes: SESSION_PROMPT_BYTES, requestBytes: SESSION_REQUEST_BYTES, responseBytes: SESSION_RESPONSE_BYTES },
     retry: 'Never automatically retry a mutation. Inspect saved state after a lost response; keep the original key.' };

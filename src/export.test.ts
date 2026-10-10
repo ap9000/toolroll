@@ -84,7 +84,7 @@ function seed(): { password: string; apiToken: string; hashes: string[] } {
   const hashes = [
     "synthetic-first-refresh-hash", "synthetic-next-refresh-hash", "synthetic-code-hash", "synthetic-source-hash",
     ...(store.handle.prepare("SELECT credential_hash AS h FROM approver").all() as { h: string }[]).map(one => one.h),
-    ...(store.handle.prepare("SELECT secret_hash AS h FROM api_token").all() as { h: string }[]).map(one => one.h),
+    ...(store.handle.prepare("SELECT secret_hash AS h FROM credential").all() as { h: string }[]).map(one => one.h),
   ];
   return { password: alex.token, apiToken: api.token, hashes };
 }
@@ -178,7 +178,7 @@ test("no secret, token, key or password hash appears in the export", () => {
   // What was pasted is still there around the key; the key itself is redacted.
   expect(textOf(exported)).toContain("Refunds (key [redacted])");
   expect(exported.manifest.excluded.tables).toEqual(expect.arrayContaining(["web_session", "ceremony_nonce", "chat_pair"]));
-  expect(exported.manifest.excluded.columns).toEqual(expect.arrayContaining(["approver.credential_hash", "api_token.secret_hash", "invite.token_hash", "flow_trigger.hook_hash", "push_subscription.auth", "chat_action.token"]));
+  expect(exported.manifest.excluded.columns).toEqual(expect.arrayContaining(["approver.credential_hash", "credential.secret_hash", "invite.token_hash", "flow_trigger.hook_hash", "push_subscription.auth", "chat_action.token"]));
   // Token counts are usage, kept.
   expect(exported.manifest.excluded.columns).not.toContain("run.tokens_in");
   expect(redactKeyShapes(`Authorization: Bearer ${"a".repeat(40)}`)).toBe("Authorization: [redacted]");

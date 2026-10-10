@@ -1,8 +1,9 @@
 /**
- * API tokens (v101): what scripts and CI use instead of a password on each
- * request. A token belongs to one person, reads or acts (never more than the
- * person may), always expires (a year at most), is shown once, and only its
- * hash is kept. `Authorization: Bearer so_<id>_<secret>`.
+ * Machine credentials (D7, v118): one codec and one table (`credential`) for every kind. A person's API token is
+ * what scripts and CI use instead of a password on each request: it belongs to one person, reads or acts (never
+ * more than the person may), always expires (a year at most), is shown once, and only its hash is kept.
+ * `Authorization: Bearer so_<id>_<secret>`. A lead token (`lt_<id>_<secret>`) is an agent acting for its owner; a
+ * coordinator's secret (no prefix, hashed whole) files proposals over MCP. Each kind keeps its own policy.
  *
  * A token never passes a step-up: approvals and other password ceremonies
  * stay a person's act in the console.
@@ -11,25 +12,57 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export type TokenAccess = "read" | "act";
 export type TokenPurpose = "api" | "mcp";
+/** Who a credential stands for: a person (their API token), a person's lead, or a coordinator. */
+export type CredentialKind = "person" | "lead" | "coordinator";
 export const MCP_ROTATION_REFUSAL = "Reconnect the MCP client to renew this token. You can still revoke it here.";
 
 /** Missing purpose is an old ordinary token; an unrecognised stored purpose is never treated as ordinary. */
 export const tokenPurpose = (value: unknown): TokenPurpose => value === undefined || value === "api" ? "api" : "mcp";
 export const tokenRotationProblem = (token: { purpose: TokenPurpose }): string | null => token.purpose === "api" ? null : MCP_ROTATION_REFUSAL;
 export const TOKEN_DAYS = [30, 90, 365] as const;
-const SHAPE = /^so_([a-f0-9]{12})_([A-Za-z0-9_-]{43})$/;
+/** The prefixed shapes: so_ (a person's API token) and lt_ (a lead token), each `<prefix>_<12 hex>_<43 base64url>`. */
+const PRESENTED = /^(so|lt)_([a-f0-9]{12})_([A-Za-z0-9_-]{43})$/;
+const PREFIX = { person: "so", lead: "lt" } as const;
+const CID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
-export function mintApiToken(): { id: string; secret: string; token: string; hash: string } {
-  const id = randomBytes(6).toString("hex"), secret = randomBytes(32).toString("base64url");
-  return { id, secret, token: `so_${id}_${secret}`, hash: hashSecret(secret) };
+/** What a presented secret says it is, before any check. A coordinator's secret has no prefix and is hashed whole. */
+export type PresentedCredential = { kind: "person" | "lead"; id: string; secret: string } | { kind: "coordinator"; secret: string };
+
+/** A new credential of `kind`: its id, the secret shown once, and the only thing kept, its hash. */
+export function mintCredential(kind: CredentialKind): { id: string; secret: string; token: string; hash: string } {
+  const secret = randomBytes(32).toString("base64url");
+  if (kind === "coordinator") {
+    let id = "";
+    for (const byte of randomBytes(12)) id += CID_ALPHABET[byte % CID_ALPHABET.length];
+    return { id, secret, token: secret, hash: hashSecret(secret) };
+  }
+  const id = randomBytes(6).toString("hex");
+  return { id, secret, token: `${PREFIX[kind]}_${id}_${secret}`, hash: hashSecret(secret) };
 }
 
 export const hashSecret = (secret: string) => createHash("sha256").update(secret, "utf8").digest("hex");
 
-/** The id and secret of something shaped like a token, or null. */
+/** Read a presented credential's kind and parts; null for nothing at all. A lead token may carry surrounding space. */
+export function parseCredential(presented: string): PresentedCredential | null {
+  if (presented === "") return null;
+  const match = PRESENTED.exec(presented) ?? (/^lt_/.test(presented.trim()) ? PRESENTED.exec(presented.trim()) : null);
+  if (match !== null) return { kind: match[1] === "so" ? "person" : "lead", id: match[2]!, secret: match[3]! };
+  return { kind: "coordinator", secret: presented };
+}
+
+export const mintApiToken = () => mintCredential("person");
+export const mintLeadToken = () => mintCredential("lead");
+
+/** The id and secret of something shaped like an API token, or null. */
 export function parseApiToken(presented: string): { id: string; secret: string } | null {
-  const match = SHAPE.exec(presented);
-  return match === null ? null : { id: match[1]!, secret: match[2]! };
+  const parsed = parseCredential(presented);
+  return parsed?.kind === "person" && PRESENTED.test(presented) ? { id: parsed.id, secret: parsed.secret } : null;
+}
+
+/** The id and secret of something shaped like a lead token, or null. */
+export function parseLeadToken(presented: string): { id: string; secret: string } | null {
+  const parsed = parseCredential(presented);
+  return parsed?.kind === "lead" ? { id: parsed.id, secret: parsed.secret } : null;
 }
 
 /** Whether the secret is the one whose hash was kept, in constant time. */

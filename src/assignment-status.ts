@@ -86,7 +86,7 @@ export function noteAssignmentStatus(store: Store, snapshot: AssignmentSnapshot,
     } else {
       const claimed = store.handle.prepare("SELECT actor FROM action_ledger WHERE task_id=? AND action='assignment claimed' AND source='work' ORDER BY id DESC LIMIT 1").get(snapshot.rootId);
       if ((claimed === undefined ? ref.coordinatorCid : String(claimed["actor"]).replace(/^coordinator:/, "")) !== owner.id) return null;
-      const credential = store.handle.prepare("SELECT repos FROM coordinator_credential WHERE cid=? AND revoked_at IS NULL").get(owner.id);
+      const credential = store.handle.prepare("SELECT projects_json AS repos FROM credential WHERE id=? AND kind='coordinator' AND revoked_at IS NULL").get(owner.id);
       let repos: unknown;
       try { repos = JSON.parse(String(credential?.["repos"] ?? "null")); } catch { return null; }
       if (!Array.isArray(repos) || !repos.includes(snapshot.repo)) return null;

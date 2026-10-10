@@ -158,9 +158,6 @@ edge("remote", "edge.oauth-authorize", "GET,HEAD", "/oauth/authorize");
 edge("remote", "edge.oauth-consent", "POST", "/oauth/authorize", { callers: ["cookie"], scope: "step-up", viewer: true, proof: "adapter" });
 edge("settings", "edge.google-callback", "GET", "/settings/google/callback", { callers: ["service"], proof: "adapter" });
 edge("settings", "edge.connect-callback", "GET", "/settings/tools/connected", { callers: ["service"], proof: "adapter" });
-for (const operation of ["list", "show", "changes", "start", "send", "stop", "resume", "recover"]) {
-  edge("remote", `edge.sessions-${operation}`, "POST", `/api/sessions/${operation}`, { callers: ["bearer"], scope: ["list", "show", "changes"].includes(operation) ? "read" : "act", project: "adapter", proof: "adapter" });
-}
 edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });

@@ -5,7 +5,8 @@ import { validateScopeText } from "./task-text.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { projectAuthority } from "./project-access.js";
 import { activeRemote } from "./remote-run.js";
-import { claimActor, currentActor, parseLeadToken } from "./actor.js";
+import { claimActor, currentActor } from "./actor.js";
+import { parseLeadToken } from "./api-tokens.js";
 /**
  * What a task is allowed to become, agreed before anything builds it.
  *

@@ -14,12 +14,13 @@ import { envelopeJson } from './envelope.js';
 import { COMMAND_GUIDE } from './surface.js';
 import { centralProfile, UsageError, type TeamCliOptions } from './team-cli.js';
 import { CLI_FILES_BYTES, CLI_WAIT_SECONDS, type CliRequest } from './cli-http.js';
+import { TOKEN_REPLACEMENT } from './password-bearer.js';
 import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommand, type RemoteCommandLookup } from './remote-command.js';
 
 export { contractRow, STEP_UP_MESSAGE, type RemoteMode } from './remote-command.js';
 const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
-/** Team commands own their own central path (team-cli.ts). */
-const TEAM_COMMANDS = new Set(['connect', 'lead', 'conversation', 'chat', 'brief']);
+/** Team commands own their own central path (team-cli.ts); `session` sends its own checked request (session-cli.ts). */
+const TEAM_COMMANDS = new Set(['connect', 'lead', 'conversation', 'chat', 'brief', 'session']);
 const RESPONSE_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = (CLI_WAIT_SECONDS + 35) * 1_000;
 
@@ -33,7 +34,7 @@ export type RemoteExecOptions = TeamCliOptions & {
 };
 
 type Answer = { exitCode: number; stdout: string; stderr: string };
-type Outcome = { kind: 'answer'; answer: Answer } | { kind: 'refused'; status: number; code: string; message: string } | { kind: 'unconfirmed' };
+export type Outcome = { kind: 'answer'; answer: Answer } | { kind: 'refused'; status: number; code: string; message: string } | { kind: 'unconfirmed' };
 
 async function bounded(response: Response): Promise<unknown> {
   if (!response.body) throw new Error('empty');
@@ -51,7 +52,7 @@ async function bounded(response: Response): Promise<unknown> {
 }
 
 /** One request, never retried. */
-async function post(origin: string, token: string, request: CliRequest, options: RemoteExecOptions): Promise<Outcome> {
+export async function postCli(origin: string, token: string, request: CliRequest, options: RemoteExecOptions): Promise<Outcome> {
   try {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const response = await (options.fetch ?? fetch)(`${origin}/api/cli`, {
@@ -129,7 +130,7 @@ export async function maybeRunRemoteCommand(argv: readonly string[], options: Re
   // No saved token: today's local behaviour. A profile saved with a password serves chat only.
   if (profile === null || !profile.apiToken) {
     if (!explicit) return null;
-    return refuse('usage', 'This profile has no API token. Connect again with your so_ token (toolroll connect <origin> --token-stdin).', EXIT.usage);
+    return refuse('usage', `This profile has no API token. ${TOKEN_REPLACEMENT}, then connect again with it (toolroll connect <origin> --token-stdin).`, EXIT.usage);
   }
   if (row === null || mode === 'no') {
     return refuse('usage', `${command} runs only on this computer. Drop --profile to run it here.`, EXIT.usage);
@@ -154,7 +155,7 @@ export async function maybeRunRemoteCommand(argv: readonly string[], options: Re
       : `The answer from ${profile.origin} could not be confirmed. Check the task's state before running this again; it was not retried.`, EXIT.failed);
   };
   if (row?.invocation === 'task wait') return waitRemotely(sent, files, profile, options, deliver);
-  return deliver(await post(profile.origin, profile.token, { argv: sent, files }, options));
+  return deliver(await postCli(profile.origin, profile.token, { argv: sent, files }, options));
 }
 
 /**
@@ -165,7 +166,7 @@ async function waitRemotely(argv: string[], files: Record<string, string>, profi
   const at = argv.indexOf('--timeout');
   const given = at < 0 ? null : Number(argv[at + 1]);
   const base = at < 0 ? argv : argv.filter((_one, index) => index !== at && index !== at + 1);
-  if (given !== null && (!Number.isFinite(given) || given < 0)) return deliver(await post(profile.origin, profile.token, { argv, files }, options));
+  if (given !== null && (!Number.isFinite(given) || given < 0)) return deliver(await postCli(profile.origin, profile.token, { argv, files }, options));
   const json = base.includes('--json');
   const probe = json ? base : [...base, '--json'];
   const started = Date.now();
@@ -174,7 +175,7 @@ async function waitRemotely(argv: string[], files: Record<string, string>, profi
   while (true) {
     const remaining = given === null ? CLI_WAIT_SECONDS : Math.max(0, given - (Date.now() - started) / 1_000);
     const slice = Math.min(CLI_WAIT_SECONDS, Math.floor(remaining * 1_000) / 1_000);
-    const outcome = await post(profile.origin, profile.token, { argv: [...probe, '--timeout', String(slice)], files }, options);
+    const outcome = await postCli(profile.origin, profile.token, { argv: [...probe, '--timeout', String(slice)], files }, options);
     if (outcome.kind !== 'answer') return deliver(outcome);
     let reason: unknown;
     try { reason = (JSON.parse(outcome.answer.stdout) as { reason?: unknown }).reason; } catch { return deliver(outcome); }
@@ -182,7 +183,7 @@ async function waitRemotely(argv: string[], files: Record<string, string>, profi
     if (!timedOut || slice <= 0 || given !== null && remaining - slice <= 0) {
       if (json) return deliver(outcome);
       // Settled (or out of time): the server renders the final answer in the person's own format.
-      return deliver(await post(profile.origin, profile.token, { argv: [...base, '--timeout', '0'], files }, options));
+      return deliver(await postCli(profile.origin, profile.token, { argv: [...base, '--timeout', '0'], files }, options));
     }
     if (signal.aborted) return deliver(outcome);
     try { await sleep(250, signal); } catch { return deliver(outcome); }

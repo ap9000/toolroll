@@ -21,10 +21,10 @@ import { flowDefinitionForStore, flowDefinitionFromStore } from "./flows.js";
 import type { FlowCardChange, FlowCardFields } from "./contracts/flow-card.js";
 import { cardOutputsForStore, cardOutputsFromStore } from "./contracts/stage-output.js";
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
-import { actorLabel, currentActor, leadSecretMatches, mintLeadToken, parseLeadToken, type Actor } from "./actor.js";
+import { actorLabel, currentActor, type Actor } from "./actor.js";
 import { scanForSecrets } from "./evidence.js";
 import { LIVE_ACTIVITY_KINDS, type LiveActivityKind } from "./live.js";
-import { tokenPurpose, tokenRotationProblem, type TokenPurpose } from "./api-tokens.js";
+import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose, tokenRotationProblem, type CredentialKind, type TokenPurpose } from "./api-tokens.js";
 /**
  * The database: a small task store, and the operational overlay beside it.
  *
@@ -270,21 +270,11 @@ CREATE TABLE IF NOT EXISTS lead_config (
 );
 `;
 
-/** Pings follow responsibility (no version bump: additive only). `lead_credential` is a lead token: an agent acting
- * for `owner`, only its hash kept. `task_act` is who filed, approved, cancelled, completed or handed on a task
+/** Pings follow responsibility (no version bump: additive only). A lead token (v118: a `credential` row of kind
+ * 'lead') is an agent acting for its owner, only its hash kept. `task_act` is who filed, approved, cancelled, completed or handed on a task
  * (`lead` 1: the owner's lead; `person`/`why`: who the lead asked, and why). `notification_actor` is whose act made
  * a fact. `task_replacement` is the task that replaced a cancelled one. `project_mute` is a person's muted projects. */
 const LEAD_QUIET_SCHEMA = `
-CREATE TABLE IF NOT EXISTS lead_credential (
-  id          TEXT PRIMARY KEY,
-  owner       TEXT NOT NULL,
-  secret_hash TEXT NOT NULL,
-  created_at  TEXT NOT NULL,
-  created_by  TEXT NOT NULL,
-  revoked_at  TEXT,
-  revoked_by  TEXT
-);
-CREATE INDEX IF NOT EXISTS lead_credential_owner ON lead_credential (owner);
 CREATE TABLE IF NOT EXISTS task_act (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   task_ref INTEGER NOT NULL,
@@ -641,7 +631,60 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // the lead's subagents (teammate* → subagent*, their rows' teammate column → subagent), with every row, id and link kept.
 // mate_turn (and chat_turn.mate_turn) keep their names this release: the update gate the previous build's updater lifts
 // names them byte for byte (desktop-update-gate.ts), so they move once every updater reads either name.
-export const SCHEMA_VERSION = 117;
+// v118 (D7) keeps every machine credential in one table, `credential`: a person's API tokens (so_…), the lead's tokens
+// (lt_…) and coordinators, each with its kind, read/act access, project limit, expiry, revocation and generation. Every
+// row moves with its id, hash and dates; the references to coordinators and API tokens point at it.
+export const SCHEMA_VERSION = 118;
+
+/** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
+export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
+/** The foreign keys that named a merged table, exactly as their DDL wrote them; each names `credential(id)` instead. */
+const V118_REFERENCES = /REFERENCES (?:coordinator_credential\(cid\)|api_token\(id\))/g;
+/** The columns that hold a coordinator's id: rewritten only when the merge had to give one a new canonical id. */
+const V118_COORDINATOR_COLUMNS: readonly (readonly [table: string, column: string])[] = [["task_ref", "coordinator_cid"], ["coordinator_event", "cid"], ["mcp_idempotency", "cid"], ["coordinator_proposal", "cid"]];
+/**
+ * v118 (D7): one credential table for every machine credential. `id` is the canonical identity every reference holds;
+ * `public_id` is the id the secret presents (so_<id>_…, lt_<id>_…) or a coordinator's cid, unique per kind. They are
+ * equal unless the merge found two kinds sharing an id. `account` is the person a token acts as (a lead's owner; for
+ * a coordinator, who minted it); `projects_json` the project limit (a coordinator's projects); `generation` which
+ * issue it is (1, then one more per rotation, per lead token for the same owner, per coordinator of the same name).
+ * Lead tokens never expire; a coordinator made before v101 has no expiry.
+ */
+export const CREDENTIAL_TABLE = `
+CREATE TABLE IF NOT EXISTS credential (
+  id            TEXT PRIMARY KEY,
+  kind          TEXT NOT NULL CHECK (kind IN ('person','lead','coordinator')),
+  public_id     TEXT NOT NULL,
+  account       TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  secret_hash   TEXT NOT NULL,
+  access        TEXT NOT NULL CHECK (access IN ('read','act')),
+  projects_json TEXT,
+  per_hour      INTEGER,
+  purpose       TEXT NOT NULL DEFAULT 'api' CHECK (purpose IN ('api','mcp')),
+  generation    INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+  created_at    TEXT NOT NULL,
+  created_by    TEXT NOT NULL,
+  expires_at    TEXT,
+  last_used_at  TEXT,
+  revoked_at    TEXT,
+  revoked_by    TEXT,
+  replaces      TEXT,
+  replaced_by   TEXT,
+  overlap_until TEXT,
+  UNIQUE (kind, public_id)
+);
+`;
+/** Created once the merged tables (and their index of the same name) are gone. */
+const CREDENTIAL_INDEXES = `
+CREATE INDEX IF NOT EXISTS credential_account ON credential (account, kind);
+CREATE INDEX IF NOT EXISTS credential_coordinator_secret ON credential (secret_hash) WHERE kind = 'coordinator';
+CREATE UNIQUE INDEX IF NOT EXISTS coordinator_live_name ON credential (name) WHERE kind = 'coordinator' AND revoked_at IS NULL;
+CREATE TRIGGER IF NOT EXISTS ledger_coordinator_minted AFTER INSERT ON credential WHEN NEW.kind = 'coordinator' BEGIN
+  INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (NEW.created_at, NEW.created_by, NULL, NULL, NULL,
+    'coordinator minted: ' || NEW.name, 'minted', 'access', 'projects: ' || NEW.projects_json);
+END;
+`;
 
 /** v117: each table renamed, by its old name. Rows, ids, foreign keys and indexes go with it (renameForV117). */
 export const V117_RENAMED_TABLES: Readonly<Record<string, string>> = Object.freeze({
@@ -664,10 +707,10 @@ function presentTable(db: Database, name: string): string {
   const old = V117_OLD_NAME[name];
   return old !== undefined && !tableExists(db, name) && tableExists(db, old) ? old : name;
 }
-/** A row `PRAGMA foreign_key_check` reports, by today's table names: a row already pointing nowhere before v117 is the
- * same row after it, though RENAME now reports it (and what it points at) under the new names. */
+/** A row `PRAGMA foreign_key_check` reports, by today's table names: a row already pointing nowhere before v117 (or
+ * v118) is the same row after it, though RENAME (or the credential merge) now reports what it points at by the new names. */
 export function orphanKey(row: Record<string, unknown>): string {
-  const named = (value: unknown) => typeof value === "string" ? V117_RENAMED_TABLES[value] ?? value : value;
+  const named = (value: unknown) => typeof value === "string" ? V117_RENAMED_TABLES[value] ?? (Object.hasOwn(V118_MERGED_TABLES, value) ? "credential" : value) : value;
   return JSON.stringify({ table: named(row["table"]), rowid: row["rowid"], parent: named(row["parent"]), fkid: row["fkid"] });
 }
 /** Shapes compare by today's names: a pre-v117 table, index or reference names the same shape by its old one. */
@@ -715,9 +758,11 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * transaction that checks each count before the old tables are dropped; the
  * rehearsal checks each moved table's rows arrived (HISTORY_RULES). v117 renames the mate's tables to the lead's and the
  * teammates' to its subagents' (SQLite's RENAME, every row, id and link carried), renames their teammate column, and rewrites four internal kinds from 'teammate' to 'subagent' in place; the rehearsal checks
- * each renamed table's rows arrived under its new name.
+ * each renamed table's rows arrived under its new name. v118 (D7) is checked the same way: every row of api_token,
+ * coordinator_credential and lead_credential moves into credential under its kind in one transaction that counts them
+ * before the old tables drop, and the references that named them name credential in place, their rows untouched.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118]);
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -752,22 +797,9 @@ CREATE TABLE IF NOT EXISTS scope_author (
 );
 `;
 
-/** v101: API tokens and the browser sessions that survive a restart. Only hashes of their secrets are kept. */
+/** v101: the browser sessions that survive a restart (API tokens are `credential` rows since v118). Only hashes of
+ * their secrets are kept. */
 const CREDENTIALS_SCHEMA = `
-CREATE TABLE IF NOT EXISTS api_token (
-  id           TEXT PRIMARY KEY,
-  account      TEXT NOT NULL REFERENCES approver(name),
-  name         TEXT NOT NULL,
-  secret_hash  TEXT NOT NULL,
-  access       TEXT NOT NULL CHECK (access IN ('read','act')),
-  created_at   TEXT NOT NULL,
-  created_by   TEXT NOT NULL,
-  expires_at   TEXT NOT NULL,
-  last_used_at TEXT,
-  revoked_at   TEXT,
-  revoked_by   TEXT
-);
-CREATE INDEX IF NOT EXISTS api_token_account ON api_token (account);
 CREATE TABLE IF NOT EXISTS web_session (
   id_hash          TEXT PRIMARY KEY,
   account          TEXT NOT NULL,
@@ -786,7 +818,7 @@ CREATE INDEX IF NOT EXISTS web_session_account ON web_session (account);
 `;
 /**
  * v113: MCP sign-in (OAuth 2.1, mcp-oauth.ts). A registered client, a one-time code (its hash, a minute at most), and
- * each grant: the ordinary API token it signs in with (revoked like any other), the account generation and exact
+ * each grant: the ordinary API token it signs in with (a person's `credential` row, revoked like any other), the account generation and exact
  * projects the person chose, and every issued refresh-secret hash (any replay ends the whole family).
  */
 const OAUTH_SCHEMA = `
@@ -813,7 +845,7 @@ CREATE TABLE IF NOT EXISTS oauth_code (
   token        TEXT
 );
 CREATE TABLE IF NOT EXISTS oauth_grant (
-  token              TEXT PRIMARY KEY REFERENCES api_token(id),
+  token              TEXT PRIMARY KEY REFERENCES credential(id),
   client             TEXT NOT NULL REFERENCES oauth_client(id),
   account            TEXT NOT NULL,
   generation         INTEGER NOT NULL,
@@ -2157,7 +2189,7 @@ CREATE TABLE IF NOT EXISTS task_ref (
   -- AUTHORITATIVE linkage — written only by the branded coordinator door,
   -- joined by exact cid, never parsed out of filed_via (which stays
   -- display-only). NULL is every other filer.
-  coordinator_cid         TEXT REFERENCES coordinator_credential(cid),
+  coordinator_cid         TEXT REFERENCES credential(id),
   -- The deliverable (v34, scout tasks): 'branch' is every task until now;
   -- 'report' dispatches a scout — a read-only session whose whole output
   -- is one report artifact. Stamped at filing, never rewritten.
@@ -2165,29 +2197,15 @@ CREATE TABLE IF NOT EXISTS task_ref (
   UNIQUE (backend, external_id)
 );
 
--- v31 (MCP gateway): the coordinator principal (DESIGN.md 9b). Minted by
--- an operator password ceremony; the token is hashed at rest and shown
--- once. cid is the IMMUTABLE identity — names are unique only among the
--- living, so revoke-and-remint never conflates generations in audit or
--- cap accounting.
-CREATE TABLE IF NOT EXISTS coordinator_credential (
-  cid             TEXT PRIMARY KEY,
-  name            TEXT NOT NULL,
-  credential_hash TEXT NOT NULL,
-  repos           TEXT NOT NULL,
-  per_hour        INTEGER NOT NULL,
-  created_by      TEXT NOT NULL,
-  created_at      TEXT NOT NULL,
-  revoked_at      TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS coordinator_live_name
-  ON coordinator_credential (name) WHERE revoked_at IS NULL;
+-- v31 (MCP gateway): the coordinator principal (DESIGN.md 9b) is a row of
+-- credential (v118, kind 'coordinator'): its id is the IMMUTABLE identity,
+-- so revoke-and-remint never conflates generations in audit or cap accounting.
 
 -- The coordinator audit (v31): filing, dismissal, and revocation rows,
 -- inserted ATOMICALLY with their state change — never a separate write.
 CREATE TABLE IF NOT EXISTS coordinator_event (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  cid        TEXT NOT NULL REFERENCES coordinator_credential(cid),
+  cid        TEXT NOT NULL REFERENCES credential(id),
   kind       TEXT NOT NULL CHECK (kind IN ('filed','dismissed','revoked')),
   task_id    TEXT,
   detail     TEXT,
@@ -2199,7 +2217,7 @@ CREATE TABLE IF NOT EXISTS coordinator_event (
 -- the original answer without a rate charge; a different digest refuses.
 -- The global Store.replay is digest-blind and is NOT this.
 CREATE TABLE IF NOT EXISTS mcp_idempotency (
-  cid            TEXT NOT NULL REFERENCES coordinator_credential(cid),
+  cid            TEXT NOT NULL REFERENCES credential(id),
   key            TEXT NOT NULL,
   request_digest TEXT NOT NULL,
   task_id        TEXT NOT NULL,
@@ -2861,7 +2879,7 @@ CREATE INDEX IF NOT EXISTS lead_proposal_thread ON lead_proposal (thread, state)
 
 CREATE TABLE IF NOT EXISTS coordinator_proposal (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  cid          TEXT NOT NULL REFERENCES coordinator_credential(cid),
+  cid          TEXT NOT NULL REFERENCES credential(id),
   name         TEXT NOT NULL,
   repo         TEXT NOT NULL,
   kind         TEXT NOT NULL CHECK (kind IN ('next','reserve','hold','unhold','scope','cancel','answer')),
@@ -4443,14 +4461,16 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(TEAM_SCHEMA);
   db.exec(SSO_SCHEMA);
   db.exec(CREDENTIALS_SCHEMA);
-  // v111: a token's project limit (null: every project its person may use) and its rotation.
-  addColumn(db, "api_token", "projects_json", "TEXT");
-  addColumn(db, "api_token", "replaces", "TEXT");
-  addColumn(db, "api_token", "replaced_by", "TEXT");
-  addColumn(db, "api_token", "overlap_until", "TEXT");
+  // v111: a token's project limit (null: every project its person may use) and its rotation. (Until v118 moves it.)
+  if (tableExists(db, "api_token")) {
+    addColumn(db, "api_token", "projects_json", "TEXT");
+    addColumn(db, "api_token", "replaces", "TEXT");
+    addColumn(db, "api_token", "replaced_by", "TEXT");
+    addColumn(db, "api_token", "overlap_until", "TEXT");
+  }
   // v113: MCP sign-in (OAuth), and whether a token is an ordinary one or an MCP sign-in's.
   db.exec(OAUTH_SCHEMA);
-  addColumn(db, "api_token", "purpose", "TEXT NOT NULL DEFAULT 'api' CHECK (purpose IN ('api','mcp'))");
+  if (tableExists(db, "api_token")) addColumn(db, "api_token", "purpose", "TEXT NOT NULL DEFAULT 'api' CHECK (purpose IN ('api','mcp'))");
   db.exec(APPROVAL_SCHEMA);
   db.exec(LEDGER_CHAIN_SCHEMA);
   db.exec(MONITORING_SCHEMA);
@@ -4603,6 +4623,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   migrateToV115(db);
   // v116: every chat app onto the shared chat tables, after v115 and every older step gave the old tables their last shape.
   convertChatTables(db);
+  // v118: every machine credential into the one credential table, after every older step gave the old tables their last shape.
+  mergeCredentialsForV118(db);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -5232,6 +5254,116 @@ function renameForV117(db: Database): void {
   }
   const check = db.prepare("PRAGMA integrity_check").all().map(row => String(row["integrity_check"]));
   if (check.length !== 1 || check[0] !== "ok") throw new Error(`the v117 renames left the database damaged (${check.slice(0, 3).join("; ")})`);
+}
+
+/**
+ * v118 (D7): the three credential tables become one. In one transaction every row moves with its id, hash, dates,
+ * access, project limit, expiry and revocation; the counts are checked before the old tables drop; the foreign keys
+ * that named them name `credential(id)` in place (rows untouched); and the coordinator ledger trigger follows. A
+ * person's API token keeps its id. A coordinator or lead token whose id another kind already holds gets `<kind>:<id>`
+ * as its canonical id (a coordinator's references follow it); its secret presents the same id as before either way.
+ */
+function mergeCredentialsForV118(db: Database): void {
+  db.exec(CREDENTIAL_TABLE);
+  const present = Object.keys(V118_MERGED_TABLES).filter(table => tableExists(db, table));
+  const referring = (db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL").all() as { name: string; sql: string }[])
+    .filter(row => !Object.hasOwn(V118_MERGED_TABLES, row.name) && new RegExp(V118_REFERENCES.source).test(row.sql));
+  if (present.length === 0 && referring.length === 0) { db.exec(CREDENTIAL_INDEXES); return; }
+  const orphans = () => new Set(db.prepare("PRAGMA foreign_key_check").all().map(orphanKey));
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    const before = orphans();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const taken = new Set((db.prepare("SELECT id FROM credential").all() as { id: string }[]).map(row => row.id));
+      const already = Object.fromEntries(Object.values(V118_MERGED_TABLES).map(kind => [kind, Number(db.prepare("SELECT count(*) AS n FROM credential WHERE kind = ?").get(kind)!["n"])]));
+      const claim = (kind: CredentialKind, legacy: string): string => {
+        let id = legacy;
+        for (let n = 1; taken.has(id); n++) id = n === 1 ? `${kind}:${legacy}` : `${kind}:${legacy}:${n}`;
+        taken.add(id);
+        return id;
+      };
+      const insert = db.prepare(`INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, projects_json, per_hour, purpose, generation,
+        created_at, created_by, expires_at, last_used_at, revoked_at, revoked_by, replaces, replaced_by, overlap_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const text = (value: unknown): string | null => value == null ? null : String(value);
+      if (tableExists(db, "api_token")) {
+        const rows = db.prepare("SELECT * FROM api_token ORDER BY rowid").all();
+        const byId = new Map(rows.map(row => [String(row["id"]), row]));
+        // A rotation's replacement is one generation on from the token it replaced.
+        const generation = (row: Record<string, unknown>, seen = new Set<string>()): number => {
+          const from = text(row["replaces"]), earlier = from === null ? undefined : byId.get(from);
+          if (earlier === undefined || seen.has(from!)) return 1;
+          seen.add(from!);
+          return generation(earlier, seen) + 1;
+        };
+        for (const row of rows) {
+          const id = String(row["id"]);
+          // Persons move first, into an empty table: an API token's id is never renamed (its grants and budgets name it).
+          if (claim("person", id) !== id) throw new Error(`API token ${id} collides with another credential`);
+          insert.run(id, "person", id, String(row["account"]), String(row["name"]), String(row["secret_hash"]), row["access"] === "act" ? "act" : "read", text(row["projects_json"]), null,
+            row["purpose"] === "mcp" ? "mcp" : "api", generation(row), String(row["created_at"]), String(row["created_by"]), text(row["expires_at"]), text(row["last_used_at"]),
+            text(row["revoked_at"]), text(row["revoked_by"]), text(row["replaces"]), text(row["replaced_by"]), text(row["overlap_until"]));
+        }
+      }
+      if (tableExists(db, "coordinator_credential")) {
+        const issued = new Map<string, number>();
+        for (const row of db.prepare("SELECT * FROM coordinator_credential ORDER BY created_at, rowid").all()) {
+          const cid = String(row["cid"]), id = claim("coordinator", cid), name = String(row["name"]);
+          const generation = (issued.get(name) ?? 0) + 1;
+          issued.set(name, generation);
+          insert.run(id, "coordinator", cid, String(row["created_by"]), name, String(row["credential_hash"]), "act", String(row["repos"]), Number(row["per_hour"]), "api", generation,
+            String(row["created_at"]), String(row["created_by"]), text(row["expires_at"]), null, text(row["revoked_at"]), null, null, null, null);
+          if (id !== cid) for (const [table, column] of V118_COORDINATOR_COLUMNS) {
+            if (tableExists(db, table) && hasColumn(db, table, column)) db.prepare(`UPDATE "${table}" SET "${column}" = ? WHERE "${column}" = ?`).run(id, cid);
+          }
+        }
+      }
+      if (tableExists(db, "lead_credential")) {
+        const issued = new Map<string, number>();
+        for (const row of db.prepare("SELECT * FROM lead_credential ORDER BY created_at, rowid").all()) {
+          const legacy = String(row["id"]), owner = String(row["owner"]);
+          const generation = (issued.get(owner) ?? 0) + 1;
+          issued.set(owner, generation);
+          insert.run(claim("lead", legacy), "lead", legacy, owner, "lead token", String(row["secret_hash"]), "act", null, null, "api", generation,
+            String(row["created_at"]), String(row["created_by"]), null, null, text(row["revoked_at"]), text(row["revoked_by"]), null, null, null);
+        }
+      }
+      for (const [table, kind] of Object.entries(V118_MERGED_TABLES)) {
+        if (!tableExists(db, table)) continue;
+        const had = Number(db.prepare(`SELECT count(*) AS n FROM "${table}"`).get()!["n"]);
+        const moved = Number(db.prepare("SELECT count(*) AS n FROM credential WHERE kind = ?").get(kind)!["n"]);
+        if (had !== moved - already[kind]!) throw new Error(`${table} kept ${had} rows but ${moved} arrived in credential`);
+      }
+      // The references keep their rows and point at the one table (SQLite's documented procedure, as v115 does).
+      // Node 24's SQLite opens in defensive mode, which forbids it; it is lifted for the rewrite only.
+      if (referring.length > 0) {
+        const version = Number(db.prepare("PRAGMA schema_version").get()?.["schema_version"]);
+        const defensive = (db as unknown as { enableDefensive?: (active: boolean) => void }).enableDefensive?.bind(db);
+        defensive?.(false);
+        db.exec("PRAGMA writable_schema = ON");
+        try {
+          const rewrite = db.prepare("UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = ?");
+          for (const row of referring) rewrite.run(row.sql.replace(V118_REFERENCES, "REFERENCES credential(id)"), row.name);
+          db.exec(`PRAGMA schema_version = ${version + 1}`);
+        } finally {
+          db.exec("PRAGMA writable_schema = OFF");
+          defensive?.(true);
+        }
+      }
+      // Their indexes and the coordinator ledger trigger go with them; the one table gets its own.
+      for (const table of present) db.exec(`DROP TABLE "${table}"`);
+      db.exec(CREDENTIAL_INDEXES);
+      if ([...orphans()].some(row => !before.has(row))) throw new Error("foreign keys did not survive the v118 credential merge");
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+  const check = db.prepare("PRAGMA integrity_check").all().map(row => String(row["integrity_check"]));
+  if (check.length !== 1 || check[0] !== "ok") throw new Error(`the v118 credential merge left the database damaged (${check.slice(0, 3).join("; ")})`);
 }
 
 function migrateToV115(db: Database): void {
@@ -7772,10 +7904,10 @@ export class Store {
     // with a revocation or an access change, not a password change.
     this.db.prepare("DELETE FROM web_session WHERE account = ?").run(approver);
     if (by !== "credential-rotation") {
-      for (const row of this.db.prepare("SELECT id FROM api_token WHERE account = ? AND revoked_at IS NULL").all(approver)) this.revokeApiToken(String(row["id"]), by, now, "ended with the account's standing");
-      for (const row of this.db.prepare("SELECT cid, name FROM coordinator_credential WHERE created_by = ? AND revoked_at IS NULL").all(approver)) {
+      for (const row of this.db.prepare("SELECT id FROM credential WHERE kind = 'person' AND account = ? AND revoked_at IS NULL").all(approver)) this.revokeApiToken(String(row["id"]), by, now, "ended with the account's standing");
+      for (const row of this.db.prepare("SELECT id AS cid, name FROM credential WHERE kind = 'coordinator' AND created_by = ? AND revoked_at IS NULL").all(approver)) {
         const cid = String(row["cid"]);
-        this.db.prepare("UPDATE coordinator_credential SET revoked_at = ? WHERE cid = ?").run(stamp, cid);
+        this.db.prepare("UPDATE credential SET revoked_at = ?, revoked_by = ? WHERE id = ? AND kind = 'coordinator'").run(stamp, by, cid);
         this.db.prepare("INSERT INTO coordinator_event (cid, kind, detail, created_at) VALUES (?, 'revoked', ?, ?)").run(cid, `with ${approver}'s standing, by ${by}`, stamp);
         this.sweepCoordinatorProposals(now, cid);
         this.recordAction({ at: stamp, actor: by, repo: null, taskId: null, runId: null, action: `coordinator revoked: ${String(row["name"])}`, outcome: "revoked", source: "access", detail: `made by ${approver}` });
@@ -8375,8 +8507,8 @@ export class Store {
   createApiToken(token: { id: string; account: string; name: string; secretHash: string; access: "read" | "act"; expiresAt: string; by: string; projects?: readonly string[] | null; purpose?: TokenPurpose }, now: Date): void {
     this.transact(() => {
       const projects = token.projects ?? null;
-      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(token.id, token.account, token.name, token.secretHash, token.access, now.toISOString(), token.by, token.expiresAt, projects === null ? null : JSON.stringify(projects), token.purpose ?? "api");
+      this.db.prepare("INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, purpose) VALUES (?, 'person', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(token.id, token.id, token.account, token.name, token.secretHash, token.access, now.toISOString(), token.by, token.expiresAt, projects === null ? null : JSON.stringify(projects), token.purpose ?? "api");
       this.recordAction({ at: now.toISOString(), actor: token.by, repo: null, taskId: null, runId: null, action: `API token created: ${token.name}`, outcome: token.access, source: "access",
         detail: `for ${token.account}, until ${token.expiresAt.slice(0, 10)}${projects === null ? "" : ` · ${projects.length === 0 ? "no projects" : projects.join(", ")}`} · id ${token.id}` });
     });
@@ -8396,9 +8528,11 @@ export class Store {
       if (old.replacedBy !== null) return { ok: false as const, reason: "replaced" as const };
       const stamp = now.toISOString();
       const until = new Date(Math.min(at + Math.max(0, overlapMs), Date.parse(old.expiresAt))).toISOString();
-      this.db.prepare("INSERT INTO api_token (id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, replaces) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(replacement.id, old.account, old.name, replacement.secretHash, old.access, stamp, by, old.expiresAt, old.projects === null ? null : JSON.stringify(old.projects), old.id);
-      this.db.prepare("UPDATE api_token SET replaced_by = ?, overlap_until = ? WHERE id = ? AND replaced_by IS NULL").run(replacement.id, until, old.id);
+      // The replacement is the token's next generation; it keeps every term, so rotating never widens or extends it.
+      this.db.prepare(`INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, created_at, created_by, expires_at, projects_json, replaces, generation)
+        VALUES (?, 'person', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT generation + 1 FROM credential WHERE id = ?))`)
+        .run(replacement.id, replacement.id, old.account, old.name, replacement.secretHash, old.access, stamp, by, old.expiresAt, old.projects === null ? null : JSON.stringify(old.projects), old.id, old.id);
+      this.db.prepare("UPDATE credential SET replaced_by = ?, overlap_until = ? WHERE id = ? AND kind = 'person' AND replaced_by IS NULL").run(replacement.id, until, old.id);
       this.recordAction({ at: stamp, actor: by, repo: null, taskId: null, runId: null, action: `API token rotated: ${old.name}`, outcome: old.access, source: "access",
         detail: `${old.account}'s · id ${old.id} → ${replacement.id}, the old one stops ${until.slice(0, 16).replace("T", " ")} UTC` });
       return { ok: true as const, row: this.apiTokenSecret(replacement.id)!.row };
@@ -8407,32 +8541,47 @@ export class Store {
 
   /** v111: record the end of each replaced token whose overlap has passed (it already signs no one in). */
   endRotatedApiTokens(now: Date): number {
-    const due = this.db.prepare("SELECT id, overlap_until FROM api_token WHERE revoked_at IS NULL AND overlap_until IS NOT NULL AND overlap_until <= ?").all(now.toISOString());
+    const due = this.db.prepare("SELECT id, overlap_until FROM credential WHERE kind = 'person' AND revoked_at IS NULL AND overlap_until IS NOT NULL AND overlap_until <= ?").all(now.toISOString());
     for (const row of due) this.revokeApiToken(String(row["id"]), "system", new Date(String(row["overlap_until"])), "replaced; its overlap ended");
     return due.length;
   }
 
-  /** A token by id with its kept hash (for the check), or null. */
+  /**
+   * D7: the one check every machine credential takes. The credential a presented secret is (its kind and id), when
+   * its kept hash matches in constant time; null otherwise. Whether it is live, and what its kind may do, stays with
+   * each caller's own policy (a person's API token, a lead token, a coordinator).
+   */
+  presentedCredential(presented: string): { kind: CredentialKind; id: string } | null {
+    const parsed = parseCredential(presented);
+    if (parsed === null) return null;
+    const row = parsed.kind === "coordinator"
+      ? this.db.prepare("SELECT id, secret_hash FROM credential WHERE kind = 'coordinator' AND secret_hash = ?").get(hashSecret(parsed.secret))
+      : this.db.prepare("SELECT id, secret_hash FROM credential WHERE kind = ? AND public_id = ?").get(parsed.kind, parsed.id);
+    if (row === undefined || !secretMatches(parsed.secret, String(row["secret_hash"]))) return null;
+    return { kind: parsed.kind, id: String(row["id"]) };
+  }
+
+  /** A person's API token by id with its kept hash (for the check), or null. */
   apiTokenSecret(id: string): { row: ApiTokenRow; secretHash: string } | null {
-    const row = this.db.prepare("SELECT * FROM api_token WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM credential WHERE id = ? AND kind = 'person'").get(id);
     return row === undefined ? null : { row: readApiToken(row), secretHash: String(row["secret_hash"]) };
   }
 
   /** Tokens, newest first: one person's, or everyone's (null). */
   apiTokens(account: string | null): ApiTokenRow[] {
-    return (account === null ? this.db.prepare("SELECT * FROM api_token ORDER BY created_at DESC").all() : this.db.prepare("SELECT * FROM api_token WHERE account = ? ORDER BY created_at DESC").all(account)).map(readApiToken);
+    return (account === null ? this.db.prepare("SELECT * FROM credential WHERE kind = 'person' ORDER BY created_at DESC").all() : this.db.prepare("SELECT * FROM credential WHERE kind = 'person' AND account = ? ORDER BY created_at DESC").all(account)).map(readApiToken);
   }
 
   /** Kept at most once a minute: a busy script doesn't write on every request. */
   touchApiToken(id: string, now: Date): void {
-    this.db.prepare("UPDATE api_token SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)").run(now.toISOString(), id, new Date(now.getTime() - 60_000).toISOString());
+    this.db.prepare("UPDATE credential SET last_used_at = ? WHERE id = ? AND kind = 'person' AND (last_used_at IS NULL OR last_used_at < ?)").run(now.toISOString(), id, new Date(now.getTime() - 60_000).toISOString());
   }
 
   revokeApiToken(id: string, by: string, now: Date, why = "revoked"): boolean {
     return this.transact(() => {
-      const row = this.db.prepare("SELECT name, account FROM api_token WHERE id = ? AND revoked_at IS NULL").get(id);
+      const row = this.db.prepare("SELECT name, account FROM credential WHERE id = ? AND kind = 'person' AND revoked_at IS NULL").get(id);
       if (row === undefined) return false;
-      this.db.prepare("UPDATE api_token SET revoked_at = ?, revoked_by = ? WHERE id = ?").run(now.toISOString(), by, id);
+      this.db.prepare("UPDATE credential SET revoked_at = ?, revoked_by = ? WHERE id = ? AND kind = 'person'").run(now.toISOString(), by, id);
       this.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: `API token revoked: ${String(row["name"])}`, outcome: "revoked", source: "access", detail: `${String(row["account"])}'s · ${why}` });
       return true;
     });
@@ -8546,7 +8695,7 @@ export class Store {
       const moved = this.db.prepare("UPDATE oauth_grant SET renew_hash = ?, access_expires_at = ? WHERE token = ? AND renew_hash = ?")
         .run(next.refreshHash, next.accessExpiresAt, token, ask.refreshHash);
       if (Number(moved.changes) !== 1) return invalid;
-      this.db.prepare("UPDATE api_token SET secret_hash = ? WHERE id = ? AND revoked_at IS NULL").run(next.accessHash, token);
+      this.db.prepare("UPDATE credential SET secret_hash = ? WHERE id = ? AND kind = 'person' AND revoked_at IS NULL").run(next.accessHash, token);
       this.db.prepare("INSERT INTO oauth_refresh (token, hash) VALUES (?, ?)").run(token, next.refreshHash);
       return { ok: true, access: kept.access } as const;
     });
@@ -13038,10 +13187,10 @@ export class Store {
   coordinatorProvenanceOf(taskId: string): { label: string; filedAt: string | null } | null {
     const row = this.db
       .prepare(
-        `SELECT c.name AS name, c.cid AS cid,
-                (SELECT MIN(e.created_at) FROM coordinator_event e WHERE e.cid = c.cid AND e.task_id = task_ref.external_id AND e.kind = 'filed') AS filed_at
+        `SELECT c.name AS name, c.public_id AS cid,
+                (SELECT MIN(e.created_at) FROM coordinator_event e WHERE e.cid = c.id AND e.task_id = task_ref.external_id AND e.kind = 'filed') AS filed_at
            FROM task_ref
-           JOIN coordinator_credential c ON c.cid = task_ref.coordinator_cid
+           JOIN credential c ON c.id = task_ref.coordinator_cid AND c.kind = 'coordinator'
           WHERE task_ref.backend = ? AND task_ref.external_id = ?`,
       )
       .get(BUILT_IN, taskId);
@@ -19980,9 +20129,12 @@ export class Store {
   mintLeadCredential(owner: string, by: string, now: Date): { id: string; token: string } {
     return this.transact(() => {
       const stamp = now.toISOString();
-      this.db.prepare("UPDATE lead_credential SET revoked_at = ?, revoked_by = ? WHERE owner = ? AND revoked_at IS NULL").run(stamp, by, owner);
-      const minted = mintLeadToken();
-      this.db.prepare("INSERT INTO lead_credential (id, owner, secret_hash, created_at, created_by) VALUES (?, ?, ?, ?, ?)").run(minted.id, owner, minted.hash, stamp, by);
+      this.db.prepare("UPDATE credential SET revoked_at = ?, revoked_by = ? WHERE kind = 'lead' AND account = ? AND revoked_at IS NULL").run(stamp, by, owner);
+      let minted = mintLeadToken();
+      // One id per credential across kinds; the canonical id is the one the token presents.
+      while (this.db.prepare("SELECT 1 FROM credential WHERE id = ? OR (kind = 'lead' AND public_id = ?)").get(minted.id, minted.id) !== undefined) minted = mintLeadToken();
+      this.db.prepare(`INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, created_at, created_by, generation)
+        VALUES (?, 'lead', ?, ?, 'lead token', ?, 'act', ?, ?, 1 + (SELECT count(*) FROM credential WHERE kind = 'lead' AND account = ?))`).run(minted.id, minted.id, owner, minted.hash, stamp, by, owner);
       this.recordAction({ at: stamp, actor: by, repo: null, taskId: null, runId: null, action: "lead token created", outcome: "recorded", source: "access", detail: `lead for ${owner}` });
       return { id: minted.id, token: minted.token };
     });
@@ -19991,7 +20143,7 @@ export class Store {
   /** End every live lead token for one person. */
   revokeLeadCredentials(owner: string, by: string, now: Date): number {
     return this.transact(() => {
-      const ended = Number(this.db.prepare("UPDATE lead_credential SET revoked_at = ?, revoked_by = ? WHERE owner = ? AND revoked_at IS NULL").run(now.toISOString(), by, owner).changes);
+      const ended = Number(this.db.prepare("UPDATE credential SET revoked_at = ?, revoked_by = ? WHERE kind = 'lead' AND account = ? AND revoked_at IS NULL").run(now.toISOString(), by, owner).changes);
       if (ended > 0) this.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "lead token revoked", outcome: "recorded", source: "access", detail: `lead for ${owner}` });
       return ended;
     });
@@ -19999,12 +20151,12 @@ export class Store {
 
   /** Whose lead a presented token is: a live token whose owner is still an approver, or null. */
   leadFor(presented: string): { owner: string; id: string } | null {
-    const parsed = parseLeadToken(presented);
-    if (parsed === null) return null;
-    const row = this.db.prepare("SELECT owner, secret_hash FROM lead_credential WHERE id = ? AND revoked_at IS NULL").get(parsed.id);
-    if (row === undefined || !leadSecretMatches(parsed.secret, String(row["secret_hash"]))) return null;
-    const owner = String(row["owner"]), account = this.accountOf(owner);
-    return account === null || account.revokedAt !== null || account.role !== "approver" ? null : { owner, id: parsed.id };
+    const found = this.presentedCredential(presented);
+    if (found?.kind !== "lead") return null;
+    const row = this.db.prepare("SELECT account, public_id FROM credential WHERE id = ? AND kind = 'lead' AND revoked_at IS NULL").get(found.id);
+    if (row === undefined) return null;
+    const owner = String(row["account"]), account = this.accountOf(owner);
+    return account === null || account.revokedAt !== null || account.role !== "approver" ? null : { owner, id: String(row["public_id"]) };
   }
 
   /** Record who did this to a task, when someone is acting. The lead's acts are also in the ledger as "lead for <owner>". */
