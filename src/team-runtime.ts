@@ -68,7 +68,7 @@ export function createTeamRuntime(options: TeamRuntimeOptions) {
     const key=hash([selected.leadId,selected.projects,selected.revision]);
     const previous=pages.get(key);
     if(revision&&previous?.revision===revision&&previous.expires>now.getTime())return previous.page;
-    const page=workIndexPage(store,now,{principal:'operator',repos:selected.projects},{leadId:selected.leadId,limit:40});
+    const page=workIndexPage(store,now,{principal:'operator',repos:selected.projects},{leadId:selected.leadId,limit:40,root:options.evidenceRoot});
     if(revision&&options.workspaceRevision){
       if(pages.size>=64)pages.delete(pages.keys().next().value!);
       pages.set(key,{revision,expires:options.workspaceRevision.expiresAt(now),page});

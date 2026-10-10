@@ -1102,9 +1102,12 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(item.excerpts).toEqual([{ path: "src/empty.ts", cited: true, more: 0, lines: [{ kind: "deletion", line: 2, text: '  return "No results";' }, { kind: "addition", line: 2, text: long }] }]);
     expect(item.shots).toHaveLength(1);
     expect(item.shots[0]!.src).toMatch(new RegExp(`^/r/${run}/evidence/[0-9]+$`));
-    expect(first.panel!.youCheck!.accept).toMatchObject({ action: "/t/t-look/accept-proof", run });
+    // A requirement only the person checks reads Needs you with that ask; its one Accept is the need's own.
+    expect(first.panel!.status).toMatchObject({ headline: "Needs you", sentence: `Check this requirement yourself, then mark it complete: ${statement}` });
+    expect(first.panel!.need!.accept).toMatchObject({ action: "/t/t-look/accept-proof", run });
+    expect(first.panel!.youCheck!.accept).toBeNull();
     // Its Requirements row counts it as the person's, so the page can count each Looks right as met.
-    expect(first.panel!.requirements).toEqual({ met: 0, total: 1, yours: 1, missed: 0 });
+    expect(first.panel!.requirements).toMatchObject({ met: 0, total: 1, yours: 1, missed: 0 });
     // Checks didn't run and the item is still the person's: Accept without your check, naming it, and that it finishes the task.
     expect(first.decision).toEqual({ label: "Accept without your check", ready: false, why: `Not checked yet: “${statement}”.`,
       effect: "Finishes the task. The branch stays; publishing isn't set up.", sentence: "Review the change, then accept it or ask for changes.",
@@ -1395,28 +1398,20 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     sealVerificationReceipt(store, evidenceRoot, run, "b".repeat(40), store.liveVerifyCommand("/repo/main")!, { configured: true, ran: true, exitCode: 1 }, T0);
     const cookie = await login();
     const html = await (await fetch(url(`/review?result=t-complete&run=${run}`), { headers: { cookie } })).text();
-    // Checks failed on the saved result: the one red headline (task-status.ts), still ready to complete or revise.
+    // Checks failed on the saved result: the one red headline (task-status.ts). Complete is refused, so nothing offers it.
     expect(html).toContain('>Failed</span>');
     expect(queueOf(html)).toContain('data-work-status="assignment-ready-to-check"');
     expect(queueOf(html)).not.toContain('conflicting evidence');
     expect(html).toContain('1 needs your attention');
-    expect(html).toContain('Accept and finish</button>');
-    expect(html).toContain('Checks stay unchanged; nothing is published or deployed.');
+    expect(html).not.toContain('Accept and finish</button>');
     const decision = ((await (await fetch(url(`/review?result=t-complete&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
-    expect(decision.selected!.decision).toMatchObject({ label: "Accept and finish", ready: false, why: "Nothing on record says what was met and checks failed." });
-    // The one ink act resolves it: Request changes, after one line saying why; Accept stays as allowed, in outline.
-    expect(decision.selected!.acts).toEqual({ primary: "request-changes", secondary: "accept", line: "Can't accept yet: the project's check failed on these changes." });
-    const receipt = /name="receipt" value="([a-f0-9]{64})"/.exec(html)?.[1];
-    expect(receipt).toBeDefined();
+    expect(decision.selected!.complete).toBeNull();
+    // The one ink act is Request changes, after one line saying why and what to do.
+    expect(decision.selected!.acts).toMatchObject({ primary: "request-changes", line: "Checks failed (exit 1). Fix them and run checks again, or ask for changes." });
+    const receipt = assignmentOf(store, "t-complete", new Date(), { principal: "operator", repos: null }, evidenceRoot)!.receipt!.digest;
     const csrf = csrfOf(html);
     const chatResult = await (await fetch(url(`/chat?task=t-complete&result=${run}`), { headers: { cookie } })).text();
-    const completionForm = /<form[^>]*action="\/t\/t-complete\/complete"[^>]*>[\s\S]*?<\/form>/.exec(chatResult)?.[0];
-    expect(completionForm).toBeDefined();
-    expect(completionForm).toContain(`name="csrf" value="${csrf}"`);
-    expect(completionForm).toContain(`name="receipt" value="${receipt}"`);
-    expect(completionForm).toContain(`name="run" value="${run}"`);
-    expect(completionForm).toContain('Accept and finish</button>');
-    expect(completionForm).toContain('Checks stay unchanged; nothing is published or deployed.');
+    expect(chatResult).not.toContain('Accept and finish</button>');
     const historicalChat = await (await fetch(url(`/chat?task=t-complete&result=${historical}`), { headers: { cookie } })).text();
     expect(historicalChat).toContain(`data-result-run="${historical}"`);
     expect(historicalChat).not.toContain('Accept and finish</button>');
@@ -1428,43 +1423,20 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect((await post(cookie, "/t/t-complete/complete", { run: String(run), receipt: receipt! })).status).toBe(403);
     expect((await post(cookie, "/t/t-complete/complete", { csrf, run: "999", receipt: receipt! })).status).toBe(409);
     expect((await post(cookie, "/t/t-complete/complete", { csrf, run: String(run), receipt: "0".repeat(64) })).status).toBe(409);
+    // A failed check refuses completion (the one readiness guard, task-status.ts): said plainly, nothing recorded.
     const done = await post(cookie, "/t/t-complete/complete", { csrf, run: String(run), receipt: receipt! });
-    expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toContain(`run=${run}`);
+    expect(done.status).toBe(409);
+    expect(await done.text()).toContain("Checks failed (exit 1). Fix them and run checks again, or ask for changes.");
     expect(store.proofVerdictFor(run)).toEqual(before);
     expect(store.getScope('t-complete')).toEqual(approvedBefore);
     expect(store.runsFor(ref)).toEqual(runsBefore);
     expect(store.publicationForRun(run)).toEqual(publicationBefore);
     expect(store.openReviewRequests()).toEqual([]);
-    const after = await (await fetch(url(done.headers.get("location")!), { headers: { cookie } })).text();
-    expect(after).toContain('>Complete</span>');
-    expect(after).toContain('Marked complete by alex');
-    expect(after).not.toContain('Accept and finish</button>');
-    expect(await (await fetch(url(`/chat?task=t-complete&result=${run}`), { headers: { cookie } })).text()).not.toContain('Accept and finish</button>');
+    expect(assignmentOf(store, "t-complete", new Date(), { principal: "operator", repos: null }, evidenceRoot)!.state).toBe("ready-to-check");
+    const after = await (await fetch(url(`/review?result=t-complete&run=${run}`), { headers: { cookie } })).text();
+    expect(after).toContain('>Failed</span>');
     expect(after).toContain('data-actual-checks="failed"');
-    expect(after).toContain('Checks failed (exit 1).');
-    expect(queueOf(after)).toContain('data-work-status="assignment-complete"');
-    expect(queueOf(after)).not.toContain('conflicting evidence');
-    expect(after).not.toContain('needs your attention');
-    expect(mainOf(after).match(/<h1>/g)).toHaveLength(1);
-    expect(after).not.toContain('<h1>Results</h1>');
-    expect(after).not.toContain('data-current-outcome');
-    expect(after).not.toContain('Check results are unchanged.');
-
-    // Current decisions and Ready results rank ahead of this completed
-    // result, even though its stored verdict remains refuted.
-    const readyRef = seed('t-ready', 'Ready for the lead');
-    const readyRun = build('t-ready', readyRef, { finishedAt: at(1) });
-    store.stampRun(readyRun, { scopeDigest: store.getScope('t-ready')!.digest });
-    const decisionRef = seed('t-decision', 'Needs the current scope');
-    build('t-decision', decisionRef, { finishedAt: at(2) });
-    const mixed = await (await fetch(url(`/review?result=t-complete&run=${run}`), { headers: { cookie } })).text();
-    const queue = queueOf(mixed);
-    expect(mixed).toContain('2 need your attention');
-    expect(queue.indexOf('result=t-decision')).toBeLessThan(queue.indexOf('result=t-ready'));
-    expect(queue.indexOf('result=t-ready')).toBeLessThan(queue.indexOf('result=t-complete'));
-    expect(mixed).toContain('data-actual-checks="failed"');
-    expect(store.proofVerdictFor(run)).toEqual(before);
+    expect(after).not.toContain('Marked complete by alex');
   });
 
   // ---- workspace package 3 (2026-09-13): result-first review -------------

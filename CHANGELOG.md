@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.57 — 2026-10-09
+
+- **Truthful status.** Finished tasks read Complete everywhere. With checks
+  off, criteria read "checked at release" instead of Needs you.
+- **No false finish.** Completing or deploying refuses a failed or missing
+  check, an unmet criterion, a serious review finding, or missing evidence.
+- **Clear revisions.** Revisions are named after their task: -v2, -v3.
+
 ## 0.9.56 — 2026-10-09
 
 - **One lead.** Your assistant in the console, on your phone, in chat and in

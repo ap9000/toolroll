@@ -5068,6 +5068,10 @@ $ task show t-readme --json → 0
     "diagnostics": [],
     "evidence": "recorded"
   },
+  "status": {
+    "headline": "Needs you",
+    "sentence": "Say what the task should do so it can be planned."
+  },
   "assignment": {
     "version": 1,
     "rootId": "t-readme",
@@ -5101,7 +5105,8 @@ $ task show t-readme --json → 0
     "review": null,
     "deployment": {
       "status": "not-recorded"
-    }
+    },
+    "readiness": null
   },
   "ref": 1,
   "blockedBy": [],

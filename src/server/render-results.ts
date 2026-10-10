@@ -21,7 +21,7 @@ import { type AcceptanceCriterion,type approvalOf } from "../scope.js";
 import { parseReport,type ReportItem } from "../scout-report.js";
 import { type Artifact,type DiffComment,type Publication,type RepairChainRow,type ReviewRetryState,type Run,type Store,type TaskState } from "../store.js";
 import { runCostWords } from "../summary.js";
-import { demoChecksOf,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
+import { checkBackingOf,CHECKED_AT_RELEASE,demoChecksOf,type ReleaseState,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
 import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,evidenceProblemOf,MISMATCH_HEADLINE,type PublicationFacts,receiptHeadingOf,receiptPublicationWords,reportMismatchesOf,RESULT_DECISION_SENTENCE,resultHeadlineOf,resultStatusOf,REVIEW_TOKENS,type ReviewFacts } from "../workspace-ui.js";
 import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
@@ -163,7 +163,7 @@ export function evidenceLinksFor(artifacts: readonly Artifact[]): EvidenceLinkMa
  * Warnings stay outside the disclosure, including on compact surfaces. */
 export function criterionMatrixHtml(
   matrix: readonly CriterionMatrixRow[],
-  options: { compact?: boolean; runId?: number; links?: EvidenceLinkMap; fileAnchors?: ReadonlyMap<string, string>; verdict?: string | null } = {},
+  options: { compact?: boolean; runId?: number; links?: EvidenceLinkMap; fileAnchors?: ReadonlyMap<string, string>; verdict?: string | null; release?: ReleaseState | undefined } = {},
 ): Html {
   if (matrix.length === 0) return html``;
   const kinds: Record<CriterionEvidenceRef["kind"], string> = {
@@ -184,13 +184,14 @@ export function criterionMatrixHtml(
     const confirmed = row.assessment !== undefined && state === "pass";
     // Plain words (task-status brief): the retired assessment step is not a state a person acts on.
     // The card's Requirements row reads the same words from the same source (task-status.ts), so they agree.
-    const label = requirementWordOf(row, options.verdict);
+    const label = requirementWordOf(row, options.verdict, options.release);
     const cls = label === "Met" ? "badge-done" : label === "You check" ? "badge-manual-review" : "badge-note";
     const warnings: Html[] = [];
     // Only replace the known boilerplate. Other recorded failure details
     // remain verbatim, so concision cannot hide a different problem.
     const detail = row.detail.filter(line => !(row.assessment && row.review && line === `${row.review.author} ${row.review.judgement === "contradicts" ? "contradicts" : "needs more evidence for"} criterion "${row.id}": ${row.review.note}`) && !(state === "manual-review" && /^criterion "[^"\n]+" requires manual-review evidence — an operator must accept it before this can verify$/.test(line)));
-    if (!awaitingAssessment && state !== "pass" && detail.length > 0) warnings.push(html`<ul class="requirement-issues">${detail.map(line => html`<li>${line}</li>`)}</ul>`);
+    // A requirement a release check covers, or that waits only on one, has nothing wrong to say.
+    if (!awaitingAssessment && state !== "pass" && label !== "Met" && label !== CHECKED_AT_RELEASE && detail.length > 0) warnings.push(html`<ul class="requirement-issues">${detail.map(line => html`<li>${line}</li>`)}</ul>`);
     const review = row.review;
     if (review !== null && review.judgement !== "upholds") {
       warnings.push(html`<div class="requirement-warning" data-review-judgement="${review.judgement}"><strong>${review.judgement === "contradicts" ? "Reviewer found a problem" : "Reviewer could not confirm this"}</strong><p>${review.note}</p></div>`);
@@ -809,13 +810,16 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   });
   parts.push(html`<div id="verification" data-cockpit-section="result">${panel.html}</div>`);
 
-  const blocked = cantAcceptYetOf(proof?.verdict ?? null, proof?.reasons ?? [], accepted);
+  // What no acceptance resolves (a failed check, a HIGH finding): Complete is refused, so no Accept is offered and
+  // the one line says the next step.
+  const hardStop = hardBlockerOf(assignment);
+  const blocked = hardStop ?? cantAcceptYetOf(proof?.verdict ?? null, proof?.reasons ?? [], accepted);
   const youCheck = panel.panel.youCheck;
   // Accept and finish posts the completion; when an acceptance is owed (the person's own checks, or a reason a
   // report that doesn't match its changes asks for), the same request records it first.
   const owed = accepted ? null : youCheck?.accept != null ? { note: null } : panel.panel.need?.accept != null ? { note: panel.panel.need.accept.note }
     : blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
-  const complete = assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
+  const complete = hardStop === null && assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
     ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed } : null;
   if (complete !== null) parts.push(completionForm(view.taskId, run.id, complete.receipt, view.detail?.pullRequestTo ?? null, owed));
   // The one decision, after the evidence: Accept and finish only when every requirement is met and the checks passed.
@@ -823,8 +827,10 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const matrix = proof === null || proof.proofProblem !== null ? [] : proof.matrix;
   const unanswered = accepted || youCheck == null ? [] : youCheck.items.length > 0 ? youCheck.items.map(one => one.statement === "" ? one.words : one.statement) : youCheck.lines;
   const base = !acceptsHere ? null : acceptWordsOf({
-    checks: checks === undefined ? null : checks.running != null ? "running" : checks.level === "off" && checks.status !== "passed" ? "off" : checks.status,
-    unmet: matrix.filter(row => row.state !== "pass" && row.state !== "manual-review").length,
+    // Checks Off that a release check already covers read as passed (release-coverage.ts).
+    checks: checks === undefined ? null : checks.running != null ? "running" : checks.level === "off" && checks.status !== "passed" ? checks.release != null ? "passed" : "off" : checks.status,
+    // Release-aware words (task-status.ts): a requirement waiting only on a release check, or covered by one, isn't unmet.
+    unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",
     publishing: view.detail?.publishing ?? "other",
     proof: proof !== null && proof.proof !== null && proof.proofProblem === null,
@@ -837,7 +843,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const followUps = view.detail.followUps ?? null;
   const checksRunning = checks?.running != null || (followUps?.checks.some(one => one.state === "waiting" || one.state === "running") ?? false);
   const runChecks = canRetryReview && csrf !== "" && followUps !== null && (followUps.full || followUps.quick) && !checksRunning &&
-    (checks === undefined || checks.status === "not-run" || checks.status === "unavailable")
+    (checks === undefined || ((checks.status === "not-run" || checks.status === "unavailable") && checks.release == null))
     // Back on this result's Checks tab, where #follow-ups shows the run it started.
     ? { action: `/r/${run.id}/checks`, level: followUps.full ? "full" as const : "quick" as const, returnTo: `${here}&run=${run.id}&tab=checks` } : null;
   const need = panel.panel.need;
@@ -2199,7 +2205,8 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     if (proof.matrix.length === 0) {
       checkParts.push(detail.signedCriteria > 0 ? html`<p class="meta">The approved scope has ${detail.signedCriteria} requirement${detail.signedCriteria === 1 ? "" : "s"}, but this build has no requirement-by-requirement verification.</p>` : html`<p class="meta">This scope signed no acceptance checks.</p>`);
     } else {
-      checkParts.push(criterionMatrixHtml(proof.matrix, { runId, links: proof.matrixLinks, fileAnchors: detail.fileAnchors, verdict: proof.verdict }));
+      checkParts.push(criterionMatrixHtml(proof.matrix, { runId, links: proof.matrixLinks, fileAnchors: detail.fileAnchors, verdict: proof.verdict,
+        release: current?.receipt == null ? undefined : checkBackingOf(current.receipt.checks) }));
     }
     checkParts.push(semanticCoverageHtml(proof.matrix, proof.qualityMode));
     if (reviewConflict(proof.matrix, proof.machineVerdict, proof.verdict)) checkParts.push(html`<p class="meta">An independent review found conflicting evidence.</p>`);
@@ -2379,11 +2386,18 @@ export function personCheckItems(proof: ProofBundleView, patchText: string | nul
   });
 }
 
+/** The completion blocker no acceptance resolves (a failed check, an unresolved HIGH finding), in words, or null. */
+export function hardBlockerOf(assignment: AssignmentSnapshot | null | undefined): string | null {
+  return assignment?.readiness?.blockers.find(one => one.key === "check-failed" || one.key === "high")?.message ?? null;
+}
+
 /** A Needs you result's one action (needs-you.ts): a link to the act that resolves it, or Confirm it
  * stopped behind the password. Null under every other headline. */
 export function needActionOf(assignment: AssignmentSnapshot | null, status: TaskStatus | null, csrf: string, returnTo: string,
   result?: { accepted: boolean; humanReview: boolean; run: number; action: string; rebuildable?: boolean; refuted?: boolean }): BrowserNeedAction | null {
   if (assignment === null || status === null || status.headline !== "Needs you" || status.need == null) return null;
+  // Accepting can't resolve it: Request changes is the way on, beside the reason.
+  if (result !== undefined && hardBlockerOf(assignment) !== null) return null;
   const action = assignment.primaryAction;
   const rebuild = { href: null, confirm: null, rebuild: { action: `${taskHref(assignment.rootId)}/requeue` } };
   // Built to an earlier plan: Build again, in place (the task page's requeue).

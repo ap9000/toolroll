@@ -314,8 +314,8 @@ export async function processChatEvent(
       const focusedId = store.chatFocus(surface, binding.id);
       const focusedTitle = focusedId === null ? null : phoneText(store.getTask(focusedId)?.title ?? focusedId, 64);
       if (command.kind === "help") state.plan(event.id, [{ text: PHONE_HELP }], now_);
-      else if (command.kind === "status") state.plan(event.id, [{ text: phoneStatus(store, repos, now_, focusedTitle) }], now_);
-      else if (command.kind === "tasks") state.plan(event.id, [{ text: phoneTaskListText(phoneTaskChoices(store, repos, now_), focusedTitle) }], now_);
+      else if (command.kind === "status") state.plan(event.id, [{ text: phoneStatus(store, repos, now_, focusedTitle, options.evidenceRoot) }], now_);
+      else if (command.kind === "tasks") state.plan(event.id, [{ text: phoneTaskListText(phoneTaskChoices(store, repos, now_, null, 8, options.evidenceRoot), focusedTitle) }], now_);
       else if (command.kind === "lead") {
         store.setChatFocus(surface, binding.id, null, now_);
         state.plan(event.id, [{ text: PHONE_BACK_TO_LEAD }], now_);
@@ -323,7 +323,7 @@ export async function processChatEvent(
         const pick = resolvePhoneTask(store, repos, now_, command.id);
         if (pick.kind === "one") {
           store.setChatFocus(surface, binding.id, pick.id, now_);
-          const view = phoneTaskView(store, repos, pick.view, now_);
+          const view = phoneTaskView(store, repos, pick.view, now_, options.evidenceRoot);
           // The status names its task (and result): a reply to it is about that task.
           state.plan(event.id, [{ text: phoneFocusText(view.text), ...(view.link === null ? {} : { link: view.link }), task: pick.view, ...(view.run === null ? {} : { run: view.run }) }], now_);
         } else if (pick.kind === "many") {

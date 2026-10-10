@@ -70,7 +70,9 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
         : checkAssignmentAsOperator(store, task, digest, operator!, now, evidenceRoot);
       if (!changed.ok) return emit(changed);
       const assignment = 'body' in changed ? changed.body : changed.assignment;
-      return emit({ ok: true, result: assignment }, [`${current.rootId} · Complete`, `Result: ${current.activeTaskId} · run ${current.receipt!.runId} · ${current.receipt!.head ?? 'no commit'}`, current.receipt!.checks.detail]);
+      // Checks deliberately Off: nothing to say about them here.
+      return emit({ ok: true, result: assignment }, [`${current.rootId} · Complete`, `Result: ${current.activeTaskId} · run ${current.receipt!.runId} · ${current.receipt!.head ?? 'no commit'}`,
+        ...(current.readiness?.checksOff ? [] : [current.receipt!.checks.detail])]);
     }
     const feedback = flags.get('feedback'), runFlag = flags.get('run'), sourceFlag = flags.get('source'), keyFlag = flags.get('key');
     if (typeof feedback !== 'string' || !feedback.trim()) return fail('usage', 'Describe the requested change with --feedback.');

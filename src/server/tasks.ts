@@ -189,8 +189,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         // Console v2: results ready to review and work running now, from the same admitted work index.
         ...(() => {
           const row = (one: WorkIndexItem) => ({ taskId: one.rootId, title: one.title, detail: one.status.detail, repo: one.repo });
-          const needsYou = workIndexPage(store, now, workAccess(), { view: "needs-you", limit: 40, project });
-          const runningNow = workIndexPage(store, now, workAccess(), { view: "running", limit: 40, project });
+          const needsYou = workIndexPage(store, now, workAccess(), { view: "needs-you", limit: 40, project, root: evidenceRoot });
+          const runningNow = workIndexPage(store, now, workAccess(), { view: "running", limit: 40, project, root: evidenceRoot });
           return { ready: needsYou.items.filter(one => one.assignmentState === "ready-to-check").map(row), running: runningNow.items.map(row) };
         })(),
     };
@@ -218,7 +218,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const rollup = project === null && !unscopedMode;
     let work: WorkIndexPage;
     try {
-      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project });
+      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project, root: evidenceRoot });
       const facts = requestContext.getStore();
       if (facts !== undefined) {
         // These counts cover the exact admitted project lens, including
@@ -1460,7 +1460,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // CI repair, suggestion-first (M8.18): a red episode never spawns an
     // agent by itself — it EARNS a button, and the button creates one
     // unapproved task through the same revision machinery as review
-    // comments. Deterministic id = one draft per task/PR, ever.
+    // comments. One draft per task/PR, ever: the merge blocker records it.
     const id = Number(draftRepair[1]);
     const found = store.getRun(id);
     if (found === null || !visible(taskRepoOf(found.taskRef))) {
@@ -1479,10 +1479,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // failure was SEEN on and when (audit C-2) — a PR that advanced since
     // is a different failure, and the click time is not an observation.
     const episode = store.latestOpenCiEpisode(publication.githubRepo, publication.prNumber as number);
-    // Suffixes survive truncation (audit C-7): the prefix gives way, the
-    // identity-bearing tail never does.
-    const suffix = `-ci-${publication.prNumber}`;
-    const draftId = `${sourceTaskId.slice(0, 64 - suffix.length)}${suffix}`;
     const brief = {
       schema: 1 as const,
       kind: "ci-repair" as const,
@@ -1503,35 +1499,40 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // repair use (contract handoff task 2): the inherited terms come from
     // the source rows inside the seal; the scope read above only names
     // the digest this draft was composed against.
-    const sealed = store.sealRevision(
-      {
-        source: { task: sourceTaskId, run: id, scopeDigest: sourceScope?.digest ?? null },
-        brief: { evidenceRoot, key, sha256: createHash("sha256").update(briefBytes).digest("hex"), bytes: briefBytes.length, capture: "machine-authored ci-repair brief (exit 0)" },
-        child: {
-          id: draftId,
-          title: `repair ${sourceTaskId}: CI failing on PR #${publication.prNumber}`,
-          repair:
-            `repair the failing CI on PR #${publication.prNumber} (failing head ${(episode?.headSha ?? publication.headSha).slice(0, 12)}). ` +
-            `Read the failing checks on GitHub before approving; this draft carries no log content.`,
+    // One draft per task/PR, ever: the PR's merge blocker names it, lifted or not, and is written in the seal's transaction.
+    const sealed = store.transact(() => {
+      const prior = store.raw().prepare("SELECT task_id FROM merge_blocker WHERE publication = ? AND task_id IS NOT NULL ORDER BY rowid LIMIT 1").get(publication.id);
+      if (prior !== undefined) return { ok: false as const, reason: "duplicate" as const, detail: String(prior["task_id"]) };
+      const result = store.sealRevision(
+        {
+          source: { task: sourceTaskId, run: id, scopeDigest: sourceScope?.digest ?? null },
+          brief: { evidenceRoot, key, sha256: createHash("sha256").update(briefBytes).digest("hex"), bytes: briefBytes.length, capture: "machine-authored ci-repair brief (exit 0)" },
+          child: {
+            title: `repair ${sourceTaskId}: CI failing on PR #${publication.prNumber}`,
+            repair:
+              `repair the failing CI on PR #${publication.prNumber} (failing head ${(episode?.headSha ?? publication.headSha).slice(0, 12)}). ` +
+              `Read the failing checks on GitHub before approving; this draft carries no log content.`,
+          },
+          commentIds: null,
+          requestedBy: who.name,
         },
-        commentIds: null,
-        requestedBy: who.name,
-      },
-      now,
-    );
+        now,
+      );
+      // The merge blocker rides the SAME breath as the draft (merge grant,
+      // findings 3/12/13): while this repair exists, the source PR merges
+      // NOTHING — sticky until the operator's unblock act or the PR closes.
+      if (result.ok) store.createMergeBlocker(publication.id, result.id, now);
+      return result;
+    });
     if (!sealed.ok) {
       return refuse(
         response,
         who,
         sealed.reason === "duplicate" ? 409 : sealed.reason === "stale-source" || sealed.reason === "comments-taken" ? 409 : 400,
-        sealed.reason === "duplicate" ? `already drafted as ${draftId}` : `could not draft: ${sealed.detail}`,
+        sealed.reason === "duplicate" ? `already drafted as ${sealed.detail}` : `could not draft: ${sealed.detail}`,
         `/r/${id}`,
       );
     }
-    // The merge blocker rides the SAME breath as the draft (merge grant,
-    // findings 3/12/13): while this repair exists, the source PR merges
-    // NOTHING — sticky until the operator's unblock act or the PR closes.
-    store.createMergeBlocker(publication.id, sealed.id, now);
     return redirect(response, taskHref(sealed.id));
   }
 

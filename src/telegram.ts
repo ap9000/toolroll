@@ -1921,9 +1921,9 @@ function applyPhoneRead(context: Context, update: Update, effects: Effect[]): bo
         if (!stillPaired()) return;
         const repos = telegramConversationRepos(store, binding.approver, registry);
         const focused = focusedTitle(store, binding);
-        if (command.kind === "status") response = phoneStatus(store, repos, clock(), focused?.title ?? null);
+        if (command.kind === "status") response = phoneStatus(store, repos, clock(), focused?.title ?? null, context.conversation?.evidenceRoot);
         else if (command.kind === "tasks") {
-          const choices = phoneTaskChoices(store, repos, clock());
+          const choices = phoneTaskChoices(store, repos, clock(), null, 8, context.conversation?.evidenceRoot);
           response = choices.length === 0 ? phoneTaskListText([], null) : `${focused === null ? "" : `Talking about: ${focused.title}\n\n`}Pick a task to talk about:`;
           if (choices.length > 0) keyboard = pickKeyboard(store, choices, focused !== null);
         } else {
@@ -1934,7 +1934,7 @@ function applyPhoneRead(context: Context, update: Update, effects: Effect[]): bo
           } else if (pick.kind === "none") response = PHONE_NO_MATCH;
           else {
             store.setChatFocus("telegram", binding.id, pick.id, clock());
-            const view = phoneTaskView(store, repos, pick.view, clock());
+            const view = phoneTaskView(store, repos, pick.view, clock(), context.conversation?.evidenceRoot);
             shown = { task: pick.view, run: view.run };
             button = phoneLinkButton(context.conversation?.phoneOrigin?.() ?? null, view.link);
             // A destination with no trusted origin to carry it: the words say where instead.
@@ -2168,7 +2168,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     store.setChatFocus("telegram", binding.id, id, clock());
     ack(`Talking about: ${title}`.slice(0, 190));
     const current = store.taskFamilyOf(taskId, repos, false)?.current.id ?? id;
-    const view = phoneTaskView(store, repos, current, clock());
+    const view = phoneTaskView(store, repos, current, clock(), context.conversation?.evidenceRoot);
     store.recordTelegramTaskMessage(binding, String(message.message_id), current, view.run, clock());
     editText(phoneFocusText(view.text), [[telegramButton("Back to the lead", "pick:lead")]]);
     return;

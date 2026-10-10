@@ -17,7 +17,9 @@ import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer } from "./serve.js";
 import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { assignmentTaskStatusOf } from "./assignment-presentation.js";
-import { taskStatusOf, HEADLINES, HEADLINE_TONE } from "./task-status.js";
+import { taskStatusOf, completionBlockersOf, requirementWordOf, HEADLINES, HEADLINE_TONE } from "./task-status.js";
+import { releaseCoverageOf } from "./release-coverage.js";
+import { workIndexPage, workIndexTask } from "./work-index.js";
 import { verifyApproverByPassword } from "./principal.js";
 import { completeAndOpenPullRequest, mergePullRequest, pullRequestViewOf, savePublishing } from "./pull-request-flow.js";
 import { runOperate, EXIT } from "./operate.js";
@@ -26,10 +28,11 @@ import { LEAD_TOOLS } from "./lead-tools.js";
 import { confirmLeadProposal } from "./lead-doors.js";
 import {
   checkCommandFor, checkLevelFromWords, effectiveCheckLevel, projectCheckLevel, quickVerifyKey, recordRunCheckLevel, setProjectCheckLevel,
-  setTaskCheckLevel, suggestQuickCommand, taskCheckLevel, type CheckLevel,
+  setTaskCheckLevel, suggestQuickCommand, taskCheckLevel, requiredCheckCommandFor, type CheckLevel,
 } from "./check-levels.js";
 import { followUpChecksOf, fullCheckGate, requestFollowUpChecks, runFollowUpCheck, withFollowUps } from "./result-follow-ups.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
+import { mixedCheckScreenshot } from "../test/status-evidence-fixture.js";
 
 const NOW = new Date("2026-10-01T12:00:00.000Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -64,30 +67,35 @@ function filed(id: string, title: string, at: Date, checks?: CheckLevel): number
   const ref = store.refFor("built-in", id).id;
   store.placeTask(ref, REPO, {}, at);
   if (checks !== undefined) expect(setTaskCheckLevel(store, id, checks, "sam", at)).toEqual({ ok: true });
-  const proposed = propose(store, { taskId: id, goal: title, touches: ["src/"], acceptance: [{ id: "c1", statement: title, how: null, evidence: ["manual-review"] }], now: at });
+  const proposed = propose(store, { taskId: id, goal: title, touches: ["src/"], acceptance: [{ id: "c1", statement: title, how: null, evidence: ["check"] }], now: at });
   const ok = approve(store, id, "sam", at, proposed.digest, password);
   if (!ok.ok) throw new Error(ok.reason);
   return ref;
 }
 
 /** A finished build as the builder leaves it at each level: the level it used, and the check it ran (none for Off). */
-function built(id: string, title: string, at: Date, level: CheckLevel, exitCode = 0, checks?: CheckLevel): number {
+function built(id: string, title: string, at: Date, level: CheckLevel, exitCode = 0, checks?: CheckLevel, head = HEAD, release = false): number {
   const ref = filed(id, title, at, checks);
   const authority = store.routeAuthorityFor(ref, "builder");
   if (!authority?.ok) throw new Error("route");
   const run = store.startRun({ taskRef: ref, leaseId: `l-${id}`, runner: "builder-1", branch: `toolroll/${id}`, worktree: `/pool/${id}`, route: authority.stamp, now: at });
   store.stampRun(run, { scopeDigest: store.getScope(id)!.digest, baseRevision: "1".repeat(40) });
-  store.recordOutcomeFacts(run, { headRevision: HEAD, handoff: `${title}.` });
+  store.recordOutcomeFacts(run, { headRevision: head, handoff: `${title}.` });
+  // A release check runs under Strict quality; its recorded result is indexed as the release check.
+  if (release) store.handle.prepare("UPDATE run SET quality_mode = 'strict' WHERE id = ?").run(run);
   store.finishRun(run, { outcome: "built", committed: true, now: at });
   store.setTaskState(id, "done", at);
   recordRunCheckLevel(store, { id: run, taskId: id, repo: REPO }, level, checks === undefined ? "project" : "task", at);
-  store.saveProofVerdict(run, "attested", [], at, [{ id: "c1", statement: title, requiredEvidence: ["manual-review"], state: "manual-review", detail: [], answered: [], review: null }] as never, "attested");
+  // The requirement rests on the project check: met when it passed, failed when it failed, waiting for it when Off.
+  const passed = level !== "off" && exitCode === 0;
+  store.saveProofVerdict(run, passed ? "verified" : level === "off" ? "short" : "refuted", [], at, [{ id: "c1", statement: title, requiredEvidence: ["check"],
+    state: passed ? "pass" : level === "off" ? "missing" : "failed", detail: [], answered: passed ? [{ kind: "check", ref: checkCommandFor(store, REPO, level).command!.command }] : [], review: null }] as never, passed ? "verified" : level === "off" ? "attested" : "refuted");
   storeEvidence(store, root, run, "terminal-diff", "diff.patch", Buffer.from(`diff --git a/src/${id}.ts b/src/${id}.ts\n--- a/src/${id}.ts\n+++ b/src/${id}.ts\n@@ -1 +1 @@\n-a\n+b\n`), "git diff (exit 0)", at, { captureStatus: "ok" });
-  storeEvidence(store, root, run, "diff-stat", "diff-stat.json", Buffer.from(JSON.stringify({ schema: 1, head: HEAD, base: "1".repeat(40), filesTruncated: false, fileCount: 1, files: [{ path: `src/${id}.ts` }] })), "git diff --numstat", at, { captureStatus: "ok" });
+  storeEvidence(store, root, run, "diff-stat", "diff-stat.json", Buffer.from(JSON.stringify({ schema: 1, head, base: "1".repeat(40), filesTruncated: false, fileCount: 1, files: [{ path: `src/${id}.ts` }] })), "git diff --numstat", at, { captureStatus: "ok" });
   if (level !== "off") {
     const command = checkCommandFor(store, REPO, level).command!;
     storeEvidence(store, root, run, "check-log", "checks.txt", Buffer.from(exitCode === 0 ? "41 passed\n" : "1 failed\n"), command.command, at, { captureStatus: "ok" });
-    sealVerificationReceipt(store, root, run, HEAD, command, { configured: true, ran: true, exitCode }, at);
+    sealVerificationReceipt(store, root, run, head, command, { configured: true, ran: true, exitCode }, at);
     store.recordRunCheck(run, { status: exitCode === 0 ? "passed" : "failed", exitCode, suites: [] }, at);
   } else {
     store.recordRunCheck(run, { status: "not-run", exitCode: null, suites: [] }, at);
@@ -171,6 +179,10 @@ describe("c1: a project is Quick, Full or Off, and a task can override it", () =
     expect(checkCommandFor(store, REPO, "full")).toMatchObject({ level: "full", command: { command: "test -f app.txt" } });
     expect(checkCommandFor(store, REPO, "off")).toEqual({ level: "off", command: null });
     expect(checkCommandFor(store, join(dir, "fresh-project"), "quick")).toEqual({ level: "full", command: null });
+    expect(requiredCheckCommandFor(store, REPO, "quick-pass", "quick")?.command).toBe("test -f package.json");
+    expect(requiredCheckCommandFor(store, REPO, "full-pass", "full")?.command).toBe("test -f app.txt");
+    expect(requiredCheckCommandFor(store, REPO, "checks-off", "off")).toBeNull();
+    expect(requiredCheckCommandFor(store, REPO, "checks-off", null)).toBeNull();
     expect(suggestQuickCommand(REPO)).toBe("npm run typecheck && npx vitest related --run $(git diff --name-only HEAD~1)");
   });
 
@@ -235,8 +247,8 @@ describe("c2: Off reads Ready for review and says no check ran; a Quick pass rea
     expect(HEADLINES).not.toContain("Built, not checked");
     const off = taskStatusOf({ stage: "finished", checks: { status: "not-run", exitCode: null, head: HEAD, level: "off" }, links: { runChecks: "/r/1?tab=checks#follow-ups" } });
     expect(off.headline).toBe("Ready for review");
-    expect(off.sentence).toBe("Checks are off for this project. Review the change, then mark it complete.");
-    expect(off.details[0]).toMatchObject({ key: "checks", text: "Off for this project", mark: "none", action: { label: "Run checks" } });
+    expect(off.sentence).toBe("Checked at release. Review the change, then mark it complete.");
+    expect(off.details[0]).toMatchObject({ key: "checks", text: "Checked at release", mark: "none", action: { label: "Run checks" } });
     const quick = taskStatusOf({ stage: "finished", checks: { status: "passed", exitCode: 0, head: HEAD, level: "quick" } });
     expect(quick.headline).toBe("Ready for review");
     expect(quick.sentence).toBe(`Quick checks passed on ${HEAD.slice(0, 7)}. Review the change, then mark it complete.`);
@@ -265,7 +277,8 @@ describe("c2: Off reads Ready for review and says no check ran; a Quick pass rea
     expect(label("quick-fail").label).toBe("Failed");
     const off = await taskView("checks-off");
     expect(off.status!.status.headline).toBe("Ready for review");
-    expect(off.status!.status.details.find(one => one.key === "checks")).toMatchObject({ text: "Off for this project", mark: "none", action: { label: "Run checks" } });
+    expect(off.status!.status.details.find(one => one.key === "checks")).toMatchObject({ text: "Checked at release", mark: "none", action: { label: "Run checks" } });
+    expect(off.status!.status.details.find(one => one.key === "requirements")).toMatchObject({ text: "0 of 1 met · 1 at release" });
     const quick = await taskView("quick-pass");
     expect(quick.status!.status.sentence).toContain("Quick checks passed");
   });
@@ -356,7 +369,8 @@ describe("c3: Run checks and Add tests work on any result", () => {
 
 describe("full checks before merge", () => {
   test("a Quick result's pull request runs the full check; Merge waits for it unless a person merges anyway", async () => {
-    built("quick-pr", "Add a size guide link", ago(30), "quick");
+    // Built after the quick command was last approved, so its own quick pass still reads.
+    built("quick-pr", "Add a size guide link", NOW, "quick");
     const run = runs["quick-pr"]!;
     expect(fullCheckGate(store, run, NOW).state).toBe("not-requested");
     const who = verifyApproverByPassword(store, "sam", password, [REPO]);
@@ -433,5 +447,170 @@ describe("upgrade: a result completed before check levels stays complete", () =>
     expect(after.receipt!.checks.running).toBe("quick");
     expect(after.receipt!.digest).toBe(before.receipt!.digest);
     expect(after.state).toBe("complete");
+  });
+});
+
+describe("checks Off are checked at release", () => {
+  const commit = (file: string) => { writeFileSync(join(REPO, file), `${file}\n`); git(REPO, "add", file); git(REPO, "commit", "-q", "-m", file); return git(REPO, "rev-parse", "HEAD"); };
+  const read = (id: string) => assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, root)!;
+
+  test("Off reads Ready and Checked at release until a passing full release check contains its commit; nothing stored changes", async () => {
+    const offHead = commit("off-change.txt");
+    built("off-before-release", "Reword the delivery banner", ago(20), "off", 0, "off", offHead);
+    const before = read("off-before-release");
+    const proofBefore = store.proofVerdictFor(runs["off-before-release"]!);
+    const status = () => assignmentTaskStatusOf(read("off-before-release"));
+    expect(before.readiness).toEqual({ verdict: "short", checksOff: true, blockers: [] });
+    expect(requirementWordOf(before.receipt!.proof!.matrix[0]!, null, "pending")).toBe("Checked at release");
+    expect(status()).toMatchObject({ headline: "Ready for review", sentence: "Checked at release. Review the change, then mark it complete." });
+    expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "0 of 1 met · 1 at release" });
+
+    // Not covered: a release check on an older commit, a failed one, and a quick one.
+    built("release-older", "Release the previous build", ago(18), "full", 0, undefined, HEAD, true);
+    const later = commit("release.txt");
+    built("release-failed", "Release with a failing check", ago(17), "full", 1, undefined, later, true);
+    built("release-quick", "Release with quick checks", ago(16), "quick", 0, undefined, later, true);
+    expect(releaseCoverageOf(store, root, REPO, offHead)).toBeNull();
+    expect(status().headline).toBe("Ready for review");
+
+    // Covered: a passing full release check on a later commit that contains it.
+    built("release-full", "Release the next version", ago(15), "full", 0, undefined, later, true);
+    expect(releaseCoverageOf(store, root, REPO, offHead)).toEqual({ run: runs["release-full"], head: later });
+    // Fails closed: a commit Git doesn't know, or no evidence root.
+    expect(releaseCoverageOf(store, root, REPO, "e".repeat(40))).toBeNull();
+    expect(releaseCoverageOf(store, undefined, REPO, offHead)).toBeNull();
+    const after = read("off-before-release");
+    expect(after.receipt!.checks.release).toEqual({ run: runs["release-full"], head: later });
+    expect(status()).toMatchObject({ headline: "Ready for review", sentence: `Checked at release on ${later.slice(0, 7)}. Review the change, then mark it complete.` });
+    expect(status().details.find(one => one.key === "checks")).toMatchObject({ text: `Passed at release on ${later.slice(0, 7)}`, mark: "ok" });
+    expect(status().details.find(one => one.key === "requirements")).toMatchObject({ text: "1 of 1 met", mark: "ok" });
+    // Derived at read time: the sealed receipt digest and the stored proof are unchanged.
+    expect(after.receipt!.digest).toBe(before.receipt!.digest);
+    expect(store.proofVerdictFor(runs["off-before-release"]!)).toEqual(proofBefore);
+    // The Tasks list says the same.
+    const rows = (workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>).rows;
+    expect(rows.find(row => row.id === "off-before-release")!.status).toMatchObject({ label: "Ready for review" });
+    const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { root }).items.find(one => one.rootId === "off-before-release")!;
+    expect(listed.status).toMatchObject({ label: "Ready for review", detail: status().sentence });
+
+    // task complete says nothing about checks that were deliberately Off.
+    const lines: string[] = [];
+    expect(await runOperate("task", ["complete", "off-before-release", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.ok);
+    expect(lines.join("\n")).toMatch(/^off-before-release · Complete\nResult: off-before-release · run \d+ · [a-f0-9]{40}$/);
+    expect(lines.join("\n")).not.toMatch(/check/i);
+  });
+
+  test("task complete refuses a failed or missing check, an unresolved requirement and a HIGH finding, and says what to do", async () => {
+    const complete = async (id: string) => {
+      const lines: string[] = [];
+      const code = await runOperate("task", ["complete", id, "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW });
+      return { code, said: lines.join("\n"), state: read(id).state };
+    };
+    built("refuse-failed", "Round totals", ago(14), "full", 1);
+    expect(await complete("refuse-failed")).toEqual({ code: EXIT.refused, said: "Checks failed (exit 1). Fix them and run checks again, or ask for changes.", state: "ready-to-check" });
+
+    built("refuse-missing", "Trim the footer", ago(13), "full");
+    store.handle.prepare("DELETE FROM artifact WHERE run = ? AND kind IN ('check-log', 'verification-receipt')").run(runs["refuse-missing"]!);
+    expect(read("refuse-missing").receipt!.checks.status).not.toBe("passed");
+    expect(await complete("refuse-missing")).toMatchObject({ code: EXIT.refused, state: "ready-to-check" });
+    expect((await complete("refuse-missing")).said).toContain("Run checks on it, then mark it complete.");
+
+    built("refuse-criteria", "Show stock levels", ago(12), "full");
+    const run = runs["refuse-criteria"]!;
+    const proof = store.proofVerdictFor(run)!;
+    store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+    store.saveProofVerdict(run, "short", ["criterion \"c1\" is not met"], ago(12), [{ ...proof.matrix[0]!, state: "failed", detail: ["not met"] }], "short");
+    expect(await complete("refuse-criteria")).toMatchObject({ code: EXIT.refused, said: "This requirement isn't met: Show stock levels. Ask for changes, or accept the result with a reason.", state: "ready-to-check" });
+
+    built("refuse-high", "Cache prices", ago(11), "full");
+    store.handle.prepare(`INSERT INTO build_review (run, task_id, repo, state, findings_json, queued_at, finished_at) VALUES (?, 'refuse-high', ?, 'reviewed', ?, ?, ?)`)
+      .run(runs["refuse-high"]!, REPO, JSON.stringify({ version: 1, findings: [{ severity: "HIGH", file: "src/prices.ts", line: 4, scenario: "A stale price is charged after a change." }] }), ago(11).toISOString(), ago(11).toISOString());
+    const high = read("refuse-high");
+    expect(high.readiness).toMatchObject({ verdict: "refuted", blockers: [{ key: "high" }] });
+    expect(assignmentTaskStatusOf(high)).toMatchObject({ headline: "Needs you", sentence: "The automatic review found a high-severity problem. Ask for changes before marking it complete." });
+    expect(await complete("refuse-high")).toMatchObject({ code: EXIT.refused, said: "The automatic review found a high-severity problem. Ask for changes before marking it complete.", state: "ready-to-check" });
+    // A pending review is never verified.
+    store.handle.prepare("UPDATE build_review SET state = 'pending', findings_json = NULL WHERE run = ?").run(runs["refuse-high"]!);
+    expect(read("refuse-high").readiness?.verdict).toBe("short");
+  });
+
+  test("an invalid screenshot plus a missing check cannot be completed after a passing check", async () => {
+    const run = built("mixed-invalid-shot", "Keep checkout readable", ago(8), "full");
+    const row = mixedCheckScreenshot({ path: "", ok: false, problem: "not a PNG or JPEG" });
+    store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+    store.saveProofVerdict(run, "short", row.detail, ago(8), [row], "short");
+    const lines: string[] = [];
+    expect(await runOperate("task", ["complete", "mixed-invalid-shot", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain("requirement");
+    expect(read("mixed-invalid-shot").readiness?.blockers).toMatchObject([{ key: "criteria" }]);
+  });
+
+  test("Quick-only projects still require the Quick check when its log is missing", async () => {
+    const run = built("quick-only-missing", "Check checkout totals", ago(7), "quick");
+    const heldRepo = `${REPO}-full-command-held`;
+    store.handle.prepare("UPDATE verify_command SET repo = ? WHERE repo = ?").run(heldRepo, REPO);
+    try {
+      store.handle.prepare("DELETE FROM artifact WHERE run = ? AND kind IN ('check-log', 'verification-receipt')").run(run);
+      store.handle.prepare("DELETE FROM run_check WHERE run = ?").run(run);
+      // No verdict can stand in for the required machine check.
+      store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+      expect(read("quick-only-missing").readiness?.blockers).toMatchObject([{ key: "check-missing" }]);
+      const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 100, root }).items.find(one => one.activeTaskId === "quick-only-missing")!;
+      expect(listed.status.label).toBe("Needs you");
+      const lines: string[] = [];
+      expect(await runOperate("task", ["complete", "quick-only-missing", "--as", "sam", "--token", password], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
+      expect(lines.join("\n")).toContain("Run checks on it");
+    } finally {
+      store.handle.prepare("UPDATE verify_command SET repo = ? WHERE repo = ?").run(REPO, heldRepo);
+    }
+  });
+
+  test("CLI show preserves recorded Failed, Complete and manual-review asks when evidence files disappear", async () => {
+    for (const [id, level, exit, expected] of [["lost-failed", "full", 1, "Failed"], ["lost-complete", "full", 0, "Complete"], ["lost-manual", "full", 0, "Needs you"]] as const) {
+      const run = built(id, "Confirm checkout stays readable on a phone", ago(6), level, exit);
+      if (id === "lost-complete") {
+        const who = verifyApproverByPassword(store, "sam", password, [REPO]);
+        if (!who.ok) throw Error("approver");
+        expect(checkAssignmentAsOperator(store, id, read(id).receipt!.digest, who.who, NOW, root)).toMatchObject({ ok: true });
+      }
+      if (id === "lost-manual") {
+        store.handle.prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+        store.saveProofVerdict(run, "short", ['criterion "c1" requires manual-review evidence — an operator must accept it before this can verify'], ago(6),
+          [{ id: "c1", statement: "Confirm checkout stays readable on a phone", requiredEvidence: ["manual-review"], state: "manual-review", detail: [], answered: [], review: null }], "short");
+      }
+      for (const artifact of store.artifactsFor(run)) rmSync(join(root, artifact.key), { force: true });
+      const lines: string[] = [];
+      expect(await runOperate("task", ["show", id, "--json"], line => lines.push(line), { databaseFile, now: NOW })).toBe(EXIT.ok);
+      const shown = JSON.parse(lines.join("\n"));
+      const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 100, root }).items.find(one => one.activeTaskId === id)!;
+      expect(shown.status).toEqual({ headline: expected, sentence: listed.status.detail });
+      expect(shown.assignment.result.checks.status).toBe("unavailable");
+      expect(shown.work.status.label).toBe(expected);
+      if (id === "lost-manual") expect(shown.status.sentence).toContain("Check this requirement yourself");
+      const completion: string[] = [];
+      expect(await runOperate("task", ["complete", id, "--as", "sam", "--token", password], line => completion.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
+      expect(completion.join("\n")).toContain("Run checks on it");
+    }
+  });
+
+  test("exact saved-status lookup is independent of the page limit and retains project admission", () => {
+    const access = { principal: "operator" as const, repos: [REPO] };
+    const all = workIndexPage(store, NOW, access, { limit: 100, root }).items;
+    const last = all.at(-1)!;
+    expect(all.length).toBeGreaterThan(1);
+    expect(workIndexTask(store, last.activeTaskId, NOW, access, root)).toEqual(last);
+    expect(workIndexTask(store, last.activeTaskId, NOW, { ...access, repos: [] }, root)).toBeNull();
+    expect(workIndexTask(store, "unknown-task", NOW, access, root)).toBeNull();
+  });
+
+  test("the completion guard is one pure rule", () => {
+    const row = { id: "c1", statement: "Totals round to cents", state: "missing", requiredEvidence: ["check"], answered: [] };
+    const off = { status: "not-run" as const, exitCode: null, level: "off" as const };
+    expect(completionBlockersOf({ report: false, checks: off, checkRequired: true, matrix: [row], verdict: "short", accepted: false, high: 0 })).toEqual([]);
+    expect(completionBlockersOf({ report: false, checks: { ...off, level: "full" }, checkRequired: true, matrix: [row], verdict: "short", accepted: false, high: 0 }).map(one => one.key)).toEqual(["check-missing", "criteria"]);
+    expect(completionBlockersOf({ report: false, checks: { status: "passed", exitCode: 0, level: "full" }, checkRequired: true, matrix: [row], verdict: "short", accepted: false, high: 0 })).toEqual([]);
+    // A person's own check is theirs to give by completing; an acceptance resolves the rest, never a HIGH.
+    expect(completionBlockersOf({ report: false, checks: null, checkRequired: false, matrix: [{ ...row, state: "manual-review", requiredEvidence: ["manual-review"] }], verdict: "short", accepted: false, high: 0 })).toEqual([]);
+    expect(completionBlockersOf({ report: false, checks: null, checkRequired: false, matrix: [{ ...row, state: "failed" }], verdict: "short", accepted: true, high: 1 }).map(one => one.key)).toEqual(["high"]);
   });
 });
