@@ -93,7 +93,7 @@ export function finishedLine(fact: FinishedFact): string {
     case "Ready for review":
       if (fact.report) return fact.lead === true ? `I wrote up ${lower}. The report is ready to read.` : `${name}: the report is ready to read.`;
       if (fact.checks === "passed") return `${ready}. Your tests passed. ${fact.pullRequest === true ? "Merge it?" : "Accept and finish it?"}`;
-      if (fact.checks === "off") return `${ready}. Checks are off for this project, so look it over first.`;
+      if (fact.checks === "off") return `${ready}. Its checks run at release, so look it over first.`;
       return `${ready}, but no tests ran. Look it over first.`;
     case "Failed":
       if (fact.leadOnIt === true) return fact.checks === "failed" ? `${name} is built, but its tests failed. ${leadOnIt(fact.leadName)}` : `${name} stopped before it finished. ${leadOnIt(fact.leadName)}`;

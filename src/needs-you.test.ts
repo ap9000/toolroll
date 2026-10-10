@@ -138,7 +138,7 @@ describe("Confirm it stopped, end to end", () => {
     store.createTask({ id, title }, NOW);
     const ref = store.refFor("built-in", id).id;
     store.placeTask(ref, REPO, {}, NOW);
-    const proposed = propose(store, { taskId: id, goal: title, touches: ["src/"], acceptance: [{ id: "c1", statement: title, how: null, evidence: ["manual-review"] }], now: NOW });
+    const proposed = propose(store, { taskId: id, goal: title, touches: ["src/"], acceptance: [{ id: "c1", statement: title, how: null, evidence: ["changed-path"] }], now: NOW });
     const ok = approve(store, id, "sam", NOW, proposed.digest, password);
     if (!ok.ok) throw new Error(ok.reason);
     const authority = store.routeAuthorityFor(ref, "builder");
@@ -149,7 +149,7 @@ describe("Confirm it stopped, end to end", () => {
     store.raw().prepare("UPDATE run SET provider_started_at = ? WHERE id = ?").run(NOW.toISOString(), run);
     store.finishRun(run, { outcome: "built", committed: true, now: NOW });
     store.setTaskState(id, "done", NOW);
-    store.saveProofVerdict(run, "attested", [], NOW, [{ id: "c1", statement: title, requiredEvidence: ["manual-review"], state: "manual-review", detail: [], answered: [], review: null }] as never, "attested");
+    store.saveProofVerdict(run, "attested", [], NOW, [{ id: "c1", statement: title, requiredEvidence: ["changed-path"], state: "pass", detail: [], answered: [{ kind: "changed-path", ref: "src/app.ts" }], review: null }] as never, "attested");
     storeEvidence(store, root, run, "terminal-diff", "diff.patch", Buffer.from(`diff --git a/src/${id}.ts b/src/${id}.ts\n--- a/src/${id}.ts\n+++ b/src/${id}.ts\n@@ -1 +1 @@\n-a\n+b\n`), "git diff (exit 0)", NOW, { captureStatus: "ok" });
     store.recordRunCheck(run, { status: "not-run", exitCode: null, suites: [] }, NOW);
     runs[id] = run;

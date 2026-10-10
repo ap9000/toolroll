@@ -9,11 +9,14 @@ import { readProjectAccess } from './project-access.js';
 import { pauseOnTaskProviders, providerName, signInReason } from './provider-auth.js';
 import type { ProviderId } from './provider.js';
 import { scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
-import type { AssignmentSnapshot } from './assignment.js';
+import { assignmentChecksForRun, type AssignmentSnapshot } from './assignment.js';
 import type { WorkAction, WorkSummaryAccess } from './work-summary.js';
 import type { WorkStatus, WorkView } from './workspace-ui.js';
-import { leadOnIt, plainReasonOf, replacedWords, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from './task-status.js';
-import { isCheckLevel } from './check-levels.js';
+import { checkBackingOf, completionBlockersOf, leadOnIt, plainReasonOf, replacedWords, requirementsOf, stageOfCode, taskStatusOf, unverifiedWhenRefuted, workToneOf, type ChecksFact, type TaskStatusFacts } from './task-status.js';
+import { releaseCoverageOf, type ReleaseMemo } from './release-coverage.js';
+import { buildReviewOf } from './review-switch.js';
+import { shownVerdictOf } from './proof.js';
+import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
 import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
@@ -49,7 +52,8 @@ export type WorkIndexItem = {
   /** The viewer's own lead took it on (lead-voice.ts): "<name> is on it.", by the name they gave it, read now. */
   lead?: string;
 };
-export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string };
+/** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it. */
+export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string };
 /** How the list is grouped: the Needs you rows by their ask, then building, then the rest. */
 export type WorkIndexGroup = Ask | 'building' | 'rest';
 export type WorkIndexGroupCounts = Record<WorkIndexGroup, number>;
@@ -394,6 +398,16 @@ function readCursor(value: string | null | undefined, scope: string): Cursor | n
  * Project counters share the page's admitted project/state filter.
  * Cursors bind the admitted scope, project and view, never broaden access. */
 export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions = {}): WorkIndexPage {
+  return readWorkIndexPage(store, now, access, options);
+}
+
+/** An exact family lookup through the list's saved-fact projection. It remains
+ * permission-bound and bypasses pagination, never action-time verification. */
+export function workIndexTask(store: Store, taskId: string, now: Date, access: WorkSummaryAccess, root?: string): WorkIndexItem | null {
+  return readWorkIndexPage(store, now, access, { limit: 1, ...(root === undefined ? {} : { root }) }, taskId).items[0] ?? null;
+}
+
+function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, taskId: string | null = null): WorkIndexPage {
   const projection = registerValidators(store);
   const custody = custodyReadings(store);
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
@@ -401,7 +415,7 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1' : view === 'completed' ? "code='complete'" : '1';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
-    SELECT * FROM ranked WHERE ${filter} AND ($cursorRoot=0 OR
+    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
   ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS} FROM ranked), project_totals AS (
@@ -414,7 +428,7 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
     'earlier_id',earlier_id,'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
-    'result_role',(SELECT role FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
+    'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
     'check_level',(SELECT outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
     'check_follows',(SELECT json_group_array(q.outcome||' '||COALESCE((SELECT substr(f.outcome,instr(f.outcome,':')+1) FROM action_ledger f WHERE f.repo IS page.repo AND f.run_id=page_result_id
@@ -427,7 +441,7 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
-    .all({ ...parameters(now, access, options, custody), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
@@ -440,7 +454,11 @@ export function workIndexPage(store: Store, now: Date, access: WorkSummaryAccess
   };
   // A claimed row says the viewer's own name for their lead.
   const leadName = page.some(row => n(row, 'lead_claim') !== 0) && access.principal === 'operator' && access.viewer != null ? leadNameOf(store, access.viewer) : undefined;
-  return { items: page.map(row => itemOf(row, access.principal, probe, leadName)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
+  // A finished result reads the same readiness the task page does (task-status.ts): its requirements, acceptance,
+  // automatic review and, with checks Off, the release check that covers it.
+  const memo: ReleaseMemo = new Map();
+  const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
+  return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), nextCursor, limit, view };
 }
 
@@ -485,7 +503,32 @@ function listChecksOf(own: 'passed' | 'failed' | null, level: string | null, fol
   return { status: read.status, exitCode: null, head: null, level: read.level, running: read.running };
 }
 
-function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string): WorkIndexItem {
+type ReadinessFacts = Pick<TaskStatusFacts, 'requirements' | 'accepted' | 'blockers'> & { checks: ChecksFact | null };
+/** A ready result's requirements, acceptance and completion blockers from its saved records, as assignmentOf reads them. */
+function resultReadinessFacts(store: Store, now: Date, root: string | undefined, row: Row, recorded: ChecksFact | null, memo: ReleaseMemo): ReadinessFacts {
+  const run = n(row, 'result_id'), repo = s(row, 'repo');
+  if (!run) return { checks: recorded };
+  const report = s(row, 'result_role') === 'scout';
+  // No recorded check result (a build from before results were recorded, or none ran): read its saved receipt, as the page does.
+  const saved = root !== undefined && (recorded === null || recorded.status === 'not-run') ? assignmentChecksForRun(store, root, run, now) : null;
+  const listed: ChecksFact | null = saved === null ? recorded : { status: saved.status, exitCode: saved.exitCode, head: s(row, 'result_head'),
+    ...(saved.level == null ? {} : { level: saved.level }), ...(saved.running == null ? {} : { running: saved.running }), ...(saved.batch == null ? {} : { batch: saved.batch }) };
+  const checks: ChecksFact | null = listed?.level === 'off' && listed.status !== 'passed' && listed.status !== 'failed'
+    ? { ...listed, release: releaseCoverageOf(store, root, repo, s(row, 'result_head'), { memo }) } : listed;
+  const proof = store.proofVerdictFor(run), accepted = store.proofAcceptance(run) !== null;
+  const review = buildReviewOf(store, run);
+  const high = review === null || review.sentBackAs !== null || review.state !== 'reviewed' ? 0 : review.high.length;
+  const checkRequired = requiredCheckCommandFor(store, repo, String(row['id']), checks?.level) !== null;
+  const backing = checkBackingOf(checks);
+  const requirements = requirementsOf(proof?.matrix, backing);
+  const verdict = shownVerdictOf(proof?.verdict ?? null, { checkFailed: !report && checks?.status === 'failed', highFindings: high, reviewPending: review?.state === 'pending',
+    criteriaPassed: requirements === null || requirements.met === requirements.total });
+  const blockers = completionBlockersOf({ report, checks, checkRequired, matrix: proof?.matrix, verdict: proof?.verdict ?? null, accepted, high });
+  return { checks, requirements: unverifiedWhenRefuted(requirements, verdict), ...(accepted ? { accepted } : {}), ...(blockers.length === 0 ? {} : { blockers }) };
+}
+
+function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string,
+  readiness?: (row: Row, checks: ChecksFact | null) => ReadinessFacts): WorkIndexItem {
   const code = String(row['code']), id = String(row['id']);
   const custody = code === 'process-needs-attention' || (code === 'result-needs-attention' && n(row, 'custody_unresolved') === 1);
   const process = custody && probe !== undefined ? processNeedOf(probe(id)) : null;
@@ -575,10 +618,13 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const checkStatus = s(row, 'check_status'), verdict = s(row, 'proof_verdict');
   const finished = reading.stage === 'finished' || reading.stage === 'complete';
   const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' || verdict === 'verified' ? 'passed' as const : null;
+  const listedChecks = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
+  const ready = reading.stage === 'finished' && readiness !== undefined ? readiness(row, listedChecks) : null;
   const shared = taskStatusOf({ stage: reading.stage, ...(reading.need === undefined ? {} : { need: reading.need }), ...(reading.wait === undefined ? {} : { wait: reading.wait }),
     ...(process === null ? {} : { needContext: { build: process.build } }),
     reason: finished ? null : plainReasonOf(reading.stage, code, detail || null), report: s(row, 'result_role') === 'scout',
-    checks: !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']),
+    checks: ready?.checks ?? listedChecks,
+    ...(ready === null ? {} : { requirements: ready.requirements ?? null, ...(ready.accepted ? { accepted: true } : {}), ...(ready.blockers === undefined ? {} : { blockers: ready.blockers }) }),
     completedBy: code !== 'complete' ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),
     ...(lead === null ? {} : { lead, ...(leadName === undefined ? {} : { leadName }) }) });
   label = shared.headline;

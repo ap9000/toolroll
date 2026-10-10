@@ -236,7 +236,7 @@ describe("inherited review context (v51)", () => {
       {
         source: { task: "feat", run: sourceRun, scopeDigest: store.getScope("feat")!.digest },
         brief: { evidenceRoot, key, bytes: briefBytes.length, sha256: createHash("sha256").update(briefBytes).digest("hex"), capture: "machine-authored revision brief (exit 0)" },
-        child: { id: "feat-rev", title: "Revise feat", repair: "apply the annotations" },
+        child: { title: "Revise feat", repair: "apply the annotations" },
         commentIds: null,
       },
       T0,
@@ -967,8 +967,10 @@ describe("inherited review context (v51)", () => {
     storeEvidence(f.store, f.evidenceRoot, f.revisionRun, "proof", "proof.json", Buffer.from(JSON.stringify(proof)), "proof", T0);
     const brief = Buffer.from(JSON.stringify({ schema: 1, sourceTask: f.revisionTaskId, sourceRun: f.revisionRun, sourceScopeDigest: f.store.getScope(f.revisionTaskId)!.digest, head: f.shas.revision, comments: [] }));
     const key = writeEvidenceFile(f.evidenceRoot, f.revisionRun, "next-brief.json", brief);
-    const child = f.store.sealRevision({ source: { task: f.revisionTaskId, run: f.revisionRun, scopeDigest: f.store.getScope(f.revisionTaskId)!.digest }, brief: { evidenceRoot: f.evidenceRoot, key, bytes: brief.length, sha256: sha256(brief), capture: "revision brief" }, child: { id: "second-revision", title: "Next report", repair: "rename report" }, commentIds: null }, T0);
+    const child = f.store.sealRevision({ source: { task: f.revisionTaskId, run: f.revisionRun, scopeDigest: f.store.getScope(f.revisionTaskId)!.digest }, brief: { evidenceRoot: f.evidenceRoot, key, bytes: brief.length, sha256: sha256(brief), capture: "revision brief" }, child: { title: "Next report", repair: "rename report" }, commentIds: null }, T0);
     if (!child.ok) throw new Error(child.reason);
+    // Every version is named from the family root: the revision of a revision is the third version.
+    expect([f.revisionTaskId, child.id]).toEqual(["feat-v2", "feat-v3"]);
     const ref = f.store.refFor("built-in", child.id).id;
     const scope = approve(f.store, child.id, "alex", T0, f.store.getScope(child.id)!.digest, f.approverToken);
     if (!scope.ok) throw new Error(scope.reason);

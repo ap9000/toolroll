@@ -5,7 +5,8 @@ import { manualReviewOnly } from "./proof.js";
 import { diagnoseTaskDispatch, withDispatchDiagnoses, type DispatchDiagnosis } from "./dispatch.js";
 import type { Notification, Store } from "./store.js";
 import { familyCompleted } from "./result-completion.js";
-import { plainReasonOf, stageOfDispatch, taskStatusOf, type TaskStatus } from "./task-status.js";
+import { assignmentStatusFacts, plainReasonOf, stageOfDispatch, taskStatusOf, type TaskStatus } from "./task-status.js";
+import { assignmentOf } from "./assignment.js";
 import { CHAT_CONTROLS, chatControlHref, chatResultHref, type ChatControl } from "./chat-controls.js";
 
 export type PhoneCommand = { kind: "status" } | { kind: "help" } | { kind: "task"; id: string } | { kind: "tasks" } | { kind: "lead" };
@@ -56,11 +57,20 @@ export function projectLabel(repo: string): string {
   return plain(repo.split(/[\\/]/).filter(Boolean).pop() ?? "project", 48);
 }
 
+/** The phone's reading of saved results: `root` lets a finished result read its saved checks, requirements and
+ * review exactly as the console does. Without it, the dispatch diagnosis speaks. */
+export type PhoneRead = { root?: string | undefined; now?: Date; repos?: readonly string[] };
+
 /** The shared headline (task-status.ts) for a dispatch diagnosis on the phone. */
-function headlineFor(store: Store, id: string, d: DispatchDiagnosis): TaskStatus {
+function headlineFor(store: Store, id: string, d: DispatchDiagnosis, read_: PhoneRead = {}): TaskStatus {
   // Any version of a completed family reads Complete, as taskWaitSnapshot says.
   const completed = d.code === "complete" && familyCompleted(store, id);
   const read = stageOfDispatch(d, { completed });
+  // A finished result reads the console's own facts: its requirements, checks Off at release, and what holds it back.
+  if (read.stage === "finished" && read_.root !== undefined && read_.now !== undefined && read_.repos !== undefined) {
+    const assignment = assignmentOf(store, id, read_.now, { principal: "operator", repos: read_.repos }, read_.root);
+    if (assignment !== null && assignment.state === "ready-to-check") return taskStatusOf(assignmentStatusFacts(assignment));
+  }
   const finished = read.stage === "finished" || read.stage === "complete" || read.stage === "failed";
   return taskStatusOf({ stage: read.stage, ...(read.need === undefined ? {} : { need: read.need }), reason: finished ? null : plainReasonOf(read.stage, d.code, d.detail),
     checks: read.stage === "failed" && d.code === "proof-refuted" ? { status: "failed", exitCode: null, head: null } : null });
@@ -97,7 +107,7 @@ function nextStep(d: DispatchDiagnosis): string {
 
 /** repos is the transport's explicit enrollment ceiling, never opened-project
  * history. This snapshot is intentionally bounded and advertises that bound. */
-export function phoneStatus(store: Store, repos: readonly string[], now: Date, focused: string | null = null): string {
+export function phoneStatus(store: Store, repos: readonly string[], now: Date, focused: string | null = null, root?: string): string {
   if (repos.length === 0) return "No connected projects are available to this bridge. Add a project in Toolroll, then send /status again.";
   return store.transact(() => {
     const snapshot = withDispatchDiagnoses(store, store.chatSnapshot(repos, now), now);
@@ -109,7 +119,7 @@ export function phoneStatus(store: Store, repos: readonly string[], now: Date, f
       if (rows.length === 0) continue;
       lines.push(`${group} · ${rows.length}${snapshot.tasksSaturated ? " in this snapshot" : ""}`);
       for (const task of rows.slice(0, 2)) {
-        lines.push(`${plain(task.id, 64)} · ${projectLabel(repos[task.repoIndex]!)}`, `  ${plain(task.title, 64)} — ${headlineFor(store, task.id, task.dispatch!).headline}`);
+        lines.push(`${plain(task.id, 64)} · ${projectLabel(repos[task.repoIndex]!)}`, `  ${plain(task.title, 64)} — ${headlineFor(store, task.id, task.dispatch!, { root, now, repos }).headline}`);
       }
       if (rows.length > 2) lines.push(`  +${rows.length - 2} more in the console`);
       lines.push("");
@@ -127,7 +137,7 @@ const PICK_GROUPS = ["Needs attention", "Working", "Waiting / next up", "Finishe
  * then work in progress, waiting work and recent results; one entry per
  * task (its revisions share it), optionally narrowed by words in the id or
  * title. Bounded, within the chat's own project ceiling. */
-export function phoneTaskChoices(store: Store, repos: readonly string[], now: Date, query: string | null = null, limit = 8): PhoneTaskChoice[] {
+export function phoneTaskChoices(store: Store, repos: readonly string[], now: Date, query: string | null = null, limit = 8, root?: string): PhoneTaskChoice[] {
   if (repos.length === 0) return [];
   return store.transact(() => {
     const snapshot = withDispatchDiagnoses(store, store.chatSnapshot(repos, now), now);
@@ -141,7 +151,7 @@ export function phoneTaskChoices(store: Store, repos: readonly string[], now: Da
       const id = row.rootId ?? row.id;
       if (seen.has(id) || !words.every(word => `${id} ${row.title}`.toLowerCase().includes(word))) continue;
       seen.add(id);
-      choices.push({ id, title: plain(row.title, 64), label: headlineFor(store, row.id, row.dispatch!).headline, group: groupOf(row.dispatch!) });
+      choices.push({ id, title: plain(row.title, 64), label: headlineFor(store, row.id, row.dispatch!, { root, now, repos }).headline, group: groupOf(row.dispatch!) });
       if (choices.length >= limit) break;
     }
     return choices;
@@ -215,13 +225,13 @@ function taskLinkFor(id: string, d: DispatchDiagnosis, result: { run: number; ve
   }
 }
 
-export function phoneTask(store: Store, repos: readonly string[], id: string, now: Date): string {
-  return phoneTaskView(store, repos, id, now).text;
+export function phoneTask(store: Store, repos: readonly string[], id: string, now: Date, root?: string): string {
+  return phoneTaskView(store, repos, id, now, root).text;
 }
 
 /** One task's status for a chat app: the words, its one console link, and
  * the saved result it shows (a reply to it is about that result). */
-export function phoneTaskView(store: Store, repos: readonly string[], id: string, now: Date): { text: string; link: PhoneTaskLink | null; run: number | null } {
+export function phoneTaskView(store: Store, repos: readonly string[], id: string, now: Date, root?: string): { text: string; link: PhoneTaskLink | null; run: number | null } {
   return store.transact(() => {
     const ref = store.lookupRef(id);
     // Check admission before reading a title, run, proof, or diagnosis.
@@ -229,7 +239,7 @@ export function phoneTaskView(store: Store, repos: readonly string[], id: string
     if (task === null || ref?.repo == null) return { text: "No such task in your connected projects. Send /status for task IDs.", link: null, run: null };
     const d = diagnoseTaskDispatch(store, id, now);
     if (d === null) return { text: "This task's status is unavailable. Open it in the console before retrying.", link: null, run: null };
-    const shared = headlineFor(store, id, d);
+    const shared = headlineFor(store, id, d, { root, now, repos });
     const lines = [plain(task.title, 140), `${plain(id, 64)} · ${projectLabel(ref.repo)}`, `As of ${now.toISOString().replace("T", " ").slice(0, 19)} UTC`, "", shared.headline];
     const blocker = d.blockerTaskId === null ? null : store.lookupRef(d.blockerTaskId);
     const hiddenDependency = blocker !== null && (blocker.repo === null || !repos.includes(blocker.repo));

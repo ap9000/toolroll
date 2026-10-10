@@ -63,7 +63,7 @@ import { refuse,screen,type Screen } from "./chrome.js";
 import { chatResultHref,chatReturnWithLatest,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
 import { chatAckPage,chatPage,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
 import { type ProjectPeek } from "./render-pages.js";
-import { completionForm,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
+import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
 export function createChatHandlers(runtime: ServerRuntime) {
   const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
@@ -199,7 +199,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const roomId = url.searchParams.get('conversation');
     const resultLink = (href: string) => roomId ? href + '&conversation=' + encodeURIComponent(roomId) : href;
     // Accept and finish is here: the one act that accepts the person's own checks and finishes the task.
-    const finishes = resultRun !== null && who.role === 'approver' && focusTask?.assignment?.state === 'ready-to-check' && focusTask.assignment.receipt?.runId === resultRun.id;
+    // Never offered where Complete is refused whatever is accepted (a failed check, a HIGH finding).
+    const finishes = resultRun !== null && who.role === 'approver' && focusTask?.assignment?.state === 'ready-to-check' && focusTask.assignment.receipt?.runId === resultRun.id &&
+      hardBlockerOf(focusTask.assignment) === null;
     const resultPanel =
       resultRun === null
         ? null
@@ -279,7 +281,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     if (repos.length > 0) {
       try {
         fleetSnapshot = store.chatSnapshot(repos, now);
-        const summaries = workIndexPage(store, now, { principal: 'operator', repos, includeUnplaced: false, viewer: who.name }, { limit: 100 }).items;
+        const summaries = workIndexPage(store, now, { principal: 'operator', repos, includeUnplaced: false, viewer: who.name }, { limit: 100, root: evidenceRoot }).items;
         fleetSnapshot.assignmentStates = Object.fromEntries(summaries.flatMap(value =>
           [value.rootId, value.activeTaskId].map(id => [id, { state: value.assignmentState, label: value.status.label, detail: value.status.detail }])));
         fleetSnapshot.attentionCount = needsYouBadge(null);
@@ -1243,9 +1245,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
         agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt,
         activity: runActivityOf(store, run, now) };
     });
-    const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT });
-    const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT });
-    const done = workIndexPage(store, now, access, { view: "completed", limit: WORK_INDEX_MAX_LIMIT });
+    const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
+    const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
+    const done = workIndexPage(store, now, access, { view: "completed", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
     const counts: BrowserHomeCount[] = [
       { key: "working", label: "Working now", value: agents.length, href: "/work?view=running" },

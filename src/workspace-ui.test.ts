@@ -20,7 +20,8 @@ describe("the result's Accept words", () => {
       .toEqual({ label: "Accept without checks", ready: false, why: "Checks didn't run.", effect: "Finishes the task. The branch stays; publishing isn't set up." });
     expect(acceptWordsOf({ checks: "passed", unmet: 2, action: "complete", publishing: "other", proof: true }))
       .toEqual({ label: "Accept without checks", ready: false, why: "2 requirements aren't met.", effect: "Finishes the task. Nothing is published." });
-    expect(acceptWordsOf({ checks: "off", unmet: 1, action: "complete", publishing: "off", proof: true }).why).toBe("Checks are off for this project and 1 requirement isn't met.");
+    // Checks deliberately Off are checked at release: only the unmet requirement is said.
+    expect(acceptWordsOf({ checks: "off", unmet: 1, action: "complete", publishing: "off", proof: true }).why).toBe("1 requirement isn't met.");
     expect(acceptWordsOf({ checks: null, unmet: 0, action: "complete", publishing: "off", proof: true }).label).toBe("Accept without checks");
   });
 

@@ -214,7 +214,7 @@ export function repairStaleStatuses(store: Store, now: Date): { exitsRecorded: n
  * `repos`: the only projects to report (a remote person limited to some projects); null is the whole installation.
  * A limited report counts only those projects' tasks and leaves out what belongs to the installation as a whole:
  * the release check, plan windows and the lead line are empty, never another project's. */
-export function installationStatus(store: Store, now: Date, viewer: string | null = currentActor()?.account ?? null, repos: readonly string[] | null = null): InstallationStatus {
+export function installationStatus(store: Store, now: Date, viewer: string | null = currentActor()?.account ?? null, repos: readonly string[] | null = null, root?: string): InstallationStatus {
   const admitted = (row: Record<string, unknown>) => repos === null || typeof row["repo"] === "string" && repos.includes(row["repo"]);
   const access = { principal: "operator" as const, repos, includeUnplaced: repos === null };
   const runningRows = store.handle.prepare(`SELECT run.id, run.role, run.phase, ref.id AS task_ref, ref.external_id AS task, ref.repo
@@ -295,7 +295,7 @@ export function installationStatus(store: Store, now: Date, viewer: string | nul
         observedAt: String(row["observed_at"]),
       })),
     signIn: pauses.map(one => ({ provider: one.provider, reason: signInReason(one), command: signInCommand(one), since: one.openedAt })),
-    tasks: workIndexPage(store, now, { ...access, viewer }, { limit: 8 }).items
+    tasks: workIndexPage(store, now, { ...access, viewer }, { limit: 8, ...(root === undefined ? {} : { root }) }).items
       .map(one => ({ task: one.rootId, title: one.title, headline: one.status.label, sentence: one.status.detail })),
     lead: repos !== null ? null : (() => {
       // Only the asker's own lead: another person's lead is never "Your lead".

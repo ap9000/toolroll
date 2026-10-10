@@ -14,13 +14,14 @@ import { verificationEvidence } from "./verification-evidence.js";
 import { reproveApprover, type VerifiedApprover } from "./principal.js";
 import { noteAssignmentStatus } from "./assignment-status.js";
 import { historicalAssessmentReason } from "./assignment-presentation.js";
-import { manualReviewOnly } from "./proof.js";
+import { manualReviewOnly, shownVerdictOf, type ProofVerdict } from "./proof.js";
 import { ACCEPT_NEEDS_REASON, cantAcceptYetOf } from "./result-acts.js";
-import { runCheckLevel, type CheckLevel } from "./check-levels.js";
+import { requiredCheckCommandFor, runCheckLevel, type CheckLevel } from "./check-levels.js";
 import { followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
 import { buildReviewOf, findingWords, type BuildReviewView } from "./review-switch.js";
 import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type WaitKey } from "./needs-you.js";
-import { assignmentStageOf, type ChecksBatch } from "./task-status.js";
+import { assignmentStageOf, checkBackingOf, completionBlockersOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
+import { releaseCoverageOf, type ReleaseCoverage, type ReleaseMemo } from "./release-coverage.js";
 import { leadClaimOf, type LeadClaim } from "./lead-voice.js";
 
 export type AssignmentAccess = WorkSummaryAccess;
@@ -34,6 +35,8 @@ export type AssignmentChecks = {
   running?: "quick" | "full" | null;
   /** A batch check (batch-checks.ts): waiting for its batch, or how it was checked. */
   batch?: ChecksBatch | null;
+  /** Checks Off: the passing full release check that contains this commit (release-coverage.ts), read now, never sealed. */
+  release?: ReleaseCoverage | null;
 };
 export type AssignmentReceipt = {
   digest: string; rootId: string; taskId: string; runId: number;
@@ -72,6 +75,9 @@ export type AssignmentSnapshot = {
   earlierActive?: number;
   /** Of those, how many are running rather than only queued; present with earlierActive. */
   earlierRunning?: number;
+  /** The result as it reads today (task-status.ts): the verdict it shows, whether its checks were deliberately Off, and
+   * what refuses Complete. Derived at read time; never part of the sealed receipt. Null without a result. */
+  readiness?: { verdict: ProofVerdict | null; checksOff: boolean; blockers: CompletionBlocker[] } | null;
 };
 
 /** Status-first handoff for routine reads. Fetch get_assignment only when
@@ -86,7 +92,7 @@ export function assignmentBrief(assignment: AssignmentSnapshot | null) {
       base: receipt.base, head: receipt.head, completionKind: receipt.completionKind,
       checks: receipt.checks, proofAcceptance: receipt.proofAcceptance, verdict: receipt.proof?.verdict ?? null,
       criteria: { passed: receipt.proof?.matrix.filter(row => row.state === "pass").length ?? 0, total: receipt.proof?.matrix.length ?? 0 }, evidence: receipt.evidence },
-    publication: assignment.publication, review: assignment.review, deployment: assignment.deployment };
+    publication: assignment.publication, review: assignment.review, deployment: assignment.deployment, readiness: assignment.readiness ?? null };
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 /** A lookup added with lead-quiet, read safely: a deploy proves completion with this code over the INSTALLED runtime's
@@ -95,7 +101,7 @@ function olderStoreSafe<T>(read: () => T, absent: T): T {
   try { return read(); } catch (error) { if (error instanceof TypeError || /no such (table|column)/.test(String(error))) return absent; throw error; }
 }
 /** A check as the receipt digest seals it: presentation-only fields (check-levels.ts) left out. */
-const sealedChecks = ({ level: _level, running: _running, batch: _batch, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch"> => proof;
+const sealedChecks = ({ level: _level, running: _running, batch: _batch, release: _release, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch" | "release"> => proof;
 const OWNER_ACTION = "assignment claimed";
 const CHECK_ACTION = COMPLETION_ACTION;
 const actorOf = (owner: AssignmentOwner) => `${owner.kind}:${owner.id}`;
@@ -162,7 +168,7 @@ function buildChecks(store: Store, root: string | undefined, runId: number): Ass
   } catch { return unavailable("Saved checks could not be read."); }
 }
 
-export function assignmentOf(store: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string): AssignmentSnapshot | null {
+export function assignmentOf(store: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string, memo?: ReleaseMemo): AssignmentSnapshot | null {
   const family = store.taskFamilyOf(taskId, access.repos, access.principal === "operator" && access.includeUnplaced === true);
   if (family === null) return null;
   const current = family.current;
@@ -197,7 +203,10 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
   const unavailable = family.versions.flatMap(version => store.runsFor(version.refId).flatMap(run =>
     store.artifactsFor(run.id).filter(artifact => root === undefined || !readVerifiedArtifact(root, artifact).ok)
       .map(artifact => `Saved ${artifact.kind} #${artifact.id} (run ${run.id}) is unavailable or changed.`)));
-  const checks = result === null ? null : assignmentChecksForRun(store, root, result.id, now);
+  const ownChecks = result === null ? null : assignmentChecksForRun(store, root, result.id, now);
+  // Checks Off: a passing full release check that contains this commit covers it, read now from the existing receipts.
+  const checks = ownChecks === null || ownChecks.level !== "off" || ownChecks.status === "passed" || ownChecks.status === "failed" ? ownChecks
+    : { ...ownChecks, release: releaseCoverageOf(store, root, current.repo, result!.headRevision, memo === undefined ? {} : { memo }) };
   const finishedBuild = result?.role === "builder" && (result.outcome === "built" || result.outcome === "no-change") &&
     result.finishedAt !== null && /^[a-f0-9]{40}$/.test(result.headRevision ?? "");
   // Finished work returns to its lead or user. Strict terms and previous model
@@ -361,6 +370,7 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
         attention, receipt: receipt?.digest ?? null }), acknowledged: false } : null;
   const publication = result === null ? null : store.publicationForRun(result.id);
   const lead = state === "complete" || state === "cancelled" || access.principal !== "operator" ? null : leadClaimOf(store, family.root.id, now, access.viewer);
+  const readiness = receipt === null ? null : readinessOf(store, receipt, current.repo, review);
   // Existing saved inputs and output, read only after family admission. Keep
   // polling briefs small; full reads disclose exactly which excerpts are shortened.
   const planId = result?.planRevision == null ? null : store.getPlanRevision(result.planRevision)?.artifact;
@@ -378,7 +388,22 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
   return { version: 1, rootId: family.root.id, activeTaskId: current.id, repo: current.repo, title: family.root.title,
     state, detail, primaryAction, attention: [...new Set(attention)], attempts, owner, receipt, savedContext, completion, handoff,
     publication: publication === null ? null : { state: publication.state, prUrl: publication.prUrl, remoteState: publication.remoteState },
-    review, deployment: { status: "not-recorded" }, ...(need === null ? {} : { need }), ...(lead === null ? {} : { lead }), ...(earlierActive.length === 0 ? {} : { earlierActive: earlierActive.length, earlierRunning }) };
+    review, deployment: { status: "not-recorded" }, readiness, ...(need === null ? {} : { need }), ...(lead === null ? {} : { lead }), ...(earlierActive.length === 0 ? {} : { earlierActive: earlierActive.length, earlierRunning }) };
+}
+
+/** The result's shown verdict and completion blockers (task-status.ts), from the receipt, the project's approved check
+ * and the automatic review. A HIGH finding a revision already took is resolved there. */
+function readinessOf(store: Store, receipt: AssignmentReceipt, repo: string | null, review: BuildReviewView | null): NonNullable<AssignmentSnapshot["readiness"]> {
+  const report = receipt.completionKind === "research-report";
+  const high = review === null || review.sentBackAs !== null || review.state !== "reviewed" ? 0 : review.high.length;
+  const checkRequired = olderStoreSafe(() => requiredCheckCommandFor(store, repo, receipt.taskId, receipt.checks.level), null) !== null;
+  const matrix = receipt.proof?.matrix ?? [];
+  const backing = checkBackingOf(receipt.checks);
+  const verdict = shownVerdictOf(receipt.proof?.verdict ?? null, { checkFailed: !report && receipt.checks.status === "failed", highFindings: high,
+    reviewPending: review?.state === "pending", criteriaPassed: matrix.every(row => requirementWordOf(row, null, backing) === "Met") });
+  const blockers = completionBlockersOf({ report, checks: receipt.checks, checkRequired, matrix, verdict: receipt.proof?.verdict ?? null,
+    accepted: receipt.proofAcceptance !== null, high });
+  return { verdict, checksOff: !report && receipt.checks.level === "off", blockers };
 }
 
 type MutationResult = { ok: true; assignment: AssignmentSnapshot } | { ok: false; reason: string; message: string };
@@ -429,6 +454,9 @@ function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDi
   const receipt = current.receipt;
   if (current.state !== "ready-to-check" && current.state !== "complete") return { ok: false, reason: "not-ready", message: "This assignment still has unresolved execution, scope or decisions." };
   if (current.state !== "complete") {
+    // The one readiness guard: a failed or missing required check, an unresolved requirement or HIGH finding refuses.
+    const blockers = current.readiness?.blockers ?? [];
+    if (blockers.length > 0) return { ok: false, reason: "not-ready", message: blockers.map(one => one.message).join(" ") };
     // v102: declared paths are only a promise. A result whose actual diff reaches protected files, on a
     // scope one person approved, completes only by someone else — two people have then seen the work.
     const problem = store.protectedResultProblem(receipt.taskId, familyChangedFiles(store, receipt.taskId, receipt.runId, root), actor.startsWith("operator:") ? actor.slice("operator:".length) : null);
@@ -483,9 +511,11 @@ class Undone extends Error { constructor(readonly result: { ok: false; reason: s
  * (no reason needed), or an exception a report that doesn't match its changes needs a reason for. Null when
  * Accept and finish is a plain completion: nothing is owed (no proof, a failed check, or a verified result),
  * or it was already accepted. */
-export function owedAcceptance(receipt: AssignmentReceipt | null): "person-check" | "exception" | null {
+export function owedAcceptance(receipt: AssignmentReceipt | null, blockers: readonly CompletionBlocker[] = []): "person-check" | "exception" | null {
   if (receipt === null || receipt.proofAcceptance !== null) return null;
   if (personCheckPending(receipt)) return "person-check";
+  // An unresolved requirement is resolved only by an acceptance that says why.
+  if (blockers.some(one => one.key === "criteria")) return "exception";
   return cantAcceptYetOf(receipt.proof?.verdict ?? null, receipt.proof?.reasons ?? [], false) === ACCEPT_NEEDS_REASON ? "exception" : null;
 }
 
@@ -511,7 +541,7 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
         return { ok: false, reason: "stale", message: "This result changed. Open the current result before accepting it." };
       }
       // Already complete, or nothing owed: the plain completion of the receipt as read.
-      const owed = before.state === "ready-to-check" ? owedAcceptance(receipt) : null;
+      const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
       // An exception is accepted only with its reason: never a completion that skips it.
       if (owed === "exception" && input.note === null) return { ok: false, reason: "needs-reason", message: `${ACCEPT_NEEDS_REASON}.` };
       let digest = receipt.digest;

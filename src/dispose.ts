@@ -803,10 +803,6 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
   };
   const briefBytes = Buffer.from(JSON.stringify(draftBrief, null, 2), "utf8");
   const key = writeEvidenceFile(evidenceRoot, sourceRunId, `repair-brief-${sourceRunId}-${attempt}.json`, briefBytes);
-  // Suffixes survive truncation (the CI-repair rule, verbatim): the prefix
-  // gives way, the identity-bearing tail never does.
-  const suffix = observation ? `-evidence-${attempt}` : `-fix-${attempt}`;
-  const draftId = `${rootTask.slice(0, 64 - suffix.length)}${suffix}`;
   // The draft files through the ONE revision boundary: the source's goal,
   // exclusions, touches, rubric, risk, quality, posture, budget, overrides
   // and pins are read from the SOURCE ROWS inside the seal — the scope
@@ -816,7 +812,6 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
       source: { task: ref.externalId, run: sourceRunId, scopeDigest: scope.digest },
       brief: { evidenceRoot, key, sha256: createHash("sha256").update(briefBytes).digest("hex"), bytes: briefBytes.length, capture: "machine-authored repair brief (exit 0)" },
       child: {
-        id: draftId,
         title: observation ? `Collect missing evidence for ${ref.externalId}` : verification === undefined ? `repair ${ref.externalId}: ${unresolved.length} criteri${unresolved.length === 1 ? "on" : "a"} unmet` : `Fix failed checks for ${ref.externalId}`,
         repair: observation ? `Collect only the missing observations for ${unresolved.join(", ")}. Keep the saved candidate unchanged. The machine runs supported focused test observations and reuses its intact passing gate; a fresh review assesses the added evidence.` : verification === undefined ? `repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: ${unresolved.join(", ")}.` : "Diagnose the saved failed project check and repair within the original scope. Preserve the acceptance criteria and verification command; the revision brief binds the exact failure evidence.",
       },

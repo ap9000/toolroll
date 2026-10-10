@@ -275,7 +275,7 @@ import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFr
 import { WorktreePool } from "./worktree.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
 import { worktreeAdoptionNotice } from "./worktree-notices.js";
-import { workIndexPage, WorkIndexCursorError, type WorkIndexPage } from "./work-index.js";
+import { workIndexPage, workIndexTask, WorkIndexCursorError, type WorkIndexPage } from "./work-index.js";
 import { readExecutorOf } from "./read-executor.js";
 import { parseWorkView } from "./workspace-ui.js";
 import { taskWorkSummaryOf } from "./work-summary.js";
@@ -9262,10 +9262,10 @@ async function statusCommand(
   // that belongs to the installation or other projects (updates, integrations, builds by project, unsent replies).
   const lens = context.principal?.lens ?? null;
   if (lens !== null) {
-    const status = installationStatus(context.store, context.clock(), viewer, lens);
+    const status = installationStatus(context.store, context.clock(), viewer, lens, context.evidenceRoot);
     return succeed(context.write, context.json, command, { ...status, projects: [] }, () => renderInstallationStatus(status, true));
   }
-  const status = installationStatus(context.store, context.clock(), viewer);
+  const status = installationStatus(context.store, context.clock(), viewer, null, context.evidenceRoot);
   // One line, only when a newer Toolroll exists; offline or switched off says nothing.
   const current = PACKAGE_VERSION;
   const method = installMethod(context.installBin);
@@ -9941,6 +9941,7 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
     view: parseWorkView(rawView ?? null), limit, cursor: text(flags, 'cursor') ?? null,
     ...(wanted === undefined ? {} : { state: wanted as TaskState }),
     ...(text(flags, 'repo') === undefined ? {} : { project: text(flags, 'repo')! }),
+    root: context.evidenceRoot,
   };
   const refused = (error: unknown): number => {
     if (!(error instanceof WorkIndexCursorError)) throw error;
@@ -9996,10 +9997,18 @@ function showTask(positional: readonly string[], context: Context): number {
     const repo = store.lookupRef(blocker)?.repo;
     return repo != null && lens.includes(repo);
   });
+  const work = taskWorkSummaryOf(store, id, now, access);
+  const current = assignmentOf(store, id, now, access, context.evidenceRoot);
+  // Read the same saved facts and statusOf path as task list. File health remains
+  // in the assignment diagnostics and action-time guards; it cannot rewrite history.
+  const listed = workIndexTask(store, id, now, access, context.evidenceRoot);
+  const shared = listed === null ? null : { headline: listed.status.label, sentence: listed.status.detail };
+  const primaryAction = listed === null ? work?.primaryAction ?? null : listed.primaryAction;
   const detail = {
     task,
-    work: taskWorkSummaryOf(store, id, now, access),
-    assignment: assignmentBrief(assignmentOf(store, id, now, access, context.evidenceRoot)),
+    work: work === null || listed === null ? work : { ...work, status: { ...work.status, label: listed.status.label, detail: listed.status.detail, tone: listed.status.tone }, primaryAction },
+    status: shared === null ? null : { headline: shared.headline, sentence: shared.sentence },
+    assignment: assignmentBrief(current),
     ref: ref.id,
     // One phrase for every inaccessible blocker, so even their number stays private.
     blockedBy: visibleBlockers.length === blockers.length ? visibleBlockers : [...visibleBlockers, "a task in another project"],
@@ -10040,8 +10049,8 @@ function showTask(positional: readonly string[], context: Context): number {
     `${task.id}  ${task.state}${ref.deliverable === "report" ? "  (scout — delivers a report)" : ""}`,
     `  ${task.title}`,
     ...(detail.work === null ? [] : [
-      `  status: ${detail.work.status.label}`,
-      ...(detail.work.primaryAction === null ? [] : [`  next: ${detail.work.primaryAction.label}${detail.work.primaryAction.target.decisionId === null ? "" : ` — decision #${detail.work.primaryAction.target.decisionId}`}`]),
+      `  status: ${shared?.headline ?? detail.work.status.label}${shared === null ? "" : ` — ${shared.sentence}`}`,
+      ...(primaryAction === null ? [] : [`  next: ${primaryAction.label}${primaryAction.target.decisionId === null ? "" : ` — decision #${primaryAction.target.decisionId}`}`]),
     ]),
     // The closed machine-authored verdict (Priority 2), computed once at
     // completion — never re-derived here. Same words `verdictWords`
@@ -10049,7 +10058,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(task.state !== "done" || detail.proofVerdict === null
       ? []
       : [
-          `  proof: ${proofVerdictWords(detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
+          `  proof: ${proofVerdictWords(current?.receipt?.runId === latestFinished?.id ? current?.readiness?.verdict ?? detail.proofVerdict : detail.proofVerdict, detail.proofReasons).word}${detail.proofAccepted ? " (accepted)" : ""}`,
           ...(detail.proofReasons.length > 0 ? [`    ${detail.proofReasons.join("; ")}`] : []),
           ...matrixWords(detail.proofMatrix),
           ...(detail.semanticCoverage === null ? [] : coverageWords(detail.semanticCoverage).map(line => `  ${line}`)),

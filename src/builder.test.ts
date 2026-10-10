@@ -3327,7 +3327,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       const sealed = store.sealRevision({
         source: { task: "t-1", run: sourceRun.id, scopeDigest: store.getScope("t-1")!.digest },
         brief: { evidenceRoot, key, bytes: briefBytes.length, sha256: sha("sha256").update(briefBytes).digest("hex"), capture: "machine-authored revision brief (exit 0)" },
-        child: { id: "t-1-rev", title: "Revise the guard", repair: "apply the comments" },
+        child: { title: "Revise the guard", repair: "apply the comments" },
         commentIds: null,
       }, T0);
       if (!sealed.ok) throw new Error(sealed.detail);
@@ -3483,7 +3483,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     const disposition = disposeBuildOutcome(context, { ok: true, committed: true, branch: "feat/a", summary: "Built" });
     expect(disposition.kind).toBe("built");
     expect(store.repairChainFor(req.runId!)).toBeNull();
-    expect(store.getTask("t-1-fix-1")).toBeNull();
+    expect(store.getTask("t-1-v2")).toBeNull();
     expect(store.openReviewRequests().filter(one => one.run === req.runId)).toHaveLength(0);
     expect(checks).toBe(1); // disposition never repeats the full gate
   });

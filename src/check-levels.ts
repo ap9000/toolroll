@@ -127,6 +127,12 @@ export function checkCommandFor(store: Store, repo: string, level: CheckLevel): 
   return { level: "full", command: store.liveVerifyCommand(repo) };
 }
 
+/** Readiness uses the result's level, falling back to the task/project for legacy
+ * runs. Quick's approved command (or its Full fallback) is required; Off is not. */
+export function requiredCheckCommandFor(store: Store, repo: string | null, taskId: string, level: CheckLevel | null | undefined): VerifyCommand | null {
+  return repo === null ? null : checkCommandFor(store, repo, level ?? effectiveCheckLevel(store, repo, taskId).level).command;
+}
+
 /** The builder records which level a run used, so its result says it honestly. */
 export function recordRunCheckLevel(store: Store, run: { id: number; taskId: string; repo: string | null }, level: CheckLevel, from: EffectiveCheckLevel["from"], now: Date): void {
   store.recordAction({ at: now.toISOString(), actor: "system", repo: run.repo, taskId: run.taskId, runId: run.id, action: RUN_LEVEL_ACTION, outcome: level, source: "work",
