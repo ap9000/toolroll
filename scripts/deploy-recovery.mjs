@@ -7,7 +7,10 @@
 // the live database, the previous runtime never starts on it unless the
 // rehearsal proved it reads the result: the verified backup goes back first.
 // A stop that was not proved (old processes may still run) or a new service
-// that may be running is left as it is, for a person to inspect.
+// that may be running is left as it is, for a person to inspect. A deployment
+// journals "preparing" before it installs its pause, so a failure between the
+// two still knows the pause's owner: one held by this deployment is lifted,
+// and without one the journal stays resumable under the same id.
 export const PAUSED_BEFORE_SWAP = Object.freeze(["admission-paused", "frozen", "backup-verified", "rehearsed"]);
 /** The candidate's store opened the live database, or the new service ran on it. */
 export const MIGRATION_STARTED = Object.freeze(["migrating", "migrated", "start-failed"]);
@@ -16,10 +19,16 @@ const RESTARTABLE = Object.freeze(["stopped", "backup-restored", ...MIGRATION_ST
 /** effects: stopProved() says whether every old process is gone (asked only at "stopping"),
  * restoreBackup() puts the verified backup in place of the live database and returns where the
  * live one was kept, restoreService() starts the previous definition and waits until it answers,
- * removeGate() lifts this deployment's own pause, mark(phase) journals the outcome.
+ * removeGate() lifts this deployment's own pause and says whether it held one, mark(phase) journals the outcome.
  * previousRuntimeCompatible: the rehearsal proved the previous runtime reads the migrated database.
  * Returns the words to show, or null when nothing was this function's to undo. */
 export function recoverFailedDeployment(phase, effects, { previousRuntimeCompatible = false } = {}) {
+  if (phase === "preparing") {
+    // Stopped between journaling and the next marker: the pause may or may not be in place.
+    if (!effects.removeGate()) return null;
+    effects.mark("released");
+    return "New work resumed: the deployment stopped while pausing new work, before the swap, and lifted its pause.";
+  }
   if (PAUSED_BEFORE_SWAP.includes(phase)) {
     effects.removeGate();
     effects.mark("released");
@@ -55,17 +64,23 @@ export function waitUntilHealthy(probe, { attempts = 90, pause = () => sleepSync
 }
 export function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-/** Ctrl-C, a closed terminal or a kill end the deployment through process.exit, so the same
- * exit recovery runs as for any other failure. The recovery itself is synchronous: a second
- * signal waits until it has finished. */
-export function exitOnSignals(proc = process) {
+/** A running deployment supplies onSignal to request cancellation and unwind its awaited
+ * work before exit. In particular SQLite's backup must settle and close its writer first.
+ * Repeated signals cannot force exit through that cleanup. */
+export function exitOnSignals(proc = process, onSignal = code => proc.exit(code)) {
+  let stopping = false;
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
-    proc.on(signal, () => { console.error(`Stopping: ${signal} received.`); proc.exit(code); });
+    proc.on(signal, () => {
+      if (stopping) return;
+      stopping = true;
+      console.error(`Stopping: ${signal} received.`);
+      onSignal(code, signal);
+    });
   }
 }
 
 /** A deployment that ends in failure, by an error, a refusal or a signal, recovers on its way out. */
-export function recoverOnExit(recover, proc = process) {
-  proc.on("exit", code => { if (code !== 0) recover(); });
-  exitOnSignals(proc);
+export function recoverOnExit(recover, proc = process, { onSignal, release = () => {} } = {}) {
+  proc.on("exit", code => { try { if (code !== 0) recover(); } finally { release(); } });
+  exitOnSignals(proc, onSignal);
 }
