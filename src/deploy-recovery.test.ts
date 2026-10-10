@@ -11,6 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { recoverFailedDeployment, recoverOnExit, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
 import { codingBackupBeforeSwap, restoreDeploymentBackup, stopProved } from '../scripts/deploy-phases.mjs';
 import { fakePid } from '../test/fake-pid.js';
+import { deploymentChild } from '../test/deploy-process.js';
+import { openStore } from './store.js';
+import { CodingWorkspace } from './coding-workspace.js';
+import { installUpdateGate, updateGateOwned } from './desktop-update-gate.js';
+import { acquireDeploymentLock } from './deploy-lock.js';
 
 /** The effects a failed browser deployment may take, recorded in order. */
 function effects(stopProved = false, gateHeld = true) {
@@ -135,6 +140,71 @@ test('a deployment that exits in failure, or on a signal, recovers on its way ou
   expect(recovered).toBe(1);
   proc.emit('SIGTERM');
   expect(recovered).toBe(2);
+});
+
+test.each([['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const)('%s during coding backup closes its writer before exit recovery removes both gates', async (signal, code) => {
+  const root = mkdtempSync(join(tmpdir(), 'deploy-signal-backup-'));
+  const database = join(root, 'orders.db'), journalFile = join(root, 'deployment.json');
+  const id = '0f1e2d3c-4b5a-4968-8776-655443322110';
+  const store = openStore(database);
+  await new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(root, 'worktrees') }).close();
+  installUpdateGate(store.raw(), id);
+  store.close();
+  fs.writeFileSync(journalFile, JSON.stringify({ id, phase: 'frozen' }));
+  const module = (name: string) => JSON.stringify(new URL(name, import.meta.url).href);
+  const run = deploymentChild(`
+    import { createRequire } from 'node:module';
+    import { readFileSync } from 'node:fs';
+    import { acquireDeploymentLock } from ${module('../dist/deploy-lock.js')};
+    import { browserDeployment } from ${module('../scripts/deploy-phases.mjs')};
+    import { recoverOnExit } from ${module('../scripts/deploy-recovery.mjs')};
+    import * as gate from ${module('../dist/desktop-update-gate.js')};
+    import * as update from ${module('../dist/desktop-update.js')};
+    import * as coding from ${module('../dist/coding-update.js')};
+    const database = ${JSON.stringify(database)}, journalFile = ${JSON.stringify(journalFile)};
+    const deploymentLock = acquireDeploymentLock(journalFile), cancellation = new AbortController();
+    const sqlite = createRequire(import.meta.url)('node:sqlite'), backup = sqlite.backup;
+    const resume = new Promise(resolve => process.once('message', resolve));
+    sqlite.backup = async (...args) => {
+      process.send('writer-open');
+      await resume;
+      return backup(...args);
+    };
+    const phases = browserDeployment({ database, journalFile, stageDir: ${JSON.stringify(root)},
+      candidateHead: 'c'.repeat(40), deploymentLock, signal: cancellation.signal, oldRt: { gate, update }, say: () => {} });
+    recoverOnExit(() => phases.recoverJournal(), process, {
+      release: () => deploymentLock.release(),
+      onSignal: (code, name) => {
+        process.exitCode = code; cancellation.abort(Error(name)); process.send('signalled');
+      },
+    });
+    try { await phases.ensureCodingBackup(coding, JSON.parse(readFileSync(journalFile, 'utf8'))); }
+    catch (error) { if (!cancellation.signal.aborted) throw error; }
+    finally { process.disconnect(); }
+  `);
+  const probe = new DatabaseSync(`${database}.coding.sqlite`);
+  try {
+    expect(await run.message()).toBe('writer-open');
+    expect(() => probe.exec('BEGIN IMMEDIATE')).toThrow('locked');
+    run.child.kill(signal);
+    expect(await run.message()).toBe('signalled');
+    // Cancellation has arrived, but the backup is still unresolved and must keep admission closed.
+    expect(() => probe.exec('BEGIN IMMEDIATE')).toThrow('locked');
+    expect(() => acquireDeploymentLock(journalFile, 0)).toThrow('busy');
+    const paused = new DatabaseSync(database);
+    try { expect(updateGateOwned(paused, id)).toBe(true); } finally { paused.close(); }
+    run.child.kill(signal); // A second signal cannot cut through the asynchronous cleanup.
+    run.child.send('finish-backup');
+    const result = await run.closed;
+    expect(result, result.output).toMatchObject({ code, signal: null });
+    expect(result.output).not.toContain('database is locked');
+    expect(JSON.parse(readFileSync(journalFile, 'utf8')).phase).toBe('released');
+    probe.exec('BEGIN IMMEDIATE; ROLLBACK');
+    expect(probe.prepare("SELECT count(*) n FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_coding_update_*'").get()?.n).toBe(0);
+    const after = new DatabaseSync(database);
+    try { expect(updateGateOwned(after, id)).toBe(false); } finally { after.close(); }
+    acquireDeploymentLock(journalFile, 0).release();
+  } finally { await run.stop(); probe.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 /** deploy-browser's backup restore for a scratch database and stage. */

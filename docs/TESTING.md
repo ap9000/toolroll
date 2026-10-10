@@ -117,8 +117,14 @@ the deployer's runtime in their own step, put back together on failure. A
 deployment that fails before its swap lifts its own pause, including while
 installing it. One killed outright with new work still paused is lifted
 through `toolroll release --release-gate <id>`, which proves the swap never
-began first. Every wait has a time
-limit. `toolroll skills get release` has the details.
+began first; add `--yes` to lift that pause. Deploy, resume, recovery and
+confirmed gate release share an exclusive lock beside the staging journal.
+It stays held through proof, gate removal and the saved release record, and
+the OS releases it when the process dies. Do not delete its `.lock.sqlite`
+file: it is reused for later attempts. Signals let an in-flight backup close
+its SQLite writer before recovery runs. Lock acquisition waits at most five
+seconds, then refuses without changing the pause. `toolroll skills get release`
+has the details.
 
 ## Unit tests (`npm test`)
 

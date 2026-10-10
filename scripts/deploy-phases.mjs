@@ -96,13 +96,18 @@ export function codingBackupBeforeSwap(r, database) {
  * pgrep and curl), the staged runtime (proveStaged, load, loadCodingDeploymentRuntime), fetch, sleep, say,
  * requireTrue (which ends the deployment) and pruneStaged. */
 export function browserDeployment({
-  database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt,
+  database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
 }) {
   const short = candidateHead.slice(0, 7);
-  const readJournal = () => JSON.parse(readFileSync(journalFile, "utf8"));
-  const save = (r, phase) => { r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
+  const assertLocked = () => deploymentLock.assertHeld(journalFile);
+  const checkpoint = () => { assertLocked(); signal?.throwIfAborted(); };
+  // Await settlement, never race an open SQLite backup against cancellation.
+  const settle = async promise => { const result = await promise; checkpoint(); return result; };
+  const readJournal = () => { assertLocked(); return JSON.parse(readFileSync(journalFile, "utf8")); };
+  const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
   const loadPhase = phase => {
+    checkpoint();
     // The plane's records are re-read before every phase, not only at entry:
     // a revoked approval or a changed command between phases stops the swap.
     const current = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
@@ -135,6 +140,7 @@ export function browserDeployment({
   // finish leaves the service stopped and names the command that resumes it.
   let recoveryAttempted = false;
   function recoverJournal() {
+    assertLocked();
     if (recoveryAttempted || !existsSync(journalFile)) return true;
     recoveryAttempted = true;
     let r;
@@ -148,6 +154,8 @@ export function browserDeployment({
           const db = openDeploymentDatabase(database);
           try {
             if (!oldRt.gate.updateGateOwned(db, r.id)) return false;
+            const fresh = readJournal();
+            if (JSON.stringify(fresh) !== JSON.stringify(r)) throw Error("The deployment journal changed during recovery; the pause was left in place.");
             oldRt.gate.removeUpdateGate(db, r.id);
             return true;
           } finally { db.close(); }
@@ -193,10 +201,12 @@ export function browserDeployment({
     finally { save(r, r.phase); }
   }
   async function ensureCodingBackup(runtime, r) {
+    checkpoint();
     try { observeCodingDeployment(runtime, database, r); }
     finally { save(r, r.phase); }
     try { await backupCodingDeployment(runtime, database, stageDir, r); }
     finally { save(r, r.phase); }
+    checkpoint();
     verifyCodingBackup(runtime, r);
   }
 
@@ -214,6 +224,7 @@ export function browserDeployment({
   }
 
   async function prepare(staged) {
+    checkpoint();
     // A failure to acquire the admission lock can leave the original preparing
     // journal intact. Reuse its identity; never delete it or mint a second gate.
     const resumed = existsSync(journalFile) ? loadPhase("preparing") : null;
@@ -222,7 +233,7 @@ export function browserDeployment({
     const db = openDeploymentDatabase(database);
     try {
       const schema = db.prepare("SELECT version FROM schema_version").get().version;
-      const nextSchema = (await load(nextDist, "store.js")).SCHEMA_VERSION;
+      const nextSchema = (await settle(load(nextDist, "store.js"))).SCHEMA_VERSION;
       const f = facts(db);
       if (!resumed) writeFileSync(join(stageDir, "release.json"), JSON.stringify({ ...f, run: runId, head: candidateHead, at: new Date().toISOString(), ...staged }, null, 1));
       const r = resumed ?? { id: randomUUID(), candidate: candidateHead, database, phase: "preparing", schema, nextSchema, createdAt: new Date().toISOString(), backup: join(stageDir, "orders.backup.db"), priorRuntime: priorDist, nextRuntime: nextDist, builder: runId, completion: f.completion, gateDigest: f.gateDigest, task: f.taskId, repo: f.repo, scopeDigest: f.scopeDigest, ...staged, proofVerdict: f.proofVerdict, manualAcceptance: f.acceptance, publicUrl };
@@ -256,7 +267,7 @@ export function browserDeployment({
       // Do not hold a writer reservation while scanning, copying or hashing.
       const original = openDeploymentDatabase(database, { readOnly: true });
       let before;
-      try { before = await snapshotBackup(original, r.backup, view => verifyPreparedDatabase(view, r)); } finally { original.close(); }
+      try { before = await settle(snapshotBackup(original, r.backup, view => verifyPreparedDatabase(view, r))); } finally { original.close(); }
       chmodSync(r.backup, 0o600);
       const copied = openDeploymentDatabase(r.backup, { readOnly: true });
       try { assertPreserved(copied, before); } finally { copied.close(); }
@@ -279,7 +290,7 @@ export function browserDeployment({
     save(r, "stopping");
     spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
     const oldPids = [...new Set([r.oldService.supervisor, ...r.oldService.children, r.stoppingService.supervisor, ...r.stoppingService.children])];
-    await verifyServiceStopped(oldPids);
+    await settle(verifyServiceStopped(oldPids));
     await ensureCodingBackup(oldRt.coding, r);
     // The coding database as the stopped service left it; a failed deployment puts this back with orders.db.
     r.codingBackupBeforeSwap = codingBackupBeforeSwap(r, database);
@@ -287,16 +298,16 @@ export function browserDeployment({
     // An older runtime killed before its close left its coding owner record behind: with every old
     // process proved gone, the candidate's own check releases it (ledgered) instead of failing here.
     // The staged runtime is the proved candidate; its own coding module decides.
-    const candidateCoding = await loadCodingDeploymentRuntime(nextDist);
+    const candidateCoding = await settle(loadCodingDeploymentRuntime(nextDist));
     const released = (() => { const db = openDeploymentDatabase(database); try { return releaseStaleCodingDeployment(candidateCoding, database, db, oldPids, r); } finally { db.close(); } })();
     if (released) { save(r, "stopped"); say(`• released the stopped service's coding record (process ${released.pid})`); }
     // Migrate the live database with the new runtime (a no-op for a same-schema build).
-    let db = openDeploymentDatabase(database);
     let before, beforeHistory;
-    const history = r.schema === r.nextSchema ? null : await load(nextDist, "toolroll-update.js");
+    const history = r.schema === r.nextSchema ? null : await settle(load(nextDist, "toolroll-update.js"));
+    let db = openDeploymentDatabase(database);
     try { requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.schema && oldRt.gate.updateGateOwned(db, r.id), "Expected the owned gate on the live database."); quiet(db); assertCodingDeploymentStopped(oldRt.coding, database, db, r); before = snapshot(db); beforeHistory = history?.historySnapshot(db); } finally { db.close(); }
     save(r, "migrating");
-    (await load(nextDist, "store.js")).openStore(database).close();
+    (await settle(load(nextDist, "store.js"))).openStore(database).close();
     db = openDeploymentDatabase(database, { readOnly: true });
     try { requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id), "Migration or gate mismatch."); if (r.schema === r.nextSchema) assertPreserved(db, before); else assertMigrated(db, history, beforeHistory); } finally { db.close(); }
     r.migration = { from: r.schema, to: r.nextSchema, preservedTables: before.length, preservedRows: before.reduce((n, t) => n + t.count, 0) };
@@ -309,7 +320,7 @@ export function browserDeployment({
     writeFileSync(join(stageDir, "service.log"), "", { mode: 0o600, flag: "a" });
     // Migration loads asynchronously; backup, service and native custody must still hold.
     await ensureCodingBackup(oldRt.coding, r);
-    await verifyServiceStopped(oldPids);
+    await settle(verifyServiceStopped(oldPids));
     verifyCodingBackup(oldRt.coding, r);
     const beforeReplace = openDeploymentDatabase(database, { readOnly: true });
     try { assertCodingDeploymentStopped(oldRt.coding, database, beforeReplace, r); } finally { beforeReplace.close(); }
@@ -318,7 +329,7 @@ export function browserDeployment({
     requireTrue(booted.status === 0, `launchctl bootstrap failed: ${booted.stderr}`);
     save(r, "starting");
     let live = null;
-    for (let i = 0; i < 90 && live === null; i++) { await sleep(1000); live = service(nextDist); }
+    for (let i = 0; i < 90 && live === null; i++) { await settle(sleep(1000)); live = service(nextDist); }
     if (live === null) {
       // A failed health check does not establish process exit. Capture the
       // service's remaining processes before stopping it, and check native
@@ -330,10 +341,10 @@ export function browserDeployment({
       requireTrue(!failedChildren || failedChildren.status === 0 || failedChildren.status === 1, "The failed service's child processes could not be checked. The previous runtime was not restored.");
       const failedPids = failedPid > 1 ? [failedPid, ...failedChildren.stdout.trim().split(/\s+/).filter(Boolean).map(Number)] : [];
       spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
-      await verifyServiceStopped(failedPids);
-      const coding = await loadCodingDeploymentRuntime(nextDist);
+      await settle(verifyServiceStopped(failedPids));
+      const coding = await settle(loadCodingDeploymentRuntime(nextDist));
       await ensureCodingBackup(coding, r);
-      await verifyServiceStopped(failedPids);
+      await settle(verifyServiceStopped(failedPids));
       verifyCodingBackup(coding, r);
       const stopped = openDeploymentDatabase(database, { readOnly: true });
       try { assertCodingDeploymentStopped(coding, database, stopped, r); } finally { stopped.close(); }
@@ -343,14 +354,15 @@ export function browserDeployment({
     }
     r.newService = live;
     save(r, "started");
-    await ensureCodingBackup(await loadCodingDeploymentRuntime(nextDist), r);
+    await ensureCodingBackup(await settle(loadCodingDeploymentRuntime(nextDist)), r);
   }
 
   async function finish() {
+    checkpoint();
     const phase = readJournal().phase;
     requireTrue(["started", "healthy"].includes(phase), `Unexpected finish phase: ${phase}.`);
     const r = loadPhase(phase);
-    const coding = await loadCodingDeploymentRuntime(nextDist);
+    const coding = await settle(loadCodingDeploymentRuntime(nextDist));
     await ensureCodingBackup(coding, r);
     const live = service(nextDist);
     requireTrue(live, "The new service is not running from the new runtime.");
@@ -363,6 +375,7 @@ export function browserDeployment({
       requireTrue(response && (response.ok || response.status === 303 || response.status === 302), "The configured HTTPS console is unavailable.");
       remote = `${r.publicUrl} answered ${response.status}`;
     }
+    checkpoint();
     const repos = JSON.parse(readFileSync(join(stateDir, "repos.json"), "utf8")).repos ?? [];
     const runner = (livePlist.match(/<string>--runner<\/string>\s*<string>([^<]+)<\/string>/) ?? [])[1];
     const db = openDeploymentDatabase(database, {}, 10000);
@@ -372,7 +385,7 @@ export function browserDeployment({
       for (let i = 0; i < 90; i++) {
         leases = repos.map(repo => db.prepare("SELECT repo,heartbeat_at,expires_at FROM watch_lease WHERE runner=? AND repo=?").get(runner, repo));
         if (leases.every(l => l && Date.parse(l.expires_at) > Date.now() && Date.parse(l.heartbeat_at) > Date.now() - 60_000)) break;
-        await sleep(1000);
+        await settle(sleep(1000));
       }
       requireTrue(leases.every(l => l && Date.parse(l.expires_at) > Date.now()), "Project worker leases did not come up fresh.");
       assertPreserved(db, []);

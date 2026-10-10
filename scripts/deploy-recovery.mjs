@@ -64,17 +64,23 @@ export function waitUntilHealthy(probe, { attempts = 90, pause = () => sleepSync
 }
 export function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-/** Ctrl-C, a closed terminal or a kill end the deployment through process.exit, so the same
- * exit recovery runs as for any other failure. The recovery itself is synchronous: a second
- * signal waits until it has finished. */
-export function exitOnSignals(proc = process) {
+/** A running deployment supplies onSignal to request cancellation and unwind its awaited
+ * work before exit. In particular SQLite's backup must settle and close its writer first.
+ * Repeated signals cannot force exit through that cleanup. */
+export function exitOnSignals(proc = process, onSignal = code => proc.exit(code)) {
+  let stopping = false;
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
-    proc.on(signal, () => { console.error(`Stopping: ${signal} received.`); proc.exit(code); });
+    proc.on(signal, () => {
+      if (stopping) return;
+      stopping = true;
+      console.error(`Stopping: ${signal} received.`);
+      onSignal(code, signal);
+    });
   }
 }
 
 /** A deployment that ends in failure, by an error, a refusal or a signal, recovers on its way out. */
-export function recoverOnExit(recover, proc = process) {
-  proc.on("exit", code => { if (code !== 0) recover(); });
-  exitOnSignals(proc);
+export function recoverOnExit(recover, proc = process, { onSignal, release = () => {} } = {}) {
+  proc.on("exit", code => { try { if (code !== 0) recover(); } finally { release(); } });
+  exitOnSignals(proc, onSignal);
 }

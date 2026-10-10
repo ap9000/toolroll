@@ -7,6 +7,8 @@ import { installUpdateGate, updateAdmissionPaused } from "./desktop-update-gate.
 import { gateOwner, proveBeforeSwap, releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { openStore, SCHEMA_VERSION, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
+import { deploymentChild } from "../test/deploy-process.js";
+import { acquireDeploymentLock } from "./deploy-lock.js";
 
 const ID = "0f1e2d3c-4b5a-4968-8776-655443322110", OTHER_ID = "11111111-2222-4333-8444-555555555555";
 
@@ -53,6 +55,7 @@ describe("toolroll release --release-gate", () => {
     expect(shown).toMatchObject({ ok: true, released: false, stage: p.stage });
     expect(shown.ok && shown.proof.join("\n")).toContain(`stopped at ${phase}, before the swap`);
     expect(stillPaused(p.database)).toBe(ID);
+    expect(existsSync(join(p.stage, "deployment.json.lock.sqlite"))).toBe(false);
 
     expect(releaseGate(ID, p.world, true)).toMatchObject({ ok: true, released: true });
     const db = new DatabaseSync(p.database, { readOnly: true }) as unknown as Database;
@@ -96,5 +99,68 @@ describe("toolroll release --release-gate", () => {
     openStore(join(fresh, "orders.db")).close();
     expect(proveBeforeSwap(ID, { ...p.world, database: join(fresh, "orders.db"), stateDir: fresh, open: () => new DatabaseSync(join(fresh, "orders.db")) as unknown as Database })).toMatchObject({ ok: false, reason: "not-paused" });
     expect(existsSync(join(fresh, "staged-upgrades"))).toBe(false);
+  });
+
+  test("a guided release racing a deploy waits for exclusion and refuses its newly starting phase", async () => {
+    const p = paused(), journal = join(p.stage, "deployment.json");
+    const deploy = deploymentChild(`
+      import { acquireDeploymentLock } from ${JSON.stringify(new URL("../dist/deploy-lock.js", import.meta.url).href)};
+      import { readFileSync, writeFileSync } from 'node:fs';
+      const file = ${JSON.stringify(journal)}, lock = acquireDeploymentLock(file);
+      process.on('message', () => {
+        const r = JSON.parse(readFileSync(file, 'utf8'));
+        writeFileSync(file, JSON.stringify({ ...r, phase: 'starting' }));
+        lock.release(); process.disconnect();
+      });
+      process.send('held');`);
+    try {
+      expect(await deploy.message()).toBe("held");
+      let observed = false;
+      p.world.processes = () => {
+        if (!observed) { observed = true; deploy.child.send("advance"); }
+        return p.processes;
+      };
+      expect(releaseGate(ID, p.world, true)).toMatchObject({ ok: false, reason: "after-swap" });
+      expect((await deploy.closed).code).toBe(0);
+      expect(stillPaused(p.database)).toBe(ID);
+      expect(JSON.parse(readFileSync(journal, "utf8")).phase).toBe("starting");
+    } finally { await deploy.stop(); rmSync(p.state, { recursive: true, force: true }); }
+  });
+
+  test("release holds exclusion through repeated proof and refuses service or phase changes at removal", () => {
+    for (const change of ["service", "journal", "none"]) {
+      const p = paused(), journal = join(p.stage, "deployment.json");
+      let proofs = 0;
+      p.world.processes = () => {
+        proofs++;
+        if (proofs > 1) expect(() => acquireDeploymentLock(journal, 0)).toThrow("busy");
+        if (proofs === 2 && change === "service") p.plists[0]!.text = p.plists[0]!.text.replaceAll(p.prior, p.next);
+        if (proofs === 3 && change === "journal") { p.journal["phase"] = "starting"; p.writeJournal(); }
+        return p.processes;
+      };
+      try {
+        expect(releaseGate(ID, p.world, true).ok).toBe(change === "none");
+        expect(stillPaused(p.database)).toBe(change === "none" ? null : ID);
+        acquireDeploymentLock(journal, 0).release();
+      } finally { rmSync(p.state, { recursive: true, force: true }); }
+    }
+  });
+
+  test("SIGKILL leaves an owned gate that one guided command can safely release", async () => {
+    const p = paused(), journal = join(p.stage, "deployment.json");
+    const deploy = deploymentChild(`
+      import { acquireDeploymentLock } from ${JSON.stringify(new URL("../dist/deploy-lock.js", import.meta.url).href)};
+      const lock = acquireDeploymentLock(${JSON.stringify(journal)});
+      process.on('message', () => {});
+      process.send('held');`);
+    try {
+      expect(await deploy.message()).toBe("held");
+      await deploy.stop();
+      expect((await deploy.closed).signal).toBe("SIGKILL");
+      expect(stillPaused(p.database)).toBe(ID);
+      expect(releaseGate(ID, p.world, true)).toMatchObject({ ok: true, released: true });
+      expect(stillPaused(p.database)).toBeNull();
+      expect(JSON.parse(readFileSync(journal, "utf8"))).toMatchObject({ phase: "released", releasedBeforeSwap: { from: "preparing" } });
+    } finally { await deploy.stop(); rmSync(p.state, { recursive: true, force: true }); }
   });
 });
