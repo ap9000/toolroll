@@ -1288,9 +1288,9 @@ describe("the filed contract reaches planning and survives it", () => {
   };
 
   /** The console over this plane's store and evidence root, logged in. */
-  const openConsole = async (approverToken: string) => {
+  const openConsole = async (approverToken: string, clock: () => Date = () => new Date()) => {
     const store = openStore(db);
-    server = createDecisionServer({ store, evidenceRoot: join(base, "evidence"), clock: () => new Date(), repo });
+    server = createDecisionServer({ store, evidenceRoot: join(base, "evidence"), clock, repo });
     await new Promise<void>(resolve => (server as Server).listen(0, "127.0.0.1", resolve));
     const address = (server as Server).address();
     if (typeof address !== "object" || address === null) throw new Error("no address");
@@ -1299,7 +1299,12 @@ describe("the filed contract reaches planning and survives it", () => {
     expect(response.status).toBe(303);
     const cookie = (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
     const page = async (path: string) => (await fetch(`${url}${path}`, { headers: { cookie } })).text();
-    return { page, close: async () => { await new Promise<void>(resolve => (server as Server).close(() => resolve())); server = null; store.close(); } };
+    const post = async (path: string, fields: Record<string, string>) => {
+      const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await page("/"))?.[1];
+      if (!csrf) throw Error("no CSRF token");
+      return fetch(`${url}${path}`, { method: "POST", headers: { cookie, origin: url }, body: new URLSearchParams({ ...fields, csrf }), redirect: "manual" });
+    };
+    return { page, post, close: async () => { await new Promise<void>(resolve => (server as Server).close(() => resolve())); server = null; store.close(); } };
   };
 
   test("c1: a short title with a detailed filed scope reaches the planner losslessly as quoted data — goal, exclusions, touches, every criterion with its evidence and how, the execution terms — recorded before any spend; a plan that reproduces it lands with no changes, the approval says so, and the yes binds the filed terms", async () => {
@@ -1668,5 +1673,164 @@ describe("the filed contract reaches planning and survives it", () => {
       expect(store.getScope("huge")!.goal).toHaveLength(PLANNER_SOURCE_LIMITS.bytes);
       expect(diagnoseTaskDispatch(store, "huge", new Date(T0.getTime() + 61_000))).toMatchObject({ code: "planner-source", detail: expect.stringContaining("planner source cap") });
     });
+  });
+
+  /** The operator rewrites a planned task's scope (v119): the filing primitive every scope edit goes through. */
+  const rewritten = {
+    goal: "Add a high-contrast theme to the settings page, chosen per device",
+    outOfScope: "No dark-mode work; no new dependencies",
+    touches: ["src/settings.ts", "src/contrast.css"],
+    acceptance: [{ id: "h1", statement: "The settings page offers a high-contrast theme.", how: null, evidence: ["screenshot"] as AcceptanceCriterion["evidence"] }],
+  };
+  const rescope = (at: Date, terms: typeof rewritten = rewritten) => withStore(store => propose(store, { taskId: "dark", ...terms, qualityMode: "strict", now: at }));
+  const asking = () => replying([
+    () => ({
+      file: "park",
+      body: {
+        urgency: "blocking",
+        recap: "Two persistence stores fit.",
+        question: "Account preferences or local storage?",
+        options: [
+          { id: "account", label: "Account", consequence: "Roams.", reversible: true },
+          { id: "local", label: "Local", consequence: "Simpler.", reversible: true },
+        ],
+        recommendation: "account",
+      },
+    }),
+  ]);
+
+  test("c1: a re-scoped task gets a plan for its new goal — the old plan, contract record and answers leave the planner's context but stay on record, and an identical refile changes nothing", async () => {
+    const { runnerToken, approverToken } = await setup();
+    expect(await tick(runnerToken, asking())).toBe(EXIT.ok);
+    const asked = withStore(store => store.listDecisions("unanswered")[0]!);
+    await run(["decide", String(asked.id), "--choose", "account", "--as", "alex", "--token", approverToken, "--json"], replying([]), new Date(T0.getTime() + 60_000));
+    expect(await tick(runnerToken, replying([() => ({ file: "plan", body: preservingPlan() })]), new Date(T0.getTime() + 2 * 60_000))).toBe(EXIT.ok);
+    const old = withStore(store => {
+      const ref = store.refFor("built-in", "dark");
+      expect(ref).toMatchObject({ plan: "drafted", planningGeneration: 0 });
+      expect(store.answeredDecisionsFor("dark")).toHaveLength(1);
+      return { plan: store.latestPlanArtifact(ref.id)!.id, contract: store.latestPlanContractArtifact(ref.id)!.id, chain: store.ledgerChain({ full: true }) };
+    });
+
+    rescope(new Date(T0.getTime() + 3 * 60_000));
+    withStore(store => {
+      const ref = store.refFor("built-in", "dark");
+      expect(ref).toMatchObject({ plan: "requested", planStrikes: 0, planningGeneration: 1 });
+      // Nothing from the old goal is offered as the next plan, and its answer is not the next planner's memory…
+      expect(store.latestPlanArtifact(ref.id)).toBeNull();
+      expect(store.latestPlanContractArtifact(ref.id)).toBeNull();
+      expect(store.answeredDecisionsFor("dark")).toEqual([]);
+      // …but every record stays: the plan, the contract record, the answered question and the ledger chain.
+      expect(store.getArtifact(old.plan)).not.toBeNull();
+      expect(store.getArtifact(old.contract)).not.toBeNull();
+      expect(store.getDecision(asked.id)).toMatchObject({ state: "answered", choice: "account", supersededReason: null });
+      expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true });
+      expect(store.raw().prepare("SELECT outcome FROM action_ledger WHERE task_id = 'dark' AND action = 'planning restarted'").all()).toEqual([{ outcome: "scope changed" }]);
+    });
+
+    prompts = [];
+    const replan = { ...rewritten, plan: planDocument(["h1"]), amendment: null };
+    expect(await tick(runnerToken, replying([() => ({ file: "plan", body: replan })]), new Date(T0.getTime() + 10 * 60_000))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual({ id: "dark", outcome: "planned" });
+    expect(prompts[0]).toContain(rewritten.goal);
+    expect(prompts[0]).not.toContain(filed.goal);
+    expect(prompts[0]).not.toContain("Account preferences or local storage?");
+    withStore(store => {
+      const ref = store.refFor("built-in", "dark");
+      expect(ref).toMatchObject({ plan: "drafted", planningGeneration: 1 });
+      expect(store.getScope("dark")).toMatchObject({ goal: rewritten.goal, acceptance: rewritten.acceptance });
+      const plan = store.latestPlanArtifact(ref.id)!;
+      expect(plan.id).not.toBe(old.plan);
+      expect(store.getRun(plan.run)).toMatchObject({ role: "planner", planningGeneration: 1 });
+      const record = decodePlanContractRecord((readVerifiedArtifact(join(base, "evidence"), store.latestPlanContractArtifact(ref.id)!) as { ok: true; content: Buffer }).content)!;
+      expect(record).toMatchObject({ changes: [], amendment: null, filed: { goal: rewritten.goal } });
+      const source = decodePlannerSource((readVerifiedArtifact(join(base, "evidence"), store.plannerSourceArtifactFor(plan.run)!) as { ok: true; content: Buffer }).content)!;
+      expect(source.answers).toEqual([]);
+    });
+
+    // The same terms filed again (whitespace aside) are not a new scope: the drafted plan stands.
+    rescope(new Date(T0.getTime() + 11 * 60_000), { ...rewritten, goal: `  ${rewritten.goal}  `, touches: [...rewritten.touches].reverse() });
+    withStore(store => expect(store.refFor("built-in", "dark")).toMatchObject({ plan: "drafted", planningGeneration: 1 }));
+  });
+
+  test("c1: re-scoping closes the old goal's open question — it leaves the queue with its hold and page, typed, never answered — and the next pass plans the new goal", async () => {
+    const { runnerToken, approverToken } = await setup();
+    expect(await tick(runnerToken, asking())).toBe(EXIT.ok);
+    const asked = withStore(store => {
+      const decision = store.listDecisions("unanswered")[0]!;
+      expect(store.raw().prepare("SELECT count(*) AS n FROM hold WHERE owner_kind = 'decision' AND owner_id = ?").get(String(decision.id))).toEqual({ n: 1 });
+      return decision;
+    });
+
+    rescope(new Date(T0.getTime() + 60_000));
+    withStore(store => {
+      expect(store.getDecision(asked.id)).toMatchObject({ state: "answered", choice: null, note: null, supersededReason: "scope-changed" });
+      expect(store.listDecisions("unanswered")).toEqual([]);
+      expect(store.countUnanswered()).toBe(0);
+      expect(store.raw().prepare("SELECT count(*) AS n FROM hold WHERE owner_kind = 'decision'").get()).toEqual({ n: 0 });
+      expect(store.raw().prepare("SELECT count(*) AS n FROM notification WHERE dedupe_key = ? AND resolved_at IS NULL").get(`decision:${asked.id}`)).toEqual({ n: 0 });
+      // A closed question is not an answer anywhere.
+      expect(store.answeredDecisionsFor("dark")).toEqual([]);
+    });
+
+    // Every surface says it closed and why, with no answer and nothing left to answer: a stale answer is refused in those words.
+    await run(["decide", String(asked.id), "--choose", "account", "--as", "alex", "--token", approverToken, "--json"], replying([]), new Date(T0.getTime() + 2 * 60_000));
+    expect(payload()).toMatchObject({ ok: false, reason: "closed", message: expect.stringContaining("Closed without an answer. The scope changed, so planning started again.") });
+    withStore(store => expect(store.getDecision(asked.id)).toMatchObject({ choice: null, supersededReason: "scope-changed" }));
+    await run(["decide", String(asked.id)], replying([]));
+    expect(lines.join("\n")).toContain("Closed without an answer. The scope changed, so planning started again.");
+    expect(lines.join("\n")).not.toContain("answered: null");
+    expect(lines.join("\n")).toContain("dark — CLOSED");
+    expect(lines.join("\n")).not.toContain("--choose");
+    const web = await openConsole(approverToken);
+    const question = await web.page(`/d/${asked.id}`);
+    expect(question).toContain('badge-answered">closed</span>');
+    expect(question).toContain("The scope changed, so planning started again.");
+    expect(question).not.toContain(`/d/${asked.id}/answer`);
+    const stale = await web.post(`/d/${asked.id}/answer`, { choice: "account" });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain("Closed without an answer. The scope changed, so planning started again.");
+    withStore(store => expect(store.getDecision(asked.id)).toMatchObject({ choice: null, supersededReason: "scope-changed" }));
+    const task = await web.page("/t/dark");
+    expect(task).toContain("Closed without an answer");
+    expect(task).not.toContain("Answered");
+    await web.close();
+
+    prompts = [];
+    expect(await tick(runnerToken, replying([() => ({ file: "plan", body: { ...rewritten, plan: planDocument(["h1"]), amendment: null } })]), new Date(T0.getTime() + 10 * 60_000))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual({ id: "dark", outcome: "planned" });
+    expect(prompts[0]).toContain(rewritten.goal);
+    expect(prompts[0]).not.toContain("Account preferences or local storage?");
+  });
+
+  test("a goal too long for the planner's handoff is named before any lease, run or spend — no strike, no malformed-plan incident — and a shorter goal plans", async () => {
+    const { runnerToken, approverToken } = await setup();
+    rescope(T0, { ...rewritten, goal: "g".repeat(9_000) });
+    let spawned = false;
+    const neverSpawns: Runner = async () => {
+      spawned = true;
+      throw new Error("nothing spawns on a goal the planner cannot carry");
+    };
+    expect(await tick(runnerToken, neverSpawns, new Date(T0.getTime() + 60_000))).toBe(EXIT.refused);
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "dark", outcome: "skipped", reason: "planner-source-too-long", detail: "The goal is 9,000 characters; the planner can carry at most 8,000. Shorten the goal and planning starts again." }));
+    expect(spawned).toBe(false);
+    withStore(store => {
+      const ref = store.refFor("built-in", "dark");
+      expect(store.runsFor(ref.id)).toHaveLength(0);
+      expect(store.incidentsForTask(ref.id)).toEqual([]);
+      expect(ref).toMatchObject({ plan: "requested", planStrikes: 0 });
+      expect(diagnoseTaskDispatch(store, "dark", new Date(T0.getTime() + 61_000))).toMatchObject({ code: "planner-source", summary: "Scope too long to plan", detail: expect.stringContaining("9,000 characters") });
+    });
+    // The task page says it once: what to shorten and one action, with no "the agent is inspecting" card beside it.
+    const web = await openConsole(approverToken, () => new Date(T0.getTime() + 61_000));
+    const page = await web.page("/t/dark");
+    expect(page).toContain("The goal is 9,000 characters; the planner can carry at most 8,000.");
+    expect(page).toContain("Edit the request");
+    expect(page).not.toContain("Planning requested");
+    await web.close();
+
+    rescope(new Date(T0.getTime() + 2 * 60_000));
+    expect(await tick(runnerToken, replying([() => ({ file: "plan", body: { ...rewritten, plan: planDocument(["h1"]), amendment: null } })]), new Date(T0.getTime() + 3 * 60_000))).toBe(EXIT.ok);
+    expect(payload().dispatched).toContainEqual({ id: "dark", outcome: "planned" });
   });
 });

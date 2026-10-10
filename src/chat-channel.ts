@@ -1,5 +1,6 @@
 /** Shared membership-chat identity, proposal previews and result links. Transport adapters never grant authority. */
 import { FLOW_HREF } from "./flow-engine.js";
+import { closedQuestionWords } from "./decision.js";
 import { createHash } from "node:crypto";
 import {
   sharedActionPayload,
@@ -380,7 +381,7 @@ export function proposalPreview(
   proposal: LeadProposal,
   repos: readonly string[],
   channel: ChatChannelName | null = null,
-): { text: string; buttons: boolean } {
+): { text: string; buttons: boolean; closed?: true } {
   const payload = proposal.payload;
   const t = (key: string, cap = 200): string =>
     typeof payload[key] === "string"
@@ -528,6 +529,7 @@ export function proposalPreview(
       const id =
         typeof payload["decision"] === "number" ? payload["decision"] : null;
       const decision = id === null ? null : store.getDecision(id);
+      if (decision?.supersededReason != null) return { text: closedQuestionWords(decision.supersededReason), buttons: false, closed: true };
       const pick = t("option", 64);
       const irreversible = payload["reversible"] === false;
       const body =

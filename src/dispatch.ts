@@ -440,7 +440,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     // the planner could not be given whole is refused before spend, and
     // this is where the task page says so.
     const sourceProblem = plannerSourceProblemOf(store, taskId);
-    if (sourceProblem !== null) return answer("planner-source", "waiting", "The filed request cannot be planned as filed", sourceProblem, { action: "write-scope", role });
+    if (sourceProblem !== null) return answer("planner-source", "waiting", sourceProblem.title, sourceProblem.detail, { action: "write-scope", role });
     return answer("planning-ready", "retrying", "Planner ready", "An eligible worker can draft the scope on the next pass.", { role });
   }
   if (role === "scout") return answer("scouting-ready", "retrying", "Scout ready", "An eligible worker can produce the report on the next pass.", { role });

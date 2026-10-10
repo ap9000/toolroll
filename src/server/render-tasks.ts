@@ -1,5 +1,6 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
 import { type Html,html,htmlString,joinHtml,postForm,replaceMarkup } from "../html.js";
+import { closedQuestionReason, closedQuestionWords } from "../decision.js";
 import { type RunActivity } from "../activity-line.js";
 import { type AgentChoice } from "../agentconfig.js";
 import { gateWords } from "../approval-policy.js";
@@ -1867,7 +1868,10 @@ export function taskBodyParts(data: {
   const planCard =
     data.planDocument === null
       ? data.plan === "requested"
-        ? data.revision != null && !("problem" in data.revision)
+        // A request the planner cannot be given waits on a person; the status card above already says what to shorten.
+        ? data.dispatch?.code === "planner-source"
+          ? ""
+          : data.revision != null && !("problem" in data.revision)
           ? html`<div class="card planner-status"><span class="planner-orb" aria-hidden="true"></span><p><strong>Updating the plan</strong><span class="meta">Adding your notes to the plan. You approve any change before it builds.</span></p></div>`
           : html`<div class="card planner-status"><span class="planner-orb" aria-hidden="true"></span><p><strong>Planning requested</strong><span class="meta">${data.planAuto ? "Automatic approval is enabled for a verified plan that preserves your filed contract. Amendments and unanswered questions still pause." : "The agent is inspecting the repository and drafting the goal, acceptance criteria, and approach. It will ask only if a missing answer changes the work."}</span></p></div>`
         : ""
@@ -2209,7 +2213,7 @@ export function taskBodyParts(data: {
     data.decisions.length === 0
       ? ""
       : html`<h2>Decisions</h2>${joinHtml(data.decisions.map(
-          decision => html`<p class="row"><a href="/d/${decision.id}">${decision.question}</a> <span class="meta">${decision.state}${isOverdue(decision, data.now) ? " · overdue" : ""}</span></p>`,
+          decision => html`<p class="row"><a href="/d/${decision.id}">${decision.question}</a> <span class="meta">${decision.supersededReason !== null ? closedQuestionWords(decision.supersededReason) : decision.state}${isOverdue(decision, data.now) ? " · overdue" : ""}</span></p>`,
         ), "\n")}`;
 
   const incidents =
@@ -2534,7 +2538,10 @@ export function taskBodyParts(data: {
     if (decision.state === "open" || decision.state === "expired") continue;
     thread.push({ key: `question-${decision.id}`, at: decision.createdAt, kind: "question", who: "agent", author: "", title: "Asked",
       text: decision.question, link: { label: "Question", href: `/d/${decision.id}` }, html: "", more: null });
-    if (decision.answeredAt !== null) {
+    if (decision.supersededReason !== null) {
+      thread.push({ key: `answer-${decision.id}`, at: decision.answeredAt ?? decision.createdAt, kind: "progress", who: "agent", author: "", title: "Closed without an answer",
+        text: closedQuestionReason(decision.supersededReason), link: null, html: "", more: null });
+    } else if (decision.answeredAt !== null) {
       const chosen = decision.options.find(one => one.id === decision.choice)?.label ?? decision.choice;
       thread.push({ key: `answer-${decision.id}`, at: decision.answeredAt, kind: "reply", who: "person", author: decision.answeredBy ?? "You", title: "Answered",
         text: [chosen, decision.note].filter((one): one is string => one !== null && one !== "").join(" — ") || null, link: null, html: "", more: null });
@@ -2798,7 +2805,9 @@ export function decisionPage(
   const options = decisionOptionForms(decision, returnTo);
 
   const answered =
-    decision.state === "answered"
+    decision.supersededReason !== null
+      ? html`<p class="meta">${closedQuestionReason(decision.supersededReason)}</p>`
+      : decision.state === "answered"
       ? html`<div class="answered">Answered: <strong>${decision.choice ?? ""}</strong> by ${decision.answeredBy ?? ""}${decision.note === null ? "" : ` — ${decision.note}`}</div>`
       : "";
 
@@ -2814,7 +2823,7 @@ export function decisionPage(
       ]);
 
   return screen(`decide · ${taskId}`, joinHtml([
-    html`<h1>${taskId} <span class="badge badge-${decision.state}">${decision.state}</span>${
+    html`<h1>${taskId} <span class="badge badge-${decision.state}">${decision.supersededReason !== null ? "closed" : decision.state}</span>${
       isOverdue(decision, now) ? html` <span class="badge badge-overdue">Overdue</span>` : ""
     }${decision.deadline === null ? "" : html` <span class="meta">deadline ${decision.deadline}</span>`}</h1>`,
     html`<div class="recap">${decision.recap}</div>`,
@@ -2828,4 +2837,3 @@ export function taskOf(store: Store, decision: Decision): string {
   const run = store.getRun(decision.run);
   return run === null ? "?" : store.externalIdFor(run.taskRef) ?? "?";
 }
-

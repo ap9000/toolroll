@@ -315,7 +315,9 @@ export const taskStatusOf = statusOf;
  * wait on a person stay Needs you; everything else waits in the queue. */
 const CODE_STAGE: Readonly<Record<string, [TaskStage, TaskStatusFacts["need"]?]>> = {
   queued: ["queued"], ready: ["queued"], "worker-at-capacity": ["queued"], "retry-scheduled": ["queued"], updating: ["queued"],
-  "waiting-dependency": ["queued"], "scouting-ready": ["queued"], "planning-ready": ["queued"], "provider-quota": ["queued"], "planner-source": ["queued"],
+  "waiting-dependency": ["queued"], "scouting-ready": ["queued"], "planning-ready": ["queued"], "provider-quota": ["queued"],
+  // A request the planner cannot be given (too long to hand back, say) waits on a person to shorten it.
+  "planner-source": ["needs-you", "fix-request"],
   running: ["building"], reviewing: ["reviewing"], "review-pending": ["building"],
   "signed-out": ["needs-you", "sign-in"],
   "needs-approval": ["needs-you", "approval"],
