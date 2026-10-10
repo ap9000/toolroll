@@ -334,7 +334,7 @@ describe("people over /mcp, against the real runOperateAs", () => {
     const replacement = mintApiToken();
     expect(store.rotateApiToken(minted.id, { id: replacement.id, secretHash: replacement.hash }, "alex", now, 600_000)).toMatchObject({ ok: true, row: { projects: [shopRepo] } });
     expect((await cli(["task", "show", shopTask, "--json"])).body.exitCode).toBe(0);
-    store.handle.prepare("UPDATE api_token SET overlap_until = ? WHERE id = ?").run(new Date(Date.now() - 1).toISOString(), minted.id);
+    store.handle.prepare("UPDATE credential SET overlap_until = ? WHERE id = ?").run(new Date(Date.now() - 1).toISOString(), minted.id);
     expect((await cli(["task", "show", shopTask, "--json"])).status).toBe(401);
     expect((await fetch(`${real.base}/mcp`, { method: "POST", headers: { authorization: `Bearer ${minted.token}`, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: modernMeta } }) })).status).toBe(401);
     const renewed = realClient(replacement.token);

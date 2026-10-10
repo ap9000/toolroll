@@ -350,7 +350,7 @@ describe("the MCP stdio server", () => {
     const h = harness(store, token);
     h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { _meta: modernMeta, name: "list_repos", arguments: {} } });
     expect((h.last()["result"] as Record<string, unknown>)["isError"]).toBeUndefined();
-    const rows = store.handle.prepare("SELECT cid FROM coordinator_credential").all();
+    const rows = store.handle.prepare("SELECT id AS cid FROM credential WHERE kind = 'coordinator'").all();
     revokeCoordinator(store, String(rows[0]?.["cid"]), "alex", T0);
     h.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { _meta: modernMeta, name: "list_repos", arguments: {} } });
     expect(h.last()["error"]).toMatchObject({ code: -32000 });
@@ -400,7 +400,7 @@ describe("the MCP stdio server", () => {
     // interleaving filings across two live sessions.
     const other = mintCoordinator(store, { name: "other-bot", repos: ["/repo/isolated"], by: "alex", now: T0 });
     if (!other.ok) throw new Error("mint failed");
-    const mine = store.handle.prepare("SELECT cid FROM coordinator_credential WHERE name = 'planner-bot'").get();
+    const mine = store.handle.prepare("SELECT id AS cid FROM credential WHERE kind = 'coordinator' AND name = 'planner-bot'").get();
     const myCid = String(mine?.["cid"]);
 
     const h1 = harness(store, token);

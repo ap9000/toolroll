@@ -14,7 +14,7 @@ import { adapterPolicy } from "./server/route-policy.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PACKAGE_VERSION } from "./version.js";
 import type { Store } from "./store.js";
-import { parseApiToken, secretMatches, tokenLive, tokenProjects } from "./api-tokens.js";
+import { tokenLive, tokenProjects } from "./api-tokens.js";
 import { oauthProjects, oauthTokenAllowed, RESOURCE_PATH } from "./mcp-oauth.js";
 import { authenticateCoordinator } from "./coordinator.js";
 import {
@@ -65,10 +65,10 @@ export function createMcpHttp(options: McpHttpOptions): (request: IncomingMessag
     if (presented === undefined || presented.includes(":")) return null;
     if (presented.startsWith("so_")) {
       if (!options.signedIn(request)) return null;
-      const parsed = parseApiToken(presented);
-      const kept = parsed === null ? null : store.apiTokenSecret(parsed.id);
-      // The secret is checked here too, so this door never rests on how signedIn reads the request.
-      if (parsed === null || kept === null || !secretMatches(parsed.secret, kept.secretHash)) return null;
+      // The secret is checked here too (the one credential check), so this door never rests on how signedIn reads the request.
+      const found = store.presentedCredential(presented);
+      const kept = found?.kind === "person" ? store.apiTokenSecret(found.id) : null;
+      if (kept === null) return null;
       if (!tokenLive(kept.row, options.clock().getTime())) return null;
       const account = store.accountOf(kept.row.account);
       if (account === null || account.revokedAt !== null) return null;

@@ -1,29 +1,97 @@
 import { open } from 'node:fs/promises';
 import { envelopeJson } from './envelope.js';
 import {
-  SESSION_DESCRIPTORS, SESSION_PROMPT_BYTES, SESSION_RESPONSE_BYTES,
+  SESSION_DESCRIPTORS, SESSION_PROMPT_BYTES,
   isSessionResponse, sessionCapabilities, sessionDescriptor, validateSessionRequest,
-  type SessionDescriptor, type SessionOperation, type SessionRequest, type SessionResponse,
+  type SessionDescriptor, type SessionRequest, type SessionResponse,
 } from './session-contract.js';
+import { centralProfile, UsageError, type TeamCliOptions } from './team-cli.js';
+import { postCli } from './remote-exec.js';
+import { TOKEN_REPLACEMENT } from './password-bearer.js';
 
-export type SessionCliOptions = {
-  fetch?: typeof fetch; env?: NodeJS.ProcessEnv; readStdin?: () => Promise<string>;
-  stderr?: (line: string) => void;
-};
-const commonFlags = { url: 'value', as: 'value', 'token-env': 'value', 'token-file': 'value', json: 'flag', help: 'flag' } as const;
+/**
+ * `toolroll session …` (D7): native session operations run on the central server over `POST /api/cli`, signed in with
+ * the API token `toolroll connect` saved, like every other remote command. The client checks and sends the exact
+ * request; the server (session-remote.ts) runs it through the existing session owner and answers one session envelope.
+ */
+export type SessionCliOptions = TeamCliOptions & { readStdin?: () => Promise<string>; stderr?: (line: string) => void };
+/** The files key the prompt travels under: the server reads no paths, only what the request carries. */
+export const SESSION_PROMPT_FILE = 'prompt';
 export const SESSION_CLI_ACTIONS = ['capabilities', ...SESSION_DESCRIPTORS.map(one => one.operation)] as const;
-export function sessionCliFlags(spec: SessionDescriptor): Record<string, 'value' | 'flag'> {
-  return { ...commonFlags, ...Object.fromEntries(Object.keys(spec.flags).map(name => [name, 'value' as const])), ...(spec.operation === 'start' || spec.operation === 'send' ? { file: 'value', stdin: 'flag' } : {}) };
+/** Before D7 the session client signed in with an operator password on every request. */
+const RETIRED_FLAGS = new Set(['url', 'as', 'token-env', 'token-file']);
+export const SESSION_TOKEN_REQUIRED = `Session commands use your saved API token. ${TOKEN_REPLACEMENT}, then save it with \`toolroll connect <origin> --as <account> --token-stdin\`.`;
+
+/** The flags an operation takes: on this computer (where the prompt may come from a file or stdin, and a saved
+ * profile is chosen), or on the server (where the prompt is only ever the request's own file). */
+export function sessionCliFlags(spec: SessionDescriptor, side: 'client' | 'server' = 'client'): Record<string, 'value' | 'flag'> {
+  const prompt = spec.operation === 'start' || spec.operation === 'send';
+  return { json: 'flag', help: 'flag', ...(side === 'client' ? { profile: 'value' as const } : {}),
+    ...Object.fromEntries(Object.keys(spec.flags).map(name => [name, 'value' as const])),
+    ...(prompt ? { file: 'value' as const, ...(side === 'client' ? { stdin: 'flag' as const } : {}) } : {}) };
 }
 function help(spec?: SessionDescriptor): string {
-  if (!spec) return `toolroll session <operation>\n\n${SESSION_DESCRIPTORS.map(one => `  ${one.operation.padEnd(12)} ${one.synopsis}`).join('\n')}\n  capabilities  Show this client's schemas and authority requirements\n\nUse session <operation> --help for required flags. Session controls require operator credentials. Chat is the separate coordinator conversation.`;
+  if (!spec) return `toolroll session <operation>\n\n${SESSION_DESCRIPTORS.map(one => `  ${one.operation.padEnd(12)} ${one.synopsis}`).join('\n')}\n  capabilities  Show this client's schemas and authority requirements\n\nUse session <operation> --help for required flags. Sessions run on the server you connected to with your API token (toolroll connect); they need instance operator access.`;
   const fields = spec.inputSchema.required.filter(one => !['version', 'sessionId', 'prompt'].includes(one));
   const required = fields.map(field => Object.entries(spec.flags).find(([, value]) => value.field === field)?.[0]).filter(Boolean);
-  return `toolroll session ${spec.operation}${'sessionId' in spec.inputSchema.properties ? ' <session-id>' : ''}\n${spec.synopsis}.\n\nRequired: --url <service-origin> --as <operator>\n  --token-env <variable-name> or --token-file <path>\n${required.map(name => `  --${name} <value>`).join('\n')}${'prompt' in spec.inputSchema.properties ? '\n  --file <path> or --stdin (complete prompt, up to 64 KB)' : ''}\n${'expectedRevision' in spec.inputSchema.properties ? '\nUse the revision, nativeThreadId and turnId from session show. Use none for a null thread or turn.\n' : ''}\nOptions: ${Object.keys(sessionCliFlags(spec)).map(name => `--${name}`).join(' ')}\nCredentials are sent only to the named HTTPS service or loopback HTTP. Redirects and automatic mutation retries are disabled.`;
+  return `toolroll session ${spec.operation}${'sessionId' in spec.inputSchema.properties ? ' <session-id>' : ''}\n${spec.synopsis}.\n\n${required.length > 0 ? `Required:\n${required.map(name => `  --${name} <value>`).join('\n')}\n` : ''}${'prompt' in spec.inputSchema.properties ? '  --file <path> or --stdin (complete prompt, up to 64 KB)\n' : ''}${'expectedRevision' in spec.inputSchema.properties ? '\nUse the revision, nativeThreadId and turnId from session show. Use none for a null thread or turn.\n' : ''}\nOptions: ${Object.keys(sessionCliFlags(spec)).map(name => `--${name}`).join(' ')}\nRuns on the saved connection (or --profile <name>) over /api/cli with your API token. Mutations are never retried automatically.`;
 }
 
-type Parsed = { spec: SessionDescriptor; request: SessionRequest; url: string; account: string; token: string };
-class UsageError extends Error {}
+export type SessionArguments = { spec: SessionDescriptor; flags: Record<string, string | true>; positionals: string[] };
+/** One parser for both sides of /api/cli: `<operation> [<session-id>] --flag value …`. */
+export function parseSessionArguments(argv: readonly string[], side: 'client' | 'server'): SessionArguments | { problem: string } {
+  const operation = argv[0] ?? '';
+  const spec = sessionDescriptor(operation);
+  if (!spec) return { problem: `Unknown session operation. Use: ${SESSION_CLI_ACTIONS.join(', ')}.` };
+  const allowed = sessionCliFlags(spec, side); const flags: Record<string, string | true> = {}; const positionals: string[] = [];
+  for (let index = 1; index < argv.length; index++) {
+    const argument = argv[index]!;
+    if (!argument.startsWith('-')) { positionals.push(argument); continue; }
+    const name = argument === '-h' ? 'help' : argument.startsWith('--') ? argument.slice(2) : '';
+    if (side === 'client' && RETIRED_FLAGS.has(name)) return { problem: SESSION_TOKEN_REQUIRED };
+    if (!Object.hasOwn(allowed, name)) return { problem: `Unknown option ${argument} for session ${operation}.` };
+    if (Object.hasOwn(flags, name)) return { problem: `Option --${name} was repeated.` };
+    if (allowed[name] === 'flag') flags[name] = true;
+    else {
+      const value = argv[++index];
+      if (!value || value.startsWith('-')) return { problem: `--${name} requires a value.` };
+      flags[name] = value;
+    }
+  }
+  return { spec, flags, positionals };
+}
+
+/** The validated request the parsed arguments and prompt spell. */
+export function sessionRequestOf({ spec, flags, positionals }: SessionArguments, prompt: string | undefined): { ok: true; request: SessionRequest } | { ok: false; message: string } {
+  const request: Record<string, unknown> = { version: 1 };
+  if ('sessionId' in spec.inputSchema.properties) {
+    if (positionals.length !== 1) return { ok: false, message: 'Name exactly one session ID.' };
+    request['sessionId'] = positionals[0];
+  } else if (positionals.length) return { ok: false, message: 'This operation takes no positional arguments.' };
+  for (const [name, field] of Object.entries(spec.flags)) {
+    const raw = flags[name];
+    if (typeof raw !== 'string') continue;
+    if (field.kind === 'integer' && !/^\d+$/.test(raw)) return { ok: false, message: `--${name} must be a whole number.` };
+    request[field.field] = field.kind === 'integer' ? Number(raw) : field.kind === 'nullable-id' && raw === 'none' ? null : raw;
+  }
+  if (prompt !== undefined) request['prompt'] = prompt;
+  return validateSessionRequest(spec.operation, request);
+}
+
+/** The exact argv the server runs for a validated request: always --json, the prompt as the request's one file. */
+export function sessionArgv(spec: SessionDescriptor, request: SessionRequest): string[] {
+  const fields = request as Record<string, unknown>;
+  const argv = ['session', spec.operation];
+  if (typeof fields['sessionId'] === 'string') argv.push(fields['sessionId']);
+  for (const [name, field] of Object.entries(spec.flags)) {
+    const value = fields[field.field];
+    if (value !== undefined) argv.push(`--${name}`, value === null ? 'none' : String(value));
+  }
+  if (typeof fields['prompt'] === 'string') argv.push('--file', SESSION_PROMPT_FILE);
+  argv.push('--json');
+  return argv;
+}
+
 async function readBoundedFile(path: string, limit: number, label: string): Promise<string> {
   let file;
   try {
@@ -54,62 +122,7 @@ async function readStdin(): Promise<string> {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)); }
   catch { throw new UsageError('The prompt must be UTF-8 text.'); }
 }
-/** Credentials are never sent to a URL with embedded authority, an API path,
- * query, fragment or an insecure remote host. Fetch cannot follow redirects. */
-export function sessionServiceOrigin(raw: string): string {
-  let url: URL;
-  try { url = new URL(raw); } catch { throw new UsageError('--url must be an HTTPS or loopback HTTP service origin.'); }
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new UsageError('--url must contain only the service origin, with no credentials, path, query or fragment.');
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname))) throw new UsageError('--url requires HTTPS except for loopback HTTP.');
-  return url.origin;
-}
-async function parseRequest(spec: SessionDescriptor, flags: Record<string, string | true>, positionals: string[], options: SessionCliOptions): Promise<Parsed> {
-  const value = (name: string): string => typeof flags[name] === 'string' ? flags[name] as string : '';
-  const url = sessionServiceOrigin(value('url'));
-  const account = value('as');
-  if (!account || account.length > 200 || /[\s:\x00-\x1f\x7f]/.test(account)) throw new UsageError('--as must name the operator account.');
-  if (Boolean(flags['token-env']) === Boolean(flags['token-file'])) throw new UsageError('Choose exactly one credential source: --token-env <variable-name> or --token-file <path>.');
-  let token: string;
-  if (flags['token-env']) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value('token-env'))) throw new UsageError('--token-env must name an environment variable.');
-    token = (options.env ?? process.env)[value('token-env')] ?? '';
-  } else token = (await readBoundedFile(value('token-file'), 8192, 'The token file')).trim();
-  if (!token || token.length > 8192 || /[\s\x00-\x1f\x7f]/.test(token)) throw new UsageError('The selected credential is empty or invalid. Set the named variable or token file.');
-  const request: Record<string, unknown> = { version: 1 };
-  if ('sessionId' in spec.inputSchema.properties) {
-    if (positionals.length !== 1) throw new UsageError('Name exactly one session ID.');
-    request['sessionId'] = positionals[0];
-  } else if (positionals.length) throw new UsageError('This operation takes no positional arguments.');
-  for (const [name, field] of Object.entries(spec.flags)) {
-    if (flags[name] === undefined) continue;
-    const raw = value(name);
-    if (field.kind === 'integer' && !/^\d+$/.test(raw)) throw new UsageError(`--${name} must be a whole number.`);
-    request[field.field] = field.kind === 'integer' ? Number(raw) : field.kind === 'nullable-id' && raw === 'none' ? null : raw;
-  }
-  if ('prompt' in spec.inputSchema.properties) {
-    if (Boolean(flags['file']) === Boolean(flags['stdin'])) throw new UsageError('Choose exactly one prompt source: --file <path> or --stdin.');
-    request['prompt'] = flags['file'] ? await readBoundedFile(value('file'), SESSION_PROMPT_BYTES, 'The prompt file') : await (options.readStdin ?? readStdin)();
-  }
-  const validated = validateSessionRequest(spec.operation, request);
-  if (!validated.ok) throw new UsageError(validated.message);
-  return { spec, request: validated.request, url, account, token };
-}
 
-async function readResponse(response: Response): Promise<unknown> {
-  if (!response.body) throw new Error('Missing response body');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = []; let bytes = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > SESSION_RESPONSE_BYTES) { await reader.cancel(); throw new Error('Response limit'); }
-      chunks.push(chunk.value);
-    }
-  } finally { reader.releaseLock(); }
-  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
-}
 function unconfirmed(spec: SessionDescriptor, request: SessionRequest): SessionResponse {
   const sessionId = 'sessionId' in request ? request.sessionId : undefined;
   return { version: 1, operation: spec.operation, ok: false, status: spec.mutation ? 'uncertain' : 'rejected',
@@ -118,32 +131,28 @@ function unconfirmed(spec: SessionDescriptor, request: SessionRequest): SessionR
     message: spec.mutation ? 'The service response could not be confirmed. Inspect the saved session before continuing; the request was not retried.' : 'The service response could not be read. Check the service address and connection.',
     nextActions: [{ operation: sessionId ? 'show' : 'list', label: sessionId ? 'Inspect session' : 'List sessions', ...(sessionId ? { sessionId } : {}) }] };
 }
-async function perform(parsed: Parsed, options: SessionCliOptions): Promise<SessionResponse> {
-  const { spec, request, url, account, token } = parsed;
-  try {
-    const response = await (options.fetch ?? fetch)(`${url}/api/sessions/${spec.operation}`, {
-      method: 'POST', redirect: 'manual', credentials: 'omit', signal: AbortSignal.timeout(60_000),
-      headers: { authorization: `Bearer ${account}:${token}`, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(request),
-    });
-    if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); return unconfirmed(spec, request); }
-    // This marker belongs to the owner boundary. A bare gateway 503 or 404
-    // cannot prove that an upstream mutation was never accepted.
-    if ([401, 403, 404, 503].includes(response.status) && response.headers.get('x-standing-orders-session-delivery') === 'not-sent') {
-      await response.body?.cancel();
-      const reason = response.status === 401 ? 'unauthenticated' : response.status === 403 ? 'forbidden' : response.status === 404 ? 'session-unsupported' : 'session-unavailable';
-      return { version: 1, operation: spec.operation, ok: false, status: 'rejected', delivery: 'not-sent', retry: spec.mutation ? 'never' : 'safe-read', reason,
-        message: response.status === 401 || response.status === 403 ? 'The service refused these operator credentials. Check the account and its access.' : 'This service does not currently support the requested session operation. Check its installed build and readiness.', nextActions: [] };
-    }
-    const payload = await readResponse(response);
-    if (!isSessionResponse(payload, spec.operation) || (payload.ok && !response.ok)) return unconfirmed(spec, request);
-    if ('sessionId' in request && payload.result?.session && payload.result.session.id !== request.sessionId) return unconfirmed(spec, request);
-    if (payload.ok && 'key' in request && payload.result?.receipt?.key !== request.key) return unconfirmed(spec, request);
-    if (payload.ok && 'expectedThreadId' in request && request.expectedThreadId !== null && payload.result?.session?.nativeThreadId !== request.expectedThreadId) return unconfirmed(spec, request);
-    return payload;
-  } catch { return unconfirmed(spec, request); }
+/** One request over /api/cli, never retried. Only an answer whose identity matches the request counts as delivered. */
+async function perform(spec: SessionDescriptor, request: SessionRequest, profile: { origin: string; token: string }, options: SessionCliOptions): Promise<SessionResponse> {
+  const files = typeof (request as { prompt?: unknown }).prompt === 'string' ? { [SESSION_PROMPT_FILE]: (request as { prompt: string }).prompt } : {};
+  const outcome = await postCli(profile.origin, profile.token, { argv: sessionArgv(spec, request), files }, options);
+  if (outcome.kind === 'unconfirmed') return unconfirmed(spec, request);
+  if (outcome.kind === 'refused') {
+    // /api/cli refuses before it runs anything, except a command that stopped on the server: that one may have acted.
+    if (outcome.status >= 500 && outcome.status !== 501 && outcome.status !== 503) return unconfirmed(spec, request);
+    return { version: 1, operation: spec.operation, ok: false, status: 'rejected', delivery: 'not-sent', retry: spec.mutation ? 'never' : 'safe-read',
+      reason: /^[a-z][a-z0-9-]*$/.test(outcome.code) ? outcome.code : 'refused', message: outcome.message, nextActions: [] };
+  }
+  let payload: unknown;
+  try { payload = JSON.parse(outcome.answer.stdout); } catch { return unconfirmed(spec, request); }
+  if (!isSessionResponse(payload, spec.operation)) return unconfirmed(spec, request);
+  if ('sessionId' in request && payload.result?.session && payload.result.session.id !== request.sessionId) return unconfirmed(spec, request);
+  if (payload.ok && 'key' in request && payload.result?.receipt?.key !== request.key) return unconfirmed(spec, request);
+  if (payload.ok && 'expectedThreadId' in request && request.expectedThreadId !== null && payload.result?.session?.nativeThreadId !== request.expectedThreadId) return unconfirmed(spec, request);
+  return payload;
 }
 const terminalText = (value: string): string => value.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
-function render(response: SessionResponse): string {
+/** The plain-text answer, the same on either side of the transport. */
+export function renderSessionResponse(response: SessionResponse): string {
   const result = response.result;
   const lines = response.ok && response.operation === 'show' && result?.brief ? [] : [response.message];
   for (const session of result?.sessions ?? []) lines.push(`${session.id}  ${session.status}  ${session.title}`);
@@ -159,6 +168,8 @@ function render(response: SessionResponse): string {
   for (const action of response.nextActions) lines.push(`${action.label}: ${action.operation === 'open-ui' ? 'open the coding workspace' : `toolroll session ${action.operation}${action.sessionId ? ` ${action.sessionId}` : ''}`}`);
   return terminalText(lines.join('\n'));
 }
+/** 0 delivered · 1 unknown (inspect first) · 3 refused. */
+export const sessionExitCode = (response: SessionResponse): number => response.ok ? 0 : response.status === 'uncertain' || response.reason === 'service-unavailable' ? 1 : 3;
 
 export async function runSessionCommand(argv: readonly string[], write: (line: string) => void, options: SessionCliOptions = {}): Promise<number> {
   const json = argv.includes('--json');
@@ -177,28 +188,26 @@ export async function runSessionCommand(argv: readonly string[], write: (line: s
     if (argv.slice(1).some(arg => !['--json', '--help', '-h'].includes(arg))) return fail('session capabilities accepts only --json or --help.');
     write(json ? envelopeJson({ ok: true, command, ...sessionCapabilities() }) : help()); return 0;
   }
-  const spec = sessionDescriptor(operation);
-  if (!spec) return fail(`Unknown session operation. Use: ${SESSION_CLI_ACTIONS.join(', ')}.`);
-  const allowed = sessionCliFlags(spec); const flags: Record<string, string | true> = {}; const positionals: string[] = [];
-  for (let index = 1; index < argv.length; index++) {
-    const argument = argv[index]!;
-    if (!argument.startsWith('-')) { positionals.push(argument); continue; }
-    const name = argument === '-h' ? 'help' : argument.startsWith('--') ? argument.slice(2) : '';
-    if (!Object.hasOwn(allowed, name)) return fail(`Unknown option ${argument} for session ${operation}.`);
-    if (Object.hasOwn(flags, name)) return fail(`Option --${name} was repeated.`);
-    if (allowed[name] === 'flag') flags[name] = true;
-    else {
-      const value = argv[++index];
-      if (!value || value.startsWith('-')) return fail(`--${name} requires a value.`);
-      flags[name] = value;
-    }
-  }
+  const parsed = parseSessionArguments(argv, 'client');
+  if ('problem' in parsed) return fail(parsed.problem);
+  const { spec, flags } = parsed;
   if (flags['help']) { write(json ? envelopeJson({ ok: true, command, descriptor: spec, help: help(spec) }) : help(spec)); return 0; }
-  let parsed: Parsed;
-  try { parsed = await parseRequest(spec, flags, positionals, options); }
-  catch (error) { return fail(error instanceof UsageError ? error.message : 'The session request could not be prepared. Check the prompt and credential source.'); }
-  const response = await perform(parsed, options);
-  if (json) write(envelopeJson({ ...response, command, ...('key' in parsed.request ? { key: parsed.request.key } : {}) }));
-  else if (response.ok) write(render(response)); else stderr(render(response));
-  return response.ok ? 0 : response.status === 'uncertain' || response.reason === 'service-unavailable' ? 1 : 3;
+  let request: SessionRequest;
+  let profile: ReturnType<typeof centralProfile>;
+  try {
+    let prompt: string | undefined;
+    if ('prompt' in spec.inputSchema.properties) {
+      if (Boolean(flags['file']) === Boolean(flags['stdin'])) throw new UsageError('Choose exactly one prompt source: --file <path> or --stdin.');
+      prompt = typeof flags['file'] === 'string' ? await readBoundedFile(flags['file'], SESSION_PROMPT_BYTES, 'The prompt file') : await (options.readStdin ?? readStdin)();
+    }
+    const validated = sessionRequestOf(parsed, prompt);
+    if (!validated.ok) throw new UsageError(validated.message);
+    request = validated.request;
+    profile = centralProfile(options, typeof flags['profile'] === 'string' ? flags['profile'] : undefined);
+  } catch (error) { return fail(error instanceof UsageError ? error.message : 'The session request could not be prepared. Check the prompt and saved connection.'); }
+  if (profile === null || !profile.apiToken) return fail(SESSION_TOKEN_REQUIRED);
+  const response = await perform(spec, request, profile, options);
+  if (json) write(envelopeJson({ ...response, command, ...('key' in request ? { key: request.key } : {}) }));
+  else if (response.ok) write(renderSessionResponse(response)); else stderr(renderSessionResponse(response));
+  return sessionExitCode(response);
 }

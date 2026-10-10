@@ -36,7 +36,7 @@ test.each([109, -109])("v%s: every ledger row, id, detail and seal carries over,
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
   expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(SCHEMA_VERSION);
   // Every row, with its id and detail, as it was; the chain over them still proves.
   expect(store.actionLedger({ repos: null, limit: 101 })).toEqual(before);

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, Store, type Database } from "./store.js";
+import { CREDENTIAL_TABLE, openStore, openStoreNoMigrate, readSchemaVersion, SCHEMA_VERSION, Store, type Database } from "./store.js";
 import { mintCoordinator } from "./coordinator.js";
 import { MODERN, serveMcp } from "./mcp.js";
 import { baselineFile } from "../test/baseline.js";
@@ -81,6 +81,8 @@ describe("the non-migrating door", () => {
       }
     }
     const reader = new V107Reader(new DatabaseSync(file));
+    // This build's coordinator door reads the one credential table (v118); the reader's file has it beside its own.
+    reader.handle.exec(CREDENTIAL_TABLE);
     let migrated: Store | undefined;
     try {
       const now = new Date("2026-09-17T12:00:00Z");

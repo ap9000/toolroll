@@ -186,9 +186,9 @@ test("v114 → v115: held sessions go, and the attempt one still owned ends as a
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
   const raw = store.handle;
-  expect(raw.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(117);
+  expect(raw.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(118);
   // The tables and their indexes are gone (the one on decision too); the history columns stay without their foreign key.
   expect(raw.prepare(`SELECT name FROM sqlite_master WHERE name IN ${HELD_NAMES}`).all()).toEqual([]);
   const runSql = String(raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run'").get()?.["sql"]);

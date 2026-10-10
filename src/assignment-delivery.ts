@@ -30,7 +30,7 @@ const ownerSql = `COALESCE((SELECT 'lead:'||o.lead FROM team_task_owner o WHERE 
 
 function admittedRepos(store: Store, owner: AssignmentOwner): string[] | null {
   if (owner.kind !== "coordinator" || typeof owner.id !== "string" || owner.id.length === 0) return null;
-  const row = store.handle.prepare("SELECT repos,revoked_at FROM coordinator_credential WHERE cid = ?").get(owner.id);
+  const row = store.handle.prepare("SELECT projects_json AS repos,revoked_at FROM credential WHERE id = ? AND kind = 'coordinator'").get(owner.id);
   if (!row || row["revoked_at"] !== null) return null;
   try {
     const repos: unknown = JSON.parse(String(row["repos"]));

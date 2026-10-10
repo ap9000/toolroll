@@ -71,7 +71,7 @@ describe("toolroll tokens", () => {
     // Only the hash is kept.
     const kept = store.apiTokenSecret(made.id)!;
     expect(secretMatches(parsed.secret, kept.secretHash)).toBe(true);
-    expect(JSON.stringify(store.handle.prepare("SELECT * FROM api_token").all())).not.toContain(parsed.secret);
+    expect(JSON.stringify(store.handle.prepare("SELECT * FROM credential").all())).not.toContain(parsed.secret);
 
     expect(await tokens(["list", "--as", "alex", "--password-stdin"])).toBe(0);
     expect(last()).toMatchObject({ ok: true, tokens: [{ id: made.id, name: "laptop", access: "act", projects: null, lastUsedAt: null, expiresAt: made.expiresAt, stopsAt: null }] });
@@ -229,7 +229,7 @@ describe("toolroll tokens", () => {
     // A token made with less than a day left is told once; replaced and revoked tokens are told nothing.
     clock = new Date(expires - 3 * DAY);
     const replaced = await create("ci"), gone = await create("old");
-    store.handle.prepare("UPDATE api_token SET expires_at = ? WHERE id IN (?, ?)").run(new Date(clock.getTime() + 12 * 3_600_000).toISOString(), replaced.id, gone.id);
+    store.handle.prepare("UPDATE credential SET expires_at = ? WHERE id IN (?, ?)").run(new Date(clock.getTime() + 12 * 3_600_000).toISOString(), replaced.id, gone.id);
     expect(await tokens(["rotate", replaced.id, "--overlap", "0", "--as", "alex", "--password-stdin"])).toBe(0);
     const replacement = (last() as { id: string }).id;
     expect(await tokens(["revoke", gone.id, "--as", "alex", "--password-stdin"])).toBe(0);

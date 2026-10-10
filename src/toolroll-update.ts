@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -398,6 +398,8 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // subagent*); a column renamed in a table that keeps its name keeps its values under the new one.
   ...Object.fromEntries(Object.entries(V117_RENAMED_TABLES).map(([old, now]) => [old, { moved: { into: now, where: "1" } }])),
   ...Object.fromEntries(V117_RENAMED_COLUMNS.filter(([table]) => !Object.values(V117_RENAMED_TABLES).includes(table)).map(([table, from, to]) => [table, { renamed: { [from]: to } }])),
+  // v118 (D7): every API token, coordinator and lead token arrives in the one credential table under its kind.
+  ...Object.fromEntries(Object.entries(V118_MERGED_TABLES).map(([table, kind]) => [table, { moved: { into: "credential", where: `kind = '${kind}'` } }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));

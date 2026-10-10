@@ -2,7 +2,8 @@
  * The coordinator principal (MCP gateway spec v6; DESIGN.md §9b).
  *
  * A coordinator is the ONE credential the MCP surface accepts: minted by
- * an operator password ceremony, hashed at rest, repo-scoped at the mint,
+ * an operator password ceremony, hashed at rest (a `credential` row of kind
+ * 'coordinator', v118: the shared codec and table), repo-scoped at the mint,
  * rate-limited, revocable — and able to do exactly one thing: file a
  * proposal through the canonical door. What it files is an ordinary
  * UNAPPROVED task; admission is the operator's existing scope ceremony,
@@ -15,7 +16,8 @@
  * Steering and every operator-speech surface cannot accept this type.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+import { hashSecret, mintCredential } from "./api-tokens.js";
 import { canonicalRepos } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
 import { describeScope } from "./scope.js";
@@ -40,19 +42,7 @@ function verified(row: { cid: string; name: string; repos: string[]; perHour: nu
 }
 
 const NAME = /^[a-z0-9-]{1,32}$/;
-const CID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const KEY = /^[\x21-\x7e]{8,64}$/;
-
-function hashSecret(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
-
-function mintCid(): string {
-  const bytes = randomBytes(12);
-  let cid = "";
-  for (const b of bytes) cid += CID_ALPHABET[b % CID_ALPHABET.length];
-  return cid;
-}
 
 export type MintResult =
   | { ok: true; cid: string; token: string; repos: string[] }
@@ -82,18 +72,19 @@ export function mintCoordinator(
   if (!Number.isInteger(perHour) || perHour < 1 || perHour > 60) return { ok: false, reason: "bad-rate" };
   if (input.repos.length === 0) return { ok: false, reason: "no-repos" };
   const repos = canonicalRepos(input.repos);
-  const token = (input.newToken ?? (() => randomBytes(32).toString("base64url")))();
+  const token = (input.newToken ?? (() => mintCredential("coordinator").token))();
 
   return store.transact(() => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const cid = (input.newCid ?? mintCid)();
+      const cid = (input.newCid ?? (() => mintCredential("coordinator").id))();
       try {
+        // Its generation: which coordinator of this name it is (revoke-and-remint keeps the earlier one's history apart).
         store.handle
           .prepare(
-            `INSERT INTO coordinator_credential (cid, name, credential_hash, repos, per_hour, created_by, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, projects_json, per_hour, created_by, created_at, expires_at, generation)
+             VALUES (?, 'coordinator', ?, ?, ?, ?, 'act', ?, ?, ?, ?, ?, 1 + (SELECT count(*) FROM credential WHERE kind = 'coordinator' AND name = ?))`,
           )
-          .run(cid, name, hashSecret(token), JSON.stringify(repos), perHour, input.by, input.now.toISOString(), expiresAt);
+          .run(cid, cid, input.by, name, hashSecret(token), JSON.stringify(repos), perHour, input.by, input.now.toISOString(), expiresAt, name);
         return { ok: true as const, cid, token, repos };
       } catch (error) {
         const said = String(error);
@@ -115,9 +106,8 @@ export type CoordinatorAuth =
  * the stored hash; the caller re-runs this INSIDE any mutating
  * transaction (the startup check is a courtesy; the txn check is law). */
 export function authenticateCoordinator(store: Store, token: string): CoordinatorAuth {
-  const row = store.handle
-    .prepare("SELECT * FROM coordinator_credential WHERE credential_hash = ?")
-    .get(hashSecret(token));
+  const found = store.presentedCredential(token);
+  const row = found?.kind === "coordinator" ? store.handle.prepare("SELECT * FROM credential WHERE id = ? AND kind = 'coordinator'").get(found.id) : undefined;
   if (row === undefined) return { ok: false, reason: "unknown" };
   if (row["revoked_at"] !== null) return { ok: false, reason: "revoked" };
   // v101: a credential made with an expiry stops at it (one made before expiry existed lives until it's renewed or revoked).
@@ -125,9 +115,9 @@ export function authenticateCoordinator(store: Store, token: string): Coordinato
   return {
     ok: true,
     who: verified({
-      cid: String(row["cid"]),
+      cid: String(row["id"]),
       name: String(row["name"]),
-      repos: JSON.parse(String(row["repos"])) as string[],
+      repos: JSON.parse(String(row["projects_json"])) as string[],
       perHour: Number(row["per_hour"]),
     }),
   };
@@ -140,12 +130,12 @@ export function revokeCoordinator(
   now: Date,
 ): { ok: true } | { ok: false; reason: "unknown" | "already-revoked" } {
   return store.transact(() => {
-    const row = store.handle.prepare("SELECT revoked_at FROM coordinator_credential WHERE cid = ?").get(cid);
+    const row = store.handle.prepare("SELECT revoked_at FROM credential WHERE id = ? AND kind = 'coordinator'").get(cid);
     if (row === undefined) return { ok: false as const, reason: "unknown" as const };
     if (row["revoked_at"] !== null) return { ok: false as const, reason: "already-revoked" as const };
     store.handle
-      .prepare("UPDATE coordinator_credential SET revoked_at = ? WHERE cid = ?")
-      .run(now.toISOString(), cid);
+      .prepare("UPDATE credential SET revoked_at = ?, revoked_by = ? WHERE id = ? AND kind = 'coordinator'")
+      .run(now.toISOString(), by, cid);
     // The revocation event rides the SAME transaction as the state change,
     // and the credential's pending proposals expire with it (mate arc v3).
     store.handle
@@ -172,14 +162,14 @@ export type CoordinatorRow = {
 export function listCoordinators(store: Store): CoordinatorRow[] {
   return store.handle
     .prepare(
-      `SELECT c.*, (SELECT MAX(e.created_at) FROM coordinator_event e WHERE e.cid = c.cid AND e.kind = 'filed') AS last_filed
-         FROM coordinator_credential c ORDER BY c.created_at, c.cid`,
+      `SELECT c.*, (SELECT MAX(e.created_at) FROM coordinator_event e WHERE e.cid = c.id AND e.kind = 'filed') AS last_filed
+         FROM credential c WHERE c.kind = 'coordinator' ORDER BY c.created_at, c.id`,
     )
     .all()
     .map(row => ({
-      cid: String(row["cid"]),
+      cid: String(row["id"]),
       name: String(row["name"]),
-      repos: JSON.parse(String(row["repos"])) as string[],
+      repos: JSON.parse(String(row["projects_json"])) as string[],
       perHour: Number(row["per_hour"]),
       createdBy: String(row["created_by"]),
       createdAt: String(row["created_at"]),
@@ -336,7 +326,7 @@ export function fileCoordinatorProposal(
               ],
             }),
         ...(input.deliverable === undefined ? {} : { deliverable: input.deliverable }),
-        filedVia: `mcp:${who.name}`, filedBy: { name: (store.handle.prepare("SELECT created_by FROM coordinator_credential WHERE cid = ?").get(who.cid)?.["created_by"] as string | undefined) ?? null, kind: "coordinator" as const },
+        filedVia: `mcp:${who.name}`, filedBy: { name: (store.handle.prepare("SELECT created_by FROM credential WHERE id = ? AND kind = 'coordinator'").get(who.cid)?.["created_by"] as string | undefined) ?? null, kind: "coordinator" as const },
         admittedRepos: who.repos,
       },
       now,
