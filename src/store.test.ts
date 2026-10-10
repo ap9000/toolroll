@@ -1824,3 +1824,49 @@ describe("run admission proves route provenance before any row exists (v48)", ()
     expect(store.runRoute(planner)).toMatchObject({ phase: "plan", routeDigest: routeDigestOf(proposed) });
   });
 });
+
+describe("restarting planning when a scope is rewritten (v118)", () => {
+  test("a planning task moves to a new generation: strikes clear, old questions close, a waiting revision is rejected with its hold, and revision numbers continue", () => {
+    const store = openStore(":memory:");
+    try {
+      store.createTask({ id: "p", title: "planned" }, T0);
+      store.createTask({ id: "q", title: "not planning" }, T0);
+      const ref = store.refFor(BUILT_IN, "p").id, other = store.refFor(BUILT_IN, "q").id;
+      expect(store.requestPlan(ref, T0)).toEqual({ ok: true });
+      store.addPlanStrike(ref);
+      const run = store.startRun({ taskRef: ref, leaseId: "l", runner: "r", branch: "b", worktree: "/w", role: "planner", ...bareLegacy("plan"), now: T0 });
+      const options = [{ id: "a", label: "A", consequence: "a", reversible: true }, { id: "b", label: "B", consequence: "b", reversible: true }];
+      const asked = store.saveDecision({ run, urgency: "blocking", recap: "r", question: "q?", options, recommendation: "a" }, T0);
+      const artifact = store.saveArtifact({ run, kind: "plan", key: "k", bytesOriginal: 1, bytesStored: 1, truncated: false, sha256: "0".repeat(64), capture: "c" }, T0);
+      const revision = { taskRef: ref, artifact, parentHash: null, reason: "r", evidenceLink: null, author: "a", originRun: run, kind: "builder-proposal" as const, authorityKind: "authority-change" as const, authorityDigest: "d", changedFields: ["signed-scope"] };
+      store.insertPlanRevision({ ...revision, revision: 1, status: "applied" }, T0);
+      const blocked = store.insertPlanRevision({ ...revision, revision: 2, status: "blocked" }, T0);
+      store.holdOwned({ taskRef: ref, ownerKind: "revision", ownerId: String(blocked), reason: "waiting", until: null }, T0);
+      expect(store.nextPlanRevisionNumber(ref)).toBe(3);
+
+      // A task that is not planning has nothing to restart.
+      expect(store.restartPlanning(other, T0)).toBe(false);
+      expect(store.refForId(other)).toMatchObject({ plan: null, planningGeneration: 0 });
+
+      expect(store.restartPlanning(ref, T0)).toBe(true);
+      expect(store.refForId(ref)).toMatchObject({ plan: "requested", planStrikes: 0, planningGeneration: 1 });
+      expect(store.getDecision(asked)).toMatchObject({ state: "answered", choice: null, supersededReason: "scope-changed" });
+      expect(store.raw().prepare("SELECT action, outcome FROM action_ledger WHERE task_id = 'p' AND action IN ('decision answered','decision closed')").all()).toEqual([{ action: "decision closed", outcome: "scope-changed" }]);
+      expect(store.getPlanRevision(blocked)).toMatchObject({ status: "rejected", resolvedBy: "toolroll" });
+      expect(store.raw().prepare("SELECT count(*) AS n FROM hold WHERE task_ref = ?").get(ref)).toEqual({ n: 0 });
+      // The old revisions stay on record; the new generation starts with none and numbers past them.
+      expect(store.currentPlanRevision(ref)).toBeNull();
+      expect(store.latestPlanRevision(ref)).toBeNull();
+      expect(store.listPlanRevisions(ref)).toEqual([]);
+      expect(store.getPlanRevision(blocked)).not.toBeNull();
+      expect(store.nextPlanRevisionNumber(ref)).toBe(3);
+      const next = store.insertPlanRevision({ ...revision, revision: 3, status: "applied", kind: "initial", authorityKind: "plan-only", changedFields: [] }, T0);
+      expect(store.currentPlanRevision(ref)).toMatchObject({ id: next, revision: 3 });
+      // A run opened now belongs to the new generation.
+      const fresh = store.startRun({ taskRef: ref, leaseId: "l2", runner: "r", branch: "b", worktree: "/w", role: "planner", ...bareLegacy("plan"), now: T0 });
+      expect(store.getRun(fresh)?.planningGeneration).toBe(1);
+      expect(store.getRun(run)?.planningGeneration).toBe(0);
+      expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true });
+    } finally { store.close(); }
+  });
+});

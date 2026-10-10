@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -344,7 +344,7 @@ export function durableRename(temp: string, target: string): void {
 const LEGACY_DESTINATION = "legacy:single-destination";
 type Moved = { into: string; where: string; rows?: string };
 type HistoryRule = { appendOnly?: true; dropped?: string[]; carried?: { into: string; destination: string }; receives?: string; compacted?: { into: string; sum: string }; summarizes?: string;
-  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved; renamed?: Record<string, string> };
+  retired?: true; fromRoutines?: "flow" | "trigger"; moved?: Moved; renamed?: Record<string, string>; added?: Record<string, string> };
 /** v116: every old per-app chat table into the shared chat tables, keyed by provider (chat-migration.ts). Several old
  * tables fan into one shared table; each picks out only its own rows there, so every count is checked on its own. */
 const TELEGRAM_MOVES: Record<string, Moved> = {
@@ -398,6 +398,9 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // subagent*); a column renamed in a table that keeps its name keeps its values under the new one.
   ...Object.fromEntries(Object.entries(V117_RENAMED_TABLES).map(([old, now]) => [old, { moved: { into: now, where: "1" } }])),
   ...Object.fromEntries(V117_RENAMED_COLUMNS.filter(([table]) => !Object.values(V117_RENAMED_TABLES).includes(table)).map(([table, from, to]) => [table, { renamed: { [from]: to } }])),
+  // v118: planning generations and a question's closure reason are new columns; every row saved before them reads
+  // the declared value (generation 0, no closure reason).
+  ...Object.fromEntries(Object.entries(V118_ADDED_COLUMNS).map(([table, columns]) => [table, { added: Object.fromEntries(Object.entries(columns).map(([column, { saved }]) => [column, saved])) }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));
@@ -539,6 +542,9 @@ export function changedHistory(db: DatabaseSync, before: TableDigest[]): string[
     const kept = (c: string) => present.has(c) || (rule?.renamed?.[c] !== undefined && present.has(rule.renamed[c]!));
     if (t.columns.some(c => !kept(c) && (!rule?.dropped?.includes(c) || (t.nonNull?.[c] !== 0 && !accounted(rule, t))))) return true;
     const columns = t.columns.filter(c => present.has(c));
+    // A declared new column: every row saved before it reads its declared value.
+    const added = Object.entries(rule?.added ?? {}).filter(([c]) => !t.columns.includes(c) && present.has(c));
+    if (t.rowid && added.some(([c, saved]) => Number(db.prepare("SELECT count(*) AS n FROM " + quote(t.name) + " WHERE rowid <= ? AND " + quote(c) + " IS NOT " + saved).get(t.last)!["n"]) > 0)) return true;
     if (!t.rowid) { const after = rowsHash(db, t.name, columns); return after.count !== t.count || after.hash !== t.hash; }
     if (rule?.fromRoutines) { const kept = rowsHash(db, t.name, columns, t.last); return kept.count !== t.count || kept.hash !== t.hash || !movedRoutines(db, t, before); }
     if (rule?.appendOnly) { const after = rowsHash(db, t.name, columns, t.last); return after.count !== t.count || after.hash !== t.hash; }

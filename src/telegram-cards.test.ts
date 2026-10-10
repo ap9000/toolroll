@@ -405,6 +405,28 @@ describe("a lead's proposal", () => {
     seen("Proposal: irreversible answer", "answered", script.current(ALEX, card.messageId));
     expect(store.getDecision(decision)).toMatchObject({ state: "answered", choice: "closed", answeredBy: "alex", answeredVia: "telegram" });
   });
+
+  test.each(["scope-changed", "cancelled"] as const)("a question closed by %s removes a stale phone proposal's controls without inventing an answer", async reason => {
+    const ref = placed("q", "Choose a saved preference");
+    if (reason === "scope-changed") store.setPlanState(ref, "requested");
+    const decision = decisionOn(ref, "Choose where the preference is saved.", [
+      { id: "local", label: "This device", consequence: "Other devices keep their settings", reversible: true },
+    ], "local");
+    const card = proposal("answer", { decision, task: "q", option: "local", optionLabel: "This device", reversible: true }, 78);
+    const token = script.current(ALEX, card.messageId).token(/^Confirm$/);
+    if (reason === "scope-changed") store.restartPlanning(ref, now);
+    else store.cancelTask("q", now);
+    const closed = store.getDecision(decision)!;
+    expect(closed).toMatchObject({ choice: null, supersededReason: reason });
+    for (const channel of ["telegram", "slack", "discord", "teams"] as const) {
+      expect(proposalPreview(store, store.getLeadProposal(card.id)!, [REPO], channel)).toMatchObject({ buttons: false, closed: true, text: expect.stringContaining("Closed without an answer") });
+    }
+    await tapIn(ALEX, token, card.messageId);
+    const shown = seen("Proposal: closed question", reason, script.current(ALEX, card.messageId));
+    expect(shown.text).toContain(reason === "scope-changed" ? "The scope changed" : "The task was cancelled");
+    expect(shown.labels).toEqual([]);
+    expect(store.getDecision(decision)).toEqual(closed);
+  });
 });
 
 describe("flow cards", () => {

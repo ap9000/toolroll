@@ -38,11 +38,13 @@
 
 import { createHash } from "node:crypto";
 import type { Store } from "./store.js";
-import type { AcceptanceCriterion, EvidenceKind, Scope } from "./scope.js";
+import type { AcceptanceCriterion, Scope } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { RiskLevel } from "./phase-routing.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact } from "./evidence.js";
 import { TEXT_LIMITS } from "./text-limits.js";
+import { PLAN_TOUCHES } from "./contracts/plan.js";
+import { contractChangesOf, type ContractChange, type ContractTerms } from "./contract-changes.js";
 
 export const PLANNER_SOURCE_VERSION = 1;
 
@@ -55,15 +57,10 @@ export const PLANNER_SOURCE_LIMITS = {
   amendment: TEXT_LIMITS.planAmendment,
   /** Earlier answers quoted into the brief. */
   answers: 5,
+  /** Terms that exceed the entire handoff cap cannot fit regardless of the plan's size. Do not reserve a maximum-
+   * sized plan here: a shorter document can carry larger valid terms. The final payload still enforces its byte cap. */
+  handoffTerms: TEXT_LIMITS.planPayloadBytes,
 } as const;
-
-/** The four contract fields a planner may propose to amend. */
-export type ContractTerms = {
-  goal: string;
-  outOfScope: string | null;
-  touches: string[];
-  acceptance: AcceptanceCriterion[];
-};
 
 export type PlannerContractScope = ContractTerms & {
   /** The filed row's digest — the exact bytes the terms carry today. */
@@ -213,7 +210,7 @@ export function plannerContractOf(store: Store, taskId: string): { ok: true; con
 
 export type PlannerSourceResult =
   | { ok: true; source: PlannerSource; bytes: number }
-  | { ok: false; reason: "no-task" | "revision-brief" | "oversized"; message: string };
+  | { ok: false; reason: "no-task" | "revision-brief" | "oversized" | "too-long"; message: string };
 
 /**
  * Everything a planning attempt is given, assembled once per attempt from
@@ -275,25 +272,51 @@ export function plannerSourceOf(
         `(scope ${scopeBytes}, revision brief ${briefBytes}); nothing is trimmed silently — shorten the scope or brief, then plan again`,
     };
   }
+  const handoff = source.contract.scope === null ? null : plannerHandoffProblemOf(source.contract.scope);
+  if (handoff !== null) return { ok: false, reason: "too-long", message: handoff };
   return { ok: true, source, bytes };
 }
 
 /**
  * The dispatch diagnosis's read of the same gate, from the store alone:
  * why the next pass would refuse to plan this task before spending — the
- * revision brief unreadable, or the filed request over the byte cap. The
- * size is a floor (the brief's stored bytes, before JSON quoting), so a
- * "yes" here is certain and the dispatch refusal itself stays the exact
- * word. Null when nothing here stands in the way.
+ * revision brief unreadable, the filed request over the byte cap, or terms
+ * the planner's handoff cannot carry. The size is a floor (the brief's
+ * stored bytes, before JSON quoting), so a "yes" here is certain and the
+ * dispatch refusal itself stays the exact word. Null when nothing here
+ * stands in the way.
  */
-export function plannerSourceProblemOf(store: Store, taskId: string): string | null {
-  if (store.answeredDecisionsFor(taskId, PLANNER_SOURCE_LIMITS.answers + 1).length > PLANNER_SOURCE_LIMITS.answers) return `more than ${PLANNER_SOURCE_LIMITS.answers} answered decisions exceed the planner history bound; file a follow-up task with the consolidated decisions`;
+export function plannerSourceProblemOf(store: Store, taskId: string): { title: string; detail: string } | null {
+  const filed = (detail: string) => ({ title: "The filed request cannot be planned as filed", detail });
+  if (store.answeredDecisionsFor(taskId, PLANNER_SOURCE_LIMITS.answers + 1).length > PLANNER_SOURCE_LIMITS.answers) return filed(`more than ${PLANNER_SOURCE_LIMITS.answers} answered decisions exceed the planner history bound; file a follow-up task with the consolidated decisions`);
   const contract = plannerContractOf(store, taskId);
-  if (!contract.ok) return contract.message;
+  if (!contract.ok) return filed(contract.message);
   const briefBytes = contract.contract.revision === null ? 0 : (store.getArtifact(contract.contract.revision.briefArtifact)?.bytesStored ?? 0);
   const floor = Buffer.byteLength(JSON.stringify(contract.contract, null, 2), "utf8") + briefBytes;
   if (floor > PLANNER_SOURCE_LIMITS.bytes) {
-    return `the filed request is at least ${floor} bytes — over the ${PLANNER_SOURCE_LIMITS.bytes}-byte planner source cap; shorten the scope or brief before planning`;
+    return filed(`the filed request is at least ${floor} bytes — over the ${PLANNER_SOURCE_LIMITS.bytes}-byte planner source cap; shorten the scope or brief before planning`);
+  }
+  const handoff = contract.contract.scope === null ? null : plannerHandoffProblemOf(contract.contract.scope);
+  return handoff === null ? null : { title: "Scope too long to plan", detail: handoff };
+}
+
+/**
+ * Whether the planner can hand the filed terms back (contracts/plan.ts): it must reproduce the goal, exclusions,
+ * touches and criteria in its handoff, so terms its handoff cannot carry would end every attempt as a malformed plan.
+ * This names the problem before any workspace, run or provider spend instead: the actual size, the limit, and what to
+ * shorten. Null when the terms fit.
+ */
+export function plannerHandoffProblemOf(terms: ContractTerms): string | null {
+  const n = (value: number) => value.toLocaleString("en-US");
+  for (const [label, is, text] of [["goal", "is", terms.goal], ["exclusions", "are", terms.outOfScope ?? ""]] as const) {
+    if (text.length > TEXT_LIMITS.goal) return `The ${label} ${is} ${n(text.length)} characters; the planner can carry at most ${n(TEXT_LIMITS.goal)}. Shorten the ${label} and planning starts again.`;
+  }
+  if (terms.touches.length > PLAN_TOUCHES) return `The scope lists ${n(terms.touches.length)} paths; the planner can carry at most ${PLAN_TOUCHES}. List fewer paths and planning starts again.`;
+  const path = terms.touches.find(one => one.length > TEXT_LIMITS.planTouch);
+  if (path !== undefined) return `A path is ${n(path.length)} characters; the planner can carry at most ${n(TEXT_LIMITS.planTouch)}. Shorten it and planning starts again.`;
+  const bytes = Buffer.byteLength(JSON.stringify({ goal: terms.goal, outOfScope: terms.outOfScope, touches: terms.touches, acceptance: terms.acceptance }), "utf8");
+  if (bytes > PLANNER_SOURCE_LIMITS.handoffTerms) {
+    return `The goal, exclusions, paths and criteria are ${n(bytes)} bytes together; the planner can carry at most ${n(PLANNER_SOURCE_LIMITS.handoffTerms)} bytes in its whole handoff. Shorten the scope and planning starts again.`;
   }
   return null;
 }
@@ -336,76 +359,7 @@ export function decodePlannerSource(content: Buffer): PlannerSource | null {
 
 // ---- amendments -----------------------------------------------------------
 
-export type ContractChange =
-  | { field: "goal"; kind: "changed"; before: string; after: string }
-  | { field: "outOfScope"; kind: "added" | "removed" | "changed"; before: string | null; after: string | null }
-  | { field: "touches"; kind: "added" | "removed"; path: string }
-  | {
-      field: "acceptance";
-      kind: "added" | "removed" | "changed";
-      id: string;
-      before: { statement: string; evidence: EvidenceKind[]; how: string | null } | null;
-      after: { statement: string; evidence: EvidenceKind[]; how: string | null } | null;
-      /** For `changed`: which parts moved. `how` is advisory and unsigned,
-       * but a planner rewriting it is still a change the operator sees. */
-      moved: ("statement" | "evidence" | "how")[];
-    };
-
-const trimmed = (text: string | null): string | null => {
-  if (text === null) return null;
-  const t = text.trim();
-  return t === "" ? null : t;
-};
-
-/**
- * Every addition, change, and removal between the filed contract and a
- * proposed one. Whitespace at the ends and touch/evidence order do not
- * count (the scope digest ignores them too); everything else does,
- * including the advisory `how`, because the operator wrote it.
- */
-export function contractChangesOf(filed: ContractTerms, proposed: ContractTerms): ContractChange[] {
-  const changes: ContractChange[] = [];
-  if (filed.goal.trim() !== proposed.goal.trim()) {
-    changes.push({ field: "goal", kind: "changed", before: filed.goal, after: proposed.goal });
-  }
-  const filedOut = trimmed(filed.outOfScope);
-  const proposedOut = trimmed(proposed.outOfScope);
-  if (filedOut !== proposedOut) {
-    changes.push({
-      field: "outOfScope",
-      kind: filedOut === null ? "added" : proposedOut === null ? "removed" : "changed",
-      before: filed.outOfScope,
-      after: proposed.outOfScope,
-    });
-  }
-  const filedTouches = new Set(filed.touches.map(one => one.trim()).filter(one => one !== ""));
-  const proposedTouches = new Set(proposed.touches.map(one => one.trim()).filter(one => one !== ""));
-  for (const path of filedTouches) if (!proposedTouches.has(path)) changes.push({ field: "touches", kind: "removed", path });
-  for (const path of proposedTouches) if (!filedTouches.has(path)) changes.push({ field: "touches", kind: "added", path });
-
-  const criterionOf = (one: AcceptanceCriterion) => ({ statement: one.statement, evidence: [...one.evidence].sort() as EvidenceKind[], how: one.how });
-  const filedById = new Map(filed.acceptance.map(one => [one.id, one]));
-  const proposedById = new Map(proposed.acceptance.map(one => [one.id, one]));
-  for (const [id, before] of filedById) {
-    const after = proposedById.get(id);
-    if (after === undefined) {
-      changes.push({ field: "acceptance", kind: "removed", id, before: criterionOf(before), after: null, moved: [] });
-      continue;
-    }
-    const moved: ("statement" | "evidence" | "how")[] = [];
-    if (before.statement.trim() !== after.statement.trim()) moved.push("statement");
-    if ([...before.evidence].sort().join(",") !== [...after.evidence].sort().join(",")) moved.push("evidence");
-    if (trimmed(before.how) !== trimmed(after.how)) moved.push("how");
-    if (moved.length > 0) {
-      changes.push({ field: "acceptance", kind: "changed", id, before: criterionOf(before), after: criterionOf(after), moved });
-    }
-  }
-  for (const [id, after] of proposedById) {
-    if (!filedById.has(id)) changes.push({ field: "acceptance", kind: "added", id, before: null, after: criterionOf(after), moved: [] });
-  }
-  return changes;
-}
-
+export { contractChangesOf, type ContractChange, type ContractTerms } from "./contract-changes.js";
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /** One line per change, for terminals, notifications, and validation messages. */

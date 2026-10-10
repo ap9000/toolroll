@@ -30,8 +30,8 @@ test.each([110, -110, 111, -111, 112, -112])("v%s: MCP sign-in's tables are adde
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(118);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'oauth_%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["oauth_client", "oauth_code", "oauth_grant", "oauth_refresh"]);
   // The token and its kept hash are untouched, and an ordinary token has no MCP sign-in binding.

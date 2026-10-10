@@ -31,8 +31,8 @@ test.each([110, -110])("v%s: every API token carries over unchanged, unlimited a
   expect(updateSafeSchema(110)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(111);
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(118);
   // The saved row is as it was, and reads as every-project, unrotated and live.
   const after = store.handle.prepare("SELECT * FROM api_token").all();
   expect(after.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !COLUMNS.includes(key))))).toEqual(before.map(row => ({ ...row })));

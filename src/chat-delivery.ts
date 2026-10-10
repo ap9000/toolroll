@@ -758,6 +758,8 @@ export function applyChatAction(
     const phase = action.phase;
     if (proposal.state !== "pending")
       content = { text: proposalOutcomeText(proposal), edit: event.ts };
+    else if (preview.closed)
+      content = { text: preview.text, edit: event.ts };
     else if (
       !preview.buttons ||
       preview.text.length > (options.maxProposal ?? 10_000)

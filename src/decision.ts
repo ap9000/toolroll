@@ -46,6 +46,16 @@ export const LIMITS = {
 /** Bytes an operator's note may occupy — the UTF-8 backstop under LIMITS.note. */
 export const NOTE_BYTE_CAP = TEXT_LIMITS.noteBytes;
 
+/** Why a question closed without an answer (v118), in plain words. */
+export function closedQuestionReason(reason: "scope-changed" | "cancelled"): string {
+  return reason === "scope-changed" ? "The scope changed, so planning started again." : "The task was cancelled.";
+}
+
+/** The same, said once on one line wherever its answer would show. */
+export function closedQuestionWords(reason: "scope-changed" | "cancelled"): string {
+  return `Closed without an answer. ${closedQuestionReason(reason)}`;
+}
+
 /**
  * Unicode that reorders or breaks lines invisibly: bidi controls and the
  * line/paragraph separators. A note carrying these can spoof what a
