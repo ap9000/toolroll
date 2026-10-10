@@ -492,7 +492,8 @@ async function dispatch(
   if (first === "session") {
     // D5: native coding sessions are deprecated. They still run this release; each use says so once, on stderr.
     (mainOptions.session?.stderr ?? (line => process.stderr.write(`${line}\n`)))(deprecationWarning(`session ${rest.find(arg => !arg.startsWith("-")) ?? ""}`.trim(), "session"));
-    return runSessionCommand(rest, write, mainOptions.session);
+    // D7: it runs on the saved connection over /api/cli, signed in with that profile's API token.
+    return runSessionCommand(rest, write, { ...(mainOptions.remote ?? mainOptions.team), ...mainOptions.session });
   }
   if (first === "demo") return runDemoCommand(rest, write);
   if (first === "skills") return runSkillsCommand(rest, write);

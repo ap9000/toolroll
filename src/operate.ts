@@ -117,7 +117,8 @@ import { deleteProject, holdingsWords, projectHoldings, projectRunning } from ".
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from "./names.js";
-import { claimActor, currentActor, parseLeadToken, withActor, type Actor } from "./actor.js";
+import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
+import { parseLeadToken } from "./api-tokens.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";

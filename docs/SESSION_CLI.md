@@ -2,9 +2,10 @@
 
 > **Deprecated.** `toolroll session …` and the `/code` page still work this release, print a warning, and are removed in the next minor release. Queue work as a task (`toolroll task add`) instead.
 
-`session` connects to the running Standing Orders service that owns native coding
-sessions. It does not open a second catalog or start a background server. `chat`
-remains the coordinator conversation that reads work and proposes actions.
+`session` runs on the Toolroll server you connected to, through the same
+`POST /api/cli` endpoint as every other remote command. It does not open a second
+catalog or start a background server. `chat` remains the lead conversation that
+reads work and proposes actions.
 
 Inspect this client's exact schemas without credentials:
 
@@ -13,35 +14,27 @@ toolroll session capabilities --json
 toolroll session send --help
 ```
 
-Client capabilities do not establish that the installed service supports them.
-The matching authenticated session service must be running. Session reads and
-controls require an operator account; external coordinator credentials have no
-session access. A schema is not permission to use an operator's credential.
-
-Each request names the service and operator explicitly. Use HTTPS for a remote
-service, or HTTP on loopback. Credentials come from an explicitly named
-environment variable or token file; the CLI never discovers installation secrets.
-There is no inline token argument. The service authenticates the account again
-for every request. Redirects are never followed.
-
-With your credential already in a private token file:
+Session reads and controls need an instance operator's API token without a project
+limit; changing a session needs an act token. Lead and coordinator credentials have
+no session access. Make a token with `toolroll tokens create` (or in **Settings →
+Sessions & tokens**) and save it once with `toolroll connect <origin> --as <account>
+--token-stdin`. Each command uses that saved connection, or `--profile <name>`. The
+server checks the token again for every request, and the request is recorded in the
+action ledger like any remote command. Redirects are never followed. The old
+`--url`, `--as`, `--token-file` and `--token-env` flags, and the `/api/sessions`
+addresses, are gone; both say what to use instead.
 
 ```sh
-toolroll session list \
-  --url http://127.0.0.1:7788 --as alice --token-file /private/operator-token \
-  --json
+toolroll session list --json
 
 toolroll session start --project /path/to/project \
   --title 'Improve session continuity' --file /path/to/request.txt \
-  --key request_0123456789 \
-  --url http://127.0.0.1:7788 --as alice --token-file /private/operator-token \
-  --json
+  --key request_0123456789 --json
 ```
 
 Use a different key for each new action. `--stdin` reads a piped prompt; `--file`
-reads UTF-8 text. Both preserve the complete text, up to 64 KB. Choose one source.
-`--token-env VARIABLE_NAME` can replace `--token-file` when that environment
-variable already contains the account credential.
+reads UTF-8 text on your computer and sends it with the request. Both preserve the
+complete text, up to 64 KB. Choose one source.
 
 `session show <id>` returns a concise saved-context brief, revision, native thread
 ID and turn ID. The brief labels the agent's latest report and identifies the
@@ -59,9 +52,7 @@ For `send`, `stop`, `resume` and `recover`, copy the identity from the latest
 ```sh
 toolroll session send <session-id> --file /path/to/follow-up.txt \
   --revision 4 --thread <native-thread-id> --turn none \
-  --key followup_0123456789 \
-  --url http://127.0.0.1:7788 --as alice --token-file /private/operator-token \
-  --json
+  --key followup_0123456789 --json
 ```
 
 Use `none` only when the saved thread or turn is null. The owner rejects stale
@@ -82,6 +73,6 @@ stderr. `--json -o /path/to/answer.json` also saves the same envelope.
 If a mutation response is lost, malformed, truncated, redirected, or names a
 different session or receipt, the CLI reports `delivery: unknown` and never
 retries. Keep the original key and inspect the saved session before continuing.
-A rejection is `delivery: not-sent`. A bare gateway failure cannot establish
-non-delivery; the owner must return the typed rejection or the explicit
-`x-standing-orders-session-delivery: not-sent` response marker.
+A rejection is `delivery: not-sent`: a refusal before the command ran (a token
+that is not valid, a read token, a request limit) is never a delivery. A command
+that stopped on the server cannot establish non-delivery and reads as unknown.

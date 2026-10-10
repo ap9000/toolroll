@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { mintApiToken } from "./api-tokens.js";
+import { toV117 } from "../test/pre-v118.js";
 
 let dir: string, store: Store | undefined;
 afterEach(() => { store?.close(); store = undefined; if (dir) rmSync(dir, { recursive: true, force: true }); });
@@ -23,6 +24,7 @@ test.each([110, -110, 111, -111, 112, -112])("v%s: MCP sign-in's tables are adde
   first.close();
   // Pre-OAuth shapes, including the sibling v111/v112 migrations: no OAuth tables or purpose yet.
   const db = new DatabaseSync(file);
+  toV117(db);
   db.exec("DROP TABLE oauth_refresh; DROP TABLE oauth_grant; DROP TABLE oauth_code; DROP TABLE oauth_client");
   const columns = Math.abs(version) < 111 ? ["purpose", "projects_json", "replaces", "replaced_by", "overlap_until"] : ["purpose"];
   for (const column of columns) db.exec(`ALTER TABLE api_token DROP COLUMN ${column}`);
@@ -30,8 +32,8 @@ test.each([110, -110, 111, -111, 112, -112])("v%s: MCP sign-in's tables are adde
   db.close();
 
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(117);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
+  expect(SCHEMA_VERSION).toBe(118);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(118);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'oauth_%' ORDER BY name").all().map(row => row["name"]))
     .toEqual(["oauth_client", "oauth_code", "oauth_grant", "oauth_refresh"]);
   // The token and its kept hash are untouched, and an ordinary token has no MCP sign-in binding.

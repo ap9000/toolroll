@@ -52,8 +52,6 @@ export const REMOTE_PATH_ARGUMENTS: readonly RemotePathArgument[] = [
   ...['link', 'unlink'].map(invocation => ({ invocation, argument: { flag: '--to' }, policy: 'refuse' as const })),
   ...['repos add', 'repos remove', 'pulls', 'graph', ''].map(invocation => ({ invocation, argument: { position: 0, name: 'path', rest: true as const }, policy: 'refuse' as const })),
   { invocation: 'project use', argument: { position: 0, name: 'checkout path' }, policy: 'refuse' },
-  // These local HTTP clients read prompts themselves; they do not consume runOperateAs's files map.
-  ...['session start', 'session send'].map(invocation => ({ invocation, argument: { flag: '--file' }, policy: 'refuse' as const })),
 ];
 
 type FileProblem = { problem: string; code: 'local-only-flag' | 'server-path' | 'missing-file' | 'invalid-arguments' };

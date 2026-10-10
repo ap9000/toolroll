@@ -48,6 +48,8 @@ export type ServeOptions = {
   cliRunner?: RunOperateAs;
   /** Tests: remote command metadata until the shared contract declares it. */
   cliModeOf?: CliHttpOptions['modeOf'];
+  /** Tests: whether a password on a request is still accepted (default: this release's version, password-bearer.ts). */
+  passwordBearerAccepted?: boolean;
   /** Tests: the clock request budgets for API tokens count by (request-budget.ts). */
   requestBudgetClock?: () => number;
   /** Where repos.json lives — every enrollment locks exactly this file. */

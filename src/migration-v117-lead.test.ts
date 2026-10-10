@@ -108,8 +108,8 @@ describe("v117: the mate's tables become the lead's, and teammates the lead's su
     old.close();
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(117);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(117);
+    expect(SCHEMA_VERSION).toBe(118);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(118);
     // Each subagent keeps its name, personality and rules, and its history; its own kinds now say subagent.
     const rosa = store.getSubagent(seeded.subagent)!;
     expect(rosa).toMatchObject({ handle: "rosa", soul: SOUL_V2, version: 2, state: "active", manager: "alex" });
@@ -174,7 +174,7 @@ describe("v117: the mate's tables become the lead's, and teammates the lead's su
     db.close();
     expect(before).toHaveLength(1);
     store = openStore(file);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(117);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(118);
     const after = store.handle.prepare("PRAGMA foreign_key_check").all();
     expect(after).toMatchObject([{ table: "subagent_event", parent: "subagent" }]);
     expect(after.map(orphanKey)).toEqual(before);

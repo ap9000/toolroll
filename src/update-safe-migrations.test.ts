@@ -24,7 +24,7 @@ afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = 
  * row unchanged. A new schema version must be classed one way or the other here.
  */
 describe("update-safe migrations", () => {
-  test("every schema version is classed: v108 to v117 are update-safe, from the v107 baseline up", () => {
+  test("every schema version is classed: v108 to v118 are update-safe, from the v107 baseline up", () => {
     // A new migration: decide whether `toolroll update` may run it in place (add it to
     // UPDATE_SAFE_MIGRATIONS only when it adds and changes no saved row), then move this pin.
     // v108 (sign-in pauses) and v109 (the pause a task waits on) each only add a table or a column.
@@ -33,8 +33,9 @@ describe("update-safe migrations", () => {
     // v115 is update-safe only under its named rules: the removed features' tables retire whole and each routine becomes one flow and trigger.
     // v116 moves every old chat table's rows into the shared chat tables, and the rehearsal checks each moved count (HISTORY_RULES' moved tables).
     // v117 renames the lead's and the subagents' tables and columns; the rehearsal checks each renamed table's rows arrived.
-    expect(SCHEMA_VERSION).toBe(117);
-    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117]);
+    // v118 moves every API token, coordinator and lead token into the one credential table; the rehearsal checks each kind's rows arrived.
+    expect(SCHEMA_VERSION).toBe(118);
+    expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
 
@@ -159,7 +160,7 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     copy.close();
     const store = openStore(backup);
     try {
-      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(117);
+      expect(store.handle.prepare("SELECT version FROM schema_version").get()?.version).toBe(118);
       expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: seeded.chain.through, head: seeded.chain.head });
       const moved = store.handle.prepare(`SELECT f.name, t.state, t.next_at, json_extract(t.config_json, '$.schedule') AS schedule, json_extract(t.config_json, '$.order.goal') AS goal,
         json_extract(t.config_json, '$.order.costCeilingUsd') AS ceiling, json_extract(t.config_json, '$.order.routine') AS routine, t.last_outcome
@@ -180,6 +181,6 @@ console.log(JSON.stringify({ ok: read.ok, message: read.ok ? null : read.message
     // The release before it no longer reads the migrated file as its own: v116 is newer than it speaks.
     rmSync(file);
     execFileSync("cp", [backup, file]);
-    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v117, written by a newer build/) });
+    expect(tsx("read.ts")).toMatchObject({ ok: false, message: expect.stringMatching(/schema v118, written by a newer build/) });
   }, 120_000);
 });

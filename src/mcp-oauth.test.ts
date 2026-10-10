@@ -246,7 +246,7 @@ describe("MCP sign-in (OAuth 2.1)", () => {
 
     // An ordinary API token of sam's, listed and revocable like any other, its secrets kept only as hashes.
     expect(store.apiTokens("sam").find(one => one.id === id)).toMatchObject({ name: "MCP: Test Agent", access: "act", revokedAt: null });
-    const kept = JSON.stringify(store.handle.prepare("SELECT * FROM oauth_grant").all()) + JSON.stringify(store.handle.prepare("SELECT * FROM oauth_code").all()) + JSON.stringify(store.handle.prepare("SELECT * FROM api_token").all());
+    const kept = JSON.stringify(store.handle.prepare("SELECT * FROM oauth_grant").all()) + JSON.stringify(store.handle.prepare("SELECT * FROM oauth_code").all()) + JSON.stringify(store.handle.prepare("SELECT * FROM credential").all());
     for (const secret of [access, tokens["refresh_token"] as string, code, verifier]) expect(kept).not.toContain(secret.slice(-43));
     expect(JSON.stringify(store.actionLedger({ repos: null, limit: 200 }))).not.toContain(access.slice(-43));
 
@@ -481,17 +481,17 @@ describe("MCP sign-in (OAuth 2.1)", () => {
     };
     // Neither stored record can confer a project outside current account access.
     store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/shop", "/repo/bank"]), id);
-    store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/shop", "/repo/bank"]), id);
+    store.handle.prepare("UPDATE credential SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/shop", "/repo/bank"]), id);
     expect(await projects()).toEqual(["/repo/shop"]);
-    store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/bank"]), id);
+    store.handle.prepare("UPDATE credential SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/bank"]), id);
     expect(await projects()).toEqual([]);
-    store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/shop"]), id);
+    store.handle.prepare("UPDATE credential SET projects_json = ? WHERE id = ?").run(JSON.stringify(["/repo/shop"]), id);
     store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/bank"]), id);
     expect(await projects()).toEqual([]);
     store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/shop", 1]), id);
     expect(await projects()).toEqual([]);
     store.handle.prepare("UPDATE oauth_grant SET projects_json = ? WHERE token = ?").run(JSON.stringify(["/repo/shop"]), id);
-    store.handle.prepare("UPDATE api_token SET projects_json = 'broken' WHERE id = ?").run(id);
+    store.handle.prepare("UPDATE credential SET projects_json = 'broken' WHERE id = ?").run(id);
     expect(await projects()).toEqual([]);
     expect((await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client })).status).toBe(400);
   });

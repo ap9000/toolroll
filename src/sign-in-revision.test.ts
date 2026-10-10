@@ -184,8 +184,8 @@ describe("HTTP password admission", () => {
     }
     expect(refused).toBe(10_001);
     const bearer = await fetch(`${base}/work`, { redirect: "manual", headers: { authorization: `Bearer alex:${password}`, "x-forwarded-for": source(101).slice(4), "x-forwarded-proto": "https" } });
-    expect(bearer.status).toBe(303);
-    expect(bearer.headers.get("location")).toMatch(/^\/login/);
+    expect(bearer.status).toBe(401);
+    expect(await bearer.text()).toContain("toolroll tokens create");
     expect(scryptSync).not.toHaveBeenCalled();
   });
 

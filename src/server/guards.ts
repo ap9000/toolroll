@@ -4,7 +4,7 @@ import type { TaskFamily } from "../store.js";
 
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
-import { parseApiToken,secretMatches,tokenLive,tokenProjects } from "../api-tokens.js";
+import { tokenLive,tokenProjects } from "../api-tokens.js";
 import { oauthProjects,oauthTokenAllowed } from "../mcp-oauth.js";
 import { REMOTE_MESSAGES,reproveRemote,type Principal } from "../operate-remote.js";
 import {
@@ -277,9 +277,10 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     if (presented !== undefined) {
       const source = runtime.joinSourceOf(request), at = Date.now();
       if (runtime.signInBudget.waitFor(source, at) > 0) return null;
-      const parsed = parseApiToken(presented);
-      const kept = parsed === null ? null : runtime.store.apiTokenSecret(parsed.id);
-      if (parsed === null || kept === null || !secretMatches(parsed.secret, kept.secretHash)) { runtime.signInBudget.failed(source, at); return null; }
+      // The one credential check (api-tokens.ts): only a person's API token signs in here.
+      const found = runtime.store.presentedCredential(presented);
+      const kept = found?.kind === "person" ? runtime.store.apiTokenSecret(found.id) : null;
+      if (kept === null) { runtime.signInBudget.failed(source, at); return null; }
       if (!tokenLive(kept.row, at)) return null;
       // v111: a token limited to some projects signs in only where its limit travels with it (the remote CLI and MCP,
       // through Principal.projects); the console's own pages and APIs check the account's access alone, so it is refused there.

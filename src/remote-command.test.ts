@@ -19,7 +19,7 @@ test('the inventory includes all audited file, destination, credential and execu
     'up --pool refuse', 'daemon --pool refuse', 'task resume --pool refuse', 'serve --project-root refuse', 'up --project-root refuse',
     'skills install --dir refuse', 'skills install --repo refuse', 'onboard --repo refuse', 'repos add-from-github --root refuse',
     'link --to refuse', 'unlink --to refuse', 'repos add @0 refuse', 'repos remove @0 refuse', 'pulls @0 refuse',
-    'graph @0 refuse', 'scan @0 refuse', 'project use @0 refuse', 'session start --file refuse', 'session send --file refuse',
+    'graph @0 refuse', 'scan @0 refuse', 'project use @0 refuse',
   ]);
 });
 

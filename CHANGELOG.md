@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.58 — 2026-10-09
+
+- **One token kind.** Personal, lead and coordinator tokens now live in one
+  table with one check. Existing tokens keep working.
+- **Sessions join the CLI API.** The sessions API is now part of the CLI API.
+- **Passwords as tokens warn.** Sending your password as a token still works
+  this release but warns. Create a token with `toolroll tokens create`.
+
 ## 0.9.57 — 2026-10-09
 
 - **Truthful status.** Finished tasks read Complete everywhere. With checks

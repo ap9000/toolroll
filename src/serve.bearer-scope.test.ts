@@ -1,8 +1,8 @@
 /**
  * Token scope on every bearer route, at the real server boundary: a read-scope API token never mutates, and a
  * project-limited token never reaches outside its projects — on /api/team (and its event stream), /api/cli, /mcp and
- * the console. /api/sessions stays password-only. Every bearer route is budgeted, and the OAuth endpoints refuse
- * plain HTTP from outside this computer and the tailnet.
+ * the console. Native session operations run over /api/cli too (D7), and /api/sessions answers only where they moved.
+ * Every bearer route is budgeted, and the OAuth endpoints refuse plain HTTP from outside this computer and the tailnet.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -168,8 +168,8 @@ describe("/api/team carries the token's whole principal", () => {
     expect(text).toContain("event: change");
     text = "";
     if (change === "revoked") store.revokeApiToken(id, "alex", new Date(), "test");
-    if (change === "expired") store.handle.prepare("UPDATE api_token SET expires_at = ? WHERE id = ?").run(new Date(0).toISOString(), id);
-    if (change === "projects") store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify([B]), id);
+    if (change === "expired") store.handle.prepare("UPDATE credential SET expires_at = ? WHERE id = ?").run(new Date(0).toISOString(), id);
+    if (change === "projects") store.handle.prepare("UPDATE credential SET projects_json = ? WHERE id = ?").run(JSON.stringify([B]), id);
     if (change === "generation") store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
     if (change === "account projects") store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([B]));
     if (change === "team access") store.handle.prepare("DELETE FROM team_participant WHERE conversation = ? AND account = 'alex'").run(conversationId);
@@ -213,11 +213,28 @@ describe("the other token routes keep the token's scope and projects", () => {
     expect((await post(token("act", [A]))).status).toBe(403);
   });
 
-  test("/api/sessions refuses read and outside-project API tokens before a mutation", async () => {
-    for (const bearer of [token("read"), token("act", [A])]) {
-      const response = await fetch(`${base}/api/sessions/start`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ repo: B, prompt: "Must not run" }) });
-      expect(response.status).toBe(401);
-      expect(await response.json()).toMatchObject({ delivery: "not-sent" });
+  test("session commands over /api/cli refuse read and project-limited tokens before a mutation", async () => {
+    const argv = ["session", "start", "--project", B, "--title", "Must not run", "--key", "remote_session_key_1", "--file", "prompt", "--json"];
+    for (const [bearer, reason] of [[token("read"), "read-only"], [token("act", [A]), "all-projects"]] as const) {
+      const response = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ argv, files: { prompt: "Must not run" } }) });
+      expect(response.status).toBe(200);
+      const answer = await response.json() as { exitCode: number; stdout: string };
+      expect(answer.exitCode).toBe(3);
+      expect(JSON.parse(answer.stdout)).toMatchObject({ operation: "start", ok: false, status: "rejected", delivery: "not-sent", reason });
+    }
+    expect(ran).toEqual([]);
+  });
+
+  test("/api/sessions has no handler of its own: every address there says where it moved, and nothing runs", async () => {
+    expect(ROUTES.some(row => row.pattern.includes("/api/sessions"))).toBe(false);
+    for (const path of ["/api/sessions", "/api/sessions/list", "/api/sessions/start"]) {
+      const response = await fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${token("act")}`, "content-type": "application/json" }, body: "{}" });
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get("x-standing-orders-session-delivery")).toBe("not-sent");
+      const body = await response.json() as { delivery: string; message: string };
+      expect(body).toMatchObject({ ok: false, delivery: "not-sent", reason: "moved" });
+      expect(body.message).toContain("/api/cli");
+      expect(body.message).toContain("toolroll tokens create");
     }
     expect(ran).toEqual([]);
   });
@@ -239,16 +256,20 @@ describe("every bearer route is budgeted", () => {
     expect((await fetch(`${base}/api/team`, { headers: { authorization: `Bearer ${read}` } })).status).toBe(200);
   });
 
-  test("password bearers on /api/team and /api/sessions share source and verified-account budgets", async () => {
+  test("password bearers on /api/team and the console share source and verified-account budgets", async () => {
     const limit = SOURCE_BUDGET_DEFAULTS.password;
     for (let i = 0; i < limit - 1; i++) await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}` } }).then(one => one.arrayBuffer());
     // A wrong password spends the source allowance but cannot spend the account allowance.
-    expect((await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: "Bearer alex:wrong-password", "content-type": "application/json" }, body: "{}" })).status).toBe(401);
-    const refused = await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: `Bearer alex:${password}`, "content-type": "application/json" }, body: "{}" });
+    const wrong = await fetch(`${base}/work`, { headers: { authorization: "Bearer alex:wrong-password" }, redirect: "manual" });
+    expect(wrong.status).toBe(401);
+    expect(await wrong.text()).toContain("toolroll tokens create");
+    const refused = await fetch(`${base}/work`, { headers: { authorization: `Bearer alex:${password}` }, redirect: "manual" });
     expect(refused.status).toBe(429);
     expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
-    expect(await refused.json()).toMatchObject({ ok: false, status: "rejected", delivery: "not-sent", reason: "rate-limited" });
-    expect((await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}` } })).status).toBe(429);
+    expect(await refused.text()).toContain("toolroll tokens create");
+    const team = await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}` } });
+    expect(team.status).toBe(429);
+    expect(await team.json()).toMatchObject({ ok: false, code: "rate-limited", message: expect.stringContaining("toolroll tokens create") });
     // A cookie is not a bearer: it isn't charged.
     now += 61_000;
     expect((await fetch(`${base}/api/team`, { headers: { authorization: `Bearer alex:${password}` } })).status).toBe(200);
@@ -256,7 +277,7 @@ describe("every bearer route is budgeted", () => {
 });
 
 test("/oauth/token is budgeted by source before its body is read: 429 with Retry-After, nothing minted, other sources unaffected", async () => {
-  const tokens = () => count("api_token");
+  const tokens = () => count("credential");
   const before = tokens();
   const exchange = (headers: Record<string, string> = {}) => fetch(`${base}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
     body: "grant_type=refresh_token&refresh_token=sor_000000000000_x&client_id=c" });
@@ -302,7 +323,7 @@ describe("bearer step-up and in-flight revocation", () => {
       .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head"].includes(name));
     const snapshot = () => Object.fromEntries(tables.map(table => {
       const rows = store.handle.prepare(`SELECT * FROM "${table}"`).all().filter(row => table !== "service_cursor" || row["key"] !== "workspace-content:v1").map(row => {
-        if (table === "api_token") { const { last_used_at: _used, ...protectedFields } = row; return protectedFields; }
+        if (table === "credential") { const { last_used_at: _used, ...protectedFields } = row; return protectedFields; }
         return row;
       });
       return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
@@ -347,10 +368,10 @@ describe("bearer step-up and in-flight revocation", () => {
       request.flushHeaders();
       void proved.then(() => {
         if (change === "revoked") store.revokeApiToken(id, "alex", new Date(), "regression");
-        if (change === "read") store.handle.prepare("UPDATE api_token SET access = 'read' WHERE id = ?").run(id);
-        if (change === "projects") store.handle.prepare("UPDATE api_token SET projects_json = ? WHERE id = ?").run(JSON.stringify([B]), id);
+        if (change === "read") store.handle.prepare("UPDATE credential SET access = 'read' WHERE id = ?").run(id);
+        if (change === "projects") store.handle.prepare("UPDATE credential SET projects_json = ? WHERE id = ?").run(JSON.stringify([B]), id);
         if (change === "generation") store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
-        if (change === "expired") store.handle.prepare("UPDATE api_token SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), id);
+        if (change === "expired") store.handle.prepare("UPDATE credential SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), id);
         request.end(route === "team" ? JSON.stringify({ operation: "create-lead", args: { name: "Must not be saved", projects: [A] } }) : "reason=Must+not+be+saved");
       }).catch(reject);
     });
@@ -367,7 +388,7 @@ describe("bearer step-up and in-flight revocation", () => {
 });
 
 
-test("verified password admission is shared by account across sources and console, team and sessions", async () => {
+test("verified password admission is shared by account across sources, the console and team", async () => {
   const other = addApprover(store, "sam", new Date(), { name: "alex", token: password });
   if (!other.ok) throw Error("sam");
   const get = (path: string, name = "alex", secret = password, source = "203.0.113.8") => fetch(`${base}${path}`, { headers: { authorization: `Bearer ${name}:${secret}`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
@@ -379,19 +400,18 @@ test("verified password admission is shared by account across sources and consol
   expect(denied.status).toBe(429);
   expect(denied.headers.get("retry-after")).toBe("60");
   expect((await get("/api/team", "sam", other.token)).status).toBe(200);
-  expect((await fetch(`${base}/api/sessions/list`, { method: "POST", headers: { authorization: `Bearer alex:${password}`, "content-type": "application/json" }, body: "{}" })).status).toBe(429);
+  expect((await fetch(`${base}/work`, { headers: { authorization: `Bearer alex:${password}` }, redirect: "manual" })).status).toBe(429);
   // No account allowance is consulted without proof, even when that claimed account has exhausted it.
   expect((await get("/api/team", "alex", "incorrect", "203.0.113.88")).status).toBe(401);
   now += 61_000;
   expect((await get("/api/team")).status).toBe(200);
 });
 
-test("unverified password admission is per source across console, team and sessions before authentication", async () => {
+test("unverified password admission is per source across console pages and team before authentication", async () => {
   const send = (i: number, source = "203.0.113.8") => {
-    const path = ["/login", "/api/team", "/api/sessions/list"][i % 3]!;
-    return fetch(`${base}${path}`, { method: path.includes("sessions") ? "POST" : "GET", headers: {
-      authorization: `Bearer fabricated-${i}:bad`, "x-forwarded-for": source, "x-forwarded-proto": "https", "content-type": "application/json" },
-      ...(path.includes("sessions") ? { body: "{}" } : {}) });
+    const path = ["/login", "/api/team", "/work"][i % 3]!;
+    return fetch(`${base}${path}`, { redirect: "manual", headers: {
+      authorization: `Bearer fabricated-${i}:bad`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
   };
   for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) await send(i).then(r => r.arrayBuffer());
   const auth = vi.spyOn(store, "accountOf");
