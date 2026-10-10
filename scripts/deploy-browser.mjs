@@ -45,8 +45,30 @@ const plist = flag("plist", join(homedir(), "Library", "LaunchAgents", `${label}
 const packageName = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).name;
 const uid = userInfo().uid;
 const say = (...parts) => console.log(parts.map(p => typeof p === "string" ? p : JSON.stringify(p)).join(" "));
-function requireTrue(value, message) { if (!value) { console.error(`✗ ${message}`); process.exit(1); } }
+function requireTrue(value, message) { if (!value) throw Error(message); }
 if (!Number.isInteger(runId) || runId < 1) requireTrue(false, "Name the verified builder run: --run <id>.");
+
+// Acquire before reading the saved definition, runtime or journal on every entry, including recovery.
+const candidateHead = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const short = candidateHead.slice(0, 7);
+const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
+const journalFile = join(stageDir, "deployment.json");
+mkdirSync(stageDir, { recursive: true, mode: 0o700 });
+const { acquireDeploymentLock } = await import(pathToFileURL(join(source, "dist", "deploy-lock.js")).href);
+const deploymentLock = acquireDeploymentLock(journalFile);
+const cancellation = new AbortController();
+const signal = cancellation.signal;
+let recover = () => true;
+recoverOnExit(() => recover(), process, {
+  release: () => deploymentLock.release(),
+  onSignal: (code, name) => { process.exitCode = code; cancellation.abort(Error(`Deployment interrupted by ${name}.`)); },
+});
+const load = async (root, name) => {
+  signal.throwIfAborted();
+  const module = await import(pathToFileURL(join(root, name)).href);
+  signal.throwIfAborted();
+  return module;
+};
 
 // ---- installed runtime (old) and candidate runtime (new) ---------------------
 // Recovery runs after the swap may have written the new definition: it starts the one saved at preparation.
@@ -55,14 +77,9 @@ const priorDist = (livePlist.match(/<string>([^<]*\/dist)\/cli\.js<\/string>/) ?
 requireTrue(priorDist && existsSync(priorDist), `The live service definition at ${plist} names no installed runtime.`);
 const publicUrl = (livePlist.match(/<string>--public-url<\/string>\s*<string>([^<]+)<\/string>/) ?? [])[1] ?? null;
 const servicePort = (livePlist.match(/<string>--port<\/string>\s*<string>(\d+)<\/string>/) ?? [])[1] ?? "4180";
-const load = async (root, name) => import(pathToFileURL(join(root, name)).href);
 const oldRt = { store: await load(priorDist, "store.js"), gate: await load(priorDist, "desktop-update-gate.js"), evidence: await load(priorDist, "verification-evidence.js"), update: await load(priorDist, "desktop-update.js") };
 oldRt.coding = await loadCodingDeploymentRuntime(priorDist);
 const candidateAssignment = await load(join(source, "dist"), "assignment.js");
-const candidateHead = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-const short = candidateHead.slice(0, 7);
-const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
-const journalFile = join(stageDir, "deployment.json");
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
 const stagedRuntime = stagedRuntimePaths(stageDir, packageName, names);
 const stagedName = stagedRuntime.name, nextDist = stagedRuntime.dist;
@@ -98,7 +115,7 @@ function service(dist) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function verifyServiceStopped(pids) {
-  for (let i = 0; i < 60; i++) { if (pids.every(pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1)) break; await sleep(1000); }
+  for (let i = 0; i < 60; i++) { signal.throwIfAborted(); if (pids.every(pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1)) break; await sleep(1000); }
   for (const pid of pids) requireTrue(spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1, `Service process has not exited: ${pid}`);
   requireTrue(spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 0, "The service is still loaded.");
 }
@@ -237,31 +254,38 @@ async function pruneStaged(keep) {
 
 // The journaled phases and their recovery, run with the real services, runtimes and records.
 const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
-  database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt,
+  database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
 });
-recoverOnExit(recoverJournal);
+recover = recoverJournal;
 
 // Every entry point — the whole run or one resumed phase — proves the
 // candidate against the plane's records first. Nothing is staged, and no
 // service is touched, until its approved check passed and its exact result is complete.
 const phases = { stage, prepare, rehearse, swap, finish };
-requireTrue(phaseWanted === "all" || phaseWanted === "recover" || phases[phaseWanted], "Use --phase stage|prepare|rehearse|swap|finish|recover, or omit it for all.");
-// Putting the previous service back needs no approval of the candidate: it resumes this deployment's own recovery.
-if (phaseWanted === "recover") {
-  requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
-  process.exit(recoverJournal() ? 0 : 1);
-}
-const proven = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
-say(`Candidate ${short} — task ${proven.taskId}, run ${runId}, checks passed, marked complete by ${proven.completion.actor}.`);
-say(`Installed runtime: ${priorDist}`);
-say(`Staging directory: ${stageDir}`);
-if (phaseWanted === "all") {
-  if (!has("yes")) { say("Add --yes to drain the plane, back up the database, and swap the service."); process.exit(0); }
-  const staged = stage(); await prepare(staged); await rehearse(); await swap(); await finish();
-} else {
-  if (phaseWanted !== "stage") requireTrue(flag("stage"), `--phase ${phaseWanted} resumes a staging directory: pass --stage <dir>.`);
-  if (phaseWanted === "stage") say(stage());
-  else if (phaseWanted === "prepare") await prepare({ packageSha256: sha(readFileSync(join(stageDir, readdirSync(stageDir).find(f => f.endsWith(".tgz"))))) });
-  else await phases[phaseWanted]();
+try {
+  signal.throwIfAborted();
+  requireTrue(phaseWanted === "all" || phaseWanted === "recover" || phases[phaseWanted], "Use --phase stage|prepare|rehearse|swap|finish|recover, or omit it for all.");
+  // Putting the previous service back needs no approval of the candidate: it resumes this deployment's own recovery.
+  if (phaseWanted === "recover") {
+    requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
+    process.exit(recoverJournal() ? 0 : 1);
+  }
+  const proven = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
+  say(`Candidate ${short} — task ${proven.taskId}, run ${runId}, checks passed, marked complete by ${proven.completion.actor}.`);
+  say(`Installed runtime: ${priorDist}`);
+  say(`Staging directory: ${stageDir}`);
+  if (phaseWanted === "all") {
+    if (!has("yes")) { say("Add --yes to drain the plane, back up the database, and swap the service."); process.exit(0); }
+    const staged = stage(); await prepare(staged); await rehearse(); await swap(); await finish();
+  } else {
+    if (phaseWanted !== "stage") requireTrue(flag("stage"), `--phase ${phaseWanted} resumes a staging directory: pass --stage <dir>.`);
+    if (phaseWanted === "stage") say(stage());
+    else if (phaseWanted === "prepare") await prepare({ packageSha256: sha(readFileSync(join(stageDir, readdirSync(stageDir).find(f => f.endsWith(".tgz"))))) });
+    else await phases[phaseWanted]();
+  }
+
+} catch (error) {
+  console.error(`✗ ${error.message}`);
+  process.exitCode ||= 1;
 }

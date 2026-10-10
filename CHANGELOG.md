@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.59 — 2026-10-10
+
+- **Safer deploys.** A deploy that fails before the swap releases its own
+  lock. A stranded lock clears with one guided command.
+- **Planning restarts on a new scope.** Changing a task's scope restarts its
+  planning. Cancelling a task closes its open questions.
+
 ## 0.9.58 — 2026-10-09
 
 - **One token kind.** Personal, lead and coordinator tokens now live in one

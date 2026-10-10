@@ -14,6 +14,7 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
  * scope was rewritten, the decision answered) is a refusal, never a
  * silent re-read.
  */
+import { closedQuestionWords } from "./decision.js";
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
 import { leadTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type LeadProposal, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
@@ -359,6 +360,7 @@ function executeProposal(
     if (chosen === undefined) return refuse("stale", "that option no longer exists on the decision");
     // The proposal contract is "open": a decision past its deadline — swept
     // or not — is not answered through a card (v3 review, finding 7).
+    if (decision.supersededReason !== null) return refuse("stale", closedQuestionWords(decision.supersededReason));
     if (decision.state === "answered") return refuse("already-answered", "already answered — somebody got there first");
     if (decision.state !== "open" || (decision.deadline !== null && Date.parse(decision.deadline) <= now.getTime())) {
       return refuse("stale", "this decision is no longer open — answer it on its own page if you still mean to");

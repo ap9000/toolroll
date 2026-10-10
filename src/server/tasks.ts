@@ -1,4 +1,5 @@
 import { handlersOf } from './handler-registry.js';
+import { closedQuestionWords } from "../decision.js";
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** tasks handlers, moved without changing their route bodies. */
 import { html,htmlString,joinHtml,postForm,textHtml,type Html } from "../html.js";
@@ -1205,7 +1206,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     );
     if (!answered.ok) {
       const status = answered.reason === "bad-option" || answered.reason === "bad-note" ? 400 : 409;
-      const why = answered.reason === "already-answered" ? "already answered — somebody got there first" : answered.reason;
+      const closed = answered.reason === "closed" ? store.getDecision(id)?.supersededReason ?? null : null;
+      const why = closed !== null ? closedQuestionWords(closed) : answered.reason === "already-answered" ? "already answered — somebody got there first" : answered.reason;
       return refuse(response, who, status, why, requestedReturn === null ? `/d/${id}` : decisionBack);
     }
     return redirect(response, decisionBack);

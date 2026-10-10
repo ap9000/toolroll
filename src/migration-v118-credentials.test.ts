@@ -100,8 +100,8 @@ test("a v117 file with every kind of credential upgrades whole into the one cred
 
   expect(UPDATE_SAFE_MIGRATIONS).toContain(118);
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(118);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(118);
+  expect(SCHEMA_VERSION).toBe(119);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(119);
   for (const table of Object.keys(V118_MERGED_TABLES)) expect(store.handle.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table), table).toBeUndefined();
   // Every row arrived under its kind; nothing was minted and the ledger gained nothing.
   expect(Object.fromEntries(Object.entries(V118_MERGED_TABLES).map(([table, kind]) => [table, Number(store!.handle.prepare("SELECT count(*) AS n FROM credential WHERE kind = ?").get(kind)!["n"])]))).toEqual(counts);

@@ -9,8 +9,8 @@ import { PACKAGE_VERSION } from "./version.js";
 
 /** The one replacement every machine-credential refusal names. */
 export const TOKEN_REPLACEMENT = "Create an API token with `toolroll tokens create`";
-/** The first release that refuses a password on a request: one release after this one (0.9.58) deprecated it. */
-export const PASSWORD_BEARER_REFUSED_FROM = "0.9.59";
+/** The first release that refuses a password on a request; 0.9.58 deprecated it with a warning. */
+export const PASSWORD_BEARER_REFUSED_FROM = "0.10.0";
 export const PASSWORD_BEARER_WARNING = `Signing in with a password on each request is deprecated and stops working in Toolroll ${PASSWORD_BEARER_REFUSED_FROM}. ${TOKEN_REPLACEMENT} and send it as the bearer instead.`;
 /** What the CLI says on stderr when a saved connection signs in with a password instead of an API token. */
 export const PASSWORD_PROFILE_WARNING = `Warning: this connection signs in with your password on each request, which is deprecated and stops working in Toolroll ${PASSWORD_BEARER_REFUSED_FROM}. ${TOKEN_REPLACEMENT}, then connect again with --token-stdin.`;

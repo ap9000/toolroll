@@ -6,13 +6,16 @@ import { credentialKeyOf, subscriptionCredentialKey } from "./converse.js";
 import { confirmLeadProposal, dismissLeadProposal, proposalActGate, PROPOSAL_CHAT_REASON, PROPOSAL_WAIT_REASON, TEAM_UNBOUND_CLAIM_MS } from "./lead-doors.js";
 import { TeamLeads } from './team-leads.js';
 import { teamChatAuthorization, subscriptionTeamChatProvider } from './team-chat-authorization.js';
-import { executeLeadTool } from "./lead-tools.js";
+import { decisionOver, executeLeadTool } from "./lead-tools.js";
+import { answerContextLines } from "./lead-cli.js";
 import { approve, approvalOf, hashToken, propose } from "./scope.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
 import { chatTaskStamp } from "./chat-task-actions.js";
 import * as taskControls from "./task-control.js";
 import { routeDigestOf } from "./phase-routing.js";
+import { leadProposalCardParts } from "./server/render-chat.js";
+import { htmlString } from "./html.js";
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -403,6 +406,27 @@ describe("the lead's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     clockAt += 120_000;
     expect(confirmLeadProposal(store, who, timed, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale" });
     expect(store.getDecision(3)?.state).toBe("open");
+  });
+
+  test.each(["scope-changed", "cancelled"] as const)("a stale answer card for a question closed by %s has no answer controls and refuses its old action", reason => {
+    session();
+    const ref = store.refFor("built-in", "a").id;
+    if (reason === "scope-changed") store.requestPlan(ref, T0);
+    const run = store.startRun({ taskRef: ref, leaseId: "closed", runner: "r", branch: "b", worktree: "/w", ...bareLegacy("build"), now: T0 });
+    const id = store.saveDecision({ run, urgency: "blocking", recap: "Choose where the preference is saved", question: "Save to this device?", options: [{ id: "local", label: "This device", consequence: "Other devices keep their settings", reversible: true }], recommendation: "local" }, T0);
+    const card = pending("answer", { decision: id, task: "a", option: "local", optionLabel: "This device", reversible: true, rationale: "Matches the scope" });
+    if (reason === "scope-changed") store.restartPlanning(ref, clock());
+    else store.cancelTask("a", clock());
+    const closed = store.getDecision(id)!;
+    expect(closed).toMatchObject({ supersededReason: reason, choice: null });
+    expect(decisionOver(store, [REPO], id, clock())).toMatchObject({ state: "closed", closedBecause: reason });
+    expect(answerContextLines(store, { decision: id }).join("\n")).toContain("Closed without an answer");
+    const rendered = leadProposalCardParts(store.getLeadProposal(card)!, false, closed);
+    expect(rendered.card).toMatchObject({ label: "Question closed", primary: null, dismissable: false, said: null });
+    expect(htmlString(rendered.html)).not.toContain("/confirm");
+    expect(rendered.card.body).toContain(reason === "scope-changed" ? "The scope changed" : "The task was cancelled");
+    expect(confirmLeadProposal(store, who, card, clock(), { via: "web" })).toMatchObject({ ok: false, reason: "stale", said: expect.stringContaining("Closed without an answer") });
+    expect(store.getDecision(id)).toEqual(closed);
   });
 
   test("chat-steer: get_agents reads the size and agents in the route's own words; propose_agents drafts only a configured, role-valid choice; the confirmed card changes the agents through the authenticated route edit and stales the approval", () => {

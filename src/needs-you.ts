@@ -44,7 +44,9 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   hold: { sentence: () => "A hold is keeping this task from starting. Review it to release it.", action: { code: "inspect-hold", label: "Review hold" } },
   "choose-project": { sentence: () => "Choose a project so a builder can start.", action: { code: "place-task", label: "Choose a project" } },
   "define-task": { sentence: () => "Say what the task should do so it can be planned.", action: { code: "write-scope", label: "Define the task" } },
-  "fix-request": { sentence: () => "The request can't be planned as written. Edit it so the planner can start.", action: { code: "write-scope", label: "Edit the request" } },
+  "fix-request": { sentence: () => "The request can't be planned as written. Edit it so the planner can start.", action: { code: "write-scope", label: "Edit the request" },
+    // Its own size and limit say exactly what to shorten.
+    useReason: reason => /the planner can carry at most/.test(reason) },
   "choose-agent": { sentence: () => "Choose an agent to build this.", action: { code: "select-agent", label: "Choose an agent" } },
   "fix-dependency": { sentence: () => "A task this one waits on didn't finish. Fix or remove it so this one can start.", action: { code: "repair-dependency", label: "Fix the required task" },
     useReason: reason => /didn't finish|did not finish|before it finished/i.test(reason), withReason: reason => `${reason.replace(/[.\s]*$/, ".")} Fix or remove it so this one can start.` },
