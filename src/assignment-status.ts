@@ -11,6 +11,8 @@ import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
 import { publicChatText } from "./chat-display.js";
 
 export const ASSIGNMENT_STATUS_ACTION = "assignment status observed";
+/** A reader's first sight of a task that is not news: the state later events are compared to, never delivered. */
+export const ASSIGNMENT_STATUS_BASELINE = "assignment status baseline";
 export const ASSIGNMENT_STATUS_SOURCE = "work" as const;
 /** The states that wake a lead: a result to check, a question, completion, or cancellation. */
 export const LEAD_WAKE_STATES: readonly AssignmentSnapshot["state"][] = ["ready-to-check", "needs-decision", "complete", "cancelled"];
@@ -107,29 +109,30 @@ export function noteAssignmentStatus(store: Store, snapshot: AssignmentSnapshot,
 
 /** The built-in lead's crew update (lead-follow.ts): the same event, under its follow grant. The
  * caller has already proved the grant and its projects; the root must still be a placed task. */
-export function noteFollowStatus(store: Store, grant: number, snapshot: AssignmentSnapshot, now: Date): number | null {
+export function noteFollowStatus(store: Store, grant: number, snapshot: AssignmentSnapshot, now: Date, action: typeof ASSIGNMENT_STATUS_ACTION | typeof ASSIGNMENT_STATUS_BASELINE = ASSIGNMENT_STATUS_ACTION): number | null {
   if (snapshot.repo === null) return null;
   return store.transact(() => {
     const ref = store.lookupRef(snapshot.rootId);
     if (!ref || ref.repo !== snapshot.repo || ref.revisionOf !== null) return null;
-    return appendStatusEvent(store, followActor(grant), followActor(grant), ref.id, snapshot, now);
+    return appendStatusEvent(store, followActor(grant), followActor(grant), ref.id, snapshot, now, action);
   });
 }
 
-/** Each reader's latest event, not a permanent digest set, deduplicates its retries, so Working → Needs decision →
- * Working is retained. One reader's events never suppress or duplicate another's. */
-function appendStatusEvent(store: Store, actor: string, ownerId: string, rootRef: number, snapshot: AssignmentSnapshot, now: Date): number | null {
+/** Each reader's latest event or baseline, not a permanent digest set, deduplicates its retries, so Working → Needs
+ * decision → Working is retained. One reader's events never suppress or duplicate another's. */
+function appendStatusEvent(store: Store, actor: string, ownerId: string, rootRef: number, snapshot: AssignmentSnapshot, now: Date,
+  action: typeof ASSIGNMENT_STATUS_ACTION | typeof ASSIGNMENT_STATUS_BASELINE = ASSIGNMENT_STATUS_ACTION): number | null {
   const assignment = assignmentStatusBrief(snapshot);
   const stateDigest = hash(assignment);
-  const previous = store.handle.prepare("SELECT id,outcome FROM action_ledger WHERE task_id=? AND action=? AND source=? AND actor=? ORDER BY id DESC LIMIT 1")
-    .get(snapshot.rootId, ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_SOURCE, actor);
+  const previous = store.handle.prepare("SELECT id,outcome FROM action_ledger WHERE task_id=? AND action IN (?,?) AND source=? AND actor=? ORDER BY id DESC LIMIT 1")
+    .get(snapshot.rootId, ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_BASELINE, ASSIGNMENT_STATUS_SOURCE, actor);
   if (previous !== undefined) {
     try { if (JSON.parse(String(previous["outcome"]))?.stateDigest === stateDigest) return null; } catch { /* Preserve an unreadable older event; append the current observation. */ }
   }
   const digest = hash({ rootRef, owner: ownerId, previous: previous === undefined ? null : Number(previous["id"]), stateDigest });
   const event: AssignmentStatusEvent = { version: 1, digest, stateDigest, assignment };
   return store.recordAction({ at: now.toISOString(), actor, repo: snapshot.repo,
-    taskId: snapshot.rootId, runId: assignment.runId, action: ASSIGNMENT_STATUS_ACTION,
+    taskId: snapshot.rootId, runId: assignment.runId, action,
     outcome: JSON.stringify(event), source: ASSIGNMENT_STATUS_SOURCE });
 }
 

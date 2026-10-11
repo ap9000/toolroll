@@ -2182,6 +2182,23 @@ describe("the pulse", () => {
     expect(gitCalls.find(args => args.includes("add"))).toContain(":!STANDING-ORDERS-*");
   });
 
+  test("a build with no pulse opens no steering folder, so a note filed while its agent runs reads as reaching the next attempt (v120)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let liveDuringRun: number | null = -1, phaseDuringRun: unknown = null;
+    const req = request("lease-a", {
+      pulseMs: 0,
+      agent: (async (_file, args, options) => {
+        liveDuringRun = store.steeringLiveBuild(taskRef, new Date());
+        phaseDuringRun = store.handle.prepare("SELECT phase FROM run WHERE id = ?").get(req.runId as number)?.["phase"];
+        conclude(args, options);
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(phaseDuringRun).toBe("agent-running");
+    expect(liveDuringRun).toBeNull();
+  });
+
   test("a note the agent read just before a stop is still recorded read: the folder closes before settlement sweeps (v120)", async () => {
     acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
     let stopped = false;

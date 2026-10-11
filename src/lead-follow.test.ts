@@ -94,6 +94,20 @@ describe("the built-in lead reads crew updates through the assignment inbox", ()
     expect(followEvents()).toEqual([]);
   });
 
+  test("a baseline is remembered, so a later transition that stamps no time still wakes the lead", async () => {
+    file("old", at(-10));
+    follow(t0);
+    await pass(at(1));
+    expect(asked).toEqual([]);
+    expect(followEvents()).toEqual([]);
+    // A settled review, a lifted hold or a cleared stop changes what the task reads without touching its own times.
+    store.handle.prepare("UPDATE task SET state = 'cancelled' WHERE id = 'old'").run();
+    await pass(at(2));
+    expect(followEvents()).toEqual([["old", "cancelled"]]);
+    expect(asked).toHaveLength(1);
+    expect(JSON.parse(asked[0]!.context.split("\n")[1]!)).toEqual([expect.objectContaining({ task: "old", state: "cancelled" })]);
+  });
+
   test("a change that asks nothing of the lead is acknowledged without a model turn", async () => {
     follow(t0);
     file("login", at(1));

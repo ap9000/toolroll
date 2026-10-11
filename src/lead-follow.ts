@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { LEAD_FOLLOW_MESSAGE, type Store, type LeadSession, type LeadThread, type ChatConfig } from './store.js';
 import { isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from './principal.js';
 import { assignmentOf, type AssignmentSnapshot } from './assignment.js';
-import { ASSIGNMENT_STATUS_ACTION, followActor, LEAD_WAKE_STATES, noteFollowStatus } from './assignment-status.js';
+import { ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_BASELINE, followActor, LEAD_WAKE_STATES, noteFollowStatus } from './assignment-status.js';
 import { acknowledgeLeadFollowDelivery, leadFollowInbox, type AssignmentDeliveryEvent } from './assignment-delivery.js';
 import { publicChatText } from './chat-display.js';
 import { runLeadTurn, type LeadTurnInput, type LeadTurnOutcome } from './lead.js';
@@ -72,7 +72,7 @@ function authorized(store: Store, grant: Grant, admitted: readonly string[]) {
 }
 
 /** Observe bounded pages; first sight of work that has not moved since follow
- * was enabled is only a baseline. Every later transition — cancellation too —
+ * was enabled is only a baseline, recorded so the next change is compared to it. Every later transition — cancellation too —
  * becomes an immutable status event in the grant's own inbox. */
 function observe(store: Store, grant: Grant, now: Date, root: string): void {
   store.transact(() => {
@@ -83,9 +83,9 @@ function observe(store: Store, grant: Grant, now: Date, root: string): void {
     for (const row of roots) {
       const a = assignmentOf(store, String(row['external_id']), now, { principal: 'operator', repos: grant.repos }, root);
       if (!a || !a.repo) continue;
-      const seen = store.handle.prepare("SELECT 1 FROM action_ledger WHERE task_id=? AND action=? AND source='work' AND actor=? LIMIT 1")
-        .get(a.rootId, ASSIGNMENT_STATUS_ACTION, followActor(grant.id)) !== undefined;
-      if (seen || changedSince(store, a, since)) noteFollowStatus(store, grant.id, a, now);
+      const seen = store.handle.prepare("SELECT 1 FROM action_ledger WHERE task_id=? AND action IN (?,?) AND source='work' AND actor=? LIMIT 1")
+        .get(a.rootId, ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_BASELINE, followActor(grant.id)) !== undefined;
+      noteFollowStatus(store, grant.id, a, now, seen || changedSince(store, a, since) ? ASSIGNMENT_STATUS_ACTION : ASSIGNMENT_STATUS_BASELINE);
     }
     store.setServiceCursor(cursor, roots.length < 50 ? 0 : Number(roots.at(-1)!['id']), now);
   });
