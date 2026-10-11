@@ -102,8 +102,8 @@ reported separately and still requires the exact passing native machine check.
 Enable **Automatic crew updates** in a conversation, or use `toolroll chat
 --follow`. Meaningful updates (a result, a question, completion or cancellation)
 reach the same lead within its saved permissions and limits, through the same
-acknowledged inbox an external coordinator reads. Idle scanning uses no model. Restart recovery reuses saved responses;
-a failed response does not rerun a task. `--no-follow` pauses automatic responses.
+acknowledged inbox an external coordinator reads. Idle scanning uses no model.
+Restart recovery reuses saved responses; a failed response does not rerun a task. `--no-follow` pauses automatic responses.
 This wakes Toolroll's own lead, not an unrelated external agent session.
 
 `toolroll brief` reads the local database. `knowledge search`, `knowledge
