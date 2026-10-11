@@ -19,5 +19,13 @@ if (major < 22 || (major === 22 && minor < 13)) {
   process.stderr.write(`Toolroll needs Node 22.13 or newer (this is ${versions.node}) — it uses node:sqlite.\n`);
   process.exit(2);
 }
-const { runCliProcess } = await import("./cli.js");
-await runCliProcess(process.argv.slice(2));
+// --version and the top-level usage answer here, before the CLI and its command families load.
+const argv = process.argv.slice(2);
+const { quickAnswer } = await import("./cli-fast.js");
+const quick = quickAnswer(argv);
+if (quick !== null) {
+  console.log(quick);
+} else {
+  const { runCliProcess } = await import("./cli.js");
+  await runCliProcess(argv);
+}

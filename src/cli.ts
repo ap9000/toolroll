@@ -37,7 +37,6 @@ import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "
 import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
 import { deprecationWarning } from "./deprecations.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
-import { runHealthCommand } from "./health-cli.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
 import { readPulls } from "./pulls.js";
 import {
@@ -48,14 +47,14 @@ import {
   type BackendKind,
 } from "./graph.js";
 import { openStore, openStoreReadOnly, databasePath, type Store } from "./store.js";
-import { PACKAGE_VERSION } from "./version.js";
-import { runUpdateCommand, type UpdateCliDeps } from "./toolroll-update-cli.js";
-import { runReleaseCommand, type ReleaseCliDeps } from "./release-cli.js";
+import type { UpdateCliDeps } from "./toolroll-update-cli.js";
+import type { ReleaseCliDeps } from "./release-cli.js";
 import type { BackendGrant } from "./grant.js";
-import { runOperate, OPERATE_HELP, type OperateOptions } from "./operate.js";
+import type { OperateOptions } from "./operate.js";
 import { renderReport, renderPulls, renderGraph, type PullGroup, type RemoteMap } from "./render.js";
-import { readRemote } from "./remote.js";
 import { DEFAULT_MAX_DEPTH } from "./scan.js";
+import { HELP } from "./cli-help.js";
+import { quickAnswer } from "./cli-fast.js";
 import {
   BIN_NAME,
   chooseTarget,
@@ -90,92 +89,14 @@ type Write = (line: string) => void;
 
 const USAGE_EXIT = 2;
 
-export const HELP = `toolroll — a control plane for unattended coding agents
+/** The queue's commands live in operate.ts, the largest module graph here: loaded when one of them runs, not before. */
+async function runOperate(command: string, argv: readonly string[], write: Write, options: OperateOptions): Promise<number> {
+  const operate = await import("./operate.js");
+  return operate.runOperate(command, argv, write, options);
+}
 
-Usage
-  toolroll [path...]        report what is in flight
-  toolroll pulls            report what is waiting on a person
-  toolroll graph            report which work graph is already here
-  toolroll repos            list connected repositories, and how to adjust
-  toolroll repos add <path> add a project; it is in the console at once (no path: the repo you are in)
-  toolroll repos remove <path>
-                                   take it out of the console; its tasks and results stay
-  toolroll repos add-from-github <owner/name> --root <dir>
-                                   preview, then clone and connect (--yes)
-  toolroll link             put \`toolroll\` on your PATH
-  toolroll unlink           take it off again
-  toolroll update           update to the latest release: verified, drained, undoable
-                                   (preview first; --yes, --now, --at HH:MM, --rollback)
-  toolroll release <branch> release Toolroll itself: gate, your approval, deploy, merge, tag, publish
-                                   (resumable: rerun to continue; --help)
-  toolroll contract         the machine contract: envelope version + capabilities
-                                   (--commands dumps the declared command guide)
-  toolroll skills install --claude-code [--dir <path>]
-                                   install this binary's guides for Claude Code (preview first)
-  toolroll skills install   teach a repo's agents this queue exists (preview first)
-  toolroll skills list      the guides this exact binary serves
-  toolroll skills get <name>  print one guide (version-matched, never stale)
-  toolroll demo             a seeded throwaway sandbox — see it working in 90 seconds
-  toolroll up               app + builder for every saved project — the normal start
-  toolroll onboard          make your agent Toolroll's lead: add this repo, install its skill (--yes), offer starter flows (--starter)
-  toolroll status           running, queued, ready results, release check and plan windows
-  toolroll health           recent server latency, write waits and live streams
-  toolroll integrations     which integrations work, and what to do about the ones that don't (--json)
-  toolroll lead token       mint your lead agent's credential: its own work pings nobody
-  toolroll lead say "<text>"  (the lead) one short message in its person's chat
-
-Operating the queue — \`toolroll task\` prints the whole surface,
-and any queue command + --help prints it too
-  toolroll approver add <name>
-                               mint the credential that lets a person say yes
-  toolroll ready            what could be dispatched right now
-  toolroll check-progress <run>  current or final approved check progress
-  toolroll task wait <id> [--timeout <seconds>]
-                               wait for this attempt to finish or need a person
-  toolroll task add <title> queue work
-  toolroll task scope <id> --goal <text>
-                               state what success is; approval binds to it
-  toolroll task approve <id>
-                               the yes — nothing builds without one
-  toolroll claim <id> --runner <name>
-  toolroll heartbeat <lease> / worker release <lease> / reap
-  toolroll tick --runner <name> --token <t> --repo <path>
-                               one unattended pass over the ready set
-  toolroll flows list | show <id> | create | edit | trigger | script | card | archive
-                               set up and inspect flows (writes preview until --yes)
-  toolroll chat --as <you> --token <t>
-                               talk to your lead: one conversation across every
-                               project; it proposes, you confirm (--say "…" for one turn)
-  toolroll serve --repo <path>  advanced: run only the console
-                               (--editor vscode with --runner: file links
-                               open in VS Code on the device you browse from)
-  toolroll watch / daemon install   advanced: run only the builder
-  toolroll reconcile        recover what the last stretch left behind
-
-With nothing connected it reports everything it can find below the working
-directory. Once you connect repositories it reports those instead.
-
-Options
-  --all         report everything discoverable, ignoring connected repos
-  --depth <n>   directory levels to descend (default: ${DEFAULT_MAX_DEPTH})
-  --hidden      include dot-directories, which are skipped by default
-  --dirty       also read each working tree for uncommitted files
-  --local       branches only: no network, no pull requests, no issues
-  --json        emit a machine-readable envelope instead of a report
-  -o <file>     also write that envelope to a file (requires --json)
-  -h, --help    show this
-
-Nothing is written, installed, or configured. Every repository is read
-through git with --no-optional-locks, so a scan never contends for the
-index lock with an editor you have open.
-
---dirty is off by default because reading a working tree is unbounded
-work: on a large or cloud-synced repo \`git status\` can take minutes,
-where listing branches takes milliseconds.
-
-link shows what it would do and changes nothing; add --yes to apply it,
-or --to <dir> to choose where. It never uses sudo, never leaves your
-home directory, and never touches a file it did not create.`;
+/** The top-level usage text (cli-help.ts), re-exported where it always lived. */
+export { HELP };
 
 export function parseArgs(argv: readonly string[]): ParseResult {
   const roots: string[] = [];
@@ -359,8 +280,9 @@ export async function main(
   write: Write = line => console.log(line),
   mainOptions: MainOptions = {},
 ): Promise<number> {
-  if (argv[0] === "--version" || argv[0] === "-v") {
-    write(PACKAGE_VERSION);
+  const quick = quickAnswer(argv);
+  if (quick !== null) {
+    write(quick);
     return 0;
   }
   const extracted = extractOutputFlag(argv);
@@ -467,7 +389,8 @@ async function dispatch(
   // hidden from help and the contract, before anything remote or local opens, changing nothing.
   if (argv[0] === "routine") return routinesMoved(argv, write);
   // A saved API token sends commands marked remote to the central server, before anything local opens.
-  if (argv[0] === 'health') return runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
+  // Command families below load when their command runs, so one command never pays for the others.
+  if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
   const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);
   if (typeof central === "number") return central;
   if (central !== null) argv = central.local;
@@ -484,8 +407,9 @@ async function dispatch(
   if (first === "link" || first === "unlink") {
     return runLinkCommand(first, rest, write, mainOptions.binSource);
   }
-  if (first === "update") return runUpdateCommand(rest, write, mainOptions.update);
+  if (first === "update") return (await import("./toolroll-update-cli.js")).runUpdateCommand(rest, write, mainOptions.update);
   if (first === "release") {
+    const { runReleaseCommand } = await import("./release-cli.js");
     return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });
   }
   if (first === "contract") return runContractCommand(rest, write);
@@ -578,6 +502,7 @@ async function maybeReadRemote(
   options: CliOptions,
 ): Promise<RemoteMap | undefined> {
   if (options.local) return undefined;
+  const { readRemote } = await import("./remote.js");
   return readRemote(repos.map(repo => ({ path: repo.path, remoteUrl: repo.remoteUrl })));
 }
 

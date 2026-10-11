@@ -50,7 +50,7 @@ import { telegramProgressCard } from "./telegram-progress.js";
 import { slackSettingsHtml } from "./slack-settings.js";
 import { effectivePrimary, savePrimary } from "./webhooks.js";
 import { createDecisionServer } from "./serve.js";
-import { ToolrollSlackSocket } from "./slack.js";
+import { ToolrollSlackSocket } from "./slack-socket.js";
 import { flowFromSteps } from "./flows.js";
 import { advanceFlows } from "./flow-engine.js";
 import { chooseFlowCard } from "./flow-send.js";

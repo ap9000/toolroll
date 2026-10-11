@@ -15,8 +15,6 @@
  * answering machines. The card keeps the message's ID so a Send email step
  * replying to the sender stays in the same thread.
  */
-import { ImapFlow } from "imapflow";
-import { simpleParser } from "mailparser";
 import { googleAccessToken, googleConnected } from "./google-mail.js";
 import { readEmailSettings } from "./email-settings.js";
 
@@ -83,6 +81,8 @@ const header = (headers: Map<string, unknown>, name: string): string => {
 
 /** One raw message as plain words, and whether a machine sent it. */
 export async function readMail(uid: number, source: Buffer | string): Promise<InboundMail> {
+  // The mail SDKs load when mail is read, not with every command that imports this module.
+  const { simpleParser } = await import("mailparser");
   const parsed = await simpleParser(source, { skipImageLinks: true, skipTextToHtml: true, skipTextLinks: true });
   const sender = parsed.from?.value[0];
   const from = (sender?.address ?? "").toLowerCase();
@@ -114,6 +114,7 @@ function problemOf(error: unknown): { said: string; permanent: boolean } {
 
 /** The production reader: one read-only IMAP visit. */
 export const readThroughImap: MailReader = async (access, folder, after, limit) => {
+  const { ImapFlow } = await import("imapflow");
   const client = new ImapFlow({
     host: access.host, port: access.port, secure: access.secure, logger: false, disableAutoIdle: true,
     auth: access.accessToken !== undefined ? { user: access.user, accessToken: access.accessToken } : { user: access.user, pass: access.password ?? "" },
