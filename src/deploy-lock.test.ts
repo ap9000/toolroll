@@ -44,8 +44,10 @@ test("SIGKILL releases exclusion without stale-file takeover and two contenders 
     import { acquireDeploymentLock } from ${JSON.stringify(lockModule)};
     process.send('ready');
     process.on('message', message => {
-      if (message === 'acquire') {
-        try { globalThis.lock = acquireDeploymentLock(${JSON.stringify(journal)}, 0); process.send('held'); }
+      // 'acquire' never waits; 'contend' waits briefly, as real callers do (5 s), so two contenders arriving
+      // together can't each back off from the other's SQLite SHARED lock and both report busy.
+      if (message === 'acquire' || message === 'contend') {
+        try { globalThis.lock = acquireDeploymentLock(${JSON.stringify(journal)}, message === 'acquire' ? 0 : 500); process.send('held'); }
         catch { process.send('busy'); }
       }
     });`);
@@ -56,7 +58,7 @@ test("SIGKILL releases exclusion without stale-file takeover and two contenders 
     a.child.send("acquire"); b.child.send("acquire");
     expect(await Promise.all([a.message(), b.message()])).toEqual(["busy", "busy"]);
     await owner.stop();
-    a.child.send("acquire"); b.child.send("acquire");
+    a.child.send("contend"); b.child.send("contend");
     const results = await Promise.all([a.message(), b.message()]);
     expect(results.sort()).toEqual(["busy", "held"]);
   } finally {
