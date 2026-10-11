@@ -3,14 +3,26 @@
  * bytes actually come from, and nothing unverified ever leaves the function.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import * as crypto from "node:crypto";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseNumstat, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, writeEvidenceFile, sniffImageKind, validateScreenshotBytes, verifyArtifact, SCREENSHOT_BYTE_CAP } from "./evidence.js";
 import type { Artifact } from "./store.js";
+
+// Pass-through spies: the reader behaves as normal, and a test can count its reads and hashes.
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readSync: vi.fn(actual.readSync) };
+});
+vi.mock("node:crypto", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, createHash: vi.fn(actual.createHash) };
+});
 
 describe("reading evidence back, believing nothing", () => {
   let root: string;
@@ -72,10 +84,30 @@ describe("reading evidence back, believing nothing", () => {
     utimesSync(join(root, key), mtime, mtime);
     expect(verifyArtifact(root, diff)).toMatchObject({ ok: false, problem: expect.stringMatching(/hash/) });
     expect(verifyArtifact(root, { ...diff, id: 2 })).toMatchObject({ ok: false, problem: expect.stringMatching(/hash/) });
+    expect(readVerifiedArtifact(root, diff)).toMatchObject({ ok: false, problem: expect.stringMatching(/hash/) });
     writeFileSync(join(root, key), content);
     expect(verifyArtifact(root, diff)).toEqual({ ok: true });
     rmSync(join(root, key));
     expect(verifyArtifact(root, diff)).toMatchObject({ ok: false, problem: expect.stringMatching(/gone/) });
+  });
+
+  test("an unchanged proved file costs a stat on the next check, not a re-read and SHA-256", () => {
+    const content = Buffer.from("diff --git a/x b/x\n");
+    const key = writeEvidenceFile(root, 1, "diff.patch", content);
+    const diff = record(key, content, { id: 7 });
+    const readSync = vi.mocked(fs.readSync), hash = vi.mocked(crypto.createHash);
+    readSync.mockClear(); hash.mockClear();
+    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
+    expect(readSync).toHaveBeenCalled();
+    expect(hash).toHaveBeenCalledWith("sha256");
+    readSync.mockClear(); hash.mockClear();
+    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
+    expect(readSync).not.toHaveBeenCalled();
+    expect(hash).not.toHaveBeenCalled();
+    // A reader that needs the bytes still reads and hashes them.
+    expect(readVerifiedArtifact(root, diff)).toEqual({ ok: true, content });
+    expect(readSync).toHaveBeenCalled();
+    expect(hash).toHaveBeenCalledWith("sha256");
   });
 
   test("a traversal key never reaches the filesystem", () => {
