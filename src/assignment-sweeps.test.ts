@@ -23,7 +23,7 @@ import { SWEEP_FALLBACK_MS } from "./sweep-gate.js";
 const TASKS = 48;
 const t0 = new Date("2026-10-11T12:00:00.000Z");
 const at = (ms: number) => new Date(t0.getTime() + ms);
-let root: string, repo: string, evidence: string, store: Store, token: string;
+let root: string, repo: string, evidence: string, store: Store, token: string, owner: string;
 const runs: number[] = [];
 
 beforeEach(() => {
@@ -47,6 +47,7 @@ beforeEach(() => {
   const coordinator = mintCoordinator(store, { name: "planner-bot", repos: [repo], by: "operator", now: t0 });
   if (!coordinator.ok) throw Error("coordinator");
   token = coordinator.token;
+  owner = `coordinator:${coordinator.cid}`;
   runs.length = 0;
   for (let i = 0; i < TASKS; i++) {
     const id = `task-${i}`;
@@ -72,8 +73,9 @@ const footprint = () => ({
   notifications: Number(store.handle.prepare("SELECT COUNT(*) AS n FROM notification").get()!["n"]),
   cursors: store.handle.prepare("SELECT key,updated_at FROM service_cursor WHERE key LIKE 'assignment-%' OR key LIKE 'lead:%:scan' ORDER BY key").all(),
 });
-const statusEvents = (taskId: string) => store.handle.prepare("SELECT outcome FROM action_ledger WHERE task_id=? AND action=? ORDER BY id")
-  .all(taskId, ASSIGNMENT_STATUS_ACTION).map(row => parseAssignmentStatusEvent(String(row["outcome"]))!);
+/** The owning coordinator's events; the lead's follow grant keeps its own stream. */
+const statusEvents = (taskId: string) => store.handle.prepare("SELECT outcome FROM action_ledger WHERE task_id=? AND action=? AND actor=? ORDER BY id")
+  .all(taskId, ASSIGNMENT_STATUS_ACTION, owner).map(row => parseAssignmentStatusEvent(String(row["outcome"]))!);
 const screenshotOf = (index: number) => store.artifactsFor(runs[index]!).find(one => one.kind === "screenshot")!;
 
 test("on a seeded store, worker, inbox and lead-follow passes with nothing changed re-derive nothing", async () => {
