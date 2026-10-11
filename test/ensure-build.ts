@@ -39,7 +39,8 @@ export function buildIsStale(root: string): boolean {
       return entry.isDirectory() ? newerBrowserInput(path) : statSync(path).mtimeMs > browserBuiltAt;
     });
   };
-  return newerBrowserInput(join(root, "src", "browser"));
+  // The browser's Tailwind theme imports Signal's generated theme.css.
+  return newerBrowserInput(join(root, "src", "browser")) || newerBrowserInput(join(root, "src", "design"));
 }
 
 /** The release check starts the unit tests beside its own build and names a file it writes when that build ends

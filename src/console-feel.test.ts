@@ -111,6 +111,12 @@ describe("console feel: touch, hover and press", () => {
 });
 
 describe("Signal tokens: one generated source", () => {
+  test("Tailwind's theme is the generated one, not a hand-kept copy", () => {
+    const tailwind = readFileSync(new URL("./browser/tailwind.css", import.meta.url), "utf8");
+    expect(tailwind).toContain('@import "../design/theme.css";');
+    expect(tailwind).not.toMatch(/@theme\b/);
+  });
+
   test("the workspace sheet only reads the generated tokens, so it never overrides a person's accent", () => {
     const generated = new Set([...TOKENS_CSS.matchAll(/(--so-[\w-]+):/g)].map(match => match[1]));
     const declared = [...WORKSPACE_CSS.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(--so-[\w-]+):\s*([^;]+);/g)];
