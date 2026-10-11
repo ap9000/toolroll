@@ -7,7 +7,7 @@ import { SettingsView } from "./browser/views/settings-view.js";
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -699,17 +699,23 @@ describe("the phone shell (mobile pass): one header row, drawn controls, thumb-s
     const cookie = await login();
     const html = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
     const css = await stylesOf(html, base);
-    // Light is the root; dark follows the device unless a theme is pinned.
-    const root = /:root \{\s*color-scheme: light;(.*?)\n  \}/s.exec(css)?.[1] ?? "";
-    const dark = /:root\[data-theme="dark"\] \{\s*color-scheme: dark;(.*?)\n  \}/s.exec(css)?.[1] ?? "";
-    expect(css).toContain(':root:not([data-theme="light"]) {');
+    // Light is the root; dark follows the device unless a theme is pinned. All three come from Signal's generated sheet, once each.
+    const tokens = readFileSync(join(import.meta.dirname, "design", "tokens.css"), "utf8");
+    expect(css.startsWith(tokens)).toBe(true);
+    const root = /:root \{\s*color-scheme: light;(.*?)\n\}/s.exec(css)?.[1] ?? "";
+    const preferred = /:root:not\(\[data-theme="light"\]\) \{\s*color-scheme: dark;(.*?)\n  \}/s.exec(css)?.[1] ?? "";
+    const dark = /:root\[data-theme="dark"\] \{\s*color-scheme: dark;(.*?)\n\}/s.exec(css)?.[1] ?? "";
     for (const token of ["--so-ground", "--so-paper", "--so-ink", "--so-muted", "--so-line", "--so-accent", "--so-on-accent", "--so-danger", "--so-success", "--so-warning", "--so-info"]) {
       expect(root).toContain(`${token}:`);
+      expect(preferred).toContain(`${token}:`);
       expect(dark).toContain(`${token}:`);
     }
+    expect(preferred).toBe(dark.replaceAll("\n  ", "\n    "));
+    expect(css.match(/--so-ground: #/g)).toHaveLength(3);
     // The console's names are views onto the palette, never a second ramp.
+    const names = /:root \{\s*(--background:.*?)\n  \}/s.exec(css)?.[1] ?? "";
     for (const token of ["--background", "--foreground", "--card", "--muted", "--muted-foreground", "--border", "--input", "--brand", "--running", "--success", "--destructive", "--ring"]) {
-      expect(root).toMatch(new RegExp(`${token}: var\\(--so-`));
+      expect(names).toMatch(new RegExp(`${token}: var\\(--so-`));
     }
     expect(html).toContain('<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0b0b">');
     expect(html).toContain('<meta name="theme-color" media="(prefers-color-scheme: light)" content="#efefef">');

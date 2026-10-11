@@ -49,9 +49,9 @@ function Themes({ view, csrf }: { view: BrowserSettingsView; csrf: string }) {
   return <PostForm action="/settings/appearance" className="flex flex-wrap items-center gap-3">
     <div role="group" aria-label="Theme" className="inline-flex rounded-lg bg-muted p-0.5">
       {options.map(([value, label, icon]) => <button key={value} type="submit" name="theme" value={value} aria-pressed={view.theme === value}
-        className={cn("inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground phone:h-11 [&_svg]:size-3.5", view.theme === value && "bg-card text-foreground shadow-[var(--so-pill-shadow)]")}>{icon}{label}</button>)}
+        className={cn("inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-label text-muted-foreground transition-colors hover:text-foreground phone:h-11 [&_svg]:size-3.5", view.theme === value && "bg-card text-foreground shadow-pill")}>{icon}{label}</button>)}
     </div>
-    <span className="text-[13px] text-muted-foreground">Saved in this browser.</span>
+    <span className="text-body text-muted-foreground">Saved in this browser.</span>
   </PostForm>;
 }
 
@@ -134,7 +134,7 @@ function AccentPicker({ view, csrf }: { view: BrowserSettingsView; csrf: string 
           <Button variant="ghost" size="sm" disabled={hex === view.accentPresets[0]!.hex} onClick={() => choose(view.accentPresets[0]!.hex)}>Reset</Button>
         </div>
         <div className="flex flex-wrap items-center gap-2" aria-hidden="true">
-          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-attention px-1.5 font-mono text-[11px] leading-none text-on-attention">3</span>
+          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-attention px-1.5 font-mono text-mono-count text-on-attention">3</span>
           <Badge tone="attention">Needs your decision</Badge>
           <span className="inline-flex h-7 items-center rounded-md bg-attention px-2.5 text-[12.5px] font-medium text-on-attention">Approve</span>
         </div>
@@ -168,7 +168,7 @@ function DefaultChoice({ title, description, action, field, value, canManage, ch
       </RadioGroup>
       <noscript><Button type="submit" className="mt-3">Save</Button></noscript>
     </>}</AutoForm> : <p className="text-sm"><strong>{current?.title ?? value}</strong> <span className="text-muted-foreground">· an approver can change this</span></p>}
-    {changed && <p className="text-[13px] text-muted-foreground">{changed}</p>}
+    {changed && <p className="text-body text-muted-foreground">{changed}</p>}
   </Section>;
 }
 
@@ -186,7 +186,7 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
       <CollapsibleContent>
         {google !== null
           ? <PostForm action="/settings/google/disconnect" className="mt-3 grid gap-3 rounded-lg bg-muted p-4" data-google-connected>
-              <p className="text-[13px]">Signed in with Google as <strong>{google}</strong>. Mail is sent and read through it.</p>
+              <p className="text-body">Signed in with Google as <strong>{google}</strong>. Mail is sent and read through it.</p>
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="submit" variant="outline" formAction="/settings/email-test">Send a test email</Button>
                 <Button type="submit" variant="outline" formAction="/settings/email-read-test">Check the inbox</Button>
@@ -195,7 +195,7 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
             </PostForm>
           : <>
             <PostForm action="/settings/email" className="mt-3 grid gap-3 rounded-lg bg-muted p-4" data-email-settings>
-              <p className="text-[13px] text-muted-foreground">For Gmail: smtp.gmail.com, port 587, your address, and an app password. To read mail too, add imap.gmail.com.</p>
+              <p className="text-body text-muted-foreground">For Gmail: smtp.gmail.com, port 587, your address, and an app password. To read mail too, add imap.gmail.com.</p>
               <div className="grid gap-3 desk:grid-cols-[1fr_7rem]">
                 <div className="grid gap-2"><Label htmlFor="email-host">Mail server</Label><Input id="email-host" name="host" defaultValue={email.host} placeholder="smtp.gmail.com" required /></div>
                 <div className="grid gap-2"><Label htmlFor="email-port">Port</Label><Input id="email-port" name="port" type="number" min={1} max={65535} defaultValue={String(email.port)} required /></div>
@@ -203,7 +203,7 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
               <div className="grid gap-2"><Label htmlFor="email-from">Send from</Label><Input id="email-from" name="from" type="email" defaultValue={email.from} placeholder="you@example.com" required /></div>
               <div className="grid gap-2"><Label htmlFor="email-user">Username</Label><Input id="email-user" name="user" autoComplete="username" defaultValue={email.user} placeholder="Usually the same address" /></div>
               <div className="grid gap-2"><Label htmlFor="email-password">Password</Label><Input id="email-password" name="password" type="password" autoComplete="off" placeholder={email.set ? "Leave empty to keep the saved one" : "An app password"} /></div>
-              <label className="flex items-center gap-2 text-[13px] phone:-ml-3.5 phone:min-h-11 phone:pl-3.5"><input type="checkbox" name="secure" className="size-4 accent-[var(--so-accent)]" defaultChecked={email.secure} />Use SSL from the start (port 465)</label>
+              <label className="flex items-center gap-2 text-body phone:-ml-3.5 phone:min-h-11 phone:pl-3.5"><input type="checkbox" name="secure" className="size-4 accent-primary" defaultChecked={email.secure} />Use SSL from the start (port 465)</label>
               <div className="grid gap-3 desk:grid-cols-[1fr_7rem]">
                 <div className="grid gap-2"><Label htmlFor="email-imap">Read mail from (optional)</Label><Input id="email-imap" name="imapHost" defaultValue={email.imapHost} placeholder="imap.gmail.com" /></div>
                 <div className="grid gap-2"><Label htmlFor="email-imap-port">Port</Label><Input id="email-imap-port" name="imapPort" type="number" min={1} max={65535} defaultValue={String(email.imapPort)} /></div>
@@ -215,9 +215,9 @@ function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"
               </div>
             </PostForm>
             <details className="mt-3 rounded-lg border px-4 py-3" open={email.google.clientId !== "" && !email.set} data-google-setup>
-              <summary className="cursor-pointer text-[13px] font-semibold phone:-my-3 phone:min-h-11 phone:py-3 phone:leading-5">Or sign in with a Google account</summary>
+              <summary className="cursor-pointer text-body phone:-my-3 phone:min-h-11 phone:py-3 phone:leading-5 font-semibold">Or sign in with a Google account</summary>
               <PostForm action="/settings/google" className="mt-3 grid gap-3">
-                <ol className="list-decimal space-y-1 pl-5 text-[13px] text-muted-foreground">
+                <ol className="list-decimal space-y-1 pl-5 text-body text-muted-foreground">
                   <li>In Google Cloud Console, make an OAuth client of type <em>Web application</em>, and set the consent screen to <em>In production</em> (while it's in Testing, Google ends the connection after 7 days).</li>
                   {email.google.redirect === null
                     ? <li>Open these settings on this computer (localhost) or at your https address to see the redirect address to add.</li>
@@ -249,7 +249,7 @@ function Providers({ providers, csrf }: { providers: NonNullable<BrowserSettings
             <PostForm action="/settings/provider-key" className="mt-3 grid gap-3 rounded-lg bg-muted p-4">
               <input type="hidden" name="provider" value={one.provider} />
               {one.connection && <p className="provider-connection text-sm"><strong>{one.connection.words}</strong> {one.connection.facts} · <a className="underline underline-offset-4" href={one.connection.checkHref}>Check again</a></p>}
-              <p className="text-[13px] text-muted-foreground">{one.usage} · <code className="font-mono text-xs">{one.envName}</code></p>
+              <p className="text-body text-muted-foreground">{one.usage} · <code className="font-mono text-xs">{one.envName}</code></p>
               {one.subscriptionCapable && <div className="grid gap-2"><Label htmlFor={`${one.provider}-auth`}>Sign-in</Label>
                 <Select name="auth-mode" defaultValue={one.mode}>
                   <SelectTrigger id={`${one.provider}-auth`}><SelectValue /></SelectTrigger>
@@ -260,7 +260,7 @@ function Providers({ providers, csrf }: { providers: NonNullable<BrowserSettings
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="submit">Save {one.name}</Button>
                 {one.set && <Collapsible><CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="text-destructive">Remove the stored key</Button></CollapsibleTrigger>
-                  <CollapsibleContent className="mt-2 grid gap-2"><p className="text-[13px] text-muted-foreground">Runs that use this API key stop until you add one again.</p>
+                  <CollapsibleContent className="mt-2 grid gap-2"><p className="text-body text-muted-foreground">Runs that use this API key stop until you add one again.</p>
                     <Button type="submit" variant="destructive" size="sm" formAction="/settings/provider-key-clear">Remove key</Button></CollapsibleContent></Collapsible>}
               </div>
             </PostForm>
@@ -283,14 +283,14 @@ function Workers({ workers }: { workers: NonNullable<BrowserSettingsView["worker
             <span className="ml-auto text-sm tabular-nums" data-worker-load>{one.busy} of {one.capacity} running</span>
           </div>
           {one.running.length === 0
-            ? <p className="text-[13px] text-muted-foreground">Nothing running.</p>
+            ? <p className="text-body text-muted-foreground">Nothing running.</p>
             : <ul className="grid gap-1">{one.running.map(task => <li key={task.taskId} className="flex min-w-0 items-baseline gap-2 text-sm">
               <a className="min-w-0 truncate underline-offset-4 hover:underline phone:min-h-11 phone:leading-[44px]" href={task.href}>{task.title}</a>
-              {task.project && <span className="shrink-0 text-[13px] text-muted-foreground">{task.project}</span>}
+              {task.project && <span className="shrink-0 text-body text-muted-foreground">{task.project}</span>}
             </li>)}</ul>}
         </li>)}
       </ul>}
-    {workers.length > 0 && <p className="mt-3 text-[13px] text-muted-foreground">To change how many a worker runs at once: <code className="font-mono text-xs">toolroll runner capacity &lt;name&gt; &lt;n&gt;</code></p>}
+    {workers.length > 0 && <p className="mt-3 text-body text-muted-foreground">To change how many a worker runs at once: <code className="font-mono text-xs">toolroll runner capacity &lt;name&gt; &lt;n&gt;</code></p>}
   </Section>;
 }
 
@@ -311,7 +311,7 @@ function Updates({ updates, csrf, firstResult }: { updates: NonNullable<BrowserS
       </span>
       {newer?.security && <Badge tone="warning">Security fixes</Badge>}
     </div>
-    {firstResult !== null && <p className="text-[13px] text-muted-foreground" data-first-result>{firstResult}</p>}
+    {firstResult !== null && <p className="text-body text-muted-foreground" data-first-result>{firstResult}</p>}
     {newer && <div className="grid gap-2 rounded-lg bg-muted p-3 phone:p-3" data-update-command>
       <div className="flex flex-wrap items-center gap-2">
         <code className="min-w-0 flex-1 break-words font-mono text-[12.5px]">{updates.updateCommand}</code>
@@ -322,10 +322,10 @@ function Updates({ updates, csrf, firstResult }: { updates: NonNullable<BrowserS
     {newer && <Collapsible>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="group -ml-2.5" disabled={newer.notes === ""}>What's new in {newer.version}<ChevronRight className="transition-transform group-data-[state=open]:rotate-90" /></Button></CollapsibleTrigger>
-        <a className="text-[13px] underline underline-offset-4" href={newer.url} target="_blank" rel="noreferrer">Release page</a>
+        <a className="text-body underline underline-offset-4" href={newer.url} target="_blank" rel="noreferrer">Release page</a>
       </div>
       <CollapsibleContent>
-        <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border p-3 font-sans text-[13px] leading-relaxed" data-update-notes>{newer.notes}</pre>
+        <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border p-3 font-sans text-body leading-relaxed" data-update-notes>{newer.notes}</pre>
       </CollapsibleContent>
     </Collapsible>}
     <Separator />
@@ -367,7 +367,7 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
           <SelectTrigger id={`${base}-evening`} className="desk:max-w-72"><SelectValue /></SelectTrigger>
           <SelectContent>{digestTimes(view.chat!.digestAt).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
         </Select>
-        <p className="text-[13px] text-muted-foreground">One message: what finished, what waits, what failed.</p>
+        <p className="text-body text-muted-foreground">One message: what finished, what waits, what failed.</p>
       </div>
       <div className="grid gap-2">
         <Label htmlFor={`${base}-screenshots`}>Screenshots with results</Label>
@@ -390,14 +390,14 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
           </>}</AutoForm>
         </li>)}
       </ul>
-      <p className="text-[13px] text-muted-foreground">Off: no pings. It still shows in Tasks and the evening digest.</p>
+      <p className="text-body text-muted-foreground">Off: no pings. It still shows in Tasks and the evening digest.</p>
     </div>}
     {view.chat && view.services && <Separator />}
     {view.services && (view.services.configured.length === 1 && !view.services.implicit
       ? <div className="flex items-center gap-3"><span className="font-semibold capitalize">{view.services.configured[0]}</span><span className="inline-flex items-center gap-2 text-sm text-muted-foreground"><StatusDot tone="ok" />Receiving alerts</span></div>
       : <AutoForm action="/settings/messaging" csrf={csrf}>{submit => <div className="grid gap-2">
         <Label>Alert service</Label>
-        {view.services!.implicit && <p className="text-[13px] text-warning">Several are connected and none was chosen. Pick one.</p>}
+        {view.services!.implicit && <p className="text-body text-warning">Several are connected and none was chosen. Pick one.</p>}
         <RadioGroup name="primary" {...(view.services!.channel === null ? {} : { defaultValue: view.services!.channel })} onValueChange={submit} className="grid gap-2 desk:grid-cols-2">
           {view.services!.configured.map(one => <RadioCard key={one} id={`${base}-${one}`} value={one} title={one.charAt(0).toUpperCase() + one.slice(1)} description={one === "telegram" ? "Answer buttons and replies" : "Messages with links"} />)}
         </RadioGroup></div>}</AutoForm>)}
@@ -405,12 +405,12 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
       <Separator />
       <div className="grid gap-3">
         <div className="grid gap-1"><span className="font-semibold">This device</span>
-          <span className="text-[13px] text-muted-foreground">{view.push.available ? "A notification when something needs you. On iPhone, add this app to your Home Screen first." : "Alerts need a secure (https) address for this app."}</span></div>
+          <span className="text-body text-muted-foreground">{view.push.available ? "A notification when something needs you. On iPhone, add this app to your Home Screen first." : "Alerts need a secure (https) address for this app."}</span></div>
         {view.push.available && <PostForm action="/push/subscribe" id="push-form" className="flex flex-wrap items-end gap-3">
           <input type="hidden" name="endpoint" value="" /><input type="hidden" name="p256dh" value="" /><input type="hidden" name="auth" value="" />
           <div className="grid min-w-56 flex-1 gap-2"><Label htmlFor="push-password">Your password</Label><Input id="push-password" type="password" name="token" autoComplete="current-password" /></div>
           <Button type="submit" id="push-enable" variant="outline">Get alerts on this device</Button>
-          <p className="w-full text-[13px] text-muted-foreground" id="push-state" aria-live="polite"></p>
+          <p className="w-full text-body text-muted-foreground" id="push-state" aria-live="polite"></p>
         </PostForm>}
         {view.push.devices.length > 0 && <ul className="grid gap-2">{view.push.devices.map(one => <li key={one.id} className="flex flex-wrap items-center gap-3 text-sm">
           <span>{one.words}</span>{one.state !== "ok" && <Badge tone={one.state === "failing" ? "warning" : "neutral"}>{one.state}</Badge>}
@@ -422,12 +422,12 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
       <Separator />
       <AutoForm action="/settings/telegram-digest" csrf={csrf} className="grid gap-2">{submit => <>
         <Label htmlFor={`${base}-digest`}>Telegram digest</Label>
-        <p className="text-[13px] text-muted-foreground">Bundle routine updates. Anything that needs you still arrives at once.</p>
+        <p className="text-body text-muted-foreground">Bundle routine updates. Anything that needs you still arrives at once.</p>
         <Select name="every" defaultValue={view.digest!.every} onValueChange={submit}>
           <SelectTrigger id={`${base}-digest`} className="desk:max-w-72"><SelectValue /></SelectTrigger>
           <SelectContent>{[["off", "Off: send each update"], ["30", "Every 30 minutes"], ["60", "Every hour"], ["240", "Every 4 hours"], ["720", "Every 12 hours"], ["1440", "Once a day"]].map(([value, label]) => <SelectItem key={value} value={value!}>{label}</SelectItem>)}</SelectContent>
         </Select>
-        {view.digest!.held && <p className="text-[13px] text-muted-foreground">{view.digest!.held}</p>}
+        {view.digest!.held && <p className="text-body text-muted-foreground">{view.digest!.held}</p>}
       </>}</AutoForm>
     </>}
   </Section>;
@@ -440,13 +440,13 @@ function TelegramToken({ view, csrf }: { view: BrowserSettingsView; csrf: string
       <ChevronRight className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
     </button></CollapsibleTrigger>
     <CollapsibleContent className="grid gap-3 border-t border-border px-5 py-4 phone:px-4">
-      <p className="text-[13px] text-muted-foreground">Current: {view.telegram.current}</p>
-      {view.telegram.delivery != null && <p className="text-[13px] text-muted-foreground" data-telegram-delivery>{view.telegram.delivery}</p>}
+      <p className="text-body text-muted-foreground">Current: {view.telegram.current}</p>
+      {view.telegram.delivery != null && <p className="text-body text-muted-foreground" data-telegram-delivery>{view.telegram.delivery}</p>}
       <PostForm action="/settings/telegram-token" className="flex flex-wrap items-end gap-3">
         <div className="grid min-w-56 flex-1 gap-2"><Label htmlFor="telegram-token-field">Token from @BotFather</Label><Input id="telegram-token-field" type="password" name="token" autoComplete="off" /></div>
         <Button type="submit" variant="outline">Save token</Button>
       </PostForm>
-      <p className="text-[13px] text-muted-foreground">Stored privately on this computer. Then pair your phone under <a className="underline underline-offset-4" href="/settings/telegram">Telegram</a>.</p>
+      <p className="text-body text-muted-foreground">Stored privately on this computer. Then pair your phone under <a className="underline underline-offset-4" href="/settings/telegram">Telegram</a>.</p>
     </CollapsibleContent>
   </Collapsible>;
 }
@@ -464,7 +464,7 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
           {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
             {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
             <span className="grid min-w-0 gap-0.5">{tile.label}
-              {tile.status && <span className="flex items-center gap-1.5 text-[13px] font-normal text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
+              {tile.status && <span className="flex items-center gap-1.5 text-body text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
         </div>
         {group.title === "Chat apps" && view.phone && <PhoneCard phone={view.phone} csrf={csrf} dismissable={false} />}
       </section>)}

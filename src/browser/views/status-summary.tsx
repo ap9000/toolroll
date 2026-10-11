@@ -40,7 +40,7 @@ function DetailRow({ detail, runChecks, csrf }: { detail: StatusDetail; runCheck
   const text = detail.href === null ? detail.text
     : <a href={detail.href} className={cn("underline decoration-border underline-offset-4 hover:decoration-muted-foreground", TAP)}>{detail.text}</a>;
   return <li data-status-detail={detail.key} data-mark={detail.mark}
-    className="grid grid-cols-[14px_7.5rem_minmax(0,1fr)] items-center gap-x-2.5 py-1.5 text-[13px] phone:min-h-11 phone:grid-cols-[14px_6.25rem_minmax(0,1fr)] phone:py-1">
+    className="grid grid-cols-[14px_7.5rem_minmax(0,1fr)] items-center gap-x-2.5 py-1.5 text-body phone:min-h-11 phone:grid-cols-[14px_6.25rem_minmax(0,1fr)] phone:py-1">
     <span className="flex items-center justify-center">{MARK_ICON[detail.mark]}</span>
     <span className="text-muted-foreground">{detail.label}</span>
     <span className="flex min-w-0 flex-wrap items-baseline gap-x-2.5">
@@ -75,7 +75,7 @@ export function statusWhyLines(status: TaskStatus, extra: readonly string[] = []
 export function StatusWhy({ status, extra = [] }: { status: TaskStatus; extra?: readonly string[] }) {
   const lines = statusWhyLines(status, extra);
   if (lines.length === 0) return null;
-  return <details className="group text-[13px]" data-status-why>
+  return <details className="group text-body" data-status-why>
     <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1 font-medium text-muted-foreground hover:text-foreground phone:min-h-11 [&::-webkit-details-marker]:hidden">
       <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />{STATUS_MORE}
     </summary>
@@ -92,7 +92,7 @@ export function headlineToneOf(tone: string): HeadlineTone {
  * ink accent only for Needs you, red only for Failed (on the dot). */
 export function HeadlineBadge({ label, tone, className, ...rest }: { label: string; tone: string; className?: string } & Record<`data-${string}`, string>) {
   const headline = headlineToneOf(tone);
-  return <span {...rest} data-headline={label} className={cn("inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[5px] px-1.5 py-px text-[11.5px] font-medium leading-[18px]",
+  return <span {...rest} data-headline={label} className={cn("inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap rounded-badge px-1.5 py-px text-badge",
     headline === "attention" ? "bg-attention-soft text-attention" : "bg-neutral-soft text-neutral-ink", className)}>
     <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", headline === "ready" ? "bg-transparent ring-[1.5px] ring-inset ring-success" : HEADLINE_DOT[headline])} />{label}
   </span>;

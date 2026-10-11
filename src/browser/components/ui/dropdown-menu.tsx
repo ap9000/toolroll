@@ -7,10 +7,10 @@ export const DropdownMenu = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 export function DropdownMenuContent({ className, sideOffset = 4, ...props }: ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return <DropdownMenuPrimitive.Portal><DropdownMenuPrimitive.Content data-slot="dropdown-menu-content" sideOffset={sideOffset}
-    className={cn("z-[120] min-w-44 overflow-hidden rounded-[10px] border-0 bg-popover p-1 text-popover-foreground shadow-[var(--so-shadow-overlay)]", className)} {...props} /></DropdownMenuPrimitive.Portal>;
+    className={cn("z-[120] min-w-44 overflow-hidden rounded-card border-0 bg-popover p-1 text-popover-foreground shadow-overlay", className)} {...props} /></DropdownMenuPrimitive.Portal>;
 }
 export function DropdownMenuItem({ className, ...props }: ComponentProps<typeof DropdownMenuPrimitive.Item>) {
-  return <DropdownMenuPrimitive.Item data-slot="dropdown-menu-item" className={cn("relative flex cursor-default select-none items-center gap-2 rounded-[6px] px-2 py-1.5 text-[13px] outline-none data-[highlighted]:bg-accent phone:min-h-11 [&_svg]:size-4", className)} {...props} />;
+  return <DropdownMenuPrimitive.Item data-slot="dropdown-menu-item" className={cn("relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-body outline-none data-[highlighted]:bg-accent phone:min-h-11 [&_svg]:size-4", className)} {...props} />;
 }
 export function DropdownMenuLabel({ className, ...props }: ComponentProps<typeof DropdownMenuPrimitive.Label>) {
   return <DropdownMenuPrimitive.Label className={cn("px-2 py-1.5 text-xs font-semibold text-muted-foreground", className)} {...props} />;

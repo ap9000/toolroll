@@ -21,9 +21,11 @@ export function buildIsStale(root: string): boolean {
     const output = join(root, "dist", name.replace(/\.ts$/, ".js"));
     return !existsSync(output) || statSync(join(root, "src", name)).mtimeMs > statSync(output).mtimeMs;
   })) return true;
-  // The console's stylesheet ships beside the server module that reads it.
-  const sheet = join(root, "dist", "server", "console.css");
-  if (!existsSync(sheet) || statSync(join(root, "src", "server", "console.css")).mtimeMs > statSync(sheet).mtimeMs) return true;
+  // The console's stylesheet ships beside the server module that reads it, and so does Signal's generated token sheet.
+  for (const sheet of [join("server", "console.css"), join("design", "tokens.css")]) {
+    const built = join(root, "dist", sheet);
+    if (!existsSync(built) || statSync(join(root, "src", sheet)).mtimeMs > statSync(built).mtimeMs) return true;
+  }
 
   const browserOutputs = ["workspace.js", "workspace.css", "THIRD_PARTY_NOTICES.txt"].map(name => join(root, "dist", "browser", name));
   if (browserOutputs.some(output => !existsSync(output))) return true;
@@ -37,7 +39,8 @@ export function buildIsStale(root: string): boolean {
       return entry.isDirectory() ? newerBrowserInput(path) : statSync(path).mtimeMs > browserBuiltAt;
     });
   };
-  return newerBrowserInput(join(root, "src", "browser"));
+  // The browser's Tailwind theme imports Signal's generated theme.css.
+  return newerBrowserInput(join(root, "src", "browser")) || newerBrowserInput(join(root, "src", "design"));
 }
 
 /** The release check starts the unit tests beside its own build and names a file it writes when that build ends

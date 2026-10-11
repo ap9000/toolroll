@@ -281,7 +281,7 @@ export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; it
     <div className="so-work-row">
       <a className="so-work-link" href={item.resultHref ?? item.href} aria-current={workspace.focus?.id === item.id ? "page" : undefined}>
       <div className="so-work-heading"><span className="so-work-title">{item.title}</span><HeadlineBadge label={item.label} tone={item.tone} className="so-work-badge" /><CrewAge at={item.updatedAt} /></div>
-      {item.activity !== undefined && <ActivityLine activity={item.activity} className="so-work-activity text-[12px]" />}
+      {item.activity !== undefined && <ActivityLine activity={item.activity} className="so-work-activity text-caption" />}
       </a>
       {item.detail && <details className="so-work-reason" key={item.detail}>
         <summary title={item.detail}><span>{item.detail}</span><svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg></summary>
@@ -565,7 +565,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
       <li key={`message-${message.id}`} data-message-id={message.id} data-thread-kind="message" className="so-thread-entry relative flex gap-3">
         <span aria-hidden="true" className="relative z-[1] flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card text-[10.5px] font-semibold text-muted-foreground">{message.role === "operator" ? "Y" : (workspace.leadName ?? "Lead").slice(0, 1).toUpperCase()}</span>
         <div className="min-w-0 flex-1 pb-5 phone:pb-4">
-          <p className="flex min-h-6 flex-wrap items-baseline gap-x-2 text-[13px] leading-6">
+          <p className="flex min-h-6 flex-wrap items-baseline gap-x-2 text-body leading-6">
             <span className="font-medium">{message.role === "operator" ? "You" : workspace.leadName ?? "Lead"}</span>
             <time dateTime={message.createdAt} className="ml-auto text-xs tabular-nums text-muted-foreground">{threadWhen(message.createdAt)}</time>
           </p>

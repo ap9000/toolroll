@@ -22,7 +22,7 @@ export function useNow(everyMs = 5_000): number {
 /** What the agent did last, and when: one quiet line; amber when it has gone quiet or its worker is offline. */
 export function ActivityLine({ activity, className }: { activity: RunActivity; className?: string }) {
   const line = activityLine(activity, useNow());
-  return <span className={cn("block min-w-0 truncate text-[13px]", line.quiet ? "font-medium text-warning" : "text-muted-foreground", className)}
+  return <span className={cn("block min-w-0 truncate text-body", line.quiet ? "font-medium text-warning" : "font-normal text-muted-foreground", className)}
     data-activity={line.quiet ? "quiet" : "fresh"} title={line.text}>
     <time dateTime={activity.at}>{line.text}</time>
   </span>;
