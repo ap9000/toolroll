@@ -2182,6 +2182,27 @@ describe("the pulse", () => {
     expect(gitCalls.find(args => args.includes("add"))).toContain(":!STANDING-ORDERS-*");
   });
 
+  test("once the agent exits its steering folder is closed, so a note filed before settlement finishes reads as reaching the next attempt (v120)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let exited = false, liveWhileRunning: number | null = null;
+    const afterExit: { live: number | null; phase: unknown }[] = [];
+    const req = request("lease-a", {
+      shouldStop: () => {
+        if (exited) afterExit.push({ live: store.steeringLiveBuild(taskRef, new Date()), phase: store.handle.prepare("SELECT phase FROM run WHERE id = ?").get(req.runId as number)?.["phase"] });
+        return false;
+      },
+      agent: (async (_file, args, options) => {
+        liveWhileRunning = store.steeringLiveBuild(taskRef, new Date());
+        conclude(args, options);
+        exited = true;
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(liveWhileRunning).toBe(req.runId);
+    expect(afterExit.find(one => one.phase === "agent-running")).toEqual({ live: null, phase: "agent-running" });
+  });
+
   test("a build with no pulse opens no steering folder, so a note filed while its agent runs reads as reaching the next attempt (v120)", async () => {
     acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
     let liveDuringRun: number | null = -1, phaseDuringRun: unknown = null;

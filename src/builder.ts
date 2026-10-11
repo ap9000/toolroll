@@ -1208,6 +1208,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     if (steerBox === null) return;
     const box = steerBox;
     steerBox = null;
+    try { store.markSteerFolderClosed(request.runId, clock()); } catch { /* display state; the run's outcome ends it */ }
     closeSteerMailbox(store, box, clock());
   };
 
