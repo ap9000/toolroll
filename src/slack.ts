@@ -1,7 +1,6 @@
 /** One leased Socket Mode connection, hosted by the ordinary worker. */
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { SocketModeClient, LogLevel } from "@slack/socket-mode";
 import { loadSlackCredentials, slackApi } from "./slack-api.js";
 import { ChatState } from "./chat-delivery-state.js";
 import {
@@ -12,34 +11,6 @@ import {
   type SlackChatOptions,
   planSlackRooms,
 } from "./slack-chat.js";
-
-/** The bot and socket tokens must belong to the same app, including after reconnect. */
-export class ToolrollSlackSocket extends SocketModeClient {
-  expectedApp = "";
-  wrongApp: () => void = () => {};
-  protected override async onWebSocketMessage(
-    data: string | ArrayBuffer,
-    isBinary: boolean,
-  ): Promise<void> {
-    let packet: Record<string, unknown>;
-    try {
-      packet = JSON.parse(
-        typeof data === "string" ? data : new TextDecoder().decode(data),
-      ) as Record<string, unknown>;
-    } catch {
-      return;
-    }
-    if (packet.type === "hello") {
-      const info = packet.connection_info as { app_id?: unknown } | undefined;
-      if (info?.app_id !== this.expectedApp) {
-        this.wrongApp();
-        await this.disconnect();
-        return;
-      }
-    }
-    return super.onWebSocketMessage(data, isBinary);
-  }
-}
 
 export async function followSlack(
   options: Omit<SlackChatOptions, "identity" | "api" | "owner" | "current"> & {
@@ -80,6 +51,8 @@ export async function followSlack(
       );
     };
     const problem = (text: string) => state.setProblem(credentials.installation, owner, text);
+    // The SDK loads once Slack is set up, not with every command that could host the follower.
+    const { ToolrollSlackSocket, LogLevel } = await import("./slack-socket.js");
     // SDK log output can include envelopes/tokens. Only fixed status phrases are saved.
     const client = new ToolrollSlackSocket({
       appToken: credentials.appToken,

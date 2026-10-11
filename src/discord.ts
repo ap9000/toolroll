@@ -1,7 +1,6 @@
 /** A single leased Discord Gateway connection, hosted by the ordinary worker. */
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Client, GatewayIntentBits, Partials } from "discord.js";
 import {
   loadDiscordCredentials,
   discordApi,
@@ -67,6 +66,8 @@ export async function followDiscord(
     };
     const problem = (message: string) => state.setProblem(credentials.installation, owner, message);
     const api = discordApi(credentials.botToken);
+    // The SDK loads once Discord is set up, not with every command that could host the follower.
+    const { Client, GatewayIntentBits, Partials } = await import("discord.js");
     const client = new Client({
       // Guild messages and their content are needed for rooms; the Message
       // Content intent must be enabled for the app in Discord's developer portal.

@@ -21,7 +21,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import nodemailer from "nodemailer";
 import { redactSecretAssignments } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { fillFlowText, type FlowStage } from "./flows.js";
@@ -127,6 +126,8 @@ export type MailSender = (settings: EmailSettings & { password: string; accessTo
 
 /** The production sender: the operator's mail server through nodemailer. */
 export const sendThroughServer: MailSender = async (settings, mail) => {
+  // nodemailer loads when mail is sent, not with every command that imports this module.
+  const { default: nodemailer } = await import("nodemailer");
   const transport = nodemailer.createTransport({
     // A password never travels unencrypted: with a sign-in, the connection must be (or become) TLS.
     host: settings.host, port: settings.port, secure: settings.secure, requireTLS: !settings.secure && settings.user !== "",
