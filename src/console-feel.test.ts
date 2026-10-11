@@ -112,10 +112,21 @@ describe("console feel: touch, hover and press", () => {
 });
 
 describe("Signal tokens: one generated source", () => {
-  test("Tailwind's theme is the generated one, not a hand-kept copy", () => {
-    const tailwind = readFileSync(new URL("./browser/tailwind.css", import.meta.url), "utf8");
-    expect(tailwind).toContain('@import "../design/theme.css";');
-    expect(tailwind).not.toMatch(/@theme\b/);
+  /** The workspace stylesheet the server delivers: workspace.css with the compiled Tailwind utilities appended. */
+  const BUILT_CSS = readFileSync(new URL("../dist/browser/workspace.css", import.meta.url), "utf8");
+  const customProperties = (css: string) => rulesOf(css).flatMap(rule => rule.body.split(";"))
+    .map(declaration => declaration.match(/^\s*(--so-[\w-]+)\s*:\s*(.*?)\s*$/s))
+    .filter(match => match !== null).map(match => ({ name: match[1]!, value: match[2]! }));
+  const generated = new Set(customProperties(TOKENS_CSS).map(property => property.name));
+
+  test("the built Signal utilities read the generated tokens", () => {
+    expect(generated.size).toBeGreaterThan(0);
+    for (const utility of [".text-body", ".rounded-card", ".shadow-pill"]) {
+      const body = declarations(BUILT_CSS, utility);
+      const read = [...body.matchAll(/var\((--so-[\w-]+)/g)].map(match => match[1]!);
+      expect(read.length, utility).toBeGreaterThan(0);
+      for (const name of read) expect(generated.has(name), `${utility} reads ${name}`).toBe(true);
+    }
   });
 
   test("cn knows Signal's type, radius and shadow names, so a later colour never drops a role", () => {
@@ -130,11 +141,10 @@ describe("Signal tokens: one generated source", () => {
   });
 
   test("the workspace sheet only reads the generated tokens, so it never overrides a person's accent", () => {
-    const generated = new Set([...TOKENS_CSS.matchAll(/(--so-[\w-]+):/g)].map(match => match[1]));
-    const declared = [...WORKSPACE_CSS.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(--so-[\w-]+):\s*([^;]+);/g)];
+    const declared = customProperties(BUILT_CSS);
     expect(declared.length).toBeGreaterThan(0);
-    for (const [, name, value] of declared) {
-      expect(generated.has(name!), name).toBe(false);
+    for (const { name, value } of declared) {
+      expect(generated.has(name), name).toBe(false);
       expect(value, name).toMatch(/^var\(/);
     }
   });
