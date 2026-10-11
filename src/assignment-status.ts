@@ -1,6 +1,10 @@
 /** Private lead catch-up, separate from human notification delivery. These are
  * observed assignment transitions, not a promise to capture every intermediate
- * state between scans. Recording or reading them never dispatches agent work. */
+ * state between scans. Recording or reading them never dispatches agent work.
+ * One stream serves every lead: a coordinator's or team lead's events are
+ * recorded under its owner, and the built-in lead's crew updates under its
+ * follow grant (`follow:<grant>`, lead-follow.ts); each reads its own through
+ * the delivery inbox (assignment-delivery.ts). */
 import { createHash } from "node:crypto";
 import type { Store } from "./store.js";
 import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
@@ -8,7 +12,13 @@ import { publicChatText } from "./chat-display.js";
 import { sweepIfMoved } from "./sweep-gate.js";
 
 export const ASSIGNMENT_STATUS_ACTION = "assignment status observed";
+/** A reader's first sight of a task that is not news: the state later events are compared to, never delivered. */
+export const ASSIGNMENT_STATUS_BASELINE = "assignment status baseline";
 export const ASSIGNMENT_STATUS_SOURCE = "work" as const;
+/** The states that wake a lead: a result to check, a question, completion, or cancellation. */
+export const LEAD_WAKE_STATES: readonly AssignmentSnapshot["state"][] = ["ready-to-check", "needs-decision", "complete", "cancelled"];
+/** The built-in lead's events, one stream per follow grant. */
+export const followActor = (grant: number): string => `follow:${grant}`;
 const hash = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const text = publicChatText;
 
@@ -35,9 +45,10 @@ export function assignmentStatusBrief(assignment: AssignmentSnapshot) {
   };
 }
 
+/** An owner's events always name it; the built-in lead's follow events name whatever owner the task has, or none. */
 export type AssignmentStatusEvent = {
   version: 1; digest: string; stateDigest: string;
-  assignment: ReturnType<typeof assignmentStatusBrief> & { owner: NonNullable<ReturnType<typeof assignmentStatusBrief>["owner"]> };
+  assignment: ReturnType<typeof assignmentStatusBrief>;
 };
 
 /** An unreadable ledger event is an explicit consumer error, not a cursor that
@@ -58,7 +69,7 @@ export function parseAssignmentStatusEvent(value: string): AssignmentStatusEvent
       !["working", "checking", "needs-decision", "ready-to-check", "complete", "cancelled"].includes(String(a["state"])) ||
       !Array.isArray(a["attention"]) || a["attention"].length > 8 || !a["attention"].every(one => string(one, 500))) return null;
     const owner = a["owner"], action = a["primaryAction"], result = a["result"], completion = a["completion"], publication = a["publication"];
-    if (!object(owner) || !keys(owner, ["kind", "id", "label"]) || !["coordinator", "lead"].includes(String(owner["kind"])) || !string(owner["id"], 128) || !string(owner["label"], 100)) return null;
+    if (owner !== null && (!object(owner) || !keys(owner, ["kind", "id", "label"]) || !["coordinator", "lead"].includes(String(owner["kind"])) || !string(owner["id"], 128) || !string(owner["label"], 100))) return null;
     if (action !== null && (!object(action) || !keys(action, ["code", "label", "target"]) || !string(action["code"], 80) || !string(action["label"], 160) ||
       !object(action["target"]) || !keys(action["target"], ["taskId", "runId", "decisionId"]) || !string(action["target"]["taskId"], 64) || !id(action["target"]["runId"]) || !id(action["target"]["decisionId"]))) return null;
     if (result !== null && (!object(result) || !keys(result, ["digest", "runId", "checks", "checksDigest"]) || !sha(result["digest"]) || !id(result["runId"]) || result["runId"] === null || !sha(result["checksDigest"]) ||
@@ -92,20 +103,38 @@ export function noteAssignmentStatus(store: Store, snapshot: AssignmentSnapshot,
       try { repos = JSON.parse(String(credential?.["repos"] ?? "null")); } catch { return null; }
       if (!Array.isArray(repos) || !repos.includes(snapshot.repo)) return null;
     }
-    const assignment = assignmentStatusBrief(snapshot);
-    if (assignment.owner === null) return null;
-    const stateDigest = hash(assignment);
-    const previous = store.handle.prepare("SELECT id,outcome FROM action_ledger WHERE task_id=? AND action=? AND source=? ORDER BY id DESC LIMIT 1")
-      .get(snapshot.rootId, ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_SOURCE);
-    if (previous !== undefined) {
-      try { if (JSON.parse(String(previous["outcome"]))?.stateDigest === stateDigest) return null; } catch { /* Preserve an unreadable older event; append the current observation. */ }
-    }
-    const digest = hash({ rootRef: ref.id, owner: owner.id, previous: previous === undefined ? null : Number(previous["id"]), stateDigest });
-    const event: AssignmentStatusEvent = { version: 1, digest, stateDigest, assignment: { ...assignment, owner: assignment.owner } };
-    return store.recordAction({ at: now.toISOString(), actor: `${owner.kind}:${owner.id}`, repo: snapshot.repo,
-      taskId: snapshot.rootId, runId: assignment.runId, action: ASSIGNMENT_STATUS_ACTION,
-      outcome: JSON.stringify(event), source: ASSIGNMENT_STATUS_SOURCE });
+    if (assignmentStatusBrief(snapshot).owner === null) return null;
+    return appendStatusEvent(store, `${owner.kind}:${owner.id}`, owner.id, ref.id, snapshot, now);
   });
+}
+
+/** The built-in lead's crew update (lead-follow.ts): the same event, under its follow grant. The
+ * caller has already proved the grant and its projects; the root must still be a placed task. */
+export function noteFollowStatus(store: Store, grant: number, snapshot: AssignmentSnapshot, now: Date, action: typeof ASSIGNMENT_STATUS_ACTION | typeof ASSIGNMENT_STATUS_BASELINE = ASSIGNMENT_STATUS_ACTION): number | null {
+  if (snapshot.repo === null) return null;
+  return store.transact(() => {
+    const ref = store.lookupRef(snapshot.rootId);
+    if (!ref || ref.repo !== snapshot.repo || ref.revisionOf !== null) return null;
+    return appendStatusEvent(store, followActor(grant), followActor(grant), ref.id, snapshot, now, action);
+  });
+}
+
+/** Each reader's latest event or baseline, not a permanent digest set, deduplicates its retries, so Working → Needs
+ * decision → Working is retained. One reader's events never suppress or duplicate another's. */
+function appendStatusEvent(store: Store, actor: string, ownerId: string, rootRef: number, snapshot: AssignmentSnapshot, now: Date,
+  action: typeof ASSIGNMENT_STATUS_ACTION | typeof ASSIGNMENT_STATUS_BASELINE = ASSIGNMENT_STATUS_ACTION): number | null {
+  const assignment = assignmentStatusBrief(snapshot);
+  const stateDigest = hash(assignment);
+  const previous = store.handle.prepare("SELECT id,outcome FROM action_ledger WHERE task_id=? AND action IN (?,?) AND source=? AND actor=? ORDER BY id DESC LIMIT 1")
+    .get(snapshot.rootId, ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_BASELINE, ASSIGNMENT_STATUS_SOURCE, actor);
+  if (previous !== undefined) {
+    try { if (JSON.parse(String(previous["outcome"]))?.stateDigest === stateDigest) return null; } catch { /* Preserve an unreadable older event; append the current observation. */ }
+  }
+  const digest = hash({ rootRef, owner: ownerId, previous: previous === undefined ? null : Number(previous["id"]), stateDigest });
+  const event: AssignmentStatusEvent = { version: 1, digest, stateDigest, assignment };
+  return store.recordAction({ at: now.toISOString(), actor, repo: snapshot.repo,
+    taskId: snapshot.rootId, runId: assignment.runId, action,
+    outcome: JSON.stringify(event), source: ASSIGNMENT_STATUS_SOURCE });
 }
 
 /** At most fifty roots per pass; the cursor survives process restarts. A full

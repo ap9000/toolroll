@@ -220,22 +220,25 @@ runner never pushes, merges, or opens pull requests itself.
 const steering: Guide = {
   name: "steering",
   title: "Steering a task",
-  oneLiner: "an operator ceremony: credentialed notes read before the next attempt — agents cannot file one",
+  oneLiner: "an operator ceremony: credentialed notes a running build reads when it next checks for notes, or the next attempt — agents cannot file one",
   content: `# Steering a task
 
 ${AUTHORITY_LINE}
 
 Steering is an OPERATOR ceremony. \`task steer <id> --note "..." --as
-<you> --token <t>\` files one note (≤4000 characters) for the
-task's NEXT attempt, and the credential is the point: the note appears
-in the agent's brief under an OPERATOR STEERING heading, so only a
-verified person may put words there. Anonymous or agent-authored notes
-are refused outright.
+<you> --token <t>\` files one note (≤4000 characters) for the task's
+agent, and the credential is the point: the note reaches the agent as
+operator guidance, so only a verified person may put words there.
+Anonymous or agent-authored notes are refused outright.
 
-- Delivery is recorded: the task page shows whether a note is waiting,
-  attached to an attempt, or was read. A running agent is never
-  interrupted — notes wait for the next natural boundary (a repair, a
-  resume after a parked decision, a fresh attempt, a revision).
+- While a build's agent is running, the note is put in its steering
+  folder; the agent reads it when it next checks for notes and moves it
+  to handled/, which is the only thing that marks it read. Otherwise —
+  or if the agent finishes before reading it — the next attempt's brief
+  quotes it under an OPERATOR STEERING heading.
+- Each note says where it stands, the same on the task page, in
+  \`task show\` and to the lead: waiting for the agent to read it, read
+  by the agent at a time, or will reach the next attempt.
 - A note is guidance INSIDE the approved scope. It cannot widen scope,
   approve anything, or replace the ceremony a change of scope needs.
 - Refusals: missing credential is usage; a wrong credential is

@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -379,6 +379,16 @@ export const CHAT_MOVES: Record<string, Moved> = {
   ...Object.fromEntries(Object.entries(TELEGRAM_MOVES).map(([table, move]) => [table, { ...move, where: `provider = 'telegram' AND (${move.where})` }])),
   ...Object.fromEntries(["slack", "discord", "teams"].flatMap(app => APP_TABLES.map(suffix => [`${app}_${suffix}`, { into: `chat_${suffix}`, where: `provider = '${app}'` }]))),
 };
+/** Each table's added columns across versions, merged: a table two versions both extend keeps every column. */
+function addedColumns(...versions: Readonly<Record<string, Readonly<Record<string, { saved: string }>>>>[]): Record<string, HistoryRule> {
+  const rules: Record<string, HistoryRule> = {};
+  for (const version of versions) {
+    for (const [table, columns] of Object.entries(version)) {
+      rules[table] = { added: { ...rules[table]?.added, ...Object.fromEntries(Object.entries(columns).map(([column, { saved }]) => [column, saved])) } };
+    }
+  }
+  return rules;
+}
 const HISTORY_RULES: Record<string, HistoryRule> = {
   ...Object.fromEntries(Object.entries(CHAT_MOVES).map(([table, moved]) => [table, { moved }])),
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
@@ -402,7 +412,9 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   ...Object.fromEntries(Object.entries(V118_MERGED_TABLES).map(([table, kind]) => [table, { moved: { into: "credential", where: `kind = '${kind}'` } }])),
   // v119: planning generations and a question's closure reason are new columns; every row saved before them reads
   // the declared value (generation 0, no closure reason).
-  ...Object.fromEntries(Object.entries(V119_ADDED_COLUMNS).map(([table, columns]) => [table, { added: Object.fromEntries(Object.entries(columns).map(([column, { saved }]) => [column, saved])) }])),
+  // v120: a steering note's mailing and acknowledgement, and a run's steering folder, are new columns; every row
+  // saved before them reads none.
+  ...addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));

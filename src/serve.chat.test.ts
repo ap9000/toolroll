@@ -1393,8 +1393,8 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
 
     html = await (await fetch(url("/chat?task=a"), { headers: { cookie } })).text();
     expect(html).toContain('data-card-kind="steer"');
-    expect(html).toContain("Guidance for next attempt");
-    expect(html).toContain("without changing the task’s scope");
+    expect(html).toContain("Guidance for the agent");
+    expect(html).toContain("The task’s scope doesn’t change.");
     expect(html).toContain('name="task" value="a"');
     expect(html).toContain('name="return" value="/chat?task=a"');
     expect(html).toContain('data-message-role="operator" data-key="m1"><p style="white-space:pre-wrap">Make the next pass focus on the mobile navigation.</p>');

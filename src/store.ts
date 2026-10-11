@@ -637,7 +637,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v119 keeps planning generations: a rewritten scope starts a clean planning context (task_ref, run and plan_revision
 // carry planning_generation, 0 for all earlier history), and a question closed without an answer says why
 // (decision.superseded_reason: its task's scope changed, or the task was cancelled).
-export const SCHEMA_VERSION = 119;
+// v120 lets a running build read steering: a note the pulse put in the build's steering folder (task_steer.mailed_run,
+// mailed_at) and the moment the agent moved it to handled/ (acked_at).
+export const SCHEMA_VERSION = 120;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -765,9 +767,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * coordinator_credential and lead_credential moves into credential under its kind in one transaction that counts them
  * before the old tables drop, and the references that named them name credential in place, their rows untouched. v119 only adds four columns
  * (planning_generation on task_ref, run and plan_revision, defaulting to 0, and decision.superseded_reason, null);
- * the rehearsal checks every saved row reads the declared default (HISTORY_RULES' added columns).
+ * the rehearsal checks every saved row reads the declared default (HISTORY_RULES' added columns). v120 only adds
+ * three nullable task_steer columns (the running build's steering folder), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -775,6 +778,19 @@ export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
   run: { planning_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" } },
   plan_revision: { planning_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" } },
   decision: { superseded_reason: { definition: "TEXT CHECK (superseded_reason IN ('scope-changed','cancelled'))", saved: "NULL" } },
+});
+
+/** v120: the columns it adds, by table, with the value every row saved before it reads. */
+export const V120_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_steer: {
+    mailed_run: { definition: "INTEGER REFERENCES run(id)", saved: "NULL" },
+    mailed_at: { definition: "TEXT", saved: "NULL" },
+    acked_at: { definition: "TEXT", saved: "NULL" },
+  },
+  run: {
+    steer_opened_at: { definition: "TEXT", saved: "NULL" },
+    steer_closed_at: { definition: "TEXT", saved: "NULL" },
+  },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -1690,6 +1706,9 @@ export type RunPhase = (typeof RUN_PHASES)[number];
  * One operator steering note (arc 1, v22). Attached ≠ delivered: attachment
  * says which build the note rode toward; delivery settles only on the
  * stream's own receipt. Superseded = the task ended with it still pending.
+ * v120: a note filed while a build runs is mailed into that build's steering
+ * folder (mailed), and is read only when the agent moves it to handled/
+ * (acked, which also settles it delivered to that build).
  */
 export type SteerNote = {
   /** v24 (ruling 11): "verified" = credentialed authorship; anything else is history, never brief-bound. */
@@ -1704,6 +1723,9 @@ export type SteerNote = {
   attachedAt: string | null;
   deliveredAt: string | null;
   supersededAt: string | null;
+  mailedRun: number | null;
+  mailedAt: string | null;
+  ackedAt: string | null;
 };
 
 /** One phone enrollment for web push (arc 3, v23). A row per ACTIVATION —
@@ -3975,6 +3997,9 @@ CREATE TABLE IF NOT EXISTS review_request (
 -- rode toward; delivered_at settles only on the stream's own receipt (the
 -- agent's first words, or a successful completion). At-least-once, honestly
 -- labeled. Superseded means the task ended with the note still pending.
+-- v120 adds mailed_run, mailed_at and acked_at (V120_ADDED_COLUMNS): a note
+-- filed while a build runs is written into its steering folder, and is read
+-- (and delivered) only when that agent moves it to handled/.
 CREATE TABLE IF NOT EXISTS task_steer (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
@@ -4572,6 +4597,10 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(PLAN_AUTO_SCHEMA);
   // v119: planning generations, and why a question closed unanswered (additive only; saved rows read the defaults).
   for (const [table, columns] of Object.entries(V119_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v120: a running build's steering folder (additive only; saved notes read as never mailed).
+  for (const [table, columns] of Object.entries(V120_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
   installLedgerTriggers(db);
@@ -15598,6 +15627,84 @@ export class Store {
     return Number(changes);
   }
 
+  /**
+   * The task's build whose agent is running right now and reads its steering
+   * folder (v120): the current live lease's open builder run, in its
+   * agent-running phase, whose steering folder is open. Null otherwise — a
+   * note then waits for the next attempt. Display state, never evidence.
+   */
+  steeringLiveBuild(taskRef: number, now: Date): number | null {
+    const live = this.currentLiveLease(taskRef, now);
+    if (live === null) return null;
+    const row = this.db
+      .prepare(
+        `SELECT id FROM run WHERE task_ref = ? AND lease_id = ? AND role = 'builder'
+            AND outcome IS NULL AND phase = 'agent-running' AND steer_opened_at IS NOT NULL AND steer_closed_at IS NULL
+          ORDER BY id DESC LIMIT 1`,
+      )
+      .get(taskRef, live);
+    return row === undefined ? null : Number(row["id"]);
+  }
+
+  /** This run made its steering folder (v120): its agent can read a note filed now. */
+  markSteerFolderOpened(runId: number, now: Date): void {
+    this.db.prepare("UPDATE run SET steer_opened_at = ? WHERE id = ? AND outcome IS NULL AND steer_opened_at IS NULL").run(now.toISOString(), runId);
+  }
+
+  /** This run's steering folder is gone (v120): a note filed now reaches the next attempt. */
+  markSteerFolderClosed(runId: number, now: Date): void {
+    this.db.prepare("UPDATE run SET steer_closed_at = ? WHERE id = ? AND steer_opened_at IS NOT NULL AND steer_closed_at IS NULL").run(now.toISOString(), runId);
+  }
+
+  /**
+   * The notes a RUNNING build may still read (v120): verified, pending, not
+   * already quoted in this run's brief, and not already in its folder. The
+   * pulse mails exactly these, in filing order.
+   */
+  mailableSteerNotes(taskRef: number, runId: number): SteerNote[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM task_steer
+          WHERE task_ref = ? AND authorship_state = 'verified'
+            AND delivered_at IS NULL AND superseded_at IS NULL
+            AND (attached_run IS NULL OR attached_run <> ?)
+            AND (mailed_run IS NULL OR mailed_run <> ?)
+          ORDER BY id`,
+      )
+      .all(taskRef, runId, runId)
+      .map(readSteerNote);
+  }
+
+  /** The pulse wrote this note into the run's steering folder. Mailing is not
+   * reading: delivery settles only on the agent's own acknowledgement. */
+  markSteerMailed(noteId: number, runId: number, now: Date): boolean {
+    const { changes } = this.db
+      .prepare(
+        `UPDATE task_steer SET mailed_run = ?, mailed_at = ?
+          WHERE id = ? AND delivered_at IS NULL AND superseded_at IS NULL`,
+      )
+      .run(runId, now.toISOString(), noteId);
+    return Number(changes) > 0;
+  }
+
+  /**
+   * The agent moved this note to handled/ (v120): it was read, by THIS run.
+   * Acknowledgement is the only road from mailed to delivered — a hook firing
+   * or a file written proves nothing. First acknowledgement wins; a note the
+   * task already ended, or mailed to another run since, is left alone.
+   */
+  ackSteerNote(noteId: number, runId: number, now: Date): boolean {
+    const stamp = now.toISOString();
+    const { changes } = this.db
+      .prepare(
+        `UPDATE task_steer SET acked_at = ?, delivered_at = ?, attached_run = ?, attached_at = COALESCE(mailed_at, ?)
+          WHERE id = ? AND mailed_run = ? AND acked_at IS NULL AND delivered_at IS NULL AND superseded_at IS NULL`,
+      )
+      .run(stamp, stamp, runId, stamp, noteId, runId);
+    if (Number(changes) > 0) this.bumpWake();
+    return Number(changes) > 0;
+  }
+
   /** A finished task's pending notes settle superseded — shown, typed, done. */
   supersedeSteerNotes(taskRef: number, now: Date): number {
     const { changes } = this.db
@@ -21051,6 +21158,9 @@ function readSteerNote(row: Record<string, unknown>): SteerNote {
     supersededAt: row["superseded_at"] === null ? null : String(row["superseded_at"]),
     authorshipState: row["authorship_state"] === "verified" ? "verified" : "unverified-legacy",
     supersededReason: row["superseded_reason"] === null || row["superseded_reason"] === undefined ? null : String(row["superseded_reason"]),
+    mailedRun: row["mailed_run"] === null || row["mailed_run"] === undefined ? null : Number(row["mailed_run"]),
+    mailedAt: row["mailed_at"] === null || row["mailed_at"] === undefined ? null : String(row["mailed_at"]),
+    ackedAt: row["acked_at"] === null || row["acked_at"] === undefined ? null : String(row["acked_at"]),
   };
 }
 

@@ -241,7 +241,8 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     const taskHtml = await (await fetch(url("/t/peek-1"), { headers: { cookie } })).text();
     const csrf = /name="csrf" value="([^"]+)"/.exec(taskHtml)?.[1] ?? "";
     expect(csrf).not.toBe("");
-    expect(taskHtml).toContain("guidance for the next attempt");
+    expect(taskHtml).toContain("guidance for the agent");
+    expect(taskHtml).toContain("The next attempt reads it before starting.");
 
     const posted = await fetch(url("/t/peek-1/steer"), {
       method: "POST",
@@ -252,7 +253,7 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     expect(posted.status).toBe(303);
     const after = await (await fetch(url("/t/peek-1"), { headers: { cookie } })).text();
     expect(after).toContain("look at the retry path first");
-    expect(after).toContain("waiting for the next attempt");
+    expect(after).toContain("Will reach the next attempt");
 
     // Without a session cookie, steering does not exist as a surface.
     const bare = await fetch(url("/t/peek-1/steer"), {

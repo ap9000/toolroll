@@ -15,6 +15,7 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
  * silent re-read.
  */
 import { closedQuestionWords } from "./decision.js";
+import { steerDestinationWords } from "./steer-status.js";
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
 import { leadTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type LeadProposal, type Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
@@ -111,7 +112,7 @@ const VIA_WORDS: Record<DoorOptions["via"], string> = {
 };
 const CARD_WORDS: Partial<Record<ProposalKind, string>> = {
   task: "New task", next: "Queue priority", reserve: "Worker assignment", hold: "Pause work", unhold: "Resume work",
-  steer: "Guidance for the next attempt", scope: "Scope revision", answer: "Decision answer", repair: "Waiting task",
+  steer: "Guidance for the agent", scope: "Scope revision", answer: "Decision answer", repair: "Waiting task",
   agents: "Agents change", task_action: "Task update", action: "Action",
 };
 
@@ -457,7 +458,9 @@ function executeProposal(
       return refuse("refused", said);
     }
     const taskName = payloadString(payload, "taskTitle") ?? taskId;
-    return { ok: true, kind, said: `Guidance saved for ${taskName}'s next attempt`, taskId };
+    const steered = store.lookupRef(taskId);
+    const live = steered !== null && store.steeringLiveBuild(steered.id, now) !== null;
+    return { ok: true, kind, said: `Guidance saved for ${taskName}. ${steerDestinationWords(live)}`, taskId };
   }
 
   if (kind === "repair") {

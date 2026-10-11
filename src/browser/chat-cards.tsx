@@ -93,7 +93,7 @@ export const CHAT_COMMANDS: Record<string, { command: string; hint: string; text
     { command: "revise", hint: "Request changes", text: "Request changes: " },
     { command: "diff", hint: "Walk through the changes", text: "Walk me through the changes file by file." },
     { command: "log", hint: "What the checks said", text: "What does the check log say?" },
-    { command: "steer", hint: "Guide the next attempt", text: "For the next attempt: " },
+    { command: "steer", hint: "Send the agent a note", text: "Note for the agent: " },
     { command: "stop", hint: "Stop the running attempt", text: "Stop this task." },
     { command: "resume", hint: "Resume a stopped attempt", text: "Resume this task." },
     { command: "complete", hint: "Mark the result complete", text: "Mark this result complete." },

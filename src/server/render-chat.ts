@@ -671,7 +671,7 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
     reserve: { label: "Worker assignment", action: payload["worker"] === null ? "release" : "reserve", icon: html`<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>` },
     hold: { label: "Pause work", action: "hold", icon: html`<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>` },
     unhold: { label: "Resume work", action: "release hold", icon: html`<path d="m7 4 13 8-13 8z"/>` },
-    steer: { label: "Guidance for next attempt", action: "add guidance", icon: html`<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>` },
+    steer: { label: "Guidance for the agent", action: "add guidance", icon: html`<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>` },
     scope: { label: "Scope revision", action: "save scope", icon: html`<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/>` },
     answer: { label: "Decision answer", action: "confirm answer", icon: html`<path d="M9.1 9a3 3 0 1 1 5.8 1c0 2-3 2-3 4"/><path d="M12 18h.01"/><circle cx="12" cy="12" r="9"/>` },
     cancel: { label: "Cancel task", action: "open task", icon: html`<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="9"/>` },
@@ -753,8 +753,8 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
     what = html`<h3>Release <a href="${taskHref(task)}">${task}</a> from its hold</h3>${facts(["project", mono(repoId)])}`;
   } else if (view.kind === "steer") {
     const taskTitle = text("taskTitle") || task;
-    what = html`<h3>Guide <a href="${taskHref(task)}">${taskTitle}</a>'s next attempt</h3><p class="proposal-summary">${text("note")}</p>${
-      facts(["when", "next attempt"], ["project", mono(repoId)])}<p class="meta proposal-disclosure">This guides the next attempt without changing the task’s scope. It does not interrupt work already running.</p>`;
+    what = html`<h3>Guidance for <a href="${taskHref(task)}">${taskTitle}</a></h3><p class="proposal-summary">${text("note")}</p>${
+      facts(["project", mono(repoId)])}<p class="meta proposal-disclosure">A running agent reads it when it next checks for notes; otherwise the next attempt does. The task’s scope doesn’t change.</p>`;
   } else if (view.kind === "agents") {
     // The agents card (v48): exactly what changes, in the same words the
     // task page uses — the role, the exact agent, the size — and the

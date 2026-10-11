@@ -45,7 +45,8 @@ function bootstrapApprover(store: Store): string {
 }
 const AGENT_SAID = JSON.stringify({ result: "Added the guard and a test for it." });
 
-import { mkdtempSync, readFileSync, writeFileSync as writeSync2 } from "node:fs";
+import { existsSync as existsSync2, mkdtempSync, readFileSync, renameSync as renameSync2, writeFileSync as writeSync2 } from "node:fs";
+import { steerStandingWords } from "./steer-status.js";
 import { tmpdir as tmpdir2 } from "node:os";
 import { join as join2 } from "node:path";
 
@@ -2137,6 +2138,106 @@ describe("the pulse", () => {
     const finished = currentClaim(store, taskRef, new Date())!.heartbeatAt;
     await sleep(25);
     expect(currentClaim(store, taskRef, new Date())!.heartbeatAt).toBe(finished);
+  });
+
+  test("a note filed while the agent runs reaches its steering folder, and the agent moving it marks it read (v120)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let prompt = "", settings: { hooks?: { PostToolUse?: { hooks: { command: string }[] }[] } } | null = null, liveDuringRun: number | null = null, mailedKey: string | null = null;
+    const until = async (done: () => boolean) => { for (let i = 0; i < 400 && !done(); i++) await sleep(5); expect(done()).toBe(true); };
+    const req = request("lease-a", {
+      agent: (async (_file, args, options) => {
+        prompt = args[args.indexOf("-p") + 1] ?? "";
+        settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "null");
+        liveDuringRun = store.steeringLiveBuild(taskRef, new Date());
+        const folder = /STANDING-ORDERS-STEER-[0-9a-f]{16}/.exec(prompt)?.[0] ?? "";
+        const cwd = options?.cwd ?? wt;
+        store.fileSteerNote("t-1", "alex" as never, "prefer the smaller diff", new Date());
+        await until(() => existsSync2(join2(cwd, folder, "001.json")));
+        mailedKey = JSON.parse(readFileSync(join2(cwd, folder, "001.json"), "utf8")).key;
+        renameSync2(join2(cwd, folder, "001.json"), join2(cwd, folder, "handled", "001.json"));
+        await until(() => store.listSteerNotes(taskRef)[0]?.ackedAt != null);
+        conclude(args, options);
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+
+    const folder = /STANDING-ORDERS-STEER-[0-9a-f]{16}/.exec(prompt)?.[0];
+    expect(folder).toBeDefined();
+    // The floor every provider gets: look after each step, act within scope, move it to handled/.
+    expect(prompt).toContain(`After each milestone or\n  commit-sized step, list its *.json files`);
+    expect(prompt).toContain(`${folder}/handled/ — moving a note is how the operator`);
+    // Only notes carrying this attempt's key are the operator's.
+    const key = /Act only on a note whose "key" is ([0-9a-f]{16})/.exec(prompt)?.[1];
+    expect(key).toBeDefined();
+    expect(mailedKey).toBe(key);
+    // Claude also gets the doorbell, in the run's own --settings.
+    expect(settings!.hooks!.PostToolUse![0]!.hooks[0]!.command).toContain(`${folder}'/[0-9]*.json`);
+    expect(liveDuringRun).toBe(req.runId);
+    const note = store.listSteerNotes(taskRef)[0]!;
+    expect(note).toMatchObject({ mailedRun: req.runId, attachedRun: req.runId });
+    expect(steerStandingWords(note, false, iso => iso)).toBe(`Read by the agent at ${note.ackedAt}`);
+    // The folder is gone, and never reached the commit.
+    expect(existsSync2(join2(wt, folder!))).toBe(false);
+    expect(gitCalls.find(args => args.includes("add"))).toContain(":!STANDING-ORDERS-*");
+  });
+
+  test("once the agent exits its steering folder is closed, so a note filed before settlement finishes reads as reaching the next attempt (v120)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let exited = false, liveWhileRunning: number | null = null;
+    const afterExit: { live: number | null; phase: unknown }[] = [];
+    const req = request("lease-a", {
+      shouldStop: () => {
+        if (exited) afterExit.push({ live: store.steeringLiveBuild(taskRef, new Date()), phase: store.handle.prepare("SELECT phase FROM run WHERE id = ?").get(req.runId as number)?.["phase"] });
+        return false;
+      },
+      agent: (async (_file, args, options) => {
+        liveWhileRunning = store.steeringLiveBuild(taskRef, new Date());
+        conclude(args, options);
+        exited = true;
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(liveWhileRunning).toBe(req.runId);
+    expect(afterExit.find(one => one.phase === "agent-running")).toEqual({ live: null, phase: "agent-running" });
+  });
+
+  test("a build with no pulse opens no steering folder, so a note filed while its agent runs reads as reaching the next attempt (v120)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let liveDuringRun: number | null = -1, phaseDuringRun: unknown = null;
+    const req = request("lease-a", {
+      pulseMs: 0,
+      agent: (async (_file, args, options) => {
+        liveDuringRun = store.steeringLiveBuild(taskRef, new Date());
+        phaseDuringRun = store.handle.prepare("SELECT phase FROM run WHERE id = ?").get(req.runId as number)?.["phase"];
+        conclude(args, options);
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(phaseDuringRun).toBe("agent-running");
+    expect(liveDuringRun).toBeNull();
+  });
+
+  test("a note the agent read just before a stop is still recorded read: the folder closes before settlement sweeps (v120)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let stopped = false;
+    const req = request("lease-a", {
+      shouldStop: () => stopped,
+      agent: (async (_file, args, options) => {
+        const folder = /STANDING-ORDERS-STEER-[0-9a-f]{16}/.exec(args[args.indexOf("-p") + 1] ?? "")?.[0] ?? "";
+        const cwd = options?.cwd ?? wt;
+        store.fileSteerNote("t-1", "alex" as never, "stop after the guard", new Date());
+        for (let i = 0; i < 400 && !existsSync2(join2(cwd, folder, "001.json")); i++) await sleep(5);
+        // Read and moved, then the operator stops the build before the next beat.
+        renameSync2(join2(cwd, folder, "001.json"), join2(cwd, folder, "handled", "001.json"));
+        stopped = true;
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: false, reason: "stopped" });
+    expect(store.listSteerNotes(taskRef)[0]).toMatchObject({ mailedRun: req.runId, attachedRun: req.runId, ackedAt: expect.any(String) });
   });
 
   test("check levels: Quick runs the approved quick command, Off runs nothing, and each run records the level it used", async () => {
