@@ -20,8 +20,11 @@ install or open the app. An explicit new `.app` output path is also accepted;
 an existing file, directory, or link is always refused, even a previous build.
 Use the controlled update flow below before replacing an installation.
 
-The bundle includes the compiled controller and a standalone official Node
-binary, preserving Node's original signature and license. Releases require a
+The bundle includes the compiled controller, its package metadata, licenses
+and lockfile production dependencies, and a standalone official Node binary,
+preserving Node's original signature and license. Before notarization the
+build launches a copy of the bundled server in isolation and refuses the app
+if it is missing a dependency or reports the wrong version. Releases require a
 valid **Developer ID Application** identity from the signing keychain; there
 is no automatic ad-hoc fallback. `TOOLROLL_SIGN_IDENTITY` can supply the
 same identity. `--notary-profile` (or `TOOLROLL_NOTARY_PROFILE`) uses
