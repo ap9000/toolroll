@@ -1338,6 +1338,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // The steering folder exists before the brief names it, and only on the
   // agent road: a prepared candidate spawns no agent to read it.
   steerBox = steerable && (scope?.candidate ?? null) === null ? openSteerMailbox(worktree, steerFolder, request.runId, taskRef, randomBytes(8).toString("hex")) : null;
+  if (steerBox !== null) store.markSteerFolderOpened(request.runId, clock());
   // The live window (arc 1): display state beside the run, never evidence.
   // Every streaming transport emits events now (peek); a file that cannot
   // open is a null, and a null never costs a build.

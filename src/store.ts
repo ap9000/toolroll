@@ -787,6 +787,7 @@ export const V120_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     mailed_at: { definition: "TEXT", saved: "NULL" },
     acked_at: { definition: "TEXT", saved: "NULL" },
   },
+  run: { steer_opened_at: { definition: "TEXT", saved: "NULL" } },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -15626,8 +15627,8 @@ export class Store {
   /**
    * The task's build whose agent is running right now and reads its steering
    * folder (v120): the current live lease's open builder run, in its
-   * agent-running phase. Null otherwise — a note then waits for the next
-   * attempt. Display state, never evidence.
+   * agent-running phase, that opened a steering folder. Null otherwise — a
+   * note then waits for the next attempt. Display state, never evidence.
    */
   steeringLiveBuild(taskRef: number, now: Date): number | null {
     const live = this.currentLiveLease(taskRef, now);
@@ -15635,11 +15636,16 @@ export class Store {
     const row = this.db
       .prepare(
         `SELECT id FROM run WHERE task_ref = ? AND lease_id = ? AND role = 'builder'
-            AND outcome IS NULL AND phase = 'agent-running'
+            AND outcome IS NULL AND phase = 'agent-running' AND steer_opened_at IS NOT NULL
           ORDER BY id DESC LIMIT 1`,
       )
       .get(taskRef, live);
     return row === undefined ? null : Number(row["id"]);
+  }
+
+  /** This run made its steering folder (v120): its agent can read a note filed now. */
+  markSteerFolderOpened(runId: number, now: Date): void {
+    this.db.prepare("UPDATE run SET steer_opened_at = ? WHERE id = ? AND outcome IS NULL AND steer_opened_at IS NULL").run(now.toISOString(), runId);
   }
 
   /**

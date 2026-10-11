@@ -113,31 +113,32 @@ function collectAcknowledgements(store: Store, box: SteerMailbox, now: Date): vo
   }
 }
 
+/** Remove a name this pulse wrote, only while the folder is still this worktree's own; a link goes, never its target. */
+function removeOwn(box: SteerMailbox, name: string): void {
+  if (!stillInside(box)) return;
+  try { unlinkSync(join(box.dir, name)); } catch { /* never written, or the agent already took it */ }
+}
+
 /** Write each note this run has not seen yet: a temp name, then the number. */
 function mailNotes(store: Store, box: SteerMailbox, now: Date): void {
   const notes = store.mailableSteerNotes(box.taskRef, box.runId);
   if (notes.length === 0 || !ensureFolder(box)) return;
   for (const note of notes) {
+    if (!stillInside(box)) return;
     const number = highestNumber(box) + 1;
     const name = steerNoteName(number);
-    const temp = join(box.dir, `.${name}.tmp`);
+    const temp = `.${name}.tmp`;
     const body = { version: 1, number, key: box.key, filedAt: note.createdAt, note: fence(note.note) };
-    if (!stillInside(box)) return;
     try {
-      writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-      renameSync(temp, join(box.dir, name));
+      writeFileSync(join(box.dir, temp), `${JSON.stringify(body, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      renameSync(join(box.dir, temp), join(box.dir, name));
     } catch {
-      try { unlinkSync(temp); } catch { /* never written */ }
+      removeOwn(box, temp);
       return;
     }
     // Checked again after the write: a folder swapped for a link mid-write
-    // takes back the file it caught, and nothing more is mailed this beat.
-    let landed: string | null = null;
-    try { landed = realpathSync(join(box.dir, name)); } catch { /* the agent already took it */ }
-    if (landed !== null && landed !== join(box.realDir, name)) {
-      try { unlinkSync(landed); } catch { /* already gone */ }
-      return;
-    }
+    // leaves the note unrecorded, deletes nothing, and mails nothing more this beat.
+    if (!stillInside(box)) return;
     box.last = number;
     let recorded: boolean;
     try { recorded = store.markSteerMailed(note.id, box.runId, now); } catch { recorded = false; }
@@ -147,7 +148,7 @@ function mailNotes(store: Store, box: SteerMailbox, now: Date): void {
       // The task ended or the note settled between the read and the write, or
       // the mailing could not be recorded: an unrecorded file would only be
       // mailed twice, so it goes, and the next beat tries again.
-      try { unlinkSync(join(box.dir, name)); } catch { /* the agent already took it */ }
+      removeOwn(box, name);
     }
   }
 }
