@@ -325,7 +325,7 @@ The system rejects the dashboard default. Status does not get coloured everywher
 
 ## Colors
 
-The palette is a true neutral grey ramp with one the ink accent and four quiet status hues. Every token has a light and a dark value. The frontmatter keys ending in `-dark` are the dark-scheme values of the same roles. They are defined once, in `THEME_LIGHT` / `THEME_DARK` in `src/serve.ts`, and every surface reads them: server pages, the React workspace, and the pre-script fallback.
+The palette is a true neutral grey ramp with one the ink accent and four quiet status hues. Every token has a light and a dark value. The frontmatter keys ending in `-dark` are the dark-scheme values of the same roles. They are defined once, in the generated `src/design/tokens.css`, and every surface reads them: server pages, the React workspace, and the pre-script fallback.
 
 ### Primary
 - **Ink accent** (signal, #171717 light / #ededed dark): the default accent, used for what waits on a person. It fills the sidebar's needs-you count, the "Needs you" tab count and the Results menu count. It is the text of an attention badge ("Needs your decision") on its grey wash, and the fill of the one verb that resolves a waiting screen (Approve, Inspect the result, the result page's next act). It is also focus, caret and selection.

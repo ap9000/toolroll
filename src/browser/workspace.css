@@ -4,9 +4,10 @@
    a person can take; the accent (ink by default; a person can pick a colour) is only what waits on a person, plus focus and
    selection. Geist for words, Geist Mono for machine facts. */
 :root {
-  /* Colors come from the shared palette (THEME_LIGHT / THEME_DARK in serve.ts). */
-  --so-radius: 10px;
-  --so-sheet-radius: 12px;
+  /* Colors, shadows and radii are Signal's generated tokens (src/design/tokens.css),
+     defined once in the server's sheet; this sheet only reads them. */
+  --so-radius: var(--so-radius-card);
+  --so-sheet-radius: var(--so-radius-sheet);
   --so-font: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
   --so-mono: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
 }
