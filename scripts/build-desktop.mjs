@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { desktopBuildOptions, resolveReleaseIdentity, signingFacts, assertCompatibleUpgrade } from "./desktop-signing.mjs";
 import { reserveDesktopArtifact } from "./desktop-artifact.mjs";
+import { stageServerRuntime, verifyServerRuntime } from "./desktop-runtime.mjs";
 import { randomUUID } from "node:crypto";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (process.platform !== "darwin") throw new Error("The first desktop shell targets macOS. The web console remains cross-platform.");
@@ -49,7 +50,8 @@ mkdirSync(macos, { recursive: true }); mkdirSync(resources, { recursive: true })
 writeFileSync(join(resources, "standing-orders-bundle"), "local desktop build\n");
 execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
 const { SCHEMA_VERSION } = await import(join(root, "dist", "store.js"));
-cpSync(join(root, "dist"), join(resources, "dist"), { recursive: true });
+const { bundleHash } = await import(join(root, "dist", "desktop-bundle.js"));
+stageServerRuntime(root, resources);
 mkdirSync(join(resources, "runtime"));
 const bundledNode = join(resources, "runtime", "node");
 cpSync(sourceNode, bundledNode);
@@ -80,6 +82,10 @@ execFileSync("/usr/bin/codesign", ["--force", "--sign", signingIdentity, ...(opt
 execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", app], { stdio: "inherit" });
 const nextSignature = signature(app);
 if (!options.development && (!nextSignature.team || nextSignature.adhoc)) throw Error("Release signature verification failed.");
+// Before notarization: the sealed server must launch without this checkout.
+verifyServerRuntime(resources, bundledNode, version);
+// File → Install app update refuses links; refuse them here instead.
+bundleHash(app);
 if (comparePrevious) {
   const oldSignature = signature(previousApp);
   assertCompatibleUpgrade(oldSignature, nextSignature, options.development);
@@ -100,7 +106,7 @@ if (options.notaryProfile) {
   execFileSync("/usr/bin/xcrun", ["stapler", "validate", app], { stdio: "inherit" });
 }
 output.publish(app);
-console.log(`Built ${destination}\nIncludes Node ${process.version}; the background controller does not depend on the build machine's Node installation.`);
+console.log(`Built ${destination}\nIncludes Node ${process.version}; the background controller does not depend on the build machine's Node installation or checkout.`);
 console.log("The installed app, background service and task database were not changed. Use File → Install app update for a compatible controlled update; legacy installations or schema changes need the documented migration procedure.");
 console.log(options.development ? "Development preview only: separate app, database and permissions; not an unattended-release certificate." : options.notaryProfile ? "Developer ID signed and notarized. Project permission persistence still requires the update/restart acceptance check." : "Developer ID signed, not notarized. Add --notary-profile before distributing this app.");
 } finally {
