@@ -27,6 +27,7 @@ import {
   realpathSync,
   unlinkSync,
   writeFileSync,
+  type BigIntStats,
 } from "node:fs";
 import { join, sep } from "node:path";
 import { namedPath } from "./names.js";
@@ -475,6 +476,36 @@ export function readVerifiedArtifact(
   root: string,
   artifact: Artifact,
 ): { ok: true; content: Buffer } | { ok: false; problem: string } {
+  return withArtifactFile(root, artifact, readAndHash);
+}
+
+/**
+ * Whether an artifact's bytes still verify, without returning them. Status
+ * sweeps ask this of every artifact of every run, so a file proved earlier and
+ * not touched since (same artifact row, device, inode, size, mtime and ctime
+ * on the descriptor just opened) costs an fstat, not a re-read and SHA-256.
+ * Every path check still runs on each call; a changed or new file is hashed.
+ */
+export function verifyArtifact(root: string, artifact: Artifact): { ok: true } | { ok: false; problem: string } {
+  return withArtifactFile(root, artifact, (fd, stat, memoKey) => {
+    if (VERIFIED_FILES.get(memoKey) === fileIdentity(artifact, stat)) return { ok: true };
+    const read = readAndHash(fd, stat, memoKey, artifact);
+    return read.ok ? { ok: true } : read;
+  });
+}
+
+/** Files proved by an earlier read, keyed by artifact and resolved path. Bounded; the oldest proof is forgotten first. */
+const VERIFIED_FILES = new Map<string, string>();
+const VERIFIED_FILES_LIMIT = 20_000;
+const fileIdentity = (artifact: Artifact, stat: BigIntStats): string =>
+  [artifact.sha256, artifact.bytesStored, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+
+/** The checks both readers share, on the descriptor `use` then reads. */
+function withArtifactFile<T extends { ok: boolean }>(
+  root: string,
+  artifact: Artifact,
+  use: (fd: number, stat: BigIntStats, memoKey: string, artifact: Artifact) => T | { ok: false; problem: string },
+): T | { ok: false; problem: string } {
   const segments = artifact.key.split("/");
   const wellFormed =
     segments.length > 0 &&
@@ -513,27 +544,35 @@ export function readVerifiedArtifact(
     return { ok: false, problem: "cannot open the file without following a link" };
   }
   try {
-    const stat = fstatSync(fd);
+    const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile()) return { ok: false, problem: "not a regular file" };
     if (Number(stat.size) !== artifact.bytesStored) {
       return { ok: false, problem: "the file's size no longer matches its record" };
     }
-    const buffer = Buffer.alloc(artifact.bytesStored);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const read = readSync(fd, buffer, offset, buffer.length - offset, offset);
-      if (read <= 0) break;
-      offset += read;
-    }
-    if (offset !== buffer.length) return { ok: false, problem: "the file ended early" };
-    const digest = createHash("sha256").update(buffer).digest("hex");
-    if (digest !== artifact.sha256) {
-      return { ok: false, problem: "the file no longer hashes to its record" };
-    }
-    return { ok: true, content: buffer };
+    return use(fd, stat, `${artifact.id}\0${resolved}`, artifact);
   } finally {
     closeSync(fd);
   }
+}
+
+/** Read the whole file from the open descriptor; only bytes matching the row's SHA-256 leave, and only they are remembered as proved. */
+function readAndHash(fd: number, stat: BigIntStats, memoKey: string, artifact: Artifact): { ok: true; content: Buffer } | { ok: false; problem: string } {
+  VERIFIED_FILES.delete(memoKey);
+  const buffer = Buffer.alloc(artifact.bytesStored);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const read = readSync(fd, buffer, offset, buffer.length - offset, offset);
+    if (read <= 0) break;
+    offset += read;
+  }
+  if (offset !== buffer.length) return { ok: false, problem: "the file ended early" };
+  const digest = createHash("sha256").update(buffer).digest("hex");
+  if (digest !== artifact.sha256) {
+    return { ok: false, problem: "the file no longer hashes to its record" };
+  }
+  if (VERIFIED_FILES.size >= VERIFIED_FILES_LIMIT) VERIFIED_FILES.delete(VERIFIED_FILES.keys().next().value!);
+  VERIFIED_FILES.set(memoKey, fileIdentity(artifact, stat));
+  return { ok: true, content: buffer };
 }
 
 /** The file alone, no row — quarantines use this; they belong to no live run. */

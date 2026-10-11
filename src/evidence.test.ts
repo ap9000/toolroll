@@ -5,11 +5,11 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseNumstat, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, writeEvidenceFile, sniffImageKind, validateScreenshotBytes, SCREENSHOT_BYTE_CAP } from "./evidence.js";
+import { parseNumstat, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, writeEvidenceFile, sniffImageKind, validateScreenshotBytes, verifyArtifact, SCREENSHOT_BYTE_CAP } from "./evidence.js";
 import type { Artifact } from "./store.js";
 
 describe("reading evidence back, believing nothing", () => {
@@ -59,6 +59,23 @@ describe("reading evidence back, believing nothing", () => {
     expect(readVerifiedArtifact(root, { ...log, captureStatus: "failed" })).toEqual({ ok: true, content });
     writeFileSync(join(root, key), Buffer.from(content.toString().replace("exit 0", "exit 1")));
     expect(readVerifiedArtifact(root, log)).toMatchObject({ ok: false, problem: expect.stringMatching(/hash/) });
+  });
+
+  test("a remembered proof never outlives a rewrite, even one that keeps the size and mtime", () => {
+    const content = Buffer.from("diff --git a/x b/x\n");
+    const key = writeEvidenceFile(root, 1, "diff.patch", content);
+    const diff = record(key, content);
+    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
+    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
+    const { mtime } = statSync(join(root, key));
+    writeFileSync(join(root, key), Buffer.from("diff --git a/y b/y\n"));
+    utimesSync(join(root, key), mtime, mtime);
+    expect(verifyArtifact(root, diff)).toMatchObject({ ok: false, problem: expect.stringMatching(/hash/) });
+    expect(verifyArtifact(root, { ...diff, id: 2 })).toMatchObject({ ok: false, problem: expect.stringMatching(/hash/) });
+    writeFileSync(join(root, key), content);
+    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
+    rmSync(join(root, key));
+    expect(verifyArtifact(root, diff)).toMatchObject({ ok: false, problem: expect.stringMatching(/gone/) });
   });
 
   test("a traversal key never reaches the filesystem", () => {
