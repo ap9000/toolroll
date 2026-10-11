@@ -2142,7 +2142,7 @@ describe("the pulse", () => {
 
   test("a note filed while the agent runs reaches its steering folder, and the agent moving it marks it read (v120)", async () => {
     acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
-    let prompt = "", settings: { hooks?: { PostToolUse?: { hooks: { command: string }[] }[] } } | null = null, liveDuringRun: number | null = null;
+    let prompt = "", settings: { hooks?: { PostToolUse?: { hooks: { command: string }[] }[] } } | null = null, liveDuringRun: number | null = null, mailedKey: string | null = null;
     const until = async (done: () => boolean) => { for (let i = 0; i < 400 && !done(); i++) await sleep(5); expect(done()).toBe(true); };
     const req = request("lease-a", {
       agent: (async (_file, args, options) => {
@@ -2153,6 +2153,7 @@ describe("the pulse", () => {
         const cwd = options?.cwd ?? wt;
         store.fileSteerNote("t-1", "alex" as never, "prefer the smaller diff", new Date());
         await until(() => existsSync2(join2(cwd, folder, "001.json")));
+        mailedKey = JSON.parse(readFileSync(join2(cwd, folder, "001.json"), "utf8")).key;
         renameSync2(join2(cwd, folder, "001.json"), join2(cwd, folder, "handled", "001.json"));
         await until(() => store.listSteerNotes(taskRef)[0]?.ackedAt != null);
         conclude(args, options);
@@ -2166,6 +2167,10 @@ describe("the pulse", () => {
     // The floor every provider gets: look after each step, act within scope, move it to handled/.
     expect(prompt).toContain(`After each milestone or\n  commit-sized step, list its *.json files`);
     expect(prompt).toContain(`${folder}/handled/ — moving a note is how the operator`);
+    // Only notes carrying this attempt's key are the operator's.
+    const key = /Act only on a note whose "key" is ([0-9a-f]{16})/.exec(prompt)?.[1];
+    expect(key).toBeDefined();
+    expect(mailedKey).toBe(key);
     // Claude also gets the doorbell, in the run's own --settings.
     expect(settings!.hooks!.PostToolUse![0]!.hooks[0]!.command).toContain(`${folder}'/[0-9]*.json`);
     expect(liveDuringRun).toBe(req.runId);

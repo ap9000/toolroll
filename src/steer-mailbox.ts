@@ -17,8 +17,20 @@
  * Every step is bookkeeping, and bookkeeping never fails a build: a folder
  * the agent removed is made again, one it replaced with anything but a real
  * directory is never written through, and an error waits for the next beat.
+ *
+ * Two boundaries, because the folder lives where the agent and anything it
+ * runs can write:
+ * - Every genuine note carries this attempt's key, which only the brief and
+ *   the notes themselves name. A file in the folder without it was not
+ *   written by the operator, and the brief tells the agent to act on none.
+ *   (The brief rides the agent's argv, so a process that reads argv could
+ *   learn it: this keeps ordinary repository code from posing as the
+ *   operator, not a determined local process.)
+ * - The pulse writes only while the folder still resolves to this worktree's
+ *   own folder, before and after each write, so swapping it for a link can
+ *   never make the plane write a note somewhere else.
  */
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fence } from "./brief-fence.js";
 import type { Store } from "./store.js";
@@ -32,6 +44,10 @@ export type SteerMailbox = {
   /** Worktree-relative, as the brief names it. */
   folder: string;
   dir: string;
+  /** The folder's real path, resolved once when it was made inside the worktree. */
+  realDir: string;
+  /** This attempt's note key: in the brief and in every genuine note, nowhere else. */
+  key: string;
   /** The highest number this pulse has written. */
   last: number;
   /** Mailed and not yet moved to handled/: number → note id. */
@@ -45,10 +61,17 @@ const isRealDirectory = (path: string): boolean => {
 };
 
 /** Make the folder and its handled/ inside the worktree; null when it cannot be made. */
-export function openSteerMailbox(worktree: string, folder: string, runId: number, taskRef: number): SteerMailbox | null {
-  const box: SteerMailbox = { runId, taskRef, folder, dir: join(worktree, folder), last: 0, waiting: new Map() };
+export function openSteerMailbox(worktree: string, folder: string, runId: number, taskRef: number, key: string): SteerMailbox | null {
+  let realDir: string;
+  try { realDir = join(realpathSync(worktree), folder); } catch { return null; }
+  const box: SteerMailbox = { runId, taskRef, folder, dir: join(worktree, folder), realDir, key, last: 0, waiting: new Map() };
   return ensureFolder(box) ? box : null;
 }
+
+/** The folder is still this worktree's own, not a link to somewhere else. */
+const stillInside = (box: SteerMailbox): boolean => {
+  try { return realpathSync(box.dir) === box.realDir; } catch { return false; }
+};
 
 function ensureFolder(box: SteerMailbox): boolean {
   for (const path of [box.dir, join(box.dir, STEER_HANDLED)]) {
@@ -60,7 +83,7 @@ function ensureFolder(box: SteerMailbox): boolean {
     // Something the agent put in the folder's place is never written through.
     if (!isRealDirectory(path)) return false;
   }
-  return true;
+  return stillInside(box);
 }
 
 function highestNumber(box: SteerMailbox): number {
@@ -98,12 +121,21 @@ function mailNotes(store: Store, box: SteerMailbox, now: Date): void {
     const number = highestNumber(box) + 1;
     const name = steerNoteName(number);
     const temp = join(box.dir, `.${name}.tmp`);
-    const body = { version: 1, number, filedAt: note.createdAt, note: fence(note.note) };
+    const body = { version: 1, number, key: box.key, filedAt: note.createdAt, note: fence(note.note) };
+    if (!stillInside(box)) return;
     try {
       writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`, { flag: "wx", mode: 0o600 });
       renameSync(temp, join(box.dir, name));
     } catch {
       try { unlinkSync(temp); } catch { /* never written */ }
+      return;
+    }
+    // Checked again after the write: a folder swapped for a link mid-write
+    // takes back the file it caught, and nothing more is mailed this beat.
+    let landed: string | null = null;
+    try { landed = realpathSync(join(box.dir, name)); } catch { /* the agent already took it */ }
+    if (landed !== null && landed !== join(box.realDir, name)) {
+      try { unlinkSync(landed); } catch { /* already gone */ }
       return;
     }
     box.last = number;

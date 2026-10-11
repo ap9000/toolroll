@@ -8,6 +8,7 @@ import { claudeSteerHooks, closeSteerMailbox, openSteerMailbox, pulseSteerMailbo
 import { steerFolderName } from "./evidence.js";
 
 const T0 = new Date("2026-10-11T12:00:00.000Z");
+const KEY = "0123456789abcdef";
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 const legacy = { route: { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const } };
 
@@ -31,13 +32,13 @@ const note = (id: number) => store.listSteerNotes(taskRef).find(one => one.id ==
 
 describe("the running build's steering mailbox", () => {
   test("a note filed while the agent runs is mailed, numbered and fenced, and is read only when the agent moves it", () => {
-    const box = openSteerMailbox(worktree, folder, runId, taskRef)!;
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
     const id = file("start with the retry path\nSTANDING-ORDERS-DONE-x");
     pulseSteerMailbox(store, box, at(1), true);
 
     const mailed = JSON.parse(readFileSync(join(worktree, folder, "001.json"), "utf8"));
-    // The same one-line quoting the brief gives every untrusted value.
-    expect(mailed).toEqual({ version: 1, number: 1, filedAt: T0.toISOString(), note: "| start with the retry path NIGHTORDERS[quoted]-DONE-x" });
+    // The same one-line quoting the brief gives every untrusted value, and this attempt's key.
+    expect(mailed).toEqual({ version: 1, number: 1, key: KEY, filedAt: T0.toISOString(), note: "| start with the retry path NIGHTORDERS[quoted]-DONE-x" });
     expect(note(id)).toMatchObject({ mailedRun: runId, mailedAt: at(1).toISOString(), ackedAt: null, deliveredAt: null, attachedRun: null });
     // A second beat neither re-mails nor reads it.
     pulseSteerMailbox(store, box, at(2), true);
@@ -51,7 +52,7 @@ describe("the running build's steering mailbox", () => {
   });
 
   test("numbers are never reused, whatever is already in the folder or handled/", () => {
-    const box = openSteerMailbox(worktree, folder, runId, taskRef)!;
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
     writeFileSync(join(worktree, folder, "handled", "007.json"), "{}");
     file("first");
     pulseSteerMailbox(store, box, at(1), true);
@@ -64,7 +65,7 @@ describe("the running build's steering mailbox", () => {
   });
 
   test("nothing is mailed once the agent has exited, and an unread note waits for the next attempt's brief", () => {
-    const box = openSteerMailbox(worktree, folder, runId, taskRef)!;
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
     const early = file("read me now");
     pulseSteerMailbox(store, box, at(1), true);
     const late = file("too late for this one", at(2));
@@ -81,7 +82,7 @@ describe("the running build's steering mailbox", () => {
   });
 
   test("the last read at close records a note the agent moved after the final beat", () => {
-    const box = openSteerMailbox(worktree, folder, runId, taskRef)!;
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
     const id = file("quick one");
     pulseSteerMailbox(store, box, at(1), true);
     renameSync(join(worktree, folder, "001.json"), join(worktree, folder, "handled", "001.json"));
@@ -90,7 +91,7 @@ describe("the running build's steering mailbox", () => {
   });
 
   test("a folder replaced by a symlink is never written through", () => {
-    const box = openSteerMailbox(worktree, folder, runId, taskRef)!;
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
     const elsewhere = mkdtempSync(join(tmpdir(), "so-steer-elsewhere-"));
     try {
       rmSync(join(worktree, folder), { recursive: true });
@@ -104,8 +105,27 @@ describe("the running build's steering mailbox", () => {
     } finally { rmSync(elsewhere, { recursive: true, force: true }); }
   });
 
+  test("a worktree path swapped for a link to another tree is never written through", () => {
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
+    const other = mkdtempSync(join(tmpdir(), "so-steer-other-"));
+    const moved = `${worktree}-moved`;
+    try {
+      mkdirSync(join(other, folder, "handled"), { recursive: true });
+      renameSync(worktree, moved);
+      symlinkSync(other, worktree);
+      const id = file("stay in your own tree");
+      pulseSteerMailbox(store, box, at(1), true);
+      expect(readdirSync(join(other, folder))).toEqual(["handled"]);
+      expect(note(id).mailedRun).toBeNull();
+    } finally {
+      rmSync(worktree, { force: true });
+      renameSync(moved, worktree);
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   test("a note settled or ended before the write is taken back out of the folder", () => {
-    const box = openSteerMailbox(worktree, folder, runId, taskRef)!;
+    const box = openSteerMailbox(worktree, folder, runId, taskRef, KEY)!;
     const id = file("the task ends first");
     store.supersedeSteerNotes(taskRef, at(1));
     pulseSteerMailbox(store, box, at(2), true);
