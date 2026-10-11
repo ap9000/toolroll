@@ -10,6 +10,8 @@ import { runBatchChecks } from "./batch-checks.js";
 import { BATCH_HINT, BATCH_WINDOW_MS, projectBatchChecks, setProjectBatchChecks } from "./batch-policy.js";
 import { buildReviewPass } from "./build-review.js";
 import { buildReviewLines, buildReviewOf } from "./review-switch.js";
+import { steerDestinationWords, steerStandingOf, steerStandingWords } from "./steer-status.js";
+import { utcMinute } from "./when-html.js";
 import { parseProtectedPaths } from "./approval-policy.js";
 import { rulesSummary } from "./approval-rules-ui.js";
 import { evidencePack, exportDay, ledgerExportChunks, standaloneEvidenceHtml, type LedgerExport } from "./evidence-pack.js";
@@ -453,7 +455,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll task add-tests <id>       file a small task to write tests for that change
   toolroll task revise <id> --feedback "requested change"
   toolroll assignment show <task>    root, current work and exact handoff
-  toolroll assignment updates        durable updates (--after <cursor>)
+  toolroll assignment updates        history of handoffs sent to people (--after <cursor>)
   toolroll assignment brief          catch up from the local database
   toolroll assignment inbox --consumer <name>  receive saved status changes
   toolroll assignment ack --consumer <name> --batch <id>  acknowledge delivery
@@ -470,9 +472,10 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         is still required); --undo puts it
                                         back in filing order
   toolroll task steer <id> --note "..."
-                                        guidance for the next attempt — it
-                                        reads the note before starting; a
-                                        running agent is not interrupted
+                                        guidance for the agent — a running
+                                        build reads it when it next checks
+                                        for notes, otherwise the next
+                                        attempt does
   toolroll task assign <id> --runner <name> | --anyone
                                         reserve it for one worker (it joins
                                         the back of that worker's queue) or
@@ -10011,6 +10014,7 @@ function showTask(positional: readonly string[], context: Context): number {
   const listed = workIndexTask(store, id, now, access, context.evidenceRoot);
   const shared = listed === null ? null : { headline: listed.status.label, sentence: listed.status.detail };
   const primaryAction = listed === null ? work?.primaryAction ?? null : listed.primaryAction;
+  const steeringLive = store.steeringLiveBuild(ref.id, now) !== null;
   const detail = {
     task,
     work: work === null || listed === null ? work : { ...work, status: { ...work.status, label: listed.status.label, detail: listed.status.detail, tone: listed.status.tone }, primaryAction },
@@ -10050,6 +10054,9 @@ function showTask(positional: readonly string[], context: Context): number {
     stops: store.stopsForTask(ref.id),
     // The pull request Complete opened (any version), with its CI state and merge commit — the console's view.
     pullRequest: newestPullRequestOf(store, store.taskFamilyOf(id, null, true)?.versions.map(one => one.id) ?? [id]),
+    // Operator steering (v120), in the task page's words: read (and when), waiting, or for the next attempt.
+    steering: store.listSteerNotes(ref.id).map(one => ({ id: one.id, author: one.author, createdAt: one.createdAt, note: one.note,
+      standing: steerStandingOf(one, steeringLive), words: steerStandingWords(one, steeringLive, utcMinute) })),
   };
 
   return succeed(write, json, "task show", detail, () => [
@@ -10085,6 +10092,7 @@ function showTask(positional: readonly string[], context: Context): number {
       ? []
       : [`  position  ${detail.position.position} of ${detail.position.total}${detail.position.column === null ? " in the shared queue" : ` in ${detail.position.column}'s queue`}`]),
     ...(detail.hold === null ? [] : [`  held: ${detail.hold.reason}`]),
+    ...detail.steering.slice(-5).map(one => `  note #${one.id} to the agent: ${one.words}`),
     ...(detail.claim === null ? [] : [`  claimed by ${detail.claim.runner} until ${detail.claim.expiresAt}`]),
     ...(detail.dispatch === null ? [] : [`  dispatch: ${detail.dispatch.summary} — ${detail.dispatch.detail}`]),
     ...(detail.control.kind === "none"
@@ -10462,7 +10470,7 @@ async function steerTask(
   const id = positional[0];
   const note = text(flags, "note");
   if (id === undefined || note === undefined) {
-    return fail(write, json, "task steer", "usage", "`toolroll task steer <id> --note \"...\" --as <you> --token <t>` — steering speaks with the operator's voice, so it takes your credential; the note reaches the next attempt's brief, fenced, inside the approved scope", EXIT.usage);
+    return fail(write, json, "task steer", "usage", "`toolroll task steer <id> --note \"...\" --as <you> --token <t>` — steering speaks with the operator's voice, so it takes your credential; a running build's agent reads the note when it next checks for notes, otherwise the next attempt's brief quotes it, fenced, inside the approved scope", EXIT.usage);
   }
   // Ruling 11: authorship derives from a VERIFIED principal, never a flag.
   // Missing credentials are usage (the invocation is incomplete); present
@@ -10485,8 +10493,10 @@ async function steerTask(
           : (filed.problem ?? "that note will not store");
     return fail(write, json, "task steer", filed.reason, detail, EXIT.refused);
   }
-  return succeed(write, json, "task steer", { task: id, note: filed.id }, () => [
-    `Noted. The next attempt at ${id} reads it before starting — a running agent is not interrupted.`,
+  const steered = store.lookupRef(id);
+  const live = steered !== null && store.steeringLiveBuild(steered.id, context.now) !== null;
+  return succeed(write, json, "task steer", { task: id, note: filed.id, standing: live ? "waiting" : "next-attempt" }, () => [
+    `Noted. ${steerDestinationWords(live)} \`task show ${id}\` says when it has been read.`,
   ]);
 }
 

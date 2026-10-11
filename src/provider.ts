@@ -20,6 +20,7 @@
  */
 
 import { claudeFenceSettings, codexFenceArgv } from "./agent-fence.js";
+import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
 import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl } from "./exec.js";
 import { scanForSecrets } from "./evidence.js";
@@ -81,6 +82,11 @@ export type Invocation = {
    * Codex renders it as its own sandbox profile; Claude as deny rules for
    * its file tools (its shell is fenced by the macOS sandbox around it). */
   fence?: readonly string[];
+  /** A running build's steering folder (steer-mailbox.ts): the absolute path
+   * and the worktree-relative name its brief uses. Claude renders a
+   * PostToolUse hook that says when a note is waiting; every other provider
+   * relies on the brief's own rule to look. */
+  steerFolder?: { dir: string; name: string };
   /** Claude's structured-output floor for a non-review phase: the scout's
    * report rides the terminal result event instead of a file plan mode
    * would refuse to write. Ignored by providers without `--json-schema`. */
@@ -345,9 +351,19 @@ const claudeArgv = (invocation: Invocation): string[] => [
         ...(invocation.allowedTools === undefined || invocation.allowedTools.length === 0 ? [] : ["--allowedTools", invocation.allowedTools.join(",")]),
         ...(invocation.toolArgv ?? []),
         ...(invocation.extraMcpServers === undefined ? [] : ["--mcp-config", JSON.stringify({ mcpServers: invocation.extraMcpServers })]),
-        ...(invocation.fence !== undefined && invocation.fence.length > 0 ? ["--settings", claudeFenceSettings(invocation.fence)] : []),
+        ...claudeSettingsArgv(invocation),
         ...(invocation.jsonSchema === undefined ? [] : ["--json-schema", JSON.stringify(invocation.jsonSchema)])]),
 ];
+
+/** One --settings for a build: the fence's deny rules and the steering doorbell, whichever the run has. */
+function claudeSettingsArgv(invocation: Invocation): string[] {
+  const fenced = invocation.fence !== undefined && invocation.fence.length > 0;
+  if (!fenced && invocation.steerFolder === undefined) return [];
+  return ["--settings", JSON.stringify({
+    ...(fenced ? JSON.parse(claudeFenceSettings(invocation.fence!)) : {}),
+    ...(invocation.steerFolder === undefined ? {} : { hooks: claudeSteerHooks(invocation.steerFolder.dir, invocation.steerFolder.name) }),
+  })];
+}
 
 /** A claude envelope object, whichever line carried it. */
 type ClaudeResultShape = {

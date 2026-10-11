@@ -9,7 +9,7 @@ import { CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "./contrac
 import type { DemoLead } from "./demo.js";
 import { createFlowRooms,flowFingerprint } from "./flow-live.js";
 import { type GoogleVisit } from "./google-mail.js";
-import { configureLeadFollow,runLeadFollowPass } from './lead-follow.js';
+import { configureLeadFollow,recordLeadFollowFailure,runLeadFollowPass } from './lead-follow.js';
 import { leadNameOf } from "./lead-identity.js";
 import { createLiveBus,followWorkspace } from "./live-bus.js";
 import { startMaintenance } from './maintenance.js';
@@ -1557,7 +1557,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       run: () => runLeadFollowPass({ store, repos: managedRepos, evidenceRoot, clock,
         provider: () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; },
         fetcher: chatFetcher, ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}) }),
-      onError: () => { /* Pending delivery is durable and will be read on the next service pass. */ },
+      // Pending delivery is durable and is read again on the next pass; a failure is said where follow status is read.
+      onError: error => recordLeadFollowFailure(store, error, clock()),
     });
   });
   // Keep native process custody until shutdown has verified agent/tool exit.

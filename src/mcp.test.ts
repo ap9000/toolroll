@@ -449,7 +449,7 @@ describe("the MCP stdio server", () => {
         inputSchema: { type: "object", properties: { ref: { type: "string", minLength: 1, maxLength: 64 } }, required: ["ref"], additionalProperties: false },
       },
       {
-        name: "list_assignment_updates", description: "Read durable assignment updates in your projects after a cursor. Save nextCursor after processing; repeated reads do not acknowledge or deliver anything.",
+        name: "list_assignment_updates", description: "Read the history of assignment handoffs sent to people in your projects, after a cursor. History only: it delivers and acknowledges nothing. To receive your updates, use get_assignment_inbox.",
         inputSchema: { type: "object", properties: { after: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, limit: { type: "integer", minimum: 1, maximum: 100 } }, additionalProperties: false },
       },
       {

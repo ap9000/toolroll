@@ -216,7 +216,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   ...(["show", "updates", "claim", "check", "brief", "inbox", "ack"] as const).map(action => ({
     invocation: `assignment ${action}`,
     synopsis: action === "show" ? "read the root, current work, owner and exact receipt"
-      : action === "updates" ? "read durable updates after a cursor; save nextCursor after processing"
+      : action === "updates" ? "read the history of handoffs sent to people after a cursor; delivers nothing — receive updates with assignment inbox"
       : action === "claim" ? "record lead ownership; with the lead token the task reads \"<the lead's name> is on it\" and leaves Needs you until done, handed over, or 2 hours idle; grants no approval or execution authority"
       : action === "brief" ? "catch up from current assignments and project knowledge in the local database"
       : action === "inbox" ? "receive or replay a saved batch of lead status updates"
@@ -257,7 +257,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, keyFlag, { name: "undo", takesValue: false, meaning: "back to filing order" }],
     notableReasons: ["unknown-task", "claimed"] },
-    operator("task steer", "one credentialed note read before the task's next attempt — steering speaks with the operator's voice"),
+    operator("task steer", "one credentialed note for the task's agent — a running build reads it when it next checks for notes, otherwise the next attempt does; steering speaks with the operator's voice"),
   { invocation: "task assign", synopsis: "reserve a task for one worker, or return it to the shared queue", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, keyFlag,

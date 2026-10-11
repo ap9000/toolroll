@@ -36,6 +36,7 @@ import { assignmentStageOf,demoChecksOf,stageOfCode,stageOfDispatch,STATUS_MORE,
 import { buildProgressOf,dispatchActionLabel,type DisplayStatus,earlierAttemptsWords,type PublicationFacts,receiptPublicationWords,resultStatusOf,REVIEW_TOKENS,type ReviewFacts,type WorkStatus,workStatusOf } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
 import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,transcriptScript,whenTime } from "./chrome.js";
+import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard,type CompletionReceiptView,criterionMatrixHtml,type EvidenceLinkMap,evidenceWords,homePhaseWords,incidentWords,needsCheck,pullRequestCardHtml,reasonWords,receiptStatusOf,repairChainHtml,reportItemsHtml,reviewRetryPanel,runNoun,runOutcomeBadge,semanticCoverageHtml,type TaskPullRequest,terminalDiffCard,verificationExplanation,verificationRecovered } from "./render-results.js";
@@ -1442,6 +1443,8 @@ export function taskBodyParts(data: {
   coordinatorProposals?: { rows: CoordinatorProposal[]; decisions: Map<number, Decision>; now: Date } | null;
   /** Operator steering notes (arc 1), delivery state included. */
   steering?: SteerNote[];
+  /** A build's agent is running now and reads new notes when it next checks for them (v120). */
+  steeringLive?: boolean;
   /** The publication grant the publisher would act under — from
    * publicationGrantFor(repo) only; null when none, or no project. */
   grant?: PublicationGrant | null;
@@ -1750,19 +1753,15 @@ export function taskBodyParts(data: {
     }
     return box("problem", "Dispatch unknown", "Refresh this task before relying on its scheduler state.", "unknown");
   })();
-  // Operator steering (arc 1): notes for the agent, each wearing exactly
-  // where it stands — waiting, attached, proven delivered, or superseded.
+  // Operator steering (arc 1, v120): notes for the agent, each wearing the
+  // same words the CLI and the lead use — read (and when), waiting for the
+  // running agent, bound for the next attempt, or ended unread.
   const steering = data.steering ?? [];
-  const steerState = (one: SteerNote): string =>
-    one.authorshipState !== "verified"
-      ? "recorded before steering required a credential — never delivered"
-      : one.supersededAt !== null
-      ? "the task ended before this landed"
-      : one.deliveredAt !== null
-        ? `reached build #${one.attachedRun}`
-        : one.attachedRun !== null
-          ? `attached to build #${one.attachedRun} — delivery not yet proven`
-          : "waiting for the next attempt";
+  const steeringLive = data.steeringLive === true;
+  const steerState = (one: SteerNote) => {
+    const { words, readAt } = steerStandingParts(one, steeringLive);
+    return readAt === null ? html`${words}` : html`${words} ${whenTime(readAt)}`;
+  };
   const steerRows = steering.length === 0 ? "" : joinHtml(steering.map(
     one => html`<p class="row"><span class="meta">${one.author} · ${whenTime(one.createdAt)} · ${steerState(one)}</span> ${one.note}</p>`,
   ), "\n");
@@ -1770,8 +1769,8 @@ export function taskBodyParts(data: {
     data.csrf === "" || task.state === "done" || task.state === "cancelled"
       ? ""
       : joinHtml([
-        postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the next attempt" aria-label="steering note" style="width:100%;max-width:28rem"><button type="submit">Steer</button>`, { attrs: { class: "row" } }),
-        html`<p class="meta">Lands when the next attempt starts — a running agent is not interrupted, and a note cannot widen the approved scope</p>`,
+        postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem"><button type="submit">Steer</button>`, { attrs: { class: "row" } }),
+        html`<p class="meta">${steerDestinationWords(steeringLive)} A note can't widen the approved scope.</p>`,
       ]);
   const steeringCard =
     steerRows === "" && steerForm === "" ? "" : html`<h2>Steering</h2>${steerRows}${steerForm}`;

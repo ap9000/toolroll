@@ -49,6 +49,8 @@ const DESCRIPTION_CHANGES: Record<string, string> = {
   get_person: "D5: the people index calls teammates subagents",
   get_subagents: "D5: describe the renamed tool and field",
   propose_subagent: "D5: describe the renamed tool and the new ask operation",
+  get_task: "v120: get_task says whether the agent has read the operator's notes",
+  propose_steer: "v120: a running build's agent reads guidance when it next checks for notes, not only the next attempt",
 };
 const historicalName = (surface: Surface, tool: string) => RENAMED[surface][tool]?.from ?? tool;
 const historicalCall = (surface: Surface, tool: string, call: unknown): unknown => {

@@ -509,6 +509,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           return { rows, decisions: decisionsFor(runtime.store, rows), now };
         })(),
         steering: ref === null ? [] : runtime.store.listSteerNotes(ref.id),
+        steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         // "publishes as" reads ONLY publicationGrantFor(repo) — the grant
         // the publisher would act under — never listGrants(), which is
         // dispatch authority (slice 1c).

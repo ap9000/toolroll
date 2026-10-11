@@ -100,8 +100,9 @@ separate model reviewer or automatic evidence resubmission loop. Deployment is
 reported separately and still requires the exact passing native machine check.
 
 Enable **Automatic crew updates** in a conversation, or use `toolroll chat
---follow`. Meaningful updates reach the same lead within its saved permissions
-and limits. Idle scanning uses no model. Restart recovery reuses saved responses;
+--follow`. Meaningful updates (a result, a question, completion or cancellation)
+reach the same lead within its saved permissions and limits, through the same
+acknowledged inbox an external coordinator reads. Idle scanning uses no model. Restart recovery reuses saved responses;
 a failed response does not rerun a task. `--no-follow` pauses automatic responses.
 This wakes Toolroll's own lead, not an unrelated external agent session.
 
@@ -816,7 +817,7 @@ The console, the terminal, Telegram, Slack, Discord and Teams all talk to the
 same lead with the same tools. The lead reads the fleet
 and **only proposes**: file a task (or a scout), move one to the front,
 reserve it for a worker, hold it, rewrite a scope, retry/replace/unlink a
-terminal dependency, guide a task's next attempt, cancel, or suggest an answer to a parked decision. Every
+terminal dependency, send a task's agent guidance, cancel, or suggest an answer to a parked decision. Every
 proposal is a card you confirm, with
 every consequence and the builder's recommendation shown beside the
 lead's pick; a scope the lead wrote never seals under an operating mode.
@@ -843,8 +844,9 @@ Every task has an **Overview / Ask** switch. **Ask** opens a focused companion
 to that task without creating another conversation: Toolroll attaches
 the current task to each new message, keeps the live status beside the thread,
 and offers plain-language starters for status, scope revision, steering, and
-result inspection. Proposed guidance is inert until you confirm its card, then it
-reaches the next attempt without interrupting work already running.
+result inspection. Proposed guidance is inert until you confirm its card. A
+running build's agent then reads it when it next checks for notes; otherwise
+the next attempt does. Each note says whether the agent has read it.
 
 New work starts the same way: describe the outcome once in ordinary language.
 The lead infers a concise title, narrow scope, safe non-goals, and proof

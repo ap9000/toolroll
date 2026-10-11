@@ -22,7 +22,7 @@ const failure = (reason: string, message: string): Failure => ({ ok: false, reas
  * (src/contracts/gateway-tools.ts), which `toolroll assignment` reads its flags with too. */
 export const ASSIGNMENT_TOOLS = [
   { name: "get_assignment", operation: "show", description: "Read one assignment's root, current execution, owner, exact result and handoff receipt. Approval, proof and deployment remain separate facts." },
-  { name: "list_assignment_updates", operation: "updates", description: "Read durable assignment updates in your projects after a cursor. Save nextCursor after processing; repeated reads do not acknowledge or deliver anything." },
+  { name: "list_assignment_updates", operation: "updates", description: "Read the history of assignment handoffs sent to people in your projects, after a cursor. History only: it delivers and acknowledges nothing. To receive your updates, use get_assignment_inbox." },
   { name: "claim_assignment", operation: "claim", description: "Record yourself as this assignment's lead. Repeating your claim is safe; another active owner cannot be replaced. This grants no approval or execution authority." },
   { name: "acknowledge_assignment", operation: "check", description: "Acknowledge the exact ready-to-check receipt as its lead, using the current receipt digest. This does not accept failed proof, answer decisions, approve work, publish or deploy." },
   { name: "get_assignment_brief", operation: "brief", description: "Catch up from the local database: current work, decisions, saved results and project knowledge. Bounded read only; no model call or task mutation." },

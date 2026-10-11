@@ -9,7 +9,8 @@ import { appendFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseNumstat, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, writeEvidenceFile, sniffImageKind, validateScreenshotBytes, SCREENSHOT_BYTE_CAP } from "./evidence.js";
+import { looksLikeProtocolFile, parseNumstat, quarantineMailboxes, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, steerFolderName, writeEvidenceFile, sniffImageKind, validateScreenshotBytes, SCREENSHOT_BYTE_CAP } from "./evidence.js";
+import { existsSync, mkdirSync } from "node:fs";
 import type { Artifact } from "./store.js";
 
 describe("reading evidence back, believing nothing", () => {
@@ -142,6 +143,30 @@ describe("reading protocol mailboxes", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the steering folder is protocol, never work (v120)", () => {
+  test("the folder, git status's untracked-folder line and every file in it read as protocol; look-alikes do not", () => {
+    const folder = steerFolderName();
+    expect(folder).toMatch(/^STANDING-ORDERS-STEER-[0-9a-f]{16}$/);
+    expect(looksLikeProtocolFile(folder)).toBe(true);
+    expect(looksLikeProtocolFile(`${folder}/`)).toBe(true);
+    // A repository that shows every untracked file lists them one by one.
+    expect(looksLikeProtocolFile(`${folder}/handled/001.json`)).toBe(true);
+    expect(looksLikeProtocolFile("STANDING-ORDERS-STEER-notes/")).toBe(false);
+    expect(looksLikeProtocolFile(`src/${folder}/001.json`)).toBe(false);
+  });
+
+  test("an earlier attempt's folder is swept whole before a new attempt starts", () => {
+    const worktree = mkdtempSync(join(tmpdir(), "so-steer-sweep-"));
+    try {
+      const folder = steerFolderName();
+      mkdirSync(join(worktree, folder, "handled"), { recursive: true });
+      writeFileSync(join(worktree, folder, "handled", "001.json"), "{}");
+      expect(quarantineMailboxes(worktree, null, null)).toEqual([folder]);
+      expect(existsSync(join(worktree, folder))).toBe(false);
+    } finally { rmSync(worktree, { recursive: true, force: true }); }
   });
 });
 

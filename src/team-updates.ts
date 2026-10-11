@@ -3,7 +3,7 @@
 import type { Store } from './store.js';
 import { TeamLeads } from './team-leads.js';
 import type { TeamActor } from './team-contract.js';
-import { ASSIGNMENT_STATUS_ACTION, parseAssignmentStatusEvent } from './assignment-status.js';
+import { ASSIGNMENT_STATUS_ACTION, LEAD_WAKE_STATES, parseAssignmentStatusEvent } from './assignment-status.js';
 
 export const teamUpdateCursor = (conversation: string) => `team-updates:${conversation}`;
 export function startTeamUpdates(store:Store,conversation:string,now:Date):void {
@@ -35,9 +35,9 @@ export function deliverTeamUpdates(store:Store,domain:TeamLeads,authorized:(acto
       for(const row of rows){
         const event=parseAssignmentStatusEvent(String(row['outcome']));
         // Keep an unreadable row pending instead of silently losing delivery.
-        if(!event||event.assignment.rootId!==row['task_id']||event.assignment.owner.kind!=='lead'||event.assignment.owner.id!==current.lead.id)break;
+        if(!event||event.assignment.rootId!==row['task_id']||event.assignment.owner?.kind!=='lead'||event.assignment.owner.id!==current.lead.id)break;
         through=Number(row['id']);
-        if(!['ready-to-check','needs-decision','complete','cancelled'].includes(event.assignment.state))continue;
+        if(!LEAD_WAKE_STATES.includes(event.assignment.state))continue;
         changes.push(`${event.assignment.rootId}: ${event.assignment.title.slice(0,100)} — ${event.assignment.state}. ${event.assignment.detail.slice(0,180)}`);
         if(changes.length===4)break;
       }

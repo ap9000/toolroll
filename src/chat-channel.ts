@@ -484,9 +484,9 @@ export function proposalPreview(
       return card(`Release ${taskName} from its hold.`);
     case "steer":
       return card(
-        `Guide ${taskName}'s next attempt:`,
+        `Guidance for ${taskName}'s agent:`,
         lines(t("note", 1_000), 1_000),
-        "Scope stays the same; active work is not interrupted.",
+        "A running agent reads it when it next checks for notes; otherwise the next attempt does. Scope stays the same.",
       );
     case "repair": {
       const blocker = t("blockerTitle", 120) || t("blocker", 64);
