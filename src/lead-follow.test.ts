@@ -108,6 +108,50 @@ describe("the built-in lead reads crew updates through the assignment inbox", ()
     expect(JSON.parse(asked[0]!.context.split("\n")[1]!)).toEqual([expect.objectContaining({ task: "old", state: "cancelled" })]);
   });
 
+  const grantId = () => Number(store.handle.prepare("SELECT MAX(id) AS id FROM action_ledger WHERE action = 'lead follow configured'").get()!["id"]);
+  const ledger = (action: string, taskId: string | null, now: Date, outcome = "{}") =>
+    store.recordAction({ at: now.toISOString(), actor: who.name, repo: taskId === null ? null : repo, taskId, runId: null, action, outcome, source: "work" });
+  const READY = "The lead will respond when a result or decision is ready, or a task is cancelled.";
+
+  test("a legacy crew update the old batches recorded but never handed the lead is still news", async () => {
+    follow(t0);
+    file("sent", at(1));
+    file("queued", at(1));
+    store.setTaskState("sent", "cancelled", at(2));
+    store.setTaskState("queued", "cancelled", at(2));
+    // The old private path: both updates recorded, one batch of only the first handed over and acknowledged later.
+    const sent = ledger(`lead update:${grantId()}`, "sent", at(3));
+    ledger(`lead update:${grantId()}`, "queued", at(3));
+    const batch = ledger(`lead batch:${grantId()}`, null, at(4));
+    store.setServiceCursor(`lead:${grantId()}:events`, sent, at(4));
+    store.setServiceCursor(`lead:${grantId()}:delivery`, batch, at(4));
+
+    await pass(at(5));
+    expect(followEvents()).toEqual([["queued", "cancelled"]]);
+    expect(asked).toHaveLength(1);
+    expect(JSON.parse(asked[0]!.context.split("\n")[1]!)).toEqual([expect.objectContaining({ task: "queued", state: "cancelled" })]);
+  });
+
+  test("a waiting status returns to ready once a pass leaves no page unacknowledged", async () => {
+    follow(t0);
+    ledger(`lead delivery status:${grantId()}`, null, at(1), "Crew updates are waiting: The saved delivery page is invalid.");
+    file("login", at(1));
+    await pass(at(2));
+    expect(asked).toEqual([]);
+    expect(leadFollowStatus(store, who.name).detail).toBe(READY);
+  });
+
+  test("a failure stays visible while its page is still unacknowledged", async () => {
+    follow(t0);
+    file("login", at(1));
+    store.setTaskState("login", "cancelled", at(2));
+    answer = "throws";
+    await pass(at(3));
+    // No provider: the page is read but not handed over, so the lead is still waiting on it.
+    await runLeadFollowPass({ store, repos: () => [repo], evidenceRoot: root, clock: () => at(4), provider: () => null, runTurn });
+    expect(leadFollowStatus(store, who.name).detail).toContain("the last update check failed");
+  });
+
   test("a change that asks nothing of the lead is acknowledged without a model turn", async () => {
     follow(t0);
     file("login", at(1));

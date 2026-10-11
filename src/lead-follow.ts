@@ -19,7 +19,8 @@ import { sweepIfMoved } from './sweep-gate.js';
 const CONFIG = 'lead follow configured';
 /** What follow status reads while nothing is waiting on the lead. */
 const FOLLOW_READY = 'The lead will respond when a result or decision is ready, or a task is cancelled.';
-const FAILED = 'Crew updates are waiting: the last update check failed';
+const WAITING = 'Crew updates are waiting:';
+const FAILED = `${WAITING} the last update check failed`;
 /** The built-in lead's one inbox per grant. */
 const CONSUMER = 'lead';
 const PAGE = 20;
@@ -86,7 +87,9 @@ function observe(store: Store, grant: Grant, now: Date, root: string): void {
       if (!a || !a.repo) continue;
       const seen = store.handle.prepare("SELECT 1 FROM action_ledger WHERE task_id=? AND action IN (?,?) AND source='work' AND actor=? LIMIT 1")
         .get(a.rootId, ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_BASELINE, followActor(grant.id)) !== undefined;
-      noteFollowStatus(store, grant.id, a, now, seen || changedSince(store, a, since) ? ASSIGNMENT_STATUS_ACTION : ASSIGNMENT_STATUS_BASELINE);
+      const undelivered = !seen && store.handle.prepare("SELECT 1 FROM action_ledger WHERE actor=? AND action=? AND task_id=? AND source='work' AND id>? LIMIT 1")
+        .get(grant.actor, `lead update:${grant.id}`, a.rootId, store.serviceCursor(`lead:${grant.id}:events`)) !== undefined;
+      noteFollowStatus(store, grant.id, a, now, seen || undelivered || changedSince(store, a, since) ? ASSIGNMENT_STATUS_ACTION : ASSIGNMENT_STATUS_BASELINE);
     }
     store.setServiceCursor(cursor, roots.length < 50 ? 0 : Number(roots.at(-1)!['id']), now);
   });
@@ -105,12 +108,14 @@ function changedSince(store: Store, a: AssignmentSnapshot, since: string): boole
 }
 
 /** When follow began counting news: the grant itself, or, for a grant that
- * predates this inbox, the last crew update its old private batches already
- * handed the lead — that is not news again. */
+ * predates this inbox, the newest crew update its old private batches actually
+ * handed the lead — that is not news again. Updates recorded past that point
+ * were never received, so observe still treats their tasks as news. */
 function baselineOf(store: Store, grant: Grant): string {
-  const handled = store.serviceCursor(`lead:${grant.id}:delivery`);
-  if (handled === 0) return grant.at;
-  const row = store.handle.prepare("SELECT at FROM action_ledger WHERE id=? AND actor=? AND action=?").get(handled, grant.actor, `lead batch:${grant.id}`);
+  const received = store.serviceCursor(`lead:${grant.id}:events`);
+  if (received === 0) return grant.at;
+  const row = store.handle.prepare("SELECT at FROM action_ledger WHERE id<=? AND actor=? AND action=? AND source='work' ORDER BY id DESC LIMIT 1")
+    .get(received, grant.actor, `lead update:${grant.id}`);
   return row !== undefined && String(row['at']) > grant.at ? String(row['at']) : grant.at;
 }
 
@@ -127,9 +132,10 @@ function wakeUpdates(events: readonly AssignmentDeliveryEvent[]) {
 }
 
 /** The lead's follow status line, written once per distinct status. */
+const lastDeliveryStatus = (store: Store, grant: Grant) =>
+  store.handle.prepare("SELECT outcome FROM action_ledger WHERE actor=? AND action=? ORDER BY id DESC LIMIT 1").get(grant.actor, `lead delivery status:${grant.id}`)?.['outcome'];
 function noteDeliveryStatus(store: Store, grant: Grant, status: string, now: Date): void {
-  const last = store.handle.prepare("SELECT outcome FROM action_ledger WHERE actor=? AND action=? ORDER BY id DESC LIMIT 1").get(grant.actor, `lead delivery status:${grant.id}`);
-  if (last?.['outcome'] !== status) store.recordAction({ at: now.toISOString(), actor: grant.actor, repo: null, taskId: null, runId: null, action: `lead delivery status:${grant.id}`, outcome: status, source: 'work' });
+  if (lastDeliveryStatus(store, grant) !== status) store.recordAction({ at: now.toISOString(), actor: grant.actor, repo: null, taskId: null, runId: null, action: `lead delivery status:${grant.id}`, outcome: status, source: 'work' });
 }
 
 const enabledGrants = (store: Store): Grant[] => store.handle.prepare("SELECT a.* FROM action_ledger a WHERE a.action=? AND a.source='work' AND a.id=(SELECT MAX(b.id) FROM action_ledger b WHERE b.actor=a.actor AND b.action=a.action AND b.source=a.source) ORDER BY a.id")
@@ -138,10 +144,9 @@ const enabledGrants = (store: Store): Grant[] => store.handle.prepare("SELECT a.
 const failureStatus = (error: unknown) =>
   `${FAILED} (${publicChatText(error instanceof Error ? error.message : String(error), 200)}). It retries in a few seconds.`;
 
-/** A clean pass after a failed one says so: a fault that cleared is not still waiting. */
-function clearFailure(store: Store, grant: Grant, now: Date): void {
-  const last = store.handle.prepare("SELECT outcome FROM action_ledger WHERE actor=? AND action=? ORDER BY id DESC LIMIT 1").get(grant.actor, `lead delivery status:${grant.id}`);
-  if (String(last?.['outcome'] ?? '').startsWith(FAILED)) noteDeliveryStatus(store, grant, FOLLOW_READY, now);
+/** With no page left unacknowledged, an earlier fault or refusal is no longer waiting. */
+function settle(store: Store, grant: Grant, now: Date): void {
+  if (String(lastDeliveryStatus(store, grant) ?? '').startsWith(WAITING)) noteDeliveryStatus(store, grant, FOLLOW_READY, now);
 }
 
 /** A follow pass that failed outright says so where each enabled conversation reads its follow status. */
@@ -164,10 +169,7 @@ export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
   checkLeadCommitments(store, clock(), input.evidenceRoot);
   for (const grant of enabledGrants(store)) {
     // One conversation's fault never holds up another's updates, and it is said where follow status is read.
-    try {
-      await followGrant(input, grant, clock);
-      clearFailure(store, grant, clock());
-    } catch (error) { noteDeliveryStatus(store, grant, failureStatus(error), clock()); }
+    try { await followGrant(input, grant, clock); } catch (error) { noteDeliveryStatus(store, grant, failureStatus(error), clock()); }
   }
 }
 
@@ -180,12 +182,13 @@ async function followGrant(input: LeadFollowInput, grant: Grant, clock: () => Da
   const page = leadFollowInbox(store, grant, { consumer: CONSUMER, limit: PAGE }, clock());
   if (!page.ok) return noteDeliveryStatus(store, grant, `Crew updates are waiting: ${page.message}`, clock());
   const batch = page.batch;
-  if (batch.id === null) return;
+  if (batch.id === null) return settle(store, grant, clock());
   const batchId = batch.id;
   const acknowledge = (status: string | null, turnStopped: boolean) => store.transact(() => {
     // Concurrent passes may finish the same receipt, but ACK once.
     const acked = acknowledgeLeadFollowDelivery(store, grant, { consumer: CONSUMER, batchId }, clock());
-    if (!acked.ok || acked.alreadyAcknowledged || status === null) return;
+    if (!acked.ok || acked.alreadyAcknowledged) return;
+    if (status === null) return settle(store, grant, clock());
     noteDeliveryStatus(store, grant, status, clock());
     if (turnStopped && authorized(store, grant, input.repos())) store.appendLeadMessage({ thread: grant.thread, turn: null, role: 'assistant', text: status }, clock());
   });
