@@ -16,6 +16,6 @@ export function RadioGroupItem({ className, ...props }: ComponentProps<typeof Ra
 export function RadioCard({ value, id, title, description, className }: { value: string; id: string; title: string; description?: string; className?: string }) {
   return <label htmlFor={id} className={cn("flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card p-3.5 transition-colors phone:min-h-11 phone:px-3 phone:py-2.5 hover:bg-accent has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-accent", className)}>
     <RadioGroupItem value={value} id={id} />
-    <span className="grid gap-0.5"><span className="text-sm font-semibold">{title}</span>{description && <span className="text-[13px] text-muted-foreground phone:leading-[1.35]">{description}</span>}</span>
+    <span className="grid gap-0.5"><span className="text-sm font-semibold">{title}</span>{description && <span className="text-body text-muted-foreground phone:leading-[1.35]">{description}</span>}</span>
   </label>;
 }

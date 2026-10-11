@@ -22,25 +22,25 @@ const LIMIT_TEXT: Record<BrowserLimitTile["tone"], string> = { neutral: "", warn
 /** One limit: whose and which window, the figure, a bar (with the 50/80 % alert marks on a budget), and when it resets. */
 function LimitTile({ tile }: { tile: BrowserLimitTile }) {
   const body = <>
-    <p className="flex min-w-0 items-baseline gap-1.5 text-[12px] leading-4">
+    <p className="flex min-w-0 items-baseline gap-1.5 text-caption leading-4 font-normal">
       <span className="truncate font-medium text-foreground">{tile.name}</span>
       <span className="shrink-0 text-muted-foreground">{tile.window}</span>
     </p>
     <p className={cn("mt-2.5 flex items-baseline tabular-nums phone:mt-1.5", tile.unit === "%" ? "gap-px" : "gap-1")}>
       <span className={cn("text-[22px] font-semibold leading-none tracking-[-0.02em]", tile.tone === "danger" && "text-destructive")}>{tile.value}</span>
-      <span className="text-[12px] text-muted-foreground">{tile.unit}</span>
+      <span className="text-caption text-muted-foreground font-normal">{tile.unit}</span>
     </p>
     <div className="relative mt-3 h-1.5 phone:mt-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(100, tile.percent))}
       aria-label={`${tile.name} ${tile.window}`}>
       <div className={cn("h-full rounded-full motion-safe:transition-[width] motion-safe:duration-500 motion-safe:ease-out", LIMIT_FILL[tile.tone])} style={{ width: `${Math.min(100, Math.max(0, tile.percent))}%` }} />
       {tile.marks.map(mark => <span key={mark} aria-hidden="true" className="absolute inset-y-0 w-0.5 bg-card" style={{ left: `calc(${mark}% - 1px)` }} />)}
     </div>
-    <p className={cn("mt-2 truncate text-[12px] leading-4 phone:mt-1.5", tile.tone === "neutral" ? "text-muted-foreground" : LIMIT_TEXT[tile.tone])}>{tile.detail}</p>
+    <p className={cn("mt-2 truncate text-caption leading-4 phone:mt-1.5 font-normal", tile.tone === "neutral" ? "text-muted-foreground" : LIMIT_TEXT[tile.tone])}>{tile.detail}</p>
   </>;
-  const frame = "block min-w-0 rounded-[10px] border border-border bg-card px-3.5 py-3 phone:w-[152px] phone:px-3 phone:py-2.5 phone:shrink-0 phone:snap-start";
+  const frame = "block min-w-0 rounded-card border border-border bg-card px-3.5 py-3 phone:w-[152px] phone:px-3 phone:py-2.5 phone:shrink-0 phone:snap-start";
   return <li data-limit={tile.key} title={tile.title ?? undefined} className="min-w-0 phone:shrink-0">
     {tile.href === null ? <div className={frame}>{body}</div>
-      : <a href={tile.href} className={cn(frame, "transition-colors hover:border-input hover:bg-[var(--so-raised)]")}>{body}</a>}
+      : <a href={tile.href} className={cn(frame, "transition-colors hover:border-input hover:bg-raised")}>{body}</a>}
   </li>;
 }
 
@@ -71,12 +71,12 @@ export function usageSummary(limits: BrowserLimits): { key: string; text: string
  * shows a state word and every waiting row reads alike.
  * Every other row wears its headline, the same words as the task page, the result and Crew. */
 function TaskChip({ row, grouped }: { row: BrowserTasksView["rows"][number]; grouped: boolean }) {
-  const place = "text-[12px] desk:col-start-1 desk:row-start-1 desk:justify-self-start phone:col-start-1 phone:row-start-2 phone:self-center";
+  const place = "text-caption desk:col-start-1 desk:row-start-1 desk:justify-self-start phone:col-start-1 phone:row-start-2 phone:self-center";
   if (row.ask === null) return <HeadlineBadge label={row.status.label} tone={row.status.tone === "attention" ? "neutral" : row.status.tone} className={place} />;
   if (row.chip === null && grouped) return <span className={cn("sr-only", place)} data-headline={row.status.label}>{row.status.label}</span>;
   // Outside a group, a chip-less waiting row wears the same ink chip, its headline as the word.
   return <span data-ask={row.ask} {...(row.chip === null ? {} : { "data-chip": row.chip })} data-headline={row.status.label} title={row.status.label}
-    className={cn("inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-[5px] bg-primary px-1.5 py-px font-semibold leading-[18px] text-primary-foreground", place)}>
+    className={cn("inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-badge bg-primary px-1.5 py-px font-semibold leading-[18px] text-primary-foreground", place)}>
     {row.chip === null ? row.status.label : <><span className="sr-only">{row.status.label}: </span>{row.chip}</>}
   </span>;
 }
@@ -86,7 +86,7 @@ function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][numbe
   // project and age, then any detail. The title block and the chip cluster dissolve into it (contents).
   const waiting = row.ask !== null;
   return <li data-task={row.id} data-work-status={row.status.token} data-group={row.group}
-    className="grid grid-cols-1 gap-y-2 border-b border-border px-2 py-3 transition-colors hover:bg-[var(--so-raised)] desk:col-span-3 desk:grid-cols-subgrid desk:items-center desk:gap-x-4 phone:grid-cols-[auto_minmax(0,1fr)_auto] phone:gap-x-2 phone:gap-y-0.5 phone:py-1.5">
+    className="grid grid-cols-1 gap-y-2 border-b border-border px-2 py-3 transition-colors hover:bg-raised desk:col-span-3 desk:grid-cols-subgrid desk:items-center desk:gap-x-4 phone:grid-cols-[auto_minmax(0,1fr)_auto] phone:gap-x-2 phone:gap-y-0.5 phone:py-1.5">
     <div className="min-w-0 desk:col-start-2 desk:row-start-1 phone:contents">
       <a href={row.href} className={cn("block text-[13.5px] leading-snug hover:underline hover:underline-offset-4 phone:col-[1/3] phone:row-start-1 phone:flex phone:min-h-11 phone:items-center",
         waiting ? "font-semibold" : "font-medium")}>{row.title}</a>
@@ -120,8 +120,8 @@ function TaskList({ view }: { view: BrowserTasksView }) {
   const loose = view.rows.filter(row => !placed.has(row.group));
   return <div className={cn(grid, "flex flex-col gap-5 phone:gap-3.5 desk:gap-0")}>
     {sections.map((section, index) => <section key={section.key} data-task-group={section.key} aria-labelledby={`task-group-${section.key}`} className="desk:contents">
-      <h2 id={`task-group-${section.key}`} className={cn("flex items-baseline gap-2 border-b border-border px-2 pb-1.5 text-[13px] font-semibold leading-5 desk:col-span-3", index > 0 && "desk:mt-6")}>
-        {section.label}<span className="font-mono text-[12px] font-medium tabular-nums text-muted-foreground">{section.count}</span>
+      <h2 id={`task-group-${section.key}`} className={cn("flex items-baseline gap-2 border-b border-border px-2 pb-1.5 text-body leading-5 desk:col-span-3 font-semibold", index > 0 && "desk:mt-6")}>
+        {section.label}<span className="font-mono text-mono tabular-nums text-muted-foreground font-medium">{section.count}</span>
       </h2>
       <ul className="desk:contents">{section.rows.map(row => <TaskRow key={row.id} row={row} grouped />)}</ul>
     </section>)}
@@ -133,7 +133,7 @@ function TaskList({ view }: { view: BrowserTasksView }) {
 function UsageToggle({ limits, open, onToggle, controls }: { limits: BrowserLimits; open: boolean; onToggle: () => void; controls: string }) {
   const parts = usageSummary(limits);
   return <button type="button" aria-expanded={open} aria-controls={controls} onClick={onToggle} data-usage-summary
-    className="ml-auto inline-flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-[var(--so-raised)] hover:text-foreground phone:hidden">
+    className="ml-auto inline-flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-raised hover:text-foreground phone:hidden">
     <span className="sr-only">Usage: </span>
     <span className="truncate tabular-nums">{parts.map((part, index) => <span key={part.key}>{index > 0 && <span aria-hidden="true"> · </span>}<span className={LIMIT_TEXT[part.tone]}>{part.text}</span></span>)}</span>
     <ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 motion-safe:transition-transform", open && "rotate-90")} />
@@ -172,7 +172,7 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
   return <div className="flex w-full max-w-[960px] flex-col gap-5 phone:gap-3 phone:px-0.5">
     <div className="flex min-w-0 items-baseline gap-x-3 gap-y-1">
       <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Tasks</h1>
-      {view.needsYou > 0 && <p className="whitespace-nowrap text-[13px] text-muted-foreground" data-needs-you-count>
+      {view.needsYou > 0 && <p className="whitespace-nowrap text-body text-muted-foreground" data-needs-you-count>
         <span className="font-semibold tabular-nums text-foreground">{view.needsYou}</span> {view.needsYou === 1 ? "needs" : "need"} you</p>}
       {limits && <UsageToggle limits={limits} open={usageOpen} onToggle={() => setUsageOpen(open => !open)} controls={usageId} />}
       <div className={cn("flex shrink-0 items-center gap-2 self-center", !limits && "ml-auto", "phone:ml-auto")}>
@@ -191,10 +191,10 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
         <ul className="inline-flex h-8 items-center gap-0.5 rounded-lg bg-muted p-0.5 phone:h-12">
           {view.tabs.map(tab => <li key={tab.href} className="h-full">
             <a href={tab.href} aria-current={tab.active ? "page" : undefined}
-              className={cn("inline-flex h-full items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground",
-                tab.active && "bg-card text-foreground shadow-[var(--so-pill-shadow)]")}>
+              className={cn("inline-flex h-full items-center gap-1.5 rounded-md px-2.5 text-label whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground",
+                tab.active && "bg-card text-foreground shadow-pill")}>
               {tab.label}
-              <span className={cn("min-w-[18px] rounded-full px-1.5 text-center font-mono text-[12px] leading-[18px] tabular-nums", tab.label === "Needs you" && tab.count > 0 ? "bg-attention text-on-attention" : "text-muted-foreground")}>{tab.count}</span>
+              <span className={cn("min-w-[18px] rounded-full px-1.5 text-center font-mono text-mono font-medium leading-[18px] tabular-nums", tab.label === "Needs you" && tab.count > 0 ? "bg-attention text-on-attention" : "text-muted-foreground")}>{tab.count}</span>
             </a>
           </li>)}
         </ul>

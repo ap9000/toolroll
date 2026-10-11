@@ -46,7 +46,7 @@ function Html({ html, className }: { html: string; className?: string }) {
  * attempt starting with the one suggestion of what to change, ready to edit. */
 export function RetryForm({ action, csrf, note, variant = "default" }: { action: string; csrf: string; note?: string | undefined; variant?: "default" | "attention" }) {
   return <PostForm action={action} data-retry className="flex w-full flex-col gap-1.5">
-    <label htmlFor="retry-note" className="text-[13px] font-medium">What to change next time</label>
+    <label htmlFor="retry-note" className="text-body font-medium">What to change next time</label>
     {/* The whole suggestion shows, and grows with what the person adds (a single-line field cut it off on a phone). */}
     <div className="flex flex-wrap items-end gap-2 phone:flex-col phone:items-stretch">
       <Textarea id="retry-note" name="note" maxLength={RETRY_NOTE_LIMIT} rows={1} defaultValue={note ?? ""} placeholder="Note for the next attempt (optional)" data-retry-note
@@ -59,7 +59,7 @@ export function RetryForm({ action, csrf, note, variant = "default" }: { action:
 /** What a failed attempt missed: the evidence line behind it, and where to see the build (or that exact log line). */
 function FailureEvidence({ failure }: { failure: NonNullable<BrowserTaskView["failure"]> }) {
   if (failure.evidence === null && failure.link === null) return null;
-  return <p className="mt-1 text-[13px] text-muted-foreground phone:leading-[1.35]" data-failure-evidence>
+  return <p className="mt-1 text-body text-muted-foreground phone:leading-[1.35]" data-failure-evidence>
     {failure.evidence !== null && <span className="[overflow-wrap:anywhere]">{failure.evidence}</span>}
     {failure.link !== null && <>{failure.evidence !== null && " "}<a href={failure.link.href} data-failure-log className="whitespace-nowrap font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:-my-3 phone:inline-block phone:py-3">{failure.link.label}</a></>}
   </p>;
@@ -98,11 +98,11 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
           <span className="[overflow-wrap:anywhere]">{card.status.sentence}</span>
         </p>
         {view.activity != null && <ActivityLine activity={view.activity} className="mt-1" />}
-        {view.record != null && <p className="mt-1 text-[13px]">
+        {view.record != null && <p className="mt-1 text-body">
           <a href={view.record.href} data-build-record className="text-muted-foreground underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-muted-foreground phone:inline-flex phone:min-h-11 phone:items-center">{view.record.label}</a>
         </p>}
         {failed && failure != null && <FailureEvidence failure={failure} />}
-        {failed && failure != null && !retrying && <p className="mt-1 text-[13px] text-muted-foreground" data-failure-suggestion>What to change: {failure.suggestion}</p>}
+        {failed && failure != null && !retrying && <p className="mt-1 text-body text-muted-foreground" data-failure-suggestion>What to change: {failure.suggestion}</p>}
       </div>
       {/* Confirm it stopped asks for the password right here, in place of a link. */}
       {confirm != null && csrf !== "" ? <ConfirmStoppedForm form={confirm} csrf={csrf} label={card.action?.label ?? "Confirm it stopped"} />
@@ -120,13 +120,13 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
     {retrying && <RetryForm action={retry.action} csrf={csrf} note={retry.note ?? failure?.suggestion} />}
     <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
     {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&
-      <div className="flex flex-col gap-1 border-t border-border pt-3 text-[13px] phone:pt-2 phone:leading-[1.35]">
+      <div className="flex flex-col gap-1 border-t border-border pt-3 text-body phone:pt-2 phone:leading-[1.35]">
       <StatusWhy status={card.status} extra={[...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`)]} />
       {card.notices !== null && <Fold summary={card.notices.summary} quiet>
         {card.notices.lines.map(line => <p key={line} className="text-muted-foreground">{line}</p>)}
       </Fold>}
     </div>}
-    {view.earlier != null && <div className="border-t border-border pt-1 text-[13px]" data-earlier-attempts={view.earlier.attempts.length}>
+    {view.earlier != null && <div className="border-t border-border pt-1 text-body" data-earlier-attempts={view.earlier.attempts.length}>
       <Fold summary={view.earlier.summary} quiet>
         <ul className="flex flex-col gap-1.5">{view.earlier.attempts.map(one => <li key={one.href} className="text-muted-foreground">
           <a href={one.href} className="font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:inline-flex phone:min-h-11 phone:items-center">{one.label}</a>
@@ -162,7 +162,7 @@ function Section({ section }: { section: BrowserTaskSection }) {
   return <details id={section.id} open={section.open} className="group scroll-mt-4" data-task-section={section.id}>
     <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 hover:bg-accent/50 phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
       <ChevronRight className="size-4 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-      <h2 className="text-[15px] font-semibold">{section.title}</h2>
+      <h2 className="text-title">{section.title}</h2>
       {section.count !== null && section.count > 0 && <Badge>{section.count}</Badge>}
     </summary>
     <div className="px-5 pb-5 pt-1 phone:px-3.5 phone:pb-3.5 phone:pt-0"><Html html={section.html} className="so-task-fold" /></div>
@@ -198,17 +198,17 @@ function ThreadEntry({ item }: { item: BrowserTaskThreadItem }) {
   return <li data-thread-entry={item.key} data-thread-kind={item.kind} className="so-thread-entry relative flex gap-3">
     <ThreadMark item={item} />
     <div className="min-w-0 flex-1 pb-5 phone:pb-4">
-      <p className="flex min-h-6 flex-wrap items-baseline gap-x-2 text-[13px] leading-6">
+      <p className="flex min-h-6 flex-wrap items-baseline gap-x-2 text-body leading-6">
         <span className="font-medium text-foreground">{item.title}</span>
         {item.author !== "" && <span className="text-muted-foreground">{item.author}</span>}
         <time dateTime={item.at} title={whenTitle(item.at)} className="ml-auto text-xs tabular-nums text-muted-foreground">{threadWhen(item.at)}</time>
       </p>
       {/* An entry with no words shows none: never an empty bubble. */}
       {item.text !== null && item.text.trim() !== "" && <p className={cn("mt-1 whitespace-pre-line text-sm leading-relaxed [overflow-wrap:anywhere]",
-        item.who === "person" && "w-fit max-w-full rounded-xl bg-[var(--so-user-bubble)] px-3 py-2")}>{item.text}</p>}
-      {item.link !== null && <a href={item.link.href} className="mt-1 inline-flex text-[13px] font-medium underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:min-h-11 phone:items-center">{item.link.label}</a>}
+        item.who === "person" && "w-fit max-w-full rounded-xl bg-user-bubble px-3 py-2")}>{item.text}</p>}
+      {item.link !== null && <a href={item.link.href} className="mt-1 inline-flex text-body underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:min-h-11 phone:items-center font-medium">{item.link.label}</a>}
       {item.html !== "" && <div className="mt-2"><Html html={item.html} className="so-thread-card" /></div>}
-      {item.more !== null && <div className="mt-1 text-[13px]"><Fold summary={item.more.summary} quiet><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
+      {item.more !== null && <div className="mt-1 text-body"><Fold summary={item.more.summary} quiet><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
     </div>
   </li>;
 }
@@ -225,14 +225,14 @@ function Thread({ items, chat, chatHref }: { items: BrowserTaskThreadItem[]; cha
   return <section aria-label="Thread" data-task-thread {...(chat === null ? {} : { "data-workspace-chat": "" })} className="flex flex-col">
     <ol className="so-thread relative flex flex-col">{entries.map(one => one.node)}</ol>
     {chat !== null ? chat.footer
-      : chatHref !== null && <p className="border-t border-border pt-3 text-[13px] text-muted-foreground">
+      : chatHref !== null && <p className="border-t border-border pt-3 text-body text-muted-foreground">
         <a href={chatHref} className="font-medium text-foreground underline decoration-border underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">Message the agent</a> from Chat.
       </p>}
   </section>;
 }
 
 function FactRows({ facts }: { facts: BrowserTaskFact[] }) {
-  return <dl className="grid grid-cols-[8.25rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-[13px] phone:gap-y-2">
+  return <dl className="grid grid-cols-[8.25rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-body phone:gap-y-2">
     {facts.map(fact => <div key={fact.label} className="contents" data-detail-fact={fact.label}>
       <dt className="text-muted-foreground">{fact.label}</dt>
       <dd className="min-w-0 leading-snug [overflow-wrap:anywhere]"><FactValue fact={fact} /></dd>
@@ -249,11 +249,11 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
   const attempts = card !== null && (card.attempts.length > 1 || card.lead !== null) ? card : null;
   return <div className="flex flex-col gap-5 px-5 py-4 phone:gap-4 phone:px-4" data-task-details>
     {groups.map(group => <section key={group.title} aria-labelledby={`details-${group.title}`} className="flex flex-col gap-2.5" data-detail-group={group.title}>
-      <h2 id={`details-${group.title}`} className="text-[12px] font-medium text-muted-foreground">{group.title}</h2>
+      <h2 id={`details-${group.title}`} className="text-caption text-muted-foreground">{group.title}</h2>
       <FactRows facts={group.facts} />
     </section>)}
-    {attempts !== null && <section aria-labelledby="details-attempts" className="flex flex-col gap-2 border-t border-border pt-4 text-[13px]">
-      <h2 id="details-attempts" className="flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground">Attempts <Badge>{attempts.attempts.length}</Badge></h2>
+    {attempts !== null && <section aria-labelledby="details-attempts" className="flex flex-col gap-2 border-t border-border pt-4 text-body">
+      <h2 id="details-attempts" className="flex items-center gap-1.5 text-caption text-muted-foreground">Attempts <Badge>{attempts.attempts.length}</Badge></h2>
       <ol className="flex flex-col gap-2">
         {attempts.attempts.map(attempt => <li key={attempt.taskId} data-attempt-task={attempt.taskId}>
           <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
@@ -265,15 +265,15 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
     </section>}
     <Sections sections={view.sections} label="Task details" />
     {(view.manage.length > 0 || view.cancel !== null || view.everyTime) && <section aria-labelledby="task-manage" className="flex flex-col gap-3 phone:gap-2">
-      <h2 id="task-manage" className="text-[12px] font-medium text-muted-foreground">Manage</h2>
+      <h2 id="task-manage" className="text-caption text-muted-foreground">Manage</h2>
       <Sections sections={view.manage} label="Manage" />
-      {view.everyTime && <a href={view.everyTime.href} data-every-time className="flex min-h-12 items-center gap-2 rounded-lg border border-border bg-card px-4 text-[14px] font-semibold transition-colors hover:bg-accent">
+      {view.everyTime && <a href={view.everyTime.href} data-every-time className="flex min-h-12 items-center gap-2 rounded-lg border border-border bg-card px-4 text-title-sm transition-colors hover:bg-accent">
         <Repeat className="size-4 text-muted-foreground" aria-hidden="true" />Do this every time…
-        <span className="ml-auto truncate pl-3 text-[12px] font-normal text-muted-foreground">{view.everyTime.starter}</span>
+        <span className="ml-auto truncate pl-3 text-caption text-muted-foreground font-normal">{view.everyTime.starter}</span>
       </a>}
       {/* Cancel stays armed behind one deliberate tap, far from the primary action. */}
       {view.cancel !== null && <details open={view.cancel.open} className="group rounded-lg border border-destructive/30 bg-card" data-task-section="cancel">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-[14px] font-semibold text-destructive phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-title-sm text-destructive phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
           <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />Cancel task
         </summary>
         <div className="px-4 pb-4 pt-1 phone:px-3.5 phone:pb-3.5 phone:pt-0"><Html html={view.cancel.html} className="so-task-cancel" /></div>
@@ -292,8 +292,8 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
     <header className="flex flex-col gap-3 pb-1 phone:gap-2 phone:pb-0">
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3 phone:gap-y-2">
         <div className="min-w-0 flex-1 basis-72">
-          <h1 className="text-[26px] font-semibold leading-tight tracking-tight phone:text-[22px]">{view.title}</h1>
-          <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground phone:mt-0.5">
+          <h1 className="text-display tracking-tight phone:text-[22px]">{view.title}</h1>
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-body text-muted-foreground phone:mt-0.5">
             {view.project !== null && <><span className="font-medium text-foreground/80">{view.project}</span><span aria-hidden="true">·</span></>}
             <span className="min-w-0 truncate font-mono text-xs">{view.id}</span>
             {view.scout && <Badge tone="info">Scout</Badge>}
@@ -310,7 +310,7 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
           </ul>
         </nav>}
       </div>
-      {view.version !== null && <p className="rounded-md bg-info-soft px-3 py-2 text-[13px] text-info">
+      {view.version !== null && <p className="rounded-md bg-info-soft px-3 py-2 text-body text-info">
         {view.version.label} · <a href={view.version.current.href} className="font-semibold underline underline-offset-4">{view.version.current.label}</a>
       </p>}
     </header>

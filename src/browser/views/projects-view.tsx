@@ -49,7 +49,7 @@ function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: 
               </OpenForm>)}
         </span>
       </div>
-      <p className="mt-0.5 truncate text-[13px] text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1.5 phone:leading-[1.35]" title={row.path}>
+      <p className="mt-0.5 truncate text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1.5 phone:leading-[1.35]" title={row.path}>
         <span className="font-mono text-xs">{row.shortPath}</span>
         {row.openedAt !== null && <> · {openedWords(row.openedAt)}</>}
         {row.peek === null && <> · Not scanned</>}
@@ -83,7 +83,7 @@ export function ProjectsView({ view, csrf }: { view: BrowserProjectsView; csrf: 
   return <div className="flex w-full flex-col gap-5 phone:gap-3">
     <header className="flex flex-wrap items-center gap-3">
       <div className="min-w-0 flex-1">
-        <h1 className="text-[26px] font-semibold leading-tight tracking-tight phone:text-[22px]">{view.choosing ? "New task" : "Projects"}</h1>
+        <h1 className="text-display tracking-tight phone:text-[22px]">{view.choosing ? "New task" : "Projects"}</h1>
         {view.choosing && <p className="mt-1 text-sm text-muted-foreground">Choose the project it belongs to.</p>}
       </div>
       {!empty && <Button asChild variant="outline" size="sm"><a href="#add-project"><Plus />Add project</a></Button>}

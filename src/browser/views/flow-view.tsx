@@ -118,7 +118,7 @@ function AlsoHere({ others, cards }: { others: Here[]; cards: BrowserFlowCard[] 
   const editor = others.find(one => one.editing);
   return <div className="inline-flex min-w-0 items-center gap-1.5" data-also-here role="status" aria-label={`Also here: ${words}`} title={words}>
     <span className="flex -space-x-1.5">{others.slice(0, 4).map(one => <span key={one.name} className="rounded-full ring-2 ring-card"><Face name={one.name} /></span>)}</span>
-    <span className="truncate text-[12px] text-muted-foreground">{editor !== undefined ? `${editor.name} is changing this flow` : others.length === 1 ? `${others[0]!.name} is here` : `${others.length} others here`}</span>
+    <span className="truncate text-caption text-muted-foreground font-normal">{editor !== undefined ? `${editor.name} is changing this flow` : others.length === 1 ? `${others[0]!.name} is here` : `${others.length} others here`}</span>
   </div>;
 }
 
@@ -156,7 +156,7 @@ function ZoneNode({ data, selected }: NodeProps<Node<ZoneData, "zone">>) {
     <header className="flex items-center gap-2 border-b px-3 py-2">
       <span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: color }}>{KIND_ICONS[stage.kind]}</span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-semibold">{stage.title}</div>
+        <div className="truncate text-body font-semibold">{stage.title}</div>
         <div className="truncate text-[11px] text-muted-foreground">{data.kindLabel}{data.start ? " · new cards start here" : ""}{data.subagent !== null ? ` · ${data.subagent}` : stage.toOwner === true ? ` · ${data.owner}` : stage.approver ? ` · ${stage.approver}` : ""}</div>
       </div>
       {cards.length > 0 && <span className="rounded-full bg-muted px-1.5 text-[11px] font-semibold text-muted-foreground">{cards.length}</span>}
@@ -204,7 +204,7 @@ function TriggerNode({ data }: NodeProps<Node<TriggerData, "trigger">>) {
       return <div key={trigger.id} className={cn("flex items-center gap-2 border-t px-2.5", trigger.state === "paused" && "opacity-60")} style={{ height: TRIGGER_ROW }} data-trigger={trigger.id}>
         <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">{TRIGGER_ICONS[trigger.kind] ?? <Zap className="size-3.5" aria-hidden="true" />}</span>
         <button type="button" className="nodrag nopan min-w-0 flex-1 cursor-pointer text-left" onClick={() => data.onOpen(trigger.id)} aria-label={`Trigger: ${trigger.words}`}>
-          <div className="truncate text-[12px] font-semibold">{trigger.name}</div>
+          <div className="truncate text-caption font-semibold">{trigger.name}</div>
           <div className={cn("truncate text-[11px]", attention ? "text-warning" : "text-muted-foreground")}>{line}</div>
         </button>
         {trigger.button !== null && trigger.state === "active" && <Button size="sm" className="nodrag nopan h-7 px-2.5" onClick={() => data.onPress(trigger.id)}>Start</Button>}
@@ -322,13 +322,13 @@ function Discussion({ card, view, csrf, apply }: { card: BrowserFlowCard; view: 
   const partial = /(?:^|\s)@([A-Za-z0-9_.-]*)$/.exec(text)?.[1];
   const suggestions = partial === undefined ? [] : view.approvers.filter(name => name !== view.me && name.toLowerCase().startsWith(partial.toLowerCase())).slice(0, 6);
   return <div className="flex flex-col gap-2" data-flow-discussion>
-    <h3 className="text-[13px] font-semibold">Discussion</h3>
-    {card.comments.length === 0 ? <p className="text-[12px] text-muted-foreground">No comments yet.</p>
+    <h3 className="text-body font-semibold">Discussion</h3>
+    {card.comments.length === 0 ? <p className="text-caption text-muted-foreground font-normal">No comments yet.</p>
       : <ol className="flex flex-col gap-3">{card.comments.map(comment => <li key={comment.id} className="flex gap-2" data-comment={comment.id}>
         <Face name={comment.author} size="md" />
         <div className="min-w-0 flex-1">
-          <p className="text-[12px] text-muted-foreground"><span className="font-semibold text-foreground">{comment.author}</span> · {when(comment.at)}</p>
-          <p className="whitespace-pre-wrap break-words text-[13px]"><Mentioned body={comment.body} mentions={comment.mentions} /></p>
+          <p className="text-caption text-muted-foreground font-normal"><span className="font-semibold text-foreground">{comment.author}</span> · {when(comment.at)}</p>
+          <p className="whitespace-pre-wrap break-words text-body"><Mentioned body={comment.body} mentions={comment.mentions} /></p>
         </div>
       </li>)}</ol>}
     {view.canEdit && <form className="flex flex-col gap-2" onSubmit={async event => {
@@ -338,7 +338,7 @@ function Discussion({ card, view, csrf, apply }: { card: BrowserFlowCard; view: 
     }}>
       <Textarea value={text} onChange={event => setText(event.target.value)} rows={3} maxLength={4000} placeholder="Add a comment. Type @ and a name to ping someone." aria-label="Comment" />
       {suggestions.length > 0 && <div className="flex flex-wrap gap-1.5" aria-label="People to mention">{suggestions.map(name => <button key={name} type="button"
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border px-2 text-[12px] hover:border-primary/60" onClick={() => setText(current => current.replace(/@([A-Za-z0-9_.-]*)$/, `@${name} `))}>
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border px-2 text-caption hover:border-primary/60 font-normal" onClick={() => setText(current => current.replace(/@([A-Za-z0-9_.-]*)$/, `@${name} `))}>
         <Face name={name} />{name}</button>)}</div>}
       <Button type="submit" size="sm" className="self-start" disabled={busy || text.trim() === ""}>Comment</Button>
     </form>}
@@ -351,15 +351,15 @@ function CardPeople({ card, view, csrf, apply }: { card: BrowserFlowCard; view: 
   const act = async (path: string, fields: Record<string, string>) => { setBusy(true); apply(await send(`${view.flow.href}/cards/${card.id}/${path}`, fields, csrf)); setBusy(false); };
   const others = card.watchers.filter(name => name !== card.owner);
   return <div className="flex flex-col gap-2" data-flow-card-people>
-    {view.canEdit && card.state === "active" ? <label className="grid gap-1.5"><span className="text-[13px] font-medium">Owner</span>
+    {view.canEdit && card.state === "active" ? <label className="grid gap-1.5"><span className="text-body font-medium">Owner</span>
       <select className={SELECT} value={card.owner ?? ""} disabled={busy} onChange={event => void act("assign", { owner: event.target.value })} aria-label="Owner">
         <option value="">No owner</option>
         {view.approvers.map(name => <option key={name} value={name}>{name === view.me ? `${name} (you)` : name}</option>)}
       </select></label>
-      : card.owner !== null && <p className="flex items-center gap-2 text-[13px]"><Face name={card.owner} /> Owned by {card.owner}</p>}
+      : card.owner !== null && <p className="flex items-center gap-2 text-body"><Face name={card.owner} /> Owned by {card.owner}</p>}
     <div className="flex flex-wrap items-center gap-2">
       {view.canEdit && card.state === "active" && card.owner === null && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("assign", { owner: view.me })}>Take it</Button>}
-      {others.length > 0 && <span className="flex items-center gap-1 text-[12px] text-muted-foreground">{others.slice(0, 5).map(name => <Face key={name} name={name} />)}{others.length === 1 ? " follows it" : " follow it"}</span>}
+      {others.length > 0 && <span className="flex items-center gap-1 text-caption text-muted-foreground font-normal">{others.slice(0, 5).map(name => <Face key={name} name={name} />)}{others.length === 1 ? " follows it" : " follow it"}</span>}
       {view.canEdit && card.owner !== view.me && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act("watch", { watching: card.watching ? "no" : "yes" })} aria-pressed={card.watching}>
         {card.watching ? <><BellOff className="size-4" />Stop following</> : <><Bell className="size-4" />Follow</>}</Button>}
     </div>
@@ -368,7 +368,7 @@ function CardPeople({ card, view, csrf, apply }: { card: BrowserFlowCard; view: 
 
 /** Links a "Send to me" or "Person chooses" sent: Toolroll's pages here, a pull request in a new tab. */
 function SentLinks({ links }: { links: { label: string; href: string }[] }) {
-  return <div className="flex flex-wrap gap-x-3 gap-y-1">{links.map(link => <a key={link.label} className="text-[13px] font-medium text-primary underline-offset-4 hover:underline" href={link.href}
+  return <div className="flex flex-wrap gap-x-3 gap-y-1">{links.map(link => <a key={link.label} className="text-body text-primary underline-offset-4 hover:underline font-medium" href={link.href}
     {...(link.href.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{link.label}</a>)}</div>;
 }
 
@@ -389,9 +389,9 @@ function SentItems({ items }: { items: BrowserFlowSentItem[] }) {
 /** What a "Send to me" last sent the card's person. */
 function SentBox({ sent }: { sent: NonNullable<BrowserFlowCard["sent"]> }) {
   return <details className="rounded-md border px-3 py-2" data-flow-sent>
-    <summary className="cursor-pointer text-[13px] font-medium">Sent to {sent.person} · {when(sent.at)}</summary>
+    <summary className="cursor-pointer text-body font-medium">Sent to {sent.person} · {when(sent.at)}</summary>
     <div className="mt-2 flex flex-col gap-2">
-      <p className="text-[12px] text-muted-foreground">{sent.title}</p>
+      <p className="text-caption text-muted-foreground font-normal">{sent.title}</p>
       <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{sent.summary}</p>
       {sent.items !== undefined && <SentItems items={sent.items} />}
       {sent.links.length > 0 && <SentLinks links={sent.links} />}
@@ -411,7 +411,7 @@ function ChooseBox({ choose, base, csrf, apply }: { choose: NonNullable<BrowserF
     if (result.ok) setNote("");
   };
   return <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3" data-flow-choose>
-    <p className="text-[12px] text-muted-foreground">{choose.title}</p>
+    <p className="text-caption text-muted-foreground font-normal">{choose.title}</p>
     <p className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[12.5px]">{choose.summary}</p>
     {choose.items !== undefined && <SentItems items={choose.items} />}
     {choose.links.length > 0 && <SentLinks links={choose.links} />}
@@ -443,34 +443,34 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
   return <div className="flex flex-col gap-4" data-flow-card-panel={card.id}>
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
-        <h2 className="text-[15px] font-semibold leading-snug">{card.title}</h2>
-        <p className="mt-0.5 text-[12px] text-muted-foreground">{card.state === "active" ? `In ${stage?.title ?? card.stage}` : card.state === "done" ? "Done" : card.waiting === "Ignored" ? "Ignored" : "Cancelled"} · added by {card.createdBy}</p>
+        <h2 className="text-title leading-snug">{card.title}</h2>
+        <p className="mt-0.5 text-caption text-muted-foreground font-normal">{card.state === "active" ? `In ${stage?.title ?? card.stage}` : card.state === "done" ? "Done" : card.waiting === "Ignored" ? "Ignored" : "Cancelled"} · added by {card.createdBy}</p>
         {card.sorted !== null && <div className="mt-1.5 flex"><SortChip sorted={card.sorted} /></div>}
       </div>
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>
     </div>
-    {card.source !== null && <p className="text-[12px] text-muted-foreground">From {card.source.url === null ? card.source.label
+    {card.source !== null && <p className="text-caption text-muted-foreground font-normal">From {card.source.url === null ? card.source.label
       : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{card.source.label}</a>}</p>}
-    {card.description !== null && <p className="whitespace-pre-wrap text-[13px]">{card.description}</p>}
-    {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-[13px]">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
+    {card.description !== null && <p className="whitespace-pre-wrap text-body">{card.description}</p>}
+    {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-body">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
     {card.choose != null && <ChooseBox choose={card.choose} base={`${view.flow.href}/cards/${card.id}`} csrf={csrf} apply={apply} />}
     {card.sent != null && <SentBox sent={card.sent} />}
-    {card.question != null && card.deadline != null && <p className="text-[12px] text-muted-foreground">{deadlineWords(card.deadline)}</p>}
+    {card.question != null && card.deadline != null && <p className="text-caption text-muted-foreground font-normal">{deadlineWords(card.deadline)}</p>}
     <CardPeople card={card} view={view} csrf={csrf} apply={apply} />
-    {card.task !== null && <a className="text-[13px] font-medium text-primary underline-offset-4 hover:underline" href={card.task.href}>Open its task</a>}
+    {card.task !== null && <a className="text-body text-primary underline-offset-4 hover:underline font-medium" href={card.task.href}>Open its task</a>}
     {card.draft !== null && !card.canDecide && <details className="rounded-md border px-3 py-2" open data-flow-draft>
-      <summary className="cursor-pointer text-[13px] font-medium">Draft from {card.draft.title}</summary>
+      <summary className="cursor-pointer text-body font-medium">Draft from {card.draft.title}</summary>
       <p className="mt-2 whitespace-pre-wrap text-[12.5px]">{card.draft.text}</p>
     </details>}
     {card.canDecide && <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3">
-      {card.handoff != null && <p className="rounded-md bg-muted px-3 py-2 text-[13px]" data-subagent-handoff><span className="font-medium">{card.handoff.from}:</span> {card.handoff.note}</p>}
+      {card.handoff != null && <p className="rounded-md bg-muted px-3 py-2 text-body" data-subagent-handoff><span className="font-medium">{card.handoff.from}:</span> {card.handoff.note}</p>}
       {card.draft !== null && <>
-        <Label htmlFor="flow-draft" className="text-[13px]">Draft from {card.draft.title}</Label>
+        <Label htmlFor="flow-draft" className="text-body">Draft from {card.draft.title}</Label>
         <Textarea id="flow-draft" value={draftText} onChange={event => setDraftText(event.target.value)} rows={8} maxLength={12000} data-flow-draft-edit />
-        {draftText.trim() !== card.draft.text.trim() && <p className="text-[12px] text-muted-foreground">Approving sends your edited version on.</p>}
+        {draftText.trim() !== card.draft.text.trim() && <p className="text-caption text-muted-foreground font-normal">Approving sends your edited version on.</p>}
       </>}
-      <Label htmlFor="flow-note" className="text-[13px]">{stage?.title ?? "Decision"}: approve, or send it back</Label>
+      <Label htmlFor="flow-note" className="text-body">{stage?.title ?? "Decision"}: approve, or send it back</Label>
       <Textarea id="flow-note" value={note} onChange={event => setNote(event.target.value)} placeholder="What should change? (needed to send it back)" rows={3} />
       <div className="flex flex-wrap gap-2">
         <Button size="sm" disabled={busy || (card.draft !== null && draftText.trim() === "")} onClick={() => void act(`${base}/decide`, { decision: "approve", note, ...(card.draft === null ? {} : { draft: draftText }) })}>{NEEDS.card.action.label}</Button>
@@ -478,33 +478,33 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       </div>
     </div>}
     {view.canEdit && card.state === "active" && <div className="flex flex-col gap-2">
-      <Label htmlFor="flow-move" className="text-[13px]">Move to</Label>
-      <select id="flow-move" className="h-9 rounded-md border bg-transparent px-2 text-[13px]" value={card.stage} disabled={busy}
+      <Label htmlFor="flow-move" className="text-body">Move to</Label>
+      <select id="flow-move" className="h-9 rounded-md border bg-transparent px-2 text-body" value={card.stage} disabled={busy}
         onChange={event => void act(`${base}/move`, { stage: event.target.value })}>
         {view.stages.map(one => <option key={one.id} value={one.id}>{one.title}</option>)}
       </select>
     </div>}
     {(card.calls ?? []).length > 0 && <details className="rounded-md border px-3 py-2" data-subagent-calls>
-      <summary className="cursor-pointer text-[13px] font-medium">Tool calls ({card.calls!.length})</summary>
+      <summary className="cursor-pointer text-body font-medium">Tool calls ({card.calls!.length})</summary>
       <ol className="mt-2 flex flex-col gap-2.5">{card.calls!.map(call => <li key={call.id} className="flex flex-col gap-0.5 text-[12.5px]" data-subagent-call={call.state}>
         <span className="break-words"><span className="font-medium">{call.who}</span> · {call.words}</span>
         <span className="text-muted-foreground">{call.outcome}{call.why !== "" && call.state !== "refused" ? ` · ${call.why}` : ""}</span>
-        {call.result !== null && call.result !== "" && (call.state === "done" || call.state === "failed") && <span className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 text-[12px]">{call.result}</span>}
+        {call.result !== null && call.result !== "" && (call.state === "done" || call.state === "failed") && <span className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 text-caption font-normal">{call.result}</span>}
         {call.undo != null && call.subagent !== undefined && <Button size="sm" variant="outline" className="mt-1 self-start" disabled={busy} data-subagent-undo={call.id}
           onClick={() => void act(`/settings/lead/subagents/${call.subagent}/week`, { op: "undo", id: String(call.id) })}>Undo with {call.undo}</Button>}
       </li>)}</ol>
     </details>}
     {card.outputs.length > 0 && <div className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-semibold">What zones reported</h3>
+      <h3 className="text-body font-semibold">What zones reported</h3>
       {card.outputs.map(output => <details key={output.stage} className="rounded-md border px-3 py-2">
-        <summary className="cursor-pointer text-[13px] font-medium">{output.title}</summary>
+        <summary className="cursor-pointer text-body font-medium">{output.title}</summary>
         <p className="mt-2 whitespace-pre-wrap text-[12.5px] text-muted-foreground">{output.text}</p>
       </details>)}
     </div>}
     <Discussion card={card} view={view} csrf={csrf} apply={apply} />
     <div className="flex flex-col gap-1.5">
-      <h3 className="text-[13px] font-semibold">History</h3>
-      <ol className="flex flex-col gap-1.5">{card.history.map((line, index) => <li key={index} className="text-[12px]"><span className="text-muted-foreground">{whenAt(line.at)}</span> · {line.text}</li>)}</ol>
+      <h3 className="text-body font-semibold">History</h3>
+      <ol className="flex flex-col gap-1.5">{card.history.map((line, index) => <li key={index} className="text-caption font-normal"><span className="text-muted-foreground">{whenAt(line.at)}</span> · {line.text}</li>)}</ol>
     </div>
     {view.canEdit && card.state === "active" && <Button variant="ghost" size="sm" className="self-start text-destructive" disabled={busy} onClick={() => void act(`${base}/cancel`, {})}>Cancel card</Button>}
   </div>;
@@ -512,9 +512,9 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
 
 /** One labelled setting: defined once at the top level, so typing in it never remounts the input. */
 function Field({ label, hint, children }: { label: string; hint?: string | undefined; children: ReactNode }) {
-  return <label className="grid gap-1.5"><span className="text-[13px] font-medium">{label}</span>{children}{hint !== undefined && <span className="text-[12px] text-muted-foreground">{hint}</span>}</label>;
+  return <label className="grid gap-1.5"><span className="text-body font-medium">{label}</span>{children}{hint !== undefined && <span className="text-caption text-muted-foreground font-normal">{hint}</span>}</label>;
 }
-const SELECT = "h-9 w-full rounded-md border bg-transparent px-2 text-[13px]";
+const SELECT = "h-9 w-full rounded-md border bg-transparent px-2 text-body";
 
 const SURE_LEVELS = [0.95, 0.9, 0.85, 0.8, 0.7, 0.6];
 type SortSettingsValue = NonNullable<BrowserFlowStage["sort"]>;
@@ -528,7 +528,7 @@ function SortSettings({ sort, others, ready, set }: { sort: SortSettingsValue; o
     <Field label="Question">
       <Input value={sort.question} maxLength={300} onChange={event => set({ ...sort, question: event.target.value })} aria-label="Question" />
     </Field>
-    <div className="grid gap-2"><span className="text-[13px] font-medium">Answers</span>
+    <div className="grid gap-2"><span className="text-body font-medium">Answers</span>
       {sort.answers.map((one, index) => <div key={index} className="grid gap-1.5 rounded-md border p-2" data-sort-answer={index}>
         <div className="flex items-center gap-1.5">
           <Input value={one.answer} maxLength={40} placeholder="Answer" onChange={event => answer(index, { answer: event.target.value })} aria-label={`Answer ${index + 1}`} />
@@ -548,7 +548,7 @@ function SortSettings({ sort, others, ready, set }: { sort: SortSettingsValue; o
       </select>
     </Field>
     <details className="rounded-md border px-3 py-2" open={sort.notes.length > 0}>
-      <summary className="cursor-pointer text-[13px] font-medium">Also note on the card{sort.notes.length > 0 ? ` (${sort.notes.length})` : ""}</summary>
+      <summary className="cursor-pointer text-body font-medium">Also note on the card{sort.notes.length > 0 ? ` (${sort.notes.length})` : ""}</summary>
       <div className="mt-2 grid gap-2">
         {sort.notes.map((one, index) => <div key={index} className="grid gap-1.5 rounded-md border p-2" data-sort-note={index}>
           <div className="flex items-center gap-1.5">
@@ -582,16 +582,16 @@ function RequestSettings({ request, view, csrf, apply, set }: { request: Request
         <Input value={request.url} maxLength={2000} onChange={event => set({ ...request, url: event.target.value })} className="font-mono text-[12.5px]" placeholder="https://api.example.com/items" aria-label="Address" />
       </div>
     </Field>
-    <div className="grid gap-1.5"><span className="text-[13px] font-medium">Headers</span>
+    <div className="grid gap-1.5"><span className="text-body font-medium">Headers</span>
       {headers.map(([name, value], index) => <div key={index} className="flex gap-1.5" data-request-header={index}>
-        <Input value={name} maxLength={64} onChange={event => header(index, event.target.value, value)} className="w-32 shrink-0 font-mono text-[12px]" placeholder="Authorization" aria-label={`Header ${index + 1} name`} />
-        <Input value={value} maxLength={500} onChange={event => header(index, name, event.target.value)} className="font-mono text-[12px]" placeholder="Bearer {{secret.API_TOKEN}}" aria-label={`Header ${index + 1} value`} />
+        <Input value={name} maxLength={64} onChange={event => header(index, event.target.value, value)} className="w-32 shrink-0 font-mono text-mono" placeholder="Authorization" aria-label={`Header ${index + 1} name`} />
+        <Input value={value} maxLength={500} onChange={event => header(index, name, event.target.value)} className="font-mono text-mono" placeholder="Bearer {{secret.API_TOKEN}}" aria-label={`Header ${index + 1} value`} />
         <Button variant="ghost" size="icon" onClick={() => set({ ...request, headers: Object.fromEntries(headers.filter((_, at) => at !== index)) })} aria-label={`Remove header ${name || index + 1}`}><X className="size-4" /></Button>
       </div>)}
       {headers.length < 10 && <Button size="sm" variant="outline" className="self-start" onClick={() => set({ ...request, headers: { ...request.headers, [`X-Header-${headers.length + 1}`]: "" } })}><Plus className="size-4" />Add a header</Button>}
     </div>
     {request.method !== "GET" && request.method !== "DELETE" && <Field label="What it sends" hint="JSON is sent as JSON, with fill-ins inside its strings; anything else as plain text.">
-      <Textarea rows={5} value={request.body ?? ""} maxLength={8000} onChange={event => set({ ...request, body: event.target.value })} className="font-mono text-[12px]" aria-label="What it sends" />
+      <Textarea rows={5} value={request.body ?? ""} maxLength={8000} onChange={event => set({ ...request, body: event.target.value })} className="font-mono text-mono" aria-label="What it sends" />
     </Field>}
     <SecretsBox view={view} csrf={csrf} apply={apply} words={<>Kept on this computer, never shown again. Use one in a header as {"{{secret.NAME}}"}.</>} />
   </>;
@@ -603,16 +603,16 @@ function SecretsBox({ view, csrf, apply, words, chosen, choose }: { view: Browse
   const [busy, setBusy] = useState(false);
   const picked = chosen ?? [];
   return <details className="rounded-md border px-3 py-2" data-request-secrets open={picked.length > 0 ? true : undefined}>
-    <summary className="cursor-pointer text-[13px] font-medium">Secrets{choose !== undefined ? picked.length > 0 ? ` (${picked.length} used)` : "" : view.requestSecrets.length > 0 ? ` (${view.requestSecrets.length})` : ""}</summary>
+    <summary className="cursor-pointer text-body font-medium">Secrets{choose !== undefined ? picked.length > 0 ? ` (${picked.length} used)` : "" : view.requestSecrets.length > 0 ? ` (${view.requestSecrets.length})` : ""}</summary>
     <div className="mt-2 grid gap-2">
-      <p className="text-[12px] text-muted-foreground">{words}</p>
+      <p className="text-caption text-muted-foreground font-normal">{words}</p>
       {view.requestSecrets.length > 0 && (choose === undefined
         ? <p className="flex flex-wrap gap-1.5">{view.requestSecrets.map(name => <Badge key={name} tone="neutral" className="font-mono">{name}</Badge>)}</p>
-        : <div className="flex flex-wrap gap-x-3 gap-y-1.5">{view.requestSecrets.map(name => <label key={name} className="inline-flex items-center gap-1.5 font-mono text-[12px]">
-            <input type="checkbox" className="size-4 accent-[var(--so-accent)]" checked={picked.includes(name)} onChange={event => choose(event.target.checked ? [...picked, name] : picked.filter(one => one !== name))} />{name}</label>)}</div>)}
-      {picked.filter(name => !view.requestSecrets.includes(name)).map(name => <p key={name} className="text-[12px] text-warning">{name} isn't saved yet: save it below.</p>)}
+        : <div className="flex flex-wrap gap-x-3 gap-y-1.5">{view.requestSecrets.map(name => <label key={name} className="inline-flex items-center gap-1.5 font-mono text-mono">
+            <input type="checkbox" className="size-4 accent-primary" checked={picked.includes(name)} onChange={event => choose(event.target.checked ? [...picked, name] : picked.filter(one => one !== name))} />{name}</label>)}</div>)}
+      {picked.filter(name => !view.requestSecrets.includes(name)).map(name => <p key={name} className="text-caption text-warning font-normal">{name} isn't saved yet: save it below.</p>)}
       <div className="flex gap-1.5">
-        <Input value={secret.name} onChange={event => setSecret({ ...secret, name: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_") })} className="w-32 shrink-0 font-mono text-[12px]" placeholder="API_TOKEN" aria-label="Secret name" />
+        <Input value={secret.name} onChange={event => setSecret({ ...secret, name: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_") })} className="w-32 shrink-0 font-mono text-mono" placeholder="API_TOKEN" aria-label="Secret name" />
         <Input type="password" autoComplete="off" value={secret.value} onChange={event => setSecret({ ...secret, value: event.target.value })} placeholder="Its value (empty removes it)" aria-label="Secret value" />
       </div>
       <Button size="sm" variant="outline" className="self-start" disabled={busy || secret.name === ""} onClick={async () => {
@@ -626,8 +626,8 @@ function SecretsBox({ view, csrf, apply, words, chosen, choose }: { view: Browse
 /** A script zone (v90): which script, where it runs, the answers its "goto:" line picks, and the secrets it gets. */
 /** The answers a zone may pick, each with the zone it leads to (a script's "goto:", a subagent's choice). */
 function Answers({ routes, others, set, hint }: { routes: { answer: string; to: string }[]; others: BrowserFlowStage[]; set: (next: { answer: string; to: string }[]) => void; hint: React.ReactNode }) {
-  return <div className="grid gap-1.5" data-code-routes><span className="text-[13px] font-medium">Answers (optional)</span>
-    <p className="text-[12px] text-muted-foreground">{hint}</p>
+  return <div className="grid gap-1.5" data-code-routes><span className="text-body font-medium">Answers (optional)</span>
+    <p className="text-caption text-muted-foreground font-normal">{hint}</p>
     {routes.map((route, index) => <div key={index} className="flex gap-1.5">
       <Input value={route.answer} maxLength={40} onChange={event => set(routes.map((one, at) => at === index ? { ...one, answer: event.target.value } : one))} className="w-32 shrink-0" placeholder="Urgent" aria-label={`Answer ${index + 1}`} />
       <select className={SELECT} value={route.to} onChange={event => set(routes.map((one, at) => at === index ? { ...one, to: event.target.value } : one))} aria-label={`Where ${route.answer || `answer ${index + 1}`} leads`}>
@@ -645,8 +645,8 @@ function SubagentQuestion({ question, csrf, apply }: { question: NonNullable<Bro
   const answer = async (fields: Record<string, string>) => { setBusy(true); const result = await send(`/settings/lead/subagents/questions/${question.id}/answer`, fields, csrf); setBusy(false); apply(result); if (result.ok) setText(""); };
   const call = question.call ?? null;
   return <div className="flex flex-col gap-2 rounded-lg border border-attention/50 p-3" data-subagent-question={question.id}>
-    <p className="text-[12px] text-muted-foreground">{call === null ? `${question.from} asks${question.mine ? " you" : ` ${question.askedOf}`}` : `${question.from} needs ${question.mine ? "your" : `${question.askedOf}'s`} approval`}</p>
-    <p className="break-words text-[13px] font-medium">{question.question}</p>
+    <p className="text-caption text-muted-foreground font-normal">{call === null ? `${question.from} asks${question.mine ? " you" : ` ${question.askedOf}`}` : `${question.from} needs ${question.mine ? "your" : `${question.askedOf}'s`} approval`}</p>
+    <p className="break-words text-body font-medium">{question.question}</p>
     {call !== null && <p className="text-[12.5px] text-muted-foreground" data-subagent-call-why>{call.why !== "" && <>{call.why} </>}({call.rule})</p>}
     {question.mine && <>
       {question.options.length > 0 && <div className="flex flex-wrap gap-2">{question.options.map((one, at) => <Button key={one.id} size="sm" variant={call !== null && at === 0 ? "default" : "outline"} disabled={busy} onClick={() => void answer({ choice: one.id })}>{one.label}</Button>)}</div>}
@@ -661,14 +661,14 @@ function SubagentSettings({ stage, others, view, update }: { stage: BrowserFlowS
   const mates = view.subagents ?? [];
   return <>
     <Field label="Subagent" hint={mates.length === 0 ? undefined : "It follows its soul file's rules, and asks the flow's owner when they say to."}>
-      {mates.length === 0 ? <p className="text-[13px] text-muted-foreground">No subagents in this project yet. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings/lead/subagents">Add one</a>.</p>
+      {mates.length === 0 ? <p className="text-body text-muted-foreground">No subagents in this project yet. <a className="font-medium text-primary underline-offset-4 hover:underline" href="/settings/lead/subagents">Add one</a>.</p>
         : <select className={SELECT} aria-label="Subagent" value={stage.subagent ?? ""} onChange={event => update({ subagent: event.target.value })}>
           {mates.map(one => <option key={one.handle} value={one.handle}>{one.label}{one.working ? "" : " (paused)"}</option>)}</select>}
     </Field>
     <Field label="What to do here"><Textarea rows={4} value={stage.instructions ?? ""} maxLength={8000} onChange={event => update({ instructions: event.target.value })} aria-label="What to do here" placeholder="Read the customer's reply and decide what happens next." /></Field>
     <Answers routes={stage.routes ?? []} others={others} set={routes => update({ routes })} hint="It picks one, and writes what the next zones send. With none, it moves the card on to “Then”." />
-    <label className="flex items-start gap-2 text-[13px]"><input type="checkbox" className="mt-0.5 size-4" checked={stage.reply === true} onChange={event => update({ reply: event.target.checked ? true : undefined })} data-subagent-reply />
-      <span>Answer whoever asked<span className="block text-[12px] text-muted-foreground">What it writes goes back to the person who added the card, in their chat app.</span></span></label>
+    <label className="flex items-start gap-2 text-body"><input type="checkbox" className="mt-0.5 size-4" checked={stage.reply === true} onChange={event => update({ reply: event.target.checked ? true : undefined })} data-subagent-reply />
+      <span>Answer whoever asked<span className="block text-caption text-muted-foreground font-normal">What it writes goes back to the person who added the card, in their chat app.</span></span></label>
   </>;
 }
 
@@ -733,7 +733,7 @@ function ToolSettings({ tool, view, set }: { tool: NonNullable<BrowserFlowStage[
         : <Input value={tool.name} maxLength={100} onChange={event => set({ ...tool, name: event.target.value })} className="font-mono" aria-label="What it does" />}
     </Field>
     <Field label="Arguments" hint={`JSON, with fill-ins inside its strings. ${FILL_INS}`}>
-      <Textarea rows={5} value={tool.args} maxLength={4000} onChange={event => set({ ...tool, args: event.target.value })} className="font-mono text-[12px]" aria-label="Arguments" />
+      <Textarea rows={5} value={tool.args} maxLength={4000} onChange={event => set({ ...tool, args: event.target.value })} className="font-mono text-mono" aria-label="Arguments" />
     </Field>
   </>;
 }
@@ -743,7 +743,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
   const select = SELECT;
   const kind = view.kinds.find(one => one.kind === stage.kind);
   return <div className="flex flex-col gap-3" data-flow-zone-panel={stage.id}>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">Edit zone</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Edit zone</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
     <Field label="Name"><Input value={stage.title} maxLength={60} onChange={event => update({ title: event.target.value })} aria-label="Zone name" /></Field>
     <Field label="What happens here" {...(kind === undefined ? {} : { hint: kind.about })}>
       <select className={select} aria-label="What happens here" value={stage.kind} onChange={event => update({ kind: event.target.value as BrowserFlowStage["kind"], ...(event.target.value === "done" ? { next: null, onFail: null } : {}),
@@ -793,7 +793,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
     {stage.kind === "notify" && <Field label="Message"><Input value={stage.message ?? ""} maxLength={1000} onChange={event => update({ message: event.target.value })} aria-label="Message" /></Field>}
     {stage.kind === "update" && <>
       <Field label="Comment on the issue" hint={"Fill-ins: {{card.title}}, {{note}}, {{stage.<zone id>}}."}><Textarea rows={3} value={stage.message ?? ""} maxLength={1000} onChange={event => update({ message: event.target.value })} aria-label="Comment on the issue" /></Field>
-      <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" className="size-4 accent-[var(--so-accent)]" checked={stage.close !== false} onChange={event => update({ close: event.target.checked })} />Close the issue too (Linear: move it to done)</label>
+      <label className="flex items-center gap-2 text-body"><input type="checkbox" className="size-4 accent-primary" checked={stage.close !== false} onChange={event => update({ close: event.target.checked })} />Close the issue too (Linear: move it to done)</label>
     </>}
     {stage.kind === "pull-request" && <Field label="When checks pass" hint="Merging needs a “Person decides” zone before this one, and a person's approval of the card since it was built.">
       <select className={select} aria-label="When checks pass" value={stage.merge ?? ""} onChange={event => update({ merge: event.target.value === "" ? undefined : event.target.value as "squash" | "merge" | "rebase" })}>
@@ -835,7 +835,7 @@ function ZonePanel({ stage, stages, view, csrf, apply, update, remove, makeStart
       </select>
     </Field>}
     {stage.kind !== "wait" && stage.kind !== "done" && <TimeLimit stage={stage} others={others} update={update} />}
-    <div className="grid gap-1.5"><span className="text-[13px] font-medium">Color</span>
+    <div className="grid gap-1.5"><span className="text-body font-medium">Color</span>
       <div className="flex gap-2">{view.colors.map(color => <button key={color} type="button" aria-label={color} aria-pressed={stage.zone.color === color}
         className={cn("size-7 rounded-full border-2", stage.zone.color === color ? "border-foreground" : "border-transparent")} style={{ background: COLORS[color] }}
         onClick={() => update({ zone: { ...stage.zone, color } })} />)}</div>
@@ -854,7 +854,7 @@ const FAIL_LABELS: Partial<Record<BrowserFlowStage["kind"], string>> = { approva
 function ChooseSettings({ options, others, set }: { options: { label: string; to: string }[]; others: BrowserFlowStage[]; set: (options: { label: string; to: string }[]) => void }) {
   const change = (index: number, change: Partial<{ label: string; to: string }>) => set(options.map((one, at) => at === index ? { ...one, ...change } : one));
   return <div className="grid gap-2" data-choose-options>
-    <span className="text-[13px] font-medium">Buttons</span>
+    <span className="text-body font-medium">Buttons</span>
     {options.map((option, index) => <div key={index} className="flex flex-wrap items-center gap-2">
       <Input className="min-w-0 flex-1" value={option.label} maxLength={40} onChange={event => change(index, { label: event.target.value })} aria-label={`Button ${index + 1}`} />
       <select className={cn(SELECT, "min-w-0 flex-1")} aria-label={`Button ${index + 1} goes to`} value={option.to} onChange={event => change(index, { to: event.target.value })}>
@@ -882,7 +882,7 @@ function Duration({ minutes, label, set }: { minutes: number; label: string; set
 function TimeLimit({ stage, others, update }: { stage: BrowserFlowStage; others: BrowserFlowStage[]; update: (change: Partial<BrowserFlowStage>) => void }) {
   const moves = stage.kind === "inbox" || stage.kind === "approval" || stage.kind === "choose";
   return <div className="grid gap-2" data-time-limit>
-    <label className="flex items-center gap-2 text-[13px] font-medium"><input type="checkbox" className="size-4 accent-[var(--so-accent)]" checked={stage.limit !== undefined}
+    <label className="flex items-center gap-2 text-body font-medium"><input type="checkbox" className="size-4 accent-primary" checked={stage.limit !== undefined}
       onChange={event => update({ limit: event.target.checked ? { minutes: 24 * 60, to: null } : undefined })} />Time limit</label>
     {stage.limit !== undefined && <>
       <Field label="Remind after" hint={stage.kind === "approval" ? "Whoever decides hears about it once." : stage.kind === "choose" ? "Whoever chooses hears about it once." : "The card's owner (or the flow's) hears about it once."}>
@@ -910,8 +910,8 @@ function NewCard({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: 
     apply(result);
     if (result.ok) { setTitle(""); setDescription(""); }
   }}>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">New card</h2>{onClose !== undefined && <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>}</div>
-    <p className="text-[12px] text-muted-foreground">It starts in {start?.title ?? "the first zone"}.</p>
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">New card</h2>{onClose !== undefined && <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>}</div>
+    <p className="text-caption text-muted-foreground font-normal">It starts in {start?.title ?? "the first zone"}.</p>
     <Input value={title} onChange={event => setTitle(event.target.value)} placeholder="What needs doing?" maxLength={200} required aria-label="Title" />
     <Textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Details (optional)" rows={4} aria-label="Details" />
     <Button type="submit" size="sm" className="self-start" disabled={busy || title.trim() === ""}><Plus className="size-4" />Add card</Button>
@@ -926,20 +926,20 @@ const ago = (at: string | null): string => {
 
 function CopyLine({ label, value }: { label: string; value: string }) {
   const copy = () => { void navigator.clipboard?.writeText(value).then(() => toast.success(`${label} copied.`), () => toast.error("Select it and copy it by hand.")); };
-  return <div className="grid gap-1"><span className="text-[12px] font-medium">{label}</span>
-    <div className="flex gap-2"><Input readOnly value={value} className="h-8 font-mono text-[12px]" onFocus={event => event.target.select()} aria-label={label} />
+  return <div className="grid gap-1"><span className="text-caption">{label}</span>
+    <div className="flex gap-2"><Input readOnly value={value} className="h-8 font-mono text-mono" onFocus={event => event.target.select()} aria-label={label} />
       <Button type="button" size="sm" variant="outline" onClick={copy} aria-label={`Copy ${label.toLowerCase()}`}><Copy className="size-3.5" /></Button></div></div>;
 }
 
 /** A new webhook address (and GitHub's secret), shown once. */
 function RevealBox({ kind, reveal, onDone }: { kind: string; reveal: Reveal; onDone: () => void }) {
   return <div className="flex flex-col gap-2 rounded-lg border border-primary/40 bg-primary/5 p-3" data-trigger-reveal>
-    <p className="text-[13px] font-semibold">Copy these now. They aren't shown again.</p>
+    <p className="text-body font-semibold">Copy these now. They aren't shown again.</p>
     {reveal.address === null
-      ? <p className="text-[12px]">Save your public webhook address below first, then choose New address. <span className="break-all font-mono">{reveal.path}</span></p>
+      ? <p className="text-caption font-normal">Save your public webhook address below first, then choose New address. <span className="break-all font-mono">{reveal.path}</span></p>
       : <CopyLine label="Address" value={reveal.address} />}
     {reveal.secret !== null && <CopyLine label="Secret" value={reveal.secret} />}
-    <p className="text-[12px] text-muted-foreground">{kind === "github" ? "In GitHub: Settings → Webhooks → Add webhook. Paste the address and the secret, choose application/json, and pick the events this trigger watches (Issues, Pull requests or Workflow runs)."
+    <p className="text-caption text-muted-foreground font-normal">{kind === "github" ? "In GitHub: Settings → Webhooks → Add webhook. Paste the address and the secret, choose application/json, and pick the events this trigger watches (Issues, Pull requests or Workflow runs)."
       : kind === "linear" ? "In Linear: Settings → API → Webhooks → New webhook. Paste the address and choose Issues. Then paste Linear's signing secret on this trigger."
       : kind === "form" ? "Share this link. Anyone who has it can add a card without signing in; the work it starts still waits for your approval."
       : "Post JSON to the address. A title field becomes the card's title; description, its details."}</p>
@@ -979,7 +979,7 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
     if (result.ok) setFields({});
   };
   return <details className="rounded-lg border px-3 py-2" open={open}>
-    <summary className="cursor-pointer text-[13px] font-semibold">Add a trigger</summary>
+    <summary className="cursor-pointer text-body font-semibold">Add a trigger</summary>
     <form className="flex flex-col gap-3 pt-3" onSubmit={event => void submit(event)} data-add-trigger>
       <Field label="What starts cards">
         <select className={SELECT} value={kind} onChange={event => { setKind(event.target.value); setFields({}); }}>
@@ -997,7 +997,7 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
           <select className={SELECT} value={v("script") === "" && !scripted ? "card" : "script"} aria-label="Makes" onChange={event => { setScripted(event.target.value === "script"); setFields(current => ({ ...current, script: event.target.value === "script" ? view.scripts[0]?.name ?? "" : "" })); }}>
             <option value="card">One card each time</option><option value="script">A card for each item a script prints</option></select></Field>
         {v("script") !== "" || scripted
-          ? view.scripts.length === 0 ? <p className="text-[13px] text-muted-foreground">This project has no scripts yet: make one with Scripts in the toolbar.</p> : <>
+          ? view.scripts.length === 0 ? <p className="text-body text-muted-foreground">This project has no scripts yet: make one with Scripts in the toolbar.</p> : <>
             <Field label="Script" hint="It prints one item per line (a title, or JSON like {&quot;title&quot;: &quot;…&quot;, &quot;key&quot;: 42}). The same item never makes two cards.">
               <select className={SELECT} value={v("script")} onChange={set("script")} aria-label="Script">{view.scripts.map(one => <option key={one.name} value={one.name}>{one.name} — {one.about}</option>)}</select></Field>
             <Field label="Secrets it gets (optional)" hint="Names of saved secrets, like CRM_KEY. Save them on a script zone's Secrets."><Input value={v("secrets")} onChange={set("secrets")} className="font-mono" placeholder="CRM_KEY" maxLength={400} /></Field>
@@ -1026,7 +1026,7 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
         hint={v("delivery") === "webhook" ? setup.hooksBase === null ? "Needs your public webhook address: set it under Settings below." : "You'll get an address to paste into " + (kind === "github" ? "GitHub." : "Linear.")
           : kind === "linear" && !setup.linearKey ? "Save your Linear key under Settings below first." : undefined}>
         <select className={SELECT} value={v("delivery")} onChange={set("delivery")}><option value="poll">Checked every 2 minutes</option><option value="webhook">Sent to a webhook address</option></select></Field>}
-      {kind === "flow" && (setup.otherFlows.length === 0 ? <p className="text-[13px] text-muted-foreground">There are no other flows to follow yet.</p> : <>
+      {kind === "flow" && (setup.otherFlows.length === 0 ? <p className="text-body text-muted-foreground">There are no other flows to follow yet.</p> : <>
         <Field label="Flow"><select className={SELECT} value={v("flow")} onChange={event => setFields(current => ({ ...current, flow: event.target.value, when: "" }))}>
           {setup.otherFlows.map(one => <option key={one.id} value={one.id}>{one.name}</option>)}</select></Field>
         <Field label="When a card reaches"><select className={SELECT} value={v("when")} onChange={set("when")}>
@@ -1071,10 +1071,10 @@ function TriggerSettings({ view, csrf, apply }: { view: BrowserFlowView; csrf: s
   const [busy, setBusy] = useState(false);
   const act = async (path: string, fields: Record<string, string>) => { setBusy(true); const result = await send(path, fields, csrf); setBusy(false); apply(result); if (result.ok) { setKey(""); setPassword(""); } };
   return <details className="rounded-lg border px-3 py-2">
-    <summary className="cursor-pointer text-[13px] font-semibold">Settings</summary>
+    <summary className="cursor-pointer text-body font-semibold">Settings</summary>
     <div className="flex flex-col gap-4 pt-3">
       {setup.linearKey
-        ? <div className="grid gap-1.5"><span className="text-[13px] font-medium">Linear key</span><p className="text-[12px] text-muted-foreground">Saved on this computer.</p>
+        ? <div className="grid gap-1.5"><span className="text-body font-medium">Linear key</span><p className="text-caption text-muted-foreground font-normal">Saved on this computer.</p>
             <Button type="button" size="sm" variant="ghost" className="self-start text-destructive" disabled={busy} onClick={() => void act(`${view.flow.href}/linear-key`, { remove: "yes" })}>Remove key</Button></div>
         : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void act(`${view.flow.href}/linear-key`, { key, password }); }}>
             <Field label="Linear key" hint="From Linear → Settings → Security & access → Personal API keys. Kept on this computer only.">
@@ -1095,8 +1095,8 @@ function TriggerSettings({ view, csrf, apply }: { view: BrowserFlowView; csrf: s
 function StepUp({ view, password, setPassword }: { view: BrowserFlowView; password: string; setPassword: (value: string) => void }) {
   if (view.stepUp === undefined) return <Field label="Your Toolroll password"><Input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></Field>;
   return view.stepUp.fresh
-    ? <p className="text-[13px] text-success" data-sso-step-up="confirmed">✓ Confirmed with {view.stepUp.label}</p>
-    : <a className="text-[13px] underline" data-sso-step-up="confirm" href={view.stepUp.confirmHref}>Confirm with {view.stepUp.label}</a>;
+    ? <p className="text-body text-success" data-sso-step-up="confirmed">✓ Confirmed with {view.stepUp.label}</p>
+    : <a className="text-body underline" data-sso-step-up="confirm" href={view.stepUp.confirmHref}>Confirm with {view.stepUp.label}</a>;
 }
 const stepUpReady = (view: BrowserFlowView, password: string) => view.stepUp === undefined ? password !== "" : view.stepUp.fresh;
 
@@ -1129,24 +1129,24 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
   const live = view.triggers.filter(one => one.state !== "removed");
   useEffect(() => { if (focus !== null) document.querySelector(`[data-trigger-row="${focus}"]`)?.scrollIntoView({ block: "nearest" }); }, [focus]);
   return <div className="flex flex-col gap-4" data-flow-triggers>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">Triggers</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Triggers</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
     {/* A schedule's standing order says its own approval terms beside it (one may build without asking). */}
-    <p className="text-[13px] text-muted-foreground">Triggers add cards to this flow on their own.{live.some(one => one.order !== undefined) ? "" : " The work they start still waits for your usual approvals."}</p>
+    <p className="text-body text-muted-foreground">Triggers add cards to this flow on their own.{live.some(one => one.order !== undefined) ? "" : " The work they start still waits for your usual approvals."}</p>
     {reveal !== null && <RevealBox kind={reveal.kind} reveal={reveal.reveal} onDone={() => setReveal(null)} />}
     {live.length > 0 && <ul className="flex flex-col gap-3">{live.map(trigger => <li key={trigger.id} className={cn("rounded-lg border p-3", focus === trigger.id && "ring-2 ring-primary/50")} data-trigger-row={trigger.id}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">{TRIGGER_ICONS[trigger.kind] ?? <Zap className="size-3.5" aria-hidden="true" />}</span>
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-medium leading-snug">{trigger.words}</p>
-          <p className="text-[12px] text-muted-foreground">Starts in {trigger.zone}{trigger.state === "paused" ? " · Paused" : ""}{trigger.shared ? " · Shared as a form" : ""}</p>
-          {trigger.status !== null && <p className={cn("text-[12px]", trigger.failing ? "text-warning" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}<StatusLink link={trigger.statusLink} /></p>}
+          <p className="text-body leading-snug font-medium">{trigger.words}</p>
+          <p className="text-caption text-muted-foreground font-normal">Starts in {trigger.zone}{trigger.state === "paused" ? " · Paused" : ""}{trigger.shared ? " · Shared as a form" : ""}</p>
+          {trigger.status !== null && <p className={cn("text-caption font-normal", trigger.failing ? "text-warning" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}<StatusLink link={trigger.statusLink} /></p>}
         </div>
       </div>
       {/* Its approval is what turning it on agrees to, so it stays in view; the terms each run files open on demand. */}
-      {trigger.order !== undefined && <p className="mt-2 text-[12px] break-words" data-trigger-approval>{trigger.order.at(-1)}</p>}
+      {trigger.order !== undefined && <p className="mt-2 text-caption break-words font-normal" data-trigger-approval>{trigger.order.at(-1)}</p>}
       {trigger.order !== undefined && <details className="mt-2 rounded-md border px-3 py-2" data-trigger-order>
-        <summary className="cursor-pointer text-[13px] font-medium">What each run files</summary>
-        <ul className="mt-1 flex flex-col gap-1 text-[12px] text-muted-foreground">{trigger.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
+        <summary className="cursor-pointer text-body font-medium">What each run files</summary>
+        <ul className="mt-1 flex flex-col gap-1 text-caption text-muted-foreground font-normal">{trigger.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
       </details>}
       {trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1175,8 +1175,8 @@ function PressPanel({ trigger, view, csrf, apply, onClose }: { trigger: BrowserF
     const result = await send(`${view.flow.href}/triggers/${trigger.id}/press`, { answers: JSON.stringify(answers) }, csrf);
     setBusy(false); apply(result); if (result.ok) onClose();
   }}>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">{trigger.button?.label}</h2><Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
-    <p className="text-[12px] text-muted-foreground">The card starts in {trigger.zone}.</p>
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">{trigger.button?.label}</h2><Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
+    <p className="text-caption text-muted-foreground font-normal">The card starts in {trigger.zone}.</p>
     {questions.map((question, index) => <Field key={index} label={question}>
       {index === 0 ? <Input value={answers[index] ?? ""} onChange={answer(index)} maxLength={200} required autoFocus /> : <Textarea rows={3} value={answers[index] ?? ""} onChange={answer(index)} />}
     </Field>)}
@@ -1198,18 +1198,18 @@ function ScriptsPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; c
   const set = (key: keyof typeof blank) => (event: { target: { value: string } }) => setDraft(current => current === null ? current : { ...current, [key]: event.target.value });
   const [runsFile, setRunsFile] = useState(false);
   return <div className="flex flex-col gap-4" data-flow-scripts>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">Scripts</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
-    <p className="text-[13px] text-muted-foreground">Reusable steps with no AI, in shell, Python or Node. A “Run a script” zone runs one with the card, and a schedule can run one to make cards. Any flow in {view.flow.project} can use them.</p>
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Scripts</h2><Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
+    <p className="text-body text-muted-foreground">Reusable steps with no AI, in shell, Python or Node. A “Run a script” zone runs one with the card, and a schedule can run one to make cards. Any flow in {view.flow.project} can use them.</p>
     {view.scripts.length > 0 && <ul className="flex flex-col gap-2">{view.scripts.map(script => <li key={script.name} className="rounded-lg border p-3" data-script={script.name}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"><ListChecks className="size-3.5" aria-hidden="true" /></span>
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-1.5 font-mono text-[13px] font-semibold">{script.name}{script.held && <Badge tone="attention">Needs approval</Badge>}</p>
+          <p className="flex flex-wrap items-center gap-1.5 font-mono text-body font-semibold">{script.name}{script.held && <Badge tone="attention">Needs approval</Badge>}</p>
           <p className="text-[12.5px]">{script.about}</p>
-          <p className="text-[12px] text-muted-foreground">{LANGUAGE_NAMES[script.language]}{script.file === null ? "" : ` · runs ${script.file}`} · version {script.version} · {script.savedBy} · up to {script.timeoutMinutes} min{script.usedHere.length > 0 ? ` · runs in ${script.usedHere.join(", ")}` : " · not used in this flow"}</p>
+          <p className="text-caption text-muted-foreground font-normal">{LANGUAGE_NAMES[script.language]}{script.file === null ? "" : ` · runs ${script.file}`} · version {script.version} · {script.savedBy} · up to {script.timeoutMinutes} min{script.usedHere.length > 0 ? ` · runs in ${script.usedHere.join(", ")}` : " · not used in this flow"}</p>
         </div>
       </div>
-      {script.file === null && <details className="mt-2"><summary className="cursor-pointer text-[12px] text-muted-foreground">Show the script</summary><pre className="mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-[12px]">{script.body}</pre></details>}
+      {script.file === null && <details className="mt-2"><summary className="cursor-pointer text-caption text-muted-foreground font-normal">Show the script</summary><pre className="mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-mono">{script.body}</pre></details>}
       {script.held && <p className="mt-2 text-[12.5px]" data-script-held>It came with an imported flow, so it doesn't run until you approve it. Read it first.</p>}
       {view.canEdit && <div className="mt-2 flex gap-1.5">
         {script.held && <Button size="sm" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/scripts`, { approve: "yes", name: script.name }, csrf)); setBusy(false); }} data-approve-script>Approve</Button>}
@@ -1272,36 +1272,36 @@ function InsightsPanel({ view, onClose }: { view: BrowserFlowView; onClose: () =
     } catch { setLog({ key, text: "The log couldn't load." }); }
   };
   return <div className="flex flex-col gap-4" data-flow-insights>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-[15px] font-semibold">Insights</h2>
-      <select className="h-8 rounded-md border bg-transparent px-2 text-[12px]" value={days} onChange={event => setDays(Number(event.target.value))} aria-label="Period">
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Insights</h2>
+      <select className="h-8 rounded-md border bg-transparent px-2 text-caption font-normal" value={days} onChange={event => setDays(Number(event.target.value))} aria-label="Period">
         <option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option></select>
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
-    {problem !== null && <p className="text-[13px] text-destructive">{problem}</p>}
-    {data === null && problem === null && <p className="text-[13px] text-muted-foreground">Loading…</p>}
+    {problem !== null && <p className="text-body text-destructive">{problem}</p>}
+    {data === null && problem === null && <p className="text-body text-muted-foreground">Loading…</p>}
     {data !== null && <>
-      <p className="text-[13px]">{data.cards.started} card{data.cards.started === 1 ? "" : "s"} started, {data.cards.finished} finished, {data.cards.active} in progress.</p>
+      <p className="text-body">{data.cards.started} card{data.cards.started === 1 ? "" : "s"} started, {data.cards.finished} finished, {data.cards.active} in progress.</p>
       <section className="flex flex-col gap-2">
-        <h3 className="text-[13px] font-semibold">Where it breaks</h3>
+        <h3 className="text-body font-semibold">Where it breaks</h3>
         {data.breaks.length === 0 ? <p className="text-[12.5px] text-muted-foreground">Nothing failed or was sent back in this period.</p>
-          : <ul className="flex flex-col gap-2">{data.breaks.map(one => { const zone = data.zones.find(z => z.zone === one.zone); return <li key={one.zone} className="rounded-lg border border-border p-2.5 text-[13px]">
+          : <ul className="flex flex-col gap-2">{data.breaks.map(one => { const zone = data.zones.find(z => z.zone === one.zone); return <li key={one.zone} className="rounded-lg border border-border p-2.5 text-body">
             <p><span className="font-semibold">{one.title}</span>: {one.problems} of {one.of} card{one.of === 1 ? "" : "s"} failed or were sent back</p>
-            {zone?.lastProblem && <p className="mt-0.5 text-[12px] text-muted-foreground">Latest: {zone.lastProblem.cardTitle}{zone.lastProblem.note === null ? "" : ` — ${zone.lastProblem.note.split("\n")[0]}`}</p>}
+            {zone?.lastProblem && <p className="mt-0.5 text-caption text-muted-foreground font-normal">Latest: {zone.lastProblem.cardTitle}{zone.lastProblem.note === null ? "" : ` — ${zone.lastProblem.note.split("\n")[0]}`}</p>}
           </li>; })}</ul>}
       </section>
       <section className="flex flex-col gap-1.5">
-        <h3 className="text-[13px] font-semibold">Zones</h3>
-        <table className="w-full text-left text-[12px]"><thead className="text-muted-foreground"><tr><th className="py-1 font-medium">Zone</th><th className="font-medium">In</th><th className="font-medium">On</th><th className="font-medium">Failed</th><th className="font-medium">Back</th><th className="font-medium">Typical stay</th></tr></thead>
+        <h3 className="text-body font-semibold">Zones</h3>
+        <table className="w-full text-left text-caption font-normal"><thead className="text-muted-foreground"><tr><th className="py-1 font-medium">Zone</th><th className="font-medium">In</th><th className="font-medium">On</th><th className="font-medium">Failed</th><th className="font-medium">Back</th><th className="font-medium">Typical stay</th></tr></thead>
           <tbody>{data.zones.map(zone => <tr key={zone.zone} className="border-t">
             <td className="py-1.5 pr-2 font-medium">{zone.title}{zone.here > 0 ? <span className="text-muted-foreground"> · {zone.here} here</span> : null}</td>
             <td>{zone.entered}</td><td>{zone.movedOn}</td><td className={zone.failed > 0 ? "font-semibold text-destructive" : ""}>{zone.failed}</td><td className={zone.sentBack > 0 ? "font-semibold text-foreground" : ""}>{zone.sentBack}</td><td>{duration(zone.typicalMinutes)}</td>
           </tr>)}</tbody></table>
       </section>
       {data.scripts.length > 0 && <section className="flex flex-col gap-1.5">
-        <h3 className="text-[13px] font-semibold">Scripts</h3>
+        <h3 className="text-body font-semibold">Scripts</h3>
         <ul className="flex flex-col gap-1 text-[12.5px]">{data.scripts.map(one => <li key={one.script}><span className="font-mono font-semibold">{one.script}</span>: {one.passed} of {one.runs} passed{one.typicalSeconds === null ? "" : `, usually ${one.typicalSeconds < 90 ? `${one.typicalSeconds} s` : `${Math.round(one.typicalSeconds / 60)} min`}`}</li>)}</ul>
       </section>}
       {data.sorts.length > 0 && <section className="flex flex-col gap-2" data-insights-sorts>
-        <h3 className="text-[13px] font-semibold">Sorting</h3>
+        <h3 className="text-body font-semibold">Sorting</h3>
         {data.sorts.map(one => <div key={one.zone} className="rounded-lg border p-2.5 text-[12.5px]" data-insights-sort={one.zone}>
           <p><span className="font-semibold">{one.title}</span>: {one.sorted} sorted · {one.alone} on its own · {one.notSure} for a person{one.corrected > 0 && <> · <span className="font-semibold text-attention">{one.corrected} moved elsewhere by people</span></>}</p>
           {one.bands.some(band => band.of > 0) && <p className="mt-1 text-muted-foreground">Right when {one.bands.filter(band => band.of > 0).map(band => `${band.from}–${band.to}% sure: ${band.right} of ${band.of}`).join(" · ")}</p>}
@@ -1310,18 +1310,18 @@ function InsightsPanel({ view, onClose }: { view: BrowserFlowView; onClose: () =
         </div>)}
       </section>}
       {(data.recurring ?? []).length > 0 && <section className="flex flex-col gap-1.5" data-insights-recurring>
-        <h3 className="text-[13px] font-semibold">What keeps coming back</h3>
+        <h3 className="text-body font-semibold">What keeps coming back</h3>
         <ul className="flex flex-col gap-1 text-[12.5px]">{data.recurring!.map(one => <li key={one.problem} className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate">{one.card === null ? one.title : <a className="underline-offset-2 hover:underline" href={`${view.flow.href}?card=${one.card}`}>{one.title}</a>}</span>
           <span className={cn("shrink-0 tabular-nums", one.days > 1 ? "font-semibold text-foreground" : "text-muted-foreground")}>{one.days} day{one.days === 1 ? "" : "s"}</span></li>)}</ul>
       </section>}
       <section className="flex flex-col gap-1.5">
-        <h3 className="text-[13px] font-semibold">Recent runs</h3>
+        <h3 className="text-body font-semibold">Recent runs</h3>
         {data.runs.length === 0 ? <p className="text-[12.5px] text-muted-foreground">No scripts, sorts or updates have run in this period.</p>
           : <ul className="flex flex-col gap-1.5">{data.runs.map(run => { const key = `${run.card}:${run.entry}`; return <li key={key} className="rounded-md border px-2.5 py-2 text-[12.5px]" data-run={key}>
             <button type="button" className="flex w-full items-start gap-2 text-left" onClick={() => void openLog(run.card, run.entry)} aria-expanded={log?.key === key}>
               <span className={cn("mt-1 size-2 shrink-0 rounded-full", run.state === "passed" ? "bg-success" : run.state === "failed" ? "bg-destructive" : "bg-info")} aria-hidden="true" />
-              <span className="min-w-0 flex-1"><span className="font-medium">{run.script ?? run.zoneTitle}</span> · {run.cardTitle}<span className="block text-[12px] text-muted-foreground">{run.kind === "sort" && run.state === "passed" && run.result !== null ? run.result.split(". ")[0]!.replace(/\.$/, "") : run.state === "passed" ? "Passed" : run.state === "failed" ? "Failed" : run.state === "waiting" ? "Trying again" : "Running"}{run.durationMs === null ? "" : run.kind === "sort" ? ` · ${run.durationMs < 1000 ? `${run.durationMs} ms` : `${(run.durationMs / 1000).toFixed(1)} s`}` : ` in ${Math.max(1, Math.round(run.durationMs / 1000))} s`} · {when(run.at)}</span></span>
+              <span className="min-w-0 flex-1"><span className="font-medium">{run.script ?? run.zoneTitle}</span> · {run.cardTitle}<span className="block text-caption text-muted-foreground font-normal">{run.kind === "sort" && run.state === "passed" && run.result !== null ? run.result.split(". ")[0]!.replace(/\.$/, "") : run.state === "passed" ? "Passed" : run.state === "failed" ? "Failed" : run.state === "waiting" ? "Trying again" : "Running"}{run.durationMs === null ? "" : run.kind === "sort" ? ` · ${run.durationMs < 1000 ? `${run.durationMs} ms` : `${(run.durationMs / 1000).toFixed(1)} s`}` : ` in ${Math.max(1, Math.round(run.durationMs / 1000))} s`} · {when(run.at)}</span></span>
             </button>
             {log?.key === key && <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-[11.5px]" data-run-log>{log.text}</pre>}
           </li>; })}</ul>}
@@ -1533,17 +1533,17 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
     <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
       {editing && draft !== null
         ? <Input value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} maxLength={80} className="h-8 max-w-64 font-semibold" aria-label="Flow name" />
-        : <h1 className="text-[15px] font-semibold">{view.flow.name}</h1>}
-      <span className="text-[12px] text-muted-foreground">{view.flow.project}</span>
+        : <h1 className="text-title">{view.flow.name}</h1>}
+      <span className="text-caption text-muted-foreground font-normal">{view.flow.project}</span>
       <AlsoHere others={others} cards={view.cards} />
-      {editing && draft !== null && <label className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">Owner
-        <select className="h-8 rounded-md border bg-transparent px-2 text-[12px] text-foreground" value={draft.owner} onChange={event => setDraft({ ...draft, owner: event.target.value })} aria-label="Flow owner">
+      {editing && draft !== null && <label className="inline-flex items-center gap-1.5 text-caption text-muted-foreground font-normal">Owner
+        <select className="h-8 rounded-md border bg-transparent px-2 text-caption text-foreground font-normal" value={draft.owner} onChange={event => setDraft({ ...draft, owner: event.target.value })} aria-label="Flow owner">
           {[...new Set([draft.owner, ...view.approvers])].map(name => <option key={name} value={name}>{name === view.me ? `${name} (you)` : name}</option>)}
         </select></label>}
       {waitingOnYou > 0 && !editing && <Badge tone="attention">{waitingOnYou} waiting for you</Badge>}
       {!editing && <div className="ml-1 inline-flex rounded-md border p-0.5" role="group" aria-label="Which cards">
         {([["All cards", false], ["Mine", true]] as const).map(([label, value]) => <button key={label} type="button" aria-pressed={mineOnly === value} onClick={() => setMineOnly(value)}
-          className={cn("rounded px-2 py-1 text-[12px] font-medium", mineOnly === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
+          className={cn("rounded px-2 py-1 text-caption", mineOnly === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
       </div>}
       <span className="flex-1" />
       {editing
@@ -1580,7 +1580,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
           <Controls showInteractive={false} />
         </ReactFlow>
-        {editing && <p className="pointer-events-none absolute bottom-3 left-14 max-w-md rounded-lg bg-foreground/85 px-3 py-1.5 text-[12px] text-background">Drag zones to arrange them. Drag from a zone's right dot to say where work goes next, from its bottom dot for where it goes if sent back.</p>}
+        {editing && <p className="pointer-events-none absolute bottom-3 left-14 max-w-md rounded-lg bg-foreground/85 px-3 py-1.5 text-caption text-background font-normal">Drag zones to arrange them. Drag from a zone's right dot to say where work goes next, from its bottom dot for where it goes if sent back.</p>}
       </div>
       {(selectedZone !== null && editing) || selectedCard !== null || (adding && !editing) || triggersOpen || pressing !== null || scriptsOpen || insightsOpen ? <aside className="absolute inset-y-0 right-0 z-10 w-[360px] max-w-full overflow-y-auto border-l bg-card p-4 shadow-xl" data-flow-drawer>
         {selectedZone !== null && editing
@@ -1623,33 +1623,33 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
   if (button !== null) return <div className="p-4"><PressPanel trigger={button} view={view} csrf={csrf} apply={apply} onClose={() => setPressing(null)} /></div>;
   if (card !== null) return <div className="p-4"><CardPanel card={card} view={view} csrf={csrf} apply={apply} onClose={() => setOpen(null)} /></div>;
   return <div className="flex flex-col gap-3 p-4" data-flow={view.flow.id}>
-    <div><h1 className="text-[17px] font-semibold">{view.flow.name}</h1><p className="text-[12px] text-muted-foreground">{view.flow.project}{view.canEdit ? <> · <a className="underline" href={view.chatHref}>change it in chat</a>, or edit it on a larger screen</> : null} · <a className="underline" href={`${view.flow.href}/export`} download data-export-flow>Export</a></p>
+    <div><h1 className="text-[17px] font-semibold">{view.flow.name}</h1><p className="text-caption text-muted-foreground font-normal">{view.flow.project}{view.canEdit ? <> · <a className="underline" href={view.chatHref}>change it in chat</a>, or edit it on a larger screen</> : null} · <a className="underline" href={`${view.flow.href}/export`} download data-export-flow>Export</a></p>
       {others.length > 0 && <div className="mt-1.5"><AlsoHere others={others} cards={view.cards} /></div>}</div>
     {view.canEdit && live.some(one => one.button !== null && one.state === "active") && <div className="flex flex-wrap gap-2">
       {live.filter(one => one.button !== null && one.state === "active").map(one => <Button key={one.id} size="sm" onClick={() => setPressing(one.id)}><MousePointerClick className="size-4" />{one.button!.label}</Button>)}</div>}
-    {view.canEdit && <details className="rounded-lg border p-3"><summary className="cursor-pointer text-[14px] font-semibold">New card</summary><div className="pt-3"><NewCard view={view} csrf={csrf} apply={apply} /></div></details>}
+    {view.canEdit && <details className="rounded-lg border p-3"><summary className="cursor-pointer text-title-sm">New card</summary><div className="pt-3"><NewCard view={view} csrf={csrf} apply={apply} /></div></details>}
     {flowOrder(view.stages, view.start).map(stage => {
       const cards = view.cards.filter(one => one.stage === stage.id && one.state === "active");
       return <section key={stage.id} className="rounded-lg border bg-muted/40">
-        <header className="flex items-center gap-2 px-3 py-2"><span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: COLORS[stage.zone.color] ?? "#64748b" }}>{KIND_ICONS[stage.kind]}</span><span className="flex-1 text-[14px] font-semibold">{stage.title}</span>{cards.length > 0 && <span className="text-[12px] text-muted-foreground">{cards.length}</span>}</header>
+        <header className="flex items-center gap-2 px-3 py-2"><span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: COLORS[stage.zone.color] ?? "#64748b" }}>{KIND_ICONS[stage.kind]}</span><span className="flex-1 text-title-sm">{stage.title}</span>{cards.length > 0 && <span className="text-caption text-muted-foreground font-normal">{cards.length}</span>}</header>
         {cards.length > 0 && <ul className="flex flex-col gap-2 px-3 pb-3">{cards.map(one => <li key={one.id}><button type="button" onClick={() => setOpen(one.id)} className={cn("min-h-11 w-full rounded-lg border bg-card px-3 py-2 text-left", one.canDecide && "border-attention/60")}>
-          <div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-[14px] font-medium">{one.title}</div>{one.owner !== null && <Face name={one.owner} />}</div>
+          <div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-title-sm font-medium">{one.title}</div>{one.owner !== null && <Face name={one.owner} />}</div>
           {one.sorted !== null && <div className="mt-1 flex"><SortChip sorted={one.sorted} /></div>}
-          {one.waiting !== null && <div className={cn("text-[12px]", one.task !== null && (stage.kind === "task" || stage.kind === "report") && "truncate", one.canDecide ? "font-semibold text-attention" : "text-muted-foreground")}>{one.canDecide ? NEEDS.card.sentence({}) : one.waiting}</div>}
-          {one.comments.length > 0 && <div className="mt-0.5 inline-flex items-center gap-1 text-[12px] text-muted-foreground"><MessageSquare className="size-3" aria-hidden="true" />{one.comments.length}</div>}
+          {one.waiting !== null && <div className={cn("text-caption font-normal", one.task !== null && (stage.kind === "task" || stage.kind === "report") && "truncate", one.canDecide ? "font-semibold text-attention" : "text-muted-foreground")}>{one.canDecide ? NEEDS.card.sentence({}) : one.waiting}</div>}
+          {one.comments.length > 0 && <div className="mt-0.5 inline-flex items-center gap-1 text-caption text-muted-foreground font-normal"><MessageSquare className="size-3" aria-hidden="true" />{one.comments.length}</div>}
         </button></li>)}</ul>}
       </section>;
     })}
     {live.length > 0 && <section className="rounded-lg border p-3" data-flow-triggers>
-      <h2 className="text-[14px] font-semibold">Triggers</h2>
-      <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-[13px]" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
-        <div className={cn("text-[12px]", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
+      <h2 className="text-title-sm">Triggers</h2>
+      <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-body" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
+        <div className={cn("text-caption font-normal", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
         {/* A schedule's standing order (what a routine was): its approval in view, its terms on demand, and on or off here. */}
         {one.order !== undefined && <>
-          <p className="mt-1 text-[12px] break-words" data-trigger-approval>{one.order.at(-1)}</p>
+          <p className="mt-1 text-caption break-words font-normal" data-trigger-approval>{one.order.at(-1)}</p>
           <details className="mt-1.5 rounded-md border px-3 py-2" data-trigger-order>
-            <summary className="flex min-h-11 cursor-pointer items-center text-[13px] font-medium">What each run files</summary>
-            <ul className="flex flex-col gap-1 pb-1 text-[12px] text-muted-foreground">{one.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
+            <summary className="flex min-h-11 cursor-pointer items-center text-label">What each run files</summary>
+            <ul className="flex flex-col gap-1 pb-1 text-caption text-muted-foreground font-normal">{one.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
           </details>
           {view.canEdit && <Button size="sm" variant="outline" className="mt-1.5 min-h-11" disabled={busy} onClick={() => void toggle(one)}>{one.state === "paused" ? "Turn on" : "Pause"}</Button>}
         </>}</li>)}</ul>

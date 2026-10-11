@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { PAGE_CSS } from "./serve.js";
+import { cn, SIGNAL_THEME } from "./browser/components/ui/utils.js";
 
 /** The console's two hand-written stylesheets: the server pages' CSS in
  * serve.ts and the React workspace's CSS. */
@@ -115,6 +116,17 @@ describe("Signal tokens: one generated source", () => {
     const tailwind = readFileSync(new URL("./browser/tailwind.css", import.meta.url), "utf8");
     expect(tailwind).toContain('@import "../design/theme.css";');
     expect(tailwind).not.toMatch(/@theme\b/);
+  });
+
+  test("cn knows Signal's type, radius and shadow names, so a later colour never drops a role", () => {
+    const theme = readFileSync(new URL("./design/theme.css", import.meta.url), "utf8");
+    const names = (prefix: string) => [...theme.matchAll(new RegExp(`--${prefix}-([\\w-]+?): `, "g"))].map(match => match[1]!).filter(name => !name.includes("--"));
+    expect([...SIGNAL_THEME.text].sort()).toEqual(names("text").sort());
+    expect([...SIGNAL_THEME.radius].sort()).toEqual(names("radius").filter(name => !["sm", "md", "lg", "xl"].includes(name)).sort());
+    expect([...SIGNAL_THEME.shadow].sort()).toEqual(names("shadow").sort());
+    expect(cn("text-caption", "text-muted-foreground")).toBe("text-caption text-muted-foreground");
+    expect(cn("text-body", "text-caption")).toBe("text-caption");
+    expect(cn("rounded-card", "rounded-md")).toBe("rounded-md");
   });
 
   test("the workspace sheet only reads the generated tokens, so it never overrides a person's accent", () => {

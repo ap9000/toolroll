@@ -110,12 +110,12 @@ function StatusCard({ selected, acts, answers }: { selected: Selected; acts: Res
       {sentence !== "" && <p className={cn("mt-1.5 max-w-[75ch] text-sm", selected.failure != null ? "text-foreground" : "text-muted-foreground")} data-result-sentence
         {...(selected.failure != null ? { "data-failure-reason": "" } : {})}>{sentence}</p>}
       {/* A failed build: the evidence behind what it missed, and that exact log line when a check failed. */}
-      {selected.failure != null && (selected.failure.evidence !== null || selected.failure.link !== null) && <p className="mt-1 max-w-[75ch] text-[13px] text-muted-foreground" data-failure-evidence>
+      {selected.failure != null && (selected.failure.evidence !== null || selected.failure.link !== null) && <p className="mt-1 max-w-[75ch] text-body text-muted-foreground" data-failure-evidence>
         {selected.failure.evidence !== null && <span className="[overflow-wrap:anywhere]">{selected.failure.evidence}</span>}
         {selected.failure.link !== null && <>{selected.failure.evidence !== null && " "}<a href={selected.failure.link.href} data-failure-log className={META_LINK}>{selected.failure.link.label}</a></>}
       </p>}
     </div>
-    {mismatch !== null && mismatch.rows.length > 0 && <ul aria-label="What doesn't match" className="flex flex-col gap-1.5 border-t border-border pt-3 text-[13px] phone:pt-2" data-mismatches={mismatch.rows.length}>
+    {mismatch !== null && mismatch.rows.length > 0 && <ul aria-label="What doesn't match" className="flex flex-col gap-1.5 border-t border-border pt-3 text-body phone:pt-2" data-mismatches={mismatch.rows.length}>
       {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="flex gap-2">
         <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
         <span className="min-w-0 [overflow-wrap:anywhere]">
@@ -125,7 +125,7 @@ function StatusCard({ selected, acts, answers }: { selected: Selected; acts: Res
       </li>)}
     </ul>}
     {status !== null && <StatusDetails status={status} />}
-    {caveats.length > 0 && <ul className="flex flex-col gap-1 text-[13px]" aria-label="Caveats" data-result-attention={caveats.length}>
+    {caveats.length > 0 && <ul className="flex flex-col gap-1 text-body" aria-label="Caveats" data-result-attention={caveats.length}>
       {caveats.map(one => <li key={one} data-caveat className="flex gap-2">
         <AlertTriangle className={cn("mt-0.5 size-3.5 shrink-0", failed ? "text-destructive" : "text-warning")} aria-hidden="true" />
         <span className="min-w-0 [overflow-wrap:anywhere]">{one}</span>
@@ -195,13 +195,13 @@ function CheckItems({ panel, chatHref, answers, answer }: { panel: BrowserResult
   const items = checkItemsOf(panel);
   const changesHref = panel.tabs.find(tab => tab.key === "changes")?.href ?? null;
   return <Card aria-labelledby="you-check-title" data-result-you-check={items.length} className="gap-0 p-0 phone:gap-0 phone:p-0">
-    <h2 id="you-check-title" className="px-5 pb-1 pt-4 text-[15px] font-semibold phone:px-4">{items.length === 1 ? "You check this one" : `You check these ${items.length}`}</h2>
+    <h2 id="you-check-title" className="px-5 pb-1 pt-4 text-title phone:px-4">{items.length === 1 ? "You check this one" : `You check these ${items.length}`}</h2>
     <ul className="divide-y divide-border">
       {items.map(item => {
         const said = answers.get(item.id) ?? null;
         return <li key={item.id} data-check-item={item.id} data-looks-right={said === "right" ? "1" : undefined} data-not-right={said === "not-right" ? "1" : undefined} className="flex scroll-mt-4 flex-col gap-3 px-5 py-4 phone:px-4">
           <p className="max-w-[75ch] text-sm font-medium">{wordsOf(item)}</p>
-          {item.note !== null && <p className="max-w-[75ch] text-[13px] text-muted-foreground">The agent says: {item.note}</p>}
+          {item.note !== null && <p className="max-w-[75ch] text-body text-muted-foreground">The agent says: {item.note}</p>}
           {item.excerpts.map(one => <Excerpt key={one.path} excerpt={one} changesHref={changesHref} />)}
           {item.shots.length > 0 && <ul className="flex flex-wrap gap-2" aria-label="Screenshots">
             {item.shots.map(shot => <li key={shot.src}><a href={shot.href} className="block overflow-hidden rounded-md border border-border hover:border-muted-foreground" title={shot.caption}>
@@ -261,7 +261,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
             {complete.accept != null && <input type="hidden" name="accept" value="1" />}
           </> : accept !== null && <input type="hidden" name="return" value={accept.returnTo} />}
           {reason !== null && <>
-            <label htmlFor="accept-reason" className="text-[13px] font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
+            <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
             <Input id="accept-reason" type="text" name="note" maxLength={500} required placeholder={reason} className="h-11 w-full" />
           </>}
           <Button type="submit" variant={variant} className={wide} {...mark} data-accept-result><Check className="phone:hidden" />{decision.label}</Button>
@@ -274,7 +274,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
         return <PostForm key={kind} action={anyway.action} className="flex w-full max-w-sm flex-col items-start gap-2 phone:max-w-none" data-accept-with-reason data-accept-anyway>
           <input type="hidden" name="run" value={String(anyway.run)} />
           <input type="hidden" name="return" value={anyway.returnTo} />
-          <label htmlFor="accept-reason" className="text-[13px] font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
+          <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
           <Input id="accept-reason" type="text" name="note" maxLength={500} required placeholder="Why is this safe to accept?" className="h-11 w-full" />
           <Button type="submit" variant="outline" className={wide} {...mark} data-accept-result><Check className="phone:hidden" />Accept anyway</Button>
         </PostForm>;
@@ -310,12 +310,12 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
   const rest = more ? "" : "phone:hidden";
   return <Card data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
     className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,env(safe-area-inset-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
-    {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-[13px]", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
+    {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-body", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />{line}</p>}
-    {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-[13px]" data-failure-suggestion>
+    {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-body" data-failure-suggestion>
       <span className="font-semibold">What to change.</span> <span className="text-muted-foreground">{selected.failure.suggestion}</span></p>}
     {/* What comes next (notes ready, CI failing, no build): one line, whatever the acts. */}
-    {next !== null && <p className={cn("max-w-[75ch] text-[13px]", rest)} data-next-action={next.kind}>
+    {next !== null && <p className={cn("max-w-[75ch] text-body", rest)} data-next-action={next.kind}>
       <span className="font-semibold">{next.title}.</span> <span className="text-muted-foreground">{next.detail}</span></p>}
     {shown.length > 0 && <div className={cn("flex flex-wrap items-center gap-2 phone:flex-nowrap phone:items-stretch", reason !== null && "flex-col items-start gap-3 phone:flex-row phone:items-stretch phone:gap-2", more && "phone:flex-wrap")} data-result-acts>
       <div className="contents phone:flex phone:min-w-0 phone:flex-1 phone:flex-col">{acts.primary !== null ? act(acts.primary, true) : acts.secondary !== null && act(acts.secondary, false)}</div>
@@ -323,7 +323,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
       {hasMore && <Button type="button" variant="outline" className="hidden min-h-11 shrink-0 phone:inline-flex" aria-expanded={more} aria-label={more ? "Fewer options" : "More options"}
         data-dock-more onClick={() => setMore(open => !open)}>{more ? "Less" : "More"}<ChevronDown className={cn("transition-transform motion-reduce:transition-none", more && "rotate-180")} /></Button>}
     </div>}
-    {effect !== null && <p className={cn("max-w-[75ch] text-[13px] text-muted-foreground", rest)} data-decision-effect>{effect}</p>}
+    {effect !== null && <p className={cn("max-w-[75ch] text-body text-muted-foreground", rest)} data-decision-effect>{effect}</p>}
   </Card>;
 }
 
@@ -366,13 +366,13 @@ function Details({ selected }: { selected: Selected }) {
     ...(selected.notes.length === 0 ? [] : [{ id: "notes", title: "Notes", hint: null, count: selected.notes.length,
       body: <ul className="flex flex-col gap-2 text-sm">{selected.notes.map((one, index) => <li key={index}><span className="text-muted-foreground">{one.author} · {shortWhen(one.at)}</span> {one.note}</li>)}</ul> }]),
     ...(why.length === 0 ? [] : [{ id: "why", title: "Recorded reasons", hint: null, count: why.length,
-      body: <div className="flex flex-col gap-1 text-[13px] text-muted-foreground" data-status-why>{why.map(one => <p key={one} className="[overflow-wrap:anywhere]">{one}</p>)}</div> }]),
+      body: <div className="flex flex-col gap-1 text-body text-muted-foreground" data-status-why>{why.map(one => <p key={one} className="[overflow-wrap:anywhere]">{one}</p>)}</div> }]),
     ...(panel === null || panel.limits.length === 0 ? [] : [{ id: "limits", title: "What was shortened", hint: null, count: panel.limits.length,
-      body: <ul className="flex flex-col gap-1 text-[13px] text-muted-foreground">{panel.limits.map(one => <li key={one}>{one}</li>)}</ul> }]),
+      body: <ul className="flex flex-col gap-1 text-body text-muted-foreground">{panel.limits.map(one => <li key={one}>{one}</li>)}</ul> }]),
     ...(panel?.reviewHistory == null ? [] : [{ id: "review-history", title: "Review history", hint: null,
-      body: <p className="text-[13px] text-muted-foreground">{panel.reviewHistory}</p> }]),
+      body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
-      body: <div className="flex flex-col gap-3 text-[13px]">
+      body: <div className="flex flex-col gap-3 text-body">
         <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">
           {record.facts.map(one => <div key={one.label} className="contents"><dt className="text-muted-foreground">{one.label}</dt><dd className="min-w-0 [overflow-wrap:anywhere]">{one.value}</dd></div>)}
         </dl>
@@ -387,9 +387,9 @@ function Details({ selected }: { selected: Selected }) {
     {rows.map(row => <details key={row.id} id={row.id} className="group scroll-mt-4" data-cockpit-section={row.id}>
       <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 hover:bg-accent/50 phone:min-h-12 phone:px-4 [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-        <h2 className="text-[15px] font-semibold">{row.title}</h2>
+        <h2 className="text-title">{row.title}</h2>
         {row.count !== undefined && <Badge>{row.count}</Badge>}
-        {row.hint != null && <span className="min-w-0 truncate text-[13px] text-muted-foreground">{row.hint}</span>}
+        {row.hint != null && <span className="min-w-0 truncate text-body text-muted-foreground">{row.hint}</span>}
       </summary>
       <div className="px-5 pb-5 pt-1 phone:px-4">{row.body}</div>
     </details>)}
@@ -438,8 +438,8 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
     <header className="flex flex-col gap-3 pb-1">
       <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1 basis-72">
-          <h1 className="text-[26px] font-semibold leading-tight tracking-tight phone:text-[22px]">{selected?.title ?? "Results"}</h1>
-          {selected !== null && <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground phone:gap-y-0" data-result-meta>
+          <h1 className="text-display tracking-tight phone:text-[22px]">{selected?.title ?? "Results"}</h1>
+          {selected !== null && <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-body text-muted-foreground phone:gap-y-0" data-result-meta>
             {selected.project !== null && <><span className="font-medium text-foreground/80">{selected.project}</span><span aria-hidden="true">·</span></>}
             {selected.record !== null && <><a href="#run-record" onClick={openRecord} className={META_LINK}>Build #{selected.record.build}</a><span aria-hidden="true">·</span></>}
             <a href={selected.taskHref} className={META_LINK}>Open task</a>
@@ -449,8 +449,8 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
         </div>
         {selected !== null && <ResultsMenu view={view} />}
       </div>
-      {view.missing !== null && <p role="status" className="rounded-md bg-muted px-3 py-2 text-[13px] text-foreground">{view.missing}{selected !== null ? " Showing the newest result instead." : ""}</p>}
-      {view.beyond && <p className="text-[13px] text-muted-foreground">This result is older than the list in Results.</p>}
+      {view.missing !== null && <p role="status" className="rounded-md bg-muted px-3 py-2 text-body text-foreground">{view.missing}{selected !== null ? " Showing the newest result instead." : ""}</p>}
+      {view.beyond && <p className="text-body text-muted-foreground">This result is older than the list in Results.</p>}
     </header>
 
     {selected === null
@@ -461,7 +461,7 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
               <span aria-hidden="true" className={cn("mt-2 size-2 shrink-0 rounded-full", row.status === null ? "bg-muted-foreground" : DOT[toneOf(row.status.tone)])} />
               <div className="min-w-0 flex-1">
                 <a href={row.href} className={cn("block truncate hover:underline hover:underline-offset-4", row.needsYou ? "font-semibold" : "font-medium")}>{row.title}</a>
-                <p className="truncate text-[13px] text-muted-foreground">{[row.status?.label, ...row.notes, shortWhen(row.at)].filter(Boolean).join(" · ")}</p>
+                <p className="truncate text-body text-muted-foreground">{[row.status?.label, ...row.notes, shortWhen(row.at)].filter(Boolean).join(" · ")}</p>
               </div>
             </li>)}</ul>
           </Card>
