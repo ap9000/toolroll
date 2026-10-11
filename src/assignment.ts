@@ -9,7 +9,8 @@ import { homedir } from "node:os";
 import { readSchemaVersion, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
 import { approvalOf } from "./scope.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
-import { evidenceRoot, readVerifiedArtifact, readVerifiedReport } from "./evidence.js";
+import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
+import { sweepIfMoved } from "./sweep-gate.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { reproveApprover, type VerifiedApprover } from "./principal.js";
 import { noteAssignmentStatus } from "./assignment-status.js";
@@ -202,7 +203,7 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
   const artifacts = result === null ? [] : store.artifactsFor(result.id);
   const reports = artifacts.filter(a => a.kind === "report");
   const unavailable = family.versions.flatMap(version => store.runsFor(version.refId).flatMap(run =>
-    store.artifactsFor(run.id).filter(artifact => root === undefined || !readVerifiedArtifact(root, artifact).ok)
+    store.artifactsFor(run.id).filter(artifact => root === undefined || !verifyArtifact(root, artifact).ok)
       .map(artifact => `Saved ${artifact.kind} #${artifact.id} (run ${run.id}) is unavailable or changed.`)));
   const ownChecks = result === null ? null : assignmentChecksForRun(store, root, result.id, now);
   // Checks Off: a passing full release check that contains this commit covers it, read now from the existing receipts.
@@ -441,7 +442,7 @@ export function assignmentEvidenceIntact(store: Store, root: string, receipt: As
     const family = store.taskFamilyOf(receipt.taskId, null, true);
     if (family === null || family.problem !== null || family.root.id !== receipt.rootId ||
       !family.versions.every(version => store.runsFor(version.refId).every(run =>
-        store.artifactsFor(run.id).every(artifact => readVerifiedArtifact(root, artifact).ok)))) return false;
+        store.artifactsFor(run.id).every(artifact => verifyArtifact(root, artifact).ok)))) return false;
     if (receipt.completionKind === "research-report") {
       const report = readVerifiedReport(store, root, store.lookupRef(receipt.taskId)!.id);
       return report?.ok === true && report.run === receipt.runId;
@@ -572,12 +573,13 @@ function noteAssignmentHandoff(store: Store, assignment: AssignmentSnapshot, now
     body: assignment.detail, link: `/t/${encodeURIComponent(assignment.rootId)}` }, now);
 }
 
-/** The ordinary worker reconciles at most 50 owned roots per pass. A lost
- * wakeup is recovered after restart; immutable notification keys dedupe it. */
+/** The ordinary worker reconciles at most 50 owned roots per pass, and skips a
+ * pass when nothing moved (sweep-gate.ts). A lost wakeup is recovered after
+ * restart; immutable notification keys dedupe it. */
 export function syncAssignmentHandoffs(store: Store, now: Date, repos: readonly string[], root?: string): void {
   if (repos.length === 0) return;
-  store.transact(() => {
   const key = `assignment-handoff:${digest([...new Set(repos)].sort())}`;
+  sweepIfMoved(store, key, now, () => store.transact(() => {
   const cursor = store.serviceCursor(key);
   const rows = store.handle.prepare(`SELECT t.id,t.external_id FROM task_ref t WHERE t.backend = 'built-in' AND t.revision_of IS NULL
     AND t.repo IN (SELECT value FROM json_each(?)) AND t.id > ?
@@ -591,7 +593,7 @@ export function syncAssignmentHandoffs(store: Store, now: Date, repos: readonly 
     }
   }
   store.setServiceCursor(key, rows.length < 50 ? 0 : Number(rows.at(-1)!["id"]), now);
-  });
+  }));
 }
 
 export function assignmentUpdates(store: Store, now: Date, access: AssignmentAccess, query: { after: number; limit: number }, root?: string) {

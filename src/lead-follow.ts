@@ -7,6 +7,7 @@ import { assignmentOf } from './assignment.js';
 import { runLeadTurn, type LeadTurnInput, type LeadTurnOutcome } from './lead.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
 import { checkLeadCommitments } from './lead-commitments.js';
+import { sweepIfMoved } from './sweep-gate.js';
 
 const CONFIG = 'lead follow configured';
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -130,7 +131,8 @@ export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
   for (const grant of grants) {
     const access = authorized(store, grant, input.repos());
     if (!access || updateAdmissionPaused(store.raw())) continue;
-    observe(store, grant, clock(), input.evidenceRoot);
+    const now = clock();
+    sweepIfMoved(store, `lead:${grant.id}:scan`, now, () => observe(store, grant, now, input.evidenceRoot));
     const batch = nextBatch(store, grant, clock());
     if (!batch) continue;
     // A replay after process exit reads the saved turn; even a failed turn is
