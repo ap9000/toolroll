@@ -96,7 +96,7 @@ const CONTRACT_GUIDE = [
   "recap, list_decisions, get_decision, and queue are the plane's own read queries (shared with the operator's mate). get_decision shows each option's consequence, never the builder's recommendation.",
   "propose_next, propose_reserve, propose_hold, propose_unhold, propose_scope, propose_cancel, and propose_answer write a PROPOSAL row and nothing else: an approver confirms it on the console or the CLI, and a stale one refuses there. Proposals share your hourly filing rate and hold at most 20 pending per credential; they expire after seven days.",
   "Approve, steer, answer, pick, mint, configure, merge: those verbs do not exist on this surface, by construction.",
-  "Claim one assignment, then follow list_assignment_updates with a saved cursor; inspect get_assignment when a current result or decision needs attention. claim_assignment records its lead; acknowledge_assignment records that lead's check of an exact ready receipt. Neither operation grants authority, accepts proof, answers decisions, approves work, publishes, or deploys.",
+  "Claim one assignment, then receive its changes with get_assignment_inbox and acknowledge each handled batch with acknowledge_assignment_delivery; inspect get_assignment when a current result or decision needs attention. list_assignment_updates is only the history of handoffs sent to people. claim_assignment records its lead; acknowledge_assignment records that lead's check of an exact ready receipt. Neither operation grants authority, accepts proof, answers decisions, approves work, publishes, or deploys.",
 ].join("\n");
 
 /** An assignment tool: the adapter reads its call with the same schema `toolroll assignment` does. */

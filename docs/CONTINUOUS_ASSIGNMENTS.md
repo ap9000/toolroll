@@ -11,16 +11,21 @@ an environment variable, never a prompt or command argument:
 
 ```sh
 toolroll assignment claim task-id --token-env SO_COORDINATOR --json
-toolroll assignment updates --after 0 --token-env SO_COORDINATOR --json
+toolroll assignment inbox --consumer my-lead --token-env SO_COORDINATOR --json
 toolroll assignment show task-id --token-env SO_COORDINATOR --json
 toolroll assignment check task-id --digest RECEIPT_DIGEST --token-env SO_COORDINATOR --json
 ```
 
-Process a page before saving its `nextCursor`; continue while `hasMore` is true.
-Repeated reads are safe. A notice may be stale: inspect the current assignment
-before acting. MCP offers claim_assignment, list_assignment_updates,
-get_assignment and acknowledge_assignment. Reads execute nothing and clear no
-pending decision. There is no automatic Codex-thread wakeup.
+Handle a batch, then acknowledge its exact batch ID; until then the same batch
+is returned again (see AGENT_UPDATES.md). This inbox is the one way updates
+reach a lead — the built-in lead reads the same kind of inbox for the
+conversations that turned on crew updates. `assignment updates` (MCP
+list_assignment_updates) is only the history of handoffs sent to people; it
+delivers and acknowledges nothing. An update may be stale: inspect the current
+assignment before acting. MCP offers claim_assignment, get_assignment_inbox,
+acknowledge_assignment_delivery, get_assignment and acknowledge_assignment.
+Reads execute nothing and clear no pending decision. There is no automatic
+Codex-thread wakeup.
 
 The active admitted lead checks the exact ready receipt; the signed-in user can
 mark the same result complete without taking lead ownership. The receipt binds

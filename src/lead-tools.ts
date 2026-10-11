@@ -114,6 +114,8 @@ import { STARTER_IDS } from "./flow-starters.js";
 import { undoFor, weekOf, weekWords } from "./subagent-week.js";
 import { PERSON_ID, personEntry, teamRoomOf } from "./lead-people.js";
 import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";
+import { steerStandingWords } from "./steer-status.js";
+import { utcMinute } from "./when-html.js";
 
 const REPO_ID = /^r[0-9]{1,3}$/;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -1324,7 +1326,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_task: {
-    description: "Read currentExecution, state, dispatch, history, scope, dependencies, holds, queue, attempts and decisions before acting.",
+    description: "Read currentExecution, state, dispatch, history, scope, dependencies, holds, queue, attempts, decisions and whether the agent has read your notes before acting.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       if (taskId === null) return { ok: false, message: "task is an id, 1-64 characters" };
@@ -1368,6 +1370,11 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
           attempts: runs.length,
           lastAttempt: runs[0] === undefined ? null : { build: runs[0].id, outcome: runs[0].outcome ?? "unfinished", worker: runs[0].runner, tools: ctx.store.runTools(runs[0].id), secretsFenced: ctx.store.runFence(runs[0].id)?.method ?? null },
           decisionsOpen,
+          // Operator steering (v120), in the task page's words: read (and when), waiting, or for the next attempt.
+          steering: (() => {
+            const live = ctx.store.steeringLiveBuild(ref.id, ctx.now) !== null;
+            return ctx.store.listSteerNotes(ref.id).slice(-5).map(one => ({ note: one.id, filedAt: one.createdAt, state: steerStandingWords(one, live, utcMinute) }));
+          })(),
         },
       };
     },
@@ -1494,7 +1501,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   propose_steer: {
-    description: "Guide the next attempt within existing scope; never interrupt work.",
+    description: "Send guidance within existing scope: a running build's agent reads it when it next checks for notes, otherwise the next attempt does. It never stops work.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       const ref = taskId === null ? null : admittedRef(ctx, taskId);

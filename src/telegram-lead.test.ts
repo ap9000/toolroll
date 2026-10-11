@@ -1173,8 +1173,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const steer = card("steer", { task: "b", taskTitle: "work b", note: "Prefer the smaller diff." });
       expect(steer.preview.text).toContain("| Prefer the smaller diff.");
       expect(await tapPass(steer.confirm, steer.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
-      expect(outcome(steer.id)).toMatchObject({ state: "confirmed", outcome: { said: "Guidance saved for work b's next attempt", via: "telegram" } });
-      expect(script.edits().at(-1)).toBe("✓ Guidance saved for work b's next attempt");
+      expect(outcome(steer.id)).toMatchObject({ state: "confirmed", outcome: { said: "Guidance saved for work b. The next attempt reads it before starting.", via: "telegram" } });
+      expect(script.edits().at(-1)).toBe("✓ Guidance saved for work b. The next attempt reads it before starting.");
       // Dismiss is the same door's decline, recorded once.
       const dismissed = card("hold", { task: "b", taskTitle: "work b", reason: "no", sawHold: null });
       const declined = await tapPass(dismissed.dismiss, dismissed.messageId);

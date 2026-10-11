@@ -596,6 +596,9 @@ export function syncAssignmentHandoffs(store: Store, now: Date, repos: readonly 
   }));
 }
 
+/** The history of assignment handoffs sent to people (the `assignment-handoff` notifications), read by cursor. It is
+ * not a delivery path: nothing is saved, replayed or acknowledged here. Leads receive their updates through the
+ * assignment inbox (assignment-delivery.ts), the one road results take to a lead. */
 export function assignmentUpdates(store: Store, now: Date, access: AssignmentAccess, query: { after: number; limit: number }, root?: string) {
   const after = Number.isSafeInteger(query.after) && query.after >= 0 ? query.after : 0;
   const limit = Math.max(1, Math.min(100, Math.floor(query.limit) || 50));

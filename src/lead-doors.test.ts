@@ -71,7 +71,7 @@ describe("the lead's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     const fromPhone = pending("steer", { task: "a", taskTitle: "task a", note: "Start with the mobile flow." });
     expect(confirmLeadProposal(store, who, fromPhone, clock(), { via: "telegram" })).toMatchObject({ ok: true });
     const taskChat = store.liveLeadThreadFor("alex", { kind: "task", key: "a" })!;
-    expect(store.listLeadMessages(taskChat.id, 10).map(one => [one.role, one.text])).toEqual([["assistant", expect.stringMatching(/^From Telegram — Guidance for the next attempt: \S/)]]);
+    expect(store.listLeadMessages(taskChat.id, 10).map(one => [one.role, one.text])).toEqual([["assistant", expect.stringMatching(/^From Telegram — Guidance for the agent: \S/)]]);
     const ctx = { store, who, now: clock(), step: 1, readDecisions: new Map(), draft: () => 1 };
     expect(executeLeadTool(ctx, "get_task_conversation", { task: "a" })).toMatchObject({ ok: true, body: { task: "a", title: "task a", messages: [{ from: "lead", text: expect.stringContaining("From Telegram") }] } });
     expect(executeLeadTool(ctx, "get_task_conversation", { task: "b" })).toMatchObject({ ok: true, body: { messages: [], notice: "No conversation about this task yet." } });
@@ -85,7 +85,7 @@ describe("the lead's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     clockAt += 60_000;
     const fromLead = pending("steer", { task: "b", taskTitle: "task b", note: "Keep it small." });
     expect(confirmLeadProposal(store, who, fromLead, clock(), { via: "web" })).toMatchObject({ ok: true });
-    expect(store.listLeadMessages(store.liveLeadThreadFor("alex", { kind: "task", key: "b" })!.id, 10)[0]!.text).toMatch(/^From the lead chat — Guidance for the next attempt: /);
+    expect(store.listLeadMessages(store.liveLeadThreadFor("alex", { kind: "task", key: "b" })!.id, 10)[0]!.text).toMatch(/^From the lead chat — Guidance for the agent: /);
   });
 
   test("a proposal kept by a turn stopped at its deadline confirms; a draft of a turn that failed otherwise never existed", () => {
@@ -343,7 +343,7 @@ describe("the lead's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(store.listSteerNotes(store.refFor("built-in", "a").id)).toEqual([]);
     expect(confirmLeadProposal(store, who, id, clock(), { via: "web" })).toMatchObject({
       ok: true,
-      said: "Guidance saved for task a's next attempt",
+      said: "Guidance saved for task a. The next attempt reads it before starting.",
       taskId: "a",
     });
     expect(store.listSteerNotes(store.refFor("built-in", "a").id)).toMatchObject([

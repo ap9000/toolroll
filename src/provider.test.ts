@@ -54,6 +54,18 @@ describe("argv dialects", () => {
     expect(adapterFor("claude").argv({ ...ASK, phase: "review" })).not.toContain("--disallowedTools");
   });
 
+  test("a build's steering doorbell rides Claude's one --settings, beside the fence's deny rules (v120)", () => {
+    const steerFolder = { dir: "/work/tree/STANDING-ORDERS-STEER-0123456789abcdef", name: "STANDING-ORDERS-STEER-0123456789abcdef" };
+    const settingsOf = (argv: readonly string[]) => JSON.parse(argv[argv.indexOf("--settings") + 1]!);
+    const both = settingsOf(adapterFor("claude").argv({ ...ASK, fence: ["/home/me/.toolroll"], steerFolder }));
+    expect(both.permissions.deny).toContain("Read(//home/me/.toolroll)");
+    expect(both.hooks.PostToolUse[0]).toMatchObject({ matcher: "*", hooks: [{ type: "command", command: expect.stringContaining(`'${steerFolder.dir}'/[0-9]*.json`) }] });
+    expect(settingsOf(adapterFor("claude").argv({ ...ASK, steerFolder }))).not.toHaveProperty("permissions");
+    expect(adapterFor("claude").argv({ ...ASK })).not.toContain("--settings");
+    // Every other provider relies on the brief's own rule to look.
+    expect(adapterFor("codex").argv({ ...ASK, steerFolder }).join(" ")).not.toContain("STANDING-ORDERS-STEER-");
+  });
+
   test("codex: exec --json, sandboxed workspace-write, brief positional, resume a subcommand", () => {
     const argv = adapterFor("codex").argv({ ...ASK, model: "gpt-5-codex" });
     expect(argv[0]).toBe("exec");

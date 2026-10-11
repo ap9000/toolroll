@@ -2878,7 +2878,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "assignment updates",
-      "synopsis": "read durable updates after a cursor; save nextCursor after processing",
+      "synopsis": "read the history of handoffs sent to people after a cursor; delivers nothing — receive updates with assignment inbox",
       "audience": "agent",
       "agentMayInvoke": true,
       "mutation": "none",
@@ -3296,7 +3296,7 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "task steer",
-      "synopsis": "one credentialed note read before the task's next attempt — steering speaks with the operator's voice",
+      "synopsis": "one credentialed note for the task's agent — a running build reads it when it next checks for notes, otherwise the next attempt does; steering speaks with the operator's voice",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",
@@ -5153,7 +5153,8 @@ $ task show t-readme --json → 0
     "kind": "none"
   },
   "stops": [],
-  "pullRequest": null
+  "pullRequest": null,
+  "steering": []
 }
 
 $ task show no-such-task --json → 3
