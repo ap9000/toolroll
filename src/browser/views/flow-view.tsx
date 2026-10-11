@@ -1175,7 +1175,7 @@ function PressPanel({ trigger, view, csrf, apply, onClose }: { trigger: BrowserF
     const result = await send(`${view.flow.href}/triggers/${trigger.id}/press`, { answers: JSON.stringify(answers) }, csrf);
     setBusy(false); apply(result); if (result.ok) onClose();
   }}>
-    <div className="flex items-center gap-2"><h2 className="flex-1 text-title">{trigger.button?.label}</h2><Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
+    <div className="flex items-center gap-2"><h2 className="flex-1 text-title leading-normal">{trigger.button?.label}</h2><Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>
     <p className="text-caption text-muted-foreground font-normal">The card starts in {trigger.zone}.</p>
     {questions.map((question, index) => <Field key={index} label={question}>
       {index === 0 ? <Input value={answers[index] ?? ""} onChange={answer(index)} maxLength={200} required autoFocus /> : <Textarea rows={3} value={answers[index] ?? ""} onChange={answer(index)} />}
@@ -1631,9 +1631,9 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
     {flowOrder(view.stages, view.start).map(stage => {
       const cards = view.cards.filter(one => one.stage === stage.id && one.state === "active");
       return <section key={stage.id} className="rounded-lg border bg-muted/40">
-        <header className="flex items-center gap-2 px-3 py-2"><span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: COLORS[stage.zone.color] ?? "#64748b" }}>{KIND_ICONS[stage.kind]}</span><span className="flex-1 text-title-sm">{stage.title}</span>{cards.length > 0 && <span className="text-caption text-muted-foreground font-normal">{cards.length}</span>}</header>
+        <header className="flex items-center gap-2 px-3 py-2"><span className="inline-flex size-6 items-center justify-center rounded-md text-white" style={{ background: COLORS[stage.zone.color] ?? "#64748b" }}>{KIND_ICONS[stage.kind]}</span><span className="flex-1 text-title-sm leading-normal">{stage.title}</span>{cards.length > 0 && <span className="text-caption text-muted-foreground font-normal">{cards.length}</span>}</header>
         {cards.length > 0 && <ul className="flex flex-col gap-2 px-3 pb-3">{cards.map(one => <li key={one.id}><button type="button" onClick={() => setOpen(one.id)} className={cn("min-h-11 w-full rounded-lg border bg-card px-3 py-2 text-left", one.canDecide && "border-attention/60")}>
-          <div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-title-sm font-medium">{one.title}</div>{one.owner !== null && <Face name={one.owner} />}</div>
+          <div className="flex items-start gap-2"><div className="min-w-0 flex-1 text-title-sm font-medium leading-normal">{one.title}</div>{one.owner !== null && <Face name={one.owner} />}</div>
           {one.sorted !== null && <div className="mt-1 flex"><SortChip sorted={one.sorted} /></div>}
           {one.waiting !== null && <div className={cn("text-caption font-normal", one.task !== null && (stage.kind === "task" || stage.kind === "report") && "truncate", one.canDecide ? "font-semibold text-attention" : "text-muted-foreground")}>{one.canDecide ? NEEDS.card.sentence({}) : one.waiting}</div>}
           {one.comments.length > 0 && <div className="mt-0.5 inline-flex items-center gap-1 text-caption text-muted-foreground font-normal"><MessageSquare className="size-3" aria-hidden="true" />{one.comments.length}</div>}
@@ -1648,7 +1648,7 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
         {one.order !== undefined && <>
           <p className="mt-1 text-caption break-words font-normal" data-trigger-approval>{one.order.at(-1)}</p>
           <details className="mt-1.5 rounded-md border px-3 py-2" data-trigger-order>
-            <summary className="flex min-h-11 cursor-pointer items-center text-label">What each run files</summary>
+            <summary className="flex min-h-11 cursor-pointer items-center text-body font-medium">What each run files</summary>
             <ul className="flex flex-col gap-1 pb-1 text-caption text-muted-foreground font-normal">{one.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
           </details>
           {view.canEdit && <Button size="sm" variant="outline" className="mt-1.5 min-h-11" disabled={busy} onClick={() => void toggle(one)}>{one.state === "paused" ? "Turn on" : "Pause"}</Button>}
