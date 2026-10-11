@@ -1,8 +1,7 @@
 /**
  * `toolroll release --release-gate <id>`: lift one update pause that a browser deployment (scripts/deploy-browser.mjs)
- * left behind when it stopped before the swap and its own recovery could not tell. The typical case is a deployment
- * killed between installing the pause and journaling that it had: the journal still says `preparing`, so
- * `--phase recover` leaves the pause alone, and new work stays paused.
+ * left behind when it stopped before the swap and its own exit recovery never ran. The typical case is a deployment
+ * killed outright (SIGKILL, a crash or power loss) while paused: nothing lifted the pause, and new work stays paused.
  *
  * The id alone proves nothing, and neither does the journal's phase. The pause is lifted only when every piece of
  * evidence agrees that the service was never swapped:
@@ -24,6 +23,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
 import { removeUpdateGate, updateGateOwned } from "./desktop-update-gate.js";
+import { acquireDeploymentLock } from "./deploy-lock.js";
 import type { Database } from "./store.js";
 
 /** The journal phases a deployment passes before it stops the old service (deploy-phases.mjs). */
@@ -49,7 +49,7 @@ export type GateReleaseWorld = {
 type Journal = Record<string, unknown> & { id: string; phase: string; database: string; schema: number; priorRuntime: string; nextRuntime: string };
 export type GateProof = { ok: true; id: string; stage: string; journal: Journal; proof: string[] } | { ok: false; reason: string; message: string };
 
-const refuse = (reason: string, message: string): GateProof => ({ ok: false, reason, message: `${message} The update pause was left as it is.` });
+const refuse = (reason: string, message: string): Extract<GateProof, { ok: false }> => ({ ok: false, reason, message: `${message} The update pause was left as it is.` });
 
 /** The owner id written into the live pause's triggers, when there is one pause and it names one id. */
 export function gateOwner(db: Database): string | null {
@@ -135,15 +135,35 @@ export type GateReleaseOutcome = { ok: true; released: boolean; id: string; stag
 
 /** Prove, then (with `yes`) lift exactly that pause and journal the release in the deployment's own journal. */
 export function releaseGate(id: string, world: GateReleaseWorld, yes: boolean): GateReleaseOutcome {
-  const proved = proveBeforeSwap(id, world);
-  if (!proved.ok) return proved;
-  if (!yes) return { ok: true, released: false, id, stage: proved.stage, proof: proved.proof };
-  const db = world.open();
-  // removeUpdateGate checks the owner again inside its own write: a pause that changed hands is not touched.
-  try { removeUpdateGate(db, id); } finally { db.close(); }
-  durableJson(join(proved.stage, "deployment.json"), {
-    ...proved.journal, phase: "released", updatedAt: world.now().toISOString(),
-    releasedBeforeSwap: { at: world.now().toISOString(), by: "toolroll release --release-gate", from: proved.journal.phase, proof: proved.proof },
-  });
-  return { ok: true, released: true, id, stage: proved.stage, proof: proved.proof };
+  // Discovery is not authority to remove anything. Dry-run remains read-only, even for legacy stages.
+  const discovered = proveBeforeSwap(id, world);
+  if (!discovered.ok) return discovered;
+  if (!yes) return { ok: true, released: false, id, stage: discovered.stage, proof: discovered.proof };
+  const journalFile = join(discovered.stage, "deployment.json");
+  let lock;
+  try { lock = acquireDeploymentLock(journalFile); }
+  catch (error) { return refuse("deploying", (error as Error).message); }
+  try {
+    const proved = proveBeforeSwap(id, world);
+    if (!proved.ok) return proved;
+    if (proved.stage !== discovered.stage) return refuse("conflict", "The deployment stage changed during release.");
+    const db = world.open();
+    try {
+      // Repeat the entire proof at the mutation boundary, under the same exclusion as deploy/resume/recover.
+      const fresh = proveBeforeSwap(id, world);
+      if (!fresh.ok) return fresh;
+      if (fresh.stage !== proved.stage || JSON.stringify(fresh.journal) !== JSON.stringify(proved.journal) ||
+        JSON.stringify(JSON.parse(readFileSync(journalFile, "utf8"))) !== JSON.stringify(fresh.journal)) {
+        return refuse("conflict", "The deployment journal changed during release.");
+      }
+      lock.assertHeld(journalFile);
+      // The owner is checked again within removeUpdateGate's short write transaction.
+      removeUpdateGate(db, id);
+      durableJson(journalFile, {
+        ...fresh.journal, phase: "released", updatedAt: world.now().toISOString(),
+        releasedBeforeSwap: { at: world.now().toISOString(), by: "toolroll release --release-gate", from: fresh.journal.phase, proof: fresh.proof },
+      });
+      return { ok: true, released: true, id, stage: fresh.stage, proof: fresh.proof };
+    } finally { db.close(); }
+  } finally { lock.release(); }
 }

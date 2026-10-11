@@ -2,6 +2,7 @@
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
+import { contractChangesOf } from "./contract-changes.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { projectAuthority } from "./project-access.js";
 import { activeRemote } from "./remote-run.js";
@@ -797,6 +798,19 @@ export function digestOf(
 }
 
 export function propose(store: Store, input: ScopeInput): Scope {
+  return store.transact(() => {
+    const previous = store.getScope(input.taskId);
+    const saved = proposeLocked(store, input);
+    // A rewritten goal, exclusions, touches or rubric on a task that is planning starts its planning again (v119), in
+    // the same transaction: the next planner plans for the new terms, never from the old plan or its answers. An
+    // identical refile changes nothing; the planner's own handoff writes its draft without coming through here.
+    const ref = store.lookupRef(input.taskId);
+    if (ref !== null && ref.plan !== null && (previous === null || contractChangesOf(previous, saved).length > 0)) store.restartPlanning(ref.id, input.now);
+    return saved;
+  });
+}
+
+function proposeLocked(store: Store, input: ScopeInput): Scope {
   const { taskId, goal, outOfScope = null, touches = [], budgetMicrousd = null, acceptance = [], qualityMode = "default", now, mutation = {}, profile, permissionMode, posture, proposedVia = null } = input;
 
   const draft = { goal, outOfScope, touches: [...touches], budgetMicrousd, acceptance: [...acceptance], qualityMode, candidate: input.candidate ?? null };

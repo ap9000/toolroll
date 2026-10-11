@@ -359,12 +359,13 @@ export function decisionOver(store: Store, repos: readonly string[], decisionId:
   if (repoIndex === -1) return null;
   // "Open" is derived, not stored (v3 review, finding 7): a decision past
   // its deadline is expired here whether or not the sweep has run.
-  const state = decision.state === "open" && decision.deadline !== null && Date.parse(decision.deadline) <= now.getTime() ? "expired" : decision.state;
+  const state = decision.supersededReason !== null ? "closed" : decision.state === "open" && decision.deadline !== null && Date.parse(decision.deadline) <= now.getTime() ? "expired" : decision.state;
   return {
     repoIndex,
     decision: decision.id,
     task: ref.externalId,
     state,
+    ...(decision.supersededReason === null ? {} : { closedBecause: decision.supersededReason }),
     question: decision.question,
     options: decision.options.map(one => ({ id: one.id, label: one.label, reversible: one.reversible, consequence: one.consequence })),
     ageHours: Math.max(0, Math.round((now.getTime() - Date.parse(decision.createdAt)) / 3_600_000)),

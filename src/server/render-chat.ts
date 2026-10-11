@@ -2,6 +2,7 @@
 import { assignmentSummaryHtml } from "../assignment-ui.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BrowserActionCard } from "../browser-workspace.js";
+import { closedQuestionReason } from "../decision.js";
 import { CHAT_ACTIONS,sharedActionNeedsReview,sharedActionPayload,sharedActionReviewPath } from "../chat-actions.js";
 import { CHAT_CONTINUITY_SCRIPT } from "../chat-continuity.js";
 import { CHAT_CONTROLS,chatControlHref,isChatControl } from "../chat-controls.js";
@@ -655,6 +656,15 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
   const text = (key: string): string => (typeof payload[key] === "string" ? (payload[key] as string) : "");
   const task = text("task");
   const repoId = text("repoId");
+  if (view.kind === "answer" && decision?.supersededReason != null) {
+    // The proposal remains in history, but its question no longer needs an answer.
+    // Both the server page and browser card use the same closed view, without stale consent controls.
+    const body = html`<p><a href="/d/${decision.id}">${decision.question}</a></p><p class="meta">${closedQuestionReason(decision.supersededReason)}</p>`;
+    return {
+      html: html`<article class="card proposal proposal-answer" data-card-kind="answer"><header class="proposal-head"><strong>Question closed</strong></header><div class="proposal-body">${body}</div></article>`,
+      card: { id: view.id, kind: view.kind, label: "Question closed", state: view.state as BrowserActionCard["state"], body: htmlString(body), said: null, links: [], primary: null, dismissable: false, note: null },
+    };
+  }
   const presentations: Record<LeadProposal["kind"], { label: string; action: string; icon: Html }> = {
     task: { label: payload["report"] === true ? "Scout investigation" : "New task", action: "file task", icon: html`<path d="M12 5v14"/><path d="M5 12h14"/>` },
     next: { label: "Queue priority", action: "move to front", icon: html`<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>` },

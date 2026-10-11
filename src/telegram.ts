@@ -26,7 +26,7 @@ import { resultImageFileName, resultTaskLabel, verifyResultImage } from "./chat-
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { validateNote } from "./decision.js";
+import { closedQuestionWords, validateNote } from "./decision.js";
 import { isShotsKind, resultShotsFor, type ResultShot } from "./result-shots.js";
 import { isLifecycleNotification, isTelegramProgressNotification, RESULT_SHOTS_KIND, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
 import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.js";
@@ -2034,7 +2034,7 @@ function applyNote(context: Context, update: Update, effects: Effect[]): void {
     return;
   }
   if (decision.state === "answered") {
-    say(`already answered: ${decision.choice ?? "?"} — this note did not travel`);
+    say(`${decision.supersededReason !== null ? closedQuestionWords(decision.supersededReason) : `already answered: ${decision.choice ?? "?"}`} — this note did not travel`);
     report.ignored++;
     return;
   }
@@ -2335,8 +2335,8 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
   }
   if (decision.state === "answered") {
     store.consumeTelegramAction(token, clock());
-    ack(`already answered: ${decision.choice ?? "?"}`);
-    editText(answeredText(store, decision));
+    ack(decision.supersededReason !== null ? closedQuestionWords(decision.supersededReason) : `already answered: ${decision.choice ?? "?"}`);
+    editText(answeredText(store, decision), []);
     return;
   }
 
@@ -2470,11 +2470,11 @@ function answerNow(
     editText(answeredText(store, answered.decision));
     return;
   }
-  if (answered.reason === "already-answered") {
+  if (answered.reason === "already-answered" || answered.reason === "closed") {
     if (draft !== null) store.setNoteDraftState(draft.id, "discarded");
     const settled = store.getDecision(decision.id);
-    ack(`already answered: ${settled?.choice ?? "?"}${draft === null ? "" : " — your note did NOT travel"}`);
-    if (settled !== null) editText(answeredText(store, settled));
+    ack(`${settled?.supersededReason != null ? closedQuestionWords(settled.supersededReason) : `already answered: ${settled?.choice ?? "?"}`}${draft === null ? "" : " — your note did NOT travel"}`);
+    if (settled !== null) editText(answeredText(store, settled), []);
     return;
   }
   ack(`could not answer: ${answered.reason}`);
@@ -2500,6 +2500,7 @@ function armedDecisionText(option: Decision["options"][number], note: string | n
 }
 
 function answeredText(store: Store, decision: Decision): string {
+  if (decision.supersededReason !== null) return [closedQuestionWords(decision.supersededReason), taskOf(store, decision)].join("\n");
   const chosen = decision.options.find(one => one.id === decision.choice)?.label ?? decision.choice ?? "?";
   return [
     `✓ Answered: ${chosen}`,

@@ -1125,10 +1125,12 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       // still-blocked history) is left alone rather than having a
       // revision 1 invented underneath it.
       if (planDocument !== null && store.latestPlanRevision(taskRef) === null) {
+        // Revision 1 for a task planned once; past every earlier generation's revisions for one planned again (v119).
+        planRevisionNumber = store.nextPlanRevisionNumber(taskRef);
         planRevisionId = store.insertPlanRevision(
           {
             taskRef,
-            revision: 1,
+            revision: planRevisionNumber,
             artifact: planArtifact.id,
             parentHash: null,
             reason: "the plan the operator approved",
@@ -2142,7 +2144,7 @@ function settleRevisionProposal(captured: CapturedBuild, binding: PlanBinding): 
   if (latest !== null && latest.status === "blocked") {
     return broke("the agent proposed a plan revision, but one is already awaiting your approval on this task");
   }
-  const revisionNumber = (latest?.revision ?? 0) + 1;
+  const revisionNumber = store.nextPlanRevisionNumber(taskRef);
 
   // Stored re-serialized from the validated shape, never the agent's raw
   // bytes: what a later brief quotes and hash-verifies is exactly what this

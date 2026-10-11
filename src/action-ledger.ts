@@ -51,6 +51,10 @@ export function installLedgerTriggers(db: Database): void {
   const runRef = `(SELECT task_ref FROM run WHERE id = NEW.run)`;
   const event = (at: string, actor: string, project: string, taskId: string, runId: string, action: string, outcome: string) =>
     `INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source) VALUES (${at},${actor},${project},${taskId},${runId},'${action}',${outcome},'work');`;
+  // v119: closing a question without an answer is its own event. Replace only the old trigger's future behavior;
+  // every ledger entry already recorded, and its seal, stays unchanged.
+  const answeredTrigger = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'ledger_decision_answered'").get();
+  if (answeredTrigger !== undefined && !String(answeredTrigger["sql"]).includes("superseded_reason")) db.exec("DROP TRIGGER ledger_decision_answered");
   db.exec(`
 CREATE TRIGGER IF NOT EXISTS ledger_run_started AFTER INSERT ON run BEGIN
   ${event("NEW.started_at", "NEW.runner", repo("NEW.task_ref"), task("NEW.task_ref"), "NEW.id", "run started", "NEW.role")}
@@ -63,8 +67,12 @@ CREATE TRIGGER IF NOT EXISTS ledger_decision_opened AFTER INSERT ON decision BEG
   ${event("NEW.created_at", "'system'", repo(runRef), task(runRef), "NEW.run", "decision opened", "NEW.state")}
 END;
 CREATE TRIGGER IF NOT EXISTS ledger_decision_answered AFTER UPDATE OF answered_at ON decision
-WHEN NEW.answered_at IS NOT NULL AND OLD.answered_at IS NULL BEGIN
+WHEN NEW.answered_at IS NOT NULL AND OLD.answered_at IS NULL AND NEW.superseded_reason IS NULL BEGIN
   ${event("NEW.answered_at", "COALESCE(NEW.answered_by,'system')", repo(runRef), task(runRef), "NEW.run", "decision answered", "NEW.state")}
+END;
+CREATE TRIGGER IF NOT EXISTS ledger_decision_closed AFTER UPDATE OF answered_at ON decision
+WHEN NEW.answered_at IS NOT NULL AND OLD.answered_at IS NULL AND NEW.superseded_reason IS NOT NULL BEGIN
+  ${event("NEW.answered_at", "COALESCE(NEW.answered_by,'system')", repo(runRef), task(runRef), "NEW.run", "decision closed", "NEW.superseded_reason")}
 END;
 CREATE TRIGGER IF NOT EXISTS ledger_scope_approved AFTER UPDATE OF approved_at, approved_digest ON task_scope
 WHEN NEW.approved_at IS NOT NULL AND (OLD.approved_at IS NOT NEW.approved_at OR OLD.approved_digest IS NOT NEW.approved_digest) BEGIN

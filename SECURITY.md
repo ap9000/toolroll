@@ -21,7 +21,7 @@ user. What it promises:
   in with an API token (`toolroll tokens create`): it reads or acts, can be
   limited to projects, expires, and only its hash is kept. A password sent on a
   request (`Bearer name:password`) still works this release, with a deprecation
-  warning on every answer, and is refused from 0.9.59.
+  warning on every answer, and is refused from 0.10.0.
 - **The agent fence.** Standing Orders' own secrets (the state folder beside
   the database, except the build's worktree, and `~/.toolroll`) are
   denied to agents by the operating system: Codex through its own sandbox on

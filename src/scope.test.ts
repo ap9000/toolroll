@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { openStore, type Store } from "./store.js";
 import { propose, approve, addApprover, approvalOf, authenticateApprover, digestOf, describeScope, profileDigestOf, profileFromJson, canonicalProfileJson, chainDigestOf, chainFromJson, canonicalChainJson, scopeAuthorityOf, MAX_TIMER_SECONDS } from "./scope.js";
 import { routeDigestOf, routeFromJson } from "./phase-routing.js";
@@ -45,6 +45,60 @@ describe("agreeing what a task is allowed to become", () => {
   test("a fresh scope is not approved", () => {
     // Writing down what you intend is not the same as somebody agreeing to it.
     expect(approvalOf(scopeIt())).toEqual({ approved: false, reason: "none" });
+  });
+
+  const planningTerms = {
+    goal: "Add a payout guard", outOfScope: "No schema changes", touches: ["src/payout.ts"],
+    acceptance: [{ id: "c1", statement: "Duplicate payouts are refused", how: null, evidence: ["check" as const] }],
+  };
+
+  test("filing the first goal after title-only planning also closes the old context", () => {
+    const ref = store.refFor("built-in", "t-1").id;
+    store.requestPlan(ref, T0);
+    const run = store.startRun({ taskRef: ref, role: "planner", leaseId: "title-only", runner: "r", branch: "b", worktree: "/w", route: { routeDigest: "legacy", phase: "plan", provider: "claude", model: null, chosen: "legacy" }, now: T0 });
+    const decision = store.saveDecision({ run, urgency: "blocking", recap: "Only a title was filed", question: "Which payout flow?", options: [{ id: "old", label: "Old flow", consequence: "Changes the old flow", reversible: true }], recommendation: "old" }, T0);
+    propose(store, { taskId: "t-1", ...planningTerms, now: later(1_000) });
+    expect(store.refForId(ref)).toMatchObject({ plan: "requested", planningGeneration: 1 });
+    expect(store.getDecision(decision)).toMatchObject({ supersededReason: "scope-changed", choice: null });
+    expect(store.listDecisions("unanswered")).toEqual([]);
+  });
+
+  test.each([
+    ["goal", { goal: "Add a payout audit" }],
+    ["exclusions", { outOfScope: "No API changes" }],
+    ["paths", { touches: ["src/audit.ts"] }],
+    ["criteria", { acceptance: [{ ...planningTerms.acceptance[0]!, statement: "Every payout has an audit row" }] }],
+  ])("changing only %s restarts a drafted plan once; replay leaves the new generation alone", (_field, changed) => {
+    propose(store, { taskId: "t-1", ...planningTerms, now: T0 });
+    const ref = store.refFor("built-in", "t-1").id;
+    expect(store.requestPlan(ref, T0).ok).toBe(true);
+    store.setPlanState(ref, "drafted");
+    store.addPlanStrike(ref);
+    const input = { taskId: "t-1", ...planningTerms, ...changed, now: later(1_000), mutation: { idempotencyKey: "rescope" } };
+    propose(store, input);
+    expect(store.refForId(ref)).toMatchObject({ plan: "requested", planStrikes: 0, planningGeneration: 1 });
+    propose(store, input);
+    expect(store.refForId(ref)?.planningGeneration).toBe(1);
+  });
+
+  test("non-contract edits keep the drafted plan; a failed restart rolls its scope write back", () => {
+    propose(store, { taskId: "t-1", ...planningTerms, now: T0 });
+    const ref = store.refFor("built-in", "t-1").id;
+    store.requestPlan(ref, T0);
+    store.setPlanState(ref, "drafted");
+    const saved = propose(store, { taskId: "t-1", ...planningTerms, budgetMicrousd: 500_000, now: later(1_000) });
+    expect(store.refForId(ref)).toMatchObject({ plan: "drafted", planningGeneration: 0 });
+    const restart = store.restartPlanning.bind(store);
+    const fault = vi.spyOn(store, "restartPlanning").mockImplementation((id, now) => {
+      restart(id, now);
+      throw Error("simulated failure after restarting");
+    });
+    try {
+      expect(() => propose(store, { taskId: "t-1", ...planningTerms, goal: "A changed goal", now: later(2_000) })).toThrow("simulated failure");
+      expect(store.getScope("t-1")).toEqual(saved);
+      expect(store.refForId(ref)).toMatchObject({ plan: "drafted", planningGeneration: 0 });
+      expect(store.raw().prepare("SELECT count(*) AS n FROM action_ledger WHERE action = 'planning restarted'").get()).toEqual({ n: 0 });
+    } finally { fault.mockRestore(); }
   });
 
   test("a task with no scope at all is not approved either", () => {

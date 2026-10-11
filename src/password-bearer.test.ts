@@ -23,10 +23,10 @@ vi.mock('./scope.js', async importOriginal => {
 
 describe('the removal boundary', () => {
   test('this release and the next accept a password bearer; the release that removes it, and every later one, refuse it', () => {
-    expect(PASSWORD_BEARER_REFUSED_FROM).toBe('0.9.59');
+    expect(PASSWORD_BEARER_REFUSED_FROM).toBe('0.10.0');
     expect(passwordBearerAccepted(PACKAGE_VERSION)).toBe(true);
-    for (const version of ['0.9.56', '0.9.57', '0.9.58']) expect(passwordBearerAccepted(version), version).toBe(true);
-    for (const version of ['0.9.59', '0.9.60', '0.10.0', '1.0.0']) expect(passwordBearerAccepted(version), version).toBe(false);
+    for (const version of ['0.9.56', '0.9.58', '0.9.59', '0.9.99']) expect(passwordBearerAccepted(version), version).toBe(true);
+    for (const version of ['0.10.0', '0.10.1', '0.11.0', '1.0.0']) expect(passwordBearerAccepted(version), version).toBe(false);
   });
 
   test('only a name and a secret is a password bearer; an API token is not', () => {

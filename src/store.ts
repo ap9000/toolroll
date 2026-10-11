@@ -634,7 +634,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v118 (D7) keeps every machine credential in one table, `credential`: a person's API tokens (so_…), the lead's tokens
 // (lt_…) and coordinators, each with its kind, read/act access, project limit, expiry, revocation and generation. Every
 // row moves with its id, hash and dates; the references to coordinators and API tokens point at it.
-export const SCHEMA_VERSION = 118;
+// v119 keeps planning generations: a rewritten scope starts a clean planning context (task_ref, run and plan_revision
+// carry planning_generation, 0 for all earlier history), and a question closed without an answer says why
+// (decision.superseded_reason: its task's scope changed, or the task was cancelled).
+export const SCHEMA_VERSION = 119;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -760,9 +763,19 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * teammates' to its subagents' (SQLite's RENAME, every row, id and link carried), renames their teammate column, and rewrites four internal kinds from 'teammate' to 'subagent' in place; the rehearsal checks
  * each renamed table's rows arrived under its new name. v118 (D7) is checked the same way: every row of api_token,
  * coordinator_credential and lead_credential moves into credential under its kind in one transaction that counts them
- * before the old tables drop, and the references that named them name credential in place, their rows untouched.
+ * before the old tables drop, and the references that named them name credential in place, their rows untouched. v119 only adds four columns
+ * (planning_generation on task_ref, run and plan_revision, defaulting to 0, and decision.superseded_reason, null);
+ * the rehearsal checks every saved row reads the declared default (HISTORY_RULES' added columns).
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119]);
+
+/** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
+export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_ref: { planning_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" } },
+  run: { planning_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" } },
+  plan_revision: { planning_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" } },
+  decision: { superseded_reason: { definition: "TEXT CHECK (superseded_reason IN ('scope-changed','cancelled'))", saved: "NULL" } },
+});
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -943,6 +956,9 @@ export type TaskRef = {
   plan: "requested" | "drafted" | null;
   /** Planning failures, counted apart from build strikes by design. */
   planStrikes: number;
+  /** v119: which planning context is active. A rewritten scope advances it; plans, revisions and answers from an
+   * earlier generation stay as history, never as the next planner's context. */
+  planningGeneration: number;
   /** What comes back (v34): a branch to publish, or a report to read.
    * Set at filing and never rewritten — a scout's strikes are the task's. */
   deliverable: "branch" | "report";
@@ -1588,6 +1604,8 @@ export type Run = {
   taskRef: number;
   leaseId: string;
   runner: string;
+  /** v119: the task's planning generation when this run opened (0 for every run before it). */
+  planningGeneration: number;
   /** Explicit watch ownership for claimless review runs; null on cron/legacy reviews. */
   watchIncarnation?: string | null;
   /** v50: a ROOT reviewer's attempt ordinal for its source run (1..3);
@@ -1745,7 +1763,13 @@ export type Decision = {
   answeredVia: "cli" | "web" | "telegram" | "slack" | "discord" | "teams" | null;
   choice: string | null;
   note: string | null;
+  /** v119: closed without an answer (state 'answered', no choice) because its task's scope changed or the task was
+   * cancelled. null is every real answer and every question still waiting. */
+  supersededReason: DecisionClosure | null;
 };
+
+/** Why a question closed without an answer (v119). */
+export type DecisionClosure = "scope-changed" | "cancelled";
 
 /** Evidence, by reference. `key` is relative to the evidence root, never absolute. */
 export type Artifact = {
@@ -4546,6 +4570,10 @@ function initializeStore(db: Database, file: string): Store {
   // v115: the task each standing-order firing filed, kept on the firing itself (a card's task changes as it moves).
   addColumn(db, "flow_trigger_event", "task", "TEXT");
   db.exec(PLAN_AUTO_SCHEMA);
+  // v119: planning generations, and why a question closed unanswered (additive only; saved rows read the defaults).
+  for (const [table, columns] of Object.entries(V119_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   installLedgerTriggers(db);
   // Attention/history indexes come AFTER migration: on a database whose
   // constrained tables still carry a pre-rebuild shape, creating a partial
@@ -5879,6 +5907,9 @@ export class Store {
     // for a build that can no longer happen is wrong on every road, not
     // just the state verb's.
     if (ref !== undefined) this.supersedeSteerNotes(Number(ref["id"]), now);
+    // Its open questions close the same way (v119), typed 'cancelled', with their holds and pages: a question about
+    // work that will never run must leave every decision queue. Answered ones stay exactly as they were.
+    if (ref !== undefined) this.closeQuestionsLocked(Number(ref["id"]), "cancelled", now);
     // The reason is part of the transition, not decoration: a
     // coordinator-filed task's dismissal writes its durable event IN THIS
     // transaction — operator text and typed machine codes alike (MCP spec
@@ -11866,6 +11897,72 @@ export class Store {
     });
   }
 
+  /**
+   * A rewritten scope starts planning again (v119), in one transaction: the task's planning generation advances, a
+   * requested or drafted plan becomes requested with no strikes, and what the old goal produced leaves the active
+   * planning context — its open questions close (typed 'scope-changed', never a fake answer, their holds and pages
+   * with them) and a revision still waiting for a person is rejected with its hold. The old runs, plans, revisions,
+   * answers and ledger rows all stay: generation-bound reads simply stop offering them to the next planner. Only a
+   * task already planning restarts; false (nothing changed) for any other.
+   */
+  restartPlanning(taskRef: number, now: Date): boolean {
+    return this.transact(() => {
+      const moved = this.db
+        .prepare("UPDATE task_ref SET planning_generation = planning_generation + 1, plan = 'requested', plan_strikes = 0 WHERE id = ? AND plan IN ('requested','drafted')")
+        .run(taskRef);
+      if (Number(moved.changes) === 0) return false;
+      const ref = this.db.prepare("SELECT external_id, repo, planning_generation FROM task_ref WHERE id = ?").get(taskRef)!;
+      const generation = Number(ref["planning_generation"]);
+      this.closeQuestionsLocked(taskRef, "scope-changed", now, generation);
+      const blocked = this.db
+        .prepare("SELECT id FROM plan_revision WHERE task_ref = ? AND status = 'blocked' AND planning_generation < ?")
+        .all(taskRef, generation)
+        .map(row => Number(row["id"]));
+      for (const id of blocked) {
+        this.resolvePlanRevision(id, "rejected", "toolroll", now);
+        this.releaseOwnedHold("revision", String(id));
+      }
+      this.recordAction({
+        at: now.toISOString(), actor: currentActor() === null ? "system" : actorLabel(currentActor()!), repo: ref["repo"] === null ? null : String(ref["repo"]),
+        taskId: String(ref["external_id"]), runId: null, action: "planning restarted", outcome: "scope changed", source: "work",
+      });
+      this.bumpWake();
+      return true;
+    });
+  }
+
+  /**
+   * Close a task's open and expired questions without answering them (v119): typed with why, no choice, their
+   * holds lifted and their pages resolved, so they leave every decision queue. Answered questions are never touched.
+   * `belowGeneration` limits it to questions asked in earlier planning generations. Caller holds the transaction.
+   */
+  private closeQuestionsLocked(taskRef: number, reason: DecisionClosure, now: Date, belowGeneration?: number): number[] {
+    const ids = this.db
+      .prepare(
+        `SELECT decision.id FROM decision JOIN run ON run.id = decision.run
+          WHERE run.task_ref = ? AND decision.state IN ('open','expired') AND (? IS NULL OR run.planning_generation < ?)
+          ORDER BY decision.id`,
+      )
+      .all(taskRef, belowGeneration ?? null, belowGeneration ?? null)
+      .map(row => Number(row["id"]));
+    const close = this.db.prepare(
+      "UPDATE decision SET state = 'answered', answered_at = ?, answered_by = 'toolroll', superseded_reason = ? WHERE id = ? AND state IN ('open','expired')",
+    );
+    for (const id of ids) {
+      close.run(now.toISOString(), reason, id);
+      this.releaseOwnedHold("decision", String(id));
+      this.resolveEpisode(`decision:${id}`, now);
+    }
+    return ids;
+  }
+
+  /** The number the next plan revision of a task takes: one past every revision it ever had, in any planning
+   * generation, so a restarted plan's revisions never collide with the history they follow. */
+  nextPlanRevisionNumber(taskRef: number): number {
+    const row = this.db.prepare("SELECT coalesce(max(revision), 0) AS n FROM plan_revision WHERE task_ref = ?").get(taskRef);
+    return Number(row?.["n"] ?? 0) + 1;
+  }
+
   /** Move the planning state; null clears it. Caller owns the transaction story. */
   setPlanState(taskRef: number, state: "requested" | "drafted" | null): void {
     this.db.prepare("UPDATE task_ref SET plan = ? WHERE id = ?").run(state, taskRef);
@@ -13903,8 +14000,8 @@ export class Store {
     const inserted = this.db
       .prepare(
         `INSERT INTO run (task_ref, lease_id, runner, branch, worktree, model, role, provider, parent_run, session_id, quality_mode,
-                          started_at, review_attempt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                          started_at, review_attempt, planning_generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, (SELECT planning_generation FROM task_ref WHERE id = ?1))`,
       )
       .run(
         run.taskRef,
@@ -15002,13 +15099,15 @@ export class Store {
    * reads in the order the questions arrived. "unanswered" is open + expired:
    * expiry makes a decision louder, never gone.
    */
-  /** The newest planner run's plan document for a task, when one exists. */
+  /** The newest planner run's plan document for a task, when one exists in its current planning generation (v119:
+   * a plan drafted for a scope since rewritten is history, read by its artifact id). */
   latestPlanArtifact(taskRef: number): Artifact | null {
     const row = this.db
       .prepare(
         `SELECT artifact.* FROM artifact
          JOIN run ON run.id = artifact.run
          WHERE run.task_ref = ? AND run.role = 'planner' AND artifact.kind = 'plan'
+           AND run.planning_generation = (SELECT planning_generation FROM task_ref WHERE id = run.task_ref)
          ORDER BY artifact.id DESC LIMIT 1`,
       )
       .get(taskRef);
@@ -15026,6 +15125,7 @@ export class Store {
          JOIN run ON run.id = artifact.run
          WHERE run.task_ref = ? AND run.role = 'planner' AND artifact.kind = 'plan-contract'
            AND artifact.key LIKE '%/plan-contract.json'
+           AND run.planning_generation = (SELECT planning_generation FROM task_ref WHERE id = run.task_ref)
          ORDER BY artifact.id DESC LIMIT 1`,
       )
       .get(taskRef);
@@ -15077,8 +15177,8 @@ export class Store {
       .prepare(
         `INSERT INTO plan_revision
            (task_ref, revision, artifact, parent_hash, reason, evidence_link, author, origin_run,
-            kind, authority_kind, authority_digest, changed_fields, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            kind, authority_kind, authority_digest, changed_fields, status, created_at, planning_generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, (SELECT planning_generation FROM task_ref WHERE id = ?1))`,
       )
       .run(
         revision.taskRef,
@@ -15099,11 +15199,12 @@ export class Store {
     return Number(inserted.lastInsertRowid);
   }
 
-  /** Every revision for a task, newest first — the immutable history a
-   * reader can show without a second table. */
+  /** Every revision for a task in its current planning generation, newest
+   * first — the immutable history a reader can show without a second table
+   * (v119: an earlier generation's rows stay, read by id). */
   listPlanRevisions(taskRef: number): PlanRevision[] {
     return this.db
-      .prepare("SELECT * FROM plan_revision WHERE task_ref = ? ORDER BY revision DESC")
+      .prepare("SELECT * FROM plan_revision WHERE task_ref = ? AND planning_generation = (SELECT planning_generation FROM task_ref WHERE id = plan_revision.task_ref) ORDER BY revision DESC")
       .all(taskRef)
       .map(readPlanRevision);
   }
@@ -15115,7 +15216,7 @@ export class Store {
    * `latestPlanArtifact`'s synthetic revision 1 in both cases. */
   currentPlanRevision(taskRef: number): PlanRevision | null {
     const row = this.db
-      .prepare("SELECT * FROM plan_revision WHERE task_ref = ? AND status = 'applied' ORDER BY revision DESC LIMIT 1")
+      .prepare("SELECT * FROM plan_revision WHERE task_ref = ? AND planning_generation = (SELECT planning_generation FROM task_ref WHERE id = plan_revision.task_ref) AND status = 'applied' ORDER BY revision DESC LIMIT 1")
       .get(taskRef);
     return row === undefined ? null : readPlanRevision(row as Record<string, unknown>);
   }
@@ -15124,7 +15225,7 @@ export class Store {
    * 'blocked' awaiting an operator's decision — what a reader shows
    * alongside the current one to render a pending proposal at all. */
   latestPlanRevision(taskRef: number): PlanRevision | null {
-    const row = this.db.prepare("SELECT * FROM plan_revision WHERE task_ref = ? ORDER BY revision DESC LIMIT 1").get(taskRef);
+    const row = this.db.prepare("SELECT * FROM plan_revision WHERE task_ref = ? AND planning_generation = (SELECT planning_generation FROM task_ref WHERE id = plan_revision.task_ref) ORDER BY revision DESC LIMIT 1").get(taskRef);
     return row === undefined ? null : readPlanRevision(row as Record<string, unknown>);
   }
 
@@ -15233,7 +15334,8 @@ export class Store {
     return row === undefined ? null : readArtifact(row as Record<string, unknown>);
   }
 
-  /** Answered questions for one task, newest first — the planner's memory. */
+  /** Answered questions for one task, newest first — the planner's memory. Only real answers from its current
+   * planning generation (v119): a question closed unanswered, or asked about a scope since rewritten, is history. */
   answeredDecisionsFor(
     taskId: string,
     limit = 5,
@@ -15245,7 +15347,8 @@ export class Store {
          JOIN run ON run.id = decision.run
          JOIN task_ref ON task_ref.id = run.task_ref
          WHERE task_ref.backend = ? AND task_ref.external_id = ?
-           AND decision.answered_at IS NOT NULL
+           AND decision.answered_at IS NOT NULL AND decision.superseded_reason IS NULL
+           AND run.planning_generation = task_ref.planning_generation
          ORDER BY decision.answered_at DESC, decision.id DESC LIMIT ?`,
       )
       .all(BUILT_IN, taskId, Math.max(1, Math.min(Math.floor(limit), 20)))
@@ -15364,6 +15467,9 @@ export class Store {
          JOIN task_ref ON task_ref.id = run.task_ref
          WHERE run.task_ref = ? AND decision.state = 'answered'
            AND decision.contestant IS NULL
+           -- v119: a question closed unanswered carries no answer, and one asked about a rewritten scope is history.
+           AND decision.superseded_reason IS NULL
+           AND run.planning_generation = task_ref.planning_generation
            AND NOT EXISTS (
              SELECT 1 FROM run_decision
              JOIN run AS delivered ON delivered.id = run_decision.run
@@ -15533,7 +15639,7 @@ export class Store {
     mutation: Mutation = {},
   ):
     | { ok: true; decision: Decision; duplicate?: boolean }
-    | { ok: false; reason: "unknown-decision" | "bad-option" | "already-answered" | "bad-note" } {
+    | { ok: false; reason: "unknown-decision" | "bad-option" | "already-answered" | "closed" | "bad-note" } {
     return this.once(
       mutation,
       "answerDecision",
@@ -15554,9 +15660,11 @@ export class Store {
     now: Date,
   ):
     | { ok: true; decision: Decision; duplicate?: boolean }
-    | { ok: false; reason: "unknown-decision" | "bad-option" | "already-answered" | "bad-note" } {
+    | { ok: false; reason: "unknown-decision" | "bad-option" | "already-answered" | "closed" | "bad-note" } {
     const existing = this.getDecision(answer.id);
     if (existing === null) return { ok: false as const, reason: "unknown-decision" as const };
+    // A question closed without an answer (v119) stays closed: its task's scope changed or the task was cancelled.
+    if (existing.supersededReason !== null) return { ok: false as const, reason: "closed" as const };
     if (!existing.options.some(option => option.id === answer.choice)) {
       return { ok: false as const, reason: "bad-option" as const };
     }
@@ -20812,6 +20920,7 @@ function readRun(row: Record<string, unknown>): Run {
     taskRef: Number(row["task_ref"]),
     leaseId: String(row["lease_id"]),
     runner: String(row["runner"]),
+    planningGeneration: Number(row["planning_generation"] ?? 0),
     watchIncarnation: row["watch_incarnation"] == null ? null : String(row["watch_incarnation"]),
     reviewAttempt: wholeNumber(row["review_attempt"]),
     role: String(row["role"] ?? "builder") as Run["role"],
@@ -20964,6 +21073,7 @@ function readDecision(row: Record<string, unknown>): Decision {
       row["answered_via"] === null ? null : (String(row["answered_via"]) as Decision["answeredVia"]),
     choice: row["choice"] === null ? null : String(row["choice"]),
     note: row["note"] === null ? null : String(row["note"]),
+    supersededReason: row["superseded_reason"] === "scope-changed" || row["superseded_reason"] === "cancelled" ? row["superseded_reason"] : null,
   };
 }
 
@@ -21176,6 +21286,7 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
         ? null
         : (String(row["plan"]) as "requested" | "drafted"),
     planStrikes: Number(row["plan_strikes"] ?? 0),
+    planningGeneration: Number(row["planning_generation"] ?? 0),
     deliverable: row["deliverable"] === "report" ? "report" : "branch",
     strikes: Number(row["strikes"] ?? 0),
     agentProvider:

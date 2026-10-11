@@ -253,6 +253,13 @@ export function applyProposalTap(
   const preview = proposalPreview(store, proposal, actionRepos, "telegram");
   const origin = options.phoneOrigin?.() ?? null;
 
+  if (preview.closed) {
+    store.consumeTelegramProposalActions(proposal.id, now);
+    ack("This question is closed.");
+    edit(preview.text, []);
+    return { effects, confirmed: false, ignored: true };
+  }
+
   if (action.phase === "dismiss") {
     if (!store.consumeTelegramProposalAction(token, now)) { ack("that button was already used"); return { effects, confirmed: false, ignored: true }; }
     const done = dismissLeadProposal(store, who, proposal.id, now);

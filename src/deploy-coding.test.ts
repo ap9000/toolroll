@@ -12,6 +12,8 @@ import { installUpdateGate, freezeUpdateGate, removeUpdateGate, updateGateOwned 
 import { durableJson } from './desktop-update.js';
 import { loadCodingDeploymentRuntime, observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment } from '../scripts/deploy-coding.mjs';
 import { browserDeployment, openDeploymentDatabase, snapshotBackup } from '../scripts/deploy-phases.mjs';
+import { acquireDeploymentLock } from './deploy-lock.js';
+import { deploymentChild } from '../test/deploy-process.js';
 import { fakePid } from '../test/fake-pid.js';
 
 function fixture() {
@@ -188,7 +190,7 @@ async function deployment({ codingCatalog = true } = {}) {
 
   const log: string[] = [];
   const journals: Record<string, Record<string, any>> = {};
-  const hooks: { stopped?: (pids: number[]) => void; sleep?: () => void; fetch?: () => void; install?: () => void; freeze?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
+  const hooks: { stopped?: (pids: number[]) => void; sleep?: () => void; fetch?: () => void; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
   const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
   const services = {
     old: { supervisor: fakePid(1), children: [fakePid(2)], commands: [] as string[] },
@@ -205,12 +207,16 @@ async function deployment({ codingCatalog = true } = {}) {
   const installed = coding('installed'), candidate = coding('candidate');
   const gateEffects = {
     ...gate,
-    installUpdateGate: (db: DatabaseSync, id: string) => { hooks.install?.(); gate.installUpdateGate(db, id); },
+    updateGateOwned: (db: DatabaseSync, id: string) => { hooks.owned?.(); return gate.updateGateOwned(db, id); },
+    installUpdateGate: (db: DatabaseSync, id: string) => { hooks.install?.(); gate.installUpdateGate(db, id); hooks.installed?.(); },
     freezeUpdateGate: (db: DatabaseSync, id: string) => { const frozen = gate.freezeUpdateGate(db, id); hooks.freeze?.(); return frozen; },
   };
   const paused = () => { const db = new DatabaseSync(database); try { return gate.updateAdmissionPaused(db) ? ' while paused' : ''; } finally { db.close(); } };
   let lastPhase = '';
+  const deploymentLock = acquireDeploymentLock(journalFile);
+  const cancellation = new AbortController();
   const phases = browserDeployment({
+    deploymentLock, signal: cancellation.signal,
     database, stageDir: stage, stateDir: root, journalFile, plist, livePlist, priorDist, nextDist, uid: 501, label: 'com.toolroll.browser', servicePort: '4180',
     runId: 7, candidateHead: 'c'.repeat(40), publicUrl: null, script: 'scripts/deploy-browser.mjs --phase',
     oldRt: { gate: gateEffects, update: { durableJson }, coding: installed },
@@ -261,9 +267,9 @@ async function deployment({ codingCatalog = true } = {}) {
     log.length = 0; lastPhase = '';
   };
   return {
-    root, database, stage, plist, livePlist, nextDist, codingBackup, log, journals, hooks, current, services, phases, journal, orders, gateOwned, rehearsed, appearCatalog,
+    deploymentLock, cancellation, root, database, stage, plist, livePlist, nextDist, codingBackup, log, journals, hooks, current, services, phases, journal, orders, gateOwned, rehearsed, appearCatalog,
     reset: () => { log.length = 0; lastPhase = ''; for (const key of Object.keys(journals)) delete journals[key]; },
-    close: () => rmSync(root, { recursive: true, force: true }),
+    close: () => { deploymentLock.release(); rmSync(root, { recursive: true, force: true }); },
   };
 }
 const tamper = (file: string) => writeFileSync(file, 'changed after it was verified');
@@ -311,6 +317,56 @@ test('prepare refuses a result changed while the coding backup was copied, and r
   } finally { resumed.close(); }
 });
 
+test('a deploy that fails between journaling preparing and the next marker lifts the pause it installed', async () => {
+  const d = await deployment();
+  try {
+    // The journal names the pause's owner before the pause exists.
+    let atInstall: Record<string, any> | undefined;
+    d.hooks.install = () => { atInstall = d.journal(); };
+    d.hooks.installed = () => { throw Error('killed after the pause was installed'); };
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('killed after the pause');
+    expect(atInstall).toMatchObject({ phase: 'preparing', id: expect.any(String), schema: expect.any(Number), priorRuntime: expect.any(String), nextRuntime: d.nextDist, completion: { digest: 'complete' }, gateDigest: 'check' });
+    expect([d.journal().phase, d.journal().id, d.gateOwned()]).toEqual(['preparing', atInstall!.id, true]);
+    // Exit recovery lifts exactly that pause, journals it, and leaves the old service as it was.
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect([d.journal().phase, d.gateOwned()]).toEqual(['released', false]);
+    expect(d.log.filter(one => /bootout|bootstrap/.test(one))).toEqual([]);
+    expect([readFileSync(d.plist, 'utf8'), d.services.running]).toEqual([d.livePlist, 'old']);
+  } finally { d.close(); }
+});
+
+test('a deploy that fails while preparing never lifts a pause another update holds', async () => {
+  const d = await deployment();
+  try {
+    const other = randomUUID();
+    const db = d.orders();
+    try { gate.installUpdateGate(db, other); } finally { db.close(); }
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('Another or unrecognized update');
+    expect(d.journal().phase).toBe('preparing');
+    // Nothing of its own to undo: the other update's pause stays and the journal stays resumable.
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect(d.journal().phase).toBe('preparing');
+    const after = d.orders();
+    try { expect(gate.updateGateOwned(after, other)).toBe(true); } finally { after.close(); }
+  } finally { d.close(); }
+});
+
+test('every refusal before the swap lifts the pause it holds and leaves the old service running', async () => {
+  for (const phase of ['admission-paused', 'frozen'] as const) {
+    const d = await deployment();
+    try {
+      // Fail right after the named phase is journaled.
+      const fail = () => { throw Error(`refused at ${phase}`); };
+      if (phase === 'admission-paused') d.hooks.freeze = fail; else d.hooks.facts = () => { if (existsSync(join(d.stage, 'deployment.json')) && d.journal().phase === 'frozen') fail(); };
+      await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow(`refused at ${phase}`);
+      expect([d.journal().phase, d.gateOwned()]).toEqual([phase, true]);
+      expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+      expect([d.journal().phase, d.gateOwned(), d.services.running]).toEqual(['released', false, 'old']);
+      expect(d.log.filter(one => /bootout|bootstrap/.test(one))).toEqual([]);
+    } finally { d.close(); }
+  }
+});
+
 test('a newly observed catalog is journaled before its backup is awaited', async () => {
   const d = await deployment();
   try {
@@ -319,6 +375,55 @@ test('a newly observed catalog is journaled before its backup is awaited', async
     await d.phases.ensureCodingBackup(runtime, { id: randomUUID(), phase: 'frozen' });
     expect(journaled).toBe(true);
     expect(d.journal().codingBackupHash).toMatch(/^[a-f0-9]{64}$/);
+  } finally { d.close(); }
+});
+
+test('external recovery waits for the deployment lock and reads starting instead of an earlier pre-swap phase', async () => {
+  const d = await deployment();
+  let child: ReturnType<typeof deploymentChild> | undefined;
+  try {
+    await d.rehearsed();
+    const file = join(d.stage, 'deployment.json');
+    child = deploymentChild(`
+      import { acquireDeploymentLock } from ${JSON.stringify(new URL('../dist/deploy-lock.js', import.meta.url).href)};
+      import { browserDeployment } from ${JSON.stringify(new URL('../scripts/deploy-phases.mjs', import.meta.url).href)};
+      const journalFile = ${JSON.stringify(file)};
+      process.send('acquiring');
+      const deploymentLock = acquireDeploymentLock(journalFile);
+      const deployment = browserDeployment({ journalFile, deploymentLock, candidateHead: 'c'.repeat(40) });
+      try { process.send({ recovered: deployment.recoverJournal() }); }
+      finally { deploymentLock.release(); process.disconnect(); }`);
+    expect(await child.message()).toBe('acquiring');
+    // The deploy advances while still exclusively owning the journal; recovery must read after it relinquishes.
+    d.phases.save(d.journal(), 'starting');
+    d.deploymentLock.release();
+    expect(await child.message()).toEqual({ recovered: false });
+    expect((await child.closed).code).toBe(0);
+    expect(d.journal().phase).toBe('starting');
+    expect(d.gateOwned()).toBe(true);
+    expect(() => d.phases.recoverJournal()).toThrow('not held');
+  } finally { await child?.stop(); d.close(); }
+});
+
+test('cancellation during coding backup unwinds before recovery and never advances into swap', async () => {
+  const d = await deployment();
+  try {
+    d.hooks.codingBackup = () => { d.cancellation.abort(Error('interrupted')); };
+    await expect(d.phases.prepare({ packageSha256: 'staged' })).rejects.toThrow('interrupted');
+    expect(d.journal().phase).toBe('frozen');
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect([d.journal().phase, d.gateOwned()]).toEqual(['released', false]);
+    expect(d.log).not.toContain('bootout');
+  } finally { d.close(); }
+});
+
+test('recovery rechecks the journal immediately before removal and refuses a changed phase', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    d.hooks.owned = () => { durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), phase: 'starting' }); };
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    expect([d.journal().phase, d.gateOwned()]).toEqual(['starting', true]);
   } finally { d.close(); }
 });
 

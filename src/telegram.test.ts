@@ -725,6 +725,28 @@ describe("the telegram bridge", () => {
     expect(String(edit?.params["text"])).toBe("✓ Answered: Fail open\nt-1 · by alex via telegram");
   });
 
+  test.each(["scope-changed", "cancelled"] as const)("a stale phone button for a question closed by %s shows why and removes its answer controls", async reason => {
+    const script = scriptedTransport();
+    await pairChat(script);
+    if (reason === "scope-changed") store.requestPlan(taskRef, T0);
+    const id = decisionWith(plainOptions, "closed");
+    await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(5_000) });
+    const token = keyboardTokens(script)[0]!;
+    if (reason === "scope-changed") store.restartPlanning(taskRef, later(6_000));
+    else store.cancelTask("t-1", later(6_000));
+    const closed = store.getDecision(id)!;
+    expect(closed).toMatchObject({ supersededReason: reason, choice: null });
+    script.updates.push([tap(10, token, placedOn(token))]);
+    const result = await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(10_000) });
+    expect(result).toMatchObject({ ok: true, report: { answered: 0 } });
+    const edit = script.calls.filter(call => call.method === "editMessageText").at(-1)!;
+    expect(edit.params["text"]).toContain("Closed without an answer.");
+    expect(edit.params["text"]).toContain(reason === "scope-changed" ? "The scope changed" : "The task was cancelled");
+    expect(edit.params["reply_markup"]).toEqual({ inline_keyboard: [] });
+    expect(store.getDecision(id)).toEqual(closed);
+    expect(store.listDecisions("unanswered")).toEqual([]);
+  });
+
   test("a tap from anyone but the paired person is nothing", async () => {
     const script = scriptedTransport();
     await pairChat(script);

@@ -127,7 +127,7 @@ import { spawn as spawnChild } from "node:child_process";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
-import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
+import { closedQuestionWords, hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, storeEvidence } from "./evidence.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, encodePlannerSource, plannerSourceOf } from "./planner-source.js";
 
@@ -4217,7 +4217,7 @@ async function decideCommand(
       write(envelopeJson({ ok: true, command: "decide", decision, taskId, evidence }));
       return EXIT.ok;
     }
-    write(`${taskId} — ${decision.state.toUpperCase()}${decision.deadline === null ? "" : ` · deadline ${decision.deadline}`}`);
+    write(`${taskId} — ${decision.supersededReason !== null ? "CLOSED" : decision.state.toUpperCase()}${decision.deadline === null ? "" : ` · deadline ${decision.deadline}`}`);
     write("");
     write(`  ${decision.recap}`);
     write("");
@@ -4235,7 +4235,9 @@ async function decideCommand(
     }
     if (decision.state === "answered") {
       write("");
-      write(`  answered: ${decision.choice} by ${decision.answeredBy} at ${decision.answeredAt}${decision.note === null ? "" : ` — ${decision.note}`}`);
+      write(decision.supersededReason !== null
+        ? `  ${closedQuestionWords(decision.supersededReason)} (${decision.answeredAt})`
+        : `  answered: ${decision.choice} by ${decision.answeredBy} at ${decision.answeredAt}${decision.note === null ? "" : ` — ${decision.note}`}`);
     }
     if (evidence.length > 0) {
       write("");
@@ -4243,8 +4245,10 @@ async function decideCommand(
         write(`  evidence  ${artifact.kind.padEnd(14)} ${artifact.key}${artifact.truncated ? "  (truncated)" : ""}`);
       }
     }
-    write("");
-    write(`  → toolroll decide ${id} --choose <option> --as <you> --token <t>`);
+    if (decision.state !== "answered") {
+      write("");
+      write(`  → toolroll decide ${id} --choose <option> --as <you> --token <t>`);
+    }
     return EXIT.ok;
   }
 
@@ -4277,6 +4281,8 @@ async function decideCommand(
         ? `"${choice}" is not one of this decision's options — \`toolroll decide ${id}\` shows them`
         : answered.reason === "already-answered"
           ? `decision ${id} was already answered differently — "decided" is not negotiable; park a new task if the answer must change`
+          : answered.reason === "closed"
+            ? `decision ${id}: ${closedQuestionWords(store.getDecision(id)?.supersededReason ?? "cancelled")} Nothing to answer.`
           : answered.reason === "bad-note"
             ? "the note is too long or carries control characters"
             : `no decision ${id}`;
@@ -10783,6 +10789,7 @@ async function scopeTask(
   // the mode seal record as a single operation —
   // a replayed key returns the FIRST answer whole instead of re-sealing
   // whatever scope happens to be current.
+  const generationBefore = store.lookupRef(id)?.planningGeneration ?? 0;
   const filed = store.replay(mutationFrom(flags, now), "task-scope-filed", () =>
     store.transact(():
     | { ok: true; scope: ReturnType<typeof propose>; sealedUnderMode: boolean; modeRefusedCoordinator?: boolean }
@@ -10842,8 +10849,12 @@ async function scopeTask(
     ]);
   }
 
-  return succeed(write, json, "task scope", { scope }, () => [
-    `Scope written for ${id}. Nothing will build it until somebody approves it.`,
+  // A changed scope on a planning task plans again (v119): say so once, instead of leaving the old plan implied.
+  const replanned = (store.lookupRef(id)?.planningGeneration ?? 0) > generationBefore;
+  return succeed(write, json, "task scope", { scope, ...(replanned ? { planningRestarted: true } : {}) }, () => [
+    replanned
+      ? `Scope written for ${id}. The scope changed, so planning starts again; nothing builds until somebody approves the new plan.`
+      : `Scope written for ${id}. Nothing will build it until somebody approves it.`,
     ...describeScope(scope),
     "",
     `  toolroll task approve ${id} --yes`,

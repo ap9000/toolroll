@@ -1,4 +1,5 @@
 import { configureLeadFollow, leadFollowStatus } from './lead-follow.js';
+import { closedQuestionWords } from "./decision.js";
 /**
  * `toolroll chat` (mate arc §6): the same thread the console shows,
  * driven from a terminal. The password is typed once — it mints the lead
@@ -78,6 +79,7 @@ export function answerContextLines(store: Store, payload: Record<string, unknown
   const id = typeof payload["decision"] === "number" ? payload["decision"] : null;
   const decision = id === null ? null : store.getDecision(id);
   if (decision === null) return ["     (the decision is gone)"];
+  if (decision.supersededReason !== null) return [`     ${decision.question}`, `     ${closedQuestionWords(decision.supersededReason)}`];
   const pick = typeof payload["option"] === "string" ? payload["option"] : "";
   return [
     `     ${decision.question}${decision.state !== "open" ? ` [${decision.state}]` : ""}`,
