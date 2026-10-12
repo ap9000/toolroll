@@ -16,7 +16,8 @@ import { startMaintenance } from './maintenance.js';
 import { connectionsOf,localConnectOf,oneClickOf,type ConnectVisit } from "./mcp-connect.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
-import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG } from "./project-tools.js";
+import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG,toolStanding } from "./project-tools.js";
+import { toolRefusal } from "./policy.js";
 import { isEdgeAddress,refuseEdge } from "./server/edge-refusal.js";
 import { announcePasswordBearer, isPasswordBearer, PASSWORD_BEARER_REFUSED, passwordBearerAccepted } from "./password-bearer.js";
 import { createSharedGuards } from "./server/guards.js";
@@ -407,7 +408,23 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     repo, name: projectName(repo), holdings: projectHoldings(store, repo), running: projectRunning(store, repo, clock()),
     canDelete: who.via === "cookie" && store.isInstanceOperator(who.name),
     builds: projectBuildsOf(repo, who),
+    access: projectAccessOf(repo),
   });
+  /** Settings → Project → Build access: the project's named tools and whether each loads for its builds. */
+  const projectAccessOf = (repo: string): NonNullable<ProjectSettingsView["access"]> => {
+    try {
+      const policy = store.orgPolicy();
+      return { tools: projectToolsOf(store, repo).map(tool => {
+        const refused = toolRefusal(policy, tool.name);
+        const set = secretsSetFor(repo, tool.spec, toolHome);
+        // As a launch decides (toolLaunchFor): a tool the organisation doesn't allow, or missing a secret, is left out.
+        return refused !== null ? { name: tool.name, loads: false, words: refused }
+          : { name: tool.name, loads: tool.spec.secrets.every(one => one.optional || set.includes(one.name)), words: toolStanding(tool, set).words };
+      }) };
+    } catch {
+      return { problem: "Couldn't read this project's tools right now." };
+    }
+  };
   /** Settings → Project → Builds at once: the saved number, its workers' capacity, and what builds now. */
   const projectBuildsOf = (repo: string, who: Who): NonNullable<ProjectSettingsView["builds"]> => {
     const capacities = store.listRunners().filter(one => one.retiredAt === null && one.repos.includes(repo)).map(one => one.capacity);

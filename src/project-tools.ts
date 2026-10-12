@@ -514,7 +514,7 @@ export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omit
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const tomlList = (values: readonly string[]): string => `[${values.map(toml).join(",")}]`;
 
-/** Claude: only these servers (`--strict-mcp-config`), written to a private 0600 file removed after the run. */
+/** Claude: only these servers, written to a private 0600 file removed after the run (the provider adds `--strict-mcp-config`). */
 export function claudeToolArgs(launch: ToolLaunch): ToolLaunchArgs {
   const servers: Record<string, unknown> = {};
   for (const tool of launch.tools) {
@@ -533,28 +533,12 @@ export function claudeToolArgs(launch: ToolLaunch): ToolLaunchArgs {
   const file = join(dir, "mcp.json");
   writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
   return {
-    argv: ["--strict-mcp-config", "--mcp-config", file],
+    argv: ["--mcp-config", file],
     // A first `npx` download can take longer than the default start-up wait.
     env: launch.tools.length > 0 ? { MCP_TIMEOUT: "60000" } : {},
     omitEnv: [],
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
-}
-
-/** The operator's Codex model settings a build keeps when its tools are replaced: how it thinks, never what it can reach. */
-const CARRIED_CODEX_SETTINGS = ["model_reasoning_effort", "model_reasoning_summary", "model_verbosity", "service_tier", "personality"];
-
-export function carriedCodexSettings(includeModel: boolean, codexHome: string = process.env["CODEX_HOME"] ?? join(homedir(), ".codex")): string[] {
-  let text = "";
-  try { text = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { return []; }
-  const wanted = includeModel ? ["model", ...CARRIED_CODEX_SETTINGS] : CARRIED_CODEX_SETTINGS;
-  const argv: string[] = [];
-  for (const line of text.split("\n")) {
-    if (/^\s*\[/.test(line)) break;
-    const match = /^\s*([a-z_]+)\s*=\s*("[^"\\\n]{0,80}"|[A-Za-z0-9_.-]{1,40})\s*(?:#.*)?$/.exec(line);
-    if (match !== null && wanted.includes(match[1]!)) argv.push("-c", `${match[1]}=${match[2]}`);
-  }
-  return argv;
 }
 
 /** Where the tool launcher lives beside this module, built. */
@@ -563,16 +547,15 @@ export function toolLauncherPath(): string {
 }
 
 /**
- * Codex: the operator's config.toml is ignored whole (its MCP servers
- * with it), ChatGPT apps and plugins are off, the model settings above
- * are carried, and each tool is named by `-c` and started through the
- * launcher. Codex gives its own environment to the agent's shell whatever
+ * Codex: each tool is named by `-c` and started through the launcher. The
+ * operator's config.toml, rules, apps, plugins and hooks are already off
+ * (the provider's CODEX_BUILD_ISOLATION_ARGV), and nothing of config.toml
+ * is carried. Codex gives its own environment to the agent's shell whatever
  * its policy says, so no secret rides it: each tool's values sit in the
  * run's private 0600 file and reach only that tool's process.
  */
-export function codexToolArgs(launch: ToolLaunch, options: { includeModel: boolean; codexHome?: string; launcher?: string; node?: string; enabledTools?: Readonly<Record<string, readonly string[]>> }): ToolLaunchArgs {
-  // ChatGPT apps, connectors and plugins are the operator's account, not the project's: all off (plugins carry their own MCP servers).
-  const argv = ["--ignore-user-config", ...carriedCodexSettings(options.includeModel, options.codexHome), "-c", "apps._default.enabled=false", "-c", "features.plugins=false"];
+export function codexToolArgs(launch: ToolLaunch, options: { launcher?: string; node?: string; enabledTools?: Readonly<Record<string, readonly string[]>> } = {}): ToolLaunchArgs {
+  const argv: string[] = [];
   if (launch.tools.length === 0) return { argv, env: {}, omitEnv: [], cleanup: () => undefined };
   const dir = mkdtempSync(join(tmpdir(), "so-tools-"));
   chmodSync(dir, 0o700);
@@ -661,13 +644,12 @@ export function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
   provider: "claude" | "codex" | "openrouter" | "gemini",
-  options: { home?: string; now: Date; includeModel: boolean; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>> },
+  options: { home?: string; now: Date; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>> },
 ): ToolLaunchArgs {
   const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
   const enabledTools = options.readOnly === undefined ? {} : { enabledTools: options.readOnly };
   const prepared = provider === "claude" ? claudeToolArgs(launch)
-    : provider === "codex" ? codexToolArgs(launch, { includeModel: options.includeModel, ...enabledTools })
-      : provider === "openrouter" ? codexToolArgs(launch, { includeModel: false, ...enabledTools })
+    : provider === "codex" || provider === "openrouter" ? codexToolArgs(launch, enabledTools)
         : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
   const skipped = provider === "gemini"
     ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: "Gemini builds can't use project tools yet" }))]
@@ -691,11 +673,10 @@ function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonl
 }
 
 /** When a launch's tools cannot be prepared, it still gets none of anything else's: the same isolation with an empty list. */
-export function noToolsArgs(provider: "claude" | "codex" | "openrouter" | "gemini", includeModel: boolean): ToolLaunchArgs {
-  const none: ToolLaunch = { tools: [], skipped: [] };
-  if (provider === "claude") return { argv: ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'], env: {}, omitEnv: [], cleanup: () => undefined };
+export function noToolsArgs(provider: "claude" | "codex" | "openrouter" | "gemini"): ToolLaunchArgs {
+  if (provider === "claude") return { argv: ["--mcp-config", '{"mcpServers":{}}'], env: {}, omitEnv: [], cleanup: () => undefined };
   if (provider === "gemini") return { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
-  return codexToolArgs(none, { includeModel: provider === "codex" && includeModel });
+  return codexToolArgs({ tools: [], skipped: [] });
 }
 
 // ---- changing a project's tools (console and the lead share these) ------------------------

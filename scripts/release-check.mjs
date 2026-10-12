@@ -21,7 +21,7 @@
  * nothing; any other change to them is a change. The journeys and the upgrade path start once the build passed (the
  * journeys not when the typecheck already failed).
  *
- * The base is origin/main, fetched fresh; files are compared, not ancestry. No difference from main (or no main)
+ * The base is the latest v* release tag reachable from HEAD. No reachable release tag (or no difference from it)
  * means everything runs. `--full` (or TOOLROLL_FULL_CHECK=1) runs everything, the real-model journeys too. `--real`
  * adds the real-model journeys to whatever the change runs. `--plan` prints the plan and stops. Ends with the same
  * `== summary` block, and how long each part took.
@@ -44,19 +44,17 @@ const planOnly = args.includes("--plan");
 const real = args.includes("--real");
 const baseFlag = args.includes("--base") ? args[args.indexOf("--base") + 1] : undefined;
 
-const git = (...argv) => execFileSync("git", argv, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }).trim();
+const git = (...argv) => execFileSync("git", argv, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim();
 const tryGit = (...argv) => { try { return git(...argv); } catch { return null; } };
 
 /**
- * What to compare against: main as GitHub has it now. The gate checks out a
- * commit of its own (the candidate's files on the checkout's local main), so
- * ancestry says nothing — compare the files. A candidate behind main counts
- * main's newer changes too, which only ever runs more.
+ * Compare the candidate with its most recent reachable release, including
+ * lightweight tags. A version-only release commit still checks code merged
+ * since that release. Missing tags conservatively select the full suite.
  */
 function baseOf() {
   if (baseFlag !== undefined) return baseFlag;
-  tryGit("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main");
-  return tryGit("rev-parse", "--verify", "-q", "origin/main");
+  return tryGit("describe", "--tags", "--match", "v*", "--abbrev=0", "HEAD");
 }
 
 /** Model-facing code: a change here runs the real-model journeys (the lead and its tools, chat, the planner, the builder,
@@ -135,10 +133,10 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const versionBumps = base === null ? [] : VERSIONED.filter(file => changed.includes(file) && versionOnly(file, tryGit("show", `${base}:${file}`), tryGit("show", `HEAD:${file}`)));
   // Toolroll's own checkout carries the journey scripts and the upgrade path; another project's release check has none.
   const scripts = existsSync(join("scripts", "flows-e2e.mjs")) && existsSync(join("scripts", "app-e2e.mjs"));
-  // No main to compare with, or nothing differs from it (a release of main itself): check everything.
+  // No release to compare with, or nothing differs from it: check everything.
   const plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, journeys: scripts });
   const upgrade = plan.checks && existsSync(join("scripts", "upgrade-path.mjs"));
-  console.log(`Release check against ${base === null ? "nothing (origin/main unknown)" : `origin/main ${base.slice(0, 12)}`} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from every release since 0.5.0" : ""}.`);
+  console.log(`Release check against ${base === null ? "nothing (no reachable v* release tag)" : base} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from every release since 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
 
   // Each journey run: a script, scripted or real-model, in every group with journeys of that kind.

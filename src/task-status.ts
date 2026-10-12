@@ -122,6 +122,8 @@ export type TaskStatusFacts = {
   blockers?: readonly CompletionBlocker[];
   evidence?: { shortened: number; missing: number; damaged: number } | null;
   completedBy?: string | null;
+  /** Marked complete by Toolroll because its work landed: why, in a few words ("its pull request merged"). */
+  landed?: string | null;
   action?: StatusAction | null;
   /** Where a row's one action leads: the result (and its Checks tab), the task's pull request, Run checks. */
   links?: { result?: string | null; checks?: string | null; pullRequest?: string | null; runChecks?: string | null };
@@ -196,6 +198,8 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
       if (facts.checks == null) return "Review the change, then mark it complete.";
       return "Built without a passing project check. Review the change, then mark it complete.";
     case "Complete": {
+      // Landed work says why once; its merged pull request is that reason, not a second sentence.
+      if (facts.landed) return `Marked complete automatically: ${facts.landed}.`;
       const by = facts.completedBy ? `Marked complete by ${facts.completedBy}.` : "Marked complete.";
       const pr = facts.pullRequest;
       return pr?.state === "merged" ? `${by} ${pr.number === null ? "Its pull request" : `Pull request #${pr.number}`} merged.` : by;
@@ -542,7 +546,8 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
     ...(withResult && receipt?.proofAcceptance != null ? { accepted: true } : {}),
     ...(withResult && (assignment.readiness?.blockers.length ?? 0) > 0 ? { blockers: assignment.readiness!.blockers } : {}),
     evidence: withResult ? options.evidence ?? evidenceOf(receipt, [...(receipt?.caveats ?? []), ...assignment.attention]) : null,
-    completedBy: assignment.completion === null ? null : assignment.completion.lead === true ? "the lead" : assignment.completion.actor.replace(/^(?:operator|coordinator|lead):/, ""),
+    completedBy: assignment.completion === null || assignment.completion.landed !== undefined ? null : assignment.completion.lead === true ? "the lead" : assignment.completion.actor.replace(/^(?:operator|coordinator|lead):/, ""),
+    ...(assignment.completion?.landed === undefined ? {} : { landed: assignment.completion.landed }),
     action: options.action ?? null,
     ...(options.links === undefined ? {} : { links: options.links }),
     why: options.why ?? [],

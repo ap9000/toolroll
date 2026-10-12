@@ -75,6 +75,9 @@ export const PROPOSAL_PREFIX = "STANDING-ORDERS-PROPOSAL-";
  * writes each operator note into it as NNN.json (a temp name, then a
  * rename); the agent acknowledges a note by moving it into `handled/`. */
 export const STEER_PREFIX = "STANDING-ORDERS-STEER-";
+/** The running build's status file (Agents board): JSON lines the agent appends
+ * (working, needs-decision, blocked, done), read forward by the pulse. */
+export const STATUS_PREFIX = "STANDING-ORDERS-STATUS-";
 export const MAILBOX_SUFFIX = ".json";
 /** v105: left in a run's evidence folder when the retention setting removed its files (retention.ts). */
 export const RETENTION_NOTE = "REMOVED-BY-RETENTION";
@@ -160,7 +163,7 @@ export function looksLikeMailbox(name: string): boolean {
  * The pre-rename NIGHTORDERS- prefix stays recognized here — a worktree cut
  * down before 2026-08-13 may still hold one, and cleanup has no vintage. */
 export function looksLikeProtocolFile(name: string): boolean {
-  if (looksLikeSteerFolder(name)) return true;
+  if (looksLikeSteerFolder(name) || looksLikeStatusFile(name)) return true;
   return (
     (name.startsWith(MAILBOX_PREFIX) ||
       name.startsWith(HANDOFF_PREFIX) ||
@@ -182,6 +185,15 @@ export function looksLikeProtocolFile(name: string): boolean {
  * slash, or file by file where a repository shows every untracked file. */
 export function looksLikeSteerFolder(name: string): boolean {
   return /^STANDING-ORDERS-STEER-[0-9a-f]{16}(?:\/.*)?$/.test(name);
+}
+
+/** An agent status file (Agents board), by its exact nonce-shaped name. */
+export function looksLikeStatusFile(name: string): boolean {
+  return /^STANDING-ORDERS-STATUS-[0-9a-f]{16}\.jsonl$/.test(name);
+}
+
+export function statusFileName(): string {
+  return `${STATUS_PREFIX}${randomBytes(8).toString("hex")}.jsonl`;
 }
 
 export function steerFolderName(): string {
@@ -627,8 +639,9 @@ export function quarantineMailboxes(
     const path = join(worktree, name);
     // An earlier attempt's steering folder holds copies of notes the
     // database already keeps: removed whole (a symlink is removed, never
-    // followed), never quarantined.
-    if (looksLikeSteerFolder(name)) {
+    // followed), never quarantined. So is its status file: the database
+    // already read every line it will ever need.
+    if (looksLikeSteerFolder(name) || looksLikeStatusFile(name)) {
       try {
         rmSync(path, { recursive: true, force: true });
         swept.push(name);

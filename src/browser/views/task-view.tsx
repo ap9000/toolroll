@@ -6,7 +6,7 @@
  * scripts); this page only frames them. */
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskSection, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
@@ -14,6 +14,8 @@ import { Journey } from "../first-run.js";
 import { Badge, Button, Card, Textarea, cn } from "../components/ui/index.js";
 import { ConfirmStoppedForm, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
+import { TEXT_LIMITS } from "../../text-limits.js";
+import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
 
@@ -74,6 +76,47 @@ function StopForm({ stop, csrf }: { stop: NonNullable<BrowserTaskView["stop"]>; 
   </PostForm>;
 }
 
+type LivePause = NonNullable<BrowserTaskView["pause"]>;
+
+/** Pause, beside Stop: stops the current turn of the same live Claude build and keeps it. Hidden once a pause is asked. */
+function PauseForm({ pause }: { pause: LivePause }) {
+  return <PostForm action={pause.action} className="phone:w-full" data-task-control="pause" data-control-run={pause.run}>
+    <input type="hidden" name="run" value={pause.run} />
+    <input type="hidden" name="request" value={pause.requests[0]} />
+    <input type="hidden" name="return" value="task" />
+    <Button type="submit" variant="outline" className="phone:w-full" data-pause-build>Pause</Button>
+  </PostForm>;
+}
+
+/** Resume, on a paused build: it goes on where it stopped, with no note. */
+function ResumeForm({ pause }: { pause: LivePause }) {
+  return <PostForm action={pause.action} className="phone:w-full" data-task-control="resume" data-control-run={pause.run}>
+    <input type="hidden" name="run" value={pause.run} />
+    <input type="hidden" name="request" value={pause.requests[2]} />
+    <input type="hidden" name="mode" value="resume" />
+    <input type="hidden" name="return" value="task" />
+    <Button type="submit" className="phone:w-full" data-resume-build>Resume</Button>
+  </PostForm>;
+}
+
+/** Pause and steer's note, under the card's row: the turn stops first, then the agent gets the note. A paused build
+ * only needs the note, so the same form reads Continue there. */
+function PauseSteerForm({ pause, onCancel }: { pause: LivePause; onCancel: () => void }) {
+  const paused = pause.state === "paused";
+  return <PostForm action={pause.action} className="flex w-full flex-col gap-1.5" data-task-control="pause-and-steer" data-control-run={pause.run}>
+    <input type="hidden" name="run" value={pause.run} />
+    <input type="hidden" name="request" value={pause.requests[1]} />
+    <input type="hidden" name="return" value="task" />
+    <label htmlFor="pause-steer-note" className="text-body font-medium">{paused ? "Note to continue with" : "Note for the agent"}</label>
+    <div className="flex flex-wrap items-end gap-2 phone:flex-col phone:items-stretch">
+      <Textarea id="pause-steer-note" name="note" required autoFocus maxLength={TEXT_LIMITS.note} rows={1} placeholder="What should it do instead?" data-pause-steer-note
+        className="min-h-9 min-w-0 flex-1 basis-72 resize-none [field-sizing:content] max-h-40 phone:min-h-11 phone:basis-auto" />
+      <Button type="submit" className="phone:w-full" data-pause-steer-send>{paused ? "Continue" : "Pause and send"}</Button>
+      <Button type="button" variant="ghost" className="phone:w-full" onClick={onCancel}>Cancel</Button>
+    </div>
+  </PostForm>;
+}
+
 /** One headline, one sentence and one action; the details sit quietly
  * underneath (task-status.ts). Only Failed wears vermilion: its dot and, at
  * half strength, its border; its sentence is what it missed, the evidence
@@ -87,6 +130,10 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
   const confirm = view.confirmStopped ?? null, rebuild = view.rebuild ?? null, retry = view.retry ?? null, failure = view.failure ?? null;
   const stuck = view.progress?.stuck ?? null;
   const retrying = failed && retry != null && csrf !== "";
+  const pause = view.stop != null && csrf !== "" ? view.pause ?? null : null;
+  const [steering, setSteering] = useState(false);
+  const pausedLine = pause?.state == null || stuck !== null ? null : pause.state === "pausing" ? "Pausing…"
+    : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
   return <Card data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status" className={cn(failed && "border-destructive/50")}>
     <div className="flex flex-wrap items-center gap-x-4 gap-y-3 phone:gap-y-2.5">
       <div className="min-w-0 flex-1 basis-64">
@@ -95,7 +142,9 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
         <p className={cn("mt-1.5 text-sm phone:mt-1 phone:leading-[1.35]", failed || stuck !== null ? "text-foreground" : "text-muted-foreground", stuck !== null && "flex gap-2")}
           {...(failed ? { "data-failure-reason": "" } : {})} {...(view.progress != null ? { "data-build-progress": "" } : {})} {...(stuck !== null ? { "data-build-stuck": stuck.step } : {})}>
           {stuck !== null && <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />}
-          <span className="[overflow-wrap:anywhere]">{card.status.sentence}</span>
+          {/* A pause replaces the step line: the build is waiting, not working. */}
+          {pausedLine !== null ? <span className="font-medium text-foreground" role="status" data-live-pause={pause!.state}>{pausedLine}</span>
+            : <span className="[overflow-wrap:anywhere]">{card.status.sentence}</span>}
         </p>
         {view.activity != null && <ActivityLine activity={view.activity} className="mt-1" />}
         {view.record != null && <p className="mt-1 text-body">
@@ -111,6 +160,10 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
         : stuck?.action != null || view.stop != null ? <div className="flex flex-wrap items-center gap-2 phone:w-full phone:flex-col phone:items-stretch">
             {stuck?.action != null ? <Button asChild variant="outline" className="phone:w-full"><a href={stuck.action.href} data-stuck-action>{stuck.action.label}</a></Button>
               : card.action !== null && <Button asChild variant="outline" className="phone:w-full"><a href={card.action.href} data-primary-action>{card.action.label}<ArrowRight /></a></Button>}
+            {pause !== null && pause.state === null && <PauseForm pause={pause} />}
+            {pause !== null && pause.state === "paused" && <ResumeForm pause={pause} />}
+            {pause !== null && !steering && <Button type="button" variant="outline" className="phone:w-full"
+              onClick={() => setSteering(true)} data-pause-steer>{pause.state === "paused" ? "Continue with a note" : "Pause and steer"}</Button>}
             {view.stop != null && csrf !== "" && <StopForm stop={view.stop} csrf={csrf} />}
           </div>
         : card.action !== null && <Button asChild variant={card.status.headline === "Needs you" ? "attention" : "default"} className="phone:w-full">
@@ -118,6 +171,7 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
       </Button>}
     </div>
     {retrying && <RetryForm action={retry.action} csrf={csrf} note={retry.note ?? failure?.suggestion} />}
+    {pause !== null && steering && <PauseSteerForm pause={pause} onCancel={() => setSteering(false)} />}
     <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
     {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&
       <div className="flex flex-col gap-1 border-t border-border pt-3 text-body phone:pt-2 phone:leading-[1.35]">

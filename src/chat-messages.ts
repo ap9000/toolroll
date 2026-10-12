@@ -9,6 +9,7 @@
  * Imports the store's types only (no runtime cycle): the store builds its chats on it.
  */
 import { join } from "node:path";
+import { watchedPing } from "./agent-board.js";
 import { ChatCore } from "./chat-core.js";
 import { readChatMessageBody, readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatMessageBody } from "./contracts/chat-content.js";
 import { isTelegramProgressNotification, proposalTaskOf, readNotification, readNotificationReceipt } from "./notification-rows.js";
@@ -846,8 +847,13 @@ export class ChatMessages extends ChatCore {
       for (const raw of this.db.prepare(`SELECT n.* FROM notification n JOIN notification_delivery d ON d.notification = n.id AND d.destination = ?
           WHERE n.resolved_at IS NULL AND d.delivered_at IS NULL AND d.receipt IS NULL AND (d.claim_owner IS NULL OR d.claim_expires_at <= ?)`).all(destination, now.toISOString())) {
         const row = readNotification(raw);
-        if (!this.store.pingAllowed(row, binding.approver)) {
+        // A ping about a run this person is watching stays unsettled until the watch lapses, then is decided again.
+        const watched = this.store.pingAllowed(row, binding.approver) ? watchedPing(this.store, row, binding.approver, now) : "skip";
+        if (watched === "skip") {
           this.db.prepare(`UPDATE notification_delivery SET receipt = '${TELEGRAM_SKIPPED_QUIET}' WHERE notification = ? AND destination = ?`).run(row.id, destination);
+        } else if (watched !== "send") {
+          this.db.prepare("UPDATE notification_delivery SET next_attempt_at = ? WHERE notification = ? AND destination = ? AND (next_attempt_at IS NULL OR next_attempt_at < ?)")
+            .run(watched.hold, row.id, destination, watched.hold);
         }
       }
       if (this.store.telegramRetryAt(binding.botId) > now.toISOString()) return [];

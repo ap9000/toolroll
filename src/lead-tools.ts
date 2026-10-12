@@ -115,6 +115,7 @@ import { undoFor, weekOf, weekWords } from "./subagent-week.js";
 import { PERSON_ID, personEntry, teamRoomOf } from "./lead-people.js";
 import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";
 import { steerStandingWords } from "./steer-status.js";
+import { agentQuestion, openAgentQuestions } from "./agent-board.js";
 import { utcMinute } from "./when-html.js";
 
 const REPO_ID = /^r[0-9]{1,3}$/;
@@ -1375,6 +1376,16 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
             const live = ctx.store.steeringLiveBuild(ref.id, ctx.now) !== null;
             return ctx.store.listSteerNotes(ref.id).slice(-5).map(one => ({ note: one.id, filedAt: one.createdAt, state: steerStandingWords(one, live, utcMinute) }));
           })(),
+          // Live steering: the running Claude build a note reaches in seconds and a pause can reach, and its pause.
+          liveBuild: (() => {
+            const run = ctx.store.liveInputRun(ref.id, ctx.now);
+            if (run === null) return null;
+            const pause = ctx.store.livePauseOf(run);
+            const until = pause?.state === "paused" && pause.pausedAt !== null && pause.limitMs !== null ? new Date(Date.parse(pause.pausedAt) + pause.limitMs).toISOString() : null;
+            return { build: run, pause: pause?.state ?? null, ...(until === null ? {} : { pausedUntil: until }) };
+          })(),
+          // The running agent's open questions (Agents board): reply with propose_steer and its question id.
+          agentQuestions: openAgentQuestions(ctx.store, ref.id).map(one => ({ question: one.id, key: one.key, asks: one.question, askedAt: one.askedAt })),
         },
       };
     },
@@ -1501,18 +1512,35 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   propose_steer: {
-    description: "Send guidance within existing scope: a running build's agent reads it when it next checks for notes, otherwise the next attempt does. It never stops work.",
+    description: "Send guidance within existing scope: a running Claude build gets it in seconds, another running build reads it when it next checks for notes, otherwise the next attempt does. mode pause stops a running Claude build's current turn and keeps the build (its next note continues it); pause-and-steer pauses, then sends the note; resume continues a paused build without a note. None stops work; get_task liveBuild says when a pause or resume is possible. With question (from get_task agentQuestions, mode note) the note is the reply to that open question.",
     handle: (ctx, args) => {
       const taskId = taskIdOf(args);
       const ref = taskId === null ? null : admittedRef(ctx, taskId);
       const task = taskId === null ? null : ctx.store.getTask(taskId);
       if (taskId === null || ref === null || task === null) return notFound();
-      if (typeof args["note"] === "string" && args["note"].length > LIMITS.note) return { ok: false, message: `guidance is ${args["note"].length} characters; the limit is ${LIMITS.note}. Shorten it and propose again.` };
-      if (!honest(args["note"], LIMITS.note)) return { ok: false, message: `guidance is plain text up to ${LIMITS.note} characters` };
+      const mode = args["mode"] === "pause" || args["mode"] === "pause-and-steer" || args["mode"] === "resume" ? args["mode"] : "note";
+      if (mode !== "pause" && mode !== "resume") {
+        if (typeof args["note"] === "string" && args["note"].length > LIMITS.note) return { ok: false, message: `guidance is ${args["note"].length} characters; the limit is ${LIMITS.note}. Shorten it and propose again.` };
+        if (!honest(args["note"], LIMITS.note)) return { ok: false, message: `guidance is plain text up to ${LIMITS.note} characters` };
+      }
       if (task.state === "done" || task.state === "cancelled") return { ok: false, message: "that task is finished, so guidance has no next attempt to reach" };
-      const id = ctx.draft("steer", { task: taskId, taskTitle: task.title, repoId: ref.repoId, note: args["note"] });
+      // A pause binds to the build running now: confirming it later reaches that build or none.
+      const sawRun = mode === "note" ? null : ctx.store.liveInputRun(ref.id, ctx.now);
+      if (mode !== "note" && sawRun === null) return { ok: false, message: `that task has no running Claude build to ${mode === "resume" ? "resume" : "pause"}; send the guidance as a note instead` };
+      if (mode === "resume" && ctx.store.pauseStateOf(sawRun!) !== "paused") return { ok: false, message: "that task's build isn't paused, so there is nothing to resume" };
+      // A reply names exactly one open question of this task's running agent; the confirmation re-checks it. A reply is
+      // an ordinary note (the confirmation files it through the question's own door), so it never rides a pause or resume.
+      if (typeof args["question"] === "number" && mode !== "note") return { ok: false, message: "a reply to the agent's question is sent as a note; propose it without mode" };
+      const asked = typeof args["question"] === "number" ? agentQuestion(ctx.store, args["question"]) : null;
+      if (typeof args["question"] === "number" && (asked === null || asked.taskRef !== ref.id || asked.closedAt !== null)) return { ok: false, message: "that question is no longer open; read get_task agentQuestions again" };
+      const id = ctx.draft("steer", {
+        task: taskId, taskTitle: task.title, repoId: ref.repoId,
+        ...(mode === "pause" || mode === "resume" ? {} : { note: args["note"] }),
+        ...(mode === "note" ? {} : { mode, sawRun, request: `lead-${randomUUID()}` }),
+        ...(asked === null ? {} : { question: asked.id, questionKey: asked.key }),
+      });
       if (id === null) return tooMany();
-      return { ok: true, body: { proposal: id, kind: "steer", task: taskId, awaiting: "the operator's confirmation" } };
+      return { ok: true, body: { proposal: id, kind: "steer", task: taskId, mode, awaiting: "the operator's confirmation" } };
     },
   },
   propose_dependency_repair: {

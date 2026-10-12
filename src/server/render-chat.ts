@@ -751,6 +751,18 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
     what = html`<h3>Hold <a href="${taskHref(task)}">${task}</a></h3><p class="proposal-summary">${text("reason")}</p>${facts(["project", mono(repoId)])}`;
   } else if (view.kind === "unhold") {
     what = html`<h3>Release <a href="${taskHref(task)}">${task}</a> from its hold</h3>${facts(["project", mono(repoId)])}`;
+  } else if (view.kind === "steer" && payload["mode"] === "pause") {
+    const taskTitle = text("taskTitle") || task;
+    what = html`<h3>Pause <a href="${taskHref(task)}">${taskTitle}</a></h3>${
+      facts(["project", mono(repoId)])}<p class="meta proposal-disclosure">Its current turn stops and the build keeps running; its next note continues it.</p>`;
+  } else if (view.kind === "steer" && payload["mode"] === "resume") {
+    const taskTitle = text("taskTitle") || task;
+    what = html`<h3>Resume <a href="${taskHref(task)}">${taskTitle}</a></h3>${
+      facts(["project", mono(repoId)])}<p class="meta proposal-disclosure">It goes on where it stopped. No note is sent.</p>`;
+  } else if (view.kind === "steer" && payload["mode"] === "pause-and-steer") {
+    const taskTitle = text("taskTitle") || task;
+    what = html`<h3>Pause <a href="${taskHref(task)}">${taskTitle}</a> and send a note</h3><p class="proposal-summary">${text("note")}</p>${
+      facts(["project", mono(repoId)])}<p class="meta proposal-disclosure">Its current turn stops first. The task’s scope doesn’t change.</p>`;
   } else if (view.kind === "steer") {
     const taskTitle = text("taskTitle") || task;
     what = html`<h3>Guidance for <a href="${taskHref(task)}">${taskTitle}</a></h3><p class="proposal-summary">${text("note")}</p>${

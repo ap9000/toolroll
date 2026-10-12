@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import {
+  cumulativeLiveResult,
   run, runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, terminateLiveProviders, NOT_FOUND_CODE,
   JSONL_EVENT_HARD_CAP,
   retryTransientSpawn, isTransientSpawnFailure, type SpawnAttempt,
@@ -744,5 +745,23 @@ describe("transient spawn failures are retried, bounded — a process that never
     );
     expect(again).toBe(1);
     expect(missing.notFound).toBe(true);
+  });
+});
+
+describe("a live Claude session's account across several results", () => {
+  test("usage tokens and turns add up; the session, ending, words and running cost are the last result's", () => {
+    const first = { type: "result", subtype: "error_during_execution", is_error: true, session_id: "s-1", num_turns: 3, total_cost_usd: 0.4,
+      usage: { input_tokens: 120, output_tokens: 148, cache_creation_input_tokens: 900, cache_read_input_tokens: 4_000, service_tier: "standard" } };
+    const second = { type: "result", subtype: "success", is_error: false, session_id: "s-1", result: "done", num_turns: 2, total_cost_usd: 0.55,
+      usage: { input_tokens: 30, output_tokens: 50, cache_read_input_tokens: 6_000 } };
+    const account = cumulativeLiveResult(first, second);
+    expect(account).toMatchObject({ subtype: "success", is_error: false, result: "done", session_id: "s-1", total_cost_usd: 0.55, num_turns: 5,
+      usage: { input_tokens: 150, output_tokens: 198, cache_creation_input_tokens: 900, cache_read_input_tokens: 10_000 } });
+    // The parser reads the sum: the probe's Pause-then-note session recorded 50 output tokens instead of 198.
+    expect(adapterFor("claude").parse(JSON.stringify(account))).toMatchObject({ tokensIn: 150, tokensOut: 198, costUsd: 0.55, ending: { subtype: "success", turns: 5 } });
+    // A field that is not a non-negative number adds nothing; a result with no usage keeps the sum so far.
+    expect(cumulativeLiveResult({ usage: { input_tokens: -5, output_tokens: "7" }, num_turns: null }, { usage: { input_tokens: 3 } }))
+      .toMatchObject({ usage: { input_tokens: 3 } });
+    expect(cumulativeLiveResult(second, { type: "result", subtype: "success" })).toMatchObject({ usage: { input_tokens: 30, output_tokens: 50 }, num_turns: 2 });
   });
 });

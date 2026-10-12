@@ -103,13 +103,18 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     ...view.sections.map(one => one.html), ...view.manage.map(one => one.html), view.cancel?.html ?? "",
     // Stop on the Building card is rendered from data, not HTML.
     view.stop == null ? "" : `<form method="post" action="${view.stop.action}">`,
+    // So are Pause and Pause and steer beside it: Pause only until one is asked.
+    ...(view.pause == null ? [] : [...(view.pause.state === null ? [view.pause.action] : []), view.pause.action].map(action => `<form method="post" action="${action}">`)),
   ].join("\n");
   const formsOf = (html: string): string[] => [...html.matchAll(/<form\b[^>]*\baction="([^"]+)"/g)].map(match => match[1]!).sort();
   const stepUps = (html: string): number => (html.match(/type="password"/g) ?? []).length;
 
   test("c3: the rebuilt task page carries exactly the server page's forms and password step-ups, in every state", async () => {
     filed("unscoped", "Plan the export", T0, false);
-    building("live", "Export orders", "builder-1");
+    const liveRun = building("live", "Export orders", "builder-1");
+    // A Claude build that takes live input: Pause and Pause and steer join Stop on both renderings.
+    store.markSteerFolderOpened(liveRun, T0);
+    store.markLiveInputOpened(liveRun, T0);
     const askRef = filed("asking", "Pick a cache", T0);
     const authority = store.routeAuthorityFor(askRef, "builder");
     if (!authority?.ok) throw new Error("route");
@@ -129,6 +134,7 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
       const data = await workspace(cookie, `/t/${id}`);
       const view = data.view as BrowserTaskView;
       expect(view.kind).toBe("task");
+      if (id === "live") expect(view.pause).toMatchObject({ run: liveRun, state: null });
       // The page's own fallback is the server's task body; the rebuilt view holds every one of its forms.
       expect(data.pageHtml).not.toBeNull();
       const serverForms = formsOf(data.pageHtml!);

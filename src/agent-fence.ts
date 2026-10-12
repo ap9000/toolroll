@@ -20,6 +20,10 @@
  *
  * Checked against codex-cli 0.156 and Claude Code 2.1.281 with a canary
  * file read by an obfuscated script: "Operation not permitted".
+ *
+ * A build's fence also holds its task boundary (`taskBoundary`): home
+ * configuration and the repositories beside its own, so a build works in
+ * its task's folders and nowhere else it could do harm.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -51,7 +55,7 @@ function inside(child: string, parent: string): boolean {
  * database sits anywhere else (a shared folder), only the database and
  * secret-looking entries there are fenced.
  */
-export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[] }): string[] {
+export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null }): string[] {
   const fence = new Set<string>();
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
@@ -85,23 +89,96 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     if (stream !== undefined && existsSync(stream)) fence.add(real(stream));
   }
   for (const path of options.extra ?? []) if (existsSync(path)) fence.add(real(path));
+  for (const path of options.boundary?.shell ?? []) fence.add(path);
   // Never fence the run's own worktree or anything above it.
   return [...fence].filter(path => worktree === null || (path !== worktree && !inside(worktree, path))).sort();
 }
 
+/**
+ * Credentials and agent configuration in the home folder. A build is the
+ * operator's own OS user, so without this it could read their SSH keys,
+ * cloud logins or another agent's sign-in, or rewrite their own Claude or
+ * Codex setup for the next interactive session.
+ */
+const HOME_CONFIGURATION = [".claude", ".claude.json", ".codex", ".gemini", ".ssh", ".aws", ".gnupg", ".netrc", ".git-credentials", ".kube", join(".config", "gh"), join(".docker", "config.json")];
+/** What a provider's own CLI reads to sign in and keep its sessions. The OS fence around Claude and Gemini holds
+ * their whole process, so those stay reachable there; Codex fences only its agent's commands, so it keeps none. */
+const PROVIDER_HOME: Record<string, readonly string[]> = { claude: [".claude", ".claude.json"], gemini: [".gemini"], codex: [], openrouter: [] };
+/** What Claude's own file tools refuse inside its home: the CLI reads these itself, its model never needs to. */
+const CLAUDE_FILE_TOOL_HOME = [".claude.json", join(".claude", ".credentials.json"), join(".claude", "settings.json"), join(".claude", "settings.local.json"), ".npmrc"];
+
+/** The task's boundary: `shell` joins the OS fence; `fileTools` only Claude's file-tool deny rules. */
+export type TaskBoundary = { shell: string[]; fileTools: string[] };
+
+/**
+ * Everything outside a task's own folders that a build could otherwise
+ * reach: the home configuration above, the other repositories beside its
+ * project (and other tasks' worktrees beside its own), and the project's
+ * primary checkout — all but its `.git`, which the worktree's git needs.
+ * The task's worktree, the files Toolroll makes for the run (in the
+ * system temp folder) and everything else stay as they are.
+ */
+export function taskBoundary(options: { worktree: string; provider: string; home?: string }): TaskBoundary {
+  const home = real(options.home ?? homedir());
+  const worktree = real(options.worktree);
+  const main = mainRepositoryOf(worktree);
+  const own = new Set(PROVIDER_HOME[options.provider] ?? []);
+  const present = (names: readonly string[]) => names.map(name => join(home, name)).filter(path => existsSync(path)).map(real);
+  const shell = new Set(present(HOME_CONFIGURATION.filter(name => !own.has(name))));
+  const repository = (path: string) => existsSync(join(path, ".git"));
+  for (const parent of new Set([dirname(worktree), ...(main === null ? [] : [dirname(main)])])) {
+    // Home contains toolchain clones such as .nvm and .oh-my-zsh. The
+    // explicit configuration fence above owns home, not repository discovery.
+    if (real(parent) === home) continue;
+    let entries: string[] = [];
+    try { entries = readdirSync(parent); } catch { entries = []; }
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const path = join(parent, entry);
+      if (path === worktree || path === main || inside(worktree, path) || !repository(path)) continue;
+      shell.add(path);
+    }
+  }
+  if (main !== null && main !== worktree) {
+    let entries: string[] = [];
+    try { entries = readdirSync(main); } catch { entries = []; }
+    for (const entry of entries) {
+      const path = join(main, entry);
+      if (entry !== ".git" && path !== worktree && !inside(worktree, path)) shell.add(path);
+    }
+  }
+  // Git needs this worktree's metadata and the shared objects/refs, but
+  // must not prune or rewrite the metadata of another task's checkout.
+  const gitdir = worktreeGitDir(worktree);
+  if (gitdir !== null && main !== null) {
+    const siblings = dirname(gitdir);
+    let entries: string[] = [];
+    try { entries = readdirSync(siblings); } catch { entries = []; }
+    for (const entry of entries) {
+      const path = real(join(siblings, entry));
+      if (path !== gitdir) shell.add(path);
+    }
+  }
+  const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
+  return { shell: [...shell].sort(), fileTools: fileTools.sort() };
+}
+
 /** The repository a git worktree belongs to (its `.git` file names the main repository's git folder). */
-function mainRepositoryOf(worktree: string): string | null {
+function worktreeGitDir(worktree: string): string | null {
   try {
     const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(join(worktree, ".git"), "utf8"))?.[1]?.trim();
-    if (pointer === undefined) return null;
-    const gitdir = real(isAbsolute(pointer) ? pointer : join(worktree, pointer));
-    // <repo>/.git/worktrees/<name> → <repo>
-    const marker = `${sep}.git${sep}worktrees${sep}`;
-    const at = gitdir.lastIndexOf(marker);
-    return at < 0 ? null : gitdir.slice(0, at);
+    return pointer === undefined ? null : real(isAbsolute(pointer) ? pointer : join(worktree, pointer));
   } catch {
     return null;
   }
+}
+
+function mainRepositoryOf(worktree: string): string | null {
+  const gitdir = worktreeGitDir(worktree);
+  if (gitdir === null) return null;
+  // <repo>/.git/worktrees/<name> → <repo>
+  const at = gitdir.lastIndexOf(`${sep}.git${sep}worktrees${sep}`);
+  return at < 0 ? null : gitdir.slice(0, at);
 }
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;

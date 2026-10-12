@@ -36,7 +36,7 @@ test("the global teardown removes the run's temp root and everything a test left
   }
 });
 
-test("leftovers: test folders nothing touched for a day, judged by the folder and what is directly in it", () => {
+test("leftovers: test folders nothing touched for a day, judged by the folder and what is directly in it", async () => {
   const root = mkdtempSync(join(tmpdir(), "so-temp-scan-"));
   made.push(root);
   const now = new Date();
@@ -56,13 +56,13 @@ test("leftovers: test folders nothing touched for a day, judged by the folder an
   const found = testTempFolders([root], now);
   expect(found.all.map(one => one.path).sort()).toEqual([busy, fresh, stale].sort());
   expect(found.stale.map(one => one.path)).toEqual([stale]);
-  expect(removeStaleTestTemp([root], now)).toEqual({ removed: [stale], failed: [], more: false });
+  expect(await removeStaleTestTemp([root], now)).toEqual({ removed: [stale], failed: [], more: false });
   expect([stale, busy, fresh, other].map(existsSync)).toEqual([false, true, true, true]);
   expect(isTestTemp("playwright_chromiumdev_profile-AbC123")).toBe(true);
   expect(isTestTemp("com.apple.launchd.x")).toBe(false);
 });
 
-test("a stale-looking root whose owner still runs stays; a pass removes at most its share and says more are left", () => {
+test("a stale-looking root whose owner still runs stays; a pass removes at most its share and says more are left", async () => {
   const root = mkdtempSync(join(tmpdir(), "so-temp-owner-"));
   made.push(root);
   const now = new Date();
@@ -81,16 +81,16 @@ test("a stale-looking root whose owner still runs stays; a pass removes at most 
   expect(tempOwner(running)).toEqual({ pid: runningOwner, startedAt: old.getTime() });
   expect(tempOwner(plain[0]!)).toBeNull();
   const ownerAlive = (owner: { pid: number }) => owner.pid === runningOwner;
-  const first = removeStaleTestTemp([root], now, { ownerAlive, max: 2 });
+  const first = await removeStaleTestTemp([root], now, { ownerAlive, max: 2 });
   expect(first.more).toBe(true);
   expect(first.removed).toHaveLength(2);
-  const rest = removeStaleTestTemp([root], now, { ownerAlive });
+  const rest = await removeStaleTestTemp([root], now, { ownerAlive });
   expect(rest.more).toBe(false);
   expect([...first.removed, ...rest.removed].sort()).toEqual([gone, ...plain].sort());
   expect(existsSync(running)).toBe(true);
 });
 
-test("a stale root a test made read-only is still removed", () => {
+test("a stale root a test made read-only is still removed", async () => {
   const root = mkdtempSync(join(tmpdir(), "so-temp-readonly-"));
   made.push(root);
   const now = new Date();
@@ -101,6 +101,28 @@ test("a stale root a test made read-only is still removed", () => {
   execFileSync("chmod", ["-R", "a-w", join(locked, "inner")]);
   utimesSync(join(locked, "inner"), old, old);
   utimesSync(locked, old, old);
-  expect(removeStaleTestTemp([root], now)).toEqual({ removed: [locked], failed: [], more: false });
+  expect(await removeStaleTestTemp([root], now)).toEqual({ removed: [locked], failed: [], more: false });
   expect(existsSync(locked)).toBe(false);
+});
+
+test("removing leaves the event loop free between folders, so a worker's heartbeats keep beating (Oct 12)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "so-temp-turns-"));
+  made.push(root);
+  const now = new Date();
+  const old = new Date(now.getTime() - 2 * DAY);
+  for (const name of ["so-a", "so-b", "so-c"]) { mkdirSync(join(root, name)); utimesSync(join(root, name), old, old); }
+  let beats = 0;
+  const heartbeat = setInterval(() => { beats++; }, 1);
+  const seen: number[] = [];
+  try {
+    const done = await removeStaleTestTemp([root], now, { spare: () => {
+      seen.push(beats);
+      // A slow removal: the heartbeat falls due before the next folder.
+      for (const end = Date.now() + 5; Date.now() < end;) { /* busy */ }
+      return false;
+    } });
+    expect(done.removed).toHaveLength(3);
+  } finally { clearInterval(heartbeat); }
+  expect(seen[1]).toBeGreaterThan(seen[0]!);
+  expect(seen[2]).toBeGreaterThan(seen[1]!);
 });

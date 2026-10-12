@@ -9,6 +9,18 @@ import { readVerifiedArtifact } from "./evidence.js";
 /** The ledger action a person's (or lead's) completion of a result writes. */
 export const COMPLETION_ACTION = "assignment handoff checked";
 
+/** The actor of an automatic completion: the result's work already landed (landed-cleanup.ts). Its ledger detail is
+ * the plain-English reason ("its pull request merged"), the one place every surface reads it from. */
+export const LANDED_ACTOR = "system:landed";
+
+/** Who may complete a result, as a completion's ledger actor: a person, a lead, or Toolroll when the work landed. */
+export const COMPLETER_ACTOR = /^(?:(?:operator|coordinator|lead):.+|system:landed)$/;
+
+/** Why Toolroll marked a result complete, from its completion's actor and detail; null for a person's completion. */
+export function landedReasonOf(actor: string | null | undefined, detail: string | null | undefined): string | null {
+  return actor === LANDED_ACTOR ? detail?.trim() || "its work is already in main" : null;
+}
+
 /** Whether a task's family is marked complete. Completion is recorded on the
  * family's root against its current version's latest result, so the root, a
  * superseded revision and the current version all read Complete together. */

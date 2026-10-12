@@ -68,7 +68,7 @@ const references: RemoteScope = { kind: "references" }, listing: RemoteScope = {
 export const REMOTE_SCOPES: ReadonlyMap<string, RemoteScope> = new Map<string, RemoteScope>([
   ["status", listing], ["integrations", installation], ["ready", listing], ["grants", installation], ["sync", installation],
   ["gaps", repo], ["task add", repo],
-  ...["ask", "checks", "add-tests", "show", "wait", "complete", "revise", "state", "block", "unblock", "next", "steer", "assign", "scope", "plan", "hold",
+  ...["ask", "checks", "add-tests", "show", "wait", "complete", "revise", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign", "scope", "plan", "hold",
     "unhold", "require", "requeue", "review", "repair", "route", "reopen", "stop", "resume"].map(action => [`task ${action}`, references] as [string, RemoteScope]),
   ["check-progress", references],
   ["task list", listing],

@@ -12,6 +12,7 @@ import type { DecisionOption } from "./contracts/decision.js";
 import { parseStoreColumn, readStoreColumn, readStoreStringifiedList, readStoreTextList, type StoreColumn, type SavedToolAction, type SavedToolRule } from "./contracts/store-json.js";
 import { assessmentFromSavedEvidence, verificationEvidence } from "./verification-evidence.js";
 import { LEARNING_SCHEMA, queueLearning } from "./project-learning.js";
+import { AGENT_BOARD_SCHEMA, AGENT_NOW_COLUMNS, closeRunQuestions, mintAttemptKey, watchedPing } from "./agent-board.js";
 import { SKILLS_SCHEMA } from "./project-skills.js";
 import { KNOWLEDGE_SCHEMA } from "./project-knowledge.js";
 import { MEMORY_SCHEMA } from "./project-memory.js";
@@ -53,7 +54,7 @@ import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose
  * nobody has designed yet is a column that will be wrong when they do.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
@@ -127,7 +128,7 @@ import { REQUEST_BUDGET_SCHEMA } from "./request-budget.js";
 import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-switch.js";
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, subagentFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
-import { CHECKOUT_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
+import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
 import { configBase, envValue, namedPath } from "./names.js";
@@ -410,6 +411,44 @@ CREATE TABLE IF NOT EXISTS run_activity (
 );
 `;
 
+/** Pausing a running Claude build (live steering, v121: additive only). A person's Pause asks the build to
+ * stop its current turn and keep its session: one row per request, bound to the exact run it was asked of, under the
+ * request id the asker chose (a repeated request is the same request). `note` is the steering note a Pause and steer
+ * sends right after the interrupt. The builder's dispatcher stamps sent_at when the interrupt is written, paused_at when
+ * the turn stopped, resumed_at when a later note continued the session, and ended_at when the run stopped taking input
+ * first. Never a stop: nothing here ends, holds or reclaims an attempt (run_stop does that). A person's Resume (run_resume)
+ * continues a paused build with a short continue frame and no note: one row per request, bound to the exact paused run;
+ * sent_at when the frame was written, ended_at when the run was no longer paused to take it. */
+export const LIVE_STEER_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_pause (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run           INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  request_id    TEXT NOT NULL UNIQUE,
+  requested_by  TEXT NOT NULL,
+  requested_via TEXT NOT NULL CHECK (requested_via IN ('cli','web','chat')),
+  requested_at  TEXT NOT NULL,
+  note          INTEGER REFERENCES task_steer(id) ON DELETE SET NULL,
+  sent_at       TEXT,
+  paused_at     TEXT,
+  resumed_at    TEXT,
+  ended_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS run_pause_by_run ON run_pause (run, id);
+CREATE TABLE IF NOT EXISTS run_resume (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run           INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  task_ref      INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  request_id    TEXT NOT NULL UNIQUE,
+  requested_by  TEXT NOT NULL,
+  requested_via TEXT NOT NULL CHECK (requested_via IN ('cli','web','chat')),
+  requested_at  TEXT NOT NULL,
+  sent_at       TEXT,
+  ended_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS run_resume_by_run ON run_resume (run, id);
+`;
+
 export const CHAT_APPROVAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_approval_setting (
   approver             TEXT NOT NULL,
@@ -639,7 +678,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (decision.superseded_reason: its task's scope changed, or the task was cancelled).
 // v120 lets a running build read steering: a note the pulse put in the build's steering folder (task_steer.mailed_run,
 // mailed_at) and the moment the agent moved it to handled/ (acked_at).
-export const SCHEMA_VERSION = 120;
+// v121 adds, and changes no saved row: the Agents board (run.attempt_key; agent_turn, agent_now, agent_question,
+// agent_seen, agent_view), live steering (a note's live identity and sends, a run's stdin session; run_pause and
+// run_resume) and landed work's teardown journal (landed_cleanup, landed_cleanup_item).
+export const SCHEMA_VERSION = 121;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -768,9 +810,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * before the old tables drop, and the references that named them name credential in place, their rows untouched. v119 only adds four columns
  * (planning_generation on task_ref, run and plan_revision, defaulting to 0, and decision.superseded_reason, null);
  * the rehearsal checks every saved row reads the declared default (HISTORY_RULES' added columns). v120 only adds
- * three nullable task_steer columns (the running build's steering folder), checked the same way.
+ * three nullable task_steer columns (the running build's steering folder), checked the same way. v121 only adds
+ * new tables and the columns in V121_ADDED_COLUMNS (null, or no sends), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -791,6 +834,34 @@ export const V120_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     steer_opened_at: { definition: "TEXT", saved: "NULL" },
     steer_closed_at: { definition: "TEXT", saved: "NULL" },
   },
+});
+
+/**
+ * Live steering's added columns (v121), with the value every row saved before them reads. A note carries the identity
+ * its stdin copy is sent under (live_uuid, minted when it is filed), how many times it was sent to the running build
+ * and when last, and when it was given up on as not picked up.
+ * A run says when its stdin session opened and closed: only then can a note reach it in seconds, or a Pause stop a turn;
+ * and how long a paused session may wait before it ends (the idle limit; none under a wall-clock limit).
+ */
+export const LIVE_STEER_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_steer: {
+    live_uuid: { definition: "TEXT", saved: "NULL" },
+    live_sends: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
+    live_sent_at: { definition: "TEXT", saved: "NULL" },
+    live_missed_at: { definition: "TEXT", saved: "NULL" },
+  },
+  run: {
+    live_input_opened_at: { definition: "TEXT", saved: "NULL" },
+    live_input_closed_at: { definition: "TEXT", saved: "NULL" },
+    live_pause_limit_ms: { definition: "INTEGER", saved: "NULL" },
+  },
+});
+
+/** v121: the columns it adds, by table, with the value every row saved before it reads: live steering's, and a run's
+ * attempt key (the Agents board; runs admitted before it read none). Its new tables carry no saved rows. */
+export const V121_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_steer: LIVE_STEER_COLUMNS.task_steer!,
+  run: { ...LIVE_STEER_COLUMNS.run, attempt_key: { definition: "TEXT", saved: "NULL" } },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -1726,7 +1797,43 @@ export type SteerNote = {
   mailedRun: number | null;
   mailedAt: string | null;
   ackedAt: string | null;
+  /** Live steering: the identity its stdin copy is sent under, how often and when last it was sent to the running
+   * build, and when it was given up on as not picked up. Null/0 on notes filed before live steering. */
+  liveUuid: string | null;
+  liveSends: number;
+  liveSentAt: string | null;
+  liveMissedAt: string | null;
 };
+
+/** Who asked for a pause, and through which door. */
+export type PauseVia = "cli" | "web" | "chat";
+
+/** One Pause (or Pause and steer) asked of an exact running build (LIVE_STEER_SCHEMA). */
+export type RunPause = {
+  id: number;
+  run: number;
+  taskRef: number;
+  requestId: string;
+  requestedBy: string;
+  requestedVia: PauseVia;
+  requestedAt: string;
+  note: number | null;
+  sentAt: string | null;
+  pausedAt: string | null;
+  resumedAt: string | null;
+  endedAt: string | null;
+};
+
+/** Where a run's latest pause stands, and how long a paused build may wait before it ends (null: no idle limit). */
+export type LivePauseState = { state: "pausing" | "paused"; pausedAt: string | null; limitMs: number | null };
+
+export type ResumeRequestResult =
+  | { ok: true; resume: number; duplicate: boolean }
+  | { ok: false; reason: "invalid-request" | "duplicate" | "unknown-task" | "task-finished" | "stale" | "not-paused"; detail: string };
+
+export type PauseRequestResult =
+  | { ok: true; pause: number; note: number | null; duplicate: boolean }
+  | { ok: false; reason: "invalid-request" | "duplicate" | "unknown-task" | "task-finished" | "stale" | "invalid-note"; detail: string };
 
 /** One phone enrollment for web push (arc 3, v23). A row per ACTIVATION —
  * retirement is history, never deletion. */
@@ -4531,6 +4638,10 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CHAT_APPROVAL_SCHEMA);
   // What a running agent did last (no version bump: additive only; absent means no word yet).
   db.exec(RUN_ACTIVITY_SCHEMA);
+  // v121: the Agents board: each run's attempt key (V121_ADDED_COLUMNS, below), its turn history and current snapshot,
+  // the agent's open questions, who has seen a finished run and who is watching one now. Older runs read null keys.
+  db.exec(AGENT_BOARD_SCHEMA);
+  for (const [column, definition] of AGENT_NOW_COLUMNS) addColumn(db, "agent_now", column, definition);
   // A flow's "Send to me" and "Person chooses" zones (no version bump: additive only).
   db.exec(FLOW_SEND_SCHEMA);
   db.exec(SPEND_SCHEMA);
@@ -4556,6 +4667,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CHECKOUT_CLEANUP_SCHEMA);
   // The daily storage sweep's record (no version bump: a new table, nothing carried over).
   db.exec(STORAGE_SWEEP_SCHEMA);
+  // v121: landed work's teardown journal (landed-cleanup.ts): new tables.
+  db.exec(LANDED_CLEANUP_SCHEMA);
   db.exec(BACKUP_SCHEMA);
   // Sprint 8: the organisation policy (one row, or none: nothing restricted).
   db.exec(POLICY_SCHEMA);
@@ -4603,6 +4716,12 @@ function initializeStore(db: Database, file: string): Store {
   for (const [table, columns] of Object.entries(V120_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v121: live steering and the Agents board's attempt key (additive only; saved notes read as never sent, saved runs as
+  // never taking input and keyless), and the pause and resume requests.
+  for (const [table, columns] of Object.entries(V121_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  db.exec(LIVE_STEER_SCHEMA);
   installLedgerTriggers(db);
   // Attention/history indexes come AFTER migration: on a database whose
   // constrained tables still carry a pre-rebuild shape, creating a partial
@@ -14051,6 +14170,8 @@ export class Store {
         reviewAttempt,
       );
     const id = Number(inserted.lastInsertRowid);
+    // The attempt key (Agents board): opaque, minted with the row, and the only key its stream state is recorded under.
+    this.db.prepare("UPDATE run SET attempt_key = ? WHERE id = ?").run(mintAttemptKey(), id);
     // The provenance row lands in the same transaction as the run row —
     // proved above, written here; a run and its route are one fact.
     this.writeRunRoute(id, stamp, run.now);
@@ -14403,6 +14524,8 @@ export class Store {
     // retained witnesses and every owned run; recovery revisits a pending
     // stop after an orphan finishes shutdown.
     this.recordRunProcessExits(id, result.now);
+    // An ended attempt's open questions close unanswered: a reply would reach no one.
+    closeRunQuestions(this, id, result.now);
     // Use the existing reconciliation proof now, while exits are fresh. In
     // particular, a returned --candidate check need not await the next scan.
     this.settleUnspawnedWitnesses(result.now, id);
@@ -15323,8 +15446,12 @@ export class Store {
 
   /** What the agent did last on this run (live tasks): one fixed kind and when, replacing the last. */
   recordRunActivity(run: number, kind: LiveActivityKind, now: Date): void {
-    this.db.prepare("INSERT INTO run_activity (run, kind, at) VALUES (?, ?, ?) ON CONFLICT (run) DO UPDATE SET kind = excluded.kind, at = excluded.at")
-      .run(run, kind, now.toISOString());
+    this.transact(() => {
+      this.db.prepare("INSERT INTO run_activity (run, kind, at) VALUES (?, ?, ?) ON CONFLICT (run) DO UPDATE SET kind = excluded.kind, at = excluded.at")
+        .run(run, kind, now.toISOString());
+      // Fresh activity is not Stuck: an open board hears the mark clear with this same write (agent-board.ts).
+      this.db.prepare("UPDATE agent_now SET stuck_at = NULL WHERE run = ? AND stuck_at IS NOT NULL").run(run);
+    });
   }
 
   /** A run's last recorded activity and its newest progress checkpoint's time, in one read. */
@@ -15542,14 +15669,21 @@ export class Store {
           if (task === undefined || ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
           const state = String(task["state"]);
           if (state === "done" || state === "cancelled") return { ok: false as const, reason: "task-finished" as const };
-          const inserted = this.db
-            .prepare("INSERT INTO task_steer (task_ref, author, note, created_at, authorship_state) VALUES (?, ?, ?, ?, 'verified')")
-            .run(Number(ref["id"]), author as unknown as string, valid.note, now.toISOString());
+          const id = this.insertSteerNote(Number(ref["id"]), author, valid.note, now);
           this.bumpWake();
-          return { ok: true as const, id: Number(inserted.lastInsertRowid) };
+          return { ok: true as const, id };
         }),
       result => result.ok,
     );
+  }
+
+  /** One verified note, with the identity a running build's stdin copy is sent under: filing it is also what queues
+   * its live delivery, in the same transaction (the builder's dispatcher sends whatever is filed and unsent). */
+  private insertSteerNote(taskRef: number, author: VerifiedAuthor, note: string, now: Date): number {
+    const inserted = this.db
+      .prepare("INSERT INTO task_steer (task_ref, author, note, created_at, authorship_state, live_uuid) VALUES (?, ?, ?, ?, 'verified', ?)")
+      .run(taskRef, author as unknown as string, note, now.toISOString(), randomUUID());
+    return Number(inserted.lastInsertRowid);
   }
 
   /** Every steering note of a task, filing order, delivery state included. */
@@ -15606,11 +15740,12 @@ export class Store {
         .all(taskRef, runId, live, live);
       const stamp = now.toISOString();
       for (const row of rows) {
+        // A brief that quotes it starts its live delivery over: an earlier build's sends and give-up are not this one's.
         this.db
-          .prepare("UPDATE task_steer SET attached_run = ?, attached_at = ? WHERE id = ?")
+          .prepare("UPDATE task_steer SET attached_run = ?, attached_at = ?, live_sends = 0, live_sent_at = NULL, live_missed_at = NULL WHERE id = ?")
           .run(runId, stamp, Number(row["id"]));
       }
-      return rows.map(row => readSteerNote({ ...row, attached_run: runId, attached_at: stamp }));
+      return rows.map(row => readSteerNote({ ...row, attached_run: runId, attached_at: stamp, live_sends: 0, live_sent_at: null, live_missed_at: null }));
     });
   }
 
@@ -15680,10 +15815,13 @@ export class Store {
   markSteerMailed(noteId: number, runId: number, now: Date): boolean {
     const { changes } = this.db
       .prepare(
-        `UPDATE task_steer SET mailed_run = ?, mailed_at = ?
+        `UPDATE task_steer SET mailed_run = ?, mailed_at = ?,
+            live_sends = CASE WHEN mailed_run IS ? THEN live_sends ELSE 0 END,
+            live_sent_at = CASE WHEN mailed_run IS ? THEN live_sent_at ELSE NULL END,
+            live_missed_at = CASE WHEN mailed_run IS ? THEN live_missed_at ELSE NULL END
           WHERE id = ? AND delivered_at IS NULL AND superseded_at IS NULL`,
       )
-      .run(runId, now.toISOString(), noteId);
+      .run(runId, now.toISOString(), runId, runId, runId, noteId);
     return Number(changes) > 0;
   }
 
@@ -15703,6 +15841,214 @@ export class Store {
       .run(stamp, stamp, runId, stamp, noteId, runId);
     if (Number(changes) > 0) this.bumpWake();
     return Number(changes) > 0;
+  }
+
+  /**
+   * The task's build that takes live input right now (live steering): the steering build (steeringLiveBuild) whose
+   * Claude session reads stdin. Only this run can take a note in seconds, or a Pause. Null otherwise.
+   */
+  liveInputRun(taskRef: number, now: Date): number | null {
+    const run = this.steeringLiveBuild(taskRef, now);
+    if (run === null) return null;
+    const row = this.db.prepare("SELECT 1 FROM run WHERE id = ? AND live_input_opened_at IS NOT NULL AND live_input_closed_at IS NULL").get(run);
+    return row === undefined ? null : run;
+  }
+
+  /** This run's Claude session reads stdin now (live steering), and how long a paused session may wait (null: no idle limit). */
+  markLiveInputOpened(runId: number, now: Date, pauseLimitMs: number | null = null): void {
+    this.db.prepare("UPDATE run SET live_input_opened_at = ?, live_pause_limit_ms = ? WHERE id = ? AND outcome IS NULL AND live_input_opened_at IS NULL")
+      .run(now.toISOString(), pauseLimitMs === null || !Number.isSafeInteger(pauseLimitMs) || pauseLimitMs <= 0 ? null : pauseLimitMs, runId);
+  }
+
+  /** This run's stdin is closed (live steering): notes reach it only through its folder, and a Pause is over. */
+  markLiveInputClosed(runId: number, now: Date): void {
+    const stamp = now.toISOString();
+    this.transact(() => {
+      this.db.prepare("UPDATE run SET live_input_closed_at = ? WHERE id = ? AND live_input_opened_at IS NOT NULL AND live_input_closed_at IS NULL").run(stamp, runId);
+      this.db.prepare("UPDATE run_pause SET ended_at = ? WHERE run = ? AND ended_at IS NULL AND resumed_at IS NULL").run(stamp, runId);
+      this.db.prepare("UPDATE run_resume SET ended_at = ? WHERE run = ? AND sent_at IS NULL AND ended_at IS NULL").run(stamp, runId);
+    });
+  }
+
+  /** One steering note by id. */
+  steerNote(noteId: number): SteerNote | null {
+    const row = this.db.prepare("SELECT * FROM task_steer WHERE id = ?").get(noteId);
+    return row === undefined ? null : readSteerNote(row);
+  }
+
+  /**
+   * The note's copy was written to this run's stdin (live steering): one more send, stamped. Sending is not reading —
+   * only the agent moving its file to handled/ is (ackSteerNote). Refused once the note is read, ended, given up on,
+   * or mailed to another run.
+   */
+  recordLiveSend(noteId: number, runId: number, now: Date): boolean {
+    const { changes } = this.db
+      .prepare(
+        `UPDATE task_steer SET live_sends = live_sends + 1, live_sent_at = ?
+          WHERE id = ? AND mailed_run = ? AND delivered_at IS NULL AND superseded_at IS NULL AND live_missed_at IS NULL`,
+      )
+      .run(now.toISOString(), noteId, runId);
+    return Number(changes) > 0;
+  }
+
+  /** The running build was sent this note every time it is owed and never moved it to handled/: Not picked up. A later
+   * acknowledgement still reads it (ackSteerNote ignores this), and an attempt that ends returns it to the next brief. */
+  markLiveMissed(noteId: number, runId: number, now: Date): boolean {
+    const { changes } = this.db
+      .prepare("UPDATE task_steer SET live_missed_at = ? WHERE id = ? AND mailed_run = ? AND delivered_at IS NULL AND superseded_at IS NULL AND live_missed_at IS NULL")
+      .run(now.toISOString(), noteId, runId);
+    if (Number(changes) > 0) this.bumpWake();
+    return Number(changes) > 0;
+  }
+
+  /**
+   * Pause a running Claude build, or Pause and steer it (live steering): asked of the exact run the person saw, under
+   * their request id. In one transaction the note (when there is one) is filed — Ruling 11's verified author — and the
+   * pause is queued ahead of it, so the dispatcher writes the interrupt before the note. A repeated request id is the
+   * same request; a run that no longer takes live input is stale. Pause never stops, holds or reclaims the attempt.
+   */
+  requestPause(
+    request: { taskId: string; runId: number; by: VerifiedAuthor; via: PauseVia; requestId: string; note?: string },
+    now: Date,
+  ): PauseRequestResult {
+    return this.transact((): PauseRequestResult => {
+      const requestId = request.requestId.trim();
+      if (!/^[A-Za-z0-9._:-]{8,100}$/.test(requestId)) return { ok: false, reason: "invalid-request", detail: "the request id is 8 to 100 letters, digits or . _ : -" };
+      const seen = this.db.prepare("SELECT * FROM run_pause WHERE request_id = ?").get(requestId);
+      if (seen !== undefined) {
+        const pause = readPause(seen);
+        if (pause.run !== request.runId) return { ok: false, reason: "duplicate", detail: "that request id was already used for another attempt" };
+        return { ok: true, pause: pause.id, note: pause.note, duplicate: true };
+      }
+      const task = this.db.prepare("SELECT state FROM task WHERE id = ?").get(request.taskId);
+      const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, request.taskId);
+      if (task === undefined || ref === undefined) return { ok: false, reason: "unknown-task", detail: "no such task" };
+      const state = String(task["state"]);
+      if (state === "done" || state === "cancelled") return { ok: false, reason: "task-finished", detail: "this task is finished" };
+      const taskRef = Number(ref["id"]);
+      if (this.liveInputRun(taskRef, now) !== request.runId) {
+        return { ok: false, reason: "stale", detail: `build #${request.runId} isn't taking live input now — reload and decide against the current attempt` };
+      }
+      let noteId: number | null = null;
+      if (request.note !== undefined) {
+        const valid = validateNote(request.note);
+        if (!valid.ok) return { ok: false, reason: "invalid-note", detail: valid.problem };
+        noteId = this.insertSteerNote(taskRef, request.by, valid.note, now);
+      }
+      const inserted = this.db
+        .prepare("INSERT INTO run_pause (run, task_ref, request_id, requested_by, requested_via, requested_at, note) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(request.runId, taskRef, requestId, request.by as unknown as string, request.via, now.toISOString(), noteId);
+      this.bumpWake();
+      return { ok: true, pause: Number(inserted.lastInsertRowid), note: noteId, duplicate: false };
+    });
+  }
+
+  /** The pauses this run has not yet written to stdin, in request order (the dispatcher writes these first). */
+  unsentPauses(runId: number): RunPause[] {
+    return this.db.prepare("SELECT * FROM run_pause WHERE run = ? AND sent_at IS NULL AND ended_at IS NULL ORDER BY id").all(runId).map(readPause);
+  }
+
+  /** The interrupt for this pause was written to the run's stdin. */
+  markPauseSent(pauseId: number, now: Date): void {
+    this.db.prepare("UPDATE run_pause SET sent_at = ? WHERE id = ? AND sent_at IS NULL AND ended_at IS NULL").run(now.toISOString(), pauseId);
+  }
+
+  /** The run's current turn stopped: every pause sent and still waiting reads paused. */
+  markRunPaused(runId: number, now: Date): void {
+    const changed = this.db.prepare("UPDATE run_pause SET paused_at = ? WHERE run = ? AND sent_at IS NOT NULL AND paused_at IS NULL AND resumed_at IS NULL AND ended_at IS NULL").run(now.toISOString(), runId);
+    if (Number(changed.changes) > 0) this.bumpWake();
+  }
+
+  /** A note continued the paused session: its pauses are over. */
+  markRunResumed(runId: number, now: Date): void {
+    this.db.prepare("UPDATE run_pause SET resumed_at = ? WHERE run = ? AND sent_at IS NOT NULL AND resumed_at IS NULL AND ended_at IS NULL").run(now.toISOString(), runId);
+  }
+
+  /** The run could not take this pause (its stdin closed first). */
+  endPause(pauseId: number, now: Date): void {
+    this.db.prepare("UPDATE run_pause SET ended_at = ? WHERE id = ? AND ended_at IS NULL").run(now.toISOString(), pauseId);
+  }
+
+  /** Where this run's latest pause stands: asked and not yet stopped (pausing), stopped (paused), or none. */
+  pauseStateOf(runId: number): "pausing" | "paused" | null {
+    return this.livePauseOf(runId)?.state ?? null;
+  }
+
+  /** This run's latest pause, when it paused, and how long a paused build may wait before it ends; null with none. */
+  livePauseOf(runId: number): LivePauseState | null {
+    const row = this.db.prepare(
+      `SELECT p.paused_at, r.live_pause_limit_ms FROM run_pause p JOIN run r ON r.id = p.run
+        WHERE p.run = ? AND p.resumed_at IS NULL AND p.ended_at IS NULL ORDER BY p.id DESC LIMIT 1`,
+    ).get(runId);
+    if (row === undefined) return null;
+    const pausedAt = row["paused_at"] === null ? null : String(row["paused_at"]);
+    const limit = row["live_pause_limit_ms"] === null || row["live_pause_limit_ms"] === undefined ? null : Number(row["live_pause_limit_ms"]);
+    return { state: pausedAt === null ? "pausing" : "paused", pausedAt, limitMs: limit };
+  }
+
+  /**
+   * Resume a paused Claude build (live steering): asked of the exact run the person saw, under their request id, and
+   * only while that run is paused. The dispatcher sends a short continue frame — never a note, so nothing is filed.
+   * A repeated request id is the same request; a run that no longer takes live input is stale.
+   */
+  requestResume(request: { taskId: string; runId: number; by: VerifiedAuthor; via: PauseVia; requestId: string }, now: Date): ResumeRequestResult {
+    return this.transact((): ResumeRequestResult => {
+      const requestId = request.requestId.trim();
+      if (!/^[A-Za-z0-9._:-]{8,100}$/.test(requestId)) return { ok: false, reason: "invalid-request", detail: "the request id is 8 to 100 letters, digits or . _ : -" };
+      const seen = this.db.prepare("SELECT id, run FROM run_resume WHERE request_id = ?").get(requestId);
+      if (seen !== undefined) {
+        if (Number(seen["run"]) !== request.runId) return { ok: false, reason: "duplicate", detail: "that request id was already used for another attempt" };
+        return { ok: true, resume: Number(seen["id"]), duplicate: true };
+      }
+      const task = this.db.prepare("SELECT state FROM task WHERE id = ?").get(request.taskId);
+      const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, request.taskId);
+      if (task === undefined || ref === undefined) return { ok: false, reason: "unknown-task", detail: "no such task" };
+      const state = String(task["state"]);
+      if (state === "done" || state === "cancelled") return { ok: false, reason: "task-finished", detail: "this task is finished" };
+      const taskRef = Number(ref["id"]);
+      if (this.liveInputRun(taskRef, now) !== request.runId) {
+        return { ok: false, reason: "stale", detail: `build #${request.runId} isn't taking live input now — reload and decide against the current attempt` };
+      }
+      if (this.pauseStateOf(request.runId) !== "paused") return { ok: false, reason: "not-paused", detail: `build #${request.runId} isn't paused` };
+      const inserted = this.db
+        .prepare("INSERT INTO run_resume (run, task_ref, request_id, requested_by, requested_via, requested_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(request.runId, taskRef, requestId, request.by as unknown as string, request.via, now.toISOString());
+      this.bumpWake();
+      return { ok: true, resume: Number(inserted.lastInsertRowid), duplicate: false };
+    });
+  }
+
+  /** The resumes this run has not yet sent, in request order. */
+  unsentResumes(runId: number): { id: number; requestId: string }[] {
+    return this.db.prepare("SELECT id, request_id FROM run_resume WHERE run = ? AND sent_at IS NULL AND ended_at IS NULL ORDER BY id").all(runId)
+      .map(row => ({ id: Number(row["id"]), requestId: String(row["request_id"]) }));
+  }
+
+  /** The continue frame was written: the resume is sent, and the run's pauses are over. */
+  markResumeSent(resumeId: number, runId: number, now: Date): void {
+    this.transact(() => {
+      this.db.prepare("UPDATE run_resume SET sent_at = ? WHERE id = ? AND sent_at IS NULL AND ended_at IS NULL").run(now.toISOString(), resumeId);
+      this.markRunResumed(runId, now);
+    });
+    this.bumpWake();
+  }
+
+  /** The run was no longer paused (a note continued it first) or stopped taking input: nothing to send. */
+  endResume(resumeId: number, now: Date): void {
+    this.db.prepare("UPDATE run_resume SET ended_at = ? WHERE id = ? AND sent_at IS NULL AND ended_at IS NULL").run(now.toISOString(), resumeId);
+  }
+
+  /** Every resume of a task, newest first (history and tests). */
+  resumesForTask(taskRef: number): { id: number; run: number; requestId: string; requestedVia: PauseVia; sentAt: string | null; endedAt: string | null }[] {
+    return this.db.prepare("SELECT * FROM run_resume WHERE task_ref = ? ORDER BY id DESC").all(taskRef).map(row => ({
+      id: Number(row["id"]), run: Number(row["run"]), requestId: String(row["request_id"]), requestedVia: String(row["requested_via"]) as PauseVia,
+      sentAt: row["sent_at"] === null ? null : String(row["sent_at"]), endedAt: row["ended_at"] === null ? null : String(row["ended_at"]),
+    }));
+  }
+
+  /** Every pause of a task, newest first (history and tests). */
+  pausesForTask(taskRef: number): RunPause[] {
+    return this.db.prepare("SELECT * FROM run_pause WHERE task_ref = ? ORDER BY id DESC").all(taskRef).map(readPause);
   }
 
   /** A finished task's pending notes settle superseded — shown, typed, done. */
@@ -20802,10 +21148,20 @@ export class Store {
         if (elsewhere || !this.pingAllowed(readNotification(raw), String(raw["approver"]))) {
           this.db.prepare("UPDATE push_delivery SET state = 'retired', last_error = ? WHERE id = ? AND state = 'pending'")
             .run(elsewhere ? TELEGRAM_SKIPPED_OTHER_CHAT : "quiet", Number(raw["pair"]));
-        }
+        } else this.settleWatchedPush(Number(raw["pair"]), readNotification(raw), String(raw["approver"]), now);
       }
     }
     return Number(changes);
+  }
+
+  /** A pending pair about a run its person is watching waits for the watch to lapse; one about a finished run they have
+   * since seen retires unsent (agent-board.ts watchedPing). False when the pair must not be sent now. */
+  private settleWatchedPush(pair: number, row: Notification, approver: string, now: Date): boolean {
+    const decided = watchedPing(this, row, approver, now);
+    if (decided === "send") return true;
+    if (decided === "skip") this.db.prepare("UPDATE push_delivery SET state = 'retired', last_error = 'seen' WHERE id = ? AND state = 'pending'").run(pair);
+    else this.db.prepare("UPDATE push_delivery SET next_attempt_at = ? WHERE id = ? AND state = 'pending'").run(decided.hold, pair);
+    return false;
   }
 
   /**
@@ -20828,6 +21184,10 @@ export class Store {
         .map(row => Number(row["id"]));
       const taken: number[] = [];
       for (const id of due) {
+        // A ping held while its person watched the run is decided again now: held on, retired, or sent.
+        const watched = this.db.prepare(`SELECT n.*, s.approver AS approver FROM push_delivery p JOIN push_subscription s ON s.id = p.subscription
+          JOIN notification n ON n.id = p.notification WHERE p.id = ? AND p.state = 'pending'`).get(id);
+        if (watched !== undefined && !this.settleWatchedPush(id, readNotification(watched), String(watched["approver"]), now)) continue;
         const { changes } = this.db
           .prepare(
             `UPDATE push_delivery SET state = 'claimed', claim_owner = ?, claim_expires_at = ?,
@@ -21161,6 +21521,28 @@ function readSteerNote(row: Record<string, unknown>): SteerNote {
     mailedRun: row["mailed_run"] === null || row["mailed_run"] === undefined ? null : Number(row["mailed_run"]),
     mailedAt: row["mailed_at"] === null || row["mailed_at"] === undefined ? null : String(row["mailed_at"]),
     ackedAt: row["acked_at"] === null || row["acked_at"] === undefined ? null : String(row["acked_at"]),
+    liveUuid: row["live_uuid"] === null || row["live_uuid"] === undefined ? null : String(row["live_uuid"]),
+    liveSends: Number(row["live_sends"] ?? 0),
+    liveSentAt: row["live_sent_at"] === null || row["live_sent_at"] === undefined ? null : String(row["live_sent_at"]),
+    liveMissedAt: row["live_missed_at"] === null || row["live_missed_at"] === undefined ? null : String(row["live_missed_at"]),
+  };
+}
+
+function readPause(row: Record<string, unknown>): RunPause {
+  const text = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
+  return {
+    id: Number(row["id"]),
+    run: Number(row["run"]),
+    taskRef: Number(row["task_ref"]),
+    requestId: String(row["request_id"]),
+    requestedBy: String(row["requested_by"]),
+    requestedVia: String(row["requested_via"]) as PauseVia,
+    requestedAt: String(row["requested_at"]),
+    note: row["note"] === null || row["note"] === undefined ? null : Number(row["note"]),
+    sentAt: text("sent_at"),
+    pausedAt: text("paused_at"),
+    resumedAt: text("resumed_at"),
+    endedAt: text("ended_at"),
   };
 }
 

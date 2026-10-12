@@ -1,8 +1,8 @@
 /**
  * Settings → Storage: how much space task checkouts use, what a clean-up would free now, a Clean up button whose
  * preview (what goes, what stays and why, with paths) sits behind the password, what the last storage sweep removed
- * and when (its paths in a disclosure), and when a finished task's clean checkout goes by itself. An instance
- * operator's page.
+ * and when (its paths in a disclosure), what landed work's teardown did and still waits on (in a disclosure, with the
+ * one-time command for older work), and when a finished task's clean checkout goes by itself. An instance operator's page.
  */
 import { homedir } from "node:os";
 import { basename } from "node:path";
@@ -10,6 +10,7 @@ import { html, postForm, type Html } from "./html.js";
 import { previewDigest, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { CLEANUP_CHOICES, bytesWords } from "./storage.js";
 import { sweepDetails, sweepWords, type SweepRecord } from "./storage-sweep.js";
+import type { LandedSummary } from "./landed-cleanup.js";
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
@@ -31,10 +32,14 @@ export const STORAGE_CSS = `.storage{max-width:720px;min-width:0;overflow-wrap:a
   `.storage form.setting button[type=submit],.storage .preview form.remove button[type=submit]{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);font-weight:600}` +
   `.storage .sweep{display:grid;gap:4px}.storage .sweep p{margin:0}.storage .sweep .problem{color:var(--destructive)}` +
   `.storage details.sweep-details>summary{cursor:pointer;min-height:2.25rem;display:inline-flex;align-items:center;font-size:.8125rem;color:var(--muted-foreground)}` +
+  `.storage details.landed>summary{cursor:pointer;min-height:2.25rem;display:inline-flex;align-items:center;font-size:.8125rem;color:var(--muted-foreground)}` +
+  `.storage details.landed .landed-body{display:grid;gap:6px;margin-top:4px;font-size:.8125rem}.storage details.landed p{margin:0}` +
+  `.storage details.landed ul{margin:0;padding-left:18px;overflow-wrap:anywhere}.storage details.landed .target{font-family:var(--font-mono, ui-monospace, monospace);font-size:.6875rem}` +
+  `.storage details.landed code{font-family:var(--font-mono, ui-monospace, monospace);font-size:.75rem;overflow-wrap:anywhere}` +
   `.storage details.sweep-details ul{margin:4px 0 0;padding-left:18px;font-family:var(--font-mono, ui-monospace, monospace);font-size:.6875rem;color:var(--muted-foreground);overflow-wrap:anywhere}` +
-  `@media (max-width:900px){.storage details.sweep-details>summary{min-height:44px}.storage details.clean-up>summary,.storage form button{min-height:44px}.storage label{max-width:none}.storage select,.storage input[type=password]{min-height:44px;font-size:16px}.storage .preview form.remove button{width:100%}}`;
+  `@media (max-width:900px){.storage details.sweep-details>summary,.storage details.landed>summary{min-height:44px}.storage details.clean-up>summary,.storage form button{min-height:44px}.storage label{max-width:none}.storage select,.storage input[type=password]{min-height:44px;font-size:16px}.storage .preview form.remove button{width:100%}}`;
 
-export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean } };
+export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean }; landed?: LandedSummary };
 
 /** Paths under the home folder as ~/…, as the checkout list shows them. */
 function homeAsTilde(line: string): string {
@@ -57,6 +62,16 @@ function sweepHtml(sweep: NonNullable<StorageView["sweep"]>): Html {
   const problem = last.parts.some(one => one.failed > 0 || one.problem !== undefined);
   return html`<div class="sweep" data-last-sweep="${last.at}"><p${problem ? html` class="problem"` : ""}>${who} <time datetime="${last.at}">${whenWords(last.at)}</time>. ${sweepWords(last.parts)}</p>${
     details.length === 0 ? "" : html`<details class="sweep-details"><summary>Details</summary><ul>${details.map(line => html`<li>${homeAsTilde(line)}</li>`)}</ul></details>`}</div>`;
+}
+
+/** Landed work, on demand: what its teardown did, what it waits on and why, and the one-time command for older work. */
+function landedHtml(landed: LandedSummary): Html {
+  const home = homedir();
+  const done = landed.completed + landed.checkouts + landed.branches === 0 ? "No landed work cleaned up yet."
+    : `${plural(landed.completed, "task")} marked complete; ${plural(landed.checkouts, "checkout")} and ${plural(landed.branches, "local branch", "local branches")} removed.`;
+  const waiting = landed.waiting.length === 0 ? "" : html`<p>Waiting (${landed.waiting.length}):</p><ul data-landed-waiting>${landed.waiting.map(one =>
+    html`<li><span class="target">${home !== "" && one.target.startsWith(`${home}/`) ? `~${one.target.slice(home.length)}` : one.target}</span>${one.why === null ? "" : html`: ${one.why}`}</li>`)}</ul>`;
+  return html`<details class="landed" data-landed><summary>Landed work</summary><div class="landed-body"><p>${done}</p>${waiting}<p class="meta">For work that landed before this: <code>toolroll storage clean --landed</code> shows what would go; add <code>--yes</code> to do it.</p></div></details>`;
 }
 
 function item(one: CheckoutItem): Html {
@@ -84,6 +99,6 @@ export function storageHtml(view: StorageView, notice: { said?: string | null; p
     plan.stay.length === 0 ? "" : html`<h3>Stays (${plan.stay.length})</h3><ul class="checkouts" data-stays>${plan.stay.map(one => item(one))}</ul>`}${
     remove}</div></details>`;
   const options = CLEANUP_CHOICES.map(one => html`<option value="${one.value}"${one.value === plan.cleanup ? html` selected` : ""}>${one.label}</option>`);
-  return html`<section class="storage">${note}<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${bytesWords(plan.totalBytes)}</h2><p class="meta">${facts}</p><p data-clean-bytes="${plan.freeBytes}">${frees}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${preview}</div><h2>Automatic cleanup</h2>${
-    postForm("/settings/storage", html`<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label><p class="meta">Its branch always stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button>`, { attrs: { class: "setting" } })}</section>`;
+  return html`<section class="storage">${note}<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${bytesWords(plan.totalBytes)}</h2><p class="meta">${facts}</p><p data-clean-bytes="${plan.freeBytes}">${frees}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${view.landed === undefined ? "" : landedHtml(view.landed)}${preview}</div><h2>Automatic cleanup</h2>${
+    postForm("/settings/storage", html`<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label><p class="meta">Its branch stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept. When a task's work is already in main, Toolroll marks it complete and removes its checkout and local branches.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button>`, { attrs: { class: "setting" } })}</section>`;
 }

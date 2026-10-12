@@ -22,7 +22,7 @@
 import { claudeFenceSettings, codexFenceArgv } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
-import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl } from "./exec.js";
+import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, CLAUDE_COST_UNKNOWN } from "./exec.js";
 import { scanForSecrets } from "./evidence.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
@@ -82,11 +82,23 @@ export type Invocation = {
    * Codex renders it as its own sandbox profile; Claude as deny rules for
    * its file tools (its shell is fenced by the macOS sandbox around it). */
   fence?: readonly string[];
+  /** More paths Claude's own file tools refuse, beside the fence: home
+   * configuration its CLI still reads itself (so the sandbox around the
+   * whole process can't deny them). */
+  fileToolFence?: readonly string[];
+  /** The task's own folder (its worktree). A Claude build loads no settings
+   * files, so this is where the repository's CLAUDE.md is read from. */
+  workspace?: string;
   /** A running build's steering folder (steer-mailbox.ts): the absolute path
    * and the worktree-relative name its brief uses. Claude renders a
    * PostToolUse hook that says when a note is waiting; every other provider
    * relies on the brief's own rule to look. */
   steerFolder?: { dir: string; name: string };
+  /** Live input (live-input.ts): the brief arrives as the first stdin message
+   * and stdin stays open, so the argv carries `--input-format stream-json`
+   * and never the brief (Claude drops a `-p` prompt once stdin carries
+   * input). Set by the gateway only, for a transport that streams input. */
+  streamInput?: boolean;
   /** Claude's structured-output floor for a non-review phase: the scout's
    * report rides the terminal result event instead of a file plan mode
    * would refuse to write. Ignored by providers without `--json-schema`. */
@@ -134,6 +146,9 @@ export type ParsedEnvelope = {
   tokensIn: number | null;
   tokensOut: number | null;
   costUsd: number | null;
+  /** The run spent but its cost could not be read (Claude's main result was too large to keep): the gateway charges
+   * the run's dollar cap, or records it unmeasured when none applied. Absent = the cost is what costUsd says. */
+  costUnknown?: boolean;
   usageRaw: string | null;
   /**
    * Whether the provider was seen to initialize (codex: thread.started;
@@ -172,6 +187,9 @@ export type ParsedEnvelope = {
 type Adapter = {
   binary: string;
   argv(invocation: Invocation): string[];
+  /** Environment the launch needs beside the argv (Claude: read the
+   * workspace's CLAUDE.md through `--add-dir`). */
+  env?(invocation: Invocation): Record<string, string>;
   /** Prompt input for transports that use stdin instead of a bounded OS argument. */
   stdin?(invocation: Invocation): string | undefined;
   parse(stdout: string): ParsedEnvelope;
@@ -318,12 +336,28 @@ const CLAUDE_REVIEW_JSON_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+/**
+ * A build's own setup (plan, build and repair; never a review, which keeps
+ * the isolation above). No settings file loads — not the user's, the
+ * repository's or the local one — so none of their hooks, plugins or
+ * permissions reach the run; Toolroll's one `--settings` (the fence and the
+ * steering hook) is all there is. MCP servers come only from `--mcp-config`:
+ * the project's named tools, or an explicit empty list. The repository's
+ * CLAUDE.md still loads, through `--add-dir` on the workspace. Sign-in is
+ * the CLI's own (keychain or ~/.claude), which no setting source governs.
+ * `-p` never shows the workspace trust prompt (Claude Code 2.1.290), so a
+ * fresh worktree can't wedge a headless run. Checked against 2.1.290 with
+ * planted user, project and local hooks and MCP servers: none loaded.
+ */
+export const CLAUDE_BUILD_ISOLATION_ARGV: readonly string[] = ["--setting-sources", "", "--strict-mcp-config"];
+const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
+
 /** Claude's own tools that only make sense with a person to wake them. */
 export const HEADLESS_DISALLOWED_TOOLS: readonly string[] = ["ScheduleWakeup", "CronCreate", "Monitor"];
 
 const claudeArgv = (invocation: Invocation): string[] => [
   "-p",
-  invocation.brief,
+  ...(invocation.streamInput === true ? ["--input-format", "stream-json"] : [invocation.brief]),
   ...(invocation.resumeSession === null ? [] : ["--resume", invocation.resumeSession]),
   // stream-json (arc 1): the terminal result event IS the old buffered
   // envelope, now arriving as one line of many — the streaming transport
@@ -349,20 +383,49 @@ const claudeArgv = (invocation: Invocation): string[] => [
         // turn that a -p process never gets. Denied at the harness too.
         "--disallowedTools", HEADLESS_DISALLOWED_TOOLS.join(","),
         ...(invocation.allowedTools === undefined || invocation.allowedTools.length === 0 ? [] : ["--allowedTools", invocation.allowedTools.join(",")]),
+        ...CLAUDE_BUILD_ISOLATION_ARGV,
+        ...(invocation.workspace === undefined ? [] : ["--add-dir", invocation.workspace]),
         ...(invocation.toolArgv ?? []),
         ...(invocation.extraMcpServers === undefined ? [] : ["--mcp-config", JSON.stringify({ mcpServers: invocation.extraMcpServers })]),
+        // Strict with nothing named still names its empty list.
+        ...((invocation.toolArgv ?? []).includes("--mcp-config") || invocation.extraMcpServers !== undefined ? [] : ["--mcp-config", EMPTY_MCP_CONFIG]),
         ...claudeSettingsArgv(invocation),
         ...(invocation.jsonSchema === undefined ? [] : ["--json-schema", JSON.stringify(invocation.jsonSchema)])]),
 ];
 
-/** One --settings for a build: the fence's deny rules and the steering doorbell, whichever the run has. */
+/** The build's one --settings: no personal memory, plus the fence and steering doorbell. */
 function claudeSettingsArgv(invocation: Invocation): string[] {
-  const fenced = invocation.fence !== undefined && invocation.fence.length > 0;
-  if (!fenced && invocation.steerFolder === undefined) return [];
+  const denied = [...(invocation.fence ?? []), ...(invocation.fileToolFence ?? [])];
   return ["--settings", JSON.stringify({
-    ...(fenced ? JSON.parse(claudeFenceSettings(invocation.fence!)) : {}),
+    autoMemoryEnabled: false,
+    ...(denied.length > 0 ? JSON.parse(claudeFenceSettings(denied)) : {}),
     ...(invocation.steerFolder === undefined ? {} : { hooks: claudeSteerHooks(invocation.steerFolder.dir, invocation.steerFolder.name) }),
   })];
+}
+
+/** With no settings sources, only `--add-dir` folders' CLAUDE.md load, and only with this set. */
+const claudeEnv = (invocation: Invocation): Record<string, string> =>
+  invocation.phase === "review" || invocation.workspace === undefined ? {} : { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
+
+/** The flags a build's own setup depends on, by provider. */
+const ISOLATION_FLAGS: Partial<Record<ProviderId, readonly string[]>> = {
+  claude: ["--setting-sources", "--strict-mcp-config", "--settings", "--add-dir", "--mcp-config"],
+  codex: ["--ignore-user-config", "--ignore-rules"],
+  openrouter: ["--ignore-user-config", "--ignore-rules"],
+};
+
+/**
+ * Whether a failed launch was an installed CLI too old for a build's own
+ * setup: it names one of those flags as unknown. Then nothing ran, and the
+ * run says so plainly instead of reading as a failed sign-in or bad work.
+ */
+export function isolationUnsupported(provider: ProviderId, stderr: string): string | null {
+  const flags = ISOLATION_FLAGS[provider] ?? [];
+  const said = stderr.slice(0, 8192);
+  const flag = flags.find(one => new RegExp(`(unknown|unexpected|unrecognized) (option|argument)[^\\n]{0,8}${one.replace(/-/g, "\\-")}\\b`, "i").test(said));
+  if (flag === undefined) return null;
+  const name = provider === "claude" ? "Claude Code" : "Codex";
+  return `The installed ${name} doesn't support ${flag}, which builds need to run without your own hooks, plugins and MCP servers. Update ${name} and try again.`;
 }
 
 /** A claude envelope object, whichever line carried it. */
@@ -442,6 +505,7 @@ function claudeEnvelopeOf(
     tokensIn: typeof input === "number" && input >= 0 ? input : null,
     tokensOut: typeof output === "number" && output >= 0 ? output : null,
     costUsd: typeof cost === "number" && cost >= 0 ? cost : null,
+    ...(result !== null && (result as Record<string, unknown>)[CLAUDE_COST_UNKNOWN] === true ? { costUnknown: true } : {}),
     usageRaw: result?.usage === undefined ? null : JSON.stringify(result.usage).slice(0, USAGE_JSON_CAP),
     initObserved,
     // Structural, never prose (finding 15): consumed means the primary
@@ -551,6 +615,22 @@ const codexSandboxArgv = (mode: "read-only" | "workspace-write", resuming: boole
  * servers, exactly the surface `--strict-mcp-config` closes for claude —
  * ignored outright.
  */
+/**
+ * A Codex build's own setup, the equivalent of Claude's: the operator's
+ * config.toml (its MCP servers, model choices, profiles) and execpolicy
+ * rules ignored, ChatGPT apps and plugins off (plugins carry their own MCP
+ * servers), and hooks off. Sign-in still comes from CODEX_HOME, which
+ * `--ignore-user-config` leaves alone. The project's named tools follow as
+ * `-c mcp_servers.*` (project-tools.ts).
+ */
+export const CODEX_BUILD_ISOLATION_ARGV: readonly string[] = [
+  "--ignore-user-config",
+  "--ignore-rules",
+  "-c", "apps._default.enabled=false",
+  "-c", "features.plugins=false",
+  "-c", "features.hooks=false",
+];
+
 const CODEX_REVIEW_ISOLATION_ARGV = (resuming: boolean): readonly string[] => [
   "--ignore-user-config",
   ...codexSandboxArgv("read-only", resuming),
@@ -582,6 +662,7 @@ const codexArgv = (extra: readonly string[]) => (invocation: Invocation): string
     ...(invocation.resumeSession === null ? [] : ["resume", invocation.resumeSession]),
     "--json",
     "--skip-git-repo-check",
+    ...(invocation.phase === "review" ? [] : CODEX_BUILD_ISOLATION_ARGV),
     ...(invocation.phase === "review"
       ? CODEX_REVIEW_ISOLATION_ARGV(resuming)
       // The agent fence: Codex's own sandbox with Toolroll's secrets
@@ -888,6 +969,7 @@ const ADAPTERS: Record<ProviderId, Adapter> = {
   claude: {
     binary: "claude",
     argv: claudeArgv,
+    env: claudeEnv,
     parse: claudeParse,
     defaultRunner: runClaudeStreamJsonl,
     extraOmitEnv: foreignCredentialEnv("claude"),
@@ -948,11 +1030,10 @@ export function adapterFor(provider: ProviderId): Adapter {
 
 /**
  * The provider audit: what each harness supports, what we actually pass,
- * and what user-global configuration can leak into an unattended run.
- * REPORT BEFORE ENFORCEMENT (Codex roadmap review, item 10): none of this
- * changes an invocation — it states facts an operator reads on `providers`,
- * so hermetic mode can later be turned on per provider from evidence
- * instead of hope. `enforced` is a literal false until that day.
+ * and what user-global configuration still reaches an unattended run.
+ * None of this changes an invocation — it states facts an operator reads
+ * on `providers`. Claude and Codex builds now run in their own setup
+ * (`enforced`); Gemini's flag is still only reported.
  */
 export type ProviderAudit = {
   /** How output reaches us — and therefore which signals can exist at all. */
@@ -977,13 +1058,14 @@ export type ProviderAudit = {
    */
   terminalContract: "required" | "none";
   isolation: {
-    /** The harness's hermetic flag, if it has one. We do not pass it. */
+    /** The harness's hermetic flag, if it has one. */
     flag: string | null;
     /** Whether that flag preserves resume. false = documented conflict. */
     resumeSafe: boolean | null;
-    enforced: false;
+    /** Whether every build, fresh or resumed, passes it. */
+    enforced: boolean;
   };
-  /** User-global surfaces that can reach an invocation today. */
+  /** What still reaches a build: its own sources and the user surfaces left. */
   configSurface: readonly string[];
 };
 
@@ -994,13 +1076,14 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
     initSignal: "system-init",
     sessionIdentity: "announced",
     terminalContract: "none",
-    // Restricted mode is resume-safe and is enforced for sealed reviewer
-    // turns. `enforced` remains false here because this provider-wide audit
-    // also covers ordinary build turns, where the flag is not applied.
-    isolation: { flag: "--restricted", resumeSafe: true, enforced: false },
+    // Builds: no settings sources and strict MCP, fresh and resumed alike
+    // (CLAUDE_BUILD_ISOLATION_ARGV). Reviews keep --restricted --safe-mode.
+    isolation: { flag: CLAUDE_BUILD_ISOLATION_ARGV.filter(one => one !== "").join(" "), resumeSafe: true, enforced: true },
     configSurface: [
-      "~/.claude/CLAUDE.md and settings (hooks, MCP servers, plugins)",
-      "repository CLAUDE.md / .claude directory",
+      "Toolroll's own --settings (the fence and steering hook)",
+      "the project's named tools (Settings → Tools)",
+      "repository CLAUDE.md",
+      "organisation-managed settings",
     ],
   },
   codex: {
@@ -1009,10 +1092,11 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
     initSignal: "thread.started",
     sessionIdentity: "announced",
     terminalContract: "none",
-    // --ephemeral exists and is deliberately not passed: repair resumes
-    // sessions, and ephemeral runs have none to resume.
-    isolation: { flag: "--ephemeral", resumeSafe: false, enforced: false },
-    configSurface: ["~/.codex/config.toml", "repository AGENTS.md"],
+    // Builds ignore config.toml and execpolicy rules, with apps, plugins and
+    // hooks off (CODEX_BUILD_ISOLATION_ARGV); sign-in stays in CODEX_HOME.
+    // Never --ephemeral: repair resumes sessions.
+    isolation: { flag: "--ignore-user-config --ignore-rules", resumeSafe: true, enforced: true },
+    configSurface: ["the project's named tools (Settings → Tools)", "~/.codex/AGENTS.md and repository AGENTS.md", "sign-in from CODEX_HOME"],
   },
   openrouter: {
     transport: "streaming-jsonl",
@@ -1020,10 +1104,9 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
     initSignal: "thread.started",
     sessionIdentity: "announced",
     terminalContract: "none",
-    isolation: { flag: "--ephemeral", resumeSafe: false, enforced: false },
-    // The constant -c overrides pin the model provider per invocation, so
-    // user config cannot reroute the spend — but the file still loads.
-    configSurface: ["~/.codex/config.toml (model_provider pinned per invocation)", "repository AGENTS.md"],
+    // Codex's build setup, with the model provider pinned by constant -c overrides.
+    isolation: { flag: "--ignore-user-config --ignore-rules", resumeSafe: true, enforced: true },
+    configSurface: ["the project's named tools (Settings → Tools)", "~/.codex/AGENTS.md and repository AGENTS.md", `${OPENROUTER_ENV_KEY}`],
   },
   gemini: {
     transport: "streaming-jsonl",

@@ -19,6 +19,9 @@ import { openStore } from "./store.js";
 import { acquire } from "./claim.js";
 import { WorktreePool } from "./worktree.js";
 import type { Runner } from "./builder.js";
+import { createSweepSupervisor, storageSweepSupervisor } from "./storage-sweep-process.js";
+import { hangingSweep } from "../test/sweep-process.js";
+import { lastSweep } from "./storage-sweep.js";
 import { saveProjectConcurrency } from "./project-concurrency.js";
 import { presented, OK, T0, AGENT_SAID, registerRunner, concludeDone, proveChangedPath } from "../test/tick-kit.js";
 
@@ -177,6 +180,43 @@ describe("watch — the loop, zero tokens idle", () => {
     expect(recoveredDuringBuild).toBe(true);
     expect(spawns).toBe(1);
     expect(() => JSON.parse(lines.join("\n"))).not.toThrow();
+  });
+
+  test("a hung sweep leaves later reconciliation and CI follow-ups running, and watch stop kills it without waiting", async () => {
+    const { runnerToken } = await setup();
+    const fake = hangingSweep();
+    const hanging = createSweepSupervisor(fake);
+    const supervisor = storageSweepSupervisor(db);
+    const start = vi.spyOn(supervisor, "start").mockImplementation(hanging.start);
+    const busy = vi.spyOn(supervisor, "running", "get").mockImplementation(() => hanging.running);
+    const stop = vi.spyOn(supervisor, "stop").mockImplementation(hanging.stop);
+    let passes = 0, followups = 0;
+    const adopt = WorktreePool.prototype.adopt;
+    const adoption = vi.spyOn(WorktreePool.prototype, "adopt").mockImplementation(async function (...args) {
+      passes++;
+      return adopt.apply(this, args);
+    });
+    const observer = openStore(db);
+    const opened = vi.spyOn(Object.getPrototypeOf(observer), "openedPublications").mockImplementation(() => { followups++; return []; });
+    const off = process.env.TOOLROLL_STORAGE_SWEEP;
+    delete process.env.TOOLROLL_STORAGE_SWEEP;
+    try {
+      const code = await run(["watch", "--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool,
+        "--for", "60000", "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "25", "--json"], agent,
+        () => passes >= 3 && followups >= 2);
+      expect(code, lines.join("\n")).toBe(EXIT.ok);
+      expect(passes).toBeGreaterThanOrEqual(3);
+      expect(followups).toBeGreaterThanOrEqual(2);
+      expect(fake.launch).toHaveBeenCalledTimes(1);
+      expect(fake.signal.mock.calls.map(call => call[1])).toEqual(["SIGKILL"]);
+      // The child has never emitted close. Shutdown must already have returned.
+      expect(hanging.running).toBe(true);
+      expect(lastSweep(observer)!.parts.every(one => one.problem?.includes("stopped"))).toBe(true);
+    } finally {
+      hanging.stop(); fake.child.emit("close", null);
+      start.mockRestore(); busy.mockRestore(); stop.mockRestore(); adoption.mockRestore(); opened.mockRestore(); observer.close();
+      if (off === undefined) delete process.env.TOOLROLL_STORAGE_SWEEP; else process.env.TOOLROLL_STORAGE_SWEEP = off;
+    }
   });
 
   test.each([true, false])("failed startup reconciliation pauses dispatch and reports recovery=%s truthfully", async recover => {

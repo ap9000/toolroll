@@ -31,11 +31,12 @@ import "./workspace.css";
 
 export { GuardedHtml, regionIsEditing };
 
-function Icon({ name }: { name: "menu" | "chat" | "tasks" | "flows" | "projects" | "knowledge" | "settings" | "arrow" | "close" | "send" | "tools" | "plus" }) {
+function Icon({ name }: { name: "menu" | "chat" | "tasks" | "agents" | "flows" | "projects" | "knowledge" | "settings" | "arrow" | "close" | "send" | "tools" | "plus" }) {
   const paths: Record<typeof name, ReactNode> = {
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
     chat: <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6 3V6a2 2 0 0 1 2-2Z" />,
     tasks: <><path d="m3 6 2 2 4-4m-6 9 2 2 4-4m-6 9 2 2 4-4M13 6h8M13 13h8M13 20h8" /></>,
+    agents: <><rect width="18" height="14" x="3" y="5" rx="2" /><path d="m7 10 3 2-3 2M13 14h4" /></>,
     flows: <><rect width="8" height="8" x="3" y="3" rx="2" /><path d="M7 11v4a2 2 0 0 0 2 2h4" /><rect width="8" height="8" x="13" y="13" rx="2" /></>,
     projects: <path d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />,
     knowledge: <path d="M12 5c-3-2-7-2-10-1v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Zm0 0v15" />,
@@ -62,7 +63,7 @@ function scopeOf(workspace: BrowserWorkspace): DraftScope | null {
 
 function canRefreshWorkspace(): boolean { return !document.hidden && navigator.onLine !== false; }
 
-const FULL_WIDTH_PAGES = new Set(["/work", "/board", "/queue", "/workbench", "/code"]);
+const FULL_WIDTH_PAGES = new Set(["/work", "/agents", "/board", "/queue", "/workbench", "/code"]);
 
 export function useWorkspace(initial: BrowserWorkspace) {
   const [workspace, setWorkspace] = useState(initial);
@@ -108,7 +109,9 @@ export function useWorkspace(initial: BrowserWorkspace) {
 
   // A task page follows its task's room (live-task.tsx); a conversation or a live page follows the workspace's.
   const liveTask = initial.view?.kind === "task" && initial.view.live != null && !initial.sensitive;
-  const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds);
+  // The Agents board follows the workspace too, and its opened agent's own room nudges it (agents-view.tsx).
+  const agentsBoard = initial.view?.kind === "agents" && !initial.sensitive;
+  const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
     clearRefreshRetry();
     if (!mounted.current || state.current.stale || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
@@ -166,11 +169,11 @@ export function useWorkspace(initial: BrowserWorkspace) {
 
   // The task's room says it changed: read now (live-task.tsx).
   useEffect(() => {
-    if (!liveTask) return;
+    if (!liveTask && !agentsBoard) return;
     const nudge = () => { void check(true); };
     window.addEventListener(WORKSPACE_NUDGE, nudge);
     return () => { window.removeEventListener(WORKSPACE_NUDGE, nudge); };
-  }, [check, liveTask]);
+  }, [check, liveTask, agentsBoard]);
 
   useEffect(() => {
     mounted.current = true;
@@ -338,8 +341,8 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       </select>
     </div>}
     <nav aria-label="Workspace" className="so-primary-navigation">{workspace.navigation.filter(item => item.href !== "/menu").map(item => {
-      const name = item.label.toLowerCase() as "chat" | "tasks" | "flows" | "projects" | "knowledge" | "settings";
-      return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
+      const name = item.label.toLowerCase() as "chat" | "tasks" | "agents" | "flows" | "projects" | "knowledge" | "settings";
+      return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "agents", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
         {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
     })}</nav>
     {currentProject && <div className="so-project-links">

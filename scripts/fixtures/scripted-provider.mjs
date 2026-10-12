@@ -7,6 +7,7 @@
  * src/subagents.ts, src/flow-draft.ts, src/task-sizing.ts):
  *
  *   claude  -p … --output-format json | stream-json [--json-schema …] [--resume <id>]
+ *   claude  -p --input-format stream-json --output-format stream-json …   (a build's live input, src/live-input.ts)
  *   codex   exec [resume <id>] --json … [--output-schema <file>] <brief | ->
  *
  * It answers at once from the world's script: rules a journey adds (`add`) before it acts, each matching a kind of
@@ -32,6 +33,12 @@
  * A rule: { role, when: [regex source…], unless: [regex source…], provider, resume: true|false, times, answer }.
  * Rules are tried in order and the first that matches answers; one with `times` answers that many turns, claimed
  * atomically, so concurrent turns never take the same answer twice.
+ *
+ * Live input speaks what Claude Code does (checked on 2.1.290): the brief is the first `{ type: "user" }` stdin frame
+ * and stdin stays open. A frame that arrives while a turn runs is folded into it; one that arrives between turns
+ * starts a new turn of the same session (answered as the brief plus the frame's words); an interrupt control request
+ * ends the running turn at once with an error result and a control_response. Each turn ends with its own result, and
+ * the process exits once stdin closes and the running turn has finished, with the last result's code.
  *
  * The same file counts real turns: `countingProvider` puts shims on the PATH that write each call to a journal and
  * then run the real CLI, unchanged. Both journals are one JSON line per call: { at, provider, role, turn, mode, … }.
@@ -149,7 +156,7 @@ export function readCall(provider, argv) {
     const inline = at !== -1 && at + 1 < argv.length && !argv[at + 1].startsWith("-") ? argv[at + 1] : null;
     const format = value("--output-format") ?? "text";
     return {
-      provider, prompt: inline, format,
+      provider, prompt: inline, format, input: value("--input-format") ?? "text",
       schema: json(value("--json-schema") ?? "null"), resume: value("--resume"), session: value("--session-id"),
       mcp: all("--mcp-config"), tools: value("--tools"), permission: value("--permission-mode"),
     };
@@ -158,7 +165,7 @@ export function readCall(provider, argv) {
   const last = argv.at(-1);
   const schemaFile = value("--output-schema");
   return {
-    provider, prompt: last === "-" || last === undefined || last.startsWith("-") ? null : last, format: "codex",
+    provider, prompt: last === "-" || last === undefined || last.startsWith("-") ? null : last, format: "codex", input: "text",
     schema: schemaFile === null ? null : json(readFileSync(schemaFile, "utf8")), resume: resumeAt === -1 ? null : argv[resumeAt], session: null,
     mcp: [], tools: null, permission: null,
   };
@@ -284,8 +291,14 @@ export async function callMcp(configs, { server, tool, arguments: args = {} }, t
  * Carry the answer out for its role: the structured value a JSON turn returns, the files a planner or builder writes,
  * and the final message. Throws (a failed turn) when the answer can't be carried out.
  */
-async function perform(role, answer, { prompt, call, cwd, step }) {
-  if (answer.delayMs) await new Promise(done => setTimeout(done, answer.delayMs));
+async function perform(role, answer, { prompt, call, cwd, step, signal }) {
+  if (answer.delayMs) await new Promise((done, fail) => {
+    // An interrupt (live input) ends the wait: the turn stops before it does anything.
+    if (signal?.aborted) { fail(new Error("interrupted")); return; }
+    const timer = setTimeout(done, answer.delayMs);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); fail(new Error("interrupted")); }, { once: true });
+  });
+  if (signal?.aborted) throw new Error("interrupted");
   if (answer.fail !== undefined) throw new Error(String(answer.fail));
   const mcp = [];
   for (const one of answer.mcp ?? []) mcp.push({ ...one, ...(await callMcp(call.mcp, one)) });
@@ -337,7 +350,7 @@ async function perform(role, answer, { prompt, call, cwd, step }) {
 }
 
 /** One turn: pick its answer, carry it out, and say what happened in the journal. */
-async function turn(dir, call, prompt, cwd) {
+async function turn(dir, call, prompt, cwd, signal) {
   const role = roleOf(call, prompt);
   const lead = role === "lead" ? leadTurn(prompt) : { said: prompt, step: 0, results: [] };
   const rules = (() => { try { return JSON.parse(readFileSync(join(dir, RULES), "utf8")).rules; } catch { return []; } })();
@@ -353,7 +366,7 @@ async function turn(dir, call, prompt, cwd) {
     return { ok: false, error };
   }
   try {
-    const done = await perform(role, answer, { prompt, call, cwd, step: lead.step });
+    const done = await perform(role, answer, { prompt, call, cwd, step: lead.step, signal });
     appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ ...entry, ok: true, ...(done.mcp.length === 0 ? {} : { mcp: done.mcp }) })}\n`);
     return { ok: true, ...done };
   } catch (error) {
@@ -372,7 +385,66 @@ function claudeResult(done, session, cost) {
     : { type: "result", subtype: "error_during_execution", is_error: true, duration_ms: 5, num_turns: 1, result: done.error, session_id: session, total_cost_usd: cost, usage };
 }
 const init = (session, cwd) => ({ type: "system", subtype: "init", session_id: session, cwd, model: "claude-scripted", tools: [], mcp_servers: [], permissionMode: "default" });
-const assistant = (session, text) => ({ type: "assistant", parent_tool_use_id: null, session_id: session, message: { role: "assistant", content: [{ type: "text", text }] } });
+const assistant = (session, text, id = `msg_${randomUUID()}`) => ({ type: "assistant", parent_tool_use_id: null, session_id: session, message: { id, role: "assistant", content: [{ type: "text", text }] } });
+
+/** The words of a stdin user frame: a string, or text blocks. */
+const frameText = frame => {
+  const content = frame?.message?.content;
+  if (typeof content === "string") return content;
+  return Array.isArray(content) ? content.filter(one => one?.type === "text").map(one => String(one.text ?? "")).join("\n") : "";
+};
+
+/**
+ * A Claude session with live input (`--input-format stream-json`, stdin left open): the brief is the first user frame,
+ * each turn ends with a result, and the process ends when stdin closes. Reading stdin to its end before answering
+ * would wait forever: Toolroll closes stdin only after a result.
+ */
+async function live(dir, call, cwd, session) {
+  let brief = null, running = null, code = 1, turns = 0;
+  say(init(session, cwd));
+  const start = text => {
+    // The session remembers its brief: a later turn is answered with the brief and what was said since.
+    const prompt = brief === null ? text : `${brief}\n\n${text}`;
+    if (brief === null) brief = text;
+    const controller = new AbortController();
+    const one = { controller, interrupted: false, done: null };
+    const resumed = turns === 0 ? call : { ...call, resume: session };
+    turns += 1;
+    one.done = turn(dir, resumed, prompt, cwd, controller.signal).then(done => {
+      if (one.interrupted) return;
+      if (!done.ok) process.stderr.write(`scripted claude: ${done.error}\n`);
+      if (done.ok) say(assistant(session, messageOf(done)));
+      say(claudeResult(done, session, 0.001 * turns));
+      code = done.ok ? 0 : 1;
+      running = null;
+    });
+    running = one;
+  };
+  for await (const line of createInterface({ input: process.stdin })) {
+    let frame; try { frame = JSON.parse(line); } catch { continue; }
+    if (frame?.type === "control_request") {
+      const id = frame.request_id;
+      if (frame.request?.subtype === "interrupt" && running !== null) {
+        const one = running;
+        one.interrupted = true;
+        one.controller.abort();
+        running = null;
+        say({ type: "result", subtype: "error_during_execution", is_error: true, duration_ms: 5, num_turns: 1, result: "interrupted", session_id: session, total_cost_usd: 0.001 * turns, usage });
+        code = 1;
+      }
+      say({ type: "control_response", response: { subtype: "success", request_id: id } });
+      continue;
+    }
+    if (frame?.type !== "user") continue;
+    // Mid-turn, Claude folds the frame into the running turn: it adds no result of its own.
+    if (running !== null) continue;
+    start(frameText(frame));
+  }
+  // stdin closed: the running turn finishes, then the process exits.
+  if (running !== null) await running.done;
+  if (brief === null) process.stderr.write("scripted claude: stdin closed before a user frame arrived\n");
+  process.exitCode = code;
+}
 
 async function readStdin() {
   const chunks = [];
@@ -423,6 +495,7 @@ async function main([provider, ...argv]) {
   const call = readCall(provider, argv);
   const cwd = process.cwd();
   const session = call.resume ?? call.session ?? randomUUID();
+  if (provider === "claude" && call.input === "stream-json") return live(dir, call, cwd, session);
   const prompt = call.prompt ?? await readStdin();
   const done = await turn(dir, call, prompt, cwd);
   if (!done.ok) process.stderr.write(`scripted ${provider}: ${done.error}\n`);

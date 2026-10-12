@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.61 — 2026-10-12
+
+- **Agents board.** One place to check on running agents: Needs you,
+  Working, Stuck, Done and Idle, live on desktop and phone. Agents can ask a
+  question mid-run, and you reply from the board.
+- **Steer in seconds.** A note reaches a running Claude build within seconds.
+  Pause, Resume, and Pause and steer sit beside Stop.
+- **Builds run on their own setup.** Your personal Claude hooks, plugins, MCP
+  servers and memory no longer load into builds.
+- **The sweep can't stop builds.** Storage cleanup runs in its own process
+  with a time limit, and never removes what a build is using.
+- **Finished work cleans up.** Tasks whose work has landed complete on their
+  own, and their checkouts and branches are removed.
+- **Release checks test everything since the last release.**
+
 ## 0.9.60 — 2026-10-11
 
 - **Steer a running build.** A note now reaches the agent while it works, and

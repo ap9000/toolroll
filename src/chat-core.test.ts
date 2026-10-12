@@ -8,7 +8,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, type Store } from "./store.js";
+import { openStore, verifiedAuthor, type Store } from "./store.js";
+import { answerAgentQuestion, attemptKeyOf, holdAgentView, ingestStatus, openAgentQuestions, recordAgentTurn, VIEW_LEASE_MS } from "./agent-board.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { register } from "./runner.js";
 import { storeEvidence } from "./evidence.js";
@@ -268,6 +269,49 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     h.tap(current(h, m0, delivered[0]!.message), /^Yes$/, m0);
     await h.pass();
     expect(store.getTask("payout-2")?.state).toBe("queued");
+  });
+
+  test("notifications: an agent's question waits while that person watches its run, then arrives once; one answered meanwhile never does", async () => {
+    const m0 = h.member(0);
+    await pair(h, "alex", m0);
+    const ref = placed("login-7", "Fix the login page");
+    propose(store, { taskId: "login-7", goal: "Fix the login page", touches: ["src/login.ts"], acceptance: [{ id: "c1", statement: "Sign-in works.", how: null, evidence: ["check"] }], now });
+    expect(approve(store, "login-7", "alex", now, store.getScope("login-7")!.digest, alexToken).ok).toBe(true);
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route fixture");
+    const run = store.startRun({ taskRef: ref, leaseId: "l-login-7", runner: RUNNER, branch: "so/login-7", worktree: `/pool/login-7`, route: authority.stamp, now });
+    const key = attemptKeyOf(store, run)!;
+    recordAgentTurn(store, { run, attemptKey: key, state: "busy", at: now });
+    const view = ["v", "7".repeat(23)].join("");
+    const ask = (question: string, offset: number) => ingestStatus(store, run, key, { lines: [{ status: "needs-decision", key: question.toLowerCase().replace(/[^a-z]+/g, "-").slice(0, 20).replace(/-+$/, ""), question }], nextOffset: offset }, now);
+    const said = (words: string) => h.cards(m0).filter(one => one.text.includes(words));
+
+    holdAgentView(store, view, "alex", run, now);
+    ask("Keep the old OAuth button?", 10);
+    await h.pass();
+    expect(said("Keep the old OAuth button?")).toEqual([]);
+    // A keep-alive keeps it waiting.
+    later(15_000);
+    holdAgentView(store, view, "alex", run, now);
+    await h.pass();
+    expect(said("Keep the old OAuth button?")).toEqual([]);
+    // The watch lapses with the question still open: it arrives, once.
+    later(VIEW_LEASE_MS);
+    await h.pass();
+    expect(said("Keep the old OAuth button?")).toHaveLength(1);
+    later(60_000);
+    await h.pass();
+    expect(said("Keep the old OAuth button?")).toHaveLength(1);
+
+    // Asked and answered while watched: nothing to send once the watch ends.
+    holdAgentView(store, view, "alex", run, now);
+    ask("Which button label?", 20);
+    await h.pass();
+    const id = openAgentQuestions(store, ref).find(one => one.question === "Which button label?")!.id;
+    expect(answerAgentQuestion(store, { question: id, answer: "Save", author: "alex", at: now, file: (task, note) => store.fileSteerNote(task, verifiedAuthor("alex"), note, now) }).ok).toBe(true);
+    later(VIEW_LEASE_MS + 1_000);
+    await h.pass();
+    expect(said("Which button label?")).toEqual([]);
   });
 });
 

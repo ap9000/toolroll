@@ -161,6 +161,8 @@ export type OrphanOptions = StopOptions & {
   tempRoots?: readonly string[];
   locate?: (pids: readonly number[]) => Map<number, Located>;
   self?: number;
+  /** A root live work uses (storage-sweep.ts): asked at both looks; true leaves everything in it running. */
+  spare?: (path: string) => boolean;
 };
 
 /** Stop the orphans Toolroll left (see the top of this file), each in the ledger. */
@@ -171,7 +173,8 @@ export async function sweepOrphans(store: Store, now: () => Date, options: Orpha
   const failed: string[] = [];
   let census: ProcessRow[];
   try { census = read(); } catch { return { stopped: [], failed: ["the process list couldn't be read"] }; }
-  const roots = sweepRoots(store, options.pool ?? null, census, options.tempRoots ?? [], now());
+  const rootsNow = (rows: readonly ProcessRow[]) => sweepRoots(store, options.pool ?? null, rows, options.tempRoots ?? [], now()).filter(root => options.spare?.(root.path) !== true);
+  const roots = rootsNow(census);
   if (roots.length === 0) return { stopped: [], failed };
   const guard = protectedProcesses(census, options.self);
   const orphans = census.filter(row => row.ppid === 1 && row.pid > 1 && !row.terminal && !guard.pids.has(row.pid) && !guard.groups.has(row.pgid)).map(row => row.pid);
@@ -179,14 +182,15 @@ export async function sweepOrphans(store: Store, now: () => Date, options: Orpha
   try { located = locate(orphans); } catch (error) { return { stopped: [], failed: [`working folders couldn't be read: ${(error as Error).message}`] }; }
   const first = orphanTargets(census, located, roots, guard);
   if (first.length === 0) return { stopped: [], failed };
-  // Right before the signal, everything again: the same process, still an orphan (or under one), still inside.
+  // Right before the signal, everything again: the same process, still an orphan (or under one), still inside a root
+  // that is still one (no run or lease took its checkout since, nothing live uses it).
   let again: OrphanTarget[];
   try {
     const fresh = read();
     const freshGuard = protectedProcesses(fresh, options.self);
     const freshLocated = locate(fresh.filter(row => row.ppid === 1).map(row => row.pid));
     const before = new Map(first.map(one => [one.row.pid, one]));
-    again = orphanTargets(fresh, freshLocated, roots, freshGuard).filter(one => {
+    again = orphanTargets(fresh, freshLocated, rootsNow(fresh), freshGuard).filter(one => {
       const was = before.get(one.row.pid);
       return was !== undefined && Math.abs(was.row.bornAt - one.row.bornAt) <= BIRTH_SLACK_MS && was.root.path === one.root.path;
     });

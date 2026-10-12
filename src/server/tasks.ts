@@ -71,6 +71,7 @@ import { runCostWords } from "../summary.js";
 import { requestTaskStop,resumeTaskStop } from "../task-control.js";
 import { templateByName } from "../templates.js";
 import { TEXT_LIMITS } from "../text-limits.js";
+import { agentQuestion,answerAgentQuestion,markAgentSeen } from "../agent-board.js";
 import { WorkIndexCursorError,workIndexPage,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
 import {
 buildProgressOf,
@@ -501,6 +502,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
     }
     const selected = selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
+    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board.
+    if (wantedId !== null && selected?.run != null) markAgentSeen(store, who.name, selected.run.id, now);
     // A build that delivered nothing reads Failed here, and so does a failed task's delivered result: what went wrong
     // is the card and Retry the ink act. That result may still be accepted, but only in outline, as Accept anyway, with
     // a reason.
@@ -1267,8 +1270,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return redirect(response, `${taskHref(act.taskId)}#merge`);
   }
 
-  type TaskVerb = "hold" | "unhold" | "requeue" | "cancel" | "scope" | "approve" | "plan" | "plan-edit" | "next" | "reopen" | "steer" | "accept-proof" | "accept-revision" |
-    "reject-revision" | "route" | "retry-review" | "complete" | "stop" | "resume-arm" | "resume" | "block" | "unblock" | "repair-dependency" | "follow-up";
+  type TaskVerb = "hold" | "unhold" | "requeue" | "cancel" | "scope" | "approve" | "plan" | "plan-edit" | "next" | "reopen" | "steer" | "reply" | "accept-proof" | "accept-revision" |
+    "reject-revision" | "route" | "retry-review" | "complete" | "stop" | "pause" | "resume-arm" | "resume" | "block" | "unblock" | "repair-dependency" | "follow-up";
   /** A task act bound to its verb: taskMutation owns each verb's checks. */
   const taskAct = (verb: TaskVerb) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who, response, now, posted } = ctx;
@@ -1714,7 +1717,25 @@ export function createTasksHandlers(runtime: ServerRuntime) {
                 : "no such task";
           return taskScreen(response, who, taskId, said, 400);
         }
+        // From the Agents board, back to the same agent (allow-listed: a run of this task, never a URL from the form).
+        const run = Number(body.get("run") ?? "");
+        if (body.get("return") === "agents" && Number.isSafeInteger(run) && store.getRun(run)?.taskRef === ref.id) return redirect(response, `/agents?run=${run}&said=steered`);
         return redirect(response, taskHref(taskId));
+      }
+      case "reply": {
+        const body = readForm(posted, CONSOLE_FORMS.taskReply);
+        // A reply is steering, so it is a browser session's act too.
+        if (who.via !== "cookie") return refuse(response, who, 403, "replying to an agent is a browser session's act");
+        // The same gates as a pause: the route's act scope already refuses a viewer; these say why, and the demo answers nothing.
+        if (who.role !== "approver") return taskScreen(response, who, taskId, "your login can watch — replying to an agent is an approver's act", 403);
+        if (store.isDemo()) return taskScreen(response, who, taskId, "the demo authorizes nothing", 403);
+        const id = Number(body.get("question") ?? "");
+        const asked = Number.isSafeInteger(id) && id > 0 ? agentQuestion(store, id) : null;
+        if (asked === null || asked.taskRef !== ref.id) return taskScreen(response, who, taskId, "that question is not on this task", 404);
+        const answered = answerAgentQuestion(store, { question: id, answer: body.get("answer") ?? "", author: who.name, at: now,
+          file: (task, note) => store.fileSteerNote(task, verifiedAuthor(who.name), note, now) });
+        const said = answered.ok ? "replied" : answered.reason === "invalid-answer" || answered.reason === "not-saved" ? "reply-invalid" : answered.reason === "closed" ? "reply-closed" : "reply-stale";
+        return redirect(response, `/agents?run=${asked.run}&said=${said}`);
       }
       case "hold": {
         const body = readForm(posted, CONSOLE_FORMS.taskHold);
@@ -2374,6 +2395,36 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const back = body.get("return") ?? "";
         return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
       }
+      case "pause": {
+        const body = readForm(posted, CONSOLE_FORMS.taskPause);
+        // Pause, and Pause and steer (live steering): a browser session's act, an approver's act, naming the ONE run
+        // the page showed under the page's own request id. It stops the running Claude build's turn and keeps the
+        // build; a note that rides along is filed in the same transaction and sent right after. mode=resume continues a
+        // paused build with no note. Never a stop.
+        if (who.via !== "cookie") return refuse(response, who, 403, "pausing a build is a browser session's act");
+        if (who.role !== "approver") return taskScreen(response, who, taskId, "your login can watch — pausing a build is an approver's act", 403);
+        if (store.isDemo()) return taskScreen(response, who, taskId, "the demo authorizes nothing", 403);
+        const named = (body.get("run") ?? "").trim();
+        if (!/^[0-9]{1,15}$/.test(named)) return taskScreen(response, who, taskId, "which build? a pause names one exact run", 400);
+        const note = (body.get("note") ?? "").trim();
+        // Resume: the paused build goes on where it stopped; no note is filed.
+        const asked = body.get("mode") === "resume"
+          ? store.requestResume({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "" }, now)
+          : store.requestPause({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "", ...(note === "" ? {} : { note }) }, now);
+        if (!asked.ok) {
+          const words: Record<string, string> = {
+            stale: `build #${named} has stopped taking notes — reload to see the current attempt`,
+            "not-paused": `build #${named} isn't paused any more — reload to see where it stands`,
+            "invalid-request": "that form was incomplete — reload and try again",
+            duplicate: "that form was already used for another build — reload and try again",
+            "task-finished": "this task is finished",
+            "unknown-task": "no such task",
+          };
+          return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, asked.reason === "invalid-note" ? 400 : 409);
+        }
+        const back = body.get("return") ?? "";
+        return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
+      }
       case "resume-arm": {
         const body = readForm(posted, CONSOLE_FORMS.taskResume);
         return armTaskResume(response, who, taskId, (body.get("run") ?? "").trim(), body.get("return") === "chat" ? "chat" : "task", now);
@@ -2778,6 +2829,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.next": taskAct("next"),
     "task.act.reopen": taskAct("reopen"),
     "task.act.steer": taskAct("steer"),
+    "task.act.reply": taskAct("reply"),
     "task.act.accept-proof": taskAct("accept-proof"),
     "task.act.accept-revision": taskAct("accept-revision"),
     "task.act.reject-revision": taskAct("reject-revision"),
@@ -2787,6 +2839,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.merge": taskMerge,
     "task.act.confirm-stopped": taskConfirmStopped,
     "task.act.stop": taskAct("stop"),
+    "task.act.pause": taskAct("pause"),
     "task.act.resume-arm": taskAct("resume-arm"),
     "task.act.resume": taskAct("resume"),
     "task.act.block": taskAct("block"),

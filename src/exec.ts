@@ -15,6 +15,7 @@ import { jsonlDiscriminants } from "./jsonl-discriminants.js";
 import { createContainer, currentContainment, type AttachOutcome, type Container, type ContainmentBackendId } from "./containment.js";
 import type { Store } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
+import type { LiveInput } from "./live-input.js";
 
 export type ExecResult = {
   /** Process exit code, or one of the synthetic codes below. */
@@ -118,6 +119,15 @@ export type RunOptions = ProcessTreeObserver & {
    * currently only the streaming transport can deliver this early).
    */
   onSessionId?: (id: string) => void;
+  /**
+   * Live input (live-input.ts): a Claude transport that declares `streamInput`
+   * keeps stdin piped and open, hands it to this session, and shows it every
+   * stdout event. The session sends the brief first and decides when stdin
+   * closes; the run then ends with the process, and the LAST primary result
+   * is the accounting envelope (one result per turn), with every main
+   * result's usage and turns added up (cumulativeLiveResult).
+   */
+  liveInput?: LiveInput;
   /** Fires once the child exists, with its pid (the process-group id when
    * processGroup is set) — the slot ledger records it (v14 finding 26). */
   onSpawn?: (pid: number) => void;
@@ -520,6 +530,9 @@ export const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 function streamWatchdog(
   options: RunOptions,
   onTimeout: () => void,
+  /** The idle limit was reached: true when the caller ended the wait its own way (a paused live session closes
+   * stdin), so the same limit runs again for the process to exit before it is killed. */
+  onIdle?: () => boolean,
 ): { touch: () => void; stop: () => void } {
   const hardMs = options.timeoutMs ?? (options.idleTimeoutMs === undefined ? DEFAULT_TIMEOUT_MS : undefined);
   const idleMs = options.idleTimeoutMs;
@@ -532,10 +545,16 @@ function streamWatchdog(
     fired = true;
     onTimeout();
   };
+  const idle = (): void => {
+    let handled = false;
+    try { handled = onIdle?.() === true; } catch { handled = false; }
+    if (handled) armIdle();
+    else fire();
+  };
   const armIdle = (): void => {
     if (idleMs === undefined) return;
     if (idleTimer !== undefined) clearTimeout(idleTimer);
-    idleTimer = setTimeout(fire, idleMs);
+    idleTimer = setTimeout(idle, idleMs);
     idleTimer.unref?.();
   };
   if (hardMs !== undefined) {
@@ -857,6 +876,8 @@ type BoundedJsonlLine = {
   bytesOriginal: number;
   overflowed: boolean;
   discriminants?: { type: string; itemType: string | null } | null;
+  /** An oversized line's last bytes (at most the framer's tail cap), when it keeps one; a view, consume it synchronously. */
+  tail?: Buffer;
 };
 
 /**
@@ -869,15 +890,37 @@ function boundedJsonlFramer(
   cap: number,
   onLine: (line: BoundedJsonlLine) => void,
   inspectDiscriminants = false,
+  tailCap = 0,
 ): { push: (chunk: Buffer) => void; finish: () => void } {
   const retained = Buffer.allocUnsafe(cap);
   let retainedBytes = 0;
   let originalBytes = 0;
   let nonWhitespace = false;
   let discriminants = inspectDiscriminants ? jsonlDiscriminants() : null;
+  // An oversized line's last tailCap bytes, kept only once the line passes the cap (Claude's result carries its cost
+  // after the words that made it too large). Seeded from the retained prefix's end, so it is always the line's true end.
+  const tailSize = Math.max(0, Math.min(tailCap, cap));
+  const tail = tailSize === 0 ? null : Buffer.allocUnsafe(tailSize);
+  let tailBytes = 0;
+  let tailSeeded = false;
+  const keepTail = (part: Buffer): void => {
+    if (tail === null) return;
+    if (!tailSeeded) {
+      tailSeeded = true;
+      tailBytes = retained.copy(tail, 0, retainedBytes - tailSize, retainedBytes);
+    }
+    if (part.length >= tailSize) {
+      tailBytes = part.copy(tail, 0, part.length - tailSize);
+      return;
+    }
+    const keepOld = Math.min(tailBytes, tailSize - part.length);
+    tail.copyWithin(0, tailBytes - keepOld, tailBytes);
+    tailBytes = keepOld + part.copy(tail, keepOld);
+  };
 
   const append = (part: Buffer): void => {
     discriminants?.push(part);
+    const before = originalBytes;
     originalBytes += part.length;
     if (!nonWhitespace) {
       for (const byte of part) {
@@ -890,6 +933,8 @@ function boundedJsonlFramer(
     if (retainedBytes < cap) {
       retainedBytes += part.copy(retained, retainedBytes, 0, cap - retainedBytes);
     }
+    // The bytes up to the cap are in the prefix; only what runs past it moves the tail.
+    if (tail !== null && originalBytes > cap) keepTail(before >= cap ? part : part.subarray(cap - before));
   };
 
   const emit = (): void => {
@@ -898,7 +943,10 @@ function boundedJsonlFramer(
       bytesOriginal: originalBytes,
       overflowed: originalBytes > cap,
       ...(discriminants === null ? {} : { discriminants: discriminants.finish() }),
+      ...(tail !== null && originalBytes > cap ? { tail: tail.subarray(0, tailBytes) } : {}),
     });
+    tailBytes = 0;
+    tailSeeded = false;
     retainedBytes = 0;
     originalBytes = 0;
     nonWhitespace = false;
@@ -1028,6 +1076,79 @@ function leadingClaudeSystemSubtype(prefix: Buffer): string | null {
   );
   return match?.[1] ?? null;
 }
+
+/** How much of an oversized Claude result's end is kept to read its cost and usage (they follow the words). */
+const CLAUDE_RESULT_TAIL_CAP = 64 * 1024;
+
+/**
+ * Where a key's value starts in a fragment of JSON text, once and only once. `"key":` never occurs inside a JSON
+ * string (every quote there is escaped, so `y":` cannot appear), so each match is a real key, though possibly of a
+ * nested object. A key seen more than once is ambiguous and reads as absent.
+ */
+function soleKeyValueAt(texts: readonly string[], key: string): { text: string; at: number } | null {
+  const pattern = new RegExp(`"${key}"\\s*:\\s*`, "g");
+  let found: { text: string; at: number } | null = null;
+  for (const text of texts) {
+    for (const match of text.matchAll(pattern)) {
+      if (found !== null) return null;
+      found = { text, at: match.index + match[0].length };
+    }
+  }
+  return found;
+}
+
+/** The JSON object starting at `at`, read to its matching brace (strings and escapes respected), or null. */
+function jsonObjectAt(text: string, at: number): Record<string, unknown> | null {
+  if (text[at] !== "{") return null;
+  let depth = 0, inString = false;
+  for (let i = at; i < text.length && i - at < CLAUDE_RESULT_TAIL_CAP; i += 1) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i += 1;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth += 1;
+    else if (c === "}" && --depth === 0) {
+      try {
+        const value = JSON.parse(text.slice(at, i + 1)) as unknown;
+        return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The accounting an oversized Claude result still carries, read by a bounded scan of its kept prefix and tail: the
+ * session's running `total_cost_usd`, its `usage` and `num_turns`, and whether it is a main result at all (an
+ * `origin` naming anything but a person makes it a background task's). Anything unreadable or seen twice is absent.
+ */
+export function scanOversizedClaudeResult(prefix: Buffer, tail: Buffer | undefined): { primary: boolean; account: Record<string, unknown> } {
+  const texts = [prefix.toString("utf8"), ...(tail === undefined ? [] : [tail.toString("utf8")])];
+  const origin = soleKeyValueAt(texts, "origin");
+  const originObject = origin === null ? null : jsonObjectAt(origin.text, origin.at);
+  const primary = originObject === null || String(originObject["kind"] ?? "") === "human";
+  const account: Record<string, unknown> = {};
+  const number = (key: string): number | null => {
+    const at = soleKeyValueAt(texts, key);
+    const match = at === null ? null : /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(at.text.slice(at.at, at.at + 64));
+    const value = match === null ? NaN : Number(match[0]);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  };
+  const cost = number("total_cost_usd");
+  if (cost !== null) account["total_cost_usd"] = cost;
+  const turns = number("num_turns");
+  if (turns !== null) account["num_turns"] = turns;
+  const usageAt = soleKeyValueAt(texts, "usage");
+  const usage = usageAt === null ? null : jsonObjectAt(usageAt.text, usageAt.at);
+  if (usage !== null) account["usage"] = usage;
+  return { primary, account };
+}
+
+/** Marks a Claude result whose session cost could not be read: the gateway charges the run's dollar cap instead. */
+export const CLAUDE_COST_UNKNOWN = "standing_orders_cost_unknown";
 
 function malformedCodexEventIsLoadBearing(prefix: Buffer): boolean {
   const type = leadingJsonObjectType(prefix);
@@ -1479,6 +1600,39 @@ function primaryResultOrigin(event: Record<string, unknown>): boolean {
   return false; // task-notification, channel, peer, coordinator, unknown: never the envelope
 }
 
+/** The usage fields Claude reports per message (not per session): a live session's account adds them up. */
+const LIVE_SUMMED_USAGE = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const;
+
+/**
+ * A live session's account so far (one main result per turn, checked on Claude Code 2.1.290): the latest result's
+ * session, ending, words and cost — `total_cost_usd` is already the session's running total — with the usage token
+ * fields and `num_turns`, which count only their own message, added up across every main result. A field that is not
+ * a non-negative number adds nothing.
+ */
+export function cumulativeLiveResult(previous: Record<string, unknown>, latest: Record<string, unknown>): Record<string, unknown> {
+  const count = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const usageOf = (event: Record<string, unknown>): Record<string, unknown> | null =>
+    event["usage"] !== null && typeof event["usage"] === "object" && !Array.isArray(event["usage"]) ? event["usage"] as Record<string, unknown> : null;
+  const before = usageOf(previous), now = usageOf(latest);
+  const usage: Record<string, unknown> = { ...(now ?? {}) };
+  for (const key of LIVE_SUMMED_USAGE) {
+    const a = before === null ? null : count(before[key]), b = now === null ? null : count(now[key]);
+    if (a !== null || b !== null) usage[key] = (a ?? 0) + (b ?? 0);
+  }
+  const turnsBefore = count(previous["num_turns"]), turnsNow = count(latest["num_turns"]);
+  return {
+    ...latest,
+    ...(before === null && now === null ? {} : { usage }),
+    ...(turnsBefore === null && turnsNow === null ? {} : { num_turns: (turnsBefore ?? 0) + (turnsNow ?? 0) }),
+  };
+}
+
+/** This transport can keep stdin open for a live session (RunOptions.liveInput). */
+export const STREAM_INPUT = Symbol.for("toolroll.streamInput");
+/** Whether a runner declares it keeps stdin open for a live session; an injected runner opts in by carrying the mark. */
+export const streamsInput = (runner: unknown): boolean =>
+  typeof runner === "function" && (runner as unknown as Record<symbol, unknown>)[STREAM_INPUT] === true;
+
 export function runClaudeStreamJsonl(
   file: string,
   args: readonly string[],
@@ -1486,13 +1640,14 @@ export function runClaudeStreamJsonl(
 ): Promise<ExecResult> {
   const { cwd } = options;
   const childEnv = resolveChildEnv(options);
+  const live = options.liveInput ?? null;
 
   return new Promise(resolve => {
     let child!: ReturnType<typeof spawn>;
     let container: Container | null = null;
     let attachFailure: string | null = null;
     try {
-      const spawned = spawnStream(file, args, options, ["ignore", "pipe", "pipe"], childEnv);
+      const spawned = spawnStream(file, args, options, [live === null ? "ignore" : "pipe", "pipe", "pipe"], childEnv);
       child = spawned.child;
       container = spawned.container;
       void spawned.attached.then(outcome => { if (!outcome.ok) attachFailure = outcome.detail; });
@@ -1509,6 +1664,12 @@ export function runClaudeStreamJsonl(
     let conflictingInitLine: string | null = null;
     let initSessionId: string | null = null;
     let resultLine: string | null = null;
+    let resultOverflowed = false;
+    // The run's account: the first main result, or for a live session every main result added up (each oversized
+    // one's scanned cost and usage too). Its cost is the highest running total seen; costUnknown when the latest main
+    // result's cost could not be read (an oversized one), which only a later readable result can clear.
+    let account: Record<string, unknown> | null = null;
+    let costUnknown = false;
     let overflowLine: string | null = null;
     let receiptFired = false;
     let stderr = "";
@@ -1529,6 +1690,21 @@ export function runClaudeStreamJsonl(
         // A receipt that cannot be recorded must not alter the run; the
         // note stays honestly unreceipted and re-attaches later.
       }
+    };
+
+    const tally = (event: Record<string, unknown>, line: string | null): void => {
+      const before = account;
+      account = account === null || live === null ? event : { ...(line === null ? account : {}), ...cumulativeLiveResult(account, event) };
+      const cost = event["total_cost_usd"];
+      const readable = typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+      // The running total only grows: an earlier, higher total stands (a session's cost is never given back).
+      const prior = before?.["total_cost_usd"];
+      if (readable && typeof prior === "number" && prior > cost) account = { ...account, total_cost_usd: prior };
+      if (line === null) costUnknown = !readable;
+      else if (readable) costUnknown = false;
+      if (resultOverflowed) return;
+      if (line !== null && account === event) resultLine = line;
+      else if (line !== null || resultLine !== null) resultLine = JSON.stringify(account);
     };
 
     const keep = (framed: BoundedJsonlLine): void => {
@@ -1552,8 +1728,18 @@ export function runClaudeStreamJsonl(
           if (overflowLine === null) overflowLine = claudeOverflowLine(framed);
           return;
         }
-        if (resultLine === null) resultLine = claudeOverflowLine(framed);
-        else if (overflowLine === null) overflowLine = claudeOverflowLine(framed);
+        // Nothing inside an oversized result is trusted: the agent shapes its bytes (tool inputs in permission_denials
+        // are real JSON objects), so a planted total_cost_usd or origin could read as genuine. It counts as the main
+        // result with an unknown cost, charged at the run's cap, and a live session's input closes.
+        const scanned = { primary: true, account: {} as Record<string, unknown> };
+        if (live !== null || resultLine === null) tally(scanned.account, null);
+        if (resultLine === null) {
+          resultLine = claudeOverflowLine(framed);
+          resultOverflowed = true;
+        } else if (overflowLine === null) overflowLine = claudeOverflowLine(framed);
+        // A live session whose main result was too large to read cannot be steered safely: close its input, so the
+        // process ends instead of running further turns nobody can account for.
+        if (live !== null && scanned.primary) live.close("settled");
         return;
       }
       const line = framed.prefix.toString("utf8");
@@ -1595,8 +1781,11 @@ export function runClaudeStreamJsonl(
       } else if (type === "rate_limit_event") {
         // v105: the plan's usage windows, as Claude says them each turn (the Tasks page's limits).
         noteLimits(claudeLimitsOf(event));
-      } else if (type === "result" && resultLine === null && primaryResultOrigin(event)) {
-        resultLine = line;
+      } else if (type === "result" && (resultLine === null || live !== null) && primaryResultOrigin(event)) {
+        // A live session ends a turn with a result each time: the run's account is the last one, with every main
+        // result's usage and turns added up (account). After an oversized main result the retained result stays the
+        // fail-closed overflow, but later results still count toward its cost.
+        tally(event, line);
         // Fallback receipt (finding 11): a SUCCESSFUL main-query completion
         // entails the prompt ran even if the stream elided assistant
         // events. Error results never fire — startup death is not delivery.
@@ -1609,15 +1798,29 @@ export function runClaudeStreamJsonl(
           // Observational only: a broken listener never touches the run.
         }
       }
+      // After the run's own bookkeeping: the session may close stdin on this event.
+      if (live !== null) live.observe(event);
     };
 
-    const framing = boundedJsonlFramer(JSONL_EVENT_HARD_CAP, keep);
+    // The retained main result as the run's account: an oversized one stays the fail-closed overflow but carries the
+    // cost and usage read from it and from later results; a cost that could not be read says so (CLAUDE_COST_UNKNOWN).
+    const accountedResultLine = (): string | null => {
+      if (resultLine === null || (!resultOverflowed && !costUnknown)) return resultLine;
+      const kept = JSON.parse(resultLine) as Record<string, unknown>;
+      const counted: Record<string, unknown> = {};
+      if (resultOverflowed && account !== null) {
+        for (const key of ["total_cost_usd", "usage", "num_turns"] as const) if (account[key] !== undefined) counted[key] = account[key];
+      }
+      return JSON.stringify({ ...kept, ...counted, ...(costUnknown ? { [CLAUDE_COST_UNKNOWN]: true } : {}) });
+    };
+
+    const framing = boundedJsonlFramer(JSONL_EVENT_HARD_CAP, keep, false, CLAUDE_RESULT_TAIL_CAP);
 
     const watchdog = streamWatchdog(options, () => {
       timedOut = true;
       if (options.processGroup === true) killGroup(child);
       else child.kill("SIGKILL");
-    });
+    }, live === null ? undefined : () => live.idleLimit());
 
     child.stdout?.on("data", (chunk: Buffer) => {
       watchdog.touch();
@@ -1636,7 +1839,8 @@ export function runClaudeStreamJsonl(
       watchdog.stop();
       liveProviders.delete(child);
       framing.finish();
-      const lines = [initLine, initIdentityLine, conflictingInitLine, resultLine, overflowLine]
+      live?.detach();
+      const lines = [initLine, initIdentityLine, conflictingInitLine, accountedResultLine(), overflowLine]
         .filter((one): one is string => one !== null)
         .filter((line, index, all) => all.indexOf(line) === index);
       const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);
@@ -1656,5 +1860,13 @@ export function runClaudeStreamJsonl(
       finish(null);
     });
     child.on("close", code => finish(code));
+    if (live !== null && child.stdin !== null) {
+      const input = child.stdin;
+      // A pipe the child closed (it exited) ends live input; the run settles on the process, as always.
+      input.on("error", () => live.detach("input-failed"));
+      live.attach({ write: line => { input.write(line, "utf8"); }, end: () => { input.end(); } });
+    }
   });
 }
+
+(runClaudeStreamJsonl as unknown as Record<symbol, unknown>)[STREAM_INPUT] = true;

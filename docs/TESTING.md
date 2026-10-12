@@ -65,8 +65,14 @@ providers for Jev. A real run spends a few Claude turns and a few real builds
 
 The release gate (`scripts/release-check.mjs`) runs the full unit suite,
 every scripted browser journey and the upgrade path for changes beyond docs,
-evidence, design notes or a version-only bump. Unit tests are never selected
-by changed files. Typecheck, build and units start together; unit setup waits
+evidence, design notes or a version-only bump, compared with the latest `v*`
+release tag reachable from the candidate (`HEAD`, including lightweight tags).
+A version-only release PR therefore includes code merged since that release.
+Without a reachable release tag, or with no difference from it, the full suite
+runs. Tags come from the checkout; `--base <ref>` overrides the comparison.
+`node scripts/release-check.mjs --plan` shows the baseline and selected checks.
+Unit tests are never selected by changed files. Typecheck, build and units
+start together; unit setup waits
 for the build, and browser journeys and the upgrade path start after it passes.
 Browser journeys also stay held if typecheck has already failed.
 
@@ -101,6 +107,16 @@ skipped job as passing a required check; `src/ci-workflow.test.ts` holds the
 workflows to the check names `toolroll release` waits for.
 
 ## Releasing
+
+To drain the built-in worker, use `toolroll runner list --json` to find its name
+and save its current capacity, then run `toolroll runner capacity <name> 0`.
+This requires an instance operator's login (`toolroll login`). Running tasks
+keep their claims and finish; the worker takes no new builds, even after it
+restarts. Wait until Settings → Workers shows nothing running before
+stopping the service. Restore the saved capacity with
+`toolroll runner capacity <name> <previous-capacity>` to resume. The release
+command still performs its deployment pause, backup, compatibility and health
+checks.
 
 `toolroll release <branch> --repo <gate checkout>` runs the whole release:
 gate the exact commit with Full checks, wait for an active approver's approval

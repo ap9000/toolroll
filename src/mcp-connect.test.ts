@@ -302,7 +302,7 @@ test("a research launch gets only connected services' read-only actions: Codex e
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   const readOnly = { mobbin: ["search_screens", "search_flows"], posthog: [] };
-  const launched = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false, readOnly });
+  const launched = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly });
   try {
     const argv = launched.argv.join(" ");
     expect(argv).toContain('mcp_servers.mobbin.enabled_tools=["search_screens","search_flows"]');
@@ -316,11 +316,11 @@ test("a research launch gets only connected services' read-only actions: Codex e
     launched.cleanup();
   }
   // Nothing readable: no project server at all.
-  const none = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false, readOnly: {} });
+  const none = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: {} });
   expect(none.argv.join(" ")).not.toContain("mcp_servers.");
   none.cleanup();
   // A build is not limited: every server, every action.
-  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false });
+  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
   try {
     expect(ids.every(id => build.argv.join(" ").includes(`mcp_servers.${id}.command`))).toBe(true);
     expect(build.argv.join(" ")).not.toContain("enabled_tools");
@@ -364,7 +364,7 @@ test("a build gets the project's Figma desktop app with every action", () => {
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   for (const provider of ["claude", "codex"] as const) {
-    const build = prepareRunTools(runs, 9, provider, { home: dir, now: T0, includeModel: false });
+    const build = prepareRunTools(runs, 9, provider, { home: dir, now: T0 });
     try {
       expect(JSON.parse(recorded), provider).toMatchObject({ tools: [{ name: "figma-desktop" }], skipped: [] });
       if (provider === "codex") expect(build.argv.join(" ")).toContain("figma-desktop");
@@ -455,7 +455,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   grant("openid profile email user:read query:read error_tracking:read");
   expect(research()).toEqual({ services: [{ id: "posthog", label: "PostHog" }], allowed: ["mcp__posthog__exec"], reads: { posthog: ["exec"] }, local: [] });
   expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")).toEqual({ id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "connected" });
-  const allowed = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false, readOnly: research().reads });
+  const allowed = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: research().reads });
   try {
     expect(allowed.argv.join(" ")).toContain('mcp_servers.posthog.enabled_tools=["exec"]');
     expect(JSON.parse(recorded)).toEqual({ provider: "codex", tools: [{ name: "posthog", digest: expect.any(String) }], skipped: [] });
@@ -472,7 +472,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   expect(research()).toEqual({ services: [], allowed: [], reads: {}, local: [], withheld: { posthog: WRITE_REASON } });
   expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")?.research).toBe("PostHog is connected with write access, so research runs can't use it.");
   const { reads, withheld } = research();
-  const skipped = prepareRunTools(runs, 7, "claude", { home: dir, now: T0, includeModel: false, readOnly: reads, withheld: withheld! });
+  const skipped = prepareRunTools(runs, 7, "claude", { home: dir, now: T0, readOnly: reads, withheld: withheld! });
   skipped.cleanup();
   expect(JSON.parse(recorded)).toEqual({ provider: "claude", tools: [], skipped: [{ name: "posthog", reason: WRITE_REASON }] });
 
@@ -490,7 +490,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
 
   // A builder launch is unchanged whatever the grant: the whole server, no allow-list, nothing skipped.
   grant("insight:read insight:write");
-  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, includeModel: false });
+  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
   try {
     expect(build.argv.join(" ")).toContain("mcp_servers.posthog.command");
     expect(build.argv.join(" ")).not.toContain("enabled_tools");
@@ -561,4 +561,51 @@ test("the grant is saved from the token answer (or the scope asked for, when it 
   expect(grantOf(repo, "posthog", dir)).toBeNull();
   // Tokens went only to PostHog's token address, in the request body.
   expect(seen.filter(one => one.body.includes("ph-refresh")).every(one => one.url === "https://oauth.posthog.com/oauth/token/")).toBe(true);
+});
+
+test("a build's MCP servers are exactly its project's named, sealed tools: none is an explicit empty list, and Codex carries nothing of the operator's config", () => {
+  let recorded = "";
+  let seal: { name: string; digest: string }[] | null = null;
+  const runs = {
+    projectTools: (one: string) => store.projectTools(one), orgPolicy: () => store.orgPolicy(),
+    getRun: () => ({ taskRef: 1 }), refById: () => ({ repo, externalId: "named-tools" }), getScope: () => ({ approvedDigest: "d1" }), toolSealFor: () => seal,
+    recordRunTools: (_run: number, json: string) => { recorded = json; },
+  } as unknown as Parameters<typeof prepareRunTools>[0];
+  // No opt-in: Claude gets its strict list, written out empty; Codex names no server.
+  const none = prepareRunTools(runs, 11, "claude", { home: dir, now: T0 });
+  try {
+    expect(none.argv).toEqual(["--mcp-config", expect.stringMatching(/mcp\.json$/)]);
+    expect(JSON.parse(readFileSync(none.argv[1]!, "utf8"))).toEqual({ mcpServers: {} });
+  } finally { none.cleanup(); }
+  const noneCodex = prepareRunTools(runs, 11, "codex", { home: dir, now: T0 });
+  expect(noneCodex.argv).toEqual([]);
+  noneCodex.cleanup();
+
+  // Two named tools; the task's approval sealed only one of them.
+  const token = ["sk", "test", "4f".repeat(12)].join("_");
+  const spec = (name: string) => ({ name, transport: "stdio" as const, command: "node", args: [`${name}.mjs`], url: null, secrets: [{ name: "NOTES_TOKEN", optional: false }], bearer: null, headerSecrets: {}, about: `the ${name} server` });
+  for (const name of ["notes", "later"]) {
+    expect(addToolTo(store, repo, spec(name), "custom", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+    setToolSecrets(repo, name, { NOTES_TOKEN: token }, dir);
+  }
+  seal = projectToolsOf(store, repo).filter(one => one.name === "notes").map(one => ({ name: one.name, digest: one.digest }));
+  const claude = prepareRunTools(runs, 12, "claude", { home: dir, now: T0 });
+  try {
+    expect(claude.argv.filter(one => one === "--mcp-config")).toHaveLength(1);
+    const file = claude.argv[claude.argv.indexOf("--mcp-config") + 1]!;
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).mcpServers)).toEqual(["notes"]);
+    // The value reaches only the private 0600 file, never the argv.
+    expect(claude.argv.join(" ")).not.toContain(token);
+    expect(JSON.parse(recorded)).toMatchObject({ provider: "claude", tools: [{ name: "notes" }], skipped: [{ name: "later", reason: expect.stringContaining("after this task was approved") }] });
+  } finally { claude.cleanup(); }
+
+  const codex = prepareRunTools(runs, 13, "codex", { home: dir, now: T0 });
+  try {
+    const argv = codex.argv.join(" ");
+    expect(argv).toContain("mcp_servers.notes.command=");
+    expect(argv).not.toContain("mcp_servers.later.");
+    expect(argv).not.toContain(token);
+    // The operator's config.toml is ignored by the provider's own flags; nothing of it is carried here.
+    for (const carried of ["model=", "model_reasoning_effort", "personality", "service_tier"]) expect(argv).not.toContain(carried);
+  } finally { codex.cleanup(); }
 });

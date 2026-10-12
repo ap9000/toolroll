@@ -5,7 +5,7 @@ import type { SteerNote } from "./store.js";
 const note = (over: Partial<SteerNote> = {}): SteerNote => ({
   id: 1, taskRef: 1, author: "alex", note: "prefer the smaller diff", createdAt: "2026-10-11T12:00:00.000Z",
   attachedRun: null, attachedAt: null, deliveredAt: null, supersededAt: null, authorshipState: "verified", supersededReason: null,
-  mailedRun: null, mailedAt: null, ackedAt: null, ...over,
+  mailedRun: null, mailedAt: null, ackedAt: null, liveUuid: null, liveSends: 0, liveSentAt: null, liveMissedAt: null, ...over,
 });
 const words = (one: SteerNote, live: boolean) => steerStandingWords(one, live, iso => iso.slice(11, 16));
 
@@ -21,6 +21,13 @@ describe("one set of words for where a steering note stands (v120)", () => {
     expect(words(note({ attachedRun: 7, attachedAt: "x", deliveredAt: "2026-10-11T12:02:00.000Z" }), false)).toBe("Read by the agent at 12:02");
   });
 
+  test("a note the running build was sent every time it was owed and never moved reads Not picked up, until it ends", () => {
+    const missed = note({ mailedRun: 7, mailedAt: "2026-10-11T12:01:00.000Z", liveSends: 4, liveMissedAt: "2026-10-11T12:07:00.000Z" });
+    expect(words(missed, true)).toBe("Not picked up");
+    expect(words(missed, false)).toBe("Will reach the next attempt");
+    expect(words({ ...missed, deliveredAt: "2026-10-11T12:09:00.000Z", ackedAt: "2026-10-11T12:09:00.000Z" }, true)).toBe("Read by the agent at 12:09");
+  });
+
   test("a note the task outlived, or one saved before notes needed a sign-in, says so", () => {
     expect(words(note({ supersededAt: "2026-10-11T13:00:00.000Z" }), false)).toBe("The task ended before the agent read it");
     expect(words(note({ authorshipState: "unverified-legacy" }), true)).toBe("Saved before notes required a sign-in; never sent");
@@ -28,6 +35,7 @@ describe("one set of words for where a steering note stands (v120)", () => {
 
   test("where a note filed now goes", () => {
     expect(steerDestinationWords(true)).toBe("The running agent reads it when it next checks for notes.");
+    expect(steerDestinationWords(true, true)).toBe("The running agent gets it now.");
     expect(steerDestinationWords(false)).toBe("The next attempt reads it before starting.");
   });
 });

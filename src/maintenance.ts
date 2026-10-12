@@ -5,6 +5,8 @@ export function startMaintenance(args: {
   run: () => Promise<void>;
   shouldStop: () => boolean;
   onError: (error: unknown) => void;
+  /** Synchronously cancel owned background work before waiting for the current pass. */
+  onStop?: () => void;
 }): { runNow: () => Promise<void>; stop: () => Promise<void> } {
   if (!Number.isSafeInteger(args.intervalMs) || args.intervalMs < 1 || args.intervalMs > 2_147_483_647) {
     throw new Error("maintenance interval must be an integer from 1 to 2147483647 milliseconds");
@@ -26,8 +28,11 @@ export function startMaintenance(args: {
   return {
     runNow,
     stop: async () => {
-      stopped = true;
-      clearInterval(timer);
+      if (!stopped) {
+        stopped = true;
+        clearInterval(timer);
+        args.onStop?.();
+      }
       await pending;
     },
   };

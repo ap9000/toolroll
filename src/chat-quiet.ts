@@ -161,6 +161,7 @@ function lineOf(store: Store, item: ChatBatch["items"][number], now: Date, root?
       : checks.status === "passed" || checks.status === "failed" || checks.status === "not-run" ? checks.status : null,
     report: card.facts.report === true,
     completedBy: card.facts.completedBy ?? null,
+    ...(card.facts.landed ? { landed: card.facts.landed } : {}),
     pullRequest,
     // The lead speaks as "I" for what it did: the work it filed or approved, or the completion it recorded.
     lead: card.status.headline === "Complete" ? card.completedByLead : store.leadWorkOf(item.taskRef) !== null,

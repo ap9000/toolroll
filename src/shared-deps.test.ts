@@ -346,7 +346,7 @@ describe("shared dependencies through the builder", () => {
     expect(sharedCopies(deps)).toEqual([]);
   });
 
-  test("the daily sweep removes a copy only once no checkout has used it for a week, and marks installs for Spotlight", () => {
+  test("the daily sweep removes a copy only once no checkout has used it for a week, and marks installs for Spotlight", async () => {
     const deps = join(state, "deps");
     const first = checkout(state, "first");
     fakeInstall(first);
@@ -357,19 +357,19 @@ describe("shared dependencies through the builder", () => {
     const rows = [{ path: first, repo: REPO }];
     const weekLater = new Date(Date.now() + SHARED_UNUSED_MS + 60_000);
     // Still linked by a checkout: stays however old.
-    expect(pruneUnusedShared(deps, () => rows, weekLater)).toEqual({ removed: [], failed: [] });
+    expect(await pruneUnusedShared(deps, () => rows, weekLater)).toEqual({ removed: [], failed: [] });
     rmSync(first, { recursive: true, force: true });
     // Nobody uses it, but it was linked within the week: stays.
-    expect(pruneUnusedShared(deps, () => rows, new Date(Date.now() + SHARED_UNUSED_MS - 60_000))).toEqual({ removed: [], failed: [] });
+    expect(await pruneUnusedShared(deps, () => rows, new Date(Date.now() + SHARED_UNUSED_MS - 60_000))).toEqual({ removed: [], failed: [] });
     // A checkout picks it up between the look and the removal: stays.
     let looks = 0;
     const second = checkout(state, "second");
     expect(linkInto(second, join(deps, key, "node_modules"))).toBe("link");
-    expect(pruneUnusedShared(deps, () => (++looks === 1 ? [] : [{ path: second, repo: REPO }]), weekLater).removed).toEqual([]);
+    expect((await pruneUnusedShared(deps, () => (++looks === 1 ? [] : [{ path: second, repo: REPO }]), weekLater)).removed).toEqual([]);
     expect(sharedCopies(deps).map(one => one.key)).toEqual([key]);
     // A week after its last use with nobody on it: goes.
     rmSync(second, { recursive: true, force: true });
-    const done = pruneUnusedShared(deps, () => [], new Date(Date.now() + SHARED_UNUSED_MS + 60_000));
+    const done = await pruneUnusedShared(deps, () => [], new Date(Date.now() + SHARED_UNUSED_MS + 60_000));
     expect(done.removed.map(one => one.key)).toEqual([key]);
     expect(sharedCopies(deps)).toEqual([]);
   });
@@ -384,5 +384,53 @@ describe("shared dependencies through the builder", () => {
     expect(linkInto(own, join(deps, "c".repeat(24), "node_modules"))).toBeNull();
     expect(lstatSync(join(own, "node_modules")).isDirectory()).toBe(true);
     expect(filesUnder(join(own, "node_modules"))).toBe(2);
+  });
+
+  test("a same-lockfile checkout arriving at quarantine cannot link a half-deleted copy; the late user restores it", async () => {
+    const deps = join(state, "deps"), key = "e".repeat(24);
+    const first = checkout(state, "first");
+    fakeInstall(first);
+    promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 });
+    const shared = readyCopy(deps, key)!;
+    rmSync(first, { recursive: true });
+    const users: { path: string; repo: string }[] = [];
+    let late = "";
+    const result = await pruneUnusedShared(deps, () => users, new Date(Date.now() + SHARED_UNUSED_MS + 60_000), SHARED_UNUSED_MS, {
+      quarantined: (_original, trash) => {
+        expect(sharedCopies(deps)).toEqual([]);
+        expect(readyCopy(deps, key)).toBeNull();
+        expect(readyCopy(deps, trash.split("/").at(-1)!)).toBeNull();
+        late = checkout(state, "late");
+        users.push({ path: late, repo: REPO });
+        expect(linkInto(late, shared)).toBeNull();
+        expect(linkInto(late, join(trash, "node_modules"))).toBeNull();
+        expect(existsSync(join(late, "node_modules"))).toBe(false);
+      },
+    });
+    expect(result).toEqual({ removed: [], failed: [] });
+    expect(readyCopy(deps, key)).toBe(shared);
+    expect(linkInto(late, shared)).toBe("link");
+    expect(readFileSync(join(late, "node_modules", "left-pad", "index.js"), "utf8")).toContain("module.exports = 1");
+  });
+
+  test("a failed dependency deletion stays undiscoverable and the next sweep removes its trash", async () => {
+    const deps = join(state, "deps"), key = "f".repeat(24);
+    const first = checkout(state, "first");
+    fakeInstall(first);
+    promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 });
+    rmSync(first, { recursive: true });
+    const later = new Date(Date.now() + SHARED_UNUSED_MS + 60_000);
+    const failed = await pruneUnusedShared(deps, () => [], later, SHARED_UNUSED_MS, { remove: async path => {
+      execFileSync("chmod", ["-R", "u+w", path]);
+      rmSync(path, { recursive: true, force: true });
+      throw Error("disk refused after partial removal");
+    } });
+    expect(failed.failed).toEqual([join(deps, key)]);
+    expect(readyCopy(deps, key)).toBeNull();
+    expect(sharedCopies(deps)).toEqual([]);
+    const retry = await pruneUnusedShared(deps, () => [], later);
+    expect(retry.removed.map(one => one.key)).toEqual([key]);
+    expect(retry.failed).toEqual([]);
+    expect(readdirSync(deps).filter(name => name.startsWith(".toolroll-trash-"))).toEqual([]);
   });
 });

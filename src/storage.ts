@@ -24,6 +24,42 @@ CREATE TABLE IF NOT EXISTS checkout_cleanup_setting (
 );
 `;
 
+/**
+ * Landed work's teardown (landed-cleanup.ts): the intent is written first, with the completion it follows, and each
+ * checkout and local branch it names is one item, finished at the next reconcile when a crash cut it short. A missing
+ * resource finishes its item. New tables only (v121).
+ */
+export const LANDED_CLEANUP_SCHEMA = `
+CREATE TABLE IF NOT EXISTS landed_cleanup (
+  id          INTEGER PRIMARY KEY,
+  repo        TEXT NOT NULL,
+  task_id     TEXT,
+  run_id      INTEGER,
+  receipt     TEXT,
+  head        TEXT NOT NULL,
+  how         TEXT NOT NULL CHECK (how IN ('merged', 'in-main', 'content-in-main')),
+  reason      TEXT NOT NULL,
+  completed   INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
+  actor       TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS landed_cleanup_result ON landed_cleanup(run_id) WHERE run_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS landed_cleanup_item (
+  id      INTEGER PRIMARY KEY,
+  cleanup INTEGER NOT NULL REFERENCES landed_cleanup(id) ON DELETE CASCADE,
+  kind    TEXT NOT NULL CHECK (kind IN ('checkout', 'branch')),
+  repo    TEXT NOT NULL,
+  target  TEXT NOT NULL,
+  expect  TEXT NOT NULL,
+  state   TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'done', 'kept')),
+  why     TEXT,
+  done_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS landed_cleanup_pending ON landed_cleanup_item(kind, repo, target) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS landed_cleanup_item_of ON landed_cleanup_item(cleanup, state);
+`;
+
 /** What each storage sweep or clean-up by hand did (storage-sweep.ts): the latest few. */
 export const STORAGE_SWEEP_SCHEMA = `
 CREATE TABLE IF NOT EXISTS storage_sweep (

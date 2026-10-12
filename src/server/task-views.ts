@@ -454,6 +454,14 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           const found = runtime.store.runsFor(ref.id).find(one => runIsLive(one));
           return found === undefined ? null : found.id;
         })(),
+        // Live steering: the Claude build that takes Pause right now, and where its latest pause stands.
+        livePause: (() => {
+          const run = ref === null ? null : runtime.store.liveInputRun(ref.id, now);
+          if (run === null) return null;
+          const pause = runtime.store.livePauseOf(run);
+          const until = pause?.pausedAt == null || pause.limitMs === null ? null : new Date(Date.parse(pause.pausedAt) + pause.limitMs).toISOString();
+          return { run, state: pause?.state ?? null, until, limitMs: pause?.limitMs ?? null };
+        })(),
         worker: (() => {
           const runners = runtime.store.listRunners().filter(one => one.retiredAt === null);
           const eligible = ref?.repo === null || ref?.repo === undefined

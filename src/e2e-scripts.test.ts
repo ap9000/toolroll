@@ -8,6 +8,7 @@ import { catalogueProblems, GiveUp, groupAlive, processesIn, REAL_MODEL, SCRIPTE
 import { countingProvider, readJournal, scriptedProvider, turnsOf } from "../scripts/fixtures/scripted-provider.mjs";
 import { parseDecision, parseHandoff } from "./decision.js";
 import { parsePlan } from "./plan.js";
+import { LiveInput, type LiveCloseReason } from "./live-input.js";
 
 // Regressions for the release gate's browser journeys (gate runs of 2026-09-29/30): a real-turn wait that ran out said only
 // "locator.waitFor: Timeout 30000ms exceeded", and one flaky journey made e2e-parallel.mjs run its whole group again.
@@ -366,6 +367,69 @@ describe("the scripted provider", () => {
     expect(handoff.ok && handoff.handoff.status).toBe("completed");
     expect(call(provider.shims.claude, ["-p", buildBrief("Add round2 and park this"), "--output-format", "stream-json", "--verbose"], { cwd: work }).status).toBe(0);
     expect(parseDecision(readFileSync(join(work, "STANDING-ORDERS-PARK-3333333333333333.json"), "utf8")).ok).toBe(true);
+  });
+
+  /** A build with live input, driven by Toolroll's own LiveInput: the brief as the first frame, stdin closed by it. */
+  const liveBuild = (file: string, cwd: string, done: string) => {
+    const closed: LiveCloseReason[] = [];
+    let paused = 0;
+    const live = new LiveInput({ maxTurns: 10, finished: () => existsSync(join(cwd, done)), onClose: why => { closed.push(why); }, onPaused: () => { paused++; } });
+    const child = spawn(file, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const events: Record<string, unknown>[] = [];
+    let buffer = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      for (let at = buffer.indexOf("\n"); at !== -1; at = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
+        if (line.trim() === "") continue;
+        const event = JSON.parse(line) as Record<string, unknown>;
+        events.push(event); live.observe(event);
+      }
+    });
+    const exited = new Promise<number | null>(resolve => child.on("close", code => resolve(code)));
+    live.attach({ write: line => { child.stdin.write(line); }, end: () => { child.stdin.end(); } });
+    return { live, events, closed, exited, paused: () => paused };
+  };
+
+  test("live input (a build's stream-json stdin): the brief is the first frame, the turn ends with a result, and the process exits once Toolroll closes stdin", async () => {
+    const provider = make();
+    provider.add("j", { role: "builder", when: [/subtract/], answer: { files: { "src/math.js": "export const subtract = (a, b) => a - b;\n" }, conclusion: "Added subtract." } });
+    const work = join(dir!, "work");
+    mkdirSync(work);
+    const done = "STANDING-ORDERS-DONE-4444444444444444.json";
+    const run = liveBuild(provider.shims.claude, work, done);
+    run.live.begin(`Add subtract\n- write ONE file named exactly ${done} in the worktree root:`);
+    const code = await Promise.race([run.exited, new Promise<string>(resolve => setTimeout(() => resolve("hung"), 20_000))]);
+    expect(code).toBe(0);
+    expect(run.closed).toEqual(["finished"]);
+    expect(run.events.map(one => one["type"])).toEqual(["system", "assistant", "result"]);
+    expect(parseHandoff(readFileSync(join(work, done), "utf8")).ok).toBe(true);
+    expect(provider.journal().map(one => [one.role, one.ok, one.prompt.slice(0, 12)])).toEqual([["builder", true, "Add subtract"]]);
+  });
+
+  test("live input: an interrupt ends the running turn with an error result and a control_response; the next frame continues the session and finishes it", async () => {
+    const provider = make();
+    provider.add("j",
+      { role: "builder", when: [/divide/], times: 1, answer: { delayMs: 15 * 60_000 } },
+      { role: "builder", when: [/divide/], answer: { files: { "src/math.js": "export const divide = (a, b) => a / b;\n" }, conclusion: "Added divide." } });
+    const work = join(dir!, "work");
+    mkdirSync(work);
+    const done = "STANDING-ORDERS-DONE-5555555555555555.json";
+    const run = liveBuild(provider.shims.claude, work, done);
+    run.live.begin(`Add divide\n- write ONE file named exactly ${done} in the worktree root:`);
+    // The first turn has claimed its (delayed) answer: it is running.
+    await until("the first turn to start", () => readdirSync(join(dir!, "provider", "used")).length > 0, { timeoutMs: 10_000, everyMs: 50 });
+    expect(run.live.interrupt("pause-1")).toBe("sent");
+    await until("the session to pause", () => run.paused() > 0, { timeoutMs: 10_000, everyMs: 50 });
+    expect(run.events.filter(one => one["type"] === "control_response")).toEqual([{ type: "control_response", response: { subtype: "success", request_id: "pause-1" } }]);
+    expect(run.events.filter(one => one["type"] === "result").map(one => one["is_error"])).toEqual([true]);
+    expect(run.live.resume("resume-1")).toBe("sent");
+    const code = await Promise.race([run.exited, new Promise<string>(resolve => setTimeout(() => resolve("hung"), 20_000))]);
+    expect(code).toBe(0);
+    expect(run.closed).toEqual(["finished"]);
+    expect(run.events.filter(one => one["type"] === "result").map(one => one["is_error"])).toEqual([true, false]);
+    expect(readFileSync(join(work, "src/math.js"), "utf8")).toContain("divide");
+    expect(provider.journal().map(one => [one.role, one.ok, one.resume === null])).toEqual([["builder", false, true], ["builder", true, false]]);
   });
 
   test("a declared MCP tool call reaches the server the run was given with --mcp-config", () => {

@@ -19,6 +19,7 @@ import { shownVerdictOf } from './proof.js';
 import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
 import { MARKER } from './worktree.js';
 import { withFollowUps } from './result-follow-ups.js';
+import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
 
@@ -47,7 +48,7 @@ export type WorkIndexItem = {
   /** The row's chip under its group: the specific ask (needs-you.ts askChipOf), or none. */
   chip: AskChip | null;
   primaryAction: WorkAction | null;
-  completion: { actor: string; at: string; digest: string } | null;
+  completion: { actor: string; at: string; digest: string; landed?: string } | null;
   evidence: 'recorded';
   /** The viewer's own lead took it on (lead-voice.ts): "<name> is on it.", by the name they gave it, read now. */
   lead?: string;
@@ -71,6 +72,9 @@ type Row = Record<string, unknown>;
 const n = (row: Row, key: string) => Number(row[key] ?? 0);
 const s = (row: Row, key: string) => row[key] == null ? null : String(row[key]);
 
+/** The running agent's oldest open question (agent-board.ts), from its open newest attempt only. */
+const AGENT_ASK = `(SELECT q.id FROM agent_question q JOIN run qr ON qr.id=q.run WHERE q.task_ref=a.ref_id AND q.closed_at IS NULL
+      AND qr.outcome IS NULL AND qr.attempt_key=q.attempt_key ORDER BY q.id LIMIT 1)`;
 /** Keep the lineage predicates identical to Store.taskFamilyProjection: an
  * admitted child needs its parent's exact revision brief, in the same repo.
  * All subsequent reads are scalar/indexed metadata, never artifact bytes.
@@ -133,7 +137,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT id FROM run WHERE task_ref=a.ref_id AND outcome IS NULL ORDER BY id DESC LIMIT 1) unfinished,
     CASE WHEN a.state='done' THEN (SELECT id FROM run WHERE task_ref=a.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1) END result_id,
     (SELECT h.id FROM hold h WHERE h.task_ref=a.ref_id AND (h.until IS NULL OR h.until>$now) ORDER BY h.held_at,h.id LIMIT 1) hold_id,
-    q.decision_id,(cu.task_ref IS NOT NULL OR a.ref_id IN (SELECT value FROM json_each($workspaceCustody)))
+    q.decision_id,${AGENT_ASK} agent_ask,(cu.task_ref IS NOT NULL OR a.ref_id IN (SELECT value FROM json_each($workspaceCustody)))
       AND a.ref_id NOT IN (SELECT value FROM json_each($settledCustody)) custody_unresolved
   FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id
   LEFT JOIN questions q ON q.task_ref=a.ref_id LEFT JOIN custody cu ON cu.task_ref=a.ref_id
@@ -231,7 +235,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     AND a.action='assignment handoff checked' AND a.source='work' AND a.repo IS f.repo
     AND length(a.outcome)=64 AND a.outcome NOT GLOB '*[^a-f0-9]*'
     AND a.at>=f.family_updated AND a.at>=f.finished_at AND a.at>=f.approved_at AND a.at>=f.proposed_at
-    AND (a.actor GLOB 'operator:?*' OR a.actor GLOB 'coordinator:?*' OR a.actor GLOB 'lead:?*')
+    AND (a.actor GLOB 'operator:?*' OR a.actor GLOB 'coordinator:?*' OR a.actor GLOB 'lead:?*' OR a.actor='${LANDED_ACTOR}')
     AND (cm.changed_id IS NULL OR a.id>=cm.changed_id) AND (cm.artifact_at IS NULL OR a.at>=cm.artifact_at)
     AND NOT EXISTS(SELECT 1 FROM proof_verdict p WHERE p.run=f.result_id AND p.decided_at>a.at)
     AND NOT EXISTS(SELECT 1 FROM proof_acceptance p WHERE p.run=f.result_id AND p.accepted_at>a.at)
@@ -248,7 +252,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN state='done' THEN 'result-needs-attention'
     WHEN custody_unresolved AND live_lease IS NULL THEN 'process-needs-attention'
     WHEN state='failed' THEN 'failed'
-    WHEN live_lease IS NOT NULL THEN CASE WHEN question_id IS NOT NULL THEN 'waiting-decision' ELSE 'running' END
+    WHEN live_lease IS NOT NULL THEN CASE WHEN question_id IS NOT NULL OR agent_ask IS NOT NULL THEN 'waiting-decision' ELSE 'running' END
     WHEN state='running' OR unfinished IS NOT NULL THEN 'vanished-run'
     WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_desktop_update_*') THEN 'updating'
     WHEN hold_kind='backoff' THEN 'retry-scheduled'
@@ -284,7 +288,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       WHEN ${CUSTODY_WAITS} OR code IN ('updating','retry-scheduled','waiting-dependency','worker-at-capacity','planning-ready','scouting-ready','queued') THEN 2 ELSE 0 END rank,
     ${ASK_RANK} ask_rank,
     CASE WHEN code='complete' THEN completed.at ELSE family_updated END sort_at,
-    completed.actor checked_actor,completed.at checked_at,completed.outcome checked_digest
+    completed.actor checked_actor,completed.at checked_at,completed.outcome checked_digest,completed.detail checked_detail
   FROM claimed c LEFT JOIN action_ledger completed ON completed.id=c.checked_id WHERE ($state IS NULL OR c.state=$state) AND ($leadId IS NULL OR EXISTS(SELECT 1 FROM team_task_owner own WHERE own.task_ref=c.root_ref AND own.lead=$leadId))
 )`;
 
@@ -318,9 +322,13 @@ function registerValidators(store: Store): string {
   const available = new Set(db.prepare(`SELECT name FROM sqlite_master WHERE type='index'
     AND name IN ('work_open_decision','work_spawned_run','work_unsettled_custody','work_result')`)
     .all().map(row => String(row['name'])));
-  const projection = available.size === 4 ? PROJECTION : PROJECTION.replace(
+  const indexed = available.size === 4 ? PROJECTION : PROJECTION.replace(
     / INDEXED BY (work_open_decision|work_spawned_run|work_unsettled_custody|work_result)\b/g,
     (hint, name: string) => available.has(name) ? hint : '');
+  // A same-schema reader whose file has not taken the Agents board's tables yet reads no agent questions.
+  const asks = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type='table' AND name='agent_question'").get() !== undefined;
+  const projection = asks ? indexed : indexed.replace(AGENT_ASK, 'NULL')
+    .replace(`'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),`, '');
   registered.set(db, projection);
   return projection;
 }
@@ -435,10 +443,11 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
       AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
-    'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'question_id',question_id,
+    'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
     'dependency_id',dependency_id,'dependency_state',dependency_state,'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,300),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
-    'question_run',(SELECT run FROM decision WHERE id=page.question_id),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
+    'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
+    'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
     .all({ ...parameters(now, access, options, custody), $taskId: taskId, $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
@@ -546,7 +555,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     complete: ['Complete', 'Completion is recorded for this result. Open it to inspect the saved evidence.', 'open-result', 'Open result'],
     cancelled: ['Cancelled', 'This assignment was cancelled.', 'inspect-task', 'View assignment'],
     running: ['Running now', '', null, ''],
-    'waiting-decision': ['Needs your decision', 'An unanswered question is waiting.', n(row, 'question_id') ? 'answer-decision' : 'inspect-decisions', 'Answer question'],
+    'waiting-decision': ['Needs your decision', 'An unanswered question is waiting.', n(row, 'question_id') ? 'answer-decision' : n(row, 'agent_ask') ? 'answer-agent' : 'inspect-decisions', 'Answer question'],
     'decision-queue': ['Needs your decision', 'The decision queue is full.', 'inspect-decisions', 'Review open questions'],
     // Its own reason replaces this below (resultHoldUpSentence).
     'result-needs-attention': ['Needs your decision', '', 'inspect-run', 'Inspect run'],
@@ -603,11 +612,11 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const read = actionCode !== null && ['inspect-task', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
   const primaryAction: WorkAction | null = actionCode === null ? null : { code: actionCode, label: actionLabel,
     target: { taskId: successor ?? (code === 'earlier-active' ? s(row, 'earlier_id') ?? id : actionCode === 'answer-decision' ? s(row, 'question_task') ?? id : id),
-      runId: actionCode === 'answer-decision' ? n(row, 'question_run') || null : actionCode === 'inspect-run' && code === 'running' ? n(row, 'live_run') || null : actionCode === 'open-result' || actionCode === 'inspect-run' ? n(row, 'result_id') || null
+      runId: actionCode === 'answer-decision' ? n(row, 'question_run') || null : actionCode === 'answer-agent' ? n(row, 'agent_ask_run') || null : actionCode === 'inspect-run' && code === 'running' ? n(row, 'live_run') || null : actionCode === 'open-result' || actionCode === 'inspect-run' ? n(row, 'result_id') || null
         : actionCode === 'reconcile-run' ? n(row, 'unfinished') || null : ['resume-run', 'inspect-stop'].includes(actionCode) ? n(row, 'stop_run') || null
         : actionCode === 'confirm-stopped' ? process?.build ?? (n(row, 'result_id') || null) : null,
       decisionId: actionCode === 'answer-decision' ? n(row, 'question_id') || null : null },
-    access: read ? 'read' : principal === 'operator' ? 'operator-control' : ['answer-decision', 'write-scope', 'unhold'].includes(actionCode) ? 'proposal-only' : 'operator-handoff',
+    access: read ? 'read' : principal === 'operator' ? 'operator-control' : ['answer-decision', 'answer-agent', 'write-scope', 'unhold'].includes(actionCode) ? 'proposal-only' : 'operator-handoff',
     retry: actionCode === 'reconcile-run' ? 'reconcile-before-retry' : read ? 'read-again' : 'refresh-before-acting' };
   // The one shared status: the headline and sentence every surface uses.
   const coded = stageOfCode(code, { needsPerson: personNeed, planning: s(row, 'live_role') === 'planner', operatorHold: s(row, 'hold_kind') === 'operator' });
@@ -620,17 +629,26 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' || verdict === 'verified' ? 'passed' as const : null;
   const listedChecks = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
   const ready = reading.stage === 'finished' && readiness !== undefined ? readiness(row, listedChecks) : null;
+  // Toolroll marked it complete because its work landed: the reason, said once.
+  const landed = code === 'complete' ? landedReasonOf(s(row, 'checked_actor'), s(row, 'checked_detail')) : null;
   const shared = taskStatusOf({ stage: reading.stage, ...(reading.need === undefined ? {} : { need: reading.need }), ...(reading.wait === undefined ? {} : { wait: reading.wait }),
     ...(process === null ? {} : { needContext: { build: process.build } }),
     reason: finished ? null : plainReasonOf(reading.stage, code, detail || null), report: s(row, 'result_role') === 'scout',
     checks: ready?.checks ?? listedChecks,
     ...(ready === null ? {} : { requirements: ready.requirements ?? null, ...(ready.accepted ? { accepted: true } : {}), ...(ready.blockers === undefined ? {} : { blockers: ready.blockers }) }),
-    completedBy: code !== 'complete' ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),
+    completedBy: code !== 'complete' || landed !== null ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),
+    ...(landed === null ? {} : { landed }),
     ...(lead === null ? {} : { lead, ...(leadName === undefined ? {} : { leadName }) }) });
   label = shared.headline;
   detail = shared.sentence;
   // Every Needs you action wears its need's own words.
   if (shared.need != null && shared.need.key !== 'other' && shared.need.key !== 'review-result' && primaryAction !== null) { actionLabel = shared.need.action.label; primaryAction.label = actionLabel; }
+  // A running agent's own question (agent-board.ts): its words, and Reply on the Agents board.
+  if (actionCode === 'answer-agent' && primaryAction !== null) {
+    actionLabel = 'Reply'; primaryAction.label = actionLabel;
+    const asked = s(row, 'agent_ask_text');
+    if (asked !== null) detail = `The agent asks: ${asked}`;
+  }
   const views: WorkView[] = ['all'];
   if (need) views.push('needs-you');
   if (running) views.push('running');
@@ -644,6 +662,6 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
       action: primaryAction === null ? null : { label: actionLabel, kind: actionCode === 'open-result' ? 'open-result' : 'open-task' }, views, rank: n(row, 'rank') },
     ask: need ? ASKS[n(row, 'ask_rank')] ?? 'unblock' : null,
     chip: need ? askChipOf({ headline: shared.headline, need: shared.need?.key ?? null, planChanged, mismatch: verdict === 'refuted' && n(row, 'proof_failed_check') !== 1, ask: ASKS[n(row, 'ask_rank')] ?? 'unblock' }) : null,
-    primaryAction, completion: code === 'complete' ? { actor: String(row['checked_actor']), at: String(row['checked_at']), digest: String(row['checked_digest']) } : null,
+    primaryAction, completion: code === 'complete' ? { actor: String(row['checked_actor']), at: String(row['checked_at']), digest: String(row['checked_digest']), ...(landed === null ? {} : { landed }) } : null,
     evidence: 'recorded', ...(lead === 'on-it' ? { lead: leadOnIt(leadName) } : {}) };
 }

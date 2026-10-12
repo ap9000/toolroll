@@ -52,6 +52,7 @@ import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
+import { watchedPing } from "./agent-board.js";
 export const chatObject = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -1022,6 +1023,14 @@ export async function planChatNotifications(
     for (const notification of store.notificationsWantedBefore(binding.created, cursor)) offerNotice(options, notification, binding, registry);
     state.setMeta(identity.installation, owed, "offered", nowOf(options));
   }
+  // A ping held while its person watched the run (agent-board.ts watchedPing) is offered again once the watch lapses.
+  for (const held of state.metaStartingWith(identity.installation, WATCH_HELD)) {
+    if (held.value > nowOf(options).toISOString()) continue;
+    state.deleteMeta(identity.installation, held.key);
+    const [bindingId, notificationId] = held.key.slice(WATCH_HELD.length).split(":").map(Number);
+    const binding = bindings.find(one => one.id === bindingId), notification = store.notificationById(notificationId ?? 0);
+    if (binding !== undefined && notification !== null) offerNotice(options, notification, binding, registry);
+  }
   // Every paired person is a destination of their own, under their own ceiling.
   for (const notification of store.notificationsAfter(cursor, 100)) {
     for (const binding of bindings) offerNotice(options, notification, binding, registry);
@@ -1030,6 +1039,9 @@ export async function planChatNotifications(
       .run(notification.id, identity.installation);
   }
 }
+
+/** A held ping's small fact: `watch-held:<binding>:<notification>` → when the watch lapses. */
+const WATCH_HELD = "watch-held:";
 
 /** One notification for one paired person: planned as their parts, or nothing. Never twice: each plan's event id is
  * the notification's for this binding. */
@@ -1055,6 +1067,14 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
           ? notification.recipient === binding.approver && (notification.project === null || repos.includes(notification.project))
           : (notification.taskId || notification.kind === "flow-decision") && notification.project !== null && repos.includes(notification.project))
       ) {
+        // Watching the run on the Agents board holds this ping (re-offered above once the watch lapses); a finished
+        // run they have since opened needs no ping at all.
+        const watched = watchedPing(store, notification, binding.approver, nowOf(options));
+        if (watched === "skip") return;
+        if (watched !== "send") {
+          state.setMeta(identity.installation, `${WATCH_HELD}${binding.id}:${notification.id}`, watched.hold, nowOf(options));
+          return;
+        }
         const run = store.telegramProgressRun(notification);
         const id = chatHash(
             `${options.state.provider}:notice:${binding.id}:${notification.id}`,

@@ -136,7 +136,11 @@ export const LEAD_TOOL_INPUTS = {
   propose_reserve: z.strictObject({ task: taskRef, worker: text("workerName").nullable() }),
   propose_hold: z.strictObject({ task: taskRef, reason: text("proposalReason") }),
   propose_unhold: z.strictObject({ task: taskRef }),
-  propose_steer: z.strictObject({ task: taskRef, note }),
+  // mode: a note (the default), Pause (stop a running Claude build's turn, keep the build), Pause and steer, or Resume
+  // (a paused build goes on where it stopped, without a note).
+  // question: a running agent's open question (Agents board); the note is its reply, sent as an ordinary note.
+  propose_steer: z.strictObject({ task: taskRef, note: note.optional(), mode: z.enum(["note", "pause", "pause-and-steer", "resume"]).optional(),
+    question: z.number().int().positive().optional().describe("A running agent's open question (get_task agentQuestions): the note becomes its reply and closes it.") }),
   propose_dependency_repair: z.strictObject({ task: taskRef, blocker: taskRef, operation: z.enum(["retry", "unlink", "replace"]), replacement: taskRef.optional() }),
   propose_scope: z.strictObject({ task: taskRef, goal: scopeText, not: scopeText.nullable().optional(), touches: touches.optional(), acceptance }),
   propose_agents: z.strictObject({

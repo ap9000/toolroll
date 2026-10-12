@@ -185,9 +185,12 @@ export function renderTranscriptLines(event: Record<string, unknown>): string[] 
   return lines;
 }
 
-/** Sanitize one display line: strip, redact whole on any secret hit, cap. */
+/** Bidirectional overrides and isolates (U+202A–U+202E, U+2066–U+2069): they can make shown text read differently from what was written. */
+const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g;
+
+/** Sanitize one display line: strip controls and bidi overrides, redact whole on any secret hit, cap. */
 export function sanitizeTranscriptLine(line: string): string {
-  const stripped = stripControls(line);
+  const stripped = stripControls(line).replace(BIDI_CONTROLS, "");
   if (scanForSecrets(stripped).length > 0) return LIVE_REDACTED_LINE;
   return capBytes(stripped, LIVE_LINE_CAP);
 }
