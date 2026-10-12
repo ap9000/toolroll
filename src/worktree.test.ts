@@ -1,13 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
-import { saveWorkPatch, WorktreePool, worktreePath, type Runner } from "./worktree.js";
+import { MARKER, saveWorkPatch, WorktreePool, worktreePath, type Runner } from "./worktree.js";
+import { HANDOFF_PREFIX, MAILBOX_SUFFIX } from "./evidence.js";
 import { run } from "./exec.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -831,5 +832,173 @@ describe("the pool, against real git", () => {
     expect(existsSync(made.worktree.path)).toBe(false);
     expect(existsSync(`${made.worktree.path}.occupancy`)).toBe(false);
     expect(await pool.lease({ repo, branch, reuseBranch: true, runner: "builder-1", now: later(1_000) })).toMatchObject({ ok: true });
+  });
+
+  test("a checkout edited after its clean check is never removed: not before the final check, nor between it and git's removal", async () => {
+    let edit: ((path: string) => void) | null = null;
+    const editing: typeof run = async (file, args, options) => {
+      if (edit !== null && args[0] === "worktree" && args[1] === "remove") { edit(String(args.at(-1))); edit = null; }
+      return run(file, args, options);
+    };
+    const pool = new WorktreePool(store, { root: join(base, "pool"), runner: editing });
+    const made = await pool.lease({ repo, branch: "toolroll/late-edit", base: "main", runner: "builder-1", now: T0 });
+    if (!made.ok) throw new Error(made.message);
+    const path = made.worktree.path;
+    expect((await pool.release(path, T0)).ok).toBe(true);
+
+    // Untracked work dropped in after the first inspection, while the caller is asked again.
+    const first = await pool.prune(store.listWorktrees(), (_row, fresh) => { if (fresh) writeFileSync(join(path, "notes.md"), "mine\n"); return true; });
+    expect(first).toEqual({ removed: [], kept: [{ path, why: "has changes" }] });
+    expect(readFileSync(join(path, "notes.md"), "utf8")).toBe("mine\n");
+    rmSync(join(path, "notes.md"));
+
+    // A tracked edit after the final inspection, right before git removes it: git refuses, and it all stays.
+    edit = at => writeFileSync(join(at, "README.md"), "edited\n");
+    const second = await pool.prune(store.listWorktrees(), () => true);
+    expect(second).toEqual({ removed: [], kept: [{ path, why: "has changes" }] });
+    expect(readFileSync(join(path, "README.md"), "utf8")).toBe("edited\n");
+    expect(store.getWorktree(path)).not.toBeNull();
+
+    // Clean again, Toolroll's own leftovers (a handoff, the lease note) don't hold it.
+    writeFileSync(join(path, "README.md"), "hello\n");
+    writeFileSync(join(path, `${HANDOFF_PREFIX}0123456789abcdef${MAILBOX_SUFFIX}`), "{}\n");
+    writeFileSync(join(path, MARKER), `${process.pid} builder-1\n`);
+    expect((await pool.prune(store.listWorktrees(), () => true)).removed.map(row => row.path)).toEqual([path]);
+    expect(existsSync(path)).toBe(false);
+    expect(store.getWorktree(path)).toBeNull();
+  });
+});
+
+describe("fresh base: an untouched checkout starts from current main", () => {
+  let base: string;
+  let repo: string;
+  let store: Store;
+  let ref: number;
+  const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  const commitOnMain = (name: string) => { writeFileSync(join(repo, name), `${name}\n`); git(["add", name]); git(["commit", "-qm", name]); return git(["rev-parse", "main"]); };
+
+  beforeEach(() => {
+    base = realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-fresh-")));
+    repo = join(base, "repo");
+    mkdirSync(repo);
+    store = openStore(":memory:");
+    register(store, { name: "builder-1", host: "test", now: T0 });
+    store.createTask({ id: "t-fresh", title: "follow-up filed before the release merged" }, T0);
+    ref = store.refFor("built-in", "t-fresh").id;
+    git(["init", "-q", "-b", "main"]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "Test"]);
+    commitOnMain("README.md");
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  /** One finished attempt on the branch, so the branch has a recorded base, then the checkout handed back. */
+  const firstAttempt = async (pool: WorktreePool, branch: string) => {
+    const first = await pool.lease({ repo, branch, base: "main", runner: "builder-1", taskRef: ref, now: T0 });
+    if (!first.ok) throw new Error(first.message);
+    const run = store.startRun({ taskRef: ref, leaseId: "l-1", runner: "builder-1", branch, worktree: first.worktree.path, ...bareLegacy("build"), now: T0 });
+    store.stampRun(run, { baseRevision: git(["rev-parse", "HEAD"], first.worktree.path) });
+    store.finishRun(run, { outcome: "failed", reason: "unknown", now: T0 });
+    expect((await pool.release(first.worktree.path, later(1_000))).ok).toBe(true);
+    return first.worktree.path;
+  };
+
+  test("a branch with no commits of its own moves, with its checkout, to the newer main; the whole-task base follows it", async () => {
+    const pool = new WorktreePool(store, { root: join(base, "pool") });
+    const old = git(["rev-parse", "main"]);
+    const path = await firstAttempt(pool, "toolroll/t-fresh");
+    commitOnMain("release-0.9.61.md");
+    const main = commitOnMain("release-notes.md");
+
+    const again = await pool.lease({ repo, branch: "toolroll/t-fresh", runner: "builder-1", taskRef: ref, now: later(2_000),
+      freshBase: { main: "main", recordedBase: store.recordedBranchBase(ref, "toolroll/t-fresh") } });
+
+    expect(again).toMatchObject({ ok: true, base: { head: main, main, behind: 0, moved: { from: old, behind: 2 }, kept: null } });
+    expect(git(["rev-parse", "HEAD"], path)).toBe(main);
+    expect(git(["rev-parse", "refs/heads/toolroll/t-fresh"])).toBe(main);
+    expect(existsSync(join(path, "release-notes.md"))).toBe(true);
+    expect(store.latestBranchBaseMove(ref, "toolroll/t-fresh")).toMatchObject({ from: old, to: main });
+    // Until the next attempt records its base nothing older pins the branch; then that base is the whole-task origin.
+    expect(store.firstBuilderBase(ref, "toolroll/t-fresh")).toBeNull();
+    const next = store.startRun({ taskRef: ref, leaseId: "l-2", runner: "builder-1", branch: "toolroll/t-fresh", worktree: path, ...bareLegacy("build"), now: later(3_000) });
+    store.stampRun(next, { baseRevision: main });
+    expect(store.firstBuilderBase(ref, "toolroll/t-fresh")).toBe(main);
+    expect(store.recordedBranchBase(ref, "toolroll/t-fresh")).toBe(main);
+  });
+
+  test("a branch with its own commit is never moved, and says how far behind main it is", async () => {
+    const pool = new WorktreePool(store, { root: join(base, "pool") });
+    const path = await firstAttempt(pool, "toolroll/t-fresh");
+    writeFileSync(join(path, "work.ts"), "export const work = 1;\n");
+    git(["add", "work.ts"], path);
+    git(["commit", "-qm", "the task's own work"], path);
+    const head = git(["rev-parse", "HEAD"], path);
+    const main = commitOnMain("release-0.9.61.md");
+
+    const again = await pool.lease({ repo, branch: "toolroll/t-fresh", runner: "builder-1", taskRef: ref, now: later(2_000),
+      freshBase: { main: "main", recordedBase: store.recordedBranchBase(ref, "toolroll/t-fresh") } });
+
+    expect(again).toMatchObject({ ok: true, base: { head, main, behind: 1, moved: null, kept: "has commits" } });
+    expect(git(["rev-parse", "HEAD"], path)).toBe(head);
+    expect(git(["rev-parse", "refs/heads/toolroll/t-fresh"])).toBe(head);
+    expect(store.latestBranchBaseMove(ref, "toolroll/t-fresh")).toBeNull();
+  });
+
+  test("a commit main already has still counts as the task's own once a base was recorded", async () => {
+    const pool = new WorktreePool(store, { root: join(base, "pool") });
+    const path = await firstAttempt(pool, "toolroll/t-fresh");
+    writeFileSync(join(path, "work.ts"), "export const work = 1;\n");
+    git(["add", "work.ts"], path);
+    git(["commit", "-qm", "the task's own work"], path);
+    const head = git(["rev-parse", "HEAD"], path);
+    git(["merge", "-q", "--ff-only", "toolroll/t-fresh"]);
+    commitOnMain("release-0.9.61.md");
+
+    const again = await pool.lease({ repo, branch: "toolroll/t-fresh", runner: "builder-1", taskRef: ref, now: later(2_000),
+      freshBase: { main: "main", recordedBase: store.recordedBranchBase(ref, "toolroll/t-fresh") } });
+
+    expect(again).toMatchObject({ ok: true, base: { head, behind: 1, kept: "has commits" } });
+    expect(git(["rev-parse", "HEAD"], path)).toBe(head);
+  });
+
+  test("a checkout with changes is never moved and keeps every byte", async () => {
+    const pool = new WorktreePool(store, { root: join(base, "pool") });
+    const path = await firstAttempt(pool, "toolroll/t-fresh");
+    const head = git(["rev-parse", "HEAD"], path);
+    // A recovered draft: the task's own leftover the next attempt inherits in place.
+    writeFileSync(join(path, "README.md"), "README.md\nhalf an edit\n");
+    writeFileSync(join(path, "draft.ts"), "export const draft = 1;\n");
+    const main = commitOnMain("release-0.9.61.md");
+
+    // Without reclaim a dirty checkout already refuses the lease.
+    const held = await pool.lease({ repo, branch: "toolroll/t-fresh", runner: "builder-1", taskRef: ref, now: later(2_000),
+      freshBase: { main: "main", recordedBase: store.recordedBranchBase(ref, "toolroll/t-fresh") } });
+    expect(held).toMatchObject({ ok: false, reason: "dirty" });
+
+    // A recovered draft is kept in place under a fresh lease; the same check inside it never moves the tree.
+    const freshen = (pool as unknown as { freshen: (...args: unknown[]) => Promise<unknown> }).freshen.bind(pool);
+    const standing = await freshen(path, "toolroll/t-fresh", ref, { main: "main", recordedBase: head }, later(3_000));
+
+    expect(standing).toMatchObject({ ok: true, standing: { head, main, behind: 1, moved: null, kept: "has changes" } });
+    expect(git(["rev-parse", "HEAD"], path)).toBe(head);
+    expect(readFileSync(join(path, "README.md"), "utf8")).toBe("README.md\nhalf an edit\n");
+    expect(readFileSync(join(path, "draft.ts"), "utf8")).toBe("export const draft = 1;\n");
+    expect(store.latestBranchBaseMove(ref, "toolroll/t-fresh")).toBeNull();
+  });
+
+  test("a branch nothing recorded a base for moves only when main already has its HEAD", async () => {
+    const pool = new WorktreePool(store, { root: join(base, "pool") });
+    const first = await pool.lease({ repo, branch: "toolroll-plan/t-fresh", base: "main", runner: "builder-1", taskRef: ref, now: T0 });
+    if (!first.ok) throw new Error(first.message);
+    expect((await pool.release(first.worktree.path, later(1_000))).ok).toBe(true);
+    const main = commitOnMain("release-0.9.61.md");
+
+    const again = await pool.lease({ repo, branch: "toolroll-plan/t-fresh", runner: "builder-1", taskRef: ref, now: later(2_000), freshBase: { main: "main", recordedBase: null } });
+
+    expect(again).toMatchObject({ ok: true, base: { head: main, behind: 0, moved: { behind: 1 } } });
   });
 });

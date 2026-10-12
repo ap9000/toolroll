@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { journeyEnv } from "../scripts/release-check.mjs";
 import { runGroups } from "../scripts/e2e-parallel.mjs";
 import { catalogueProblems, GiveUp, groupAlive, processesIn, REAL_MODEL, SCRIPTED, selectJourneys, spawnOwned, stopGroups, until, waitFor } from "../scripts/e2e-kit.mjs";
 import { countingProvider, readJournal, scriptedProvider, turnsOf } from "../scripts/fixtures/scripted-provider.mjs";
@@ -19,6 +20,32 @@ describe("a real-turn wait that runs out", () => {
     const waited = until("the lead's reply to “Add Leo”", async () => { asked++; return false; }, { timeoutMs: 600, everyMs: 100, seen: () => "0 new messages" });
     await expect(waited).rejects.toThrow("Timed out after 1 s waiting for the lead's reply to “Add Leo” — saw: 0 new messages");
     expect(asked).toBeGreaterThan(1);
+  });
+
+  test("scripted release waits use the configured deadline and time out as failures", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS", "90");
+    try {
+      const waited = until("the scripted build", async () => false, { timeoutMs: 600_000, everyMs: 1000 });
+      const failure = expect(waited).rejects.toThrow("Timed out after 90 s waiting for the scripted build");
+      await vi.advanceTimersByTimeAsync(91_000);
+      await failure;
+    } finally { vi.unstubAllEnvs(); vi.useRealTimers(); }
+  });
+
+  test("an uncapped wait keeps its own deadline under the release cap: a schedule's firing can't be hurried", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS", "90");
+    try {
+      let settled = false;
+      const waited = until("the scheduled card", async () => false, { timeoutMs: 150_000, everyMs: 1000, capped: false });
+      waited.then(() => { settled = true; }, () => { settled = true; });
+      const failure = expect(waited).rejects.toThrow("Timed out after 150 s waiting for the scheduled card");
+      await vi.advanceTimersByTimeAsync(91_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await failure;
+    } finally { vi.unstubAllEnvs(); vi.useRealTimers(); }
   });
 
   test("a locator's wait names the wait and its seconds, not only the selector", async () => {
@@ -122,6 +149,17 @@ describe("e2e-parallel.mjs's runGroups", () => {
     expect(at.most()).toBe(2);
   });
 
+  test("fail-fast cancellation never starts queued groups or retries", async () => {
+    const at = harness(), abort = new AbortController();
+    const done = runGroups({ groups: ["a", "b", "c"], limit: 1, run: at.run, retry: false, signal: abort.signal });
+    await settle();
+    abort.abort(); at.end("a", 1);
+    const results = await done;
+    expect(at.started).toEqual(["a"]);
+    expect(results.map(one => one.one.code)).toEqual([1, 130, 130]);
+    expect(results.every(one => one.again === null)).toBe(true);
+  });
+
   test("a failed group runs again as <group>-retry when its first run ends, taking a lane in turn, handed the first result", async () => {
     const at = harness();
     const done = runGroups({ groups: ["a", "b", "c"], limit: 2, run: at.run });
@@ -181,7 +219,7 @@ describe("e2e-parallel.mjs", () => {
     return { script, env: { ...process.env, NODE_OPTIONS: "", STAND_IN_DIR: dir, STAND_IN_BIN: resolve("dist/bin.js"), TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } };
   };
   const runsIn = (at: string) => !existsSync(join(at, "runs.jsonl")) ? [] : readFileSync(join(at, "runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Run);
-  const runParallel = (env: Record<string, string> = {}, extra: string[] = []) => {
+  const runParallel = (env: Record<string, string | undefined> = {}, extra: string[] = []) => {
     const { script, env: base } = prepare();
     let stdout: string, code = 0;
     try {
@@ -193,8 +231,16 @@ describe("e2e-parallel.mjs", () => {
     return { stdout, code, runs: runsIn(dir!) };
   };
 
-  test("retries only a failed journey, with what it needs and what it held up, and names it flaky when it then passes", () => {
-    const { stdout, code, runs } = runParallel();
+  test("release fail-fast makes the first failed group fatal and does not run queued groups or retries", () => {
+    const { code, stdout, runs } = runParallel(journeyEnv("scripted", null, {}), ["--journeys", "scripted", "--at-once", "1"]);
+    expect(code).toBe(1);
+    expect(runs.map(one => one.group)).toEqual(["alpha"]);
+    expect(stdout).not.toContain("Retrying");
+    expect(stdout).toContain("0 of 3 groups passed");
+  });
+
+  test("real-model release journeys retry only failures and their dependencies, and name recovered failures flaky", () => {
+    const { stdout, code, runs } = runParallel(journeyEnv("real", { dir: "" }), ["--journeys", "real"]);
     expect(code).toBe(0);
     const alpha = runs.filter(one => one.group === "alpha");
     expect(alpha).toHaveLength(2);

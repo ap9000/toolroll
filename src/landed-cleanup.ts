@@ -4,9 +4,15 @@
  * local build and plan branches go.
  *
  * Landed means, for the exact current result: its pull request merged for that commit, its commit is reachable from
- * the local main, or every path it changed since it left main has the same committed entry in main (both sides of a
- * rename; a file it deleted is deleted there too). Anything missing or ambiguous, and every git error, is "not
- * proven", and nothing happens. Remotes are never fetched or changed, and tags are never touched.
+ * main, or every path it changed since it left main has the same committed entry in main (both sides of a rename; a
+ * file it deleted is deleted there too). Anything missing or ambiguous, and every git error, is "not proven", and
+ * nothing happens. Remotes are never changed, and tags are never touched.
+ *
+ * Which main: a build shares the project's .git, so it can move the local main or repoint origin. Marking a task
+ * complete therefore trusts only what Toolroll recorded (the merged pull request) or the main of the remote the
+ * owner's project add recorded, fetched by this process into a private directory (remote-main.ts); the pre-teardown
+ * re-check of a teardown that completed its task uses the same proof. A task a person already completed is torn
+ * down on the local main's word, as before: nothing is completed by it.
  *
  * Teardown is crash-safe: the completion and the teardown intent (each checkout and branch, with the commit it must
  * still be at) are written in one transaction before anything is removed. Each removal is checked again right before
@@ -14,7 +20,8 @@
  * a resource already gone finishes its item.
  *
  * Never removed: a checkout with changes (untracked files count), one in use, or one whose HEAD moved past the landed
- * work; a branch that moved, is checked out anywhere, or that an unfinished task uses.
+ * work; a branch Toolroll didn't create (its reflog's first entry says so), a scout's, or one that moved, is checked
+ * out anywhere, or that an unfinished task uses.
  */
 import { existsSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
@@ -23,9 +30,10 @@ import { noteAssignmentStatus } from "./assignment-status.js";
 import { checkoutKeepWhy, taskStatuses, whyWords, type KeepWhy } from "./checkout-cleanup.js";
 import { run, type ExecResult } from "./exec.js";
 import { taskBranches } from "./names.js";
+import type { RemoteMainRead, RemoteMains } from "./remote-main.js";
 import { COMPLETION_ACTION, LANDED_ACTOR, familyChangedFiles } from "./result-completion.js";
 import type { Store, WorktreeRow } from "./store.js";
-import { WORKTREE_TIMEOUT_MS, type Runner, type WorktreePool } from "./worktree.js";
+import { SCOUT_PREFIX, WORKTREE_TIMEOUT_MS, branchCreatedMessage, type Runner, type WorktreePool } from "./worktree.js";
 
 const DAY_MS = 86_400_000;
 /** `storage clean --landed` takes only what has waited at least this long. */
@@ -46,7 +54,8 @@ export function gitOf(runner: Runner = run): Git {
 }
 
 export type LandedHow = "merged" | "in-main" | "content-in-main";
-export type LandedProof = { landed: true; how: LandedHow; reason: string } | { landed: false; why: string };
+/** `trusted`: it may complete a task automatically (a recorded merge, or the recorded remote's main). */
+export type LandedProof = { landed: true; how: LandedHow; reason: string; trusted: boolean } | { landed: false; why: string };
 /** What Toolroll last saw of the result's pull request. */
 export type PullRequestFact = { merged: boolean; headSha: string | null; number: number | null };
 
@@ -82,23 +91,11 @@ async function treeOf(git: Git, repo: string, commit: string): Promise<Map<strin
   return entries;
 }
 
-/**
- * Whether this commit's work landed, read from what Toolroll recorded and the local repository only. Fails closed:
- * every doubt is "not proven", with the reason in a few words.
- */
-export async function landedProof(git: Git, repo: string, head: string | null, pullRequest: PullRequestFact | null = null): Promise<LandedProof> {
-  if (head === null || !SHA.test(head)) return notProven("it has no saved commit");
-  if (pullRequest !== null && pullRequest.merged && pullRequest.headSha === head) {
-    return { landed: true, how: "merged", reason: pullRequest.number === null ? "its pull request merged" : `pull request #${pullRequest.number} merged` };
-  }
-  const main = await commitOf(git, repo, MAIN);
-  if (main === "error") return notProven("git couldn't read main");
-  if (main === null) return notProven("the project has no local main branch");
-  const exists = await git(repo, ["cat-file", "-e", `${head}^{commit}`]);
-  if (exists.code !== 0) return notProven("its commit isn't in the repository");
+/** Whether `head`'s work is in `main`, both read where `git` runs. */
+async function workIn(git: Git, repo: string, head: string, main: string, trusted: boolean): Promise<LandedProof> {
   const reachable = await within(git, repo, head, main);
   if (reachable === null) return notProven("git couldn't compare it with main");
-  if (reachable) return { landed: true, how: "in-main", reason: "its commits are in main" };
+  if (reachable) return { landed: true, how: "in-main", reason: "its commits are in main", trusted };
   const forked = await git(repo, ["merge-base", head, main]);
   const base = forked.stdout.trim();
   if (forked.code !== 0 || !SHA.test(base)) return notProven(forked.code === 1 ? "it shares no history with main" : "git couldn't compare it with main");
@@ -111,7 +108,44 @@ export async function landedProof(git: Git, repo: string, head: string | null, p
   if (ours === null || theirs === null) return notProven("git couldn't read its files");
   const differs = paths.find(path => ours.get(path) !== theirs.get(path));
   if (differs !== undefined) return notProven("its changes aren't all in main");
-  return { landed: true, how: "content-in-main", reason: "its changes are already in main" };
+  return { landed: true, how: "content-in-main", reason: "its changes are already in main", trusted };
+}
+
+const mergedProof = (head: string, pullRequest: PullRequestFact | null): LandedProof | null =>
+  pullRequest !== null && pullRequest.merged && pullRequest.headSha === head
+    ? { landed: true, how: "merged", reason: pullRequest.number === null ? "its pull request merged" : `pull request #${pullRequest.number} merged`, trusted: true }
+    : null;
+
+/**
+ * Whether this commit's work landed, read from what Toolroll recorded and the local repository. Fails closed: every
+ * doubt is "not proven", with the reason in a few words. Only a recorded merge is trusted to complete a task: a build
+ * can write the local main.
+ */
+export async function landedProof(git: Git, repo: string, head: string | null, pullRequest: PullRequestFact | null = null): Promise<LandedProof> {
+  if (head === null || !SHA.test(head)) return notProven("it has no saved commit");
+  const merged = mergedProof(head, pullRequest);
+  if (merged !== null) return merged;
+  const main = await commitOf(git, repo, MAIN);
+  if (main === "error") return notProven("git couldn't read main");
+  if (main === null) return notProven("the project has no local main branch");
+  const exists = await git(repo, ["cat-file", "-e", `${head}^{commit}`]);
+  if (exists.code !== 0) return notProven("its commit isn't in the repository");
+  return workIn(git, repo, head, main, false);
+}
+
+/**
+ * The proof automatic completion trusts: a recorded merge of this exact commit, or its work in the main of the
+ * project's recorded remote, compared only in the private directory that main was fetched into. `remote` is read only
+ * when no recorded merge settles it.
+ */
+export async function remoteLandedProof(remote: () => Promise<RemoteMainRead>, repo: string, head: string | null, pullRequest: PullRequestFact | null = null): Promise<LandedProof> {
+  if (head === null || !SHA.test(head)) return notProven("it has no saved commit");
+  const merged = mergedProof(head, pullRequest);
+  if (merged !== null) return merged;
+  const read = await remote();
+  if (!read.ok) return notProven(read.why);
+  if (!await read.remote.bring(repo, head)) return notProven("its commit couldn't be compared with the remote main");
+  return workIn((_cwd, args) => read.remote.git(args), "", head, read.remote.main, true);
 }
 
 // ---- finding landed results ------------------------------------------------
@@ -123,21 +157,36 @@ export type LandedCandidate = {
   /** False when it is already complete: only its teardown is left. */
   completes: boolean;
   how: LandedHow; reason: string;
+  /** Proven by a recorded merge or the recorded remote's main: only then may it complete. */
+  trusted: boolean;
   targets: LandedTarget[];
   keeps: LandedKeep[];
 };
 
-/** Every local branch: name → commit and when it was last committed to (unix seconds). */
-async function localBranches(git: Git, repo: string): Promise<Map<string, { oid: string; at: number }> | null> {
-  const listed = await git(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(committerdate:unix)", "refs/heads/"]);
+/** Every local branch: name → commit. */
+async function localBranches(git: Git, repo: string): Promise<Map<string, { oid: string }> | null> {
+  const listed = await git(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads/"]);
   if (listed.code !== 0) return null;
-  const out = new Map<string, { oid: string; at: number }>();
+  const out = new Map<string, { oid: string }>();
   for (const line of listed.stdout.split("\n")) {
-    const [ref, oid, at] = line.split("\0");
+    const [ref, oid] = line.split("\0");
     if (ref === undefined || oid === undefined || !ref.startsWith("refs/heads/") || !SHA.test(oid)) continue;
-    out.set(ref.slice("refs/heads/".length), { oid, at: Number(at) || 0 });
+    out.set(ref.slice("refs/heads/".length), { oid });
   }
   return out;
+}
+
+/**
+ * When Toolroll created a branch (ms), read from its reflog's first entry, which Toolroll writes naming the branch
+ * (worktree.ts). Its last commit's date says nothing about that. A scout's branch, and a branch whose first entry is
+ * anything else (made by hand, copied, renamed, or its reflog expired), is not Toolroll's to remove: why, instead.
+ */
+async function branchBirth(git: Git, repo: string, name: string): Promise<{ at: number } | { why: string }> {
+  if (name.startsWith(SCOUT_PREFIX)) return { why: "it is a scout's branch" };
+  const log = await git(repo, ["reflog", "show", "--date=unix", "--format=%gd%x00%gs", `refs/heads/${name}`, "--"]);
+  const [selector = "", message] = (log.stdout.trimEnd().split("\n").at(-1) ?? "").split("\0");
+  const at = /@\{(\d+)\}$/.exec(selector);
+  return log.code === 0 && at !== null && message === branchCreatedMessage(name) ? { at: Number(at[1]) * 1000 } : { why: "Toolroll has no record of creating it" };
 }
 
 /** A path as the file system names it (git reports /private/var for /var on macOS). */
@@ -211,6 +260,9 @@ function completionProblem(store: Store, assignment: AssignmentSnapshot, root: s
   return store.protectedResultProblem(receipt.taskId, familyChangedFiles(store, receipt.taskId, receipt.runId, root), null);
 }
 
+/** Why a result proven only by the local main stays for a person: a build can write that main. */
+const UNTRUSTED = "its work isn't in the project's recorded remote main";
+
 /** Results Reconcile found not landed, by what they were read against: read again only once something changed. */
 const notLanded = new Map<string, string>();
 
@@ -219,13 +271,16 @@ const notLanded = new Map<string, string>();
  * `limit` caps how many results are read against git (reconcile's bound; results read before and unchanged since
  * don't count); `before` takes only results finished before it (the one-time pass's seven days).
  */
-export async function landedResults(store: Store, git: Git, repo: string, root: string, now: Date,
+export async function landedResults(store: Store, git: Git, remotes: RemoteMains, repo: string, root: string, now: Date,
   options: { limit?: number; before?: string; memo?: boolean } = {}): Promise<{ found: LandedCandidate[]; kept: LandedKeep[] }> {
   const found: LandedCandidate[] = [], kept: LandedKeep[] = [];
   if (!existsSync(repo)) return { found, kept };
   const [branches, inUse, main] = await Promise.all([localBranches(git, repo), checkedOut(git, repo), commitOf(git, repo, MAIN)]);
   if (branches === null || inUse === null) return { found, kept: [{ repo, what: repo, why: "git couldn't read the project" }] };
   const worktrees = store.listWorktrees().filter(row => row.repo === repo);
+  // The recorded remote's main, fetched once for this look and only when a result needs it.
+  let remoteRead: Promise<RemoteMainRead> | null = null;
+  const remote = () => remoteRead ??= remotes.read(repo);
   let looked = 0;
   for (const row of settledResults(store, repo)) {
     if (options.before !== undefined && row.finishedAt >= options.before) { kept.push({ repo, what: row.id, why: `finished less than ${BACKLOG_DAYS} days ago` }); continue; }
@@ -239,12 +294,16 @@ export async function landedResults(store: Store, git: Git, repo: string, root: 
     // Complete and nothing left to remove: nothing to do.
     if (row.completed && present.length === 0 && checkouts.length === 0) continue;
     const pullRequest = pullRequestOf(store, row.run);
+    const merged = pullRequest?.merged === true && pullRequest.headSha === row.head;
+    // A result to complete is read against the recorded remote's main; one a person completed, the local main.
+    const read = row.completed || merged ? null : await remote();
+    const against = read === null ? `local:${main}` : read.ok ? `remote:${read.remote.url}\u0000${read.remote.main}` : `none:${read.why}`;
     const key = `${repo}\u0000${row.run}`;
-    const seen = `${row.head}:${main}:${pullRequest?.merged === true}:${pullRequest?.headSha}:${row.completed}`;
+    const seen = `${row.head}:${against}:${pullRequest?.merged === true}:${pullRequest?.headSha}:${row.completed}`;
     if (options.memo === true && notLanded.get(key) === seen) continue;
     if (options.limit !== undefined && looked >= options.limit) break;
     looked++;
-    const proof = await landedProof(git, repo, row.head, pullRequest);
+    const proof = row.completed ? await landedProof(git, repo, row.head, pullRequest) : await remoteLandedProof(remote, repo, row.head, pullRequest);
     if (!proof.landed) {
       if (options.memo === true) notLanded.set(key, seen);
       kept.push({ repo, what: row.id, why: proof.why });
@@ -256,9 +315,12 @@ export async function landedResults(store: Store, git: Git, repo: string, root: 
     if (assignment === null || receipt === null || receipt.runId !== row.run || receipt.head !== row.head) { kept.push({ repo, what: row.id, why: "its result couldn't be read" }); continue; }
     const completionHold = completionProblem(store, assignment, root);
     if (completionHold !== null) { kept.push({ repo, what: row.id, why: completionHold }); continue; }
+    if (assignment.state === "ready-to-check" && !proof.trusted) { kept.push({ repo, what: row.id, why: UNTRUSTED }); continue; }
     const targets: LandedTarget[] = [], keeps: LandedKeep[] = [];
     for (const one of checkouts) targets.push({ kind: "checkout", target: one.path, expect: row.head! });
     for (const name of present) {
+      const birth = await branchBirth(git, repo, name);
+      if ("why" in birth) { keeps.push({ repo, what: name, why: birth.why }); continue; }
       const tip = branches.get(name)!.oid;
       const inside = await within(git, repo, tip, row.head!) || (main !== null && main !== "error" && await within(git, repo, tip, main));
       const elsewhere = inUse.get(name);
@@ -267,7 +329,7 @@ export async function landedResults(store: Store, git: Git, repo: string, root: 
       else targets.push({ kind: "branch", target: name, expect: tip });
     }
     found.push({ repo, taskId: row.id, rootId: assignment.rootId, runId: row.run, receipt: receipt.digest, head: row.head!, finishedAt: row.finishedAt,
-      completes: assignment.state === "ready-to-check", how: proof.how, reason: proof.reason, targets, keeps });
+      completes: assignment.state === "ready-to-check", how: proof.how, reason: proof.reason, trusted: proof.trusted, targets, keeps });
   }
   return { found, kept };
 }
@@ -290,6 +352,7 @@ export function recordLandedIntent(store: Store, candidate: LandedCandidate, now
     const problem = resultProblem(store, candidate.runId, candidate.head) ?? completionProblem(store, assignment, root);
     if (problem !== null) return { ok: false as const, why: problem };
     const completes = assignment.state === "ready-to-check";
+    if (completes && !candidate.trusted) return { ok: false as const, why: UNTRUSTED };
     if (completes) {
       store.recordAction({ at: now.toISOString(), actor: LANDED_ACTOR, repo: candidate.repo, taskId: assignment.rootId, runId: candidate.runId,
         action: COMPLETION_ACTION, outcome: candidate.receipt, source: "work", detail: candidate.reason });
@@ -300,16 +363,46 @@ export function recordLandedIntent(store: Store, candidate: LandedCandidate, now
     const id = Number(store.handle.prepare(`INSERT INTO landed_cleanup (repo, task_id, run_id, receipt, head, how, reason, completed, actor, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(candidate.repo, assignment.rootId, candidate.runId, candidate.receipt, candidate.head,
       candidate.how, candidate.reason, completes ? 1 : 0, actor, now.toISOString()).lastInsertRowid);
-    addItems(store, id, candidate.repo, candidate.targets);
+    addItems(store, id, candidate.repo, candidate.targets, now.toISOString());
     if (completes) noteAssignmentStatus(store, assignmentOf(store, assignment.rootId, now, { principal: "operator", repos: null, includeUnplaced: true }, root)!, now);
     return { ok: true as const, id, completed: completes };
   });
 }
 
-function addItems(store: Store, cleanup: number, repo: string, targets: readonly LandedTarget[]): void {
-  const insert = store.handle.prepare("INSERT OR IGNORE INTO landed_cleanup_item (cleanup, kind, repo, target, expect) VALUES (?, ?, ?, ?, ?)");
+/**
+ * A teardown's items (in its intent's transaction). One pending item per target: an earlier teardown's pending item
+ * for the same target is handed over, since this intent was read later; the earlier one keeps a record saying so and
+ * finishes once nothing else of it is pending. A teardown with nothing to remove finishes at once.
+ */
+function addItems(store: Store, cleanup: number, repo: string, targets: readonly LandedTarget[], at: string): void {
+  const pending = store.handle.prepare("SELECT id, cleanup FROM landed_cleanup_item WHERE kind = ? AND repo = ? AND target = ? AND state = 'pending'");
+  const handOver = store.handle.prepare("UPDATE landed_cleanup_item SET state = 'kept', why = ?, done_at = ? WHERE id = ?");
+  const insert = store.handle.prepare("INSERT INTO landed_cleanup_item (cleanup, kind, repo, target, expect) VALUES (?, ?, ?, ?, ?)");
+  const earlier = new Set<number>();
   // Checkouts first: a branch goes only once nothing has it checked out.
-  for (const one of [...targets].sort((a, b) => (a.kind === "checkout" ? 0 : 1) - (b.kind === "checkout" ? 0 : 1))) insert.run(cleanup, one.kind, repo, one.target, one.expect);
+  for (const one of [...targets].sort((a, b) => (a.kind === "checkout" ? 0 : 1) - (b.kind === "checkout" ? 0 : 1))) {
+    const held = pending.get(one.kind, repo, one.target);
+    if (held !== undefined && Number(held["cleanup"]) === cleanup) continue;
+    if (held !== undefined) {
+      handOver.run("a later clean-up took it over", at, Number(held["id"]));
+      earlier.add(Number(held["cleanup"]));
+    }
+    insert.run(cleanup, one.kind, repo, one.target, one.expect);
+  }
+  for (const one of [...earlier, cleanup]) settle(store, one, at);
+}
+
+/** A teardown with nothing pending is finished: one ledger entry says what it did. Within a transaction. */
+function settle(store: Store, cleanup: number, at: string): void {
+  const left = store.handle.prepare("SELECT state, COUNT(*) AS n FROM landed_cleanup_item WHERE cleanup = ? GROUP BY state").all(cleanup);
+  const count = (state: string) => Number(left.find(row => row["state"] === state)?.["n"] ?? 0);
+  if (count("pending") > 0) return;
+  const row = store.handle.prepare("SELECT repo, task_id, actor, reason FROM landed_cleanup WHERE id = ? AND finished_at IS NULL").get(cleanup);
+  if (row === undefined) return;
+  store.handle.prepare("UPDATE landed_cleanup SET finished_at = ? WHERE id = ?").run(at, cleanup);
+  store.recordAction({ at, actor: String(row["actor"]), repo: String(row["repo"]), taskId: row["task_id"] === null ? null : String(row["task_id"]), runId: null,
+    action: LANDED_CLEANED_ACTION, outcome: count("kept") > 0 ? "partial" : "removed", source: String(row["actor"]) === LANDED_ACTOR ? "work" : "request",
+    detail: `${String(row["reason"])}: ${count("done")} removed${count("kept") > 0 ? `, ${count("kept")} kept` : ""}` });
 }
 
 /** A landed branch no task names: its teardown, on its own. */
@@ -320,7 +413,7 @@ export function recordBranchIntent(store: Store, branch: LandedBranch, now: Date
     const id = Number(store.handle.prepare(`INSERT INTO landed_cleanup (repo, task_id, run_id, receipt, head, how, reason, completed, actor, created_at)
       VALUES (?, NULL, NULL, NULL, ?, ?, ?, 0, ?, ?)`).run(branch.repo, branch.oid, branch.how, branch.reason, actor, now.toISOString()).lastInsertRowid);
     addItems(store, id, branch.repo, [...(branch.checkout === null ? [] : [{ kind: "checkout" as const, target: branch.checkout, expect: branch.oid }]),
-      { kind: "branch", target: branch.branch, expect: branch.oid }]);
+      { kind: "branch", target: branch.branch, expect: branch.oid }], now.toISOString());
     return id;
   });
 }
@@ -346,11 +439,13 @@ function branchUser(store: Store, statuses: ReturnType<typeof taskStatuses>, nam
 export type LandedStep = { kind: "checkout" | "branch"; repo: string; target: string; taskId: string | null; outcome: "removed" | "already gone" | "waits" | "kept"; why: string | null };
 
 type Item = { id: number; cleanup: number; kind: "checkout" | "branch"; repo: string; target: string; expect: string;
-  taskId: string | null; runId: number | null; head: string; reason: string; actor: string };
+  taskId: string | null; runId: number | null; head: string; reason: string; actor: string;
+  /** This teardown completed its task: its landing is re-proven against the recorded remote's main. */
+  completed: boolean };
 
 /** Validate persisted targets too: an older intent may name an arbitrary run branch. */
 function allowedBranch(store: Store, item: Item, name: string): boolean {
-  if (name === "main" || name === "master") return false;
+  if (name === "main" || name === "master" || name.startsWith(SCOUT_PREFIX)) return false;
   if (item.taskId === null) return item.runId === null && BACKLOG_PREFIXES.some(prefix => name.startsWith(prefix));
   const family = store.taskFamilyOf(item.taskId, null, true);
   return item.runId !== null && family !== null && family.current.repo === item.repo && familyBranches(family.versions).has(name);
@@ -379,14 +474,17 @@ function stillCurrent(store: Store, item: Item): boolean {
   return family.current.state === "done" && Number(latest?.["id"]) === item.runId;
 }
 
-/** An intent is not a lasting landing proof: main and the recorded PR fact can both change. */
-async function landingProblem(store: Store, git: Git, item: Item): Promise<string | null> {
+/** An intent is not a lasting landing proof: main and the recorded PR fact can both change. A teardown that completed
+ * its task fetches the recorded remote's main again, right now. */
+async function landingProblem(store: Store, git: Git, remotes: RemoteMains, item: Item): Promise<string | null> {
   if (!stillCurrent(store, item)) return "its task has newer work";
   if (item.runId !== null) {
     const problem = resultProblem(store, item.runId, item.head);
     if (problem !== null) return problem;
   }
-  const proof = await landedProof(git, item.repo, item.head, item.runId === null ? null : pullRequestOf(store, item.runId));
+  const pullRequest = item.runId === null ? null : pullRequestOf(store, item.runId);
+  const proof = item.completed ? await remoteLandedProof(() => remotes.read(item.repo), item.repo, item.head, pullRequest)
+    : await landedProof(git, item.repo, item.head, pullRequest);
   if (!proof.landed) return proof.why;
   // A family's older branch can carry commits beyond this result that were in main at preview time.
   const inside = await within(git, item.repo, item.expect, item.head);
@@ -417,16 +515,18 @@ function branchUseProblem(store: Store, item: Item, now: Date): string | null {
 /**
  * Finish what teardowns intended: pending items, oldest first (checkouts before branches). Each is checked again
  * right before it goes, and recorded right after. Doubt leaves it pending for the next pass; a branch that moved, or
- * a result that has newer work, is kept for good. `only` limits it to these teardowns.
+ * a result that has newer work, is kept for good. `limit` caps the items settled (removed, already gone or kept), so
+ * items left waiting never crowd out later ones. `only` limits it to these teardowns.
  */
-export async function finishLanded(store: Store, pool: WorktreePool, git: Git, now: () => Date,
+export async function finishLanded(store: Store, pool: WorktreePool, git: Git, remotes: RemoteMains, now: () => Date,
   options: { repo?: string; limit?: number; only?: ReadonlySet<number> } = {}): Promise<LandedStep[]> {
-  const items = store.handle.prepare(`SELECT i.id, i.cleanup, i.kind, i.repo, i.target, i.expect, c.task_id, c.run_id, c.head, c.reason, c.actor
+  const items = store.handle.prepare(`SELECT i.id, i.cleanup, i.kind, i.repo, i.target, i.expect, c.task_id, c.run_id, c.head, c.reason, c.actor, c.completed
       FROM landed_cleanup_item i JOIN landed_cleanup c ON c.id = i.cleanup
       WHERE i.state = 'pending' AND (? IS NULL OR i.repo = ?) ORDER BY i.cleanup, i.kind = 'branch', i.id`).all(options.repo ?? null, options.repo ?? null)
     .map(row => ({ id: Number(row["id"]), cleanup: Number(row["cleanup"]), kind: row["kind"] === "branch" ? "branch" as const : "checkout" as const,
       repo: String(row["repo"]), target: String(row["target"]), expect: String(row["expect"]), taskId: row["task_id"] === null ? null : String(row["task_id"]),
-      runId: row["run_id"] === null ? null : Number(row["run_id"]), head: String(row["head"]), reason: String(row["reason"]), actor: String(row["actor"]) }))
+      runId: row["run_id"] === null ? null : Number(row["run_id"]), head: String(row["head"]), reason: String(row["reason"]), actor: String(row["actor"]),
+      completed: Number(row["completed"]) === 1 }))
     .filter(item => options.only === undefined || options.only.has(item.cleanup));
   const steps: LandedStep[] = [];
   const touched = new Set<number>();
@@ -436,15 +536,17 @@ export async function finishLanded(store: Store, pool: WorktreePool, git: Git, n
     touched.add(item.cleanup);
   };
   const source = (item: Item) => item.actor === LANDED_ACTOR ? "work" as const : "request" as const;
+  let settled = 0;
   for (const item of items) {
-    if (options.limit !== undefined && steps.length >= options.limit) break;
+    if (options.limit !== undefined && settled >= options.limit) break;
     const step = (outcome: LandedStep["outcome"], why: string | null) => {
       steps.push({ kind: item.kind, repo: item.repo, target: item.target, taskId: item.taskId, outcome, why });
+      if (outcome !== "waits") settled++;
       mark(item, outcome === "waits" ? "pending" : outcome === "kept" ? "kept" : "done", why);
     };
     if (!stillCurrent(store, item)) { step("kept", "its task has newer work"); continue; }
     if (item.kind === "checkout") {
-      const outcome = await removeCheckout(store, pool, git, item, now);
+      const outcome = await removeCheckout(store, pool, git, remotes, item, now);
       if (outcome.outcome === "removed") store.recordAction({ at: now().toISOString(), actor: item.actor, repo: item.repo, taskId: item.taskId, runId: null,
         action: "checkout removed", outcome: "removed", source: source(item), detail: `${basename(item.target)}: its work landed (${item.reason})` });
       step(outcome.outcome, outcome.why);
@@ -453,32 +555,23 @@ export async function finishLanded(store: Store, pool: WorktreePool, git: Git, n
     if (!allowedBranch(store, item, item.target)) { step("kept", "it isn't a task build or plan branch"); continue; }
     const firstOut = store.handle.prepare("SELECT 1 FROM landed_cleanup_item WHERE cleanup = ? AND kind = 'checkout' AND state = 'pending'").get(item.cleanup);
     if (firstOut !== undefined) { step("waits", "its checkout goes first"); continue; }
-    const outcome = await deleteBranch(store, git, item, now);
+    const outcome = await deleteBranch(store, git, remotes, item, now);
     if (outcome.outcome === "removed") store.recordAction({ at: now().toISOString(), actor: item.actor, repo: item.repo, taskId: item.taskId, runId: null,
       action: "branch deleted", outcome: "removed", source: source(item), detail: `${item.target} at ${item.expect.slice(0, 12)}: its work landed (${item.reason})` });
     step(outcome.outcome, outcome.why);
   }
-  // A teardown with nothing pending is finished: one ledger entry says what it did.
-  for (const cleanup of touched) {
-    const left = store.handle.prepare("SELECT state, COUNT(*) AS n FROM landed_cleanup_item WHERE cleanup = ? GROUP BY state").all(cleanup);
-    const count = (state: string) => Number(left.find(row => row["state"] === state)?.["n"] ?? 0);
-    if (count("pending") > 0) continue;
-    store.transact(() => {
-      const row = store.handle.prepare("SELECT repo, task_id, actor, reason FROM landed_cleanup WHERE id = ? AND finished_at IS NULL").get(cleanup);
-      if (row === undefined) return;
-      store.handle.prepare("UPDATE landed_cleanup SET finished_at = ? WHERE id = ?").run(now().toISOString(), cleanup);
-      store.recordAction({ at: now().toISOString(), actor: String(row["actor"]), repo: String(row["repo"]), taskId: row["task_id"] === null ? null : String(row["task_id"]), runId: null,
-        action: LANDED_CLEANED_ACTION, outcome: count("kept") > 0 ? "partial" : "removed", source: String(row["actor"]) === LANDED_ACTOR ? "work" : "request",
-        detail: `${String(row["reason"])}: ${count("done")} removed${count("kept") > 0 ? `, ${count("kept")} kept` : ""}` });
-    });
-  }
+  for (const cleanup of touched) store.transact(() => settle(store, cleanup, now().toISOString()));
   return steps;
 }
 
-async function removeCheckout(store: Store, pool: WorktreePool, git: Git, item: Item, now: () => Date): Promise<{ outcome: LandedStep["outcome"]; why: string | null }> {
+async function removeCheckout(store: Store, pool: WorktreePool, git: Git, remotes: RemoteMains, item: Item, now: () => Date): Promise<{ outcome: LandedStep["outcome"]; why: string | null }> {
   const row = store.getWorktree(item.target);
   if (row === null) return { outcome: "already gone", why: null };
   if (row.repo !== item.repo || !allowedBranch(store, item, row.branch)) return { outcome: "kept", why: "it isn't a task build or plan branch" };
+  if (item.taskId === null) {
+    const birth = await branchBirth(git, item.repo, row.branch);
+    if ("why" in birth) return { outcome: "kept", why: birth.why };
+  }
   const protectedBranch = await isDefaultBranch(git, item.repo, row.branch);
   if (protectedBranch === null) return { outcome: "waits", why: "git couldn't read the project's default branch" };
   if (protectedBranch) return { outcome: "kept", why: "it is the project's default branch" };
@@ -499,7 +592,7 @@ async function removeCheckout(store: Store, pool: WorktreePool, git: Git, item: 
   const wanted = async (fresh: WorktreeRow, again: boolean) => {
     if (!again) return true;
     // Prune calls this after inspecting the checkout, immediately before removal.
-    landingHold = await landingProblem(store, git, item);
+    landingHold = await landingProblem(store, git, remotes, item);
     const current = store.getWorktree(fresh.path);
     return landingHold === null && current !== null && current.repo === item.repo && current.branch === fresh.branch
       && current.releasedAt === fresh.releasedAt && allowedBranch(store, item, current.branch)
@@ -513,20 +606,23 @@ async function removeCheckout(store: Store, pool: WorktreePool, git: Git, item: 
   return { outcome: "waits", why: landingHold ?? (kept === undefined ? "in use" : whyWords({ why: kept.why })) };
 }
 
-async function deleteBranch(store: Store, git: Git, item: Item, now: () => Date): Promise<{ outcome: LandedStep["outcome"]; why: string | null }> {
+async function deleteBranch(store: Store, git: Git, remotes: RemoteMains, item: Item, now: () => Date): Promise<{ outcome: LandedStep["outcome"]; why: string | null }> {
   if (!allowedBranch(store, item, item.target)) return { outcome: "kept", why: "it isn't a task build or plan branch" };
   const ref = `refs/heads/${item.target}`;
   const tip = await commitOf(git, item.repo, ref);
   if (tip === null) return { outcome: "already gone", why: null };
   if (tip === "error") return { outcome: "waits", why: "git couldn't read it" };
   if (tip !== item.expect) return { outcome: "kept", why: "it moved since" };
+  // Persisted intents are checked too: one recorded before Toolroll proved its branches may name any branch.
+  const birth = await branchBirth(git, item.repo, item.target);
+  if ("why" in birth) return { outcome: "kept", why: birth.why };
   const protectedBranch = await isDefaultBranch(git, item.repo, item.target);
   if (protectedBranch === null) return { outcome: "waits", why: "git couldn't read the project's default branch" };
   if (protectedBranch) return { outcome: "kept", why: "it is the project's default branch" };
   const firstOut = await checkedOut(git, item.repo);
   if (firstOut === null) return { outcome: "waits", why: "git couldn't read it" };
   if (firstOut.has(item.target)) return { outcome: "waits", why: `it is checked out at ${firstOut.get(item.target)}` };
-  const landingHold = await landingProblem(store, git, item);
+  const landingHold = await landingProblem(store, git, remotes, item);
   if (landingHold !== null) return { outcome: "waits", why: landingHold };
   const out = await checkedOut(git, item.repo);
   if (out === null) return { outcome: "waits", why: "git couldn't read it" };
@@ -545,9 +641,9 @@ async function deleteBranch(store: Store, git: Git, item: Item, now: () => Date)
  * Reconcile's part: finish teardowns a crash cut short, then find newly landed results (a bounded few), mark them
  * complete and tear them down.
  */
-export async function reconcileLanded(store: Store, pool: WorktreePool, git: Git, repo: string, root: string, now: () => Date): Promise<{ completed: string[]; steps: LandedStep[] }> {
-  const steps = await finishLanded(store, pool, git, now, { repo, limit: AUTO_ITEMS });
-  const { found } = await landedResults(store, git, repo, root, now(), { limit: AUTO_LOOKS, memo: true });
+export async function reconcileLanded(store: Store, pool: WorktreePool, git: Git, remotes: RemoteMains, repo: string, root: string, now: () => Date): Promise<{ completed: string[]; steps: LandedStep[] }> {
+  const steps = await finishLanded(store, pool, git, remotes, now, { repo, limit: AUTO_ITEMS });
+  const { found } = await landedResults(store, git, remotes, repo, root, now(), { limit: AUTO_LOOKS, memo: true });
   const completed: string[] = [];
   const fresh = new Set<number>();
   for (const one of found) {
@@ -556,7 +652,7 @@ export async function reconcileLanded(store: Store, pool: WorktreePool, git: Git
     fresh.add(recorded.id);
     if (recorded.completed) completed.push(one.taskId);
   }
-  if (fresh.size > 0) steps.push(...await finishLanded(store, pool, git, now, { repo, limit: AUTO_ITEMS, only: fresh }));
+  if (fresh.size > 0) steps.push(...await finishLanded(store, pool, git, remotes, now, { repo, limit: AUTO_ITEMS, only: fresh }));
   return { completed, steps };
 }
 
@@ -593,17 +689,17 @@ export type LandedPlan = {
 
 /**
  * What `storage clean --landed` would do now, across every project: landed results finished at least a week ago,
- * and Toolroll's own branches (toolroll/, toolroll-plan/, standing-orders/) no task uses whose last commit is at
- * least a week old and landed in main. Reads only.
+ * and branches Toolroll created (toolroll/, toolroll-plan/, standing-orders/) at least a week ago that no task uses
+ * and that landed in main. Reads only.
  */
-export async function landedBacklog(store: Store, git: Git, root: string, now: Date, options: { repos?: readonly string[] } = {}): Promise<LandedPlan> {
+export async function landedBacklog(store: Store, git: Git, remotes: RemoteMains, root: string, now: Date, options: { repos?: readonly string[] } = {}): Promise<LandedPlan> {
   const cutoff = new Date(now.getTime() - BACKLOG_DAYS * DAY_MS).toISOString();
   const plan: LandedPlan = { at: now.toISOString(), cutoff, results: [], branches: [], kept: [], pending: 0 };
   plan.pending = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM landed_cleanup_item WHERE state = 'pending'").get()?.["n"] ?? 0);
   const statuses = taskStatuses(store, now);
   const pendingTargets = new Set(store.handle.prepare("SELECT repo, target FROM landed_cleanup_item WHERE state = 'pending'").all().map(row => `${String(row["repo"])}\u0000${String(row["target"])}`));
   for (const repo of (options.repos ?? store.knownRepos()).filter(one => existsSync(one))) {
-    const results = await landedResults(store, git, repo, root, now, { before: cutoff });
+    const results = await landedResults(store, git, remotes, repo, root, now, { before: cutoff });
     plan.results.push(...results.found);
     plan.kept.push(...results.kept, ...results.found.flatMap(one => one.keeps));
     const taken = new Set([...results.found.flatMap(one => [...one.targets.map(target => target.target), ...one.keeps.map(keep => keep.what)])]);
@@ -617,10 +713,13 @@ export async function landedBacklog(store: Store, git: Git, root: string, now: D
       const status = branchUser(store, statuses, name);
       if (status !== undefined && staying.has(status.taskId)) continue;
       if (status !== undefined && status.keep !== null) { plan.kept.push({ repo, what: name, why: `${status.taskId} uses it (${whyWords({ why: status.keep })})` }); continue; }
-      if (tip.at * 1000 > Date.parse(cutoff)) { plan.kept.push({ repo, what: name, why: `its last commit is less than ${BACKLOG_DAYS} days old` }); continue; }
+      const birth = await branchBirth(git, repo, name);
+      if ("why" in birth) { plan.kept.push({ repo, what: name, why: birth.why }); continue; }
+      if (birth.at > Date.parse(cutoff)) { plan.kept.push({ repo, what: name, why: `it was created less than ${BACKLOG_DAYS} days ago` }); continue; }
       const checkout = worktrees.find(row => row.branch === name) ?? null;
       const elsewhere = out.get(name);
       if (elsewhere !== undefined && (checkout === null || real(checkout.path) !== real(elsewhere))) { plan.kept.push({ repo, what: name, why: `it is checked out at ${elsewhere}` }); continue; }
+      // No task names it, so nothing is completed: its teardown reads the local main, as before.
       const proof = await landedProof(git, repo, tip.oid);
       if (!proof.landed) { plan.kept.push({ repo, what: name, why: proof.why }); continue; }
       plan.branches.push({ repo, branch: name, oid: tip.oid, how: proof.how, reason: proof.reason, checkout: checkout?.path ?? null });
@@ -631,7 +730,7 @@ export async function landedBacklog(store: Store, git: Git, root: string, now: D
 
 /** Act on a preview: record every teardown first, then carry them out. Refuses nothing it previewed silently: what
  * changed since is reported as kept. */
-export async function cleanLandedBacklog(store: Store, pool: WorktreePool, git: Git, root: string, now: () => Date, plan: LandedPlan, actor: string): Promise<{ completed: string[]; steps: LandedStep[]; refused: LandedKeep[] }> {
+export async function cleanLandedBacklog(store: Store, pool: WorktreePool, git: Git, remotes: RemoteMains, root: string, now: () => Date, plan: LandedPlan, actor: string): Promise<{ completed: string[]; steps: LandedStep[]; refused: LandedKeep[] }> {
   const ids = new Set<number>();
   const completed: string[] = [];
   const refused: LandedKeep[] = [];
@@ -645,6 +744,6 @@ export async function cleanLandedBacklog(store: Store, pool: WorktreePool, git: 
   // Earlier teardowns a crash cut short finish too.
   const earlier = store.handle.prepare("SELECT DISTINCT cleanup FROM landed_cleanup_item WHERE state = 'pending'").all().map(row => Number(row["cleanup"]));
   for (const id of earlier) ids.add(id);
-  const steps = await finishLanded(store, pool, git, now, { only: ids });
+  const steps = await finishLanded(store, pool, git, remotes, now, { only: ids });
   return { completed, steps, refused };
 }

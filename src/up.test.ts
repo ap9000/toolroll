@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import { execFileSync } from "node:child_process";
 import { runOperate, parseOperateArgs } from "./operate.js";
+import { sweepServiceRunning } from "./storage-sweep-schedule.js";
 import { openStore } from "./store.js";
 import { register, normalizeRunnerName } from "./runner.js";
 import { addApprover, authenticateApprover } from "./scope.js";
@@ -53,8 +54,17 @@ const envelope = (): Record<string, unknown> => JSON.parse(lines.join("\n")) as 
 
 describe("toolroll up", () => {
   test("cold start: mints the login durably, registers a worker, watches, retires cleanly", async () => {
-    const code = await up();
+    let observed = false;
+    const code = await up([], PORT, () => {
+      const store = openStore(db);
+      try {
+        expect(store.handle.prepare("SELECT 1 FROM watch_lease WHERE expires_at > ?").get(new Date().toISOString())).toBeDefined();
+        expect(sweepServiceRunning(store, new Date())).toBe(false);
+        observed = true;
+      } finally { store.close(); }
+    });
     expect(code).toBe(0);
+    expect(observed).toBe(true);
     const answer = envelope();
     expect(answer).toMatchObject({ ok: true, command: "up" });
     expect(String(answer["url"])).toContain(`:${PORT}`);
@@ -402,7 +412,8 @@ describe("toolroll up", () => {
       // The owner adds from the command line; the running console has it within the adoption.
       said.length = 0;
       expect(await main(["repos", "add", market], line => said.push(line))).toBe(0);
-      expect(said).toEqual(["Added vamarketplacenew; it is in the console now."]);
+      // It has no origin, so no remote is recorded: its tasks wait for a person until one is.
+      expect(said).toEqual(["Added vamarketplacenew; it is in the console now.", "Recorded remote: None. Use repos add <project> --remote <url> to record one."]);
       await Promise.race([marketAdopted, stoppedEarly]);
       const tools = await read(`/settings/tools?repo=${encodeURIComponent(market)}`);
       expect(tools.status).toBe(200);

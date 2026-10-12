@@ -157,9 +157,10 @@ function installHandlers() {
  * left in its group have ended and its root is gone: { code, signal, timedOut, ms, root, output } (output: what it
  * printed, unless `stdio` is "inherit"). `onData` sees each chunk as it comes.
  */
-export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, beforeRemove = null, tempRoot = true }) {
+export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, onExit = null, signal: abortSignal = null, beforeRemove = null, tempRoot = true }) {
   // `tempRoot: false`: a suite that keeps its own short temp root (the unit tests: test/temp-root.ts) runs without one
   // more folder level, which would push the socket paths its tests make past the OS limit (103 bytes on macOS).
+  if (abortSignal?.aborted) return Promise.resolve({ code: 130, signal: null, timedOut: false, cancelled: true, ms: 0, root: null, output: Buffer.alloc(0) });
   const root = tempRoot ? makeTempRoot(prefix, { keep }) : null;
   const at = Date.now();
   return new Promise(done => {
@@ -171,12 +172,17 @@ export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, 
     const chunks = [];
     for (const stream of [child.stdout, child.stderr]) stream?.on("data", chunk => { chunks.push(chunk); onData?.(chunk); });
     if (child.pid !== undefined) groups.set(child.pid, graceMs);
+    const abort = () => { if (child.pid !== undefined) void stopGroup(child.pid, { graceMs }); };
+    abortSignal?.addEventListener("abort", abort, { once: true });
+    if (abortSignal?.aborted) abort();
     let timedOut = false;
     const timer = timeoutMs === null ? null : setTimeout(() => { timedOut = true; void stopGroup(child.pid, { graceMs }); }, timeoutMs);
     let ended = false;
     const end = async (code, signal) => {
       if (ended) return;
       ended = true;
+      abortSignal?.removeEventListener("abort", abort);
+      onExit?.(timedOut ? 124 : code ?? 1);
       if (timer !== null) clearTimeout(timer);
       // The suite's own process is gone; what it left in its group goes too, before its root does.
       if (child.pid !== undefined) { await stopGroup(child.pid, { graceMs }); groups.delete(child.pid); }

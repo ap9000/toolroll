@@ -1,3 +1,4 @@
+import { taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
 import { html,joinHtml,type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
@@ -517,6 +518,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           return { rows, decisions: decisionsFor(runtime.store, rows), now };
         })(),
         steering: ref === null ? [] : runtime.store.listSteerNotes(ref.id),
+        base: taskBaseOf(runtime.store, taskId),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         // "publishes as" reads ONLY publicationGrantFor(repo) — the grant
         // the publisher would act under — never listGrants(), which is

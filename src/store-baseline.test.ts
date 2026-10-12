@@ -74,7 +74,12 @@ describe("the v107 baseline", () => {
     const upgraded = baselineFile(join(at, "v107.db"));
     openStore(upgraded).close();
     expect(rawVersion(fresh)).toBe(SCHEMA_VERSION);
-    expect(snapshot(fresh)).toEqual(snapshot(upgraded));
+    // Only a new file knows when it was installed (the storage sweep's 48-hour clock); an upgraded one anchors that
+    // on its first service pass (storage-sweep-schedule.ts). Every other row and the schema are the same.
+    const installed = (one: Snapshot): Snapshot => ({ ...one, rows: { ...one.rows, installation_fact: one.rows["installation_fact"]!.filter(row => row["key"] !== "installed-at") } });
+    expect(snapshot(fresh).rows["installation_fact"]!.filter(row => row["key"] === "installed-at")).toHaveLength(1);
+    expect(snapshot(upgraded).rows["installation_fact"]!.filter(row => row["key"] === "installed-at")).toHaveLength(0);
+    expect(installed(snapshot(fresh))).toEqual(installed(snapshot(upgraded)));
     // A second open of the current file changes nothing.
     const before = snapshot(fresh);
     openStore(fresh).close();

@@ -1,41 +1,17 @@
 #!/usr/bin/env node
 /**
- * The release check. Docs, evidence and design notes alone run nothing; any other change runs it all:
+ * Release verification: build and typecheck, units (or exact successful CI plus local macOS tests),
+ * scripted journeys, a CPU-bounded upgrade sample only for store/schema/migration changes, and
+ * real-model journeys only for model-facing changes. --full runs all units, releases and journeys.
+ * The first hard failure stops other parts. Every selected part still must pass.
  *
- *   - typecheck and build
- *   - every unit test (`npm test`), started beside the build: its setup waits for this build's outcome
- *     (TOOLROLL_RELEASE_BUILD) rather than building again
- *   - every scripted browser journey (scripts/flows-e2e.mjs and app-e2e.mjs, the model scripted by
- *     scripts/fixtures/scripted-provider.mjs), each script's groups through scripts/e2e-parallel.mjs: flows 2 at once,
- *     app 4 at once
- *   - the upgrade path (scripts/upgrade-path.mjs): every published release from 0.5.0 on, with a realistic database,
- *     moves to this candidate through the deploy's facts check, `toolroll update` and `npm i -g` with no manual step
- *     (needs the npm registry; each release is installed once and cached)
- *   - the real-model journeys only when model-facing code changed (the lead and its tools, chat, the planner, the
- *     builder, subagents, the provider adapters) or --real is given: every group with real-model journeys, and the
- *     journeys they need, each real turn under one cap shared by both runners (scripts/provider-gate.mjs, default at
- *     most 4; TOOLROLL_CHECK_PROVIDERS). The nightly journeys flow (scripts/flows/real-model-journeys.mjs) runs every
- *     journey with real models
- *
- * A package.json or package-lock.json whose only change is the project's own "version" (a release's bump) counts as
- * nothing; any other change to them is a change. The journeys and the upgrade path start once the build passed (the
- * journeys not when the typecheck already failed).
- *
- * The base is the latest v* release tag reachable from HEAD. No reachable release tag (or no difference from it)
- * means everything runs. `--full` (or TOOLROLL_FULL_CHECK=1) runs everything, the real-model journeys too. `--real`
- * adds the real-model journeys to whatever the change runs. `--plan` prints the plan and stops. Ends with the same
- * `== summary` block, and how long each part took.
- *
- * Nothing stays behind (scripts/suite-lifecycle.mjs): each part runs in a process group and temp folder of its own,
- * stopped and removed when it ends, when it runs past TOOLROLL_CHECK_PART_MINUTES (default 120) or when the check is
- * interrupted; the check's own folder of logs goes once the summary is printed.
- *
- *   node scripts/release-check.mjs [--full] [--real] [--base <ref>] [--plan]
+ * node scripts/release-check.mjs [--full] [--real] [--base <ref>] [--plan]
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gateWords, openGate } from "./provider-gate.mjs";
+import { passedCandidateCI, macUnitFiles } from "./release-check-ci.mjs";
 import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
 
 const args = process.argv.slice(2);
@@ -46,6 +22,33 @@ const baseFlag = args.includes("--base") ? args[args.indexOf("--base") + 1] : un
 
 const git = (...argv) => execFileSync("git", argv, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim();
 const tryGit = (...argv) => { try { return git(...argv); } catch { return null; } };
+
+/** A release tag's version as numbers, or null for anything else (v0.9.61 → [0, 9, 61]). */
+const versionOf = tag => { const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag ?? ""); return m === null ? null : m.slice(1).map(Number); };
+const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+/**
+ * Whether this checkout's newest reachable release tag is the release before `version` as origin has it. A checkout
+ * missing newer tags would silently compare with an old release (and test less), so it is refused in words, as is one
+ * whose origin tags can't be read. `remoteTags` null: origin couldn't be read.
+ */
+export function releaseTagProblem(version, reachable, remoteTags) {
+  const wanted = versionOf(version);
+  if (wanted === null) return null;
+  if (remoteTags === null) return "Couldn't read origin's release tags, so the release before this one is unknown. Check the network and `git ls-remote --tags origin`, then try again (or set TOOLROLL_RELEASE_LOCAL_TAGS=1 to compare with this checkout's tags).";
+  const previous = remoteTags.map(tag => ({ tag, at: versionOf(tag) })).filter(one => one.at !== null && compare(one.at, wanted) < 0).sort((a, b) => compare(b.at, a.at))[0];
+  if (previous === undefined) return null;
+  const have = versionOf(reachable);
+  if (have !== null && compare(have, previous.at) >= 0) return null;
+  return `This checkout's newest release tag is ${reachable ?? "none"}, but origin has ${previous.tag}: the check would compare with an older release. Run \`git fetch --tags origin\`, then try again.`;
+}
+
+/** Origin's release tags, after fetching them (best effort); null when origin can't be read. */
+function originTags() {
+  tryGit("fetch", "--tags", "--quiet", "origin");
+  const listed = tryGit("ls-remote", "--tags", "--refs", "origin", "v*");
+  return listed === null ? null : listed.split("\n").map(line => line.split("\t")[1]?.replace(/^refs\/tags\//, "")).filter(Boolean);
+}
 
 /**
  * Compare the candidate with its most recent reachable release, including
@@ -90,7 +93,7 @@ export function versionOnly(file, before, after) {
 }
 
 /**
- * What runs: `checks` (every unit test, every scripted journey, the upgrade path) for any change beyond docs and a
+ * What runs: `checks` (the unit suite and every scripted journey) for any change beyond docs and a
  * version bump; `real`, the real-model journeys, for model-facing code, --real or a full check. `journeys` is false in
  * a checkout without journey scripts.
  */
@@ -113,14 +116,75 @@ export function planFor(changed, { full: all = false, real = false, versionBumps
   };
 }
 
+/** Skip only paths known not to affect upgrades. Unknown runtime code runs upgrades:
+ * this includes the entire store import graph, SQL-bearing modules and updaters,
+ * without maintaining a second, inevitably incomplete dependency graph.
+ */
+export function needsUpgrade(changed, full = false, versionBumps = []) {
+  return full || changed === null || changed.some(file => {
+    if (versionBumps.includes(file) && VERSIONED.includes(file)) return false;
+    if (/^(docs|evidence|design|output)\//.test(file) || /\.md$/.test(file) || file === "LICENSE") return false;
+    if (/\.test\.[cm]?[jt]sx?$/.test(file) || /^test\//.test(file)) return false;
+    if (/^src\/(browser|design)\//.test(file) || /\.css$/.test(file)) return false;
+    // Standalone journeys are not imported by the upgrade runner. Other scripts,
+    // including its provider gate and lifecycle helpers, conservatively run it.
+    if (/^scripts\/(app-e2e|flows-e2e|e2e-parallel)\.mjs$/.test(file)) return false;
+    return true;
+  });
+}
+
+/** NUL separators preserve filenames; failed history or untracked discovery runs upgrades. No rename pairing: a
+ * file moved out of a migration path still lists its old path, so the move can't hide it. */
+export function upgradeChanges(base, readGit) {
+  if (base === null) return null;
+  try {
+    return [...new Set([
+      ...readGit("diff", "--no-renames", "--name-only", "-z", base).split("\0"),
+      ...readGit("ls-files", "--others", "--exclude-standard", "-z").split("\0"),
+    ].filter(Boolean))];
+  } catch { return null; }
+}
+
+/** Scripted failures are final; real-model runs retain their normal retry policy. */
+export function journeyEnv(kind, gate, env = process.env) {
+  return kind === "real" ? {
+    TOOLROLL_RELEASE_FAIL_FAST: undefined,
+    TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: undefined,
+    TOOLROLL_CHECK_GATE: gate.dir,
+  } : {
+    TOOLROLL_RELEASE_FAIL_FAST: "1",
+    TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: env.TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS || "90",
+  };
+}
+
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
-// An outer check's gate is not this one's: a part only gets the gate this check hands it (env).
-const run = (label, command, argv, dir, env = {}) => runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env }, prefix: `so-check-${label}-`, timeoutMs: PART_MS, graceMs: 15_000, tempRoot: partTempRoot(label) }).then(one => {
-  const log = join(dir, `${label}.log`);
-  writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} ran past ${Math.round(PART_MS / 60_000)} min and was stopped\n`)]) : one.output);
-  return { label, code: one.code, log, ms: one.ms };
-});
+export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000 } = {}) {
+  const abort = new AbortController();
+  let failure = null;
+  const fail = (label, detail) => {
+    if (failure !== null) return;
+    failure = `${label}: ${detail}`;
+    console.error(`Release check failed: ${failure}; stopping other parts`);
+    abort.abort();
+  };
+  const run = (label, command, argv, env = {}) => {
+    let partial = "";
+    return runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env },
+      signal: abort.signal, prefix: `so-check-${label}-`, timeoutMs, graceMs, tempRoot: partTempRoot(label),
+      onExit: code => { if (code !== 0) fail(label, `exit ${code}`); },
+      onData: chunk => {
+        const lines = (partial + chunk).split("\n"); partial = lines.pop();
+        for (const line of lines) if (/^(app|flows)(-real)?$|^upgrade$/.test(label) && line.includes("TOOLROLL_CHECK_FAILURE ")) fail(label, line.slice(line.indexOf("TOOLROLL_CHECK_FAILURE ") + 23));
+      },
+    }).then(one => {
+      const log = join(dir, `${label}.log`);
+      writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} timed out and was stopped\n`)]) : one.output);
+      return { label, code: one.code, log, ms: one.ms };
+    });
+  };
+  return { run, signal: abort.signal, failure: () => failure };
+}
 // Units and browser lanes make their own roots. An outer root adds a redundant level to their Unix socket paths.
 export const partTempRoot = label => !/^(unit|app|flows)(-|$)/.test(label);
 
@@ -128,15 +192,31 @@ const took = ms => ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const started = Date.now();
+  // Newer release tags first: a checkout without them would quietly compare with an old release.
+  if (process.env.TOOLROLL_RELEASE_LOCAL_TAGS !== "1") {
+    let version = null;
+    try { version = JSON.parse(readFileSync("package.json", "utf8")).version ?? null; } catch { version = null; }
+    // Fetched before the newest reachable tag is read.
+    const remote = version === null ? [] : originTags();
+    const problem = releaseTagProblem(version, tryGit("describe", "--tags", "--match", "v*", "--abbrev=0", "HEAD"), remote);
+    if (problem !== null) { console.error(problem); process.exit(1); }
+  }
   const base = baseOf();
-  const changed = base === null ? [] : git("diff", "--name-only", base, "HEAD").split("\n").filter(Boolean);
-  const versionBumps = base === null ? [] : VERSIONED.filter(file => changed.includes(file) && versionOnly(file, tryGit("show", `${base}:${file}`), tryGit("show", `HEAD:${file}`)));
+  const diff = base === null ? null : tryGit("diff", "--name-only", base);
+  const changed = diff === null ? [] : diff.split("\n").filter(Boolean);
+  const versionBumps = base === null ? [] : VERSIONED.filter(file => changed.includes(file) && versionOnly(file, tryGit("show", `${base}:${file}`), (() => { try { return readFileSync(file, "utf8"); } catch { return null; } })()));
   // Toolroll's own checkout carries the journey scripts and the upgrade path; another project's release check has none.
   const scripts = existsSync(join("scripts", "flows-e2e.mjs")) && existsSync(join("scripts", "app-e2e.mjs"));
-  // No release to compare with, or nothing differs from it: check everything.
+  // No release comparison, or no difference: retain the full unit/journey selection.
+  // Upgrades independently use the last release tag and --full below.
   const plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, journeys: scripts });
-  const upgrade = plan.checks && existsSync(join("scripts", "upgrade-path.mjs"));
-  console.log(`Release check against ${base === null ? "nothing (no reachable v* release tag)" : base} (${changed.length} changed files): ${plan.why}${upgrade ? "; the upgrade path from every release since 0.5.0" : ""}.`);
+  // --base can narrow the ordinary comparison, never the migration safety comparison.
+  const releaseBase = tryGit("describe", "--tags", "--match", "v*", "--abbrev=0", "HEAD");
+  const upgradeDiff = upgradeChanges(releaseBase, git);
+  const upgradeBumps = releaseBase === null ? [] : VERSIONED.filter(file => versionOnly(file, tryGit("show", `${releaseBase}:${file}`), (() => { try { return readFileSync(file, "utf8"); } catch { return null; } })()));
+  const upgrade = needsUpgrade(upgradeDiff, full, upgradeBumps)
+    && existsSync(join("scripts", "upgrade-path.mjs"));
+  console.log(`Release check against ${base === null ? "nothing (no reachable v* release tag)" : base} (${changed.length} changed files): ${plan.why}${upgrade ? full ? "; the upgrade path from every release since 0.5.0" : "; upgrade path: last five release tags, baseline and 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
 
   // Each journey run: a script, scripted or real-model, in every group with journeys of that kind.
@@ -147,42 +227,54 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     return { label, kind, argv: [`scripts/${script}-e2e.mjs`, ...(script === "app" ? ["--skip-build"] : []), "--journeys", kind, "--at-once", String(LANES[script])] };
   });
   // The logs and the build's outcome; removed when the check ends, however it ends.
+  const ci = plan.checks ? passedCandidateCI({ full, git }) : { passed: false, why: "no unit suite selected" };
+  let localUnits = [];
+  if (ci.passed && process.platform === "darwin") {
+    try { localUnits = macUnitFiles(); if (localUnits.length === 0) throw Error("no macOS tests found"); }
+    catch { ci.passed = false; ci.why = "macOS test selection unreadable; running all units"; }
+  }
+  console.log(`Units: ${ci.passed ? "reuse CI; macOS tests still run locally" : "local"} (${ci.why}).`);
   const dir = makeTempRoot("release-check-");
+  const parts = partRunner(dir), run = parts.run;
   // One provider gate for both real-model runners (they find it in TOOLROLL_CHECK_GATE); scripted runs take none.
   let gate = null;
   if (journeyRuns.some(each => each.kind === "real")) {
     mkdirSync(join(dir, "gate"));
-    try { gate = openGate({ dir: join(dir, "gate") }); } catch (error) { console.error(error.message); process.exit(2); }
+    try { gate = openGate({ dir: join(dir, "gate"), reserve: true, env: { TOOLROLL_CHECK_PROVIDERS: process.env.TOOLROLL_CHECK_PROVIDERS || "4" } }); } catch (error) { console.error(error.message); process.exit(2); }
   }
   // The unit tests' setup (test/ensure-build.ts) waits for this file: the build's outcome.
   const built = join(dir, "build-outcome");
-  const typecheck = run("typecheck", "npm", ["run", "typecheck"], dir);
-  const build = run("build", "npm", ["run", "build"], dir).then(one => {
+  const typecheck = run("typecheck", "npm", ["run", "typecheck"]);
+  const build = run("build", "npm", ["run", "build"]).then(one => {
     // Whole or not at all: written aside, then renamed into place.
     writeFileSync(`${built}.part`, one.code === 0 ? "ok" : `failed (exit ${one.code})`);
     renameSync(`${built}.part`, built);
     return one;
   });
-  const units = plan.checks ? [run("unit", "npm", ["test", "--", "--run", "--reporter=dot"], dir, { TOOLROLL_RELEASE_BUILD: built })] : [];
+  const units = plan.checks && (!ci.passed || localUnits.length > 0)
+    ? [run("unit", "npm", ["test", "--", "--run", "--reporter=dot", ...localUnits], { TOOLROLL_RELEASE_BUILD: built })] : [];
   // The journeys need the built console; they don't start when the build (or a typecheck already done) failed.
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });
   const journeys = build.then(one => {
-    held = journeyRuns.length > 0 && (one.code !== 0 || (typed !== null && typed.code !== 0));
+    held = journeyRuns.length > 0 && (parts.signal.aborted || one.code !== 0 || (typed !== null && typed.code !== 0));
     if (held) return [];
-    return Promise.all(journeyRuns.map(each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)], dir, each.kind === "real" ? { TOOLROLL_CHECK_GATE: gate.dir } : {})));
+    return Promise.all(journeyRuns.map(each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)], journeyEnv(each.kind, gate))));
   });
   // The upgrade path packs the built candidate: it starts once the build passed.
   let upgradeHeld = false;
   const upgraded = build.then(one => {
-    upgradeHeld = upgrade && one.code !== 0;
-    return upgrade && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs"], dir)] : [];
+    upgradeHeld = upgrade && (parts.signal.aborted || one.code !== 0);
+    return upgrade && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs", ...(full ? ["--full"] : [])])] : [];
   }).then(list => Promise.all(list));
   const first = await Promise.all([typecheck, build]);
   const results = [...await Promise.all(units), ...await journeys, ...await upgraded];
   for (const one of [...first, ...results]) { console.log(`== ${one.label}`); console.log(readFileSync(one.log, "utf8")); }
   console.log("== summary");
   console.log(`plan: ${plan.why}`);
+  if (parts.failure()) console.log(`failed: ${parts.failure()}`);
+  if (ci.passed) console.log(`unit suite reused: ${ci.why}; ${localUnits.length} macOS files run locally`);
+  if (!upgrade) console.log("upgrade path not run: no store, migration or schema changes");
   for (const one of first.filter(each => each.code !== 0)) console.log(`${one.label}: exit ${one.code}`);
   for (const one of results) {
     console.log(`${one.label}: exit ${one.code}`);
@@ -194,5 +286,5 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   if (results.length === 0 && first.every(one => one.code === 0)) console.log("typecheck and build passed; nothing else to run");
   console.log(`took: ${[...first, ...results].map(one => `${one.label} ${took(one.ms)}`).join(", ")}; whole check ${took(Date.now() - started)}`);
   if (gate !== null) { console.log(gateWords(gate.facts())); gate.close(); }
-  process.exitCode = [...first, ...results].some(one => one.code !== 0) ? 1 : 0;
+  process.exitCode = parts.failure() !== null || [...first, ...results].some(one => one.code !== 0) ? 1 : 0;
 }

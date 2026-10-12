@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * The upgrade path, a release-check step. For every published release from
- * 0.5.0 on (the first npm release: schema v107, the baseline and the oldest
- * schema this build upgrades): install it from npm into a temporary home, give
+ * The upgrade path, a release-check step. Normally the last five stable release
+ * tags plus the baseline and 0.5.0; --full checks every published release from
+ * 0.5.0 on. Separate CPU-bounded processes install each into a temporary home, give
  * it a realistic database made by that release's own code (completed tasks, a
  * finished run that left a process record with no pid, and a completed release
  * candidate), then move it to this candidate three ways:
@@ -44,18 +44,21 @@
  * candidate wrote since is gone from it, kept in the copy set aside (named in
  * the output): going back a version still works.
  *
- *   node scripts/upgrade-path.mjs [--candidate <checkout with dist>] [--versions 0.9.9,0.9.10,0.9.11] [--keep]
+ *   node scripts/upgrade-path.mjs [--full] [--candidate <checkout with dist>] [--versions 0.9.9,0.9.10,0.9.11] [--keep]
  *
  * Needs npm and the registry (reads only). A published release never changes, so
  * each is installed from npm once into a cache (TOOLROLL_UPGRADE_CACHE, or
  * ~/.cache/toolroll-upgrade-path) and copied into every home after. Exits 1
- * when any version fails.
+ * when any version fails, stopping other workers and queued versions.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, hostname, tmpdir } from "node:os";
+import { availableParallelism, homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { limiter } from "./provider-gate.mjs";
+import { runSuite, removeOnExit } from "./suite-lifecycle.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
@@ -90,6 +93,44 @@ export const FIRST_RELEASE = "0.5.0";
 /** Every published release from the first on, oldest first. */
 export function upgradeVersions(published) {
   return lastPublished(published).filter(version => atLeast(version, FIRST_RELEASE));
+}
+
+/** Recent release tags plus a release that creates the current baseline, and the first release. */
+export function selectedVersions(tags, baselineVersion, schemaAt, { full = false } = {}) {
+  const versions = upgradeVersions(tags.map(tag => tag.replace(/^v/, "")));
+  if (full) return versions;
+  const baseline = versions.find(version => schemaAt(`v${version}`) === baselineVersion);
+  if (!baseline) throw Error(`No release tag has baseline schema v${baselineVersion}`);
+  return lastPublished([...new Set([...versions.slice(-5), baseline, FIRST_RELEASE])]);
+}
+
+export function upgradeLanes(value = process.env.TOOLROLL_UPGRADE_WORKERS, cores = availableParallelism()) {
+  const requested = value === undefined ? 4 : Number(value);
+  if (!Number.isInteger(requested) || requested < 1) throw Error("TOOLROLL_UPGRADE_WORKERS must be a positive integer");
+  return Math.min(requested, Math.max(1, cores - 1));
+}
+
+/** Historical stores exceed Git's default 1 MB child-process buffer (v0.5.0 is 1.47 MB). */
+export function historicalSchema(candidate, tag) {
+  const source = execFileSync("git", ["-C", candidate, "show", `${tag}:src/store.ts`], {
+    encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const version = /(?:export\s+)?const\s+SCHEMA_VERSION\s*=\s*(\d+)/.exec(source);
+  if (!version) throw Error(`Unreadable schema version at ${tag}`);
+  return Number(version[1]);
+}
+
+function versionsFor(candidate) {
+  if (flag("versions") && !args.includes("--full")) return lastPublished([...new Set(flag("versions").split(",").filter(Boolean))]);
+  if (!args.includes("--full")) {
+    try {
+      const git = (...argv) => execFileSync("git", ["-C", candidate, ...argv], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      const baseline = Number(/BASELINE_SCHEMA_VERSION\s*=\s*(\d+)/.exec(readFileSync(join(candidate, "src/store-baseline.ts"), "utf8"))?.[1]);
+      return selectedVersions(git("tag", "--merged", "HEAD", "--list", "v*").trim().split("\n"), baseline,
+        tag => historicalSchema(candidate, tag));
+    } catch (error) { console.log(`Upgrade selection unreadable; checking every published release: ${error.message}`); }
+  }
+  return upgradeVersions(JSON.parse(must(sh("npm", ["view", "toolroll", "versions", "--json"]), "npm view toolroll versions")));
 }
 
 /** Tables a fresh database has that `actual` lacks. */
@@ -555,23 +596,27 @@ async function main() {
   const candidateDist = join(candidate, "dist");
   if (!existsSync(join(candidateDist, "bin.js"))) throw Error(`${candidate} has no built dist; build it first.`);
   const candidateVersion = JSON.parse(readFileSync(join(candidate, "package.json"), "utf8")).version;
-  const versions = flag("versions")?.split(",").filter(Boolean)
-    ?? upgradeVersions(JSON.parse(must(sh("npm", ["view", "toolroll", "versions", "--json"]), "npm view toolroll versions")));
+  const versions = versionsFor(candidate);
   const work = realpathSync(mkdtempSync(join(tmpdir(), "upgrade-path-")));
   console.log(`Upgrade path: ${versions.join(", ")} → ${candidateVersion} (${candidate})`);
+  removeOnExit(work, { keep: args.includes("--keep") });
   let failed = 0;
   try {
     const tarball = pack(candidate, work);
-    for (const version of versions) {
-      const at = Date.now();
-      try {
-        const steps = await onePath(version, { candidate, candidateDist, candidateVersion, tarball, work });
-        console.log(`✓ ${version} → ${candidateVersion}: ${steps.join(", ")}; ${Math.round((Date.now() - at) / 1000)} s`);
-      } catch (error) {
-        failed++;
-        console.log(`✗ ${version} → ${candidateVersion} at ${error.step ?? "setup"}: ${error.message}`);
-      }
-    }
+    toolsDir(work); // Shared immutable tools, made before workers can race to create them.
+    const lanes = upgradeLanes();
+    console.log(`Upgrade workers: ${lanes}`);
+    const slot = limiter(lanes), abort = new AbortController();
+    await Promise.all(versions.map(version => slot(async () => {
+      if (abort.signal.aborted) return;
+      const one = await runSuite({ command: process.execPath,
+        args: [SELF, "--path", JSON.stringify({ version, candidate, candidateDist, candidateVersion, tarball, work })],
+        signal: abort.signal,
+        onExit: code => { if (code !== 0 && !abort.signal.aborted) { console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: exit ${code}`); abort.abort(); } },
+      });
+      console.log(one.output.toString());
+      if (one.code !== 0) { failed++; console.log(`✗ ${version} → ${candidateVersion}: exit ${one.code}; ${Math.round(one.ms / 1000)} s`); }
+    })));
   } finally {
     if (args.includes("--keep")) console.log(`kept: ${work}`); else rmSync(work, { recursive: true, force: true });
   }
@@ -580,7 +625,12 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === SELF) {
-  const modes = { seed, fresh, baseline, facts, stage, inspect, hold, release, longText, rollback, schemas, rolledBack };
+  const modes = { path: async ({ version, ...options }) => {
+    const at = Date.now();
+    const steps = await onePath(version, options);
+    console.log(`✓ ${version} → ${options.candidateVersion}: ${steps.join(", ")}; ${Math.round((Date.now() - at) / 1000)} s`);
+    return { version };
+  }, seed, fresh, baseline, facts, stage, inspect, hold, release, longText, rollback, schemas, rolledBack };
   const mode = Object.keys(modes).find(name => args[0] === `--${name}`);
   if (mode) {
     modes[mode](JSON.parse(args[1])).then(value => { process.stdout.write(`\n${JSON.stringify(value)}\n`); }, error => { process.stderr.write(`${error?.stack ?? error}\n`); process.exitCode = 1; });

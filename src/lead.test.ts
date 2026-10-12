@@ -128,7 +128,7 @@ describe("the lead's turn", () => {
     });
 
   test("the intake contract treats one outcome as enough and asks only material questions", () => {
-    expect(LEAD_CONTRACT_VERSION).toBe(48);
+    expect(LEAD_CONTRACT_VERSION).toBe(49);
     expect(LEAD_CONTRACT).toContain("Ready is a saved result, not a reviewer stage");
     expect(LEAD_CONTRACT).toContain("Historical missing assessments never require rerunning work");
     expect(LEAD_CONTRACT).toContain("call get_result_images for that exact execution and run");

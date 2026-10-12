@@ -7,6 +7,7 @@ import { gateWords } from "../approval-policy.js";
 import { type AssignmentCard,assignmentCardOf,assignmentStatusOf,assignmentSummaryHtml } from "../assignment-ui.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { holdOwnerWords } from "../board.js";
+import { baseStandingWords, type TaskBaseView } from "../task-base.js";
 import { type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
@@ -1476,6 +1477,8 @@ export function taskBodyParts(data: {
   /** The pull request opened through Complete (its state, link, CI and merge), or the offer to open one for a
    * result already marked complete; null when neither applies. */
   pullRequest?: TaskPullRequest | null;
+  /** Fresh base: the commit this task's work starts from, and how far current main has moved past it. */
+  base?: TaskBaseView | null;
   /** The task's whole family (the original and its revisions) and every attempt across it, for the thread. */
   family?: { root: { id: string; title: string; createdAt: string; goal?: string | null }; versions: { id: string; title: string; state: string }[]; runs: (Run & { taskId: string })[] } | null;
   /** Degraded composition (slice 1c). "sensitive": the page carries a
@@ -2584,6 +2587,7 @@ export function taskBodyParts(data: {
   const work: BrowserTaskFact[] = [];
   work.push({ label: "Status", parts: [data.assignment != null && assignmentOptions !== null ? assignmentCardOf(data.assignment, assignmentOptions).status.headline : status.label] });
   if (data.repo !== null) work.push({ label: "Project", parts: [projectName(data.repo)] });
+  if (data.base != null) work.push({ label: "Base", parts: [baseStandingWords(data.base)] });
   work.push({ label: "Agent", parts: [lastRunForAgent !== undefined ? `${lastRunForAgent.provider}${lastRunForAgent.model === null ? "" : ` · ${lastRunForAgent.model}`} on ${lastRunForAgent.runner}`
     : data.route?.legacy != null ? `${data.route.legacy.provider} · ${data.route.legacy.model}` : "The project's default"] });
   if (scope !== null) work.push({ label: "Checks level", parts: [qualityModeTitle(scope.qualityMode ?? "default")] });

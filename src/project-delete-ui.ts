@@ -24,6 +24,7 @@ export const PROJECT_DELETE_CSS = `.project-settings,.project-delete{max-width:7
   `.project-settings .build-access a.manage-tools:hover{background:var(--so-raised)}.project-settings .build-access a.manage-tools:focus-visible,.project-settings .build-access summary:focus-visible{outline:2px solid var(--so-ink);outline-offset:2px}`;
 
 export type ProjectSettingsView = {
+  remoteUrl?: string | null;
   repo: string; name: string; holdings: ProjectHoldings; running: string[]; canDelete: boolean;
   /** How many of its tasks build at once: the saved number, what its worker allows, how many build now. */
   builds?: { setting: number; capacity: number | null; building: number; canChange: boolean };
@@ -70,7 +71,10 @@ const note = (notice: { said?: string | null; problem?: string | null }) =>
 /** The project's page: its path, what Toolroll holds for it, and (for an instance operator) Delete project. */
 export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: string | null; problem?: string | null }): Html {
   const held = html`<p>Toolroll holds ${holdingsWords(view.holdings)} for <strong>${view.name}</strong>.</p>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${buildsHtml(view)}${accessHtml(view)}`;
+  const remote = html`<section class="build-access recorded-remote" aria-labelledby="recorded-remote-title"><h2 id="recorded-remote-title">Recorded remote</h2>${view.remoteUrl
+    ? html`<p class="path">${view.remoteUrl}</p>`
+    : html`<p>No remote recorded. Landed work waits for your review.</p>`}<details><summary>Change remote</summary><p>An owner or instance operator can run:</p><p class="path">toolroll repos add &lt;project&gt; --remote &lt;url&gt;</p></details></section>`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`

@@ -22,15 +22,19 @@ import type { Located } from "./orphan-sweep.js";
 import type { ProcessRow } from "./run-closeout.js";
 import { linkInto, sharedCopies } from "./shared-deps.js";
 import { runtimesInUse } from "./staged-runtimes.js";
-import { dailyStorageSweep as sweepDaily, lastSweep, nextSweepAt, RETRY_MS, saveSweep, sweepDetails, executeSweep as sweepStorage, sweepWords, SWEEP_EVERY_MS, type SweepDeps, type SweepPart, type SweepRecord } from "./storage-sweep.js";
+import { lastSweep, nextSweepAt, RETRY_MS, saveSweep, sweepDetails, executeSweep as sweepStorage, sweepWords, SWEEP_EVERY_MS, type SweepDeps, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { sweepStorage as childSweep, liveUse } from "./storage-sweep.js";
 import { sweepObservations } from "../test/sweep-observations.js";
 import { storageSweepSupervisor, type SweepCompletion } from "./storage-sweep-process.js";
+import { idleStorageSweep, type SweepSchedule } from "./storage-sweep-schedule.js";
+import { registerRunner } from "../test/tick-kit.js";
 
-// The direct seam is only for small deterministic unit tests. Production always uses the child.
+// The direct seam is only for small deterministic unit tests. Production always uses the child. Only the service
+// (a caller with an owner) claims a sweep.
+const service = {};
 const dailyStorageSweep = (store: Store, deps: SweepDeps, now: () => Date) => new Promise<SweepRecord | null>((resolve, reject) => {
   let launched = false;
-  sweepDaily(store, deps, now, {
+  idleStorageSweep(store, { owner: service, ...deps }, now, {
     running: false, stop() {},
     start(_request, complete) {
       launched = true;
@@ -151,47 +155,63 @@ test("extra staged runtimes are swept; with no runtime in use, every runtime sta
   expect(readdirSync(staged).sort()).toEqual(["browser-a", "browser-b", "browser-c"]);
 });
 
-test("the worker's own pass sweeps by itself, and toolroll storage shows what and when", async () => {
+test("a one-shot reconcile neither claims nor loses the sweep; the service's own pass sweeps it, and toolroll storage shows what, when and why", async () => {
   const repo = join(dir, "repo");
   mkdirSync(repo);
   for (const args of [["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"], ["commit", "-q", "--allow-empty", "-m", "first"]]) await run("git", args, { cwd: repo });
-  register(store, { name: "builder-1", host: "test", now: new Date() });
   store.close();
+  const token = registerRunner(file, "builder-1", repo, new Date());
   const stale = leftovers(2);
-  const options = { databaseFile: file, evidenceRoot: join(dir, "evidence"), tempRoots: [temp] };
+  let done = false;
+  const options = { databaseFile: file, evidenceRoot: join(dir, "evidence"), tempRoots: [temp], shouldStop: () => done };
   let lines: string[] = [];
   const cli = async (command: string, argv: string[]) => { lines = []; const code = await runOperate(command, argv, line => { lines.push(line); }, options); return { code, out: lines.join("\n") }; };
   const empty = await cli("storage", []);
-  expect(empty.out).toContain("Automatic sweep: not run yet; it runs once a day.");
-  // The pass only launches the sweep's child; it finishes later. Wait for the supervisor to hand its result over (the
-  // record is saved inside that same callback), however long the child takes on a busy machine.
+  expect(empty.out).toContain("Not swept yet.");
+  expect(empty.out).toContain("Automatic sweep: waiting: no Toolroll service running.");
+  // Wait for the supervisor to hand its result over (the record is saved inside that same callback), however long the
+  // child takes on a busy machine.
   const supervisor = storageSweepSupervisor(file);
   const start = supervisor.start.bind(supervisor);
   let finished!: (result: SweepCompletion) => void;
   const completion = new Promise<SweepCompletion>(resolve => { finished = resolve; });
   const launch = vi.spyOn(supervisor, "start").mockImplementation((request, complete, owner) =>
-    start(request, result => { try { complete(result); } finally { finished(result); } }, owner));
+    start(request, result => { try { complete(result); } finally { finished(result); done = true; } }, owner));
   cleanups.push(() => launch.mockRestore());
+  // A one-shot reconcile exits before a child would finish: it leaves the sweep, unclaimed, to the service.
   const pass = await cli("reconcile", ["--repo", repo, "--pool", join(dir, "worktrees"), "--json"]);
   expect(pass.code).toBe(0);
   expect(JSON.parse(pass.out).storageSweep).toBeNull();
+  expect(launch).not.toHaveBeenCalled();
+  store = openStore(file);
+  expect(store.serviceCursor("storage-sweep")).toBe(0);
+  expect(lastSweep(store)).toBeNull();
+  store.close();
+  for (const path of stale) expect(existsSync(path)).toBe(true);
+  // The long-lived service's pass claims it and saves what it did; its stop fence lands once the sweep is saved.
+  const watch = await cli("watch", ["--runner", "builder-1", "--token", token, "--repo", repo, "--pool", join(dir, "worktrees"),
+    "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "25", "--json"]);
+  expect(watch.code, watch.out).toBe(0);
   expect(launch).toHaveBeenCalledTimes(1);
   expect(await completion).toMatchObject({ ok: true });
-  // runOperate already closed its store: the supervised completion saved through its own handle.
   store = openStore(file);
   expect(lastSweep(store)?.parts.find(one => one.kind === "test temp")).toMatchObject({ count: 2 });
   store.close();
   for (const path of stale) expect(existsSync(path)).toBe(false);
   const shown = await cli("storage", []);
   expect(shown.out).toMatch(/Last swept .+ automatically: Removed 2 test temp folders\./);
+  // The service has stopped, so the next sweep says what it waits for.
+  expect(shown.out).toContain("Automatic sweep: waiting: no Toolroll service running.");
   expect(shown.out).toContain(`  ${stale[0]}`);
-  const json = JSON.parse((await cli("storage", ["--json"])).out) as { sweep: { last: { source: string; parts: SweepPart[] }; next: string } };
+  const json = JSON.parse((await cli("storage", ["--json"])).out) as { sweep: { last: { source: string; parts: SweepPart[] }; schedule: SweepSchedule } };
   expect(json.sweep.last.source).toBe("automatic");
   expect(json.sweep.last.parts.map(one => one.kind)).toEqual(["test temp", "orphans", "checkouts", "runtimes", "dependencies"]);
-  expect(Date.parse(json.sweep.next)).toBeGreaterThan(Date.now());
-  // A second pass the same day doesn't sweep again.
+  expect(json.sweep.schedule).toMatchObject({ state: "no-service", busy: null });
+  expect(Date.parse(json.sweep.schedule.nextAt!)).toBeGreaterThan(Date.now());
+  // A later one-shot pass doesn't sweep again either.
   const again = JSON.parse((await cli("reconcile", ["--repo", repo, "--pool", join(dir, "worktrees"), "--json"])).out) as { storageSweep: unknown };
   expect(again.storageSweep).toBeNull();
+  expect(launch).toHaveBeenCalledTimes(1);
   store = openStore(file);
 });
 
@@ -344,11 +364,18 @@ test("the runtime the CLI links point to stays, on PATH or not; another extra ru
 const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date().toISOString(), cleanup: "finished", manual: true, go: [], stay: [], count: 0, totalBytes: 0, freeBytes: 0, waitingReview: 0, withChanges: 0, ...more });
 const part = (kind: SweepPart["kind"], count: number, more: Partial<SweepPart> = {}): SweepPart => ({ kind, count, bytes: 0, failed: 0, items: [], ...more });
 
-test("Settings → Storage says when the last sweep ran and what it did, in one line; its paths sit behind Details", () => {
+test("Settings → Storage says when the last sweep ran and what it did, then why the next waits; its paths sit behind Details", () => {
   const view = (last: Parameters<typeof storageHtml>[0]["sweep"]) => htmlString(withFormToken("c".repeat(64), () => storageHtml({ plan: plan(), csrf: "c".repeat(64), ...(last === undefined ? {} : { sweep: last }) }, {})));
-  expect(view({ last: null, off: false })).toContain("Toolroll sweeps leftovers once a day. It hasn't run yet.");
-  expect(view({ last: null, off: true })).toContain("Automatic sweep is off.");
+  const schedule = (state: SweepSchedule["state"], more: Partial<SweepSchedule> = {}): SweepSchedule => ({ state, lastAt: null, nextAt: null, busy: null, ...more });
+  const never = view({ last: null, off: false, schedule: schedule("no-service") });
+  expect(never).toContain("<p>Not swept yet.</p>");
+  expect(never).toContain('<p class="meta" data-sweep-state="no-service">Automatic sweep: waiting: no Toolroll service running.</p>');
+  expect(never).not.toContain("idle");
+  expect(view({ last: null, off: true, schedule: schedule("off") })).toContain("Automatic sweep: off.");
+  expect(view({ last: null, off: false, schedule: schedule("busy", { busy: "run" }) })).toContain("Automatic sweep: due, waiting: work is running.");
   const at = "2026-10-04T03:12:00.000Z";
+  const recent = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 1)] }, off: false, schedule: schedule("recent", { lastAt: at, nextAt: "2026-10-05T03:12:00.000Z" }) });
+  expect(recent).toMatch(/Swept <time datetime="2026-10-04T03:12:00.000Z">[^<]+<\/time>\. Removed 1 test temp folder\.<\/p><p class="meta" data-sweep-state="recent">Automatic sweep: swept recently, next due Oct \d+, \d+:12 [AP]M\.<\/p>/);
   const normal = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 104_990, { items: ["/tmp/so-route-cli-1"] }), part("orphans", 1, { items: ["node (4123), 4 days, in /state/worktrees/site/build-1"] }), part("checkouts", 2, { bytes: 600 * 1024 ** 2 })] } });
   expect(normal).toContain(`<time datetime="${at}">`);
   expect(normal).toContain("Removed 104,990 test temp folders and 2 finished checkouts, about 600 MB. Stopped 1 leftover process.");

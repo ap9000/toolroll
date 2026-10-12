@@ -15,7 +15,7 @@ Unit tests are kept only where an end-to-end run can't be the guard.
 | `npm run e2e:app:parallel` | The same journeys as `e2e:app`, in groups that run at once, each in its own world. A group with failed journeys runs once more in a fresh world with just those journeys and what they need; one that passes then is listed as flaky. Prints each group's report and fails if any group still fails. |
 
 Each run makes a throwaway world (`scripts/e2e-kit.mjs`) and writes
-`output/e2e/<run>-<time>/report.md`, with screenshots and a picture of every
+`output/e2e/<name>-<time>/report.md`, with screenshots and a picture of every
 open page when a check fails. `--only <pattern>` runs just some checks;
 `--keep` keeps the world to look at.
 
@@ -63,18 +63,59 @@ real-model journeys `claude` signed in, and an OpenRouter key in Settings → AI
 providers for Jev. A real run spends a few Claude turns and a few real builds
 (about 45 minutes for both); a scripted one spends none.
 
-The release gate (`scripts/release-check.mjs`) runs the full unit suite,
-every scripted browser journey and the upgrade path for changes beyond docs,
+The release gate (`scripts/release-check.mjs`) selects the unit suite and
+every scripted browser journey for changes beyond docs,
 evidence, design notes or a version-only bump, compared with the latest `v*`
 release tag reachable from the candidate (`HEAD`, including lightweight tags).
 A version-only release PR therefore includes code merged since that release.
-Without a reachable release tag, or with no difference from it, the full suite
-runs. Tags come from the checkout; `--base <ref>` overrides the comparison.
+Without a reachable release tag, or with no difference from it, the unit and
+journey suites run; upgrades use the separate comparison below. Tags come from the checkout; `--base <ref>` overrides the comparison.
 `node scripts/release-check.mjs --plan` shows the baseline and selected checks.
-Unit tests are never selected by changed files. Typecheck, build and units
-start together; unit setup waits
+Units normally run in full. Before starting, the check queries GitHub through
+`gh api` for `ci.yml` on the exact candidate SHA. Only a clean checkout and
+the latest completed successful push-event run, with every workflow job (including both
+unit matrix legs) concluded `success` on that SHA, can replace the unit suite.
+Skipped, pending, missing, failed, unreadable or unknown results run it locally.
+The latest run attempt is used; an older green attempt cannot hide a failure.
+All test files mentioning macOS, Darwin, sandbox-exec or launchctl still run
+on macOS, including native sandbox, boot identity and browser tests. An
+unreadable local selection falls back to all units. `--full` never reuses CI.
+
+Typecheck, build and local units start together; unit setup waits
 for the build, and browser journeys and the upgrade path start after it passes.
 Browser journeys also stay held if typecheck has already failed.
+
+The upgrade path uses `git diff <last reachable release tag>` (including local
+tracked edits), plus new untracked files. It skips only when every changed
+path is clearly unrelated: docs/evidence/design, browser code/CSS, tests,
+standalone app/flow journey runners, or a verified version-only package bump.
+All other paths run upgrades, including store imports, SQL-bearing modules,
+chat tables and migrations, updater code, and unknown scripts. Unreadable
+history or untracked-file discovery runs upgrades. `--base` does not
+override this migration safety comparison. The normal sample
+is the last five stable reachable release tags, a release with schema equal
+to `BASELINE_SCHEMA_VERSION`, and 0.5.0, deduplicated. The baseline is found
+from the tagged store source with a 64 MB Git read buffer, not a hard-coded schema number. Unknown tag or
+baseline history falls back to every published version from 0.5.0.
+`--full` runs every published version, regardless of the diff. Each version
+runs in a separate process and temporary home with all existing update, npm,
+completion-preservation and rollback checks. Workers default to four, bounded
+by available CPUs minus one (minimum one); `TOOLROLL_UPGRADE_WORKERS` may lower
+or raise the requested count within that CPU bound.
+
+Scripted release journeys cap build/settle polling at 90 seconds;
+`TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS` changes that limit. A timeout is a
+failure. The first hard failure in a journey, upgrade worker, build, typecheck
+or units stops the other parts and queued work. Scripted journeys never retry;
+real-model journeys retain their existing retry and report-validation policy,
+and a failure after that policy is exhausted stops the check.
+The failure is printed immediately; cleanup is awaited before the normal
+per-part timing summary. Release journey reports are under
+`evidence/release-<pid>/<part>/`. Standalone app/flow scripts use
+`output/e2e/<name>-<time>/`; the parallel wrapper defaults to `evidence/<script>-parallel-<time>/`.
+Standalone runners retain their retry policy.
+The target is 6–8 minutes for a passing small check and under three minutes to
+report a scripted failure; actual wall time remains visible in the summary.
 
 Browser concurrency is fixed at two flow lanes and four app lanes per runner.
 Unit workers default to `min(8, max(2, cores - 1))`, using Node's available
@@ -84,16 +125,17 @@ admission gate or memory-based lane sizing.
 Real-model journeys run when model-facing code changes (the lead, chat,
 planner, builder or provider adapters), with `--real`, or for a full check.
 `--full` (or `TOOLROLL_FULL_CHECK=1`) runs every unit test and every scripted
-and real-model journey. The plan names what runs and why; the summary reports
+and real-model journey, and every published upgrade path. The plan names what runs and why; the summary reports
 results, model calls and time for each part. The nightly real-model journeys
 flow (`scripts/flows/real-model-journeys.mjs`) runs both scripts with real models.
 
-Only real provider turns use `scripts/provider-gate.mjs`. The runners share
-a cap of four Claude/Codex turns, including other sessions on this computer;
-`TOOLROLL_CHECK_PROVIDERS=<n>` overrides it. Other sessions always leave room
-for one check turn. Scripted journeys use no provider slots. The summary
-reports provider concurrency and waits. Standalone `scripts/e2e-parallel.mjs`
-uses the same fixed lane defaults and provider gate for real-model journeys.
+Only real provider turns use `scripts/provider-gate.mjs`. Release checks share
+four reserved real-turn slots across both runners; `TOOLROLL_CHECK_PROVIDERS`
+configures that check's cap. Other local sessions are recorded but do not
+reduce this release-only allowance to one. Scripted journeys take no slots.
+Standalone runners retain the shared-computer cap of four (configurable by
+the same variable), with other sessions leaving at least one check slot.
+The summary reports observed concurrency and waits.
 
 ## CI
 

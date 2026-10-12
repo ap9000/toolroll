@@ -45,9 +45,10 @@ export const LANES = 4;
  * `retry`) runs again as `<group>-retry` as soon as its first run ends, `first` its first result; the retry takes a
  * lane like any start. Each result gets `ms` and `minutes`, timed by `now`.
  */
-export async function runGroups({ groups, limit, run, retry = true, now = () => Date.now() }) {
+export async function runGroups({ groups, limit, run, retry = true, signal = null, now = () => Date.now() }) {
   const slot = limiter(limit);
   const timed = (group, folder, first) => slot(async () => {
+    if (signal?.aborted) return { group, folder, code: 130, cancelled: true, ms: 0, minutes: 0 };
     const at = now();
     const one = await run(group, folder, first);
     const ms = now() - at;
@@ -63,7 +64,9 @@ export async function runGroups({ groups, limit, run, retry = true, now = () => 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [script, ...given] = process.argv.slice(2);
   if (script === undefined) { console.error("Usage: node scripts/e2e-parallel.mjs <script.mjs> [--no-retry] [--at-once <n>] [--output <dir>] [options for every group]"); process.exit(2); }
-  const retry = !given.includes("--no-retry");
+  const failFast = process.env.TOOLROLL_RELEASE_FAIL_FAST === "1";
+  const abort = new AbortController();
+  const retry = !failFast && !given.includes("--no-retry");
   const keep = given.includes("--keep");
   const at = given.indexOf("--output");
   const onceAt = given.indexOf("--at-once");
@@ -116,6 +119,13 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       // processes.json (a run killed outright never reaches its own finally), is stopped, then the folder goes, before a
       // retry starts (scripts/suite-lifecycle.mjs).
       const one = await runSuite({
+        signal: abort.signal,
+        onExit: code => {
+          if (failFast && code !== 0 && !abort.signal.aborted) {
+            console.error(`TOOLROLL_CHECK_FAILURE ${name}/${group}: exit ${code}`);
+            abort.abort();
+          }
+        },
         command: process.execPath, args: [script, "--group", group, "--output", join(out, folder), ...extra], prefix: "so-e", keep, onData: print,
         beforeRemove: async () => {
           const left = await stopLeftovers(join(out, folder));
@@ -125,10 +135,11 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       if (partial !== "") console.log(`${tag} ${partial}`);
       return { code: one.code, signal: one.signal, journeys };
     };
-    return gate === null ? start() : gate.hold(`${name} ${folder}`, start);
+    if (abort.signal.aborted) return { code: 130, cancelled: true };
+    return gate === null ? start() : gate.hold(`${name} ${folder}`, start, { signal: abort.signal });
   };
 
-  const runs = await runGroups({ groups: groups.map(one => one.name), limit, run, retry });
+  const runs = await runGroups({ groups: groups.map(one => one.name), limit, run, retry, signal: abort.signal });
   const first = runs.map(each => each.one);
   const again = runs.flatMap(each => each.again === null ? [] : [each.again]);
   /** A retry passes only on its report: every journey that failed the first time, and the browser-error check,

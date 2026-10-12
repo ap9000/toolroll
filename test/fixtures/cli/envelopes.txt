@@ -123,10 +123,10 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "repos add",
-      "synopsis": "add a project: a Git repository, in the console at once; the lead adds with its token",
+      "synopsis": "add a project: a Git repository, in the console at once; the lead adds with its token; --remote records or replaces its trusted remote",
       "audience": "agent",
       "agentMayInvoke": true,
-      "mutation": "identity-idempotent",
+      "mutation": "unkeyed",
       "positionals": [
         {
           "name": "path",
@@ -144,6 +144,11 @@ $ contract --commands --json → 0
           "name": "token",
           "takesValue": true,
           "meaning": "the lead token (or TOOLROLL_LEAD_TOKEN)"
+        },
+        {
+          "name": "remote",
+          "takesValue": true,
+          "meaning": "an HTTPS or SSH URL without credentials whose main may complete landed work; replaces a different recorded one (owner or an instance operator's lead only)"
         }
       ],
       "notableReasons": [
@@ -5144,6 +5149,7 @@ $ task show t-readme --json → 0
     "source": null,
     "problem": "approvals bind exact routing — the planner (claude) has no exact model: set one once with `config set plan --provider claude --model <model>`"
   },
+  "base": null,
   "runs": [],
   "deliverable": "branch",
   "report": null,

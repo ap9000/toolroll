@@ -16,6 +16,7 @@ import { sharedActionNeedsReview, sharedActionPayload } from "./chat-actions.js"
 import { confirmLeadProposal } from "./lead-doors.js";
 import { executeLeadTool } from "./lead-tools.js";
 import { confirmedLink } from "./chat-channel.js";
+import { LEAD_CONTRACT } from "./lead-contract.js";
 
 describe("steps into a drawing", () => {
   const steps = [
@@ -134,6 +135,20 @@ describe("the lead builds and runs a flow", () => {
     expect(changed.terms.join("\n")).not.toMatch(/[\\/]/);
     expect(sharedActionNeedsReview(changed)).toBe(false);
     expect(confirm(edited)).toMatchObject({ ok: true });
+  });
+
+  test("a requested reply-and-approve flow is drafted with no chat app or email set up, and the lead is told to draft it anyway", () => {
+    // This fresh store has nothing connected: no Telegram, Slack, Discord, Teams or mail.
+    const created = proposalOf(lead("propose_flow", { operation: "create", repo: "r1", name: "Customer replies", steps: [
+      { title: "New questions", kind: "inbox" }, { title: "Draft a reply", kind: "draft" }, { title: "Approve or edit", kind: "approval", decider: "me" }, { title: "Post to the team", kind: "notify" },
+    ] }));
+    const drafted = sharedActionPayload(store.getLeadProposal(created)!.payload)!;
+    expect(drafted.title).toBe("Create the Customer replies flow in shop");
+    expect(drafted.terms.join("\n")).toContain("Claude writes:");
+    expect(confirm(created)).toMatchObject({ ok: true });
+    expect(store.listFlows([repo]).map(one => one.name)).toEqual(["Customer replies"]);
+    expect(LEAD_CONTRACT).toContain("call propose_flow and draft it even if an integration it uses (a chat app, email) isn't set up yet");
+    expect(LEAD_CONTRACT).toContain("Say a draft or any tool call failed only when a tool result this turn said so");
   });
 
   test("a flow term containing an actual filesystem path still needs secure review", () => {

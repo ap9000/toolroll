@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { partTempRoot, planFor, versionOnly } from "../scripts/release-check.mjs";
-import { atLeast, completionProblems, FIRST_RELEASE, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, upgradeVersions } from "../scripts/upgrade-path.mjs";
+import { journeyEnv, upgradeChanges, needsUpgrade, partRunner, partTempRoot, planFor, releaseTagProblem, versionOnly } from "../scripts/release-check.mjs";
+import { historicalSchema, atLeast, completionProblems, FIRST_RELEASE, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, selectedVersions, upgradeLanes, upgradeVersions } from "../scripts/upgrade-path.mjs";
 import { gateWords, openGate, providerCap } from "../scripts/provider-gate.mjs";
+import { ciJobNames, ciSucceeded, macUnitFiles, passedCandidateCI } from "../scripts/release-check-ci.mjs";
 import { fakePid } from "../test/fake-pid.js";
 
 const pkg = (version: string, dependencies: Record<string, string> = { zod: "^3.23.0" }) => JSON.stringify({ name: "toolroll", version, type: "module", dependencies }, null, 2) + "\n";
@@ -27,6 +28,8 @@ const repoWith = (dir: string, base: Record<string, string>, change: Record<stri
   return at;
 };
 const script = resolve(import.meta.dirname, "../scripts/release-check.mjs");
+/** These fixture repositories have no origin: compare with their own tags. */
+const LOCAL_TAGS = { ...process.env, TOOLROLL_RELEASE_LOCAL_TAGS: "1" };
 
 describe("a release's version bump", () => {
   test("only the project's own version changed: not a dependency change", () => {
@@ -85,7 +88,7 @@ describe("node scripts/release-check.mjs", () => {
     const planOf = (change: Record<string, string>) => {
       const at = fresh();
       const base = repoWith(at, { "package.json": pkg("0.9.5"), "package-lock.json": lock("0.9.5"), "store.ts": "export const a = 1;\n" }, change);
-      return execFileSync(process.execPath, [script, "--plan", "--base", base], { cwd: at, encoding: "utf8" }).trim();
+      return execFileSync(process.execPath, [script, "--plan", "--base", base], { cwd: at, encoding: "utf8", env: LOCAL_TAGS }).trim();
     };
     expect(planOf({ "package.json": pkg("0.9.6"), "package-lock.json": lock("0.9.6") }))
       .toMatch(/\(2 changed files\): nothing a test reads changed; only the version changed in package-lock\.json and package\.json\.$/);
@@ -105,10 +108,54 @@ describe("node scripts/release-check.mjs", () => {
     writeFileSync(join(at, "CHANGELOG.md"), "# Release notes\n");
     gitIn(at, "add", "."); gitIn(at, "commit", "-qm", "notes");
     gitIn(at, "tag", "candidate-only");
-    const out = execFileSync(process.execPath, [script, "--plan"], { cwd: at, encoding: "utf8" });
+    const out = execFileSync(process.execPath, [script, "--plan"], { cwd: at, encoding: "utf8", env: LOCAL_TAGS });
     expect(out).toContain("Release check against v0.9.5 (1 changed files): only docs, evidence or design notes changed.");
-    const override = execFileSync(process.execPath, [script, "--plan", "--base", base], { cwd: at, encoding: "utf8" });
+    const override = execFileSync(process.execPath, [script, "--plan", "--base", base], { cwd: at, encoding: "utf8", env: LOCAL_TAGS });
     expect(override).toContain(`Release check against ${base} (2 changed files): every unit test.`);
+  });
+
+  test("a checkout missing origin's newer release tags fetches them, and is refused when it still can't reach them", () => {
+    expect(releaseTagProblem("0.9.62", "v0.9.61", ["v0.9.6", "v0.9.59", "v0.9.60", "v0.9.61"])).toBeNull();
+    expect(releaseTagProblem("0.9.62", "v0.9.59", ["v0.9.59", "v0.9.60", "v0.9.61"])).toMatch(/newest release tag is v0\.9\.59, but origin has v0\.9\.61/);
+    expect(releaseTagProblem("0.9.62", null, ["v0.9.61"])).toMatch(/newest release tag is none/);
+    // A tag of this very version (a re-run after tagging) or a newer line isn't the release before it.
+    expect(releaseTagProblem("0.9.62", "v0.9.61", ["v0.9.61", "v0.9.62", "v1.0.0"])).toBeNull();
+    expect(releaseTagProblem("0.9.62", "v0.9.61", null)).toMatch(/Couldn't read origin's release tags/);
+    expect(releaseTagProblem(null, null, null)).toBeNull();
+    // For real: origin has v0.9.60 and v0.9.61; the checkout was cloned before them and its own tags stop at v0.9.59.
+    const at = fresh();
+    const origin = join(at, "origin.git"), work = join(at, "work");
+    mkdirSync(work);
+    const first = repoWith(work, { "package.json": pkg("0.9.59") }, { "package.json": pkg("0.9.60") });
+    gitIn(work, "tag", "v0.9.59", first);
+    execFileSync("git", ["clone", "-q", "--bare", work, origin]);
+    gitIn(work, "remote", "add", "origin", origin);
+    gitIn(work, "tag", "v0.9.60");
+    writeFileSync(join(work, "package.json"), pkg("0.9.61")); gitIn(work, "commit", "-qam", "0.9.61"); gitIn(work, "tag", "v0.9.61");
+    gitIn(work, "push", "-q", "origin", "HEAD:refs/heads/main", "v0.9.60", "v0.9.61");
+    writeFileSync(join(work, "package.json"), pkg("0.9.62")); gitIn(work, "commit", "-qam", "0.9.62");
+    for (const tag of ["v0.9.60", "v0.9.61"]) gitIn(work, "tag", "-d", tag);
+    const plan = () => execFileSync(process.execPath, [script, "--plan"], { cwd: work, encoding: "utf8", env: { ...process.env, TOOLROLL_RELEASE_LOCAL_TAGS: "" } });
+    // The best-effort fetch brings the tags back: it compares with v0.9.61.
+    expect(plan()).toContain("Release check against v0.9.61");
+    // When the fetch can't bring them (the tag isn't reachable here) or origin can't be read, it stops in words.
+    for (const tag of ["v0.9.60", "v0.9.61"]) gitIn(work, "tag", "-d", tag);
+    gitIn(work, "remote", "set-url", "origin", join(at, "missing.git"));
+    expect(() => execFileSync(process.execPath, [script, "--plan"], { cwd: work, encoding: "utf8", stdio: "pipe", env: { ...process.env, TOOLROLL_RELEASE_LOCAL_TAGS: "" } })).toThrow(/Couldn't read origin's release tags/);
+  });
+
+  test("upgrade comparison uses the last release tag even when --base points at HEAD, including local edits", () => {
+    const at = fresh();
+    const base = repoWith(at, { "src/store.ts": "export const old = true;", "scripts/upgrade-path.mjs": "" }, { "src/store.ts": "export const changed = true;" });
+    gitIn(at, "tag", "v0.9.60", base);
+    const plan = () => execFileSync(process.execPath, [script, "--plan", "--base", "HEAD"], { cwd: at, encoding: "utf8", env: LOCAL_TAGS });
+    expect(plan()).toContain("upgrade path: last five release tags, baseline and 0.5.0");
+    gitIn(at, "tag", "v0.9.61");
+    expect(plan()).not.toContain("upgrade path:");
+    writeFileSync(join(at, "src/store.ts"), "export const local = true;");
+    expect(plan()).toContain("upgrade path:");
+    const full = execFileSync(process.execPath, [script, "--plan", "--full"], { cwd: at, encoding: "utf8", env: LOCAL_TAGS });
+    expect(full).toContain("the upgrade path from every release since 0.5.0");
   });
 
   test("a run: the unit tests start beside the build and wait for its outcome; the summary keeps its lines and says how long each part took", () => {
@@ -119,11 +166,38 @@ describe("node scripts/release-check.mjs", () => {
     const manifest = (version: string) => JSON.stringify({ name: "toolroll", version, scripts }, null, 2) + "\n";
     const at = fresh();
     const base = repoWith(at, { "package.json": manifest("0.9.5"), "units.cjs": units }, { "package.json": manifest("0.9.6"), "test/setup.ts": "export {};\n" });
-    const out = execFileSync(process.execPath, [script, "--base", base], { cwd: at, encoding: "utf8", env: { ...process.env, TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } });
+    const out = execFileSync(process.execPath, [script, "--base", base], { cwd: at, encoding: "utf8", env: { ...LOCAL_TAGS, TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } });
     expect(out).toContain("(2 changed files): every unit test; only the version changed in package.json.");
     const summary = out.slice(out.indexOf("== summary"));
-    expect(summary.split("\n").slice(0, 4)).toEqual(["== summary", "plan: every unit test; only the version changed in package.json", "unit: exit 0", " Test Files  1 passed (1) after ok"]);
+    expect(summary).toContain("unit: exit 0\n Test Files  1 passed (1) after ok");
     expect(summary).toMatch(/\ntook: typecheck \d+ s, build \d+ s, unit \d+ s; whole check \d+ s\n$/);
+  });
+
+  test("exact CI reuse runs macOS files locally, while --full still invokes the entire unit suite", () => {
+    const at = fresh();
+    const manifest = JSON.stringify({ name: "fixture", scripts: { typecheck: "node -e 0", build: "node -e 0", test: "node units.cjs" } });
+    const gh = `#!/usr/bin/env node
+const { execFileSync } = require('node:child_process');
+const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const common = { event: "push", head_sha: sha, status: 'completed', conclusion: 'success' };
+console.log(JSON.stringify(process.argv.at(-1).includes('/attempts/')
+  ? [{ jobs: [{ ...common, name: 'units' }] }]
+  : [{ workflow_runs: [{ ...common, id: 1, run_attempt: 1, path: '.github/workflows/ci.yml' }] }]));
+`;
+    const base = repoWith(at, { "package.json": manifest, "units.cjs": "console.log('LOCAL_UNITS ' + JSON.stringify(process.argv.slice(2)))",
+      ".github/workflows/ci.yml": "jobs:\n  test:\n    name: units\n", "tools/gh": gh,
+      "src/native.test.ts": "// macOS-only test fixture", "src/common.test.ts": "// portable test fixture" }, { "src/code.ts": "export {};" });
+    // Executable mode is part of this fixture's candidate, so it remains clean for CI reuse.
+    chmodSync(join(at, "tools/gh"), 0o755);
+    gitIn(at, "add", "."); gitIn(at, "commit", "-qm", "executable fixture");
+    const env = { ...LOCAL_TAGS, PATH: `${join(at, "tools")}:${process.env.PATH}` };
+    const normal = execFileSync(process.execPath, [script, "--base", base], { cwd: at, env, encoding: "utf8" });
+    expect(normal).toContain("unit suite reused:");
+    if (process.platform === "darwin") expect(normal).toContain('LOCAL_UNITS ["--run","--reporter=dot","src/native.test.ts"]');
+    else expect(normal).not.toContain("LOCAL_UNITS");
+    const full = execFileSync(process.execPath, [script, "--base", base, "--full"], { cwd: at, env, encoding: "utf8" });
+    expect(full).not.toContain("unit suite reused:");
+    expect(full).toContain('LOCAL_UNITS ["--run","--reporter=dot"]');
   });
 
   /** A checkout with journey scripts and a stand-in runner that logs how it is asked to run (and whether it was handed
@@ -147,7 +221,7 @@ describe("node scripts/release-check.mjs", () => {
       expect(gitIn(at, "diff", "--name-only", "origin/main", "HEAD")).toBe("package.json");
     }
     let out: string;
-    try { out = execFileSync(process.execPath, [script, ...(baseline === "explicit" ? ["--base", base] : []), ...extra], { cwd: at, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "", TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } }); } catch (error) { out = (error as { stdout: string }).stdout; }
+    try { out = execFileSync(process.execPath, [script, ...(baseline === "explicit" ? ["--base", base] : []), ...extra], { cwd: at, encoding: "utf8", env: { ...LOCAL_TAGS, NODE_OPTIONS: "", TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } }); } catch (error) { out = (error as { stdout: string }).stdout; }
     const runs = existsSync(join(at, "journey-runs.jsonl")) ? readFileSync(join(at, "journey-runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { argv: string[]; gate: string | null }) : [];
     const outputs = runs.map(one => one.argv[one.argv.indexOf("--output") + 1]);
     expect(new Set(outputs).size).toBe(runs.length);
@@ -350,5 +424,171 @@ describe("the provider gate", () => {
     expect(gateWords(gate.facts())).toBe("provider gate: up to 1 real turn at once, 0 other sessions (cap 1, TOOLROLL_CHECK_PROVIDERS); nothing waited for a slot");
     gate.close();
     expect(gateWords({ starts: 0, cap: 4, from: "default", most: 0, others: null, waits: 0, waitedMs: 0, longest: null })).toBe("provider gate: nothing started");
+  });
+});
+
+
+describe("release check speed without weakening checks", () => {
+  test("upgrade comparison covers store, baseline, migrations and schema; unreadable and full run", () => {
+    for (const path of ["src/store.ts", "src/store-baseline.ts", "src/store/rows.ts", "src/migrations/121.ts", "src/migration-120.ts", "src/schema.sql"])
+      expect(needsUpgrade([path]), path).toBe(true);
+    expect(needsUpgrade(["package.json", "src/browser/app.tsx"], false, ["package.json"])).toBe(false);
+    expect(needsUpgrade(["package.json"])).toBe(true);
+    for (const path of ["src/chat-migration.ts", "src/contracts/chat-tables.ts", "src/storage.ts", "src/spend.ts", "src/retention.ts", "src/action-ledger.ts", "src/coding-workspace.ts", "src/ledger-chain.ts", "src/policy.ts", "src/toolroll-update.ts", "src/desktop-update.ts", "src/new-module.ts", "scripts/suite-lifecycle.mjs", "scripts/upgrade-path.mjs"])
+      expect(needsUpgrade([path]), path).toBe(true);
+    expect(needsUpgrade(["docs/TESTING.md", "src/browser/app.tsx", "src/server/console.css", "src/store.test.ts", "test/fixture.ts", "scripts/app-e2e.mjs"])).toBe(false);
+    expect(needsUpgrade([])).toBe(false);
+    expect(needsUpgrade(null)).toBe(true);
+    expect(needsUpgrade([], true)).toBe(true);
+  });
+
+  test("upgrade diff includes untracked schema code and fails closed on unreadable discovery", () => {
+    const root = mkdtempSync(join(tmpdir(), "so-upgrade-diff-"));
+    try {
+      repoWith(root, { "src/chat-migration.ts": "// old" }, { "docs/note.md": "notes" });
+      gitIn(root, "tag", "v0.9.61");
+      const git = (...args: string[]) => gitIn(root, ...args);
+      expect(upgradeChanges("v0.9.61", git)).toEqual([]);
+      writeFileSync(join(root, "src/new-tables.ts"), "const sql = 'CREATE TABLE extra (id TEXT)';");
+      expect(upgradeChanges("v0.9.61", git)).toEqual(["src/new-tables.ts"]);
+      expect(needsUpgrade(upgradeChanges("v0.9.61", git))).toBe(true);
+      writeFileSync(join(root, "src/chat-migration.ts"), "// changed");
+      expect(upgradeChanges("v0.9.61", git)).toEqual(["src/chat-migration.ts", "src/new-tables.ts"]);
+      expect(upgradeChanges("missing-tag", git)).toBeNull();
+      expect(upgradeChanges(null, git)).toBeNull();
+      expect(upgradeChanges("v0.9.61", (...args: string[]) => { if (args[0] === "ls-files") throw Error("unreadable"); return ""; })).toBeNull();
+      // A migration file moved somewhere that alone wouldn't run upgrades still lists its old path.
+      rmSync(join(root, "src/new-tables.ts"));
+      gitIn(root, "checkout", "--", "src/chat-migration.ts");
+      gitIn(root, "mv", "src/chat-migration.ts", "docs/chat-migration.md");
+      expect(upgradeChanges("v0.9.61", git)).toEqual(["docs/chat-migration.md", "src/chat-migration.ts"]);
+      expect(needsUpgrade(upgradeChanges("v0.9.61", git))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("historical schema parsing reads more than one MB and rejects missing versions", () => {
+    const root = mkdtempSync(join(tmpdir(), "so-schema-buffer-"));
+    try {
+      const base = repoWith(root, { "src/store.ts": "//" + "x".repeat(1_500_000) + "\nexport const SCHEMA_VERSION = 107;" }, { "src/store.ts": "export {};" });
+      expect(historicalSchema(root, base)).toBe(107);
+      expect(() => historicalSchema(root, "HEAD")).toThrow("Unreadable schema version");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("real v0.5.0 historical store exceeds the default buffer but parses its baseline", () => {
+    expect(historicalSchema(resolve(import.meta.dirname, ".."), "v0.5.0")).toBe(107);
+  });
+
+  test("only scripted release journeys disable retries and shorten polling", () => {
+    const env = { TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS: "75", TOOLROLL_RELEASE_FAIL_FAST: "1", TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: "1" };
+    expect(journeyEnv("scripted", null, env)).toEqual({ TOOLROLL_RELEASE_FAIL_FAST: "1", TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: "75" });
+    expect(journeyEnv("scripted", null, {})).toMatchObject({ TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: "90" });
+    expect(journeyEnv("real", { dir: "gate" }, env)).toEqual({ TOOLROLL_RELEASE_FAIL_FAST: undefined, TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: undefined, TOOLROLL_CHECK_GATE: "gate" });
+  });
+
+  test("upgrade sample deduplicates baseline and first release, full retains all, lanes respect CPU", () => {
+    const tags = ["v0.5.0", ...Array.from({ length: 8 }, (_, i) => `v0.9.${i}`), "v1.0.0-beta"];
+    const schema = (tag: string) => tag === "v0.5.0" ? 107 : tag === "v0.9.1" ? 108 : 120;
+    expect(selectedVersions(tags, 107, schema)).toEqual(["0.5.0", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7"]);
+    expect(selectedVersions(tags, 108, schema)).toEqual(["0.5.0", "0.9.1", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7"]);
+    expect(selectedVersions(tags, 107, schema, { full: true })).toHaveLength(9);
+    expect(() => selectedVersions(tags, 999, schema)).toThrow("No release tag");
+    expect(upgradeLanes("8", 4)).toBe(3);
+    expect(upgradeLanes("8", 1)).toBe(1);
+    expect(() => upgradeLanes("0", 4)).toThrow();
+  });
+
+  test("CI requires every workflow job on exactly the candidate, with no skipped or pending jobs", () => {
+    const expected = ciJobNames(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
+    expect(expected).toContain("node 22 · ubuntu-latest");
+    expect(expected).toContain("node 24 · ubuntu-latest");
+    const sha = "a".repeat(40);
+    const run = { event: "push", head_sha: sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success" };
+    const jobs = expected.map(name => ({ name, head_sha: sha, status: "completed", conclusion: "success" }));
+    expect(ciSucceeded(sha, run, jobs, expected)).toBe(true);
+    for (const event of ["pull_request", "pull_request_target", "workflow_dispatch", undefined])
+      expect(ciSucceeded(sha, { ...run, event }, jobs, expected)).toBe(false);
+    expect(ciSucceeded("b".repeat(40), run, jobs, expected)).toBe(false);
+    expect(ciSucceeded(sha, { ...run, path: ".github/workflows/other.yml" }, jobs, expected)).toBe(false);
+    for (const conclusion of ["skipped", "failure", "cancelled", null])
+      expect(ciSucceeded(sha, run, [{ ...jobs[0], conclusion }, ...jobs.slice(1)], expected)).toBe(false);
+    expect(ciSucceeded(sha, run, [{ ...jobs[0], status: "in_progress" }, ...jobs.slice(1)], expected)).toBe(false);
+    expect(ciSucceeded(sha, run, [{ ...jobs[0], head_sha: "b".repeat(40) }, ...jobs.slice(1)], expected)).toBe(false);
+    expect(ciSucceeded(sha, run, jobs.slice(1), expected)).toBe(false);
+    expect(ciSucceeded(sha, run, [...jobs, jobs[0]], expected)).toBe(false);
+  });
+
+  test("CI API is pinned by sha and latest attempt; unknown, dirty and full fall back", () => {
+    const sha = "a".repeat(40), requests: string[][] = [];
+    const workflow = () => "jobs:\n  test:\n    name: units\n";
+    const run = { event: "push", id: 7, run_attempt: 2, head_sha: sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success" };
+    const exec = (_: string, args: string[]) => {
+      requests.push(args);
+      return JSON.stringify(args.at(-1)!.includes("/attempts/") ? [{ jobs: [{ name: "units", head_sha: sha, status: "completed", conclusion: "success" }] }] : [{ workflow_runs: [run] }]);
+    };
+    const git = (...args: string[]) => args[0] === "status" ? "" : sha;
+    expect(passedCandidateCI({ git, exec, workflow }).passed).toBe(true);
+    expect(requests[0].at(-1)).toContain(`head_sha=${sha}`);
+    expect(requests[1].at(-1)).toContain("/runs/7/attempts/2/jobs");
+    run.event = "pull_request";
+    expect(passedCandidateCI({ git, exec, workflow }).passed).toBe(false);
+    run.event = "push";
+    expect(passedCandidateCI({ git, exec: () => { throw Error("offline"); }, workflow }).passed).toBe(false);
+    expect(passedCandidateCI({ git: () => "dirty", exec, workflow }).passed).toBe(false);
+    expect(passedCandidateCI({ full: true, git, exec, workflow }).passed).toBe(false);
+    expect(() => ciJobNames("jobs:\n  unit:\n    strategy:\n      matrix:\n        include: []\n")).toThrow();
+  });
+
+  test("CI reuse keeps native macOS tests including sandbox and browser coverage", () => {
+    const files = macUnitFiles(resolve(import.meta.dirname));
+    for (const file of ["agent-fence.test.ts", "boot-identity.test.ts", "scout-browser.test.ts", "desktop-update.recovery.test.ts"])
+      expect(files).toContain(resolve(import.meta.dirname, file));
+  });
+
+  test("passing unit regressions can print a synthetic journey failure without failing the outer check", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "so-synthetic-failure-"));
+    try {
+      const parts = partRunner(dir);
+      const unit = await parts.run("unit", process.execPath, ["-e", "console.error('TOOLROLL_CHECK_FAILURE fixture: exit 1')"]);
+      expect(unit.code).toBe(0);
+      expect(parts.failure()).toBeNull();
+      const app = await parts.run("app", process.execPath, ["-e", "console.error('TOOLROLL_CHECK_FAILURE alpha: exit 1'); setInterval(() => {}, 1000)"]);
+      expect(app.code).not.toBe(0);
+      expect(parts.failure()).toBe("app: alpha: exit 1");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("first hard failure cancels an active sibling and prevents later parts from starting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "so-fast-failure-"));
+    try {
+      const parts = partRunner(dir, { graceMs: 10, timeoutMs: 10_000 });
+      const hang = parts.run("unit", process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+      const fail = parts.run("app", process.execPath, ["-e", "console.error('journey failed'); process.exit(7)"]);
+      const [stopped, failed] = await Promise.all([hang, fail]);
+      expect(failed.code).toBe(7);
+      expect(stopped.code).not.toBe(0);
+      expect(parts.failure()).toBe("app: exit 7");
+      expect(parts.signal.aborted).toBe(true);
+      const late = await parts.run("late", process.execPath, ["-e", "throw Error('must never run')"]);
+      expect(late.code).toBe(130);
+      expect(readFileSync(late.log, "utf8")).toBe("");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("release-only gate reservation lets four turns start even with other sessions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "so-reserved-gate-"));
+    const gate = openGate({ dir, env: {}, reserve: true, sessions: () => 20, everyMs: 1 });
+    const peer = openGate({ dir, sessions: () => 20, everyMs: 1 });
+    const started = Promise.withResolvers<void>(), end = Promise.withResolvers<void>();
+    let count = 0;
+    try {
+      const turns = Array.from({ length: 4 }, (_, i) => (i % 2 ? gate : peer).hold(String(i), async () => {
+        if (++count === 4) started.resolve();
+        await end.promise;
+      }));
+      await started.promise;
+      expect(gate.facts().most).toBe(4);
+      end.resolve(); await Promise.all(turns);
+    } finally { end.resolve(); gate.close(); peer.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -2,11 +2,12 @@
  * Landed work: a result whose work is already in main is marked complete automatically, with a ledger entry saying
  * why, and its clean checkout and local build and plan branches go; nothing with changes or unlanded work is touched;
  * a teardown a crash cut short finishes at the next reconcile; `storage clean --landed` previews, and acts only with
- * --yes. Real git, a real store on disk; no remote, no model.
+ * --yes. Completion trusts only a recorded merge or the main of the remote the project add recorded: a moved local main
+ * or a repointed origin never completes a task. Real git, a real store on disk, a bare origin beside the project; no model.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
@@ -21,9 +22,11 @@ import { workIndexTask } from "./work-index.js";
 import { telegramProgressCard } from "./telegram-progress.js";
 import { finishedLine } from "./chat-voice.js";
 import { runOperate, EXIT } from "./operate.js";
-import { WorktreePool } from "./worktree.js";
+import { WorktreePool, branchCreatedMessage } from "./worktree.js";
 import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
-import { LANDED_CLEANED_ACTION, finishLanded, gitOf, landedProof, landedResults, recordLandedIntent, type Git } from "./landed-cleanup.js";
+import { admitProject } from "./project-admission.js";
+import { RemoteMains } from "./remote-main.js";
+import { AUTO_ITEMS, LANDED_CLEANED_ACTION, finishLanded as finishWith, gitOf, landedBacklog, landedProof, landedResults as resultsWith, recordBranchIntent, recordLandedIntent, remoteLandedProof, type Git } from "./landed-cleanup.js";
 
 const DAY = 86_400_000;
 const NOW = new Date();
@@ -31,15 +34,28 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms);
 const env = (date?: Date) => ({ ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
   ...(date === undefined ? {} : { GIT_AUTHOR_DATE: date.toISOString(), GIT_COMMITTER_DATE: date.toISOString() }) });
 const sh = (cwd: string, args: string[], date?: Date) => execFileSync("git", args, { cwd, encoding: "utf8", env: env(date) }).trim();
+/** A branch Toolroll made, as a lease makes it: its reflog's first entry names it, dated `when`. */
+const made = (name: string, base: string, when?: Date) =>
+  sh(repo, ["update-ref", "--create-reflog", "-m", branchCreatedMessage(name), `refs/heads/${name}`, sh(repo, ["rev-parse", base]), "0".repeat(40)], when);
 
-let dir: string, file: string, repo: string, root: string, poolRoot: string, store: Store, pool: WorktreePool, password: string;
+let dir: string, file: string, repo: string, origin: string, root: string, poolRoot: string, store: Store, pool: WorktreePool, password: string;
 const git: Git = gitOf();
+/** Each call reads the recorded remote afresh, as one reconcile pass does. */
+const trustedUrl = "https://trusted.example/shop.git";
+// Transport seam: the recorded network URL maps to a real bare fixture, independent of .git/config. Production refuses
+// file transport for the remote, so only this fixture opts that one fetch in.
+const remoteRun: typeof run = (file, args, options) => run(file, args.includes(trustedUrl)
+  ? args.map(arg => arg === trustedUrl ? origin : arg === "protocol.file.allow=never" ? "protocol.file.allow=always" : arg) : args, options);
+const remotes = () => new RemoteMains(store, remoteRun, root);
+const landedResults = (s: Store, g: Git, r: string, at: string, now: Date, options?: Parameters<typeof resultsWith>[6]) => resultsWith(s, g, remotes(), r, at, now, options);
+const finishLanded = (s: Store, p: WorktreePool, g: Git, now: () => Date, options?: Parameters<typeof finishWith>[5]) => finishWith(s, p, g, remotes(), now, options);
 const access = { principal: "operator" as const, repos: null, includeUnplaced: true };
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-landed-")));
   file = join(dir, "orders.db");
   repo = join(dir, "shop");
+  origin = join(dir, "origin.git");
   root = join(dir, "evidence");
   poolRoot = join(dir, "worktrees");
   mkdirSync(repo);
@@ -48,6 +64,9 @@ beforeEach(() => {
   writeFileSync(join(repo, "old.txt"), "moving soon\n");
   sh(repo, ["add", "."]);
   sh(repo, ["commit", "-qm", "first"], ago(30 * DAY));
+  sh(dir, ["init", "-q", "--bare", "-b", "main", origin]);
+  sh(repo, ["remote", "add", "origin", origin]);
+  sh(repo, ["push", "-q", "origin", "main"]);
   store = openStore(file);
   register(store, { name: "builder-1", host: "test", capacity: 4, repos: [repo], now: ago(30 * DAY), newToken: () => ["tok", "builder", "1"].join("-") });
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", ago(30 * DAY));
@@ -55,6 +74,9 @@ beforeEach(() => {
   if (!sam.ok) throw new Error("approver");
   password = sam.token;
   pool = new WorktreePool(store, { root: poolRoot });
+  // The owner's project add records origin's URL: the only remote completion trusts.
+  const added = await admitProject(store, { registryFile: null, path: repo, actor: { label: "sam", origin: "cli" }, now: ago(30 * DAY), remoteUrl: trustedUrl });
+  if (!added.ok || added.remote.url !== trustedUrl) throw new Error("admission");
 });
 afterEach(() => { try { store.close(); } catch { /* closed */ } rmSync(dir, { recursive: true, force: true }); });
 
@@ -70,7 +92,7 @@ async function built(id: string, files: Record<string, string | null>, at = ago(
   const ok = approve(store, id, "sam", at, proposed.digest, password);
   if (!ok.ok) throw new Error(ok.reason);
   const base = sh(repo, ["rev-parse", main]);
-  sh(repo, ["branch", `toolroll-plan/${id}`, base]);
+  made(`toolroll-plan/${id}`, base, at);
   const leased = await pool.lease({ repo, branch: `toolroll/${id}`, base: main, runner: "builder-1", taskRef: ref, now: at });
   if (!leased.ok) throw new Error(leased.message);
   const path = leased.worktree.path;
@@ -97,14 +119,16 @@ async function built(id: string, files: Record<string, string | null>, at = ago(
   return { runId, head, path, ref };
 }
 const branch = (name: string) => { try { return sh(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]); } catch { return null; } };
-const merge = (name: string) => sh(repo, ["merge", "-q", "--no-ff", "-m", `merge ${name}`, name]);
+/** Merge into main and push it: the work is in the recorded remote's main. */
+const merge = (name: string) => { sh(repo, ["merge", "-q", "--no-ff", "-m", `merge ${name}`, name]); push(); };
+const push = () => sh(repo, ["push", "-q", "--force", "origin", "main"]);
 const ledger = (action: string) => store.actionLedger({ repos: null }).filter(one => one.action === action);
 const merged = (b: Built, number: number) => store.handle.prepare(`INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, pr_number, pr_url, created_at, updated_at, remote_state)
   VALUES (?, ?, 'sam-shop/shop', 'origin', 'main', ?, ?, 'x', 0, 'opened', ?, ?, ?, ?, 'MERGED')`).run(b.runId, b.ref, `toolroll/${b.ref}`, b.head, number, `https://github.com/sam-shop/shop/pull/${number}`, NOW.toISOString(), NOW.toISOString());
 
 /** Every git command reconcile ran, through the same runner the CLI uses. */
 let ran: string[][] = [];
-const recording = (file: string, args: readonly string[], options?: Parameters<typeof run>[2]): Promise<ExecResult> => { ran.push([...args]); return run(file, args, options); };
+const recording = (file: string, args: readonly string[], options?: Parameters<typeof run>[2]): Promise<ExecResult> => { ran.push([...args]); return remoteRun(file, args, options); };
 let out: string[] = [];
 async function cli(command: string, argv: string[]): Promise<{ code: number; text: string }> {
   store.close();
@@ -120,7 +144,7 @@ describe("the landing proof fails closed", () => {
   test("merged pull request, commits in main, content in main (renames and deletes on both sides), and every doubt", async () => {
     const work = await built("rename", { "new.txt": "moving soon\n", "old.txt": null, "src/a.ts": "export const a = 1;\n" });
     expect(await landedProof(git, repo, work.head)).toEqual({ landed: false, why: "its changes aren't all in main" });
-    expect(await landedProof(git, repo, work.head, { merged: true, headSha: work.head, number: 7 })).toEqual({ landed: true, how: "merged", reason: "pull request #7 merged" });
+    expect(await landedProof(git, repo, work.head, { merged: true, headSha: work.head, number: 7 })).toEqual({ landed: true, how: "merged", reason: "pull request #7 merged", trusted: true });
     // A merged pull request for another commit proves nothing about this one.
     expect((await landedProof(git, repo, work.head, { merged: true, headSha: "f".repeat(40), number: 7 })).landed).toBe(false);
     // Only the added side of the rename in main: the old path is still there, so it didn't land.
@@ -129,7 +153,7 @@ describe("the landing proof fails closed", () => {
     expect(await landedProof(git, repo, work.head)).toEqual({ landed: false, why: "its changes aren't all in main" });
     sh(repo, ["rm", "-q", "old.txt"]);
     sh(repo, ["commit", "-qm", "other half"]);
-    expect(await landedProof(git, repo, work.head)).toEqual({ landed: true, how: "content-in-main", reason: "its changes are already in main" });
+    expect(await landedProof(git, repo, work.head)).toEqual({ landed: true, how: "content-in-main", reason: "its changes are already in main", trusted: false });
     // A later change in main to a file it changed: no longer the same entry.
     writeFileSync(join(repo, "src", "a.ts"), "export const a = 2;\n");
     sh(repo, ["commit", "-qam", "moved on"]);
@@ -137,7 +161,7 @@ describe("the landing proof fails closed", () => {
 
     const ancestor = await built("ancestor", { "src/b.ts": "b\n" });
     merge("toolroll/ancestor");
-    expect(await landedProof(git, repo, ancestor.head)).toEqual({ landed: true, how: "in-main", reason: "its commits are in main" });
+    expect(await landedProof(git, repo, ancestor.head)).toEqual({ landed: true, how: "in-main", reason: "its commits are in main", trusted: false });
 
     expect(await landedProof(git, repo, null)).toEqual({ landed: false, why: "it has no saved commit" });
     expect(await landedProof(git, repo, "nope")).toEqual({ landed: false, why: "it has no saved commit" });
@@ -152,6 +176,118 @@ describe("the landing proof fails closed", () => {
     sh(noMain, ["commit", "-qm", "x"]);
     expect(await landedProof(git, noMain, sh(noMain, ["rev-parse", "HEAD"]))).toEqual({ landed: false, why: "the project has no local main branch" });
     expect((await landedProof(git, join(dir, "missing"), ancestor.head)).landed).toBe(false);
+  });
+});
+
+describe("completion trusts nothing a build can write", () => {
+  const ready = (id: string) => assignmentOf(store, id, NOW, access, root)!.state;
+
+  test("c1: commits that only reach a locally moved main never complete the task, at discovery or before teardown", async () => {
+    const work = await built("moved-main", { "src/moved.ts": "moved\n" });
+    // What a build can do from its checkout: move the shared repository's main to include its own commits.
+    sh(repo, ["update-ref", "refs/heads/main", work.head]);
+    expect((await landedProof(git, repo, work.head)).landed).toBe(true);
+    expect(await remoteLandedProof(() => remotes().read(repo), repo, work.head)).toEqual({ landed: false, why: "its changes aren't all in main" });
+    const look = await landedResults(store, git, repo, root, NOW);
+    expect(look.found).toEqual([]);
+    expect(look.kept).toEqual([{ repo, what: "moved-main", why: "its changes aren't all in main" }]);
+    await reconcile();
+    expect(ledger(COMPLETION_ACTION)).toEqual([]);
+    expect(ready("moved-main")).toBe("ready-to-check");
+    expect(existsSync(work.path)).toBe(true);
+    expect(branch("toolroll/moved-main")).toBe(work.head);
+    // A candidate read while the local main had it can't complete it either.
+    const local = { repo, taskId: "moved-main", rootId: "moved-main", runId: work.runId, receipt: assignmentOf(store, "moved-main", NOW, access, root)!.receipt!.digest,
+      head: work.head, finishedAt: NOW.toISOString(), completes: true, how: "in-main" as const, reason: "its commits are in main", trusted: false, targets: [], keeps: [] };
+    expect(recordLandedIntent(store, local, NOW, root)).toEqual({ ok: false, why: "its work isn't in the project's recorded remote main" });
+    expect(ledger(COMPLETION_ACTION)).toEqual([]);
+  });
+
+  test("c1: commits that only reach a repointed origin never complete the task", async () => {
+    const work = await built("repointed", { "src/repointed.ts": "repointed\n" });
+    // A remote the build controls, with its work in main, named origin in the shared .git/config.
+    const theirs = join(dir, "theirs.git");
+    sh(dir, ["clone", "-q", "--bare", origin, theirs]);
+    sh(repo, ["push", "-q", theirs, `${work.head}:refs/heads/main`]);
+    sh(repo, ["remote", "set-url", "origin", theirs]);
+    sh(repo, ["fetch", "-q", "origin"]);
+    expect(sh(repo, ["config", "remote.origin.url"])).toBe(theirs);
+    expect(store.projectRemote(repo)).toBe(trustedUrl);
+    await reconcile();
+    expect(ledger(COMPLETION_ACTION)).toEqual([]);
+    expect(ready("repointed")).toBe("ready-to-check");
+    expect(existsSync(work.path)).toBe(true);
+    // A remote inside a project or a Toolroll checkout is never trusted, even when recorded.
+    const inside = join(repo, "origin.git");
+    sh(repo, ["clone", "-q", "--bare", theirs, inside]);
+    store.upsertProject(repo, "shop", NOW, { remoteUrl: inside });
+    expect(await remotes().read(repo)).toEqual({ ok: false, why: "its remote URL isn't one Toolroll fetches from" });
+    await reconcile();
+    expect(ledger(COMPLETION_ACTION)).toEqual([]);
+    // No recorded remote (the project was removed and its row came back without one): nothing completes.
+    store.upsertProject(repo, "shop", NOW, { remoteUrl: null });
+    expect(await remotes().read(repo)).toEqual({ ok: false, why: "the project has no recorded remote" });
+    await reconcile();
+    expect(ledger(COMPLETION_ACTION)).toEqual([]);
+    expect(ready("repointed")).toBe("ready-to-check");
+  });
+
+  test("c2: work in the recorded remote's main completes, reachable or by content, even when the local main lacks it", async () => {
+    const reached = await built("reached", { "src/reached.ts": "reached\n" });
+    const picked = await built("copied", { "src/copied.ts": "copied\n" });
+    const local = branch("main");
+    // Pushed straight to the remote's main; the local main never moves.
+    sh(repo, ["push", "-q", "origin", `${reached.head}:refs/heads/main`]);
+    // The same content, committed on the remote's main by someone else.
+    const clone = join(dir, "clone");
+    sh(dir, ["clone", "-q", origin, clone]);
+    mkdirSync(join(clone, "src"), { recursive: true });
+    writeFileSync(join(clone, "src", "copied.ts"), "copied\n");
+    sh(clone, ["add", "."]);
+    sh(clone, ["commit", "-qm", "copied by hand"]);
+    sh(clone, ["push", "-q", "origin", "main"]);
+    ran = [];
+    expect((await reconcile()).code).toBe(EXIT.ok);
+    expect(Object.fromEntries(ledger(COMPLETION_ACTION).map(one => [one.taskId, one.detail]))).toEqual({ reached: "its commits are in main", copied: "its changes are already in main" });
+    expect(branch("main")).toBe(local);
+    for (const one of [reached, picked]) expect(existsSync(one.path)).toBe(false);
+    expect([branch("toolroll/reached"), branch("toolroll/copied")]).toEqual([null, null]);
+    // Every fetch ran in a private directory, hardened, from the recorded URL or the project (the result's exact commit).
+    const fetches = ran.filter(args => args.includes("fetch"));
+    expect(fetches.length).toBeGreaterThan(0);
+    for (const args of fetches) {
+      expect(args[0]).toBe("--git-dir");
+      expect(args[1]!.startsWith(join(root, ".remote-main-"))).toBe(true);
+      expect(args).toEqual(expect.arrayContaining(["core.hooksPath=/dev/null", "protocol.ext.allow=never", "credential.helper="]));
+      expect([trustedUrl, repo]).toContain(args[args.indexOf("--") + 1]);
+      expect(args).toContain(args.includes(trustedUrl) ? "protocol.file.allow=never" : "protocol.file.allow=always");
+    }
+    expect(fetches.filter(args => args.includes(repo)).map(args => args.at(-1))).toEqual([`+${picked.head}:refs/toolroll/results/${picked.head}`]);
+    // The private directories are gone after the pass.
+    expect(existsSync(root) ? readdirSync(root).filter(name => name.startsWith(".remote-main-")) : []).toEqual([]);
+  });
+
+  test("a failed re-fetch before teardown keeps every item pending", async () => {
+    const work = await built("refetch", { "src/refetch.ts": "refetch\n" });
+    merge("toolroll/refetch");
+    const candidate = (await landedResults(store, git, repo, root, NOW)).found[0]!;
+    expect(candidate).toMatchObject({ trusted: true, how: "in-main" });
+    expect(recordLandedIntent(store, candidate, NOW, root)).toMatchObject({ ok: true, completed: true });
+    renameSync(origin, `${origin}.away`);
+    const steps = await finishLanded(store, pool, git, () => NOW);
+    expect(steps.map(one => one.outcome)).toEqual(["waits", "waits", "waits"]);
+    expect(steps[0]!.why).toBe("Toolroll couldn't read the project's remote main");
+    renameSync(`${origin}.away`, origin);
+    // The remote is there, but its fetch fails: it has no main.
+    const main = sh(origin, ["rev-parse", "refs/heads/main"]);
+    sh(origin, ["update-ref", "-d", "refs/heads/main"]);
+    expect((await finishLanded(store, pool, git, () => NOW))[0]).toMatchObject({ outcome: "waits", why: "Toolroll couldn't read the project's remote main" });
+    expect(existsSync(work.path)).toBe(true);
+    expect(branch("toolroll/refetch")).toBe(work.head);
+    sh(origin, ["update-ref", "refs/heads/main", main]);
+    await finishLanded(store, pool, git, () => NOW);
+    expect(existsSync(work.path)).toBe(false);
+    expect(branch("toolroll/refetch")).toBeNull();
   });
 });
 
@@ -212,6 +348,7 @@ describe("c1: a merged result is completed automatically and torn down", () => {
     const picked = await built("picked", { "src/picked.ts": "picked\n" });
     merge("toolroll/fast");
     sh(repo, ["cherry-pick", picked.head]);
+    push();
     expect((await reconcile()).code).toBe(EXIT.ok);
     expect(Object.fromEntries(ledger(COMPLETION_ACTION).map(one => [one.taskId, one.detail]))).toEqual({ fast: "its commits are in main", picked: "its changes are already in main" });
     for (const one of [ff, picked]) expect(existsSync(one.path)).toBe(false);
@@ -282,7 +419,12 @@ describe("c2: changes, unlanded work and anything in doubt stay", () => {
 
     sh(repo, ["branch", "-m", "main", "trunk"]);
     await built("trunkless", { "src/x.ts": "x\n" }, ago(DAY), { main: "trunk" });
-    expect((await landedResults(store, git, repo, root, NOW)).kept).toEqual([{ repo, what: "trunkless", why: "the project has no local main branch" }]);
+    expect((await landedResults(store, git, repo, root, NOW)).kept).toEqual([{ repo, what: "trunkless", why: "its changes aren't all in main" }]);
+    // The local trunk landing it proves nothing: only the recorded remote's main does.
+    sh(repo, ["merge", "-q", "--ff-only", "toolroll/trunkless"]);
+    expect((await landedResults(store, git, repo, root, NOW)).found).toEqual([]);
+    sh(repo, ["push", "-q", "origin", "trunk:main"]);
+    expect((await landedResults(store, git, repo, root, NOW)).found.map(one => [one.taskId, one.how])).toEqual([["trunkless", "in-main"]]);
   });
 });
 
@@ -301,23 +443,22 @@ describe("review regressions: eligibility and teardown fences", () => {
     expect(branch("toolroll/empty")).toBe(work.head);
   });
 
-  test("main rewound after intent keeps every item pending until the landing proof holds again", async () => {
+  test("the recorded remote's main rewound after intent keeps every item pending until the landing proof holds again", async () => {
     const work = await built("rewound", { "src/rewound.ts": "rewound\n" });
     const base = branch("main")!;
     merge("toolroll/rewound");
     const landed = branch("main")!;
     const candidate = (await landedResults(store, git, repo, root, NOW)).found[0]!;
     expect(recordLandedIntent(store, candidate, NOW, root).ok).toBe(true);
-    // Move the local integration ref without touching the task's checkout.
-    sh(repo, ["checkout", "-q", "--detach", base]);
-    sh(repo, ["update-ref", "refs/heads/main", base, landed]);
-    sh(repo, ["checkout", "-q", "main"]);
+    // The remote's main moves back; the local main, which a build could write, still has it.
+    sh(repo, ["push", "-q", "--force", "origin", `${base}:refs/heads/main`]);
+    expect(branch("main")).toBe(landed);
     const steps = await finishLanded(store, pool, git, () => NOW);
     expect(steps.every(one => one.outcome === "waits")).toBe(true);
     expect(existsSync(work.path)).toBe(true);
     expect(branch("toolroll/rewound")).toBe(work.head);
     expect(ledger(LANDED_CLEANED_ACTION)).toEqual([]);
-    merge("toolroll/rewound");
+    push();
     await reconcile();
     expect(existsSync(work.path)).toBe(false);
     expect(branch("toolroll/rewound")).toBeNull();
@@ -550,7 +691,8 @@ describe("c4: storage clean --landed previews by default and acts only with --ye
     merge("toolroll/new-result");
     // Branches no task names: one landed long ago, one never landed, one landed but new, one outside Toolroll's names.
     for (const [name, landed, when] of [["toolroll/orphan", true, ago(20 * DAY)], ["standing-orders/stray", false, ago(20 * DAY)], ["toolroll-plan/fresh", true, ago(DAY)], ["feature/mine", true, ago(20 * DAY)]] as const) {
-      sh(repo, ["checkout", "-q", "-b", name, "main"]);
+      made(name, "main", when);
+      sh(repo, ["checkout", "-q", name]);
       writeFileSync(join(repo, `${name.replace(/\//g, "-")}.txt`), "x\n");
       sh(repo, ["add", "."]);
       sh(repo, ["commit", "-qm", name], when);
@@ -569,7 +711,7 @@ describe("c4: storage clean --landed previews by default and acts only with --ye
     expect(preview.text).toContain("shop new-result: finished less than 7 days ago");
     expect(preview.text).toContain("shop unlanded-old: its changes aren't all in main");
     expect(preview.text).toContain("shop standing-orders/stray: its changes aren't all in main");
-    expect(preview.text).toContain("shop toolroll-plan/fresh: its last commit is less than 7 days old");
+    expect(preview.text).toContain("shop toolroll-plan/fresh: it was created less than 7 days ago");
     expect(preview.text).not.toContain("feature/mine");
     // A result that stays says why once: its branches are not listed again.
     expect(preview.text).not.toContain("new-result uses it");
@@ -595,5 +737,98 @@ describe("c4: storage clean --landed previews by default and acts only with --ye
     for (const name of ["toolroll/new-result", "toolroll/unlanded-old", "standing-orders/stray", "toolroll-plan/fresh", "feature/mine"]) expect(branch(name)).not.toBeNull();
     // Reconcile would complete the recent one on its own; the one-time pass only takes the week-old backlog.
     expect(assignmentOf(store, "new-result", NOW, access, root)!.state).toBe("ready-to-check");
+  });
+});
+
+describe("follow-ups: branch age and provenance, waiting items, duplicate intents", () => {
+  /** A landed branch no task names: made by Toolroll at `made` (or by hand), with one commit dated `committed`. */
+  const stray = (name: string, committed: Date, how: "toolroll" | "by hand", when?: Date) => {
+    if (how === "toolroll") made(name, "main", when);
+    else sh(repo, ["branch", name, "main"]);
+    sh(repo, ["checkout", "-q", name]);
+    writeFileSync(join(repo, `${name.replace(/\//g, "-")}.txt`), "x\n");
+    sh(repo, ["add", "."]);
+    sh(repo, ["commit", "-qm", name], committed);
+    sh(repo, ["checkout", "-q", "main"]);
+    sh(repo, ["merge", "-q", "--ff-only", name]);
+  };
+  const backlog = async () => {
+    const plan = await landedBacklog(store, git, remotes(), root, NOW, { repos: [repo] });
+    return { targets: plan.branches.map(one => one.branch).sort(), kept: Object.fromEntries(plan.kept.map(one => [one.what, one.why])) };
+  };
+
+  test("c1: the branch's own age decides the seven days, in both directions; an unknown age keeps it", async () => {
+    stray("toolroll/made-long-ago", ago(DAY), "toolroll", ago(20 * DAY));
+    stray("toolroll/made-yesterday", ago(20 * DAY), "toolroll", ago(DAY));
+    stray("toolroll/forgotten", ago(20 * DAY), "toolroll", ago(20 * DAY));
+    sh(repo, ["reflog", "expire", "--expire=now", "--expire-unreachable=now", "refs/heads/toolroll/forgotten"]);
+    const plan = await backlog();
+    expect(plan.targets).toEqual(["toolroll/made-long-ago"]);
+    expect(plan.kept["toolroll/made-yesterday"]).toBe("it was created less than 7 days ago");
+    expect(plan.kept["toolroll/forgotten"]).toBe("Toolroll has no record of creating it");
+  });
+
+  test("c2: scout branches and branches Toolroll didn't make are never targets, in a preview or a recorded intent", async () => {
+    stray("toolroll/ours", ago(20 * DAY), "toolroll", ago(20 * DAY));
+    stray("toolroll/by-hand", ago(20 * DAY), "by hand");
+    stray("toolroll-scout/look/0a1b2c3d", ago(20 * DAY), "toolroll", ago(20 * DAY));
+    // A copy or a rename carries the reflog along, but its first entry names another branch.
+    sh(repo, ["branch", "-c", "toolroll/ours", "toolroll/copied"]);
+    const plan = await backlog();
+    expect(plan.targets).toEqual(["toolroll/ours"]);
+    expect(plan.kept["toolroll/by-hand"]).toBe("Toolroll has no record of creating it");
+    expect(plan.kept["toolroll/copied"]).toBe("Toolroll has no record of creating it");
+    expect(JSON.stringify(plan)).not.toContain("toolroll-scout/");
+    // A task's own branch needs the same proof: one remade by hand at the same commit stays.
+    const work = await built("remade", { "src/remade.ts": "remade\n" });
+    merge("toolroll/remade");
+    const planTip = branch("toolroll-plan/remade")!;
+    sh(repo, ["branch", "-D", "toolroll-plan/remade"]);
+    sh(repo, ["branch", "toolroll-plan/remade", planTip]);
+    const candidate = (await landedResults(store, git, repo, root, NOW)).found[0]!;
+    expect(candidate.targets.map(one => one.target)).toEqual([work.path, "toolroll/remade"]);
+    expect(candidate.keeps).toEqual([{ repo, what: "toolroll-plan/remade", why: "Toolroll has no record of creating it" }]);
+    // Intents recorded before (or around) these checks are refused when they run.
+    for (const name of ["toolroll/by-hand", "toolroll/copied", "toolroll-scout/look/0a1b2c3d"]) {
+      recordBranchIntent(store, { repo, branch: name, oid: branch(name)!, how: "in-main", reason: "its commits are in main", checkout: null }, NOW, "sam");
+    }
+    const steps = await finishLanded(store, pool, git, () => NOW);
+    expect(steps.map(one => [one.target, one.outcome, one.why])).toEqual([
+      ["toolroll/by-hand", "kept", "Toolroll has no record of creating it"],
+      ["toolroll/copied", "kept", "Toolroll has no record of creating it"],
+      ["toolroll-scout/look/0a1b2c3d", "kept", "it isn't a task build or plan branch"]]);
+    for (const name of ["toolroll/by-hand", "toolroll/copied", "toolroll-scout/look/0a1b2c3d"]) expect(branch(name)).not.toBeNull();
+  });
+
+  test("c3: items left waiting don't count toward a pass's limit, so a later one still goes", async () => {
+    stray("toolroll/busy", ago(20 * DAY), "toolroll", ago(20 * DAY));
+    stray("toolroll/later", ago(20 * DAY), "toolroll", ago(20 * DAY));
+    const busy = recordBranchIntent(store, { repo, branch: "toolroll/busy", oid: branch("toolroll/busy")!, how: "in-main", reason: "its commits are in main", checkout: null }, NOW, "sam");
+    // More checkouts in use than a pass settles, each waiting, all ahead of the later teardown.
+    for (let at = 0; at <= AUTO_ITEMS; at++) {
+      const path = join(poolRoot, `busy-${at}`);
+      store.saveWorktree({ path, repo, branch: "toolroll/busy", runner: "builder-1", taskRef: null, createdAt: NOW.toISOString(), leasedAt: NOW.toISOString(), releasedAt: null, verified: true });
+      store.handle.prepare("INSERT INTO landed_cleanup_item (cleanup, kind, repo, target, expect) VALUES (?, 'checkout', ?, ?, ?)").run(busy, repo, path, branch("toolroll/busy"));
+    }
+    recordBranchIntent(store, { repo, branch: "toolroll/later", oid: branch("toolroll/later")!, how: "in-main", reason: "its commits are in main", checkout: null }, NOW, "sam");
+    const steps = await finishLanded(store, pool, git, () => NOW, { repo, limit: AUTO_ITEMS });
+    expect(steps.filter(one => one.outcome === "waits")).toHaveLength(AUTO_ITEMS + 2);
+    expect(steps.at(-1)).toMatchObject({ target: "toolroll/later", outcome: "removed" });
+    expect(branch("toolroll/later")).toBeNull();
+    expect(branch("toolroll/busy")).not.toBeNull();
+  });
+
+  test("a second intent for a pending target takes it over, and both teardowns finish", async () => {
+    stray("toolroll/twice", ago(20 * DAY), "toolroll", ago(20 * DAY));
+    const target = { repo, branch: "toolroll/twice", oid: branch("toolroll/twice")!, how: "in-main" as const, reason: "its commits are in main", checkout: null };
+    const first = recordBranchIntent(store, target, NOW, "sam");
+    // A preview read before the first intent was recorded, acted on after it.
+    const second = recordBranchIntent(store, target, NOW, "sam");
+    expect(store.handle.prepare("SELECT cleanup, state, why FROM landed_cleanup_item ORDER BY id").all()).toEqual([
+      { cleanup: first, state: "kept", why: "a later clean-up took it over" }, { cleanup: second, state: "pending", why: null }]);
+    await finishLanded(store, pool, git, () => NOW);
+    expect(branch("toolroll/twice")).toBeNull();
+    expect(store.handle.prepare("SELECT id FROM landed_cleanup WHERE finished_at IS NULL").all()).toEqual([]);
+    expect(ledger(LANDED_CLEANED_ACTION).map(one => one.detail).sort()).toEqual(["its commits are in main: 0 removed, 1 kept", "its commits are in main: 1 removed"]);
   });
 });
