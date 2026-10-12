@@ -411,6 +411,23 @@ CREATE TABLE IF NOT EXISTS run_activity (
 );
 `;
 
+/** A task branch moved to current main before an attempt (fresh base; v122, a new table: additive only): the branch
+ * had no commits of its own and no changes, so it started over from `to_rev`. `after_run` is the newest run id when it
+ * moved: the branch's whole-task diff runs from the first builder base recorded after it (firstBuilderBase), never from
+ * the older main it left. */
+export const BRANCH_BASE_MOVE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS branch_base_move (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_ref  INTEGER NOT NULL REFERENCES task_ref(id) ON DELETE CASCADE,
+  branch    TEXT NOT NULL,
+  from_rev  TEXT NOT NULL,
+  to_rev    TEXT NOT NULL,
+  after_run INTEGER NOT NULL,
+  moved_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS branch_base_move_branch ON branch_base_move (task_ref, branch, id);
+`;
+
 /** Pausing a running Claude build (live steering, v121: additive only). A person's Pause asks the build to
  * stop its current turn and keep its session: one row per request, bound to the exact run it was asked of, under the
  * request id the asker chose (a repeated request is the same request). `note` is the steering note a Pause and steer
@@ -681,7 +698,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v121 adds, and changes no saved row: the Agents board (run.attempt_key; agent_turn, agent_now, agent_question,
 // agent_seen, agent_view), live steering (a note's live identity and sends, a run's stdin session; run_pause and
 // run_resume) and landed work's teardown journal (landed_cleanup, landed_cleanup_item).
-export const SCHEMA_VERSION = 121;
+// v122 adds, and changes no saved row: the remote URL an owner's project add recorded (project.remote_url), the only
+// remote whose main automatic completion trusts (remote-main.ts; saved projects read none until it is recorded), and
+// fresh base's record of a task branch moved to current main before an attempt (branch_base_move).
+export const SCHEMA_VERSION = 122;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -811,9 +831,11 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * (planning_generation on task_ref, run and plan_revision, defaulting to 0, and decision.superseded_reason, null);
  * the rehearsal checks every saved row reads the declared default (HISTORY_RULES' added columns). v120 only adds
  * three nullable task_steer columns (the running build's steering folder), checked the same way. v121 only adds
- * new tables and the columns in V121_ADDED_COLUMNS (null, or no sends), checked the same way.
+ * new tables and the columns in V121_ADDED_COLUMNS (null, or no sends), checked the same way. v122 only adds a new
+ * table (branch_base_move) and the nullable column in V122_ADDED_COLUMNS (a project's recorded remote), checked the
+ * same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -862,6 +884,12 @@ export const LIVE_STEER_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 export const V121_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   task_steer: LIVE_STEER_COLUMNS.task_steer!,
   run: { ...LIVE_STEER_COLUMNS.run, attempt_key: { definition: "TEXT", saved: "NULL" } },
+});
+
+/** v122: the column it adds, with the value every row saved before it reads: the remote URL an owner's project add
+ * recorded (projects added before it read none, until `repos add <project> --remote <url>` records one). */
+export const V122_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  project: { remote_url: { definition: "TEXT", saved: "NULL" } },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -4638,6 +4666,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CHAT_APPROVAL_SCHEMA);
   // What a running agent did last (no version bump: additive only; absent means no word yet).
   db.exec(RUN_ACTIVITY_SCHEMA);
+  // v122: a task branch moved to current main before an attempt (fresh base): a new table, nothing carried over.
+  db.exec(BRANCH_BASE_MOVE_SCHEMA);
   // v121: the Agents board: each run's attempt key (V121_ADDED_COLUMNS, below), its turn history and current snapshot,
   // the agent's open questions, who has seen a finished run and who is watching one now. Older runs read null keys.
   db.exec(AGENT_BOARD_SCHEMA);
@@ -4669,6 +4699,11 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(STORAGE_SWEEP_SCHEMA);
   // v121: landed work's teardown journal (landed-cleanup.ts): new tables.
   db.exec(LANDED_CLEANUP_SCHEMA);
+  // v122: the remote URL an owner's project add recorded (V122_ADDED_COLUMNS; additive only, saved projects read none):
+  // automatic completion trusts only that remote's main (remote-main.ts), never the shared repository's config.
+  for (const [table, columns] of Object.entries(V122_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   db.exec(BACKUP_SCHEMA);
   // Sprint 8: the organisation policy (one row, or none: nothing restricted).
   db.exec(POLICY_SCHEMA);
@@ -4841,6 +4876,8 @@ function createBaseline(db: Database, file: string): number {
     }
     db.exec(BASELINE_SCHEMA);
     db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(BASELINE_SCHEMA_VERSION);
+    const installedAt = new Date().toISOString();
+    db.prepare("INSERT INTO installation_fact (key, value, created_at) VALUES ('installed-at', ?, ?)").run(installedAt, installedAt);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -14479,14 +14516,53 @@ export class Store {
    * legacy first-attempt behavior, unchanged byte-for-byte.
    */
   firstBuilderBase(taskRef: number, branch: string): string | null {
+    // A branch moved to current main (fresh base) had no commits of its own:
+    // its origin is the first base recorded after the move, not the older main.
     const row = this.db
       .prepare(
         `SELECT base_revision FROM run
           WHERE task_ref = ? AND branch = ? AND role = 'builder' AND base_revision IS NOT NULL
+            AND id > COALESCE((SELECT after_run FROM branch_base_move WHERE task_ref = ? AND branch = ? ORDER BY id DESC LIMIT 1), 0)
           ORDER BY id ASC LIMIT 1`,
       )
-      .get(taskRef, branch) as { base_revision: string } | undefined;
+      .get(taskRef, branch, taskRef, branch) as { base_revision: string } | undefined;
     return row === undefined ? null : row.base_revision;
+  }
+
+  /** Where a task branch's attempts start now: a builder branch's pinned base, or the newest base any other attempt on
+   * it recorded (a planner never commits). Null before any attempt on the branch recorded one, or after a move to
+   * current main until the next attempt records its base. */
+  recordedBranchBase(taskRef: number, branch: string): string | null {
+    const pinned = this.firstBuilderBase(taskRef, branch);
+    if (pinned !== null) return pinned;
+    const row = this.db
+      .prepare(
+        `SELECT base_revision FROM run
+          WHERE task_ref = ? AND branch = ? AND role <> 'builder' AND base_revision IS NOT NULL
+            AND id > COALESCE((SELECT after_run FROM branch_base_move WHERE task_ref = ? AND branch = ? ORDER BY id DESC LIMIT 1), 0)
+          ORDER BY id DESC LIMIT 1`,
+      )
+      .get(taskRef, branch, taskRef, branch) as { base_revision: string } | undefined;
+    return row === undefined ? null : row.base_revision;
+  }
+
+  /** Record a task branch's move to current main, before git moves it: a move that then fails leaves the next
+   * attempt's own base (still the old one) as the branch's origin, which is exactly right. */
+  recordBranchBaseMove(taskRef: number, branch: string, from: string, to: string, now: Date): void {
+    this.db
+      .prepare(
+        `INSERT INTO branch_base_move (task_ref, branch, from_rev, to_rev, after_run, moved_at)
+         VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(id), 0) FROM run), ?)`,
+      )
+      .run(taskRef, branch, from, to, now.toISOString());
+  }
+
+  /** The newest move of a task branch to current main, or null. */
+  latestBranchBaseMove(taskRef: number, branch: string): { from: string; to: string; afterRun: number; movedAt: string } | null {
+    const row = this.db
+      .prepare("SELECT from_rev, to_rev, after_run, moved_at FROM branch_base_move WHERE task_ref = ? AND branch = ? ORDER BY id DESC LIMIT 1")
+      .get(taskRef, branch);
+    return row === undefined ? null : { from: String(row["from_rev"]), to: String(row["to_rev"]), afterRun: Number(row["after_run"]), movedAt: String(row["moved_at"]) };
   }
 
   finishRun(
@@ -18665,7 +18741,7 @@ export class Store {
 
   /** Remember a project was opened. Upsert keeps added_at; recency always moves.
    * A project added for the first time starts on Quick checks. */
-  upsertProject(path: string, name: string, now: Date): void {
+  upsertProject(path: string, name: string, now: Date, admission?: { remoteUrl: string | null }): void {
     this.transact(() => {
       const added = this.db.prepare("SELECT 1 FROM project WHERE path = ?").get(path) === undefined;
       this.db
@@ -18674,8 +18750,31 @@ export class Store {
            ON CONFLICT (path) DO UPDATE SET name = excluded.name, last_opened_at = excluded.last_opened_at`,
         )
         .run(path, name, now.toISOString(), now.toISOString());
+      // Admission owns remote changes; ordinary openings preserve the saved value.
+      if (admission !== undefined) this.db.prepare("UPDATE project SET remote_url = ? WHERE path = ?").run(admission.remoteUrl, path);
       if (added) stampNewProjectLevel(this, path, now);
     });
+  }
+
+  /** Includes removed/legacy projects, so deleting a row never makes build-writable config authoritative again. */
+  projectAdmissionKnown(path: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM project WHERE path = ?
+      UNION ALL SELECT 1 FROM action_ledger WHERE repo = ?
+      UNION ALL SELECT 1 FROM task_ref WHERE repo = ?
+      UNION ALL SELECT 1 FROM worktree WHERE repo = ? LIMIT 1`).get(path, path, path, path) !== undefined;
+  }
+
+  /** Full structured URL audit, without the generic ledger's display-text truncation. */
+  recordProjectRemote(actor: string, repo: string, previous: string | null, remoteUrl: string, now: Date): void {
+    this.db.prepare(`INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail)
+      VALUES (?,?,?,NULL,NULL,'project remote recorded','recorded','access',?)`)
+      .run(now.toISOString(), actor, repo, JSON.stringify({ previousRemote: previous, remoteUrl }));
+  }
+
+  /** The remote URL captured on admission or explicitly supplied by the owner; null when none was (or the project was removed). */
+  projectRemote(path: string): string | null {
+    const url = this.db.prepare("SELECT remote_url FROM project WHERE path = ?").get(path)?.["remote_url"];
+    return typeof url === "string" && url !== "" ? url : null;
   }
 
   /** A project removed from the lists (project-admission.ts): only its row goes; its tasks, results and settings stay. */
@@ -18684,7 +18783,7 @@ export class Store {
   }
 
   /** Most recently opened first — the opener page's order. */
-  listProjects(): { path: string; name: string; addedAt: string; lastOpenedAt: string }[] {
+  listProjects(): { path: string; name: string; addedAt: string; lastOpenedAt: string; remoteUrl: string | null }[] {
     return this.db
       .prepare("SELECT * FROM project ORDER BY last_opened_at DESC")
       .all()
@@ -18693,6 +18792,7 @@ export class Store {
         name: String(row["name"]),
         addedAt: String(row["added_at"]),
         lastOpenedAt: String(row["last_opened_at"]),
+        remoteUrl: typeof row["remote_url"] === "string" ? row["remote_url"] : null,
       }));
   }
 

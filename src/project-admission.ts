@@ -16,6 +16,7 @@ import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { run } from "./exec.js";
 import { canonicalProject, projectName, sameRepo, type ProjectExec } from "./project.js";
+import { remoteUrlProblem } from "./remote-main.js";
 import { addRepos, loadProjectRegistry, removeRepos, updateRepos } from "./repos.js";
 import type { Store } from "./store.js";
 
@@ -29,8 +30,14 @@ export type AdmissionFailure = {
   reason: "unavailable" | "not-git" | "locked" | "registry" | "abandoned" | "failed";
   message: string;
 };
-export type Admitted = { ok: true; repo: string; name: string; added: boolean };
+/** `remote`: the origin URL this add recorded as the project's trusted remote (null: none), and why one wasn't. */
+export type Admitted = { ok: true; repo: string; name: string; added: boolean; remote: { url: string | null; why: string | null } };
 export type Released = { ok: true; repo: string; name: string; removed: boolean };
+
+const ADMISSION_GIT = {
+  envAllowlist: ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"],
+  env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1" },
+};
 
 export const PROJECT_ADDED = "project added";
 export const PROJECT_REMOVED = "project removed";
@@ -42,40 +49,61 @@ export async function proveProjectRoot(path: string, exec: ProjectExec = run): P
   }
   const canonical = canonicalProject(path);
   if (canonical === null) return { ok: false, reason: "unavailable", message: `${path} isn't a folder on this computer.` };
-  const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: canonical, timeoutMs: 5_000 });
+  const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: canonical, timeoutMs: 5_000, ...ADMISSION_GIT });
   const repo = top.code === 0 ? canonicalProject(top.stdout.trim()) : null;
   if (repo === null) return { ok: false, reason: "not-git", message: `${path} isn't a Git repository. Run git init there first, or choose a folder inside one.` };
   return { ok: true, repo };
 }
 
-/**
- * Admit one project. Idempotent: adding a saved project again changes
- * nothing and writes no ledger row. The registry is written first, under
- * its lock; the project row and its ledger row then commit together, so a
- * retry after a failure finishes the job and records it exactly once.
- */
+/** Read only on first CLI admission; never rediscover trust from an existing project's config. */
+async function originOf(repo: string, exec: ProjectExec): Promise<{ url: string | null; why: string | null }> {
+  const read = await exec("git", ["config", "--local", "--no-includes", "--get", "remote.origin.url"], { cwd: repo, timeoutMs: 5_000, ...ADMISSION_GIT });
+  const url = read.code === 0 ? read.stdout.trim() : "";
+  if (url === "") return { url: null, why: "it has no origin remote" };
+  const problem = remoteUrlProblem(url);
+  return problem === null ? { url, why: null } : { url: null, why: problem };
+}
+
+/** Registry first, then the project and its audit records in one transaction. Re-adds preserve trust. */
 export async function admitProject(store: Store, input: {
   /** null: a console with no machine registry (a bare `serve`) keeps only the project list. */
   registryFile: string | null; path: string; actor: AdmissionActor; now: Date; exec?: ProjectExec;
+  /** Only the authorized CLI add opts in; console/open/onboarding never discover a remote. */
+  captureOrigin?: boolean;
+  /** Explicit value from the owner/instance-operator CLI boundary. */
+  remoteUrl?: string;
 }): Promise<Admitted | AdmissionFailure> {
   const proved = await proveProjectRoot(input.path, input.exec);
   if (!proved.ok) return proved;
   const { repo } = proved;
+  if (input.remoteUrl !== undefined && (input.actor.origin === "console" || remoteUrlProblem(input.remoteUrl) !== null)) {
+    return { ok: false, reason: "failed", message: "Only an owner or instance operator can record a network remote with repos add --remote <url>. Use an HTTPS or SSH URL without credentials." };
+  }
+  const before = input.registryFile === null ? null : await loadProjectRegistry(input.registryFile);
+  const known = store.projectAdmissionKnown(repo) || (before !== null && !("error" in before) && before.repos.includes(repo));
+  const discovered = !known && input.captureOrigin === true && input.actor.origin !== "console"
+    ? await originOf(repo, input.exec ?? run) : null;
+  let remote = { url: store.projectRemote(repo), why: null as string | null };
   let registryHad = true;
   if (input.registryFile !== null) {
-    const before = await loadProjectRegistry(input.registryFile);
     const enrolled = await updateRepos(input.registryFile, repos => addRepos(repos, [repo]));
     if (!enrolled.ok) return { ok: false, reason: enrolled.reason, message: `${projectName(repo)} wasn't added: ${enrolled.message}` };
-    registryHad = !("error" in before) && before.repos.includes(repo);
+    registryHad = before !== null && !("error" in before) && before.repos.includes(repo);
   }
   const added = store.transact(() => {
     const rowHad = store.listProjects().some(one => one.path === repo);
-    store.upsertProject(repo, projectName(repo), input.now);
+    const previous = store.projectRemote(repo);
+    const first = !known && !store.projectAdmissionKnown(repo);
+    remote = input.remoteUrl !== undefined ? { url: input.remoteUrl, why: null }
+      : first && discovered !== null ? discovered : { url: previous, why: previous === null ? "no remote recorded; use repos add --remote <url>" : null };
+    store.upsertProject(repo, projectName(repo), input.now, { remoteUrl: remote.url });
+    if (input.remoteUrl !== undefined) store.recordProjectRemote(input.actor.label, repo, previous, input.remoteUrl, input.now);
+
     if (rowHad && registryHad) return false;
     store.recordAction({ at: input.now.toISOString(), actor: input.actor.label, repo, taskId: null, runId: null, action: PROJECT_ADDED, outcome: "added", source: "access", detail: `from ${input.actor.origin}` });
     return true;
   });
-  return { ok: true, repo, name: projectName(repo), added };
+  return { ok: true, repo, name: projectName(repo), added, remote };
 }
 
 /**

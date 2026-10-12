@@ -119,8 +119,15 @@ export const REAL_TURN_MS = 300_000;
 /**
  * Wait until `test` answers something truthy, trying every `everyMs`. A wait that runs out names what it waited for and
  * for how long, with the last error and, when `seen` is given, what it saw at the end (`seen` is read only then).
+ * A release check caps every wait (TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS) unless `capped` is false: a wait whose
+ * deadline is a fixed time the product itself sets (a schedule's next firing) can't be shortened.
  */
-export async function until(what, test, { timeoutMs = 120_000, everyMs = 1500, seen } = {}) {
+export async function until(what, test, { timeoutMs = 120_000, everyMs = 1500, seen, capped = true } = {}) {
+  if (capped && process.env.TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS) {
+    const seconds = Number(process.env.TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS);
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS must be positive");
+    timeoutMs = Math.min(timeoutMs, seconds * 1000);
+  }
   const deadline = Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
@@ -306,9 +313,13 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
       failed.add(title);
       if (error instanceof Skip) { results.push({ name: title, needs, ...tag, state: "skipped", because: [error.message] }); say(`SKIP  ${title} (${error.message})`); return null; }
       const file = join(out, `${results.length + 1}-failed.png`);
-      for (const one of openPages) await one.screenshot({ path: file.replace(".png", `-${openPages.indexOf(one)}.png`) }).catch(() => undefined);
+      for (const one of openPages) await one.screenshot({ timeout: 5000, path: file.replace(".png", `-${openPages.indexOf(one)}.png`) }).catch(() => undefined);
       results.push({ name: title, needs, ...tag, state: "failed", seconds: Math.round((Date.now() - at) / 100) / 10, modelCalls: calls.last, error: error instanceof Error ? error.message : String(error) });
       say(`FAIL  ${title}: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
+      if (process.env.TOOLROLL_RELEASE_FAIL_FAST === "1") {
+        writeFileSync(join(out, "report.json"), JSON.stringify({ results }));
+        throw error;
+      }
       return null;
     } finally {
       current = null;

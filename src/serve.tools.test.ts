@@ -298,3 +298,15 @@ test("Build access says plainly when a project's tools can't be read, and keeps 
   const many = htmlString(projectSettingsHtml({ ...view, access: { tools: ["a", "b", "c"].map(name => ({ name, loads: true, words: "Working · 2 tools" })) } } as never, {}));
   expect(many).toContain('with 3 tools: <span class="tool-name">a</span>, <span class="tool-name">b</span>, <span class="tool-name">c</span>.');
 });
+
+test("Project settings show the saved remote, missing guidance, and an escaped long URL", async () => {
+  const cookie = await login();
+  const page = async () => (await fetch(`${base}/settings/project?repo=${encodeURIComponent(BENTO)}`, { headers: { cookie } })).text();
+  expect(await page()).toContain("No remote recorded. Landed work waits for your review.");
+  const remoteUrl = "https://example.com/" + "long-project-name/".repeat(30) + "shop.git";
+  store.upsertProject(BENTO, "bentoportfolio", T0, { remoteUrl });
+  const html = await page();
+  expect(html).toContain(`<p class="path">${remoteUrl}</p>`);
+  expect(html).toContain("toolroll repos add &lt;project&gt; --remote &lt;url&gt;");
+  expect(html.match(/id="recorded-remote-title"/g)).toHaveLength(1);
+});

@@ -1,7 +1,7 @@
 /**
  * Settings → Storage: how much space task checkouts use, what a clean-up would free now, a Clean up button whose
  * preview (what goes, what stays and why, with paths) sits behind the password, what the last storage sweep removed
- * and when (its paths in a disclosure), what landed work's teardown did and still waits on (in a disclosure, with the
+ * and when (its paths in a disclosure) and why the next one waits, what landed work's teardown did and still waits on (in a disclosure, with the
  * one-time command for older work), and when a finished task's clean checkout goes by itself. An instance operator's page.
  */
 import { homedir } from "node:os";
@@ -10,6 +10,7 @@ import { html, postForm, type Html } from "./html.js";
 import { previewDigest, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { CLEANUP_CHOICES, bytesWords } from "./storage.js";
 import { sweepDetails, sweepWords, type SweepRecord } from "./storage-sweep.js";
+import { sweepScheduleWords, type SweepSchedule } from "./storage-sweep-schedule.js";
 import type { LandedSummary } from "./landed-cleanup.js";
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -39,7 +40,7 @@ export const STORAGE_CSS = `.storage{max-width:720px;min-width:0;overflow-wrap:a
   `.storage details.sweep-details ul{margin:4px 0 0;padding-left:18px;font-family:var(--font-mono, ui-monospace, monospace);font-size:.6875rem;color:var(--muted-foreground);overflow-wrap:anywhere}` +
   `@media (max-width:900px){.storage details.sweep-details>summary,.storage details.landed>summary{min-height:44px}.storage details.clean-up>summary,.storage form button{min-height:44px}.storage label{max-width:none}.storage select,.storage input[type=password]{min-height:44px;font-size:16px}.storage .preview form.remove button{width:100%}}`;
 
-export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean }; landed?: LandedSummary };
+export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean; schedule?: SweepSchedule }; landed?: LandedSummary };
 
 /** Paths under the home folder as ~/…, as the checkout list shows them. */
 function homeAsTilde(line: string): string {
@@ -53,14 +54,16 @@ function whenWords(at: string): string {
   return Number.isNaN(date.getTime()) ? at : date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-/** One line: when the last sweep ran and what it did; its paths and problems behind Details. */
+/** When the last sweep ran and what it did, then why the next one waits or when it is due; paths and problems behind Details. */
 function sweepHtml(sweep: NonNullable<StorageView["sweep"]>): Html {
   const last = sweep.last;
-  if (last === null) return html`<p class="meta" data-last-sweep="">${sweep.off ? "Automatic sweep is off." : html`Toolroll sweeps leftovers once a day. It hasn't run yet.`}</p>`;
+  const schedule = sweep.schedule === undefined ? (sweep.off ? html`<p class="meta" data-sweep-state="off">Automatic sweep: off.</p>` : "")
+    : html`<p class="meta" data-sweep-state="${sweep.schedule.state}">Automatic sweep: ${sweepScheduleWords(sweep.schedule, whenWords)}</p>`;
+  if (last === null) return html`<div class="sweep" data-last-sweep=""><p>Not swept yet.</p>${schedule}</div>`;
   const who = last.source === "manual" ? `Cleaned up by ${last.actor}` : "Swept";
   const details = sweepDetails(last.parts);
   const problem = last.parts.some(one => one.failed > 0 || one.problem !== undefined);
-  return html`<div class="sweep" data-last-sweep="${last.at}"><p${problem ? html` class="problem"` : ""}>${who} <time datetime="${last.at}">${whenWords(last.at)}</time>. ${sweepWords(last.parts)}</p>${
+  return html`<div class="sweep" data-last-sweep="${last.at}"><p${problem ? html` class="problem"` : ""}>${who} <time datetime="${last.at}">${whenWords(last.at)}</time>. ${sweepWords(last.parts)}</p>${schedule}${
     details.length === 0 ? "" : html`<details class="sweep-details"><summary>Details</summary><ul>${details.map(line => html`<li>${homeAsTilde(line)}</li>`)}</ul></details>`}</div>`;
 }
 

@@ -607,7 +607,14 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   const tokenAt = argv.indexOf("--token");
   const tokenFlag = tokenAt === -1 ? undefined : argv[tokenAt + 1];
   const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && index !== tokenAt + 1)));
-  const [action, ...paths] = bare;
+  const remoteAt = bare.indexOf("--remote");
+  const remoteUrl = remoteAt === -1 ? undefined : bare[remoteAt + 1];
+  const [action, ...paths] = bare.filter((_, i) => remoteAt === -1 || (i !== remoteAt && i !== remoteAt + 1));
+  if (remoteAt !== -1 && (action !== "add" || bare.filter(v => v === "--remote").length !== 1 || remoteUrl === undefined || remoteUrl.startsWith("-") || paths.length > 1)) {
+    const message = "Use repos add <project> --remote <url> for one project.";
+    write(json ? envelopeJson({ ok: false, command: "repos", reason: "usage", message }) : message);
+    return USAGE_EXIT;
+  }
   const databaseFile = databasePath(process.env, homedir());
   const file = registryBeside(databaseFile);
   if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag.startsWith("-"))) {
@@ -631,11 +638,15 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   }
 
   if (action === undefined) {
-    if (json) {
-      write(envelopeJson({ ok: true, command: "repos", count: loaded.repos.length, repos: loaded.repos, file }));
-      return 0;
-    }
-    return listRepos(loaded.repos, file, write);
+    const store = openStore(databaseFile);
+    try {
+      const projects = loaded.repos.map(repo => ({ repo, remoteUrl: store.projectRemote(repo) }));
+      if (json) {
+        write(envelopeJson({ ok: true, command: "repos", count: loaded.repos.length, repos: loaded.repos, projects, file }));
+        return 0;
+      }
+      return listRepos(loaded.repos, file, write, new Map(projects.map(p => [p.repo, p.remoteUrl])));
+    } finally { store.close(); }
   }
   if (action !== "add" && action !== "remove") {
     const message = `unknown command \`repos ${action}\` — try \`repos\`, \`repos add\`, \`repos remove\`, or \`repos add-from-github <owner/name>\``;
@@ -649,7 +660,7 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   const said: { reason?: string; projects?: unknown[] } = {};
   const say = json ? (line: string) => lines.push(line) : write;
   const code = await withAdmission({ databaseFile, registryFile: file, ...(leadToken === undefined ? {} : { leadToken }) }, say, said, admission =>
-    action === "add" ? addToRepos(admission, targets, say, said) : removeFromRepos(admission, targets, say, said));
+    action === "add" ? addToRepos(admission, targets, say, said, remoteUrl) : removeFromRepos(admission, targets, say, said));
   if (json) {
     write(
       envelopeJson({
@@ -695,7 +706,7 @@ async function withAdmission(
   }
 }
 
-function listRepos(repos: readonly string[], file: string, write: Write): number {
+function listRepos(repos: readonly string[], file: string, write: Write, remotes: ReadonlyMap<string, string | null>): number {
   if (repos.length === 0) {
     write("No repositories connected. Toolroll reports on everything it can find.");
     write("");
@@ -706,7 +717,10 @@ function listRepos(repos: readonly string[], file: string, write: Write): number
   }
 
   write(`${repos.length === 1 ? "1 repository" : `${repos.length} repositories`} connected:`);
-  for (const repo of repos) write(`  ${repo}${existsSync(repo) ? "" : "   (missing)"}`);
+  for (const repo of repos) {
+    write(`  ${repo}${existsSync(repo) ? "" : "   (missing)"}`);
+    write(`    Recorded remote: ${remotes.get(repo) ?? "None"}`);
+  }
   write("");
   write("  toolroll repos add <path>      add another; it is in the console at once");
   write("  toolroll repos remove <path>   take one out of the console; its tasks stay");
@@ -721,7 +735,7 @@ function admissionExit(reason: string): number {
   return reason === "not-git" || reason === "unavailable" ? USAGE_EXIT : 1;
 }
 
-async function addToRepos(admission: Admission, targets: readonly string[], write: Write, said: { reason?: string; projects?: unknown[] }): Promise<number> {
+async function addToRepos(admission: Admission, targets: readonly string[], write: Write, said: { reason?: string; projects?: unknown[] }, remoteUrl?: string): Promise<number> {
   // Every folder is proved before anything is written: one that is not a
   // repository fails here, not later and further away.
   let refused = false;
@@ -736,9 +750,9 @@ async function addToRepos(admission: Admission, targets: readonly string[], writ
   if (refused) return USAGE_EXIT;
   const now = new Date();
   const running = consoleRunning(admission.store, now);
-  const projects: { repo: string; name: string; added: boolean }[] = [];
+  const projects: { repo: string; name: string; added: boolean; remoteUrl: string | null }[] = [];
   for (const path of targets) {
-    const admitted = await admitProject(admission.store, { registryFile: admission.registryFile, path, actor: admission.actor, now });
+    const admitted = await admitProject(admission.store, { registryFile: admission.registryFile, path, actor: admission.actor, now, captureOrigin: true, ...(remoteUrl === undefined ? {} : { remoteUrl }) });
     if (!admitted.ok) {
       // The updater's own taxonomy survives (verification finding 4): a held
       // lock or a malformed registry is an operational fact, never "usage".
@@ -747,8 +761,9 @@ async function addToRepos(admission: Admission, targets: readonly string[], writ
       write(admitted.message);
       return admissionExit(admitted.reason);
     }
-    projects.push({ repo: admitted.repo, name: admitted.name, added: admitted.added });
+    projects.push({ repo: admitted.repo, name: admitted.name, added: admitted.added, remoteUrl: admitted.remote.url });
     write(addedWords(admitted.name, admitted.added, running));
+    write(`Recorded remote: ${admitted.remote.url ?? "None. Use repos add <project> --remote <url> to record one."}`);
   }
   said.projects = projects;
   return 0;

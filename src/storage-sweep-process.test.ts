@@ -7,10 +7,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { dailyStorageSweep, lastSweep, nextSweepAt, RETRY_MS, type SweepRecord } from "./storage-sweep.js";
-import { createSweepSupervisor, storageSweepSupervisor, sweepRequest, sweepResponse, type SweepRequest } from "./storage-sweep-process.js";
+import { lastSweep, nextSweepAt, RETRY_MS, type SweepDeps, type SweepRecord } from "./storage-sweep.js";
+import { idleStorageSweep } from "./storage-sweep-schedule.js";
+import { createSweepSupervisor, storageSweepSupervisor, sweepLaunch, SWEEP_NICE, sweepRequest, sweepResponse, type SweepRequest, type SweepSupervisor } from "./storage-sweep-process.js";
 import { hangingSweep, observeSweep } from "../test/sweep-process.js";
 import { sweepObservations } from "../test/sweep-observations.js";
+
+// The service's pass: only a caller with an owner claims a sweep (storage-sweep-schedule.ts).
+const service = {};
+const dailyStorageSweep = (store: Store, deps: SweepDeps, now: () => Date, supervisor?: SweepSupervisor) => idleStorageSweep(store, { owner: service, ...deps }, now, supervisor);
 
 let root: string, databaseFile: string, store: Store;
 const cleanups: (() => void)[] = [];
@@ -67,6 +72,9 @@ test("parent heartbeat and database renewals continue while the production child
   cleanups.push(() => flight.supervisor.stop());
   const sweep = flight.completed.finally(() => { settled = true; });
   expect(dailyStorageSweep(store, { databaseFile, pool: null, tempRoots: [temp] }, () => new Date(), flight.supervisor)).toBeNull();
+  // Behind everything else: the child's own work, like the du/rm it starts, runs at a positive nice.
+  await vi.waitFor(() => expect(existsSync(duGate.entered)).toBe(true), { timeout: 30_000 });
+  expect(JSON.parse(readFileSync(duGate.entered, "utf8")).nice).toBeGreaterThanOrEqual(SWEEP_NICE);
   const during: boolean[] = [];
   const heartbeat = setInterval(() => {
     if (!existsSync(duGate.entered)) return;
@@ -109,6 +117,13 @@ test("a production child failure is recorded without raw errors and retries afte
   dailyStorageSweep(store, { databaseFile, pool: null, tempRoots: [] }, () => new Date(at.getTime() + RETRY_MS), retry.supervisor);
   expect((await retry.completed).ok).toBe(true);
   expect(lastSweep(store)!.parts.every(one => one.problem === undefined && one.failed === 0)).toBe(true);
+});
+
+test("the child starts at low priority: under taskpolicy -b on macOS when present, the same Node otherwise", () => {
+  expect(sweepLaunch("darwin", path => path === "/usr/sbin/taskpolicy")).toEqual({ execPath: "/usr/sbin/taskpolicy", prefix: ["-b", process.execPath] });
+  expect(sweepLaunch("darwin", () => false)).toEqual({ execPath: process.execPath, prefix: [] });
+  expect(sweepLaunch("linux", () => true)).toEqual({ execPath: process.execPath, prefix: [] });
+  expect(SWEEP_NICE).toBeGreaterThan(0);
 });
 
 test("the child protocol rejects malformed, incomplete and mismatched results", () => {

@@ -19,9 +19,11 @@ import { matchesOutsideCheckpoint } from "./ledger-chain.js";
 import { CLEANUP_CHOICES, bytesWords, cleanupWords, diskBytes, parseCleanup, storageReport } from "./storage.js";
 import { removeStaleTestTemp, tempRoots, testTempFolders } from "./test-temp.js";
 import { storageSweepSupervisor } from "./storage-sweep-process.js";
-import { dailyStorageSweep, lastSweep, nextSweepAt, saveSweep, storageSweepOff as storageSweepOffNow, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
+import { idleStorageSweep, sweepSchedule, sweepScheduleWords } from "./storage-sweep-schedule.js";
+import { lastSweep, saveSweep, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
 import { cleanLandedBacklog, gitOf, landedBacklog, reconcileLanded, BACKLOG_DAYS, type LandedPlan, type LandedStep } from "./landed-cleanup.js";
+import { RemoteMains } from "./remote-main.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
 import { MIN_DAYS, RETENTION_KINDS, countWords, dailyRetention, isRetentionKind, lastSweepAt, parsePeriod, periodLabel, periodWords, retentionPlan, sweepWords, type RetentionKind, type RetentionSweep } from "./retention.js";
@@ -277,7 +279,8 @@ import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
 import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
-import { WorktreePool } from "./worktree.js";
+import { WorktreePool, type BaseStanding } from "./worktree.js";
+import { baseStandingWords, freshBaseFor, taskBaseOf } from "./task-base.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf } from "./task-control.js";
 import { worktreeAdoptionNotice } from "./worktree-notices.js";
 import { workIndexPage, workIndexTask, WorkIndexCursorError, type WorkIndexPage } from "./work-index.js";
@@ -1224,6 +1227,7 @@ type Context = {
   databaseFile: string;
   /** Where `storage` looks for leftover test temp folders; default the temp folder and /tmp. */
   tempRoots?: readonly string[];
+  /** The long-lived service's token: only a pass carrying it may start the automatic storage sweep. */
   sweepOwner?: object;
   telegramTokenFile: string;
   agentRunner?: CommandRunner;
@@ -1309,6 +1313,18 @@ function telegramConversation(context: Context, options: { serverOrigin?: string
   };
 }
 
+
+/** The attempt's history says where it started when that is news: moved to current main, or kept on an older one. */
+function noteBaseStanding(store: Store, runId: number, standing: BaseStanding | null | undefined, main: string, now: Date): void {
+  if (standing == null) return;
+  const commits = (count: number) => `${count} commit${count === 1 ? "" : "s"}`;
+  if (standing.moved !== null) {
+    store.addRunNote(runId, "Toolroll", `Started from current ${main} (${standing.main.slice(0, 8)}). The branch had no commits or changes of its own and was ${commits(standing.moved.behind)} behind at ${standing.moved.from.slice(0, 8)}.`, now);
+  } else if (standing.kept !== null && standing.behind > 0) {
+    const why = standing.kept === "has commits" ? "it has commits of its own" : standing.kept === "has changes" ? "it has uncommitted changes" : "its checkout is not on the task branch";
+    store.addRunNote(runId, "Toolroll", `Based on an older ${main}: ${standing.head.slice(0, 8)} is ${commits(standing.behind)} behind. It was not moved because ${why}.`, now);
+  }
+}
 
 /** A revision's verified start: its source build's sealed head, while the revision brief still binds that head and scope. */
 function revisionSourceHead(store: Store, evidenceRoot: string, taskRef: number, revisionOf: string): { ok: true; head: string } | { ok: false; problem: string } {
@@ -3127,6 +3143,8 @@ async function tickCommand(
         // A plan branch from an earlier plan (its checkout removed by storage retention) is reused, as its kept checkout was.
         reuseBranch: true,
         reclaim: { evidenceRoot: context.evidenceRoot },
+        // Each plan starts from current main unless it revises earlier work, which keeps that work's head.
+        ...freshBaseFor(store, id, planBranch, base),
       });
       if (!planLeased.ok) {
         release(store, lease, clock());
@@ -3150,6 +3168,7 @@ async function tickCommand(
         now: clock(),
         ...(planStamp === null ? {} : { route: planStamp }),
       });
+      noteBaseStanding(store, planRunId, planLeased.base, base, clock());
       // The source is RECORDED on the attempt before the brief is even
       // composed: the exact bytes the planner reads, sealed as evidence,
       // and the filed scope's digest stamped as what this run was proved
@@ -3458,6 +3477,7 @@ async function tickCommand(
         continue;
       }
     }
+    // An existing branch with no commits of its own starts from current main (a new one already does).
     const leased = await worktrees.lease({
       repo,
       branch,
@@ -3466,6 +3486,7 @@ async function tickCommand(
       now: clock(),
       ...(exists.code === 0 ? {} : { base: buildBase }),
       reclaim: { evidenceRoot: context.evidenceRoot },
+      ...(exists.code === 0 ? freshBaseFor(store, id, branch, base) : {}),
     });
     if (!leased.ok) {
       // The task is fine; this machine's pool is not. Hand the claim back so
@@ -3523,6 +3544,7 @@ async function tickCommand(
       dispatched.push({ id, outcome: "skipped", reason: "admission-refused", detail: error instanceof Error ? error.message : String(error) });
       continue;
     }
+    noteBaseStanding(store, runId, leased.base, base, clock());
     if (leased.resumedFromRun !== undefined) {
       store.addRunNote(
         runId,
@@ -3883,7 +3905,9 @@ async function reconcileCommand(
   // Landed work (landed-cleanup.ts): finish teardowns a crash cut short, then mark newly landed results complete (a
   // ledger entry says why) and remove their clean checkouts and local build and plan branches.
   let landed: Awaited<ReturnType<typeof reconcileLanded>> = { completed: [], steps: [] };
-  try { landed = await reconcileLanded(store, worktrees, gitOf(context.gitRunner), repo, context.evidenceRoot, clock); } catch { /* the next pass tries again */ }
+  // Completion trusts only the recorded remote's main, fetched by this process into a private folder it removes after.
+  const remotes = new RemoteMains(store, context.gitRunner, context.evidenceRoot);
+  try { landed = await reconcileLanded(store, worktrees, gitOf(context.gitRunner), remotes, repo, context.evidenceRoot, clock); } catch { /* the next pass tries again */ } finally { remotes.close(); }
   const landedGone = landed.steps.filter(one => one.outcome === "removed");
 
   // Checkout cleanup (Settings → Storage): finished work's clean checkouts go as the setting says (by default when
@@ -3899,13 +3923,17 @@ async function reconcileCommand(
   try { retention = dailyRetention(store, context.evidenceRoot, clock()); } catch { retention = null; /* the next pass tries again */ }
   const retained = retention === null ? [] : retention.counts.filter(one => one.count > 0);
 
-  // The daily storage sweep (storage-sweep.ts): stale test temp folders, orphans Toolroll left running, finished
+  // The storage sweep (storage-sweep.ts): stale test temp folders, orphans Toolroll left running, finished
   // checkouts, extra staged runtimes and dependency installs unused for a week; saved for Settings → Storage.
+  // Only the long-lived service (its watch passes `sweepOwner`) starts one, once due and while nothing is running or
+  // waiting (storage-sweep-schedule.ts). A one-shot reconcile would exit and lose the claimed sweep, so it leaves it.
   // Launch only: report a result here only if it already completed. Later results save independently.
   let storageSwept: SweepRecord | null = null;
-  try {
-    storageSwept = dailyStorageSweep(store, { databaseFile: context.databaseFile, pool: worktrees, tempRoots: context.tempRoots ?? tempRoots(), ...(context.sweepOwner === undefined ? {} : { owner: context.sweepOwner }) }, clock);
-  } catch { storageSwept = null; /* the next pass tries again */ }
+  if (context.sweepOwner !== undefined) {
+    try {
+      storageSwept = idleStorageSweep(store, { databaseFile: context.databaseFile, pool: worktrees, tempRoots: context.tempRoots ?? tempRoots(), owner: context.sweepOwner }, clock);
+    } catch { storageSwept = null; /* the next pass tries again */ }
+  }
   const swept = storageSwept === null ? [] : storageSwept.parts.filter(one => one.count > 0);
 
   const nothing =
@@ -6833,7 +6861,8 @@ async function runWatchLoop(args: {
     throw new Error("--reconcile-every must be an integer from 1 to 2147483647 milliseconds");
   }
 
-  const incarnation = randomUUID();
+  // The owner carries lifetime without changing the lease schema. Bounded watches cannot host automatic sweeps.
+  const incarnation = `${runFor === null ? "toolroll-service:" : ""}${randomUUID()}`;
   const lease = acquireWatchLeaseAuthed(
     store,
     { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS },
@@ -6979,7 +7008,8 @@ async function runWatchLoop(args: {
     },
     run: async () => {
       const maintenanceLines: string[] = [];
-      const maintenanceContext: Context = { ...quietContext, sweepOwner, write: line => maintenanceLines.push(line) };
+      const maintenanceContext: Context = { ...quietContext, ...(runFor === null ? { sweepOwner } : {}), write: line => maintenanceLines.push(line) };
+      if (runFor !== null) delete maintenanceContext.sweepOwner;
       const code = await reconcileCommand(passFlags(), maintenanceContext);
       if (code !== EXIT.ok) throw new Error(maintenanceLines.join(" "));
       if (reconciliationFailure !== null) progress("watch: reconciliation recovered — new work may resume");
@@ -8068,6 +8098,8 @@ async function upCommand(
 
   const loopFlagsFor = (repo: string): Map<string, string | true> => {
     const copy = new Map<string, string | true>();
+    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
+    if (forGiven !== undefined) copy.set("for", forGiven);
     copy.set("runner", runnerName);
     copy.set("token", runnerToken);
     copy.set("repo", repo);
@@ -10059,6 +10091,7 @@ function showTask(positional: readonly string[], context: Context): number {
   const shared = listed === null ? null : { headline: listed.status.label, sentence: listed.status.detail };
   const primaryAction = listed === null ? work?.primaryAction ?? null : listed.primaryAction;
   const steeringLive = store.steeringLiveBuild(ref.id, now) !== null;
+  const base = taskBaseOf(store, id);
   const detail = {
     task,
     work: work === null || listed === null ? work : { ...work, status: { ...work.status, label: listed.status.label, detail: listed.status.detail, tone: listed.status.tone }, primaryAction },
@@ -10074,6 +10107,8 @@ function showTask(positional: readonly string[], context: Context): number {
     scope,
     approval: approvalOf(scope),
     route: taskRouteView(routed, readiness),
+    // Fresh base: the commit this task's work starts from, and how far current main has moved past it.
+    base,
     runs: runs.map(one => ({ ...one, route: store.runRoute(one.id) })),
     deliverable: ref.deliverable,
     report: readVerifiedReport(store, context.evidenceRoot, ref.id),
@@ -10131,6 +10166,7 @@ function showTask(positional: readonly string[], context: Context): number {
           ]
         : [`  report: ${detail.report.problem} (run ${detail.report.run})`]),
     ...pullRequestLines(detail.pullRequest),
+    ...(base === null ? [] : [`  base: ${baseStandingWords(base)}`]),
     ...(detail.blockedBy.length > 0 ? [`  waits for ${detail.blockedBy.join(", ")}`] : []),
     ...(detail.position === null
       ? []
@@ -12241,15 +12277,15 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
   const sweepFacts = () => {
     const last = lastSweep(store);
     const automatic = last?.source === "automatic" ? last : lastSweep(store, "automatic");
-    return { last, lastAutomatic: automatic, next: nextSweepAt(store) };
+    return { last, lastAutomatic: automatic, schedule: sweepSchedule(store, context.clock()) };
   };
   const sweepLines = (facts: ReturnType<typeof sweepFacts>): string[] => {
     const when = (at: string) => new Date(at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     const one = facts.last;
-    const head = one === null ? (facts.next === null && storageSweepOffNow() ? "Automatic sweep: off." : "Automatic sweep: not run yet; it runs once a day.")
+    const head = one === null ? "Not swept yet."
       : `Last swept ${when(one.at)}${one.source === "manual" ? ` by ${one.actor}` : " automatically"}: ${storageSweepWords(one.parts)}`;
     const auto = one !== null && one.source === "manual" && facts.lastAutomatic !== null ? [`Last automatic sweep ${when(facts.lastAutomatic.at)}: ${storageSweepWords(facts.lastAutomatic.parts)}`] : [];
-    return [head, ...auto, ...(one === null ? [] : sweepDetails(one.parts).slice(0, 8).map(line => `  ${line}`))];
+    return [head, ...auto, `Automatic sweep: ${sweepScheduleWords(facts.schedule, when)}`, ...(one === null ? [] : sweepDetails(one.parts).slice(0, 8).map(line => `  ${line}`))];
   };
 
   if (action === undefined) {
@@ -12356,6 +12392,12 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
  * checkouts and local branches go; so do Toolroll's own branches no task uses whose work landed. A preview changes
  * nothing; --yes takes an instance operator, records every teardown first, then carries it out. */
 async function landedCommand(yes: boolean, operator: () => Promise<string | null>, refused: (what: string) => number, pool: WorktreePool, context: Context): Promise<number> {
+  // Completion trusts only the recorded remote's main, fetched by this process into a private folder it removes after.
+  const remotes = new RemoteMains(context.store, context.gitRunner, context.evidenceRoot);
+  try { return await landedCommandWith(remotes, yes, operator, refused, pool, context); } finally { remotes.close(); }
+}
+
+async function landedCommandWith(remotes: RemoteMains, yes: boolean, operator: () => Promise<string | null>, refused: (what: string) => number, pool: WorktreePool, context: Context): Promise<number> {
   const command = "storage clean --landed";
   const git = gitOf(context.gitRunner);
   const plurals = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -12367,7 +12409,7 @@ async function landedCommand(yes: boolean, operator: () => Promise<string | null
     branches: plan.results.reduce((sum, one) => sum + one.targets.filter(target => target.kind === "branch").length, 0) + plan.branches.length,
   });
   if (!yes) {
-    const plan = await landedBacklog(context.store, git, context.evidenceRoot, context.clock());
+    const plan = await landedBacklog(context.store, git, remotes, context.evidenceRoot, context.clock());
     const n = counts(plan);
     const anything = n.results + plan.branches.length + plan.pending > 0;
     return succeed(context.write, context.json, command, { preview: true, cutoff: plan.cutoff, results: plan.results, branches: plan.branches, kept: plan.kept, pending: plan.pending }, () => [
@@ -12381,8 +12423,8 @@ async function landedCommand(yes: boolean, operator: () => Promise<string | null
   }
   const actor = await operator();
   if (actor === null) return refused("cleans up landed work");
-  const plan = await landedBacklog(context.store, git, context.evidenceRoot, context.clock());
-  const done = await cleanLandedBacklog(context.store, pool, git, context.evidenceRoot, context.clock, plan, actor);
+  const plan = await landedBacklog(context.store, git, remotes, context.evidenceRoot, context.clock());
+  const done = await cleanLandedBacklog(context.store, pool, git, remotes, context.evidenceRoot, context.clock, plan, actor);
   const gone = done.steps.filter(one => one.outcome === "removed" || one.outcome === "already gone");
   const stays = done.steps.filter(one => one.outcome === "waits" || one.outcome === "kept");
   return succeed(context.write, context.json, command, { completed: done.completed, steps: done.steps, refused: done.refused, kept: plan.kept }, () => [

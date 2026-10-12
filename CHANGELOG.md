@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.62 — 2026-10-12
+
+- **Release checks in minutes.** The upgrade path runs on a sample, CI's
+  passing run on the exact commit is reused, and the first failure stops it.
+- **Storage sweep waits for quiet.** It runs when nothing is building, and
+  Settings → Storage says when it last ran and why it waits.
+- **Landing proof you can trust.** A task completes on its own only for a
+  merged pull request or the project's recorded remote main, never a local
+  branch a build could move. Projects added before this need it once: you
+  (the owner) or an instance operator's lead runs
+  `toolroll repos add <project> --remote <url>`. Until then, their tasks wait
+  for you.
+- **Cleanup follow-ups.** Only branches Toolroll created are removed, counted
+  from when it made them; scout branches stay, and duplicate teardowns merge.
+- **Fresh base.** A task with no commits starts from current main; the task
+  page shows its base.
+
 ## 0.9.61 — 2026-10-12
 
 - **Agents board.** One place to check on running agents: Needs you,

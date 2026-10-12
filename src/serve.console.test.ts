@@ -1474,10 +1474,15 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
 
     const { execSync } = await import("node:child_process");
     execSync("git init -q", { cwd: repoA });
+    execSync("git config remote.origin.url https://evil.example/shop.git", { cwd: repoA });
     const opened = await post("/projects/open", cookie, { csrf, path: repoA });
     expect(opened.status).toBe(303);
     expect(store.listProjects()).toHaveLength(1);
     expect(store.listProjects()[0]?.name).toBe(repoA.split("/").pop());
+    expect(store.projectRemote(repoA)).toBeNull();
+    store.upsertProject(repoA, "shop", T0, { remoteUrl: "https://trusted.example/shop.git" });
+    expect((await post("/projects/open", cookie, { csrf, path: repoA })).status).toBe(303);
+    expect(store.projectRemote(repoA)).toBe("https://trusted.example/shop.git");
   });
 
   test("Add a project and Remove from Toolroll go through the shared admission: ledger, idempotency, restricted accounts", async () => {

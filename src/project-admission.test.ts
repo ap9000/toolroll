@@ -85,3 +85,73 @@ test("the command line acts as this computer's user, or as the lead for an owner
   expect(store.setAccountProjects("robin", [repo], "alex", NOW)).toEqual({ ok: true });
   expect(commandLineActor(store, { databaseFile, leadToken: robinLead.token })).toMatchObject({ ok: false, message: expect.stringContaining("limited to listed projects") });
 });
+
+test("only first CLI admission discovers a network remote; all implicit re-adds preserve it", async () => {
+  const trusted = "https://github.com/sam/shop.git";
+  execFileSync("git", ["config", "remote.origin.url", trusted], { cwd: repo });
+  expect(await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, captureOrigin: true })).toMatchObject({ remote: { url: trusted } });
+  execFileSync("git", ["config", "remote.origin.url", "https://evil.example/shop.git"], { cwd: repo });
+  for (const origin of ["cli", "console", "lead"] as const) {
+    await admitProject(store, { registryFile, path: repo, actor: { label: "alex", origin }, now: NOW, captureOrigin: true });
+    expect(store.projectRemote(repo)).toBe(trusted);
+  }
+  await releaseProject(store, { registryFile, path: repo, actor: owner, now: NOW });
+  await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, captureOrigin: true });
+  expect(store.projectRemote(repo)).toBeNull();
+});
+
+test("legacy projects, console openings and onboarding do not discover trust", async () => {
+  execFileSync("git", ["config", "remote.origin.url", "https://evil.example/shop.git"], { cwd: repo });
+  await admitProject(store, { registryFile, path: repo, actor: { label: "alex", origin: "console" }, now: NOW });
+  expect(store.projectRemote(repo)).toBeNull();
+  await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, captureOrigin: true });
+  expect(store.projectRemote(repo)).toBeNull();
+});
+
+test("explicit owner remotes persist with full audit detail, and invalid or console changes do not mutate", async () => {
+  store.upsertProject(repo, "shop", NOW);
+  const trusted = "https://example.com/" + "long-path/".repeat(40) + "shop.git";
+  expect(await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, remoteUrl: trusted })).toMatchObject({ ok: true, remote: { url: trusted } });
+  expect(store.listProjects()[0]?.remoteUrl).toBe(trusted);
+  expect(JSON.parse(ledger("project remote recorded")[0]!.detail!)).toEqual({ previousRemote: null, remoteUrl: trusted });
+  for (const remoteUrl of ["/tmp/evil.git", "file:///tmp/evil.git", "https://token@example.com/shop.git", "ext::evil", "../shop.git", "https://localhost/shop.git", "ssh://git@127.0.0.1/shop.git", "git@127.1.2.3:shop.git", "https://[::1]/shop.git"]) {
+    expect(await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, remoteUrl })).toMatchObject({ ok: false });
+  }
+  expect(await admitProject(store, { registryFile, path: repo, actor: { label: "alex", origin: "console" }, now: NOW, remoteUrl: "https://evil.example/shop.git" })).toMatchObject({ ok: false });
+  expect(store.projectRemote(repo)).toBe(trusted);
+  expect(ledger("project remote recorded")).toHaveLength(1);
+  const replacement = "git@example.com:shop.git";
+  await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, remoteUrl: replacement });
+  expect(store.projectRemote(repo)).toBe(replacement);
+  expect(JSON.parse(ledger("project remote recorded")[0]!.detail!)).toEqual({ previousRemote: trusted, remoteUrl: replacement });
+});
+
+test("admission Git reads discard all inherited GIT variables and disable config includes", async () => {
+  const { run } = await import("./exec.js");
+  const calls: string[][] = [];
+  const previous = process.env["GIT_DIR"];
+  process.env["GIT_DIR"] = join(base, "nonexistent-injected-git-dir");
+  try {
+  const admitted = await admitProject(store, { registryFile, path: repo, actor: owner, now: NOW, captureOrigin: true, exec: async (file, args, options) => {
+    expect(options?.envAllowlist?.some(name => name.startsWith("GIT_"))).toBe(false);
+    expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1" });
+    calls.push([...args]);
+    return run(file, args, options);
+  } });
+  expect(admitted.ok).toBe(true);
+  expect(calls).toContainEqual(["config", "--local", "--no-includes", "--get", "remote.origin.url"]);
+  } finally {
+    if (previous === undefined) delete process.env["GIT_DIR"]; else process.env["GIT_DIR"] = previous;
+  }
+});
+
+test("first admission refuses local remotes outside the checkout, file URLs and loopback hosts", async () => {
+  for (const [name, remote] of [["local-project", join(base, "outside.git")], ["file-project", "file:///tmp/outside.git"], ["loopback-project", "ssh://git@localhost/outside.git"]] as const) {
+    const project = join(base, name);
+    execFileSync("git", ["init", "-q", project]);
+    execFileSync("git", ["config", "remote.origin.url", remote], { cwd: project });
+    const result = await admitProject(store, { registryFile, path: project, actor: owner, now: NOW, captureOrigin: true });
+    expect(result).toMatchObject({ ok: true, remote: { url: null } });
+    expect(store.projectRemote(project)).toBeNull();
+  }
+});

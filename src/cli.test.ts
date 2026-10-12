@@ -514,3 +514,44 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
     }
   });
 });
+
+describe("repos recorded remote", () => {
+  test("owner add records an explicit URL, plain re-add preserves it, and list reports it", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { openStore } = await import("./store.js");
+    const home = await mkdtemp(join(tmpdir(), "so-cli-remote-"));
+    const repo = join(home, "shop");
+    await mkdir(repo);
+    execFileSync("git", ["init", "-q", repo]);
+    const old = process.env["TOOLROLL_DB"];
+    process.env["TOOLROLL_DB"] = join(home, "orders.db");
+    const trusted = "https://example.com/shop.git";
+    const lines: string[] = [];
+    const invoke = async (args: string[]) => { lines.length = 0; return main(args, line => lines.push(line)); };
+    try {
+      expect(await invoke(["repos", "add", repo, "--remote", trusted, "--json"])).toBe(0);
+      expect(JSON.parse(lines[0]!).projects[0].remoteUrl).toBe(trusted);
+      execFileSync("git", ["config", "remote.origin.url", "https://evil.example/shop.git"], { cwd: repo });
+      expect(await invoke(["repos", "add", repo])).toBe(0);
+      expect(lines.join("\n")).toContain(`Recorded remote: ${trusted}`);
+      expect(await invoke(["repos", "--json"])).toBe(0);
+      expect(JSON.parse(lines[0]!).projects[0].remoteUrl).toBe(trusted);
+      expect(await invoke(["repos"])).toBe(0);
+      expect(lines.join("\n")).toContain(trusted);
+      for (const args of [["add", repo, repo, "--remote", trusted], ["add", repo, "--remote"], ["remove", repo, "--remote", trusted]]) {
+        expect(await invoke(["repos", ...args, "--json"])).toBe(2);
+        expect(JSON.parse(lines[0]!).reason).toBe("usage");
+      }
+      expect(await invoke(["repos", "add", repo, "--remote", "file:///tmp/evil.git", "--json"])).not.toBe(0);
+      expect(await invoke(["repos", "add", repo, "--remote", "https://evil.example/shop.git", "--token", "lt_invalid", "--json"])).toBe(3);
+      const store = openStore(process.env["TOOLROLL_DB"]!);
+      try {
+        expect(store.projectRemote(store.listProjects()[0]!.path)).toBe(trusted);
+        expect(store.actionLedger({ repos: null }).filter(e => e.action === "project remote recorded")).toHaveLength(1);
+      } finally { store.close(); }
+    } finally {
+      if (old === undefined) delete process.env["TOOLROLL_DB"]; else process.env["TOOLROLL_DB"] = old;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});

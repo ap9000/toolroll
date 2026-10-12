@@ -43,7 +43,7 @@ export function sweepObservations(root: string) {
     cp.spawnSync = (file, args, options) => {
       const gate = data().duGate;
       if (file === 'du' && gate) {
-        fs.writeFileSync(gate.entered, 'entered');
+        fs.writeFileSync(gate.entered, JSON.stringify({ nice: os.getPriority() }));
         const end = Date.now() + 2000;
         while (!fs.existsSync(gate.release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
         fs.writeFileSync(gate.result, JSON.stringify({ released: fs.existsSync(gate.release) }));

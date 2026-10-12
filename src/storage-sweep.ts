@@ -1,7 +1,7 @@
 /**
- * The daily storage sweep: the plane cleans up after itself without anyone running a command. Once a day (one worker
- * takes the day: the cursor moves in the same transaction) it removes test temp folders nothing touched for a day
- * (test-temp.ts), stops orphans Toolroll left running (orphan-sweep.ts), removes finished checkouts the cleanup
+ * The storage sweep: the plane cleans up after itself without anyone running a command. About once a day, when nothing
+ * is running or waiting (storage-sweep-schedule.ts: one service takes it, the cursor moves in the same transaction),
+ * it removes test temp folders nothing touched for a day (test-temp.ts), stops orphans Toolroll left running (orphan-sweep.ts), removes finished checkouts the cleanup
  * setting lets go (checkout-cleanup.ts), keeps the current, previous and newest staged runtimes (staged-runtimes.ts)
  * and removes shared dependency installs no checkout has used for a week (shared-deps.ts).
  *
@@ -17,8 +17,9 @@
  *
  * What each sweep did is saved (the latest few) and in the ledger: `toolroll storage` and Settings → Storage show it.
  * A clean-up by hand (`storage clean --yes`) is saved the same way. A part that failed, or had more than one pass
- * takes, brings the next sweep forward to an hour later. `TOOLROLL_STORAGE_SWEEP=off` turns the automatic sweep off
- * (the unit tests do, so a test never sweeps the machine it runs on).
+ * takes, brings the next sweep forward to an hour later; it still waits for nothing to be running.
+ * `TOOLROLL_STORAGE_SWEEP=off` turns the automatic sweep off (the unit tests do, so a test never sweeps the machine
+ * it runs on).
  */
 import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
@@ -29,12 +30,12 @@ import { processCensus, type ProcessRow } from "./run-closeout.js";
 import { linkedKey, pruneUnusedShared, sharedDepsRoot, sharedUse, SHARED_UNUSED_MS } from "./shared-deps.js";
 import { pruneStagedRuntimes, runtimesInUse, runtimeScriptPaths, stagePlan } from "./staged-runtimes.js";
 import { bytesWords, diskBytes } from "./storage.js";
-import { openStoreNoMigrate, type Store } from "./store.js";
+import type { Store } from "./store.js";
 import { removeStaleTestTemp } from "./test-temp.js";
 import { worktreeProcessOccupancy, type WorktreePool } from "./worktree.js";
-import { runSweepChild, storageSweepSupervisor, type SweepSupervisor, type SweepCompletion, type SweepExecutor } from "./storage-sweep-process.js";
+import { runSweepChild, type SweepCompletion, type SweepExecutor } from "./storage-sweep-process.js";
 
-const CURSOR = "storage-sweep";
+export const SWEEP_CURSOR = "storage-sweep";
 export const SWEEP_EVERY_MS = 86_400_000;
 /** A sweep that failed somewhere, or left work for later, runs again this soon. */
 export const RETRY_MS = 60 * 60_000;
@@ -67,55 +68,7 @@ export function storageSweepOff(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env["TOOLROLL_STORAGE_SWEEP"] ?? "").trim().toLowerCase() === "off";
 }
 
-export function storageSweepDue(store: Store, now: Date): boolean {
-  return now.getTime() - store.serviceCursor(CURSOR) >= SWEEP_EVERY_MS;
-}
-
-/** Claim and launch only. A hung child never holds reconciliation or the caller's store open. */
-export function dailyStorageSweep(store: Store, deps: SweepDeps, now: () => Date, supervisor: SweepSupervisor = storageSweepSupervisor(deps.databaseFile)): SweepRecord | null {
-  if (storageSweepOff() || supervisor.running || !storageSweepDue(store, now())) return null;
-  // This handle belongs to the flight, not to the command that has already returned by the time it finishes.
-  const connection = openStoreNoMigrate(deps.databaseFile);
-  if (!connection.ok) throw new Error("Sweep result store unavailable");
-  const results = connection.store;
-  const at = now();
-  let completed: SweepRecord | null = null;
-  let owned = false;
-  try {
-    const mine = store.transact(() => {
-      if (!storageSweepDue(store, at)) return false;
-      store.setServiceCursor(CURSOR, at.getTime(), at);
-      return true;
-    });
-    if (!mine) return null;
-    const request = { version: 1 as const, databaseFile: deps.databaseFile, poolRoot: deps.pool?.root ?? null, tempRoots: [...deps.tempRoots], actor: deps.actor ?? "worker", at: at.toISOString() };
-    owned = supervisor.start(request, result => {
-      const record = result.ok ? result.record : sweepFailure(request.at, request.actor, deps.pool !== null, result.reason);
-      try {
-        results.transact(() => {
-          if (!results.schemaCurrent()) throw new Error("Sweep result store changed");
-          saveSweep(results, record);
-          // Only this claim can reschedule itself. A later claim must never be overwritten by a late callback.
-          if (record.parts.some(one => one.failed > 0 || one.more === true || one.problem !== undefined) && results.serviceCursor(CURSOR) === at.getTime()) {
-            results.setServiceCursor(CURSOR, Math.max(0, now().getTime() - SWEEP_EVERY_MS + RETRY_MS), now());
-          }
-        });
-        completed = record;
-      } catch {
-        // No exception/path from a process or database is safe to copy into a log.
-        console.error("Could not save the storage sweep result.");
-      } finally { results.close(); }
-    }, deps.owner);
-    if (!owned) {
-      store.transact(() => {
-        if (store.serviceCursor(CURSOR) === at.getTime()) store.setServiceCursor(CURSOR, Math.max(0, at.getTime() - SWEEP_EVERY_MS + RETRY_MS), now());
-      });
-    }
-    return completed;
-  } finally { if (!owned) results.close(); }
-}
-
-function sweepFailure(at: string, actor: string, withPool: boolean, reason: Exclude<SweepCompletion, { ok: true }>["reason"]): SweepRecord {
+export function sweepFailure(at: string, actor: string, withPool: boolean, reason: Exclude<SweepCompletion, { ok: true }>["reason"]): SweepRecord {
   const problem = reason === "timeout" ? "The sweep process exceeded its time limit; some cleanup may have completed. Cleanup will retry later."
     : reason === "stopped" ? "The sweep process was stopped; some cleanup may have completed. Cleanup will retry later."
     : "The sweep process did not return a valid result; some cleanup may have completed.";
@@ -325,7 +278,7 @@ export function lastSweep(store: Store, source?: SweepRecord["source"]): SweepRe
 /** When the next automatic sweep is due, or null when it is off. */
 export function nextSweepAt(store: Store): string | null {
   if (storageSweepOff()) return null;
-  const last = store.serviceCursor(CURSOR);
+  const last = store.serviceCursor(SWEEP_CURSOR);
   return last === 0 ? null : new Date(last + SWEEP_EVERY_MS).toISOString();
 }
 

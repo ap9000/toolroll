@@ -236,10 +236,11 @@ await journey("steps", SCRIPTED, "A Draft step writes a reply with Claude, and t
 
 await journey("lead", REAL_MODEL, "The lead drafts a reply-and-approve flow from plain words (real Claude turn)", ["Sign in and turn the lead chat on (first-run setup)"], async () => {
   let { reply, text } = await askLead("Make a flow called Customer replies in this project: Claude drafts a reply to each new question, I approve or edit it in my chat app, then it's posted to the team chat.");
-  // An earlier check made a similar "Replies" flow, and the lead may fairly ask whether to reuse it: answered the way a person would.
+  // An earlier check made a similar "Replies" flow, and the lead may fairly ask whether to reuse it, or hold back for a
+  // missing chat app: whenever no card was drafted, it is asked once more, the way a person would.
   const drafted = await reply.locator('[data-view="chat-card"][data-card-state="pending"]').filter({ hasText: "Customer replies" }).first().waitFor({ timeout: 10_000 }).then(() => true, () => false);
-  if (!drafted && /\?/.test(text)) {
-    ({ reply, text } = await askLead("A separate new flow, please: draft Customer replies."));
+  if (!drafted) {
+    ({ reply, text } = await askLead("A separate new flow, please: draft Customer replies now, even though the chat apps aren't set up yet."));
   }
   const { href } = await confirmCard(reply, "Customer replies");
   const id = Number(/\/flows\/(\d+)/.exec(href ?? "")?.[1] ?? rows("SELECT id FROM flow WHERE name = 'Customer replies' ORDER BY id DESC LIMIT 1")[0]?.id);
@@ -517,7 +518,8 @@ await journey("triggers", REAL_MODEL, "The lead explains where the flows break (
 
 await journey("triggers", SCRIPTED, "The schedule trigger makes its card on time", ["A schedule trigger is added (checked at the end)"], async () => {
   if (scheduled === null || scheduled === undefined) throw new Skip("this run didn't add the schedule trigger");
-  const card = await until("the scheduled card", async () => (await flowView(checksFlow)).cards.find(one => one.title.startsWith("Health check")), { timeoutMs: Math.max(30_000, fireAt.getTime() + 60_000 - Date.now()), everyMs: 5000 });
+  // The schedule fires 45-105 s after it was added: the wait runs to its firing plus a minute, never the release cap.
+  const card = await until("the scheduled card", async () => (await flowView(checksFlow)).cards.find(one => one.title.startsWith("Health check")), { timeoutMs: Math.max(30_000, fireAt.getTime() + 60_000 - Date.now()), everyMs: 5000, capped: false });
   return { title: card.title, minutes: Math.round((Date.now() - scheduleAddedAt) / 6000) / 10 };
 });
 

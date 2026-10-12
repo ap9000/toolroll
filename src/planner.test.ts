@@ -373,6 +373,40 @@ describe("planning mode, against real git", () => {
     proved.close();
   });
 
+  test("fresh base: answering a parked plan question after main moved re-plans from current main, and the task names that base", async () => {
+    const { runnerToken, approverToken } = await setup();
+    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
+    const heads: string[] = [];
+    const at = (agent: Runner): Runner => async (file, args, options) => {
+      heads.push((await git(["rev-parse", "HEAD"], options?.cwd ?? "")).stdout.trim());
+      return agent(file, args, options);
+    };
+    const old = (await git(["rev-parse", "main"])).stdout.trim();
+    await tick(runnerToken, at(askingAgent));
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "limiter", outcome: "parked" }));
+
+    // 0.9.61 lands while the question waits; the answer is "restart from the newer base".
+    await writeFile(join(repo, "release.md"), "0.9.61\n");
+    await git(["add", "release.md"]);
+    await git(["commit", "-qm", "Release 0.9.61"]);
+    const main = (await git(["rev-parse", "main"])).stdout.trim();
+    const store = openStore(db);
+    const decision = store.listDecisions("unanswered")[0];
+    store.close();
+    await run(["decide", String(decision?.id), "--choose", "user", "--note", "restart from 0.9.61", "--as", "alex", "--token", approverToken, "--json"], planningAgent, new Date(T0.getTime() + 60_000));
+
+    await tick(runnerToken, at(planningAgent), new Date(T0.getTime() + 2 * 60_000));
+    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "limiter", outcome: "planned" }));
+    expect(heads).toEqual([old, main]);
+    expect((await git(["rev-parse", "toolroll-plan/limiter"])).stdout.trim()).toBe(main);
+    const after = openStore(db);
+    const [planned] = after.runsFor(after.refFor("built-in", "limiter").id);
+    expect(planned).toMatchObject({ role: "planner", baseRevision: main });
+    after.close();
+    await run(["task", "show", "limiter", "--json"], planningAgent);
+    expect(payload().base).toMatchObject({ base: main, behind: 0 });
+  });
+
   test("the planner's claim re-proves the strict scope projection (final authority closure): a filed scope whose risk the route was not recommended for is skipped in words before any claim — no run, no lease, no provider — and the restored scope plans", async () => {
     const { runnerToken, approverToken } = await setup();
     // A scope filed (unapproved) — the planner would run under its WORKING route.

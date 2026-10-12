@@ -112,6 +112,7 @@ import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as sub
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
 import { lastSweep,saveSweep,storageSweepOff } from "../storage-sweep.js";
+import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup } from "../storage.js";
@@ -307,7 +308,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     const selector = projects.length > 1 ? html`<form class="approval-project" method="get" action="/settings/project"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${projectName(p)}</option>`)}</select></label><button>Show</button></form>` : "";
     const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
-    const content = chosen === "" ? html`${notice.said ? html`<p role="status">${notice.said}</p>` : ""}<p>No projects yet.</p>` : (projectSettingsHtml(projectViewOf(chosen, who), notice));
+    const content = chosen === "" ? html`${notice.said ? html`<p role="status">${notice.said}</p>` : ""}<p>No projects yet.</p>` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen) }, notice));
     return sendScreen(response, 200, screen("Project", html`<p><a href="/settings">Settings</a></p><h1>Project</h1>${selector}${content}`, { chrome: chromeFor(chosen || null, "settings") }));
   }
   // v102: Settings → Approval rules, a project's separation of duties. Anyone who sees the project reads them; an instance operator sets them.
@@ -397,7 +398,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
     const plan = await checkoutPlan(store, storagePool(databaseFile), now, { manual: true });
-    const sweep = { last: lastSweep(store), off: storageSweepOff() };
+    const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
     return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store) }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }

@@ -56,16 +56,16 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
  * The check's provider gate, in `dir` (made when missing, with the cap the first opener chose). `hold(label, body)`
  * runs body once there is a slot, holding a lease until it settles; body gets { waitedMs }.
  */
-export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.env, sessions = providerSessions, now = () => Date.now(), everyMs = 2_000, sayEveryMs = 60_000, log = () => {}, alive: isAlive = alive, owner = process.pid } = {}) {
+export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.env, sessions = providerSessions, now = () => Date.now(), everyMs = 2_000, sayEveryMs = 60_000, log = () => {}, alive: isAlive = alive, owner = process.pid, reserve = false } = {}) {
   const own = dir === undefined || dir === "";
   const root = own ? mkdtempSync(join(tmpdir(), "toolroll-check-gate-")) : dir;
   mkdirSync(join(root, "leases"), { recursive: true });
   const configFile = join(root, "config.json");
   if (!existsSync(configFile)) {
-    writeFileSync(`${configFile}.${owner}`, JSON.stringify(providerCap(env)));
+    writeFileSync(`${configFile}.${owner}`, JSON.stringify({ ...providerCap(env), reserve }));
     try { renameSync(`${configFile}.${owner}`, configFile); } catch { /* another opener's is as good */ }
   }
-  const { cap, from } = JSON.parse(readFileSync(configFile, "utf8"));
+  const { cap, from, reserve: reserved = false } = JSON.parse(readFileSync(configFile, "utf8"));
   const lock = join(root, "lock");
   const take = async () => {
     for (;;) {
@@ -92,10 +92,11 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
   let count = 0;
   const releaseAll = () => { for (const file of mine) rmSync(join(root, "leases", file), { force: true }); mine.clear(); };
   process.on("exit", releaseAll);
-  async function acquire(label) {
+  async function acquire(label, signal) {
     const asked = now();
     let said = null, why = null;
     for (;;) {
+      if (signal?.aborted) return null;
       await take();
       try {
         const held = leases();
@@ -103,7 +104,7 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
         try { running = sessions(); } catch { /* unknown */ }
         // Our own turns are among the sessions running; the rest are other sessions.
         const others = Number.isFinite(running) ? Math.max(0, running - held.length) : null;
-        if (held.length + 1 <= Math.max(1, cap - (others ?? 0))) {
+        if (held.length + 1 <= Math.max(1, cap - (reserved ? 0 : others ?? 0))) {
           const file = `${owner}-${++count}-${Math.random().toString(36).slice(2, 8)}.json`;
           writeFileSync(join(root, "leases", file), JSON.stringify({ owner, label, at: now() }));
           mine.add(file);
@@ -120,8 +121,10 @@ export function openGate({ dir = process.env.TOOLROLL_CHECK_GATE, env = process.
   const release = file => { rmSync(join(root, "leases", file), { force: true }); mine.delete(file); };
   return {
     dir: root, cap, from,
-    async hold(label, body) {
-      const { file, waitedMs } = await acquire(label);
+    async hold(label, body, { signal } = {}) {
+      const lease = await acquire(label, signal);
+      if (lease === null) return { code: 130, cancelled: true };
+      const { file, waitedMs } = lease;
       try { return await body({ waitedMs }); } finally { release(file); }
     },
     /** What the gate did: every start recorded (by `owner` alone when given). */

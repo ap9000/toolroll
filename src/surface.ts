@@ -79,9 +79,11 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   // D5: the central team service (connect, the central lead verbs, conversation …) and native coding sessions are
   // deprecated: they still run this release, with a warning, but are no longer declared here.
   operator("chat", "talk to your lead: one conversation across every project; --say sends one message; --follow enables crew updates and --no-follow pauses them; proposals keep their approval requirements"),
-  { invocation: "repos add", synopsis: "add a project: a Git repository, in the console at once; the lead adds with its token", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
+  // Unkeyed: --remote with a different URL replaces the project's trusted remote (recorded in the action ledger).
+  { invocation: "repos add", synopsis: "add a project: a Git repository, in the console at once; the lead adds with its token; --remote records or replaces its trusted remote", audience: "agent", agentMayInvoke: true, mutation: "unkeyed",
     positionals: [{ name: "path", required: false, meaning: "the repository (default: the one you are in)" }],
-    flags: [jsonFlag, { name: "token", takesValue: true, meaning: "the lead token (or TOOLROLL_LEAD_TOKEN)" }],
+    flags: [jsonFlag, { name: "token", takesValue: true, meaning: "the lead token (or TOOLROLL_LEAD_TOKEN)" },
+      { name: "remote", takesValue: true, meaning: "an HTTPS or SSH URL without credentials whose main may complete landed work; replaces a different recorded one (owner or an instance operator's lead only)" }],
     notableReasons: ["not-git", "unavailable", "refused", "locked"] },
   { invocation: "repos remove", synopsis: "remove a project from the console and the builder; its tasks and results stay saved", audience: "agent", agentMayInvoke: true, mutation: "identity-idempotent",
     positionals: [{ name: "path", required: true, meaning: "the repository" }],

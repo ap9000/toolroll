@@ -1,5 +1,7 @@
 /** The storage child's bounded IPC protocol. No paths or process arguments are written to logs. */
 import { fork, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { setPriority } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SweepRecord } from "./storage-sweep.js";
@@ -35,13 +37,25 @@ export type SweepSupervisor = {
 export const SWEEP_TIMEOUT_MS = 20 * 60_000;
 export const SWEEP_KILL_GRACE_MS = 5_000;
 
+/** The sweep runs behind everything else: a positive nice and, on macOS, the background CPU and I/O policy. */
+export const SWEEP_NICE = 10;
+const TASKPOLICY = "/usr/sbin/taskpolicy";
+
+/** How the child starts: taskpolicy execs Node in place, so the pid, its group and the IPC channel stay the same. */
+export function sweepLaunch(platform: NodeJS.Platform = process.platform, exists: (path: string) => boolean = existsSync): { execPath: string; prefix: string[] } {
+  return platform === "darwin" && exists(TASKPOLICY) ? { execPath: TASKPOLICY, prefix: ["-b", process.execPath] } : { execPath: process.execPath, prefix: [] };
+}
+
 /** Only source checkouts need tsx; installed builds use the sibling child and the same Node. */
 function forkSweep(): ChildProcess {
   const source = import.meta.url.endsWith(".ts");
+  const launch = sweepLaunch();
   const child = fork(fileURLToPath(new URL(source ? "./storage-sweep-child.ts" : "./storage-sweep-child.js", import.meta.url)), [], {
-    execArgv: source ? ["--import", "tsx"] : [], stdio: ["ignore", "ignore", "ignore", "ipc"], detached: true,
+    execPath: launch.execPath, execArgv: [...launch.prefix, ...(source ? ["--import", "tsx"] : [])], stdio: ["ignore", "ignore", "ignore", "ipc"], detached: true,
   });
-  // A one-shot CLI may exit after reconcile; the child's parent-loss guard then ends it.
+  // Before the request is sent, so every rm/du the child starts inherits it.
+  if (child.pid !== undefined) { try { setPriority(child.pid, SWEEP_NICE); } catch { /* the default priority still works */ } }
+  // The service never waits on the child to exit; stop() and the child's parent-loss guard end it.
   child.unref();
   child.channel?.unref();
   return child;
@@ -148,7 +162,7 @@ export function createSweepSupervisor(options: {
   };
 }
 
-// All watch loops in this process share a flight. Other workers arbitrate the daily claim in SQLite.
+// All watch loops in this process share a flight. Other services arbitrate the claim in SQLite.
 const supervisors = new Map<string, SweepSupervisor>();
 export function storageSweepSupervisor(databaseFile: string): SweepSupervisor {
   const key = resolve(databaseFile);

@@ -81,6 +81,12 @@ describe("the CLI's machine contract", () => {
     }
   });
 
+  it("declares repos add --remote, which can replace a trusted remote, as an unkeyed mutation", () => {
+    const row = COMMAND_GUIDE.find(one => one.invocation === "repos add")!;
+    expect(row.flags).toContainEqual(expect.objectContaining({ name: "remote", takesValue: true }));
+    expect(row.mutation).toBe("unkeyed");
+  });
+
   it("says for every command row whether it may run remotely, classified once by name", () => {
     // Each row names its policy exactly once; a classification naming no row is stale.
     expect(REMOTE_POLICY_COUNT, "a row is classified twice").toBe(REMOTE_POLICY.size);

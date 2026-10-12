@@ -67,6 +67,27 @@ export type LeaseRequest = {
    * stands, as its kept checkout would have been reused. Without it, `base` always starts a new branch (and an
    * existing one refuses). */
   reuseBranch?: boolean;
+  /**
+   * Start from current main (fresh base): a checkout still at its recorded base — no commits of its own — and with no
+   * changes moves, with its branch, to `main` before the attempt. Anything else is never moved; the result says how
+   * far behind main it is. Needs `taskRef`. `recordedBase` null means no attempt on the branch recorded one yet, and
+   * then only a HEAD that main already contains counts as having no commits of its own.
+   */
+  freshBase?: { main: string; recordedBase: string | null };
+};
+
+/** Where a checkout stands against current main once its lease is granted (fresh base). */
+export type BaseStanding = {
+  /** HEAD as the attempt starts. */
+  head: string;
+  /** Current main's commit. */
+  main: string;
+  /** Commits on main that HEAD does not have. */
+  behind: number;
+  /** Set when this lease moved the checkout to main: where it was, and how far behind that was. */
+  moved: { from: string; behind: number } | null;
+  /** Why a checkout behind main stayed where it is. */
+  kept: "has commits" | "has changes" | "not on its branch" | null;
 };
 
 export type LeaseResult =
@@ -77,6 +98,8 @@ export type LeaseResult =
       reclaimed?: string;
       resumedFromRun?: number;
       recoveryKind?: "completed" | "partial";
+      /** With `freshBase`: where the checkout stands against main (null when main could not be read). */
+      base?: BaseStanding | null;
     }
   | { ok: false; reason: LeaseFailure; message: string };
 
@@ -93,6 +116,14 @@ export type KeptWhy = "has changes" | "has commits" | "unreadable" | "git refuse
  * something is in there.
  */
 export const MARKER = ".standing-orders-lease";
+
+/**
+ * The reflog message of a branch Toolroll created, naming it: its creation entry is the proof, later, that the branch
+ * is Toolroll's and how old it is. A branch copied or renamed from it names the old branch, so it proves nothing.
+ */
+export const branchCreatedMessage = (branch: string): string => `Toolroll created branch ${branch}`;
+/** Scouts' disposable branches: never landed work. */
+export const SCOUT_PREFIX = "toolroll-scout/";
 
 /** Checkouts this process is leasing or removing right now: a lease and storage retention never overlap on one. */
 const busy = new Map<string, "leasing" | "removing">();
@@ -430,16 +461,30 @@ export class WorktreePool {
       try { mkdirSync(dirname(path), { recursive: true }); } catch { /* git reports it */ }
       markNeverIndex(this.options.root);
       markNeverIndex(dirname(path));
-      const add = await this.git(request.repo, [
-        "worktree",
-        "add",
-        ...(fromBase ? ["-b", request.branch] : []),
-        path,
-        ...(fromBase ? [request.base as string] : [request.branch]),
-      ]);
+      // A new branch is created first, on its own, so its reflog's first entry says Toolroll made it and when.
+      let made: string | null = null;
+      if (fromBase) {
+        const base = await this.git(request.repo, ["rev-parse", "--verify", "--quiet", `${request.base as string}^{commit}`], READ_ONLY);
+        const oid = base.stdout.trim();
+        if (base.code !== 0 || !/^[0-9a-f]{40,64}$/.test(oid)) return { ok: false, reason: "git", message: `git couldn't find ${request.base as string}` };
+        const branch = await this.git(request.repo, ["update-ref", "--create-reflog", "-m", branchCreatedMessage(request.branch), `refs/heads/${request.branch}`, oid, "0".repeat(oid.length)]);
+        if (branch.code !== 0) return { ok: false, reason: "git", message: firstLine(branch.stderr) };
+        made = oid;
+      }
+      const add = await this.git(request.repo, ["worktree", "add", path, request.branch]);
       if (add.code !== 0) {
+        if (made !== null) await this.git(request.repo, ["update-ref", "-d", `refs/heads/${request.branch}`, made]);
         return { ok: false, reason: "git", message: firstLine(add.stderr) };
       }
+    }
+
+    // Fresh base, inside the same reservation as everything above: nothing else leases, prunes or slims this
+    // checkout between the inspection and the move.
+    let base: BaseStanding | null | undefined;
+    if (request.freshBase !== undefined && request.taskRef !== undefined) {
+      const fresh = await this.freshen(path, request.branch, request.taskRef, request.freshBase, request.now);
+      if (!fresh.ok) return { ok: false, reason: "git", message: fresh.message };
+      base = fresh.standing;
     }
 
     const row: WorktreeRow = {
@@ -478,7 +523,44 @@ export class WorktreePool {
       ...(reclaimed === undefined ? {} : { reclaimed }),
       ...(resumedFromRun === undefined ? {} : { resumedFromRun }),
       ...(recoveryKind === undefined ? {} : { recoveryKind }),
+      ...(base === undefined ? {} : { base }),
     };
+  }
+
+  /**
+   * Move an untouched checkout to current main, or say how far behind it is. Untouched means all three: on its own
+   * branch, HEAD still the recorded base (or, with none recorded, a commit main already has), and nothing changed or
+   * untracked. The move is `git reset --keep`, which refuses rather than overwrite anything; HEAD and the tree are read
+   * again right before and after it, and any surprise fails the lease with the checkout left for a person.
+   */
+  private async freshen(path: string, branch: string, taskRef: number, fresh: { main: string; recordedBase: string | null }, now: Date): Promise<{ ok: true; standing: BaseStanding | null } | { ok: false; message: string }> {
+    const read = async (args: readonly string[]) => {
+      const out = await this.runner(GIT, [...READ_ONLY, ...args], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+      return out.code === 0 ? out.stdout.trim() : null;
+    };
+    const main = await read(["rev-parse", "--verify", "--quiet", `${fresh.main}^{commit}`]);
+    const head = await read(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    if (main === null || head === null) return { ok: true, standing: null };
+    const count = await read(["rev-list", "--count", `${head}..${main}`]);
+    const behind = count === null ? NaN : Number(count);
+    if (!Number.isSafeInteger(behind)) return { ok: true, standing: null };
+    const stay = (kept: BaseStanding["kept"]): { ok: true; standing: BaseStanding } => ({ ok: true, standing: { head, main, behind, moved: null, kept } });
+    if (behind === 0) return stay(null);
+    if (await read(["symbolic-ref", "-q", "HEAD"]) !== `refs/heads/${branch}`) return stay("not on its branch");
+    if (fresh.recordedBase !== null && fresh.recordedBase !== head) return stay("has commits");
+    const contained = await this.runner(GIT, [...READ_ONLY, "merge-base", "--is-ancestor", head, main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    if (contained.code !== 0) return stay("has commits");
+    if (await this.isDirty(path) !== false) return stay("has changes");
+
+    // Recorded before git moves it: a move that then fails leaves the next attempt's own base as the branch's origin.
+    this.store.recordBranchBaseMove(taskRef, branch, head, main, now);
+    const moved = await this.runner(GIT, ["reset", "--keep", main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const after = await read(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    const branchNow = await read(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+    if (moved.code !== 0 || after !== main || branchNow !== main || await this.isDirty(path) !== false) {
+      return { ok: false, message: `${path} could not be moved to current main (${firstLine(moved.stderr) || "it changed during the move"}) — leaving it for a person` };
+    }
+    return { ok: true, standing: { head: main, main, behind: 0, moved: { from: head, behind }, kept: null } };
   }
 
   /**
@@ -770,7 +852,8 @@ export class WorktreePool {
   /**
    * Keep storage in check: remove the working copies nobody needs any more. Of `rows`, a checkout goes when it is
    * let go, nothing holds it, `wanted` says it may go (asked again right before it goes, so a task coming back or a
-   * lease since keeps it) and `inspect` finds it clean. Only the working copy goes: its branch, and so every commit,
+   * lease since keeps it) and `inspect` finds it clean, then clean still right before it goes (git refuses an edit
+   * made after that). Only the working copy goes: its branch, and so every commit,
    * stays, and a later lease of the same branch makes a new one. At most `max` go per pass.
    */
   async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
@@ -797,8 +880,8 @@ export class WorktreePool {
         // Landed cleanup rechecks Git here; existing synchronous guards keep their synchronous path.
         const allowed = wanted(now as WorktreeRow, true);
         if (!(typeof allowed === "boolean" ? allowed : await allowed)) continue;
-        const gone = await this.removeWorkingCopy(row);
-        if (!gone) { kept.push({ path: row.path, why: "git refused" }); continue; }
+        const gone = await this.removeCleanCopy(row);
+        if (gone !== "removed") { kept.push({ path: row.path, why: gone }); continue; }
         removed.push(row);
       } finally { release(); busy.delete(row.path); }
     }
@@ -864,18 +947,44 @@ export class WorktreePool {
     } finally { release(); busy.delete(path); }
   }
 
-  /** Remove one idle checkout's working copy (the caller holds it in `busy`) and forget its row. */
+  /** Throw away one idle checkout's working copy, changes and all (the caller holds it in `busy`), and forget its row.
+   * Only `discardChanges`, where losing them is what a person asked for. */
   private async removeWorkingCopy(row: WorktreeRow): Promise<boolean> {
     // Held while it goes: another process's lease sees this process in it (the busy map is this process's only).
     const note = join(row.path, MARKER);
     try { writeFileSync(note, `${process.pid} storage-retention removing ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8"); } catch { return false; }
     const gone = await this.git(row.repo, ["worktree", "remove", "--force", row.path]);
     if (gone.code !== 0) { rmSync(note, { force: true }); return false; }
+    this.forgetRemoved(row);
+    return true;
+  }
+
+  /**
+   * Remove one idle checkout's working copy only while it is still clean (the caller holds it in `busy`, and its
+   * reservation outside the checkout holds it for other processes): inspected once more right before it goes, then
+   * removed without --force, so git itself refuses an edit made since. Only Toolroll's own files go first, because
+   * git's check would count them.
+   */
+  private async removeCleanCopy(row: WorktreeRow): Promise<"removed" | KeptWhy> {
+    const found = await this.inspect(row.path);
+    if (found !== "clean") return found;
+    const status = await this.runner(GIT, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"], { cwd: row.path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    if (status.code !== 0) return "unreadable";
+    for (const line of status.stdout.split("\n")) {
+      const name = line.startsWith("?? ") ? line.slice(3).trim() : "";
+      if (name === MARKER || (name !== "" && looksLikeProtocolFile(name))) rmSync(join(row.path, name), { recursive: true, force: true });
+    }
+    const gone = await this.git(row.repo, ["worktree", "remove", row.path]);
+    if (gone.code !== 0) return (await this.isDirty(row.path)) === false ? "git refused" : "has changes";
+    this.forgetRemoved(row);
+    return "removed";
+  }
+
+  private forgetRemoved(row: WorktreeRow): void {
     this.store.transact(() => {
       const still = this.store.getWorktree(row.path);
       if (still !== null && still.runner === null && still.releasedAt === row.releasedAt) this.store.forgetWorktree(row.path);
     });
-    return true;
   }
 
   /**

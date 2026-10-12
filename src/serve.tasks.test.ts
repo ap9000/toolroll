@@ -1771,6 +1771,18 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(store.listSteerNotes(ref).map(one => one.note)).toEqual(["Keep the flag's tests; only remove the branches."]);
   });
 
+  test("fresh base: the task page's details name the commit the work starts from", async () => {
+    const ref = seed("t-base", "follow-up filed before the release merged");
+    const attempt = store.startRun({ taskRef: ref, leaseId: "lease-base", runner: "night-shift-1", provider: "claude", branch: "toolroll/t-base", worktree: "/pool/t-base", now: T0, ...presented(store, ref, "builder") });
+    store.stampRun(attempt, { baseRevision: "55caab73".padEnd(40, "0") });
+    store.finishRun(attempt, { outcome: "failed", reason: "timeout", now: T0 });
+    await boot();
+    const cookie = await login();
+    const view = workspaceOf(await (await fetch(url("/t/t-base"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
+    // The project here is not a Git checkout, so there is no count to give: the base alone, never a guessed one.
+    expect(view.details.find(group => group.title === "Work")?.facts).toContainEqual({ label: "Base", parts: ["55caab73"] });
+  });
+
   test("a failed task describes its latest finished attempt, whatever its outcome, across the whole revision family; machine output reads as an internal error with its detail behind the link", async () => {
     // A newer attempt that didn't fail is the one described, never the older failure.
     const ref = seed("t-later", "later");
