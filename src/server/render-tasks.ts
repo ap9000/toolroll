@@ -34,7 +34,8 @@ import { runCostWords } from "../summary.js";
 import { type TaskControlView } from "../task-control.js";
 import { assignmentStageOf,demoChecksOf,stageOfCode,stageOfDispatch,STATUS_MORE,taskStatusOf } from "../task-status.js";
 import { buildProgressOf,dispatchActionLabel,type DisplayStatus,earlierAttemptsWords,type PublicationFacts,receiptPublicationWords,resultStatusOf,REVIEW_TOKENS,type ReviewFacts,type WorkStatus,workStatusOf } from "../workspace-ui.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { TEXT_LIMITS } from "../text-limits.js";
 import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,transcriptScript,whenTime } from "./chrome.js";
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
@@ -906,15 +907,36 @@ export function checkProgressHtml(progress: CheckProgress | null, id = "check-pr
   return html`<p id="${id}" class="check-progress mono" data-check-progress data-final="${state}" role="status" aria-live="polite">${progress.line}</p>`;
 }
 
-export function taskControlDetailsHtml(control: TaskControlView, taskId: string, csrf: string, surface: "task" | "chat", inert = false, stopElsewhere = false): Html {
-  const card = taskControlHtml(control, taskId, csrf, surface, inert, stopElsewhere);
+export function taskControlDetailsHtml(control: TaskControlView, taskId: string, csrf: string, surface: "task" | "chat", inert = false, stopElsewhere = false, livePause: LivePauseFact | null = null): Html {
+  const card = taskControlHtml(control, taskId, csrf, surface, inert, stopElsewhere, livePause);
   return control.kind === "paused" || control.kind === "review-stopped" || control.kind === "stopping"
     ? html`<details id="task-control-details"><summary>${control.kind === "paused" ? "Preserved work and resume" : "Stop details"}</summary>${card}</details>` : card;
 }
 
 /** `stopElsewhere`: the Building card already carries this exact run's Stop, so the control card keeps only its details.
  * `csrf` is only a guard now: an empty one (a read-only surface) renders no forms; postForm writes the field. */
-export function taskControlHtml(control: TaskControlView, taskId: string, csrf: string, surface: "task" | "chat", inert = false, stopElsewhere = false): Html {
+/** Live steering: the Claude build that takes Pause right now, its latest pause (null: none, or it continued), and
+ * until when a paused build can wait before it ends (null: no idle limit). */
+export type LivePauseFact = { run: number; state: "pausing" | "paused" | null; until?: string | null; limitMs?: number | null };
+
+/** Pause and Pause and steer beside the task page's Stop (live steering): the same exact run, each form under its own
+ * request id so a repeated submit is the same request. Pause hides once asked; a paused build says until when it can
+ * wait and offers Resume, or the note to continue with. */
+function pauseFormsHtml(taskId: string, livePause: LivePauseFact): Html {
+  const form = (fields: Html, button: Html, control: string, extra: Record<string, string> = {}): Html =>
+    postForm(`${taskHref(taskId)}/pause`, html`${fields}${button}`, { attrs: { class: "inline task-control-form", "data-task-control": control }, returnTo: "task", hidden: { run: livePause.run, request: `web-${randomUUID()}`, ...extra } });
+  const paused = livePause.state === "paused";
+  const until = livePause.until ?? null, limitMs = livePause.limitMs ?? null;
+  return joinHtml([
+    paused ? html`<p class="meta" role="status" data-live-pause="paused">${until === null || limitMs === null ? "Paused." : html`Paused. It can wait until ${whenTime(until)} (${Math.max(1, Math.round(limitMs / 60_000))} min) before it ends.`}</p>` : "",
+    livePause.state === null ? form(html``, html`<button type="submit" class="task-control-button">Pause</button>`, "pause") : "",
+    paused ? form(html``, html`<button type="submit" class="task-control-button">Resume</button>`, "resume", { mode: "resume" }) : "",
+    form(html`<input type="text" name="note" required maxlength="${TEXT_LIMITS.note}" placeholder="${paused ? "note to continue with" : "note for the agent"}" aria-label="${paused ? "note to continue with" : "note for the agent"}">`,
+      html`<button type="submit" class="task-control-button">${paused ? "Continue" : "Pause and steer"}</button>`, "pause-and-steer"),
+  ]);
+}
+
+export function taskControlHtml(control: TaskControlView, taskId: string, csrf: string, surface: "task" | "chat", inert = false, stopElsewhere = false, livePause: LivePauseFact | null = null): Html {
   if (control.kind === "none") return html``;
   const guarded = csrf !== "" && !inert;
   const runForm = (path: string, className: string, button: Html): Html =>
@@ -933,6 +955,7 @@ export function taskControlHtml(control: TaskControlView, taskId: string, csrf: 
     return joinHtml([
       html`<section class="card task-control" id="task-control" data-task-control="stop" data-control-run="${control.run}" aria-label="stop this attempt">`,
       html`<div class="task-control-copy"><details><summary>Stop details · ${role(control)} #${control.run}</summary><p class="meta">Stopping ends only this attempt's own processes. Its branch, uncommitted work, evidence, and decisions stay preserved; other tasks keep running.</p></details></div>`,
+      stopElsewhere || !guarded || livePause === null || livePause.run !== control.run ? "" : pauseFormsHtml(taskId, livePause),
       stopElsewhere ? "" : guarded
         ? runForm("stop", "inline task-control-form task-stop-form", html`<button type="submit" class="danger task-control-button">Stop</button>`)
         : html`<button type="button" class="danger task-control-button" disabled>Stop</button>`,
@@ -1377,6 +1400,8 @@ export function taskBodyParts(data: {
   liveRunId?: number | null;
   /** What the agent did last on that live run, and when (task-activity.ts). */
   activity?: RunActivity | null;
+  /** Live steering: the Claude build that takes Pause right now, and its latest pause (null: none, or it continued). */
+  livePause?: LivePauseFact | null;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -2344,7 +2369,7 @@ export function taskBodyParts(data: {
   const statusHtml = html`${data.assignment != null && assignmentOptions !== null ? assignmentSummaryHtml(data.assignment, assignmentOptions) : receiptLeads ? completionReceiptCard(data.completion!.receipt!, task.id, "task", status) : taskStatusCard(status, task.id, data.dispatch ?? null, liveRunId, approveForm !== "" && data.dispatch?.action === "approve-scope")}${checkProgressHtml(data.checkProgress ?? null)}`;
   // The exact-run control (v52), directly under the scheduler's answer:
   // the one place a person stops or resumes THIS attempt.
-  const controlHtml = taskControlDetailsHtml(data.control ?? { kind: "none" }, task.id, data.csrf, "task");
+  const controlHtml = taskControlDetailsHtml(data.control ?? { kind: "none" }, task.id, data.csrf, "task", false, false, data.livePause ?? null);
   const previousResult = data.completion?.receipt == null || receiptLeads ? null : {
     title: data.assignment != null && task.state === "done" ? "Result" : "Previous result",
     html: (completionReceiptCard(data.completion.receipt, task.id, "task", data.assignment == null ? receiptStatusOf(data.completion.receipt) : assignmentStatusOf(data.assignment), data.assignment ?? null, data.assignment == null)),
@@ -2633,6 +2658,11 @@ export function taskBodyParts(data: {
   // The Building card carries Stop for the build it describes (the same form), in place of a second card below it.
   const stop = building && data.control?.kind === "stop" && data.control.run === liveRun!.id && data.csrf !== ""
     ? { action: `${taskHref(task.id)}/stop`, run: data.control.run } : null;
+  // Pause and Pause and steer sit beside that Stop, for the same run, when it is a Claude build that takes live input.
+  // Each form carries its own request id, so a repeated submit is the same request and the two never collide.
+  const pause = stop !== null && data.livePause?.run === stop.run
+    ? { action: `${taskHref(task.id)}/pause`, run: stop.run, state: data.livePause.state, requests: [`web-${randomUUID()}`, `web-${randomUUID()}`, `web-${randomUUID()}`] as [string, string, string],
+        until: data.livePause.until ?? null, limitMs: data.livePause.limitMs ?? null } : null;
   // The Building card keeps its way to the build's own record (/r/<id>), whatever act it shows.
   const record = building ? { label: `Build #${liveRun!.id} record`, href: `/r/${liveRun!.id}` } : null;
   const earlier = earlierStopped.length === 0 ? null : {
@@ -2662,6 +2692,7 @@ export function taskBodyParts(data: {
     // One quiet line under the step: what the agent did last, and when.
     activity: liveRun === undefined ? null : data.activity ?? null,
     stop,
+    pause,
     record,
     earlier,
     approval: fragmentString(approvalHtml),

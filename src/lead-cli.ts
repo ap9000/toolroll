@@ -107,6 +107,9 @@ export function proposalLines(proposals: readonly LeadProposal[], repos: readonl
       ? `${t("operation") === "revise" ? "request a revision" : "save feedback"} for ${t("taskTitle") || t("task")}: ${t("note")}${Array.isArray(payload["notes"]) && payload["notes"].length > 0 ? ` (saved notes: ${payload["notes"].join(", ")})` : ""}`
       : one.kind === "control"
       ? (isChatControl(payload["control"]) ? `${CHAT_CONTROLS[payload["control"]].label}: ${chatControlHref(payload["control"], t("task"), payload["run"], payload["project"])} (open in the console)` : "control unavailable")
+      : one.kind === "steer" && one.payload["mode"] === "pause" ? `pause ${t("task")}'s build`
+      : one.kind === "steer" && one.payload["mode"] === "resume" ? `resume ${t("task")}'s paused build`
+      : one.kind === "steer" && one.payload["mode"] === "pause-and-steer" ? `pause ${t("task")}'s build, then send: ${t("note")}`
       : one.kind === "steer" ? `guidance for ${t("task")}'s agent: ${t("note")}`
       : one.kind === "agents" ? `change agents for ${t("task")}: ${t("role")} ${t("provider")} ${t("model")} ${t("risk")}`
       : one.kind === "repair" ? `${t("operation")} dependency ${t("blocker")} for ${t("task")}`

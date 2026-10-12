@@ -17,8 +17,13 @@ import { PROOF_LIMITS } from "./proof.js";
 import { HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, HEADLESS_RULE, repairPrompt } from "./decision.js";
 import { execFileSync } from "node:child_process";
 import { readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
+import { agentTurnHistory, openAgentQuestions } from "./agent-board.js";
 import { createHash as sha } from "node:crypto";
 import { fakePid } from "../test/fake-pid.js";
+import { runClaudeStreamJsonl, STREAM_INPUT, type RunOptions } from "./exec.js";
+import { fileURLToPath } from "node:url";
+
+const FAKE_CLAUDE = fileURLToPath(new URL("../test/fake-claude-stream.mjs", import.meta.url));
 import {
   RUN_1527_ACCEPTANCE,
   RUN_1527_GOAL,
@@ -2182,6 +2187,187 @@ describe("the pulse", () => {
     expect(gitCalls.find(args => args.includes("add"))).toContain(":!STANDING-ORDERS-*");
   });
 
+  /** The real Claude stream transport around a fake stream-json harness (test/fake-claude-stream.mjs), marked as
+   * keeping stdin open, as the default transport is. `watch` sees every stdout event. */
+  const liveClaude = (env: Record<string, string>, watch: (event: Record<string, unknown>) => void, seen: { args?: readonly string[]; calls: number }): Runner =>
+    Object.assign(async (_file: string, args: readonly string[], options?: RunOptions) => {
+      seen.args = args;
+      seen.calls += 1;
+      const { fence: _fence, ...rest } = options ?? {};
+      return runClaudeStreamJsonl(process.execPath, [FAKE_CLAUDE], {
+        ...rest,
+        env: { ...(rest.env ?? {}), ...env },
+        onStreamEvent: event => { rest.onStreamEvent?.(event); watch(event); },
+      });
+    }, { [STREAM_INPUT]: true }) as Runner;
+  const framesOf = (file: string) => readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+
+  test("live steering, c1 and c3: the brief is the first stdin message, a note filed mid-turn reaches stdin within a tick, and several results settle once (Claude)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const frames = join2(wt, "..", `frames-${process.pid}-${Date.now()}.jsonl`);
+    writeSync2(frames, "");
+    let filedAt = 0, receivedAt = 0, liveInput: number | null = null;
+    const seen: { args?: readonly string[]; calls: number } = { calls: 0 };
+    const req = request("lease-a", {
+      // The lease pulse never beats during this build: delivery rides steering's own tick.
+      pulseMs: 60_000,
+      steerTickMs: 20,
+      agent: liveClaude({ FAKE_FRAMES: frames, FAKE_TURN_MS: "1500", FAKE_DONE_AFTER: "1" }, event => {
+        if (event["type"] === "assistant" && filedAt === 0) {
+          liveInput = store.liveInputRun(taskRef, new Date());
+          filedAt = Date.now();
+          store.fileSteerNote("t-1", "alex" as never, "prefer the smaller diff", new Date());
+          const poll = setInterval(() => {
+            if (receivedAt === 0 && framesOf(frames).length >= 2) { receivedAt = Date.now(); clearInterval(poll); }
+          }, 10);
+        }
+      }, seen),
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+
+    // The argv names the stream-json input and never carries the brief.
+    expect(seen.calls).toBe(1);
+    expect(seen.args!.slice(0, 3)).toEqual(["-p", "--input-format", "stream-json"]);
+    expect(seen.args!.some(arg => arg.includes("You are building one task"))).toBe(false);
+    const written = framesOf(frames);
+    expect(written[0]).toMatchObject({ type: "user", message: { role: "user", content: expect.stringContaining("You are building one task") }, uuid: expect.any(String) });
+    expect(String((written[0]!["message"] as { content: string }).content)).toContain("A note can also arrive as a message in this session");
+    // The note, in seconds: well inside the first pulse, while the brief's 1.5-second turn was still running.
+    expect(written[1]).toMatchObject({ type: "user", message: { content: expect.stringContaining("| prefer the smaller diff") } });
+    expect(receivedAt - filedAt).toBeLessThan(1_500);
+    expect(liveInput).toBe(req.runId);
+    // The note was folded into the brief's turn (one result, one settlement): the agent moved the file, and the
+    // handoff closed stdin.
+    const note = store.listSteerNotes(taskRef)[0]!;
+    expect(note).toMatchObject({ mailedRun: req.runId, liveSends: 1, ackedAt: expect.any(String) });
+    expect(written[1]!["uuid"]).toBe(note.liveUuid);
+    expect(store.handle.prepare("SELECT live_input_opened_at, live_input_closed_at FROM run WHERE id = ?").get(req.runId as number))
+      .toMatchObject({ live_input_opened_at: expect.any(String), live_input_closed_at: expect.any(String) });
+    expect(store.liveInputRun(taskRef, new Date())).toBeNull();
+  });
+
+  test("live steering, c2: Pause stops the turn and keeps the build; the next note continues the same session; nothing is stopped (Claude)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const frames = join2(wt, "..", `frames-${process.pid}-${Date.now()}-pause.jsonl`);
+    writeSync2(frames, "");
+    const seen: { args?: readonly string[]; calls: number } = { calls: 0 };
+    const sessions = new Set<string>();
+    let paused = false, interruptedAt = 0, pausedState: string | null = null;
+    const req = request("lease-a", {
+      pulseMs: 60_000,
+      steerTickMs: 20,
+      agent: liveClaude({ FAKE_FRAMES: frames, FAKE_TURN_MS: "8000", FAKE_DONE_AFTER: "1" }, event => {
+        if (typeof event["session_id"] === "string") sessions.add(event["session_id"]);
+        if (event["type"] === "assistant" && !paused) {
+          paused = true;
+          interruptedAt = Date.now();
+          expect(store.requestPause({ taskId: "t-1", runId: req.runId as number, by: "alex" as never, via: "web", requestId: "pause-request-builder" }, new Date())).toMatchObject({ ok: true });
+        }
+        if (event["type"] === "result" && event["subtype"] === "error_during_execution") {
+          // The 8-second turn stopped in well under a second, and the build is still running.
+          expect(Date.now() - interruptedAt).toBeLessThan(2_000);
+          setTimeout(() => {
+            pausedState = store.pauseStateOf(req.runId as number);
+            store.fileSteerNote("t-1", "alex" as never, "carry on with the retry path", new Date());
+          }, 50);
+        }
+      }, seen),
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(seen.calls).toBe(1);
+    expect(pausedState).toBe("paused");
+    expect(framesOf(frames).map(one => one["type"])).toEqual(["user", "control_request", "user"]);
+    expect(sessions).toEqual(new Set(["fake-session"]));
+    expect(store.pausesForTask(taskRef)).toMatchObject([{ run: req.runId, sentAt: expect.any(String), pausedAt: expect.any(String), resumedAt: expect.any(String), endedAt: null }]);
+    expect(store.stopsForTask(taskRef)).toEqual([]);
+    expect(store.listSteerNotes(taskRef)[0]).toMatchObject({ ackedAt: expect.any(String) });
+  });
+
+  /** Re-seals t-1's approval with different Claude limits (the approved profile is the only source of them). */
+  const reseal = (over: Record<string, unknown>) => {
+    const resolved = store.getScope("t-1")!.profile!;
+    propose(store, { taskId: "t-1", goal: "add a guard on the payout path", now: T0, profile: { ...resolved, ...over } as never });
+    approve(store, "t-1", "alex", T0, store.getScope("t-1")!.digest, approverToken);
+  };
+
+  test("live steering: a spent turn budget lets the last allowed turn finish, then settles from the saved handoff (Claude)", async () => {
+    reseal({ maxTurns: 2 });
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const tools = join2(wt, "..", `tools-${process.pid}-${Date.now()}.jsonl`);
+    writeSync2(tools, "");
+    const seen: { args?: readonly string[]; calls: number } = { calls: 0 };
+    const req = request("lease-a", { pulseMs: 60_000, steerTickMs: 20, agent: liveClaude({ FAKE_TOOLS: tools, FAKE_STEPS: "5", FAKE_TURN_MS: "100", FAKE_DONE_AFTER: "0" }, () => {}, seen) });
+    // The harness's last result is the budget's interrupt (exit 1), yet the handoff written in turn 1 settles the build.
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(readFileSync(tools, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  test("live steering: a spent turn budget with nothing handed off ran out of turns, in the --max-turns words (Claude)", async () => {
+    reseal({ maxTurns: 2 });
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const seen: { args?: readonly string[]; calls: number } = { calls: 0 };
+    const req = request("lease-a", { pulseMs: 60_000, steerTickMs: 20, agent: liveClaude({ FAKE_STEPS: "5", FAKE_TURN_MS: "100", FAKE_DONE_AFTER: "99" }, () => {}, seen) });
+    const result = await build(store, req);
+    expect(result).toMatchObject({ ok: false, reason: "agent" });
+    expect(result.ok ? "" : result.message).toContain("the agent ran out of turns after 2 turns");
+    expect(committed()).toBe(false);
+  });
+
+  test("live steering, c7: a paused build that reaches the idle limit has its stdin closed and settles from its handoff, not as a timeout (Claude)", async () => {
+    reseal({ timeoutSeconds: 1, timeoutKind: "idle" });
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const seen: { args?: readonly string[]; calls: number } = { calls: 0 };
+    let limit: unknown = null;
+    const req = request("lease-a", {
+      pulseMs: 60_000,
+      steerTickMs: 20,
+      // The handoff is saved by the first step's tool; Pause lands on the second step.
+      agent: liveClaude({ FAKE_STEPS: "3", FAKE_TURN_MS: "200", FAKE_DONE_AFTER: "0" }, event => {
+        if (event["type"] === "assistant" && (event["message"] as { id: string }).id === "msg-2") {
+          expect(store.requestPause({ taskId: "t-1", runId: req.runId as number, by: "alex" as never, via: "web", requestId: "pause-request-idle" }, new Date())).toMatchObject({ ok: true });
+        }
+        if (event["type"] === "result") setTimeout(() => { limit = store.livePauseOf(req.runId as number); }, 100);
+      }, seen),
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    // While paused, the page could say how long it may stay paused: the approved idle limit.
+    expect(limit).toMatchObject({ state: "paused", pausedAt: expect.any(String), limitMs: 1_000 });
+    expect(store.pausesForTask(taskRef)).toMatchObject([{ pausedAt: expect.any(String), endedAt: expect.any(String), resumedAt: null }]);
+    expect(store.stopsForTask(taskRef)).toEqual([]);
+  });
+
+  test("live steering, c7: Resume continues a paused build with only a short continue frame and files no note (Claude)", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const frames = join2(wt, "..", `frames-${process.pid}-${Date.now()}-resume.jsonl`);
+    writeSync2(frames, "");
+    const seen: { args?: readonly string[]; calls: number } = { calls: 0 };
+    let paused = false;
+    const req = request("lease-a", {
+      pulseMs: 60_000,
+      steerTickMs: 20,
+      agent: liveClaude({ FAKE_FRAMES: frames, FAKE_TURN_MS: "300", FAKE_DONE_AFTER: "0" }, event => {
+        if (event["type"] === "assistant" && !paused) {
+          paused = true;
+          store.requestPause({ taskId: "t-1", runId: req.runId as number, by: "alex" as never, via: "web", requestId: "pause-request-resume" }, new Date());
+        }
+        if (event["type"] === "result" && event["subtype"] === "error_during_execution") {
+          setTimeout(() => {
+            expect(store.requestResume({ taskId: "t-1", runId: req.runId as number, by: "alex" as never, via: "web", requestId: "resume-request-1" }, new Date())).toMatchObject({ ok: true, duplicate: false });
+            // The same request again is the same request.
+            expect(store.requestResume({ taskId: "t-1", runId: req.runId as number, by: "alex" as never, via: "web", requestId: "resume-request-1" }, new Date())).toMatchObject({ ok: true, duplicate: true });
+          }, 50);
+        }
+      }, seen),
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    const written = framesOf(frames);
+    expect(written.map(one => one["type"])).toEqual(["user", "control_request", "user"]);
+    expect(written[2]).toMatchObject({ message: { content: "continue" } });
+    expect(store.listSteerNotes(taskRef)).toEqual([]);
+    expect(store.resumesForTask(taskRef)).toMatchObject([{ sentAt: expect.any(String), endedAt: null }]);
+    expect(store.pausesForTask(taskRef)).toMatchObject([{ resumedAt: expect.any(String), endedAt: null }]);
+  });
+
   test("once the agent exits its steering folder is closed, so a note filed before settlement finishes reads as reaching the next attempt (v120)", async () => {
     acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
     let exited = false, liveWhileRunning: number | null = null;
@@ -2238,6 +2424,49 @@ describe("the pulse", () => {
     });
     expect(await build(store, req)).toMatchObject({ ok: false, reason: "stopped" });
     expect(store.listSteerNotes(taskRef)[0]).toMatchObject({ mailedRun: req.runId, attachedRun: req.runId, ackedAt: expect.any(String) });
+  });
+
+  test("the Agents board: a Claude build's stream records busy then idle, and its status file's question reaches the board while it runs", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    let prompt = "", statusName = "", openWhileRunning: string[] = [];
+    const req = request("lease-a", {
+      agent: (async (_file, args, options) => {
+        prompt = args[args.indexOf("-p") + 1] ?? "";
+        statusName = /STANDING-ORDERS-STATUS-[0-9a-f]{16}\.jsonl/.exec(prompt)?.[0] ?? "";
+        const cwd = options?.cwd ?? wt;
+        options?.onSpawn?.(fakePid());
+        options?.onStreamEvent?.({ type: "system", subtype: "init", session_id: "s-1" });
+        options?.onStreamEvent?.({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu-1", name: "Edit", input: {} }] } });
+        writeSync2(join2(cwd, statusName), JSON.stringify({ status: "needs-decision", key: "keep-guard", question: "Keep the old guard as a fallback?" }) + "\n", { flag: "a" });
+        for (let i = 0; i < 400 && openAgentQuestions(store, taskRef).length === 0; i++) await sleep(5);
+        openWhileRunning = openAgentQuestions(store, taskRef).map(one => one.key);
+        options?.onStreamEvent?.({ type: "result", subtype: "success", is_error: false, session_id: "s-1", result: "Added the guard." });
+        conclude(args, options);
+        return { ...OK, stdout: AGENT_SAID };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
+    expect(statusName).not.toBe("");
+    expect(prompt).toContain(`Append one JSON object per line to ${statusName}`);
+    expect(openWhileRunning).toEqual(["keep-guard"]);
+    expect(agentTurnHistory(store, req.runId).map(one => one.state)).toEqual(["busy", "idle"]);
+    // The file goes with the agent, and the ended attempt's question closes unanswered.
+    expect(existsSync2(join2(wt, statusName))).toBe(false);
+    expect(openAgentQuestions(store, taskRef)).toEqual([]);
+  });
+
+  test("the Agents board: an agent process that ends mid-turn, without its result, is recorded crashed", async () => {
+    acquire(store, taskRef, "builder-1", { token: tok("builder-1"), now: new Date(), ttlMs: 60 * 60_000, newLeaseId: ids("lease-a") });
+    const req = request("lease-a", {
+      agent: (async (_file, _args, options) => {
+        options?.onSpawn?.(fakePid());
+        options?.onStreamEvent?.({ type: "system", subtype: "init", session_id: "s-1" });
+        options?.onStreamEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "Looking at the payout path." }] } });
+        return { ...OK, code: 137, stdout: "" };
+      }) as Runner,
+    });
+    expect(await build(store, req)).toMatchObject({ ok: false });
+    expect(agentTurnHistory(store, req.runId).map(one => one.state)).toEqual(["busy", "crashed"]);
   });
 
   test("check levels: Quick runs the approved quick command, Off runs nothing, and each run records the level it used", async () => {

@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { currentActor, withActor } from "./actor.js";
 import { replacedWords } from "./task-status.js";
-import { COMPLETION_ACTION, familyChangedFiles } from "./result-completion.js";
+import { COMPLETER_ACTOR, COMPLETION_ACTION, familyChangedFiles, landedReasonOf } from "./result-completion.js";
 import { homedir } from "node:os";
 import { readSchemaVersion, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
 import { approvalOf } from "./scope.js";
@@ -61,7 +61,8 @@ export type AssignmentSnapshot = {
     excerpts: { artifactId: number; runId: number; kind: string; sha256: string; text: string | null; shortened: boolean; problem: string | null }[];
   };
   /** `lead`: marked complete by the person's lead (`toolroll lead token`), shown as "by the lead". */
-  completion: { actor: string; at: string; digest: string; lead?: true } | null;
+  /** `landed`: Toolroll marked it complete because its work is already in main, and why ("its pull request merged"). */
+  completion: { actor: string; at: string; digest: string; lead?: true; landed?: string } | null;
   handoff: { kind: "result" | "decision" | "attention"; digest: string; acknowledged: boolean } | null;
   publication: { state: string; prUrl: string | null; remoteState: string | null } | null;
   /** The result's one automatic review, when its project had review on:
@@ -300,19 +301,21 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
       : completionKind === "accepted-exception" ? "An operator accepted this result with its recorded limitations. The lead can inspect that decision; the recorded checks are unchanged."
       : receipt.checks.detail;
     primaryAction = { code: "open-result", label: completionKind === "research-report" ? "Read report" : "Open result", target: { taskId: current.id, runId: result!.id, decisionId: null }, access: "read", retry: "read-again" };
-    const checked = store.handle.prepare("SELECT actor,at FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND outcome = ? AND source = 'work' ORDER BY id DESC")
-      .all(family.root.id, result!.id, CHECK_ACTION, receipt.digest).find(row => /^(operator|coordinator|lead):.+/.test(String(row["actor"])));
+    const checked = store.handle.prepare("SELECT actor,at,detail FROM action_ledger WHERE task_id = ? AND run_id = ? AND action = ? AND outcome = ? AND source = 'work' ORDER BY id DESC")
+      .all(family.root.id, result!.id, CHECK_ACTION, receipt.digest).find(row => COMPLETER_ACTOR.test(String(row["actor"])));
     // This ledger fact was authorized when written. Credential rotation,
     // membership changes and ownership transfer cannot revoke past completion.
     // The exact result digest still fences changes to work, scope and history.
     if (checked !== undefined) {
       const rootRef = store.lookupRef(family.root.id);
       const byLead = rootRef !== null && olderStoreSafe(() => store.taskActs(rootRef.id), []).filter(one => one.act === "completed").at(-1)?.lead === true;
-      completion = { actor: String(checked["actor"]), at: String(checked["at"]), digest: receipt.digest, ...(byLead ? { lead: true as const } : {}) };
+      const landed = landedReasonOf(String(checked["actor"]), checked["detail"] == null ? null : String(checked["detail"]));
+      completion = { actor: String(checked["actor"]), at: String(checked["at"]), digest: receipt.digest, ...(byLead && landed === null ? { lead: true as const } : {}), ...(landed === null ? {} : { landed }) };
       state = "complete";
       primaryAction = { ...primaryAction, label: completionKind === "research-report" ? "Read report" : "Open result" };
       const label = byLead ? "the lead" : completion.actor.startsWith("operator:") ? completion.actor.slice(9) : owner && completion.actor === actorOf(owner) ? owner.label : "the previous lead";
-      detail = completionKind === "research-report" ? `Research report checked by ${label}. No deployment is implied.`
+      detail = landed !== null ? `Marked complete automatically: ${landed}. ${receipt.checks.detail}`
+        : completionKind === "research-report" ? `Research report checked by ${label}. No deployment is implied.`
         : `Handled by ${label}. ${receipt.checks.detail} Publication and deployment are separate.`;
     }
   } else if (work.status.rank === 0 || (!live && (current.state === "done" || current.state === "failed" || work.status.views.includes("needs-you")))) {

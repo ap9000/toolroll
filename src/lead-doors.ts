@@ -18,6 +18,7 @@ import { closedQuestionWords } from "./decision.js";
 import { steerDestinationWords } from "./steer-status.js";
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
 import { leadTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type LeadProposal, type Store } from "./store.js";
+import { agentQuestion, answerAgentQuestion } from "./agent-board.js";
 import type { VerifiedApprover } from "./principal.js";
 import { isVerifiedApprover, reproveApprover } from "./principal.js";
 import { TURN_WALL_CLOCK_MS } from './converse.js';
@@ -444,9 +445,50 @@ function executeProposal(
     return { ok: true, kind, said: `${taskId} released from its hold`, taskId };
   }
 
+  if (kind === "steer" && payload["mode"] === "resume") {
+    // Resume (live steering): the paused build the proposal saw, under the request id it was drafted with; no note.
+    const sawRun = payloadNumber(payload, "sawRun");
+    const request = payloadString(payload, "request");
+    if (sawRun === null || request === null) return refuse("refused", "this proposal is missing what it saw");
+    const asked = store.requestResume({ taskId, runId: sawRun, by: verifiedAuthor(actor.name), via: "chat", requestId: request }, now);
+    if (!asked.ok) {
+      return refuse(asked.reason === "stale" || asked.reason === "not-paused" ? "stale" : "refused",
+        asked.reason === "stale" ? "that build has stopped taking notes — look again" : asked.reason === "not-paused" ? "that build isn't paused any more — look again" : asked.detail);
+    }
+    const taskName = payloadString(payload, "taskTitle") ?? taskId;
+    return { ok: true, kind, said: `Resuming ${taskName} where it stopped.`, taskId };
+  }
+
+  if (kind === "steer" && (payload["mode"] === "pause" || payload["mode"] === "pause-and-steer")) {
+    // Pause, or Pause and steer (live steering): the build the proposal saw, under the request id it was drafted with.
+    const mode = payload["mode"];
+    const sawRun = payloadNumber(payload, "sawRun");
+    const request = payloadString(payload, "request");
+    const note = payloadString(payload, "note");
+    if (sawRun === null || request === null || (mode === "pause-and-steer" && note === null)) return refuse("refused", "this proposal is missing what it saw");
+    const asked = store.requestPause({ taskId, runId: sawRun, by: verifiedAuthor(actor.name), via: "chat", requestId: request, ...(mode === "pause-and-steer" ? { note: note as string } : {}) }, now);
+    if (!asked.ok) return refuse(asked.reason === "stale" ? "stale" : "refused", asked.reason === "stale" ? "that build has stopped taking notes — look again" : asked.detail);
+    const taskName = payloadString(payload, "taskTitle") ?? taskId;
+    return { ok: true, kind, said: mode === "pause" ? `Pausing ${taskName}. Its next note continues it.` : `Pausing ${taskName}, then sending your note.`, taskId };
+  }
+
   if (kind === "steer") {
     const note = payloadString(payload, "note");
     if (note === null) return refuse("refused", "this proposal carries no guidance");
+    // A reply to the running agent's own question: the same door the Agents board's Reply uses, closing exactly that key.
+    const question = payloadNumber(payload, "question");
+    if (question !== null) {
+      const asked = agentQuestion(store, question);
+      if (asked === null || asked.taskRef !== ref.id) return refuse("stale", "that question is not on this task");
+      const answered = answerAgentQuestion(store, { question, answer: note, author: actor.name, at: now,
+        file: (task, text) => store.fileSteerNote(task, verifiedAuthor(actor.name), text, now) });
+      if (!answered.ok) {
+        return answered.reason === "invalid-answer" || answered.reason === "not-saved"
+          ? refuse("refused", answered.problem ?? "that reply could not be saved")
+          : refuse("stale", "the agent's question already closed or its attempt ended — look again");
+      }
+      return { ok: true, kind, said: `Reply sent to the agent working on ${payloadString(payload, "taskTitle") ?? taskId}.`, taskId };
+    }
     const filed = store.fileSteerNote(taskId, verifiedAuthor(actor.name), note, now);
     if (!filed.ok) {
       const said =
@@ -460,7 +502,8 @@ function executeProposal(
     const taskName = payloadString(payload, "taskTitle") ?? taskId;
     const steered = store.lookupRef(taskId);
     const live = steered !== null && store.steeringLiveBuild(steered.id, now) !== null;
-    return { ok: true, kind, said: `Guidance saved for ${taskName}. ${steerDestinationWords(live)}`, taskId };
+    const liveInput = steered !== null && store.liveInputRun(steered.id, now) !== null;
+    return { ok: true, kind, said: `Guidance saved for ${taskName}. ${steerDestinationWords(live, liveInput)}`, taskId };
   }
 
   if (kind === "repair") {

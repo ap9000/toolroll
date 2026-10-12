@@ -61,6 +61,8 @@ export type FinishedFact = {
   checks: "passed" | "failed" | "not-run" | "off" | null;
   report: boolean;
   completedBy: string | null;
+  /** Toolroll marked it complete because its work landed: why ("its pull request merged"). */
+  landed?: string | null;
   /** An open pull request carries this result: the ask is "Merge it?" rather than "Accept and finish it?". */
   pullRequest?: boolean;
   /** The lead did this (built it, or marked it complete), so the lead says "I". */
@@ -104,6 +106,7 @@ export function finishedLine(fact: FinishedFact): string {
         ? `I couldn't finish ${lower}. The work so far is kept; retry when you're ready.`
         : `${name} stopped before it finished. The work so far is kept; retry when you're ready.`;
     case "Complete":
+      if (fact.landed) return `${name} is done: ${fact.landed}.`;
       if (fact.lead === true && fact.completedBy) return `I marked ${lower} complete.`;
       return fact.completedBy ? `${name} is done. ${fact.completedBy} marked it complete.` : `${name} is done.`;
     case "Needs you":

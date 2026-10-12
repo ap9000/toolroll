@@ -18,7 +18,9 @@ export const WORKSPACE_REVISION_KEY = 'workspace-content:v1';
 const KEY = WORKSPACE_REVISION_KEY;
 const MAX_AGE_MS = 60_000;
 const OMIT = new Set(['schema_version', 'service_cursor', 'wake', 'notification_delivery', 'sqlite_sequence',
-  'team_read', 'team_request', 'push_delivery', 'chat_message_ref']);
+  'team_read', 'team_request', 'push_delivery', 'chat_message_ref',
+  // Who is watching an agent right now: renewed by every open page's keep-alive, never news.
+  'agent_view']);
 const QUIET: Record<string, readonly string[]> = {
   runner: ['heartbeat_at'], claim: ['heartbeat_at', 'expires_at'], watch_lease: ['heartbeat_at', 'expires_at'],
   watch_episode: ['ticks'], provider_readiness: ['observed_at'],

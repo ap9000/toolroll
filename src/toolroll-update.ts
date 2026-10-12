@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -414,7 +414,8 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // the declared value (generation 0, no closure reason).
   // v120: a steering note's mailing and acknowledgement, and a run's steering folder, are new columns; every row
   // saved before them reads none.
-  ...addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS),
+  // v121: live steering's columns and a run's attempt key read none, and no sends, the same way.
+  ...addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));

@@ -8,8 +8,9 @@
  * Every prefix the tests and scripts give tmpdir() is covered here (test-temp.test.ts reads the sources to keep it
  * so), and Playwright's own browser profiles.
  */
-import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -88,13 +89,16 @@ export type RemoveOptions = {
   ownerAlive?: (owner: TempOwner) => boolean;
   /** At most this many go in one pass (a sweep after weeks can find 100,000); `more` says some were left. */
   max?: number;
+  /** Something live work uses (storage-sweep.ts): asked right before each folder goes; true keeps it. */
+  spare?: (path: string) => boolean;
 };
 
 /**
  * Remove the test temp folders nothing has touched for a day; each is looked at again right before it goes (still a
- * folder of its own, not a link, still directly in its temp folder, still a day untouched, its owner gone).
+ * folder of its own, not a link, still directly in its temp folder, still a day untouched, its owner gone, nothing
+ * live using it). Removal never holds the event loop: a worker's heartbeats keep beating while thousands go.
  */
-export function removeStaleTestTemp(roots: readonly string[], now: Date, options: RemoveOptions = {}): { removed: string[]; failed: string[]; more: boolean } {
+export async function removeStaleTestTemp(roots: readonly string[], now: Date, options: RemoveOptions = {}): Promise<{ removed: string[]; failed: string[]; more: boolean }> {
   const removed: string[] = [];
   const failed: string[] = [];
   const stale = testTempFolders(roots, now).stale;
@@ -102,22 +106,26 @@ export function removeStaleTestTemp(roots: readonly string[], now: Date, options
   const inside = new Set(roots.map(root => resolve(root)));
   for (const one of stale) {
     if (removed.length + failed.length >= max) return { removed, failed, more: true };
+    await nextTurn();
     try {
       const stat = lstatSync(one.path);
       if (stat.isSymbolicLink() || !inside.has(resolve(dirname(one.path)))) continue;
       if (now.getTime() - (stat.isDirectory() ? touchedAt(one.path) : stat.mtimeMs) <= DAY_MS) continue;
       const owner = stat.isDirectory() ? tempOwner(one.path) : null;
       if (owner !== null && (options.ownerAlive ?? (() => false))(owner)) continue;
-      removeTree(one.path);
+      if (options.spare?.(one.path) === true) continue;
+      await removeTree(one.path);
       removed.push(one.path);
     } catch { failed.push(one.path); }
   }
   return { removed, failed, more: false };
 }
 
+const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+
 /** rm -r; a tree a test made read-only (a shared dependency copy, a locked fixture) is made writable first. */
-function removeTree(path: string): void {
-  try { rmSync(path, { recursive: true, force: true, maxRetries: 3 }); return; } catch { /* read-only inside */ }
-  if (process.platform !== "win32") spawnSync("chmod", ["-R", "u+w", path], { timeout: 120_000 });
-  rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+async function removeTree(path: string): Promise<void> {
+  try { await rm(path, { recursive: true, force: true, maxRetries: 3 }); return; } catch { /* read-only inside */ }
+  if (process.platform !== "win32") await new Promise<void>(resolve => execFile("chmod", ["-R", "u+w", path], { timeout: 120_000 }, () => resolve()));
+  await rm(path, { recursive: true, force: true, maxRetries: 3 });
 }

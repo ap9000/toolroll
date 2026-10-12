@@ -483,6 +483,16 @@ export function proposalPreview(
     case "unhold":
       return card(`Release ${taskName} from its hold.`);
     case "steer":
+      if (payload["mode"] === "pause") return card(`Pause ${taskName}.`, [], "Its current turn stops and the build keeps running; its next note continues it.");
+      if (payload["mode"] === "resume") return card(`Resume ${taskName}.`, [], "It goes on where it stopped. No note is sent.");
+      if (payload["mode"] === "pause-and-steer") {
+        return card(`Pause ${taskName}, then send its agent:`, lines(t("note", 1_000), 1_000), "Its current turn stops first. Scope stays the same.");
+      }
+      if (typeof payload["questionKey"] === "string") return card(
+        `Reply to ${taskName}'s agent about "${t("questionKey", 40)}":`,
+        lines(t("note", 1_000), 1_000),
+        "The running agent reads it when it next checks for notes, and the question closes. Scope stays the same.",
+      );
       return card(
         `Guidance for ${taskName}'s agent:`,
         lines(t("note", 1_000), 1_000),

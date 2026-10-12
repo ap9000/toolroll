@@ -136,7 +136,7 @@ export function evidencePack(store: Store, taskId: string, access: AssignmentAcc
     result: receipt === null ? null : {
       runId: receipt.runId, base: receipt.base, head: receipt.head, kind: receipt.completionKind,
       checks: { status: receipt.checks.status, command: receipt.checks.command, exitCode: receipt.checks.exitCode, detail: receipt.checks.detail },
-      completedBy: assignment?.completion?.actor ?? null, completedAt: assignment?.completion?.at ?? null, caveats: receipt.caveats,
+      completedBy: assignment?.completion?.landed !== undefined ? `Toolroll, automatically: ${assignment.completion.landed}` : assignment?.completion?.actor ?? null, completedAt: assignment?.completion?.at ?? null, caveats: receipt.caveats,
       publication: assignment?.publication ?? null,
     },
     totals: { runs: allRuns.length, costUsd: Math.round(sum(run => run.costUsd) * 1e6) / 1e6, tokensIn: sum(run => run.tokensIn), tokensOut: sum(run => run.tokensOut) },

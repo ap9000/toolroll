@@ -13,9 +13,10 @@ const lock = (version: string, zod = "3.23.8") => JSON.stringify({
   name: "toolroll", version, lockfileVersion: 3, requires: true,
   packages: { "": { name: "toolroll", version, dependencies: { zod: "^3.23.0" } }, "node_modules/zod": { version: zod, resolved: `https://registry.npmjs.org/zod/-/zod-${zod}.tgz` } },
 }, null, 2) + "\n";
+const gitIn = (dir: string, ...argv: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
 /** A repository in `dir` with `base` committed, then one commit with `change`; the base commit. */
 const repoWith = (dir: string, base: Record<string, string>, change: Record<string, string>) => {
-  const git = (...argv: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
+  const git = (...argv: string[]) => gitIn(dir, ...argv);
   git("init", "-q", "-b", "main");
   const write = (files: Record<string, string>) => { for (const [file, text] of Object.entries(files)) { mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), text); } };
   write(base);
@@ -93,6 +94,23 @@ describe("node scripts/release-check.mjs", () => {
       .toMatch(/\(2 changed files\): every unit test\.$/);
   });
 
+  test.each([false, true])("the latest reachable release tag excludes already released code (annotated: %s)", annotated => {
+    const at = fresh();
+    const base = repoWith(at, { "src/lead.ts": "export {};\n" }, { "src/lead.ts": "export const released = true;\n" });
+    gitIn(at, "tag", "v0.9.4", base);
+    gitIn(at, "tag", ...(annotated ? ["-a", "-m", "release"] : []), "v0.9.5");
+    // A newer release on another line of development is not this candidate's baseline.
+    const unrelated = gitIn(at, "commit-tree", "HEAD^{tree}", "-p", base, "-m", "another release");
+    gitIn(at, "tag", "v99.0.0", unrelated);
+    writeFileSync(join(at, "CHANGELOG.md"), "# Release notes\n");
+    gitIn(at, "add", "."); gitIn(at, "commit", "-qm", "notes");
+    gitIn(at, "tag", "candidate-only");
+    const out = execFileSync(process.execPath, [script, "--plan"], { cwd: at, encoding: "utf8" });
+    expect(out).toContain("Release check against v0.9.5 (1 changed files): only docs, evidence or design notes changed.");
+    const override = execFileSync(process.execPath, [script, "--plan", "--base", base], { cwd: at, encoding: "utf8" });
+    expect(override).toContain(`Release check against ${base} (2 changed files): every unit test.`);
+  });
+
   test("a run: the unit tests start beside the build and wait for its outcome; the summary keeps its lines and says how long each part took", () => {
     // The stand-in tests wait for the outcome the release check hands them: seeing "ok" means they waited for the build.
     const scripts = { typecheck: "node -e \"console.log('typed')\"", build: "node -e \"console.log('built')\"", test: "node units.cjs" };
@@ -110,16 +128,26 @@ describe("node scripts/release-check.mjs", () => {
 
   /** A checkout with journey scripts and a stand-in runner that logs how it is asked to run (and whether it was handed
    * a provider gate), then one commit changing `files`; the release check's output, and each journey run it started. */
-  const checkOf = (files: Record<string, string>, extra: string[] = [], build = "node -e 0") => {
+  const checkOf = (files: Record<string, string>, extra: string[] = [], build = "node -e 0", baseline: "explicit" | "release" | "missing" = "explicit") => {
     const at = fresh();
     const runner = "import { appendFileSync } from 'node:fs';\nappendFileSync('journey-runs.jsonl', JSON.stringify({ argv: process.argv.slice(2), gate: process.env.TOOLROLL_CHECK_GATE ?? null }) + '\\n');\nconsole.log('Model calls: 4 scripted, 0 real turns');\n";
     const base = repoWith(at, {
       "scripts/e2e-parallel.mjs": runner, "scripts/flows-e2e.mjs": "", "scripts/app-e2e.mjs": "",
-      "package.json": JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build, test: "node -e 0" } }, null, 2) + "\n",
+      "package.json": JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build, test: "node -e 0 --" } }, null, 2) + "\n",
       "src/browser/app.tsx": "export {};\n", "src/lead.ts": "export {};\n",
     }, files);
+    if (baseline === "release") {
+      gitIn(at, "tag", "v0.9.5", base);
+      // Main already has the code; the release PR changes only the version.
+      gitIn(at, "update-ref", "refs/remotes/origin/main", "HEAD");
+      const manifest = JSON.parse(readFileSync(join(at, "package.json"), "utf8"));
+      manifest.version = "0.9.6";
+      writeFileSync(join(at, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+      gitIn(at, "add", "."); gitIn(at, "commit", "-qm", "version bump");
+      expect(gitIn(at, "diff", "--name-only", "origin/main", "HEAD")).toBe("package.json");
+    }
     let out: string;
-    try { out = execFileSync(process.execPath, [script, "--base", base, ...extra], { cwd: at, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "", TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } }); } catch (error) { out = (error as { stdout: string }).stdout; }
+    try { out = execFileSync(process.execPath, [script, ...(baseline === "explicit" ? ["--base", base] : []), ...extra], { cwd: at, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "", TOOLROLL_CHECK_GATE: "", TOOLROLL_CHECK_PROVIDERS: "" } }); } catch (error) { out = (error as { stdout: string }).stdout; }
     const runs = existsSync(join(at, "journey-runs.jsonl")) ? readFileSync(join(at, "journey-runs.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { argv: string[]; gate: string | null }) : [];
     const outputs = runs.map(one => one.argv[one.argv.indexOf("--output") + 1]);
     expect(new Set(outputs).size).toBe(runs.length);
@@ -133,6 +161,21 @@ describe("node scripts/release-check.mjs", () => {
   };
   const SCRIPTED = ["scripts/app-e2e.mjs --skip-build --journeys scripted --at-once 4", "scripts/flows-e2e.mjs --journeys scripted --at-once 2"];
   const REAL = ["scripts/app-e2e.mjs --skip-build --journeys real --at-once 4", "scripts/flows-e2e.mjs --journeys real --at-once 2"];
+
+  test.each(["src/browser/app.tsx", "src/lead.ts"])("a version-only release runs units and journeys for %s changed since its tag", file => {
+    const { out, runs } = checkOf({ [file]: "export const changed = 1;\n" }, [], "node -e 0", "release");
+    expect(out).toContain("Release check against v0.9.5 (2 changed files): every unit test and every scripted browser journey");
+    expect(out).toContain("\nunit: exit 0\n");
+    expect(runs).toEqual(file === "src/lead.ts" ? [REAL[0], SCRIPTED[0], REAL[1], SCRIPTED[1]] : SCRIPTED);
+  });
+
+  test("without a reachable release tag, even docs run the full suite", () => {
+    const { out, runs } = checkOf({ "CHANGELOG.md": "# Notes\n" }, [], "node -e 0", "missing");
+    expect(out).toContain("Release check against nothing (no reachable v* release tag)");
+    expect(out).toContain("a full check");
+    expect(out).toContain("\nunit: exit 0\n");
+    expect(runs).toEqual([REAL[0], SCRIPTED[0], REAL[1], SCRIPTED[1]]);
+  });
 
   test("any change beyond docs runs every scripted journey group, flows 2 and app 4 at once, and no real-model journey", () => {
     const { out, runs } = checkOf({ "src/browser/app.tsx": "export const changed = 1;\n" });

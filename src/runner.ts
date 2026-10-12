@@ -232,10 +232,10 @@ export const RUNNER_NAME_MAX = 60;
 /** The most tasks one worker may be set to run at once (the console's register form says the same). */
 export const RUNNER_CAPACITY_MAX = 64;
 
-/** A capacity as typed: a whole number from 1 to RUNNER_CAPACITY_MAX, or null. */
-export function parseRunnerCapacity(value: string): number | null {
+/** A capacity as typed; changing an existing worker may use zero to drain it. */
+export function parseRunnerCapacity(value: string, { allowZero = false } = {}): number | null {
   const capacity = Number(value.trim());
-  return value.trim() !== "" && Number.isInteger(capacity) && capacity >= 1 && capacity <= RUNNER_CAPACITY_MAX ? capacity : null;
+  return value.trim() !== "" && Number.isInteger(capacity) && capacity >= (allowZero ? 0 : 1) && capacity <= RUNNER_CAPACITY_MAX ? capacity : null;
 }
 
 export function validRunnerName(name: string): boolean {

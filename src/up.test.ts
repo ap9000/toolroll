@@ -44,8 +44,8 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-const up = (extra: string[] = [], port = PORT) =>
-  runOperate("up", ["--repo", repo, "--port", String(port), "--for", "1200", "--json", ...extra], line => lines.push(line), {
+const up = (extra: string[] = [], port = PORT, onOutput?: (line: string) => void) =>
+  runOperate("up", ["--repo", repo, "--port", String(port), "--for", "1200", "--json", ...extra], line => { lines.push(line); onOutput?.(line); }, {
     databaseFile: db,
   });
 
@@ -89,13 +89,21 @@ describe("toolroll up", () => {
     expect(String(again["passwordFile"]).endsWith("up-login.txt")).toBe(true);
   });
 
-  test("--capacity sets the built-in worker's capacity, in the ledger, and a restart keeps it", async () => {
-    expect(await up(["--capacity", "3"], PORT + 11)).toBe(0);
+  test.each([0, 3])("--capacity is recorded and a built-in worker restart keeps saved capacity %s", async savedCapacity => {
+    expect(await up(["--capacity", "3"], PORT + 11, line => {
+      if (savedCapacity !== 0) return;
+      // Drain while the worker is alive; shutdown retires it before up() returns.
+      const started = JSON.parse(line);
+      const store = openStore(db);
+      try {
+        expect(store.setRunnerCapacity(String(started.runner), 0, String(started.approver), new Date())).toMatchObject({ ok: true, before: 3, after: 0 });
+      } finally { store.close(); }
+    })).toBe(0);
     const answer = envelope();
     const runner = String(answer["runner"]);
     let store = openStore(db);
     try {
-      expect(store.getRunner(runner)?.runner.capacity).toBe(3);
+      expect(store.getRunner(runner)?.runner.capacity).toBe(savedCapacity);
       const entry = store.handle.prepare("SELECT actor, action, detail FROM action_ledger WHERE action = ?").get(`worker capacity: ${runner}`);
       expect(entry).toMatchObject({ actor: String(answer["approver"]), detail: "1 → 3" });
     } finally {
@@ -105,7 +113,7 @@ describe("toolroll up", () => {
     expect(await up([], PORT + 12)).toBe(0);
     store = openStore(db);
     try {
-      expect(store.getRunner(runner)?.runner.capacity).toBe(3);
+      expect(store.getRunner(runner)?.runner.capacity).toBe(savedCapacity);
     } finally {
       store.close();
     }

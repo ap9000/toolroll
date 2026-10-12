@@ -16,13 +16,43 @@ export const PROJECT_DELETE_CSS = `.project-settings,.project-delete{max-width:7
   `.project-settings button,.project-delete button{justify-self:start;min-height:36px;white-space:nowrap}.project-delete .actions a{min-height:36px;display:inline-flex;align-items:center}` +
   `.project-settings .builds-at-once{margin-top:20px}.project-settings .builds-at-once h2{font-size:1rem;margin:0 0 4px}.project-settings .builds-at-once form{margin-top:4px;gap:4px}` +
   `.project-settings .builds-at-once .builds-row{display:flex;gap:8px;align-items:stretch}.project-settings .builds-at-once input{width:5.5rem;min-height:44px;margin:0;box-sizing:border-box}.project-settings .builds-at-once button{min-height:44px;margin:0}` +
-  `.project-settings .builds-at-once .meta{margin:0}.project-settings form.remove-project{margin-top:20px;gap:4px}.project-settings form.remove-project button{min-height:44px}.project-settings form.remove-project .meta{margin:0}`;
+  `.project-settings .builds-at-once .meta{margin:0}.project-settings form.remove-project{margin-top:20px;gap:4px}.project-settings form.remove-project button{min-height:44px}.project-settings form.remove-project .meta{margin:0}` +
+  `.project-settings .build-access{margin-top:20px;min-width:0;overflow-wrap:anywhere}.project-settings .build-access h2{font:var(--so-typography-title-sm);margin:0 0 4px}.project-settings .build-access p{margin:0}` +
+  `.project-settings .build-access .tool-name{font:var(--so-typography-mono)}.project-settings .build-access details{margin:4px 0 0}.project-settings .build-access summary{min-height:44px;display:inline-flex;align-items:center;cursor:pointer;color:var(--so-muted);font:var(--so-typography-label)}` +
+  `.project-settings .build-access ul{margin:0 0 4px;padding-left:20px;font:var(--so-typography-body);color:var(--so-ink)}.project-settings .build-access li{margin:2px 0}.project-settings .build-access li .meta{color:var(--so-muted)}` +
+  `.project-settings .build-access a.manage-tools{display:inline-flex;align-items:center;justify-content:center;min-height:44px;margin-top:4px;padding:0 14px;white-space:nowrap;background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line);border-radius:var(--so-radius-md);font:var(--so-typography-label);text-decoration:none}` +
+  `.project-settings .build-access a.manage-tools:hover{background:var(--so-raised)}.project-settings .build-access a.manage-tools:focus-visible,.project-settings .build-access summary:focus-visible{outline:2px solid var(--so-ink);outline-offset:2px}`;
 
 export type ProjectSettingsView = {
   repo: string; name: string; holdings: ProjectHoldings; running: string[]; canDelete: boolean;
   /** How many of its tasks build at once: the saved number, what its worker allows, how many build now. */
   builds?: { setting: number; capacity: number | null; building: number; canChange: boolean };
+  /** What its builds can reach: the project's named tools and whether each loads (names and words only, never a
+   * secret), or why they couldn't be read. */
+  access?: { tools: { name: string; loads: boolean; words: string }[] } | { problem: string };
 };
+
+/** Build access: one sentence for what a build gets, the detail on demand, and the way to change it. */
+function accessHtml(view: ProjectSettingsView): Html | "" {
+  const access = view.access;
+  if (access === undefined) return "";
+  const manage = html`<a class="manage-tools" href="/settings/tools?repo=${encodeURIComponent(view.repo)}">Manage tools</a>`;
+  const always = [
+    "Your other projects, keys and sign-in files are out of reach.",
+    "Your own Claude and Codex hooks, plugins and MCP servers don't load.",
+    "Builds sign in with your existing Claude or Codex login.",
+  ];
+  if ("problem" in access) {
+    return html`<section class="build-access" aria-labelledby="build-access-title"><h2 id="build-access-title">Build access</h2><p class="problem" role="alert">${access.problem}</p><details><summary>Details</summary><ul>${always.map(one => html`<li>${one}</li>`)}</ul></details>${manage}</section>`;
+  }
+  const loading = access.tools.filter(one => one.loads);
+  const names = loading.map((one, at) => html`${at === 0 ? "" : ", "}<span class="tool-name">${one.name}</span>`);
+  const outcome = loading.length === 0
+    ? html`<p>Builds work in their task's folder, with no extra tools.</p>`
+    : html`<p>Builds work in their task's folder, with ${loading.length === 1 ? "one tool" : `${loading.length} tools`}: ${names}.</p>`;
+  const tools = access.tools.map(one => html`<li><span class="tool-name">${one.name}</span> <span class="meta">· ${one.words}</span></li>`);
+  return html`<section class="build-access" aria-labelledby="build-access-title"><h2 id="build-access-title">Build access</h2>${outcome}<details><summary>Details</summary><ul>${always.map(one => html`<li>${one}</li>`)}${tools}</ul></details>${manage}</section>`;
+}
 
 /** Builds at once: one number, one Save. The worker's cap is said only when it lowers the number. */
 function buildsHtml(view: ProjectSettingsView): Html | "" {
@@ -40,7 +70,7 @@ const note = (notice: { said?: string | null; problem?: string | null }) =>
 /** The project's page: its path, what Toolroll holds for it, and (for an instance operator) Delete project. */
 export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: string | null; problem?: string | null }): Html {
   const held = html`<p>Toolroll holds ${holdingsWords(view.holdings)} for <strong>${view.name}</strong>.</p>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${buildsHtml(view)}`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${buildsHtml(view)}${accessHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`

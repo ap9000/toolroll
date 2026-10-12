@@ -231,6 +231,11 @@ function keptFor(pool: WorktreePool, row: WorktreeRow, statuses: ReturnType<type
   return dueAt > now.toISOString() ? { why: "not due yet", taskId, dueAt } : { why: null, taskId };
 }
 
+/** Why a checkout stays as a clean-up by hand reads it (in use, or its task not done with it), before its files; null: it may go. */
+export function checkoutKeepWhy(pool: WorktreePool, row: WorktreeRow, statuses: ReturnType<typeof taskStatuses>, now: Date): KeepWhy | null {
+  return keptFor(pool, row, statuses, now, "manual").why;
+}
+
 async function eachAtMost<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
@@ -276,7 +281,7 @@ export type CleanResult = { removed: CheckoutItem[]; kept: { path: string; why: 
  * clean-up by hand (no cap, every repository). Each checkout is asked again right before it goes; each removal is in
  * the ledger.
  */
-export async function cleanCheckouts(store: Store, pool: WorktreePool, now: () => Date, options: { manual: boolean; actor: string; repo?: string; only?: ReadonlySet<string> }): Promise<CleanResult> {
+export async function cleanCheckouts(store: Store, pool: WorktreePool, now: () => Date, options: { manual: boolean; actor: string; repo?: string; only?: ReadonlySet<string>; spare?: (path: string) => boolean }): Promise<CleanResult> {
   const cleanup = store.checkoutCleanup();
   if (!options.manual && cleanup === "never") return { removed: [], kept: [], freed: 0 };
   // `only`: the checkouts a person saw in the preview; nothing they didn't see goes.
@@ -285,9 +290,15 @@ export async function cleanCheckouts(store: Store, pool: WorktreePool, now: () =
   const sizes = new Map<string, number>();
   const wanted = (row: WorktreeRow, fresh: boolean): boolean => {
     // Right before a checkout goes, where its task stands is read afresh, and its size taken for the ledger.
+    // `spare`: live work uses it (storage-sweep.ts), asked at both looks.
     if (fresh) statuses = taskStatuses(store, now());
-    const go = keptFor(pool, row, statuses, now(), options.manual ? "manual" : cleanup).why === null;
-    if (go && fresh) sizes.set(row.path, diskBytes([row.path]).get(row.path) ?? 0);
+    const go = keptFor(pool, row, statuses, now(), options.manual ? "manual" : cleanup).why === null && options.spare?.(row.path) !== true;
+    if (go && fresh) {
+      sizes.set(row.path, diskBytes([row.path]).get(row.path) ?? 0);
+      // du can be slow. The reservation excludes a concurrent checkout lease, and this last read also catches
+      // an open run/claim or task change that arrived while size was measured in the sweep child.
+      return keptFor(pool, row, taskStatuses(store, now()), now(), options.manual ? "manual" : cleanup).why === null && options.spare?.(row.path) !== true;
+    }
     return go;
   };
   const pruned = await pool.prune(rows, wanted, options.manual ? Infinity : AUTO_MAX);

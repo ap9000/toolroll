@@ -205,6 +205,9 @@ export type BrowserTaskView = {
   live?: { room: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
+  /** Pause and Pause and steer, beside Stop: the same exact live Claude build, one request id per form (Pause, the note,
+   * Resume), where its latest pause stands (null: running), and until when a paused build can wait before it ends. */
+  pause?: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until?: string | null; limitMs?: number | null } | null;
   /** The Building card's link to the live build's own record ("Build #N record", /r/<id>). */
   record?: BrowserLink | null;
   earlier?: { summary: string; attempts: { label: string; href: string; text: string | null }[] } | null;
@@ -481,7 +484,48 @@ export type BrowserFlowView = {
   colors: string[];
 };
 
-export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView;
+/** The Agents board's groups, in order (agents-board.ts). */
+export type AgentGroupKey = 'needs-you' | 'working' | 'stuck' | 'done' | 'idle';
+/** One agent: its task, project, last activity line, elapsed time and diff size. */
+export type BrowserAgentRow = {
+  runId: number; taskId: string; title: string; project: string | null; href: string;
+  /** Its one line: what it is doing, its question, or why it ended; null when there is nothing the state chip doesn't say. */
+  group: AgentGroupKey; label: string; line: string | null; quiet: boolean;
+  /** When it started, and when it ended (null: still running): the row counts the time between. */
+  startedAt: string; endedAt: string | null;
+  /** "3 files", "+12 −4 · 3 files"; null when nothing could be measured. */
+  diff: string | null;
+  agent: string;
+};
+export type BrowserAgentQuestion = { id: number; key: string; text: string; action: string };
+export type BrowserAgentDetail = BrowserAgentRow & {
+  live: boolean;
+  question: BrowserAgentQuestion | null;
+  /** The live transcript's JSON window (/r/<run>?fragment=transcript); null when this console can't read it. */
+  transcript: string | null;
+  /** The live changes fragment (/r/<run>?fragment=peek) while it runs; the saved changes once it has finished. */
+  peek: string | null;
+  files: { path: string; added: number | null; removed: number | null }[];
+  filesMore: number;
+  /** Steer the running agent (POST /t/<task>/steer): null once it has finished. */
+  steer: { action: string; run: number } | null;
+  /** Whether this person may reply or steer (an approver, outside the demo); a viewer sees the question but no composer. */
+  canAct: boolean;
+  /** The task, and once finished the run's own page (its result page when it built one). */
+  taskHref: string; resultHref: string | null;
+  /** The exact-run live room: updates, and a watch that keeps this person's pings quiet. */
+  room: string;
+  said: { tone: 'info' | 'error'; text: string } | null;
+};
+export type BrowserAgentsView = {
+  kind: 'agents';
+  groups: { key: AgentGroupKey; label: string; rows: BrowserAgentRow[] }[];
+  selected: BrowserAgentDetail | null;
+  /** Shown when nothing is on the board. */
+  empty: string | null;
+};
+
+export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
 
 export type BrowserWorkspace = {
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
@@ -591,6 +635,7 @@ export function browserNavigationOf(path: string, project: string | null = null,
     { label: 'Tasks', href: `/work${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
       active: pathname === '/work' || pathname === '/tasks' || pathname.startsWith('/t/') || pathname.startsWith('/r/'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
+    { label: 'Agents', href: '/agents', active: pathname === '/agents' || pathname === '/peek' },
     { label: 'Flows', href: '/flows', active: pathname === '/flows' || pathname.startsWith('/flows/') },
     { label: 'Projects', href: '/projects', active: pathname === '/projects' },
     { label: 'Knowledge', href: `/settings/knowledge${project === null ? '' : `?repo=${encodeURIComponent(project)}`}`, active: knowledge },

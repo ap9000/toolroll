@@ -6,6 +6,7 @@
  *   room=flow:<id>?card=&editing=  the flow changed; who else is on it, and on which card
  *   room=chat[?task=|?project=] the reader's own lead reply, as it runs (the only room that carries content)
  *   room=team[?conversation=]   the team conversation's cursor moved
+ *   room=agent:<run>            one agent on the Agents board changed; while open, this person watches it (no pings)
  *
  * Every room is validated before anything is looked up, and admitted with
  * the same checks and answers as the page it belongs to, before the stream
@@ -15,6 +16,9 @@
  * EventSource reconnects (live-bus.ts).
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
+import { boardRunOf, holdAgentView, releaseAgentView } from "../agent-board.js";
+import { agentRunFingerprint } from "../agents-board.js";
 import { createLiveRooms, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
@@ -32,7 +36,7 @@ import type { Who } from "./session.js";
 
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 5;
-const ROOM_NAME = /^(workspace|task|flow|chat|team)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
+const ROOM_NAME = /^(workspace|task|flow|chat|team|agent)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
 /** At most one workspace nudge a second: a burst of writes is one re-read, the first heard at once. */
 const WORKSPACE_SETTLE_MS = 1_000;
 /** A running reply's preview: at most one snapshot every 80 ms; the last one always goes out. */
@@ -43,7 +47,8 @@ export type LiveRoom =
   | { kind: "task"; task: string }
   | { kind: "flow"; flow: number; card: number | null; editing: boolean }
   | { kind: "chat"; task: string | null; project: string | null }
-  | { kind: "team"; conversation: string | null };
+  | { kind: "team"; conversation: string | null }
+  | { kind: "agent"; run: number };
 
 /** A room's name, read strictly: anything else is not a room. */
 export function parseLiveRoom(name: string): LiveRoom | null {
@@ -68,6 +73,8 @@ export function parseLiveRoom(name: string): LiveRoom | null {
     case "team":
       if (key !== null || !only("conversation")) return null;
       return { kind, conversation: params.get("conversation") || null };
+    case "agent":
+      return key !== null && /^[1-9][0-9]{0,9}$/.test(key) && query === undefined ? { kind, run: Number(key) } : null;
   }
   return null;
 }
@@ -92,6 +99,8 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     return cursor === null ? null : String(cursor);
   }, null, { bus: live.bus });
   const chatViewers = new Set<ChatViewer>();
+  // One agent's open view (Agents board): what it shows, keyed by the exact run.
+  const agentRooms = createLiveRooms<number, Viewer>(run => agentRunFingerprint(store, run), null, { bus: live.bus });
 
   /** The same session, still signed in, from the cookie and the account (never this request's context). */
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => {
@@ -186,7 +195,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const names = url.searchParams.getAll("room");
     if ([...url.searchParams.keys()].some(key => key !== "room") || names.length === 0 || names.length > LIVE_ROOMS_PER_PAGE || new Set(names).size !== names.length) return json(response, 400, { error: "room" });
     const rooms = names.map(name => ({ name, room: parseLiveRoom(name) }));
-    if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1) return json(response, 400, { error: "room" });
+    if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "agent").length > 1 || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1) return json(response, 400, { error: "room" });
 
     // Admit every room before the stream opens, with the answers each page's own stream gave.
     const joins: Array<(connection: LiveConnection) => void> = [];
@@ -203,6 +212,23 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         joins.push(connection => taskRooms.join(root, { name: who.name, room: name, connection,
           // A sign-out or a narrowed account stops it.
           valid: () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo) }));
+      } else if (room.kind === "agent") {
+        const browser = who as Who & { via: "cookie" };
+        const run = store.getRun(room.run);
+        const repo = run === null ? null : store.refForId(run.taskRef)?.repo ?? null;
+        if (run === null || repo === null || !visible(repo) || !store.accountCanAccess(who.name, repo)) return json(response, 404, { error: "run" });
+        // A repair is its build's own activity: its room is the build's.
+        const signedIn = sameBrowser(request, browser), runId = boardRunOf(store, run.id), view = randomBytes(12).toString("hex");
+        // The watch is a short lease in the database, renewed on every keep-alive and released when the page goes:
+        // the process that sends chat pings reads it there (agent-board.ts watchingAgent).
+        const watch = () => { try { holdAgentView(store, view, who.name, runId, clock()); } catch { /* a missed renewal only lets a ping through */ } };
+        joins.push(connection => {
+          watch();
+          connection.onKeepAlive(watch);
+          connection.onClose(() => { try { releaseAgentView(store, view, clock()); } catch { /* it lapses on its own */ } });
+          agentRooms.join(runId, { name: who.name, room: name, connection,
+            valid: () => signedIn() && rowVisible(liveCeiling(), repo) && store.accountCanAccess(who.name, repo) });
+        });
       } else if (room.kind === "flow") {
         const browser = who as Who & { via: "cookie" };
         const flow = store.getFlow(room.flow);
@@ -282,6 +308,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
       detachChat();
       workspaceRooms.close();
       teamRooms.close();
+      agentRooms.close();
       for (const viewer of [...chatViewers]) viewer.connection.close();
     },
   };

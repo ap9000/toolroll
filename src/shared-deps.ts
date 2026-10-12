@@ -17,10 +17,12 @@
  * checkout links or matches; the plane's daily storage sweep removes one no checkout has used for a week.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { rm } from "node:fs/promises";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { markNeverIndex } from "./never-index.js";
+import { QUARANTINE_NOTE, quarantine, quarantineEntries, claimQuarantine, releaseQuarantine, restoreQuarantine, deleteQuarantine, type Quarantine } from "./sweep-quarantine.js";
 
 export const DEPS_FOLDER = "deps";
 const READY = "ready.json";
@@ -193,7 +195,9 @@ function treeDigest(nodeModules: string): string | null {
 
 /** The shared node_modules for a key, when one is ready and unchanged since it was made. A changed one is retired. */
 export function readyCopy(root: string, key: string): string | null {
+  if (!/^[0-9a-f]{24}$/.test(key)) return null;
   const dir = join(root, key);
+  if (existsSync(join(dir, QUARANTINE_NOTE))) return null;
   const ready = readReady(dir);
   if (ready === null || ready.key !== key || existsSync(join(dir, RETIRED)) || !existsSync(join(dir, NODE_MODULES))) return null;
   if (ready.tree !== treeDigest(join(dir, NODE_MODULES))) { retire(dir); return null; }
@@ -242,18 +246,25 @@ function writable(path: string, on: boolean): void {
 export function linkInto(worktree: string, shared: string): "link" | "clone" | null {
   const at = join(worktree, NODE_MODULES);
   if (existsSync(at) || isLink(at)) return null;
+  const root = dirname(dirname(shared)), key = basename(dirname(shared));
+  if (readyCopy(root, key) !== shared) return null;
   try {
     mkdirSync(at);
+    // Publish intent before reading the copy. A sweep that renames it mid-link sees this user and restores it;
+    // if the sweep won before the intent, the final ready check fails and no broken link is handed to a run.
+    writeFileSync(join(at, LINK_NOTE), `${shared}\n`, "utf8");
+    touch(dirname(shared));
     for (const entry of readdirSync(shared, { withFileTypes: true })) {
       symlinkSync(join(shared, entry.name), join(at, entry.name), entry.isDirectory() ? (process.platform === "win32" ? "junction" : "dir") : "file");
     }
-    writeFileSync(join(at, LINK_NOTE), `${shared}\n`, "utf8");
+    if (readyCopy(root, key) !== shared) throw new Error("Shared copy is no longer available");
     markNeverIndex(at);
     touch(dirname(shared));
     return "link";
   } catch {
     rmSync(at, { recursive: true, force: true });
   }
+  if (readyCopy(root, key) !== shared) return null;
   const cloned = process.platform === "darwin" ? spawnSync("cp", ["-c", "-R", shared, at], { timeout: 600_000 })
     : process.platform === "linux" ? spawnSync("cp", ["--reflink=always", "-R", shared, at], { timeout: 600_000 })
     : null;
@@ -341,7 +352,10 @@ export type SharedUse = SharedCopy & { checkouts: string[] };
 
 /** Which checkouts use each copy: those linking it, and those whose lockfile it was installed from. */
 export function sharedUse(root: string, checkouts: readonly { path: string; repo: string }[]): SharedUse[] {
-  const copies = sharedCopies(root);
+  return useCopies(root, sharedCopies(root), checkouts);
+}
+
+function useCopies(root: string, copies: SharedCopy[], checkouts: readonly { path: string; repo: string }[]): SharedUse[] {
   const users = new Map<string, Set<string>>(copies.map(one => [one.key, new Set<string>()]));
   for (const checkout of checkouts) {
     const linked = linkedKey(checkout.path, root);
@@ -351,7 +365,8 @@ export function sharedUse(root: string, checkouts: readonly { path: string; repo
     if (inputs === null) continue;
     for (const copy of copies) {
       const ready = readReady(copy.dir);
-      if (!copy.retired && copy.repo === checkout.repo && ready !== null && matchesInputs(copy.dir, ready, inputs)) users.get(copy.key)!.add(checkout.path);
+      if (!copy.retired && copy.repo === checkout.repo && (ready !== null ? matchesInputs(copy.dir, ready, inputs) :
+        [inputs.digest, digestPair(inputs.lock, inputs.manifest)].includes(copy.lock))) users.get(copy.key)!.add(checkout.path);
     }
   }
   return copies.map(one => ({ ...one, checkouts: [...users.get(one.key)!].sort() }));
@@ -381,18 +396,62 @@ export function removeShared(path: string): boolean {
 
 /**
  * The daily sweep: remove each copy no checkout uses and none has linked for `unusedMs` (a week), and old debris.
- * Right before a copy goes, who uses it and when it was last linked are read again; a copy a checkout picked up in
- * between stays.
+ * Right before a copy goes, who uses it, when it was last linked and whether live work uses it (`spare`,
+ * storage-sweep.ts) are read again; a copy a checkout picked up in between stays. Removal never holds the event loop.
  */
-export function pruneUnusedShared(root: string, checkouts: () => readonly { path: string; repo: string }[], now: Date, unusedMs = SHARED_UNUSED_MS): { removed: SharedUse[]; failed: string[] } {
+export async function pruneUnusedShared(root: string, checkouts: () => readonly { path: string; repo: string }[], now: Date, unusedMs = SHARED_UNUSED_MS, options: {
+  spare?: (path: string) => boolean;
+  /** Deterministic race/failure seams; never supplied by the worker. */
+  quarantined?: (original: string, trash: string) => void | Promise<void>;
+  remove?: (path: string) => Promise<void>;
+} = {}): Promise<{ removed: SharedUse[]; failed: string[] }> {
   const stale = (one: SharedUse) => one.checkouts.length === 0 && now.getTime() - Date.parse(one.usedAt) > unusedMs;
   const removed: SharedUse[] = [];
   const failed: string[] = [];
-  for (const one of sharedUse(root, checkouts()).filter(stale)) {
-    const fresh = sharedUse(root, checkouts()).find(other => other.key === one.key);
-    if (fresh === undefined || !stale(fresh)) continue;
-    if (removeShared(fresh.dir)) removed.push(fresh); else failed.push(fresh.dir);
+  const finish = async (trash: Quarantine<SharedUse | null>) => {
+    try {
+      await options.quarantined?.(trash.original, trash.path);
+      let used = options.spare?.(trash.original) === true || options.spare?.(trash.path) === true;
+      const copy = trash.journal.data;
+      if (copy !== null) {
+        let usedAt = copy.usedAt;
+        try { usedAt = statSync(join(trash.path, READY)).mtime.toISOString(); } catch { /* partially deleted trash */ }
+        const fresh = useCopies(root, [{ ...copy, dir: trash.path, usedAt }], checkouts())[0]!;
+        used ||= !stale(fresh);
+      }
+      if (used) {
+        if (!restoreQuarantine(trash)) failed.push(trash.original);
+        return;
+      }
+      await deleteQuarantine(trash, options.remove ?? removeSharedLater);
+      if (copy !== null) removed.push(copy);
+    } catch { failed.push(trash.original); }
+    finally { releaseQuarantine(trash); }
+  };
+  for (const entry of quarantineEntries<SharedUse | null>(root)) {
+    const claimed = claimQuarantine(entry);
+    if (claimed !== null) await finish(claimed);
   }
-  for (const debris of sharedDebris(root, now)) if (!removeShared(debris)) failed.push(debris);
+  for (const one of sharedUse(root, checkouts()).filter(stale)) {
+    await nextTurn();
+    const fresh = sharedUse(root, checkouts()).find(other => other.key === one.key);
+    if (fresh === undefined || !stale(fresh) || options.spare?.(fresh.dir) === true) continue;
+    try { const trash = quarantine<SharedUse | null>(fresh.dir, fresh); if (trash !== null) await finish(trash); }
+    catch { failed.push(fresh.dir); }
+  }
+  for (const debris of sharedDebris(root, now)) {
+    await nextTurn();
+    if (options.spare?.(debris) === true) continue;
+    try { const trash = quarantine<SharedUse | null>(debris, null); if (trash !== null) await finish(trash); }
+    catch { failed.push(debris); }
+  }
   return { removed, failed };
+}
+
+const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+
+/** removeShared without holding the event loop: chmod and rm run off it. */
+async function removeSharedLater(path: string): Promise<void> {
+  if (process.platform !== "win32") await new Promise<void>(resolve => execFile("chmod", ["-R", "u+w", path], { timeout: 120_000 }, () => resolve()));
+  await rm(path, { recursive: true, force: true });
 }

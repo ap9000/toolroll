@@ -21,7 +21,9 @@ import { run as execRun } from "../exec.js";
 import { computeGaps } from "../gaps.js";
 import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
-import { readLiveWindow } from "../live.js";
+import { agentRowOf,agentsBoardOf,agentFactsFor,sealedDiffOf } from "../agents-board.js";
+import { markAgentSeen } from "../agent-board.js";
+import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
 import { readMonitoring } from "../monitoring-settings.js";
 import { targetOf } from "../monitoring.js";
@@ -407,51 +409,65 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     );
   }
 
-  // The multiplexer in the console (peek): one pane per live run the
-  // ceiling admits, each fed by the run page's own transcript poller
-  // (the byte-offset JSON protocol — text into textContent, never
-  // markup). The pane SET is re-checked on a slow cadence; when it
-  // changes the page reloads rather than swapping pollers mid-flight.
+  // Peek became the Agents board: one place to check on every running agent (agents-board.ts).
   async function peekPage(ctx: HandlerContext): Promise<void> {
-    const { url, response, project } = ctx;
-    const live = store.liveRuns(clock()).filter(run => runVisible(run));
-    if (url.searchParams.get("fragment") === "1") {
-      return respond(response, 200, "application/json", JSON.stringify({ runs: live.map(run => run.id) }));
-    }
+    return redirect(ctx.response, "/agents");
+  }
+
+  /** What the board says after a Reply or a steer, in fixed words (never text from the address). */
+  const AGENT_SAID: Record<string, { tone: "info" | "error"; text: string }> = {
+    replied: { tone: "info", text: "Reply sent. The agent reads it at its next check." },
+    steered: { tone: "info", text: "Note sent. The agent reads it at its next check." },
+    "reply-closed": { tone: "error", text: "That question was already answered." },
+    "reply-stale": { tone: "error", text: "This attempt ended before your reply, so nothing was sent." },
+    "reply-invalid": { tone: "error", text: "Write a reply of up to 1,500 characters." },
+  };
+
+  // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
+  async function agentsPage(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, project } = ctx;
     const now = clock();
-    const panes = live.map(run => {
-      const window = options.localRunner === undefined ? null : readLiveWindow(evidenceRoot, run.id, 0);
-      const tail = window !== null && window.ok ? window.text.split("\n").filter(one => one !== "").slice(-40).join("\n") : "";
-      const stage = run.phase !== null ? run.phase.replace(/-/g, " ") : run.providerStartedAt === null ? "preparing workspace" : "the agent is working";
-      return joinHtml([
-        html`<section class="card peek-pane" data-run="${run.id}">`,
-        html`<p class="row"><a href="/r/${run.id}" class="mono">#${run.id}</a> <a href="${taskHref(run.taskId)}"><strong>${run.title}</strong></a>${projectChip(run.repo)} <span class="right meta mono">${run.runner} \u00b7 ${run.role} \u00b7 ${stage} \u00b7 ${relativeAge(run.startedAt, now)}</span></p>`,
-        options.localRunner === undefined
-          ? html`<p class="meta">The transcript is readable on the machine that runs the worker \u2014 start the console there with <code>toolroll up</code></p>`
-          : html`<pre class="recap plan-doc live-pane" id="live-transcript-${run.id}" data-initial-offset="0">${tail}</pre><p class="meta" id="live-transcript-${run.id}-state"></p>`,
-        html`</section>`,
-      ], "\n");
-    });
-    const script =
-      (options.localRunner === undefined ? "" : live.map(run => transcriptScript(`/r/${run.id}`, `live-transcript-${run.id}`)).join("")) +
-      `(function(){var seen=${JSON.stringify(live.map(run => run.id))};function check(){if(document.hidden){setTimeout(check,12000);return;}` +
-      `fetch("/peek?fragment=1",{redirect:"manual",cache:"no-store"}).then(function(r){return r.ok?r.json():null;})` +
-      `.then(function(d){if(d&&Array.isArray(d.runs)&&JSON.stringify(d.runs)!==JSON.stringify(seen)){location.reload();return;}setTimeout(check,12000);})` +
-      `.catch(function(){setTimeout(check,12000);});}setTimeout(check,12000);})();`;
-    return sendScreen(
-      response,
-      200,
-      screen(
-        "peek",
-        joinHtml([
-          html`<h1>Peek</h1>`,
-          panes.length === 0
-            ? html`<p class="meta">No agent is working right now \u2014 this page follows them the moment one starts</p>`
-            : joinHtml(panes, "\n"),
-        ], "\n"),
-        { chrome: chromeFor(project, "runs"), functional: { script, fetches: true } },
-      ),
-    );
+    const access = workAccess();
+    const asked = url.searchParams.get("run");
+    let selected: BrowserAgentDetail | null = null;
+    if (asked !== null && /^[1-9][0-9]{0,9}$/.test(asked)) {
+      const run = store.getRun(Number(asked));
+      const facts = run === null || !runVisible(run) ? null : agentFactsFor(store, run.id, access, who.name);
+      if (facts !== null) {
+        // Opening a finished agent is viewing it: it leaves this person's unread Done.
+        if (facts.outcome !== null && markAgentSeen(store, who.name, facts.runId, now)) facts.seen = true;
+        const live = facts.outcome === null;
+        const sealed = live ? null : sealedDiffOf(store, evidenceRoot, facts.runId);
+        // A reply's own word first; otherwise the note that the agent asked past the questions cap.
+        const said = AGENT_SAID[url.searchParams.get("said") ?? ""] ?? (facts.questionNote === null ? null : { tone: "info" as const, text: facts.questionNote });
+        selected = {
+          ...agentRowOf(store, facts, now, evidenceRoot), live,
+          question: live && facts.question !== null ? { ...facts.question, action: `${taskHref(facts.taskId)}/reply` } : null,
+          transcript: options.localRunner === undefined ? null : `/r/${facts.runId}?fragment=transcript`,
+          // The live look at its checkout needs this machine's runner and pool, as the run page's does.
+          peek: live && options.localRunner !== undefined && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
+          files: (sealed?.files ?? []).slice(0, 30).map(one => ({ path: one.path, added: one.additions, removed: one.deletions })),
+          filesMore: Math.max(0, (sealed?.fileCount ?? 0) - 30),
+          steer: live ? { action: `${taskHref(facts.taskId)}/steer`, run: facts.runId } : null,
+          canAct: who.role === "approver" && !store.isDemo(),
+          taskHref: taskHref(facts.taskId),
+          // The run's own address: a finished result opens on its result page, anything else on its record.
+          resultHref: live ? null : `/r/${facts.runId}`,
+          room: `agent:${facts.runId}`, said,
+        };
+      }
+    }
+    const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
+    const view: BrowserAgentsView = { kind: "agents", groups, selected,
+      empty: groups.length === 0 ? "No agents in the last day. They show here the moment one starts." : null };
+    const fallback = joinHtml([
+      html`<h1>Agents</h1>`,
+      groups.length === 0 ? html`<p class="meta">${view.empty ?? ""}</p>` : joinHtml(groups.map(group => joinHtml([
+        html`<h2>${group.label}</h2>`,
+        ...group.rows.map(row => html`<p class="row"><a href="${row.href}"><strong>${row.title}</strong></a> <span class="meta">${[row.label, row.line].filter(Boolean).join(" \u00b7 ")}</span></p>`),
+      ], "\n")), "\n"),
+    ], "\n");
+    return sendScreen(response, 200, screen("Agents", fallback, { chrome: chromeFor(project, "runs"), workspace: { view } }));
   }
 
   async function fleetPage(ctx: HandlerContext): Promise<void> {
@@ -947,6 +963,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "activity": activityPage,
     "system": systemScreen,
     "peek": peekPage,
+    "agents": agentsPage,
     "fleet": fleetPage,
     "ledger.export": ledgerExport,
     "menu": menuPage,

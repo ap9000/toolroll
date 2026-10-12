@@ -203,6 +203,23 @@ describe("the invocation gateway", () => {
     expect(store.getRun(runId)?.providerStartedAt).not.toBeNull();
   });
 
+  test("a run whose cost could not be read is charged its dollar cap, said so; with no cap it is unmeasured, said so", async () => {
+    // What the Claude transport keeps when the main result was too large and its cost was out of reach.
+    const unknown = JSON.stringify({ type: "result", subtype: "standing-orders-stream-event-overflow", is_error: true, result: "too large", total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 1 }, standing_orders_cost_unknown: true });
+    const note = () => JSON.parse(String(store.handle.prepare("SELECT usage_json FROM run WHERE id = ?").get(runId)?.["usage_json"])) as Record<string, unknown>;
+    const capped = await invokeAgent(store, runId, CLAUDE, { ...ASK, maxBudgetUsd: 3 }, { runner: async () => ({ ...OK, code: 1, stdout: unknown }) });
+    expect(capped.kind).toBe("ran");
+    expect(store.getRun(runId)).toMatchObject({ costUsd: 3, tokensIn: 10 });
+    expect(note()).toEqual({ cost_note: "cost unknown, charged at the cap", usage: { input_tokens: 10, output_tokens: 1 } });
+
+    store.finishRun(runId, { outcome: "built", now: T0 });
+    store.createTask({ id: "t-uncapped", title: "u" }, T0);
+    runId = store.startRun({ taskRef: claimTask(store, "t-uncapped", "lease-u"), leaseId: "lease-u", runner: RUNNER, branch: "u", worktree: "/w/u", ...bareLegacy("build", "claude", null), now: T0 });
+    await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => ({ ...OK, code: 1, stdout: unknown }) });
+    expect(store.getRun(runId)?.costUsd).toBeNull();
+    expect(note()["cost_note"]).toBe("cost unknown, no dollar cap applied: unmeasured");
+  });
+
   test("negative or non-numeric usage is a lie, not a measurement", async () => {
     await invokeRan(store, runId, CLAUDE, ASK, {
       runner: async () => ({
@@ -334,6 +351,65 @@ describe("the invocation gateway", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    "apiKeyHelper", "forceLoginMethod", "env.ANTHROPIC_API_KEY", "env.ANTHROPIC_BASE_URL", "env.ANTHROPIC_AUTH_TOKEN",
+    "env.CLAUDE_CODE_USE_BEDROCK", "env.CLAUDE_CODE_SKIP_BEDROCK_AUTH", "env.ANTHROPIC_BEDROCK_BASE_URL",
+    "env.AWS_ACCESS_KEY_ID", "env.AWS_SECRET_ACCESS_KEY", "env.AWS_SESSION_TOKEN", "env.AWS_PROFILE",
+    "env.AWS_REGION", "env.AWS_DEFAULT_REGION", "env.AWS_BEARER_TOKEN_BEDROCK", "env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+    "env.CLAUDE_CODE_USE_VERTEX", "env.CLAUDE_CODE_SKIP_VERTEX_AUTH", "env.ANTHROPIC_VERTEX_BASE_URL",
+    "env.ANTHROPIC_VERTEX_PROJECT_ID", "env.CLOUD_ML_REGION", "env.GOOGLE_APPLICATION_CREDENTIALS", "env.GOOGLE_CLOUD_PROJECT",
+  ])("Claude settings-dependent auth refuses %s without spawning or exposing values", async key => {
+    const home = mkdtempSync(join(tmpdir(), "so-claude-settings-"));
+    const secret = ["sk", "ant", "test", "x".repeat(30)].join("-");
+    const path = join(home, ".claude", "settings.json");
+    mkdirSync(dirname(path));
+    const settings = JSON.stringify(key.startsWith("env.") ? { env: { [key.slice(4)]: secret } } : { [key]: secret });
+    writeFileSync(path, settings);
+    let spawned = 0;
+    try {
+      for (const phase of ["plan", "build", "repair"] as const) {
+        const result = await invokeAgent(store, runId, CLAUDE, { ...ASK, phase }, { keyHome: home, runner: async () => { spawned++; return OK; } });
+        expect(result).toMatchObject({ kind: "refused", reason: "auth-mode", diagnostic: expect.stringContaining(key) });
+        expect(JSON.stringify(result)).not.toContain(secret);
+        expect(JSON.stringify(store.getRun(runId))).not.toContain(secret);
+        if (result.kind === "refused") expect(result.diagnostic).toContain("Isolated builds do not load that file");
+      }
+      expect(spawned).toBe(0);
+      expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+      expect(readFileSync(path, "utf8")).toBe(settings);
+      // Review keeps its previous launch path even with settings-based auth.
+      expect((await invokeAgent(store, runId, CLAUDE, { ...ASK, phase: "review" }, { keyHome: home, runner: async () => { spawned++; return OK; } })).kind).toBe("ran");
+      expect(spawned).toBe(1);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("Claude auth preflight handles missing, unrelated, malformed and unreadable settings without leaking their contents", async () => {
+    const home = mkdtempSync(join(tmpdir(), "so-claude-settings-"));
+    const path = join(home, ".claude", "settings.json");
+    mkdirSync(dirname(path));
+    const secret = ["sk", "ant", "test", "y".repeat(30)].join("-");
+    let spawned = 0;
+    const invoke = () => invokeAgent(store, runId, CLAUDE, ASK, { keyHome: home, runner: async () => { spawned++; return OK; } });
+    try {
+      for (const malformed of [`{"apiKeyHelper":"${secret}`, "null", "[]"]) {
+        writeFileSync(path, malformed);
+        const result = await invoke();
+        expect(result).toMatchObject({ kind: "refused", reason: "auth-mode", diagnostic: expect.stringContaining("settings.json") });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      }
+      rmSync(path);
+      mkdirSync(path); // A deterministic read failure, even when tests run as root.
+      expect(await invoke()).toMatchObject({ kind: "refused", diagnostic: expect.stringContaining("Can't read") });
+      expect(spawned).toBe(0);
+      expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+      rmSync(path, { recursive: true });
+      expect((await invoke()).kind).toBe("ran");
+      writeFileSync(path, JSON.stringify({ hooks: {}, theme: "dark", env: { EDITOR: "vim", [secret]: secret } }));
+      expect((await invoke()).kind).toBe("ran");
+      expect(spawned).toBe(2);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   test("the spawn leg refuses after a takeover between acquire and invoke — the lease is no longer current (runner-custody)", async () => {

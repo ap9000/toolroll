@@ -208,7 +208,8 @@ get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system");
 get("tasks", "tasks", "/tasks", { limited: "collection" });
 get("tasks", "queue", "/queue");
-get("pages", "peek", "/peek");
+get("pages", "peek", "/peek", free);
+get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
@@ -398,6 +399,7 @@ post("tasks", "task.act.plan-edit", `^\\/t\\/${TASK}\\/plan-edit$`, { project: "
 post("tasks", "task.act.next", `^\\/t\\/${TASK}\\/next$`, { project: "task", limited: "resource", sample: "/t/one/next" });
 post("tasks", "task.act.reopen", `^\\/t\\/${TASK}\\/reopen$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/reopen" });
 post("tasks", "task.act.steer", `^\\/t\\/${TASK}\\/steer$`, { project: "task", limited: "resource", sample: "/t/one/steer" });
+post("tasks", "task.act.reply", `^\\/t\\/${TASK}\\/reply$`, { project: "task", limited: "resource", sample: "/t/one/reply" });
 post("tasks", "task.act.accept-proof", `^\\/t\\/${TASK}\\/accept-proof$`, { project: "task", limited: "resource", sample: "/t/one/accept-proof" });
 post("tasks", "task.act.accept-revision", `^\\/t\\/${TASK}\\/accept-revision$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/accept-revision" });
 post("tasks", "task.act.reject-revision", `^\\/t\\/${TASK}\\/reject-revision$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/reject-revision" });
@@ -407,6 +409,7 @@ post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "ta
 post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
 post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped", ...approver("Only an approver can confirm a build stopped.") });
 post("tasks", "task.act.stop", `^\\/t\\/${TASK}\\/stop$`, { project: "task", limited: "resource", sample: "/t/one/stop" });
+post("tasks", "task.act.pause", `^\\/t\\/${TASK}\\/pause$`, { project: "task", limited: "resource", sample: "/t/one/pause" });
 post("tasks", "task.act.resume-arm", `^\\/t\\/${TASK}\\/resume-arm$`, { project: "task", limited: "resource", sample: "/t/one/resume-arm" });
 post("tasks", "task.act.resume", `^\\/t\\/${TASK}\\/resume$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/resume" });
 for (const one of ["block", "unblock", "repair-dependency", "follow-up"]) post("tasks", `task.act.${one}`, `^\\/t\\/${TASK}\\/${one}$`, { project: "task", sample: `/t/one/${one}` });

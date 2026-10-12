@@ -18,8 +18,10 @@ import { evidencePack, exportDay, ledgerExportChunks, standaloneEvidenceHtml, ty
 import { matchesOutsideCheckpoint } from "./ledger-chain.js";
 import { CLEANUP_CHOICES, bytesWords, cleanupWords, diskBytes, parseCleanup, storageReport } from "./storage.js";
 import { removeStaleTestTemp, tempRoots, testTempFolders } from "./test-temp.js";
+import { storageSweepSupervisor } from "./storage-sweep-process.js";
 import { dailyStorageSweep, lastSweep, nextSweepAt, saveSweep, storageSweepOff as storageSweepOffNow, sweepDetails, sweepWords as storageSweepWords, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { removeShared, sharedDepsRoot, sharedUse, unusedShared, type SharedUse } from "./shared-deps.js";
+import { cleanLandedBacklog, gitOf, landedBacklog, reconcileLanded, BACKLOG_DAYS, type LandedPlan, type LandedStep } from "./landed-cleanup.js";
 import { checkoutPlan, cleanCheckouts, discardCheckout, finishedCheckouts, slimKeptCheckouts, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { closeOutCheckouts, closeOutRuns, stoppedWords } from "./run-closeout.js";
 import { MIN_DAYS, RETENTION_KINDS, countWords, dailyRetention, isRetentionKind, lastSweepAt, parsePeriod, periodLabel, periodWords, retentionPlan, sweepWords, type RetentionKind, type RetentionSweep } from "./retention.js";
@@ -418,6 +420,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll task evidence <id>        the task's evidence pack as JSON (--html for a printable page; --out <file>)
   toolroll storage                   where the disk goes: database, build checkouts, releases, evidence, leftover test temp folders
   toolroll storage clean [--yes]     preview removing finished tasks' clean checkouts (their branches stay) and test temp folders older than a day; --yes removes them
+  toolroll storage clean --landed [--yes]   preview work that landed in main over a week ago: marks its results complete, removes their clean checkouts and local branches; --yes does it (instance operator)
   toolroll storage cleanup <when>    remove a finished task's clean checkout: finished|2d|7d|never (instance operator)
   toolroll storage discard <path> --yes   throw away a checkout kept for its changes; its branch stays
   toolroll integrations [--json]     which integrations work: Connected, Not set up or Broken, and what to do (--saved: no new checks)
@@ -473,9 +476,17 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         back in filing order
   toolroll task steer <id> --note "..."
                                         guidance for the agent — a running
-                                        build reads it when it next checks
-                                        for notes, otherwise the next
-                                        attempt does
+                                        Claude build gets it in seconds,
+                                        another running build reads it when
+                                        it next checks for notes, otherwise
+                                        the next attempt does; --now pauses
+                                        the running Claude build first
+  toolroll task pause <id> [--run <id>] stop a running Claude build's
+                                        current turn and keep the build; the
+                                        next note continues it (Stop ends it)
+  toolroll task continue <id> [--run <id>]
+                                        resume a paused Claude build where it
+                                        stopped, without a note
   toolroll task assign <id> --runner <name> | --anyone
                                         reserve it for one worker (it joins
                                         the back of that worker's queue) or
@@ -774,7 +785,7 @@ type Args = {
  * (surface.ts) is tested for exact equality against them.
  */
 export const TASK_ACTIONS = [
-  "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "assign",
+  "add", "list", "show", "wait", "state", "block", "unblock", "next", "steer", "pause", "continue", "assign",
   "reopen", "scope", "approve", "hold", "unhold", "require", "requeue", "regate", "plan",
   "review", "accept", "repair", "route", "stop", "resume", "complete", "revise", "merge", "ask",
   "checks", "add-tests",
@@ -828,6 +839,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "access", "projects", "overlap",
   // audit: a token by name where --token is a credential (remote).
   "token-name",
+  // task pause / task steer --now: the asker's own request id, so a repeat is the same request.
+  "request",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
@@ -841,6 +854,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "saved",
   // task complete: also open the result's pull request.
   "pull-request",
+  // storage clean --landed: work already in main.
+  "landed",
   // up: the exact start-up details (containment) in the terminal too.
   "verbose",
   // lead token: end the lead's credential.
@@ -851,6 +866,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "also",
   // tokens: the person's password, piped (never an argument).
   "password-stdin",
+  // task steer: pause the running Claude build, then send the note.
+  "now",
 ]);
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
@@ -1207,6 +1224,7 @@ type Context = {
   databaseFile: string;
   /** Where `storage` looks for leftover test temp folders; default the temp folder and /tmp. */
   tempRoots?: readonly string[];
+  sweepOwner?: object;
   telegramTokenFile: string;
   agentRunner?: CommandRunner;
   gitRunner?: CommandRunner;
@@ -2056,9 +2074,9 @@ async function runnerCommand(
     if (name === undefined || given === undefined || positional.length > 3) {
       return fail(write, json, "runner capacity", "usage", "`runner capacity <name> <n> --as <you> --token <t>`", EXIT.usage);
     }
-    const capacity = parseRunnerCapacity(given);
+    const capacity = parseRunnerCapacity(given, { allowZero: true });
     if (capacity === null) {
-      return fail(write, json, "runner capacity", "usage", `capacity is a whole number of tasks, 1 to ${RUNNER_CAPACITY_MAX}`, EXIT.usage);
+      return fail(write, json, "runner capacity", "usage", `capacity is a whole number of tasks, 0 to ${RUNNER_CAPACITY_MAX}; 0 stops new builds`, EXIT.usage);
     }
     const acting = await askCredentials(flags, context);
     const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
@@ -2070,6 +2088,12 @@ async function runnerCommand(
       return fail(write, json, "runner capacity", changed.reason, changed.reason === "retired" ? `${name} is retired` : `no runner \`${name}\``, EXIT.refused);
     }
     const running = store.liveClaimCount(name, now);
+    if (changed.after === 0) {
+      return succeed(write, json, "runner capacity", { name, before: changed.before, after: changed.after, running }, () => [
+        `${name} takes no new builds. ${running === 0 ? "Nothing is running." : `${running} running task(s) will finish.`}`,
+        `Resume with: toolroll runner capacity ${name} <1-${RUNNER_CAPACITY_MAX}>`,
+      ]);
+    }
     return succeed(write, json, "runner capacity", { name, before: changed.before, after: changed.after, running }, () => [
       changed.before === changed.after
         ? `${name} already runs up to ${changed.after} at once.`
@@ -3856,6 +3880,12 @@ async function reconcileCommand(
     });
   }
 
+  // Landed work (landed-cleanup.ts): finish teardowns a crash cut short, then mark newly landed results complete (a
+  // ledger entry says why) and remove their clean checkouts and local build and plan branches.
+  let landed: Awaited<ReturnType<typeof reconcileLanded>> = { completed: [], steps: [] };
+  try { landed = await reconcileLanded(store, worktrees, gitOf(context.gitRunner), repo, context.evidenceRoot, clock); } catch { /* the next pass tries again */ }
+  const landedGone = landed.steps.filter(one => one.outcome === "removed");
+
   // Checkout cleanup (Settings → Storage): finished work's clean checkouts go as the setting says (by default when
   // the task is complete or cancelled); their branches stay. Each removal is in the ledger.
   // Completing or cancelling a task stops anything still running from its checkout first.
@@ -3871,9 +3901,10 @@ async function reconcileCommand(
 
   // The daily storage sweep (storage-sweep.ts): stale test temp folders, orphans Toolroll left running, finished
   // checkouts, extra staged runtimes and dependency installs unused for a week; saved for Settings → Storage.
+  // Launch only: report a result here only if it already completed. Later results save independently.
   let storageSwept: SweepRecord | null = null;
   try {
-    storageSwept = await dailyStorageSweep(store, { databaseFile: context.databaseFile, pool: worktrees, tempRoots: context.tempRoots ?? tempRoots() }, clock);
+    storageSwept = dailyStorageSweep(store, { databaseFile: context.databaseFile, pool: worktrees, tempRoots: context.tempRoots ?? tempRoots(), ...(context.sweepOwner === undefined ? {} : { owner: context.sweepOwner }) }, clock);
   } catch { storageSwept = null; /* the next pass tries again */ }
   const swept = storageSwept === null ? [] : storageSwept.parts.filter(one => one.count > 0);
 
@@ -3888,6 +3919,8 @@ async function reconcileCommand(
     closedRuns.length === 0 &&
     closedCheckouts.length === 0 &&
     slimmed.slimmed.length === 0 &&
+    landed.completed.length === 0 &&
+    landedGone.length === 0 &&
     liveSwept.removed.length === 0;
 
   return succeed(
@@ -3903,6 +3936,7 @@ async function reconcileCommand(
       checkoutsKept: pruned.kept,
       processesStopped: [...closedRuns.map(one => ({ run: one.runId, pids: one.done.stopped.map(row => row.pid) })), ...closedCheckouts.map(one => ({ checkout: one.path, pids: one.done.stopped.map(row => row.pid) }))],
       checkoutsSlimmed: slimmed.slimmed.map(one => one.path),
+      landed: { completed: landed.completed, steps: landed.steps },
       liveViewsSwept: liveSwept.removed.length,
       retention: retention === null ? null : { counts: retention.counts, freedBytes: retention.freed },
       storageSweep: storageSwept,
@@ -3921,6 +3955,8 @@ async function reconcileCommand(
             ...(pruned.removed.length === 0 ? [] : [`Removed ${pruned.removed.length} finished task checkout(s), about ${bytesWords(pruned.freed)}; their branches stay.`]),
             ...closedRuns.map(one => `Run #${one.runId} ended; stopped ${stoppedWords(one.done)}.`),
             ...closedCheckouts.map(one => `${one.path}: its task finished; stopped ${stoppedWords(one.done)}.`),
+            ...(landed.completed.length === 0 ? [] : [`Marked ${landed.completed.length} landed result(s) complete: ${landed.completed.join(", ")}.`]),
+            ...(landedGone.length === 0 ? [] : [`Removed landed work: ${landedGone.filter(one => one.kind === "checkout").length} checkout(s), ${landedGone.filter(one => one.kind === "branch").length} local branch(es).`]),
             ...(slimmed.slimmed.length === 0 ? [] : [`Dropped dependencies and build output from ${slimmed.slimmed.length} kept checkout(s), about ${bytesWords(slimmed.slimmed.reduce((sum, one) => sum + one.bytes, 0))}.`]),
             ...(liveSwept.removed.length === 0 ? [] : [`Cleared ${liveSwept.removed.length} finished live view(s).`]),
             ...(retention === null || retained.length === 0 ? [] : [`Retention removed ${sweepWords(retention.counts, retention.freed)}.`]),
@@ -4929,10 +4965,12 @@ async function providersCommand(
       `  isolation      ${
         audit.isolation.flag === null
           ? "no hermetic flag"
-          : `${audit.isolation.flag} exists, not passed${audit.isolation.resumeSafe === false ? " — it would break session resume" : audit.isolation.resumeSafe === null ? " — its effect on resume is unvalidated" : ""}`
+          : audit.isolation.enforced
+            ? `builds run in their own setup (${audit.isolation.flag}) — none of your own hooks, plugins or MCP servers; reviews keep theirs`
+            : `${audit.isolation.flag} exists, not passed${audit.isolation.resumeSafe === false ? " — it would break session resume" : audit.isolation.resumeSafe === null ? " — its effect on resume is unvalidated" : ""}`
       }`,
     );
-    write(`  config surface ${audit.configSurface.join("; ")}`);
+    write(`  ${audit.isolation.enforced ? "builds get    " : "config surface"} ${audit.configSurface.join("; ")}`);
     write("");
   }
   write("  \u2192 toolroll config show    which provider each phase actually resolves to");
@@ -6928,8 +6966,10 @@ async function runWatchLoop(args: {
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   // Reconciliation has its own cadence and sink. Sharing tick's sink would
   // interleave envelopes while a build awaits its provider or project check.
+  const sweepOwner = {};
   const maintenance = startMaintenance({
     intervalMs: reconcileEveryMs,
+    onStop: () => storageSweepSupervisor(context.databaseFile).stop(sweepOwner),
     shouldStop: stopping,
     onError: error => {
       reconciliationReady = false;
@@ -6939,7 +6979,7 @@ async function runWatchLoop(args: {
     },
     run: async () => {
       const maintenanceLines: string[] = [];
-      const maintenanceContext: Context = { ...quietContext, write: line => maintenanceLines.push(line) };
+      const maintenanceContext: Context = { ...quietContext, sweepOwner, write: line => maintenanceLines.push(line) };
       const code = await reconcileCommand(passFlags(), maintenanceContext);
       if (code !== EXIT.ok) throw new Error(maintenanceLines.join(" "));
       if (reconciliationFailure !== null) progress("watch: reconciliation recovered — new work may resume");
@@ -9436,7 +9476,7 @@ function taskCommand(
 }
 
 /** Task verbs that are the lead working on a task, not reading it. */
-const LEAD_WORK_VERBS: ReadonlySet<string> = new Set(["state", "steer", "reopen", "requeue", "regate", "repair", "resume", "stop", "scope", "approve", "plan", "checks", "revise", "hold", "unhold", "route", "require"]);
+const LEAD_WORK_VERBS: ReadonlySet<string> = new Set(["state", "steer", "pause", "continue", "reopen", "requeue", "regate", "repair", "resume", "stop", "scope", "approve", "plan", "checks", "revise", "hold", "unhold", "route", "require"]);
 
 function taskAction(
   action: string,
@@ -9482,6 +9522,10 @@ function taskAction(
       return nextTask(rest, flags, context);
     case "steer":
       return steerTask(rest, flags, context);
+    case "pause":
+      return pauseTask(rest, flags, context);
+    case "continue":
+      return continueTask(rest, flags, context);
     case "assign":
       return assignTask(rest, flags, context);
     case "reopen":
@@ -10483,6 +10527,8 @@ async function steerTask(
   if (!authed.ok) {
     return fail(write, json, "task steer", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
   }
+  // --now: Pause and steer — the running Claude build's turn stops, then this note continues it.
+  if (flags.get("now") === true) return pauseRunningBuild("task steer", id, note, verifiedAuthor(acting.name), flags, context);
   const filed = store.fileSteerNote(id, verifiedAuthor(acting.name), note, context.now, mutationFrom(flags, context.now));
   if (!filed.ok) {
     const detail =
@@ -10495,8 +10541,92 @@ async function steerTask(
   }
   const steered = store.lookupRef(id);
   const live = steered !== null && store.steeringLiveBuild(steered.id, context.now) !== null;
+  const liveInput = steered !== null && store.liveInputRun(steered.id, context.now) !== null;
   return succeed(write, json, "task steer", { task: id, note: filed.id, standing: live ? "waiting" : "next-attempt" }, () => [
-    `Noted. ${steerDestinationWords(live)} \`task show ${id}\` says when it has been read.`,
+    `Noted. ${steerDestinationWords(live, liveInput)} \`task show ${id}\` says when it has been read.`,
+  ]);
+}
+
+/**
+ * `toolroll task pause <id> [--run <n>] --as <you> --token <t>` (live steering): stop a running Claude build's
+ * current turn and keep the build — its session waits for the next note. Never a stop: nothing ends, holds or
+ * reclaims the attempt. Bound to the exact run (--run, or the one taking live input now); a repeated --request id
+ * is the same request.
+ */
+async function pauseTask(
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  const { store, write, json } = context;
+  const id = positional[0];
+  if (id === undefined) return fail(write, json, "task pause", "usage", "`toolroll task pause <id> [--run <run-id>] --as <you> --token <t>`", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, "task pause", "usage", "pausing takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", EXIT.usage);
+  const authed = authenticateApprover(store, acting.name, acting.token);
+  if (!authed.ok) return fail(write, json, "task pause", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
+  return pauseRunningBuild("task pause", id, undefined, verifiedAuthor(acting.name), flags, context);
+}
+
+/**
+ * `toolroll task continue <id> [--run <n>] --as <you> --token <t>` (live steering): Resume a paused Claude build with a
+ * short continue frame and no note. Bound to the exact run (--run, or the one taking live input now), and only while it
+ * is paused; a repeated --request id is the same request.
+ */
+async function continueTask(
+  positional: readonly string[],
+  flags: Map<string, string | true>,
+  context: Context,
+): Promise<number> {
+  const { store, write, json } = context;
+  const id = positional[0];
+  if (id === undefined) return fail(write, json, "task continue", "usage", "`toolroll task continue <id> [--run <run-id>] --as <you> --token <t>`", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, "task continue", "usage", "resuming takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", EXIT.usage);
+  const authed = authenticateApprover(store, acting.name, acting.token);
+  if (!authed.ok) return fail(write, json, "task continue", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
+  const ref = store.lookupRef(id);
+  if (ref === null || store.getTask(id) === null) return fail(write, json, "task continue", "unknown-task", `no task \`${id}\``, EXIT.refused);
+  const runText = text(flags, "run");
+  const named = runText === undefined ? store.liveInputRun(ref.id, context.now) : Number(runText);
+  if (named === null) return fail(write, json, "task continue", "not-live", `${id} has no running Claude build to resume`, EXIT.refused);
+  if (!Number.isInteger(named) || named < 1) return fail(write, json, "task continue", "usage", "--run names one exact attempt by its number", EXIT.usage);
+  const requestId = text(flags, "request") ?? text(flags, "key") ?? `cli-${randomUUID()}`;
+  const asked = store.requestResume({ taskId: id, runId: named, by: verifiedAuthor(acting.name), via: "cli", requestId }, context.now);
+  if (!asked.ok) return fail(write, json, "task continue", asked.reason, asked.detail, EXIT.refused, { run: named });
+  return succeed(write, json, "task continue", { task: id, run: named, resume: asked.resume, repeated: asked.duplicate }, () => [
+    asked.duplicate ? `Build #${named} of ${id} was already asked to resume with that request; nothing changed.`
+      : `Resuming build #${named} of ${id} where it stopped.`,
+  ]);
+}
+
+/** Pause, or Pause and steer, through the store's one action; the words both CLI doors print. */
+function pauseRunningBuild(
+  command: "task pause" | "task steer",
+  id: string,
+  note: string | undefined,
+  by: ReturnType<typeof verifiedAuthor>,
+  flags: Map<string, string | true>,
+  context: Context,
+): number {
+  const { store, write, json } = context;
+  const ref = store.lookupRef(id);
+  if (ref === null || store.getTask(id) === null) return fail(write, json, command, "unknown-task", `no task \`${id}\``, EXIT.refused);
+  const runText = text(flags, "run");
+  const named = runText === undefined ? store.liveInputRun(ref.id, context.now) : Number(runText);
+  if (named === null) {
+    return fail(write, json, command, "not-live", note === undefined
+      ? `${id} has no running Claude build to pause`
+      : `${id} has no running Claude build to pause; send the note without --now`, EXIT.refused);
+  }
+  if (!Number.isInteger(named) || named < 1) return fail(write, json, command, "usage", "--run names one exact attempt by its number", EXIT.usage);
+  const requestId = text(flags, "request") ?? text(flags, "key") ?? `cli-${randomUUID()}`;
+  const asked = store.requestPause({ taskId: id, runId: named, by, via: "cli", requestId, ...(note === undefined ? {} : { note }) }, context.now);
+  if (!asked.ok) return fail(write, json, command, asked.reason, asked.detail, EXIT.refused, { run: named });
+  return succeed(write, json, command, { task: id, run: named, pause: asked.pause, note: asked.note, repeated: asked.duplicate }, () => [
+    asked.duplicate ? `Build #${named} of ${id} was already asked to pause with that request; nothing changed.`
+      : note === undefined ? `Pausing build #${named} of ${id}. Its next note continues it; \`task stop\` ends it.`
+      : `Pausing build #${named} of ${id}, then sending your note. \`task show ${id}\` says when it has been read.`,
   ]);
 }
 
@@ -12064,7 +12194,7 @@ async function retentionCommand(positional: readonly string[], flags: Map<string
   return succeed(context.write, context.json, command, { periods }, () => [`${label(kind)}: kept ${days === null ? "forever" : `for ${periodWords(days)}`}.`]);
 }
 
-/** `storage`, `storage cleanup [<when>]`, `storage clean [--yes]`, `storage discard <path> --yes`: where the disk goes,
+/** `storage`, `storage cleanup [<when>]`, `storage clean [--landed] [--yes]`, `storage discard <path> --yes`: where the disk goes,
  * and task checkouts: when a finished task's clean checkout is removed, cleaning up now, and throwing away one kept for
  * its changes. Changing anything takes an instance operator. */
 async function storageCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
@@ -12072,7 +12202,7 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
   const command = `storage ${action ?? ""}`.trim();
   const store = context.store;
   const changes = (action === "cleanup" && rest.length > 0) || (action === "clean" && flags.has("yes")) || action === "discard";
-  const allowed = new Set([...(changes ? ["as", "token", "token-file", "token-env"] : []), ...(action === "clean" || action === "discard" ? ["yes"] : []), "db", "json"]);
+  const allowed = new Set([...(changes ? ["as", "token", "token-file", "token-env"] : []), ...(action === "clean" || action === "discard" ? ["yes"] : []), ...(action === "clean" ? ["landed"] : []), "db", "json"]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
   const pool = new WorktreePool(store, { root: join(dirname(context.databaseFile), "worktrees"), ...(context.gitRunner === undefined ? {} : { runner: context.gitRunner }) });
   const operator = async (): Promise<string | null> => {
@@ -12149,6 +12279,10 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
     const saved = store.setCheckoutCleanup(cleanup, actor, context.clock());
     return succeed(context.write, context.json, command, { cleanup: saved }, () => [`Saved. A finished task's clean checkout is removed ${cleanupWords(saved)}; its branch stays.`]);
   }
+  if (action === "clean" && flags.has("landed")) {
+    if (rest.length > 0 || flags.get("landed") !== true) return fail(context.write, context.json, "storage clean --landed", "usage", "Use storage clean --landed to preview, then storage clean --landed --yes.", EXIT.usage);
+    return landedCommand(flags.has("yes"), operator, refused, pool, context);
+  }
   if (action === "clean") {
     if (rest.length > 0) return fail(context.write, context.json, command, "usage", "Use storage clean to preview, then storage clean --yes.", EXIT.usage);
     if (!flags.has("yes")) {
@@ -12172,7 +12306,7 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
     if (actor === null) return refused("cleans up checkouts");
     const done = await cleanCheckouts(store, pool, context.clock, { manual: true, actor });
     const temp = leftovers(true);
-    const swept = removeStaleTestTemp(roots, context.clock());
+    const swept = await removeStaleTestTemp(roots, context.clock());
     if (swept.removed.length > 0) {
       store.recordAction({ at: context.clock().toISOString(), actor, repo: null, taskId: null, runId: null, action: "test temp folders removed", outcome: "removed", source: "request",
         detail: `${swept.removed.length} older than a day, about ${bytesWords(temp.staleBytes)}${swept.failed.length === 0 ? "" : `; ${swept.failed.length} couldn't be removed`}` });
@@ -12214,7 +12348,47 @@ async function storageCommand(positional: readonly string[], flags: Map<string, 
     if (!done.ok) return fail(context.write, context.json, command, "refused", done.message, EXIT.refused);
     return succeed(context.write, context.json, command, { discarded: target, freedBytes: done.bytes }, () => [`Discarded ${target}, about ${bytesWords(done.bytes)}; its branch stays.`]);
   }
-  return fail(context.write, context.json, command, "usage", "Use storage, storage cleanup <when>, storage clean [--yes] or storage discard <path> --yes.", EXIT.usage);
+  return fail(context.write, context.json, command, "usage", "Use storage, storage cleanup <when>, storage clean [--landed] [--yes] or storage discard <path> --yes.", EXIT.usage);
+}
+
+/** `storage clean --landed [--yes]`: the one-time pass over work that piled up before reconcile did this on its own.
+ * Results whose work landed at least a week ago are marked complete (a ledger entry says why) and their clean
+ * checkouts and local branches go; so do Toolroll's own branches no task uses whose work landed. A preview changes
+ * nothing; --yes takes an instance operator, records every teardown first, then carries it out. */
+async function landedCommand(yes: boolean, operator: () => Promise<string | null>, refused: (what: string) => number, pool: WorktreePool, context: Context): Promise<number> {
+  const command = "storage clean --landed";
+  const git = gitOf(context.gitRunner);
+  const plurals = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+  const keepLine = (one: { repo: string; what: string; why: string }) => `  ${projectName(one.repo)} ${one.what}: ${one.why}`;
+  const stepLine = (one: LandedStep) => `  ${projectName(one.repo)} ${one.target}${one.why === null ? "" : `: ${one.why}`}`;
+  const counts = (plan: LandedPlan) => ({
+    results: plan.results.length, complete: plan.results.filter(one => one.completes).length,
+    checkouts: plan.results.reduce((sum, one) => sum + one.targets.filter(target => target.kind === "checkout").length, 0) + plan.branches.filter(one => one.checkout !== null).length,
+    branches: plan.results.reduce((sum, one) => sum + one.targets.filter(target => target.kind === "branch").length, 0) + plan.branches.length,
+  });
+  if (!yes) {
+    const plan = await landedBacklog(context.store, git, context.evidenceRoot, context.clock());
+    const n = counts(plan);
+    const anything = n.results + plan.branches.length + plan.pending > 0;
+    return succeed(context.write, context.json, command, { preview: true, cutoff: plan.cutoff, results: plan.results, branches: plan.branches, kept: plan.kept, pending: plan.pending }, () => [
+      anything ? `Would mark ${plurals(n.complete, "landed result")} complete and remove ${plurals(n.checkouts, "checkout")} and ${plurals(n.branches, "local branch", "local branches")}.` : `Nothing landed more than ${BACKLOG_DAYS} days ago is left to clean up.`,
+      ...plan.results.map(one => `  ${projectName(one.repo)} ${one.taskId}: ${one.reason}${one.completes ? "" : " (already complete)"}`),
+      ...plan.branches.map(one => `  ${projectName(one.repo)} ${one.branch}: ${one.reason}`),
+      ...(plan.pending === 0 ? [] : [`${plurals(plan.pending, "item")} from an earlier clean-up will finish too.`]),
+      ...(plan.kept.length === 0 ? [] : [`Stays (${plan.kept.length}):`, ...plan.kept.map(keepLine)]),
+      anything ? "Nothing was changed. Run toolroll storage clean --landed --yes to do it." : "Nothing was changed.",
+    ]);
+  }
+  const actor = await operator();
+  if (actor === null) return refused("cleans up landed work");
+  const plan = await landedBacklog(context.store, git, context.evidenceRoot, context.clock());
+  const done = await cleanLandedBacklog(context.store, pool, git, context.evidenceRoot, context.clock, plan, actor);
+  const gone = done.steps.filter(one => one.outcome === "removed" || one.outcome === "already gone");
+  const stays = done.steps.filter(one => one.outcome === "waits" || one.outcome === "kept");
+  return succeed(context.write, context.json, command, { completed: done.completed, steps: done.steps, refused: done.refused, kept: plan.kept }, () => [
+    `Marked ${plurals(done.completed.length, "landed result")} complete. Removed ${plurals(gone.filter(one => one.kind === "checkout").length, "checkout")} and ${plurals(gone.filter(one => one.kind === "branch").length, "local branch", "local branches")}.`,
+    ...(stays.length + done.refused.length === 0 ? [] : [`Stays (${stays.length + done.refused.length}):`, ...stays.map(stepLine), ...done.refused.map(keepLine)]),
+  ]);
 }
 
 function checkoutSummary(plan: CheckoutPlan) {

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
@@ -798,5 +798,38 @@ describe("the pool, against real git", () => {
     expect((await pool.prune(store.listWorktrees(), () => true)).removed).toHaveLength(1);
     expect(await lateLease).toMatchObject({ ok: false, reason: "in-use" });
     expect(store.getWorktree(made.worktree.path)).toBeNull();
+  });
+
+  test("a lease in another process cannot win between the final database read and checkout removal", async () => {
+    store.close();
+    const database = join(base, "race.db");
+    store = openStore(database);
+    register(store, { name: "builder-1", host: "test", now: T0 });
+    const root = join(base, "pool"), branch = "toolroll/cross-process";
+    const pool = new WorktreePool(store, { root });
+    const made = await pool.lease({ repo, branch, base: "main", runner: "builder-1", now: T0 });
+    if (!made.ok) throw Error(made.message);
+    await pool.release(made.worktree.path, T0);
+    let lease: unknown;
+    const pruned = await pool.prune(store.listWorktrees(), (_row, fresh) => {
+      if (fresh) {
+        const script = `
+          import { openStoreNoMigrate } from ${JSON.stringify(new URL("../dist/store.js", import.meta.url).href)};
+          import { WorktreePool } from ${JSON.stringify(new URL("../dist/worktree.js", import.meta.url).href)};
+          const opened = openStoreNoMigrate(process.argv[1]);
+          if (!opened.ok) throw Error('database refused');
+          const pool = new WorktreePool(opened.store, {root: process.argv[2]});
+          try { console.log(JSON.stringify(await pool.lease({repo: process.argv[3], branch: process.argv[4], runner: 'builder-1', now: new Date()}))); }
+          finally { opened.store.close(); }
+        `;
+        lease = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script, database, root, repo, branch], { encoding: "utf8" }));
+      }
+      return true;
+    });
+    expect(lease).toMatchObject({ ok: false, reason: "in-use" });
+    expect(pruned.removed).toHaveLength(1);
+    expect(existsSync(made.worktree.path)).toBe(false);
+    expect(existsSync(`${made.worktree.path}.occupancy`)).toBe(false);
+    expect(await pool.lease({ repo, branch, reuseBranch: true, runner: "builder-1", now: later(1_000) })).toMatchObject({ ok: true });
   });
 });

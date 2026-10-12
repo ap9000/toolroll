@@ -340,4 +340,97 @@ describe("the exact-run control on the console (v52)", () => {
     expect(store.getRun(runId)?.outcome).toBe("built");
     expect((await post(alex, "/t/payouts/resume-arm", { csrf: csrfOf(html), run: String(reviewRun) })).status).toBe(409);
   });
+
+  test("live steering: Pause and Pause and steer sit beside Stop for a live Claude build, post the exact run, and never stop it", async () => {
+    const ref = seed("payouts");
+    const { runId } = live("payouts", ref);
+    const alex = await loginAs("alex", approverToken);
+    // A build without live input (Codex, or before its session opens) offers Stop alone.
+    expect(controlOf(await page(alex, "/t/payouts"))).not.toContain("/t/payouts/pause");
+    store.markSteerFolderOpened(runId, new Date());
+    store.markLiveInputOpened(runId, new Date());
+
+    const html = await page(alex, "/t/payouts");
+    const control = controlOf(html);
+    expect(control).toContain('data-task-control="pause"');
+    expect(control).toContain('data-task-control="pause-and-steer"');
+    expect(control).toContain(">Pause</button>");
+    expect(control).toContain(">Pause and steer</button>");
+    expect(control).toContain('<button type="submit" class="danger task-control-button">Stop</button>');
+    const requests = [...control.matchAll(/name="request" value="([^"]+)"/g)].map(match => match[1]);
+    expect(new Set(requests).size).toBe(2);
+    const csrf = csrfOf(html);
+
+    // Pause: the exact run, under the form's own request id; a resubmit is the same request.
+    const paused = await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: requests[0]!, return: "task" });
+    expect(paused.status).toBe(303);
+    expect(paused.headers.get("location")).toBe("/t/payouts#task-control");
+    expect((await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: requests[0]! })).status).toBe(303);
+    expect(store.pausesForTask(ref)).toHaveLength(1);
+    expect(store.pauseStateOf(runId)).toBe("pausing");
+    // Pausing hides Pause and keeps Pause and steer and Stop.
+    const pausing = controlOf(await page(alex, "/t/payouts"));
+    expect(pausing).not.toContain('data-task-control="pause"');
+    expect(pausing).toContain('data-task-control="pause-and-steer"');
+
+    // Pause and steer: the note is filed with the pause, by the signed-in approver.
+    const steered = await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: requests[1]!, note: "Keep the old guard in place." });
+    expect(steered.status).toBe(303);
+    expect(store.listSteerNotes(ref).map(one => [one.note, one.author])).toEqual([["Keep the old guard in place.", "alex"]]);
+    expect(store.pausesForTask(ref)[0]).toMatchObject({ note: store.listSteerNotes(ref)[0]!.id, requestedVia: "web" });
+
+    // Refused: a viewer, a bearer caller, another run, and a build that stopped taking input.
+    const vera = await loginAs("vera", viewerToken);
+    expect((await post(vera, "/t/payouts/pause", { csrf: csrfOf(await page(vera, "/t/payouts")), run: String(runId), request: "web-viewer-request" })).status).toBe(403);
+    const bearer = await fetch(url("/t/payouts/pause"), { method: "POST", headers: { authorization: `Bearer alex:${approverToken}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ run: String(runId), request: "web-bearer-request" }), redirect: "manual" });
+    expect(bearer.status).toBe(403);
+    const wrongRun = await post(alex, "/t/payouts/pause", { csrf, run: String(runId + 99), request: "web-other-request" });
+    expect(wrongRun.status).toBe(409);
+    expect(await wrongRun.text()).toContain("stopped taking notes");
+    store.markLiveInputClosed(runId, new Date());
+    expect((await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: "web-closed-request" })).status).toBe(409);
+    expect(controlOf(await page(alex, "/t/payouts"))).not.toContain("/t/payouts/pause");
+
+    // Pause is never a stop: no stop record, no hold, and the build is still running.
+    expect(store.stopOf(runId)).toBeNull();
+    expect(store.activeHolds(ref, new Date())).toEqual([]);
+    expect(store.getRun(runId)?.outcome).toBeNull();
+  });
+
+  test("live steering, c7: a paused build says until when it can wait and offers Resume, which files no note and is refused once it isn't paused", async () => {
+    const ref = seed("payouts");
+    const { runId } = live("payouts", ref);
+    const alex = await loginAs("alex", approverToken);
+    store.markSteerFolderOpened(runId, new Date());
+    // A twenty-minute idle limit, as the approved profile's.
+    store.markLiveInputOpened(runId, new Date(), 20 * 60_000);
+    store.requestPause({ taskId: "payouts", runId, by: "alex" as never, via: "web", requestId: "web-pause-c7-1" }, new Date());
+    store.markPauseSent(store.unsentPauses(runId)[0]!.id, new Date());
+    store.markRunPaused(runId, new Date("2026-10-11T14:25:00.000Z"));
+
+    const html = await page(alex, "/t/payouts");
+    const control = controlOf(html);
+    expect(control).toContain("Paused. It can wait until");
+    expect(control).toContain('datetime="2026-10-11T14:45:00.000Z"');
+    expect(control).toContain("(20 min) before it ends.");
+    expect(control).toContain('data-task-control="resume"');
+    expect(control).toContain(">Resume</button>");
+    expect(control).toContain(">Continue</button>");
+    expect(control).not.toContain('data-task-control="pause"');
+    const csrf = csrfOf(html);
+    const request = /data-task-control="resume"[^]*?name="request" value="([^"]+)"/.exec(control)?.[1];
+    expect(request).toBeDefined();
+
+    const resumed = await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: request!, mode: "resume", return: "task" });
+    expect(resumed.status).toBe(303);
+    expect((await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: request!, mode: "resume" })).status).toBe(303);
+    expect(store.resumesForTask(ref)).toMatchObject([{ run: runId, requestedVia: "web", sentAt: null }]);
+    expect(store.listSteerNotes(ref)).toEqual([]);
+    // The dispatcher sent it and the build went on: a second Resume finds nothing paused.
+    store.markResumeSent(store.unsentResumes(runId)[0]!.id, runId, new Date());
+    const late = await post(alex, "/t/payouts/pause", { csrf, run: String(runId), request: "web-resume-c7-late", mode: "resume" });
+    expect(late.status).toBe(409);
+    expect(await late.text()).toContain("paused any more — reload");
+    expect(store.stopOf(runId)).toBeNull();
+  });
 });

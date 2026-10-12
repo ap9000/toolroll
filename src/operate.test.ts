@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { liveBuild } from "../test/live-steer-fixture.js";
 import { openStore } from "./store.js";
 import { presetTerms, modeTermsJson, modeDigestOf } from "./modes.js";
 import { DEFAULT_LIVENESS_MS, register } from "./runner.js";
@@ -1826,7 +1827,7 @@ describe("runner ceremonies (MCP spec v6)", () => {
   test("capacity refuses bad numbers, unknown and retired workers, and people who are not instance operators", async () => {
     const token = await approver();
     await run(["runner", "register", "w-1", "--repo", "/repo/a", "--as", "alex", "--token", token, "--json"]);
-    for (const bad of ["0", "65", "2.5", "lots"]) {
+    for (const bad of ["-1", "65", "2.5", "lots", " "]) {
       expect(await run(["runner", "capacity", "w-1", bad, "--as", "alex", "--token", token, "--json"])).toBe(EXIT.usage);
     }
     expect(await run(["runner", "capacity", "w-1", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.usage);
@@ -1850,6 +1851,26 @@ describe("runner ceremonies (MCP spec v6)", () => {
     }
     expect(await run(["runner", "capacity", "w-2", "2", "--as", "sam", "--token", limited, "--json"])).toBe(EXIT.refused);
     expect(payload()).toMatchObject({ ok: false, reason: "refused" });
+  });
+
+  test("capacity zero drains a worker with the same operator authorization and resumes to its saved capacity", async () => {
+    const token = await approver();
+    await run(["runner", "register", "w-1", "--capacity", "3", "--repo", "/repo/a", "--as", "alex", "--token", token, "--json"]);
+    expect(await run(["runner", "capacity", "w-1", "0", "--json"])).toBe(EXIT.refused);
+    expect(await run(["runner", "capacity", "w-1", "0", "--as", "alex", "--token", "wrong", "--json"])).toBe(EXIT.refused);
+    expect(await run(["runner", "capacity", "w-1", "0", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ ok: true, name: "w-1", before: 3, after: 0, running: 0 });
+    expect(await run(["runner", "capacity", "w-1", "0", "--as", "alex", "--token", token])).toBe(EXIT.ok);
+    expect(lines.join("\n")).toContain("w-1 takes no new builds. Nothing is running.");
+    expect(lines.join("\n")).toContain("Resume with: toolroll runner capacity w-1 <1-64>");
+    expect(await run(["runner", "capacity", "w-1", "3", "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ ok: true, before: 0, after: 3 });
+    const store = openStore(db);
+    try {
+      expect(store.getRunner("w-1")?.runner.capacity).toBe(3);
+      expect(store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE action = 'worker capacity: w-1' ORDER BY rowid").all())
+        .toEqual([{ actor: "alex", detail: "3 → 0" }, { actor: "alex", detail: "0 → 3" }]);
+    } finally { store.close(); }
   });
 
   test("bind REPLACES the repo list, refuses unknown and retired runners, and is itself a ceremony", async () => {
@@ -1957,6 +1978,90 @@ describe("task steer takes the operator's credential (v24, ruling 11)", () => {
     const notes = store.listSteerNotes(ref);
     expect(notes[0]).toMatchObject({ author: "alex", authorshipState: "verified" });
     store.close();
+  });
+});
+
+describe("task pause and task steer --now reach a running Claude build (live steering)", () => {
+  let lines: string[] = [];
+  let db = "";
+  const write = (line: string) => lines.push(line);
+  const payload = () => JSON.parse(lines.join("\n"));
+  const run = (argv: string[]) => {
+    const [command = "", ...rest] = argv;
+    lines = [];
+    return runOperate(command, rest, write, { databaseFile: db });
+  };
+  afterEach(() => rmSync(dirname(db), { recursive: true, force: true }));
+  beforeEach(() => {
+    db = join(mkdtempSync(join(tmpdir(), "so-pause-cli-")), "db.sqlite");
+  });
+
+  test("pause and pause-and-steer bind to the live run, take the credential, and file the note behind the interrupt", async () => {
+    await run(["approver", "add", "alex", "--json"]);
+    const token = payload().token as string;
+    const seed = openStore(db);
+    const { taskRef, runId } = liveBuild(seed, new Date());
+    seed.close();
+
+    expect(await run(["task", "pause", "t-1", "--json"])).toBe(2);
+    expect(await run(["task", "pause", "t-1", "--as", "alex", "--token", "wrong", "--json"])).toBe(3);
+    expect(await run(["task", "pause", "t-1", "--run", String(runId + 5), "--as", "alex", "--token", token, "--json"])).toBe(3);
+    expect(payload()).toMatchObject({ ok: false, reason: "stale" });
+
+    expect(await run(["task", "pause", "t-1", "--request", "cli-pause-0001", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, run: runId, note: null, repeated: false });
+    expect(await run(["task", "pause", "t-1", "--request", "cli-pause-0001", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, repeated: true });
+
+    expect(await run(["task", "steer", "t-1", "--note", "switch to the retry path", "--now", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, run: runId, note: expect.any(Number) });
+
+    const store = openStore(db);
+    try {
+      const pauses = store.pausesForTask(taskRef);
+      expect(pauses).toHaveLength(2);
+      expect(pauses[0]).toMatchObject({ requestedBy: "alex", requestedVia: "cli", note: expect.any(Number) });
+      expect(store.listSteerNotes(taskRef)).toMatchObject([{ author: "alex", authorshipState: "verified", note: "switch to the retry path" }]);
+      // Pause never stops the attempt.
+      expect(store.stopsForTask(taskRef)).toEqual([]);
+      store.markLiveInputClosed(runId, new Date());
+    } finally { store.close(); }
+    expect(await run(["task", "steer", "t-1", "--note", "later", "--now", "--as", "alex", "--token", token, "--json"])).toBe(3);
+    expect(payload()).toMatchObject({ ok: false, reason: "not-live" });
+  });
+
+  test("task continue resumes only the paused live run, under the credential, and files no note", async () => {
+    await run(["approver", "add", "alex", "--json"]);
+    const token = payload().token as string;
+    const seed = openStore(db);
+    const { taskRef, runId } = liveBuild(seed, new Date());
+    seed.close();
+
+    expect(await run(["task", "continue", "t-1", "--json"])).toBe(2);
+    expect(await run(["task", "continue", "t-1", "--as", "alex", "--token", "wrong", "--json"])).toBe(3);
+    // A running build has nothing to resume.
+    expect(await run(["task", "continue", "t-1", "--as", "alex", "--token", token, "--json"])).toBe(3);
+    expect(payload()).toMatchObject({ ok: false, reason: "not-paused" });
+
+    const paused = openStore(db);
+    try {
+      paused.requestPause({ taskId: "t-1", runId, by: "alex" as never, via: "cli", requestId: "cli-pause-0002" }, new Date());
+      paused.markPauseSent(paused.unsentPauses(runId)[0]!.id, new Date());
+      paused.markRunPaused(runId, new Date());
+    } finally { paused.close(); }
+    expect(await run(["task", "continue", "t-1", "--run", String(runId + 5), "--as", "alex", "--token", token, "--json"])).toBe(3);
+    expect(payload()).toMatchObject({ ok: false, reason: "stale" });
+    expect(await run(["task", "continue", "t-1", "--request", "cli-resume-0001", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, run: runId, repeated: false });
+    expect(await run(["task", "continue", "t-1", "--request", "cli-resume-0001", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(payload()).toMatchObject({ ok: true, repeated: true });
+
+    const store = openStore(db);
+    try {
+      expect(store.resumesForTask(taskRef)).toMatchObject([{ run: runId, requestedVia: "cli", sentAt: null }]);
+      expect(store.listSteerNotes(taskRef)).toEqual([]);
+      expect(store.stopsForTask(taskRef)).toEqual([]);
+    } finally { store.close(); }
   });
 });
 

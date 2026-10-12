@@ -1548,6 +1548,20 @@ describe("capacity and quota, at the claim", () => {
     });
   });
 
+  test("zero capacity drains running work and refuses claims even when idle, until resumed", () => {
+    register(store, { name: "draining", host: "h", now: T0, capacity: 2, repos: [REPO], newToken: () => tok("draining") });
+    expect(acquireIfReady(store, a, "draining", { token: tok("draining"), now: T0, newLeaseId: ids("lease-a") })).toMatchObject({ ok: true });
+    expect(store.setRunnerCapacity("draining", 0, "alex", later(1_000))).toEqual({ ok: true, before: 2, after: 0 });
+    expect(heartbeat(store, "lease-a", later(2_000))).toMatchObject({ ok: true });
+    expect(currentClaim(store, a, later(2_000))).toMatchObject({ leaseId: "lease-a", runner: "draining" });
+    expect(acquireIfReady(store, b, "draining", { token: tok("draining"), now: later(3_000) })).toMatchObject({ ok: false, reason: "capacity" });
+    release(store, "lease-a", later(4_000));
+    expect(store.liveClaimCount("draining", later(5_000))).toBe(0);
+    expect(acquireIfReady(store, b, "draining", { token: tok("draining"), now: later(5_000) })).toMatchObject({ ok: false, reason: "capacity" });
+    expect(store.setRunnerCapacity("draining", 2, "alex", later(6_000))).toEqual({ ok: true, before: 0, after: 2 });
+    expect(acquireIfReady(store, b, "draining", { token: tok("draining"), now: later(7_000) })).toMatchObject({ ok: true });
+  });
+
   test("an exhausted quota refuses dispatch until its reset, then admits one probe", () => {
     register(store, { name: "r", host: "h", now: T0, capacity: 4, repos: [REPO], newToken: () => tok("r") });
     store.stampQuota(

@@ -3296,7 +3296,23 @@ $ contract --commands --json → 0
     },
     {
       "invocation": "task steer",
-      "synopsis": "one credentialed note for the task's agent — a running build reads it when it next checks for notes, otherwise the next attempt does; steering speaks with the operator's voice",
+      "synopsis": "one credentialed note for the task's agent — a running Claude build gets it in seconds, another running build reads it when it next checks for notes, otherwise the next attempt does; --now pauses the running Claude build first; steering speaks with the operator's voice",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "yes"
+    },
+    {
+      "invocation": "task pause",
+      "synopsis": "stop a running Claude build's current turn and keep the build (--run <id> names the attempt): its next note continues it; never a stop",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "yes"
+    },
+    {
+      "invocation": "task continue",
+      "synopsis": "resume a paused Claude build where it stopped, without a note (--run <id> names the attempt)",
       "audience": "operator",
       "agentMayInvoke": false,
       "mutation": "unkeyed",

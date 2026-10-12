@@ -190,8 +190,8 @@ test("v114 → v115: fallback chains go; what a chain owned ends ordinary and re
 
   store = openStore(file);
   const handle = store.handle;
-  expect(SCHEMA_VERSION).toBe(120);
-  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(120);
+  expect(SCHEMA_VERSION).toBe(121);
+  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(121);
   // The tables and their indexes are gone; the run's history columns stay, without their foreign key.
   expect(handle.prepare(`SELECT name FROM sqlite_master WHERE name IN ${FALLBACK_NAMES}`).all()).toEqual([]);
   const runDdl = String(handle.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run'").get()?.["sql"]);

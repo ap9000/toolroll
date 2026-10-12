@@ -38,7 +38,11 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task block', args('id:task', 'key', { on: 'task' })],
   ['task unblock', args('id:task', 'key', { on: 'task' })],
   ['task next', args('id:task', 'key undo')],
-  ['task steer', args('id:task', 'note')],
+  // Live steering: --now pauses the running Claude build first; pause and continue name the exact attempt like stop and
+  // resume, and a repeated --request (or --key) id is the same request.
+  ['task steer', args('id:task', 'note now request key', { run: 'run' })],
+  ['task pause', args('id:task', 'request key', { run: 'run' })],
+  ['task continue', args('id:task', 'request key', { run: 'run' })],
   ['task assign', args('id:task', 'key runner anyone')],
   ['task scope', args('id:task', 'key goal not touches budget-usd risk acceptance candidate model provider repair-model')],
   ['task plan', args('id:task', 'key provider model')],

@@ -340,6 +340,16 @@ export class ChatCore {
     return str(this.prepare("SELECT value FROM chat_meta WHERE provider = :provider AND installation = ? AND key = ?").get(installation, key)?.["value"]);
   }
 
+  /** Every small fact whose key starts with this prefix (a fixed, LIKE-safe word). */
+  metaStartingWith(installation: string, prefix: string): { key: string; value: string }[] {
+    return this.prepare("SELECT key, value FROM chat_meta WHERE provider = :provider AND installation = ? AND substr(key, 1, ?) = ? ORDER BY key")
+      .all(installation, prefix.length, prefix).map(row => ({ key: String(row["key"]), value: String(row["value"]) }));
+  }
+
+  deleteMeta(installation: string, key: string): void {
+    this.prepare("DELETE FROM chat_meta WHERE provider = :provider AND installation = ? AND key = ?").run(installation, key);
+  }
+
   setMeta(installation: string, key: string, value: string, now: Date): void {
     this.prepare(`INSERT INTO chat_meta (provider, installation, key, value, updated) VALUES (:provider, ?, ?, ?, ?)
       ON CONFLICT (provider, installation, key) DO UPDATE SET value = excluded.value, updated = excluded.updated`).run(installation, key, value, now.toISOString());

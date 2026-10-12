@@ -17,12 +17,12 @@
  * `invokeAgent`.
  */
 
-import { adapterFor, auditOf, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
+import { adapterFor, auditOf, isolationUnsupported, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV } from "./keys.js";
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
-import { run as runCommand, runOwnerTag } from "./exec.js";
+import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
 import { currentContainment } from "./containment.js";
 import type { Store } from "./store.js";
 import type { RunOptions } from "./exec.js";
@@ -30,8 +30,10 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-tools.js";
-import { realpathSync } from "node:fs";
-import { agentFence, linuxFenceAvailable, macosFenceAvailable, type FenceMethod } from "./agent-fence.js";
+import { readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { agentFence, linuxFenceAvailable, macosFenceAvailable, taskBoundary, type FenceMethod } from "./agent-fence.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 
 export type { ProviderRunner } from "./provider.js";
@@ -43,6 +45,41 @@ export const PROVIDER_BINARY = "claude";
 /** "Within seconds": how soon a silent failed run must end for its stderr to
  * be read for the sign-in signal. */
 const AUTH_EARLY_EXIT_MS = 30_000;
+
+// Fixed names only: neither setting values nor arbitrary JSON keys belong in
+// diagnostics. The CLI's existing login stays where it is; no config is copied.
+const CLAUDE_AUTH_ENV = [
+  "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "ANTHROPIC_BEDROCK_BASE_URL",
+  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+  "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+  "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_SKIP_VERTEX_AUTH", "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
+] as const;
+
+/** A value-only preflight: a settings-dependent login cannot survive empty setting sources. */
+function claudeSettingsAuthProblem(configDir: string): string | null {
+  let text: string;
+  try { text = readFileSync(join(configDir, "settings.json"), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return "Can't read your Claude settings.json to check sign-in. Restore access to that file and try again. Isolated builds do not load it.";
+  }
+  let settings: unknown;
+  try { settings = JSON.parse(text); }
+  catch { return "Your Claude settings.json is not valid JSON. Fix that file and try again. Isolated builds do not load it, so Toolroll must check whether sign-in depends on it first."; }
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+    return "Your Claude settings.json must contain an object. Fix that file and try again. Isolated builds do not load it.";
+  }
+  const value = settings as Record<string, unknown>;
+  const keys = ["apiKeyHelper", "forceLoginMethod"].filter(key => Object.hasOwn(value, key));
+  const env = value["env"];
+  if (env !== null && typeof env === "object" && !Array.isArray(env)) {
+    keys.push(...CLAUDE_AUTH_ENV.filter(key => Object.hasOwn(env, key)).map(key => `env.${key}`));
+  }
+  return keys.length === 0 ? null
+    : `Your Claude settings.json defines sign-in settings: ${keys.join(", ")}. Isolated builds do not load that file. Use a Claude login that works without these settings, or select another build provider in Settings. Toolroll has not changed your login or copied these values.`;
+}
 
 /**
  * A provider can run the repository's own CLI. In a self-hosting build that
@@ -189,9 +226,15 @@ export async function invokeAgent(
   }
 
   const adapter = adapterFor(spec.provider);
-  const { startSessionId: _untrustedStartSessionId, ...invocationWithoutStart } = invocation;
+  const { startSessionId: _untrustedStartSessionId, streamInput: _untrustedStreamInput, ...invocationWithoutStart } = invocation;
+  // Live input (live-input.ts): only Claude's builds, only through a transport that keeps stdin open. The brief is
+  // the session's first stdin message and never rides the argv; every other road keeps its prompt where it was.
+  const liveInput = spec.provider === "claude" && invocation.phase === "build" && options.liveInput !== undefined && streamsInput(options.runner ?? adapter.defaultRunner)
+    ? options.liveInput
+    : null;
   const resolvedInvocation = {
     ...invocationWithoutStart,
+    ...(liveInput === null ? {} : { streamInput: true }),
     model: spec.model,
     resumeSession: requestedResumeSessionId,
     ...(startSessionId === undefined ? {} : { startSessionId }),
@@ -240,6 +283,7 @@ export async function invokeAgent(
     idleTimeoutMs: _idleTimeout,
     stdin: _callerStdin,
     accumulateUsage: _accumulateUsage,
+    liveInput: _liveInput,
     ...runOptions
   } = options;
   // The live setting is read STRICTLY (atomic authority closure): a
@@ -257,6 +301,10 @@ export async function invokeAgent(
     };
   }
   const authMode: "subscription" | "api-key" = strict.mode;
+  if (spec.provider === "claude" && invocation.phase !== "review") {
+    const problem = claudeSettingsAuthProblem(options.env?.["CLAUDE_CONFIG_DIR"] ?? process.env["CLAUDE_CONFIG_DIR"] ?? join(keyHome ?? homedir(), ".claude"));
+    if (problem !== null) return { kind: "refused", reason: "auth-mode", providerVersion: attested?.version ?? null, diagnostic: problem };
+  }
   const ownKeyEnv = OWN_KEY_ENV[spec.provider];
   const managedKey =
     authMode === "api-key"
@@ -340,6 +388,8 @@ export async function invokeAgent(
 
   if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
   else store.stampProviderStart(runId, clock());
+  // The brief is the live session's first message, queued before the spawn writes it.
+  liveInput?.begin(invocation.brief);
 
   const spawn = witnessedRunner(store, runId, clock, runner ?? adapter.defaultRunner);
   let transportAnnouncedSessionId: string | null = null;
@@ -357,10 +407,16 @@ export async function invokeAgent(
   // The agent fence: Toolroll's own secrets, database and other runs'
   // evidence stay out of reach, whatever the permission mode. A review is
   // already confined to its sealed files.
-  const baseFence = invocation.phase === "review" ? [] : runFence(store, runId, options.keyHome);
+  // A build's fence also holds its task boundary: home configuration and
+  // the repositories beside its own, fresh and resumed alike.
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [] } : runFence(store, runId, spec.provider, options.keyHome);
+  const baseFence = fenceOf.fence;
   const toolsDir = (spec.provider === "codex" || spec.provider === "openrouter") && baseFence.length > 0 ? tools?.privateDir : undefined;
   const fence = toolsDir === undefined ? baseFence : [...baseFence, realpathSync(toolsDir)];
-  const launchArgv = tools === null ? argv : adapter.argv({ ...resolvedInvocation, toolArgv: tools.argv, fence });
+  // Where the build runs: Claude reads the repository's CLAUDE.md from here.
+  const workspace = invocation.phase === "review" ? null : runOptions.cwd ?? run.worktree ?? null;
+  const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }) };
+  const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
   if (invocation.phase !== "review") store.recordRunFence(runId, { method: fenced.method, paths: fence.length }, clock());
   const billingSeen: { keySource: string | null; model: string | null; planWindows: boolean; answered: boolean } = { keySource: null, model: null, planWindows: false, answered: false };
@@ -398,11 +454,13 @@ export async function invokeAgent(
         if (store.applicableStopFor(runId) !== null) throw new Error("the attempt was stopped before spawn custody completed");
       },
       ...(stdin === undefined ? {} : { stdin }),
+      ...(liveInput === null ? {} : { liveInput }),
       ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
       ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
       ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
       env: {
         ...(runOptions.env ?? {}),
+        ...(adapter.env?.(buildInvocation) ?? {}),
         ...(tools?.env ?? {}),
         ...(managedKey === null ? {} : { [PROVIDER_KEY_ENV[spec.provider]]: managedKey }),
         // This key is deliberately last: no caller may point an agent back at
@@ -454,6 +512,12 @@ export async function invokeAgent(
   store.fixRunBilling(runId, authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle), new Date());
 
   const envelope = adapter.parse(result.stdout);
+  // An installed CLI too old for a build's own setup refuses its flags
+  // before it starts: nothing ran, and the run says what to update.
+  const unsupported = result.code !== 0 && envelope.initObserved !== true && invocation.phase !== "review" ? isolationUnsupported(spec.provider, result.stderr) : null;
+  if (unsupported !== null) {
+    return { kind: "refused", reason: "provider-unattested", providerVersion: attested === null ? null : attested.version, diagnostic: unsupported };
+  }
   // The callback is the crash-safe early stamp; the parsed envelope is the
   // authoritative completed-stream account. Stamp it as a fallback for an
   // alternate transport. On fresh runs COALESCE makes callback/parser
@@ -478,11 +542,19 @@ export async function invokeAgent(
             ? "the provider returned a session id different from the exact identity recorded for resume"
             : "the provider session id was different from the identity durably recorded when the stream initialized"
         : null;
+  // A run whose cost could not be read may still have spent up to its cap: it is charged the cap, never nothing, so
+  // the next run's remaining budget stays honest. With no cap it is unmeasured, as a Codex run is, and says so.
+  const unknownCost = envelope.costUnknown === true;
+  const cap = typeof invocation.maxBudgetUsd === "number" && Number.isFinite(invocation.maxBudgetUsd) && invocation.maxBudgetUsd > 0 ? invocation.maxBudgetUsd : null;
+  const costUsd = unknownCost ? cap : envelope.costUsd;
+  const usageJson = unknownCost
+    ? JSON.stringify({ cost_note: cap === null ? "cost unknown, no dollar cap applied: unmeasured" : "cost unknown, charged at the cap", ...usageOf(envelope.usageRaw) })
+    : envelope.usageRaw;
   store.recordUsage(runId, {
     ...(envelope.tokensIn === null ? {} : { tokensIn: envelope.tokensIn + (options.accumulateUsage ? run.tokensIn ?? 0 : 0) }),
     ...(envelope.tokensOut === null ? {} : { tokensOut: envelope.tokensOut + (options.accumulateUsage ? run.tokensOut ?? 0 : 0) }),
-    ...(envelope.costUsd === null ? {} : { costUsd: envelope.costUsd + (options.accumulateUsage ? run.costUsd ?? 0 : 0) }),
-    ...(envelope.usageRaw === null ? {} : { usageJson: envelope.usageRaw }),
+    ...(costUsd === null ? {} : { costUsd: costUsd + (options.accumulateUsage ? run.costUsd ?? 0 : 0) }),
+    ...(usageJson === null ? {} : { usageJson }),
   });
 
   // How the attempt ended, classified HERE where the structural terminal
@@ -607,7 +679,7 @@ export async function invokeAgent(
       usage: {
         tokensIn: envelope.tokensIn,
         tokensOut: envelope.tokensOut,
-        costUsd: envelope.costUsd,
+        costUsd,
       },
       // Gated on the run having NOTHING to show (Codex M5-M8 audit, C-8),
       // where "nothing to show" is STRUCTURAL when the transport can say so
@@ -628,15 +700,25 @@ export async function invokeAgent(
   };
 }
 
-/** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree) and ~/.toolroll (or its older name). */
-function runFence(store: Store, runId: number, keyHome: string | undefined): string[] {
+/** The reported usage, when its kept text is whole JSON, to sit beside a cost note. */
+function usageOf(raw: string | null): { usage?: unknown } {
+  if (raw === null) return {};
+  try { return { usage: JSON.parse(raw) as unknown }; } catch { return {}; }
+}
+
+/** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
+ * ~/.toolroll (or its older name), and its task boundary; plus what only Claude's file tools refuse. */
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined): { fence: string[]; fileTools: string[] } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
-    if (databaseFile === null) return [];
-    return agentFence({ databaseFile, worktree: store.getRun(runId)?.worktree ?? null, ...(keyHome === undefined ? {} : { home: keyHome }) });
+    if (databaseFile === null) return { fence: [], fileTools: [] };
+    const worktree = store.getRun(runId)?.worktree ?? null;
+    const home = keyHome === undefined ? {} : { home: keyHome };
+    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home });
+    return { fence: agentFence({ databaseFile, worktree, ...home, boundary }), fileTools: boundary?.fileTools ?? [] };
   } catch {
-    return [];
+    return { fence: [], fileTools: [] };
   }
 }
 
@@ -655,9 +737,9 @@ function fenceLaunch(provider: AgentSpec["provider"], fence: readonly string[]):
 /** One launch's tools, or — when they cannot be prepared — the same isolation with none, never the operator's global servers. */
 function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined): ToolLaunchArgs {
   try {
-    return prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), includeModel: spec.model === null, ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }) });
+    return prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }) });
   } catch {
-    return noToolsArgs(spec.provider, spec.model === null);
+    return noToolsArgs(spec.provider);
   }
 }
 

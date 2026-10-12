@@ -14,8 +14,8 @@ export type WorkPrincipal = "operator" | "coordinator";
 export type WorkTarget = { taskId: string; runId: number | null; decisionId: number | null };
 export type WorkAction = {
   /** `confirm-stopped`: an approver confirms a finished build stopped (behind the password);
-   * `sign-in`: the agent's sign-in, in Settings. */
-  code: DispatchAction | "inspect-task" | "inspect-run" | "inspect-stop" | "inspect-decisions" | "reconcile-run" | "open-pr" | "confirm-stopped" | "sign-in";
+   * `sign-in`: the agent's sign-in, in Settings; `answer-agent`: Reply to a running agent's question on the Agents board. */
+  code: DispatchAction | "inspect-task" | "inspect-run" | "inspect-stop" | "inspect-decisions" | "reconcile-run" | "open-pr" | "confirm-stopped" | "sign-in" | "answer-agent";
   label: string;
   target: WorkTarget;
   access: "read" | "operator-control" | "proposal-only" | "operator-handoff";

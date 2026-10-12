@@ -9,9 +9,11 @@
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { describe, test, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adapterFor, auditOf, validateSpec, reportsCost, inspectionOf, MODEL_ID, OPENROUTER_ENV_KEY, PROVIDER_IDS, MONEY_CAPABILITIES, ALL_CREDENTIAL_ENV } from "./provider.js";
+import { adapterFor, auditOf, isolationUnsupported, validateSpec, reportsCost, inspectionOf, MODEL_ID, OPENROUTER_ENV_KEY, PROVIDER_IDS, MONEY_CAPABILITIES, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { runStreamJsonl } from "./exec.js";
 import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
 import { parseReview } from "./reviewer.js";
@@ -28,6 +30,36 @@ const ASK = {
   resumeSession: null as string | null,
 };
 
+test("the Claude memory canary owns only its unique marker and removes it on success and failure", async () => {
+  const { withClaudeMemoryCanary } = await import("../scripts/provider-canary.mjs");
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "so-memory-canary-")));
+  const repo = join(base, "repo");
+  const config = join(base, "claude");
+  mkdirSync(repo);
+  mkdirSync(config);
+  writeFileSync(join(config, "untouched"), "existing configuration");
+  const folder = join(config, "projects", repo.replace(/[^a-zA-Z0-9]/g, "-"));
+  try {
+    for (const fails of [false, true]) {
+      const check = withClaudeMemoryCanary(repo, config, async (marker: string) => {
+        expect(readFileSync(join(folder, "memory", "MEMORY.md"), "utf8")).toContain(marker);
+        expect(marker).toMatch(/^TOOLROLL_MEMORY_CANARY_/);
+        if (fails) throw new Error("canary failed");
+        return "NO_MEMORY";
+      });
+      if (fails) await expect(check).rejects.toThrow("canary failed");
+      else expect(await check).toBe("NO_MEMORY");
+      expect(existsSync(folder)).toBe(false);
+      expect(readFileSync(join(config, "untouched"), "utf8")).toBe("existing configuration");
+    }
+    mkdirSync(folder);
+    writeFileSync(join(folder, "existing"), "leave it");
+    await expect(withClaudeMemoryCanary(repo, config, () => { throw new Error("must not run"); })).rejects.toThrow("already exists");
+    expect(readdirSync(folder)).toEqual(["existing"]);
+    expect(readFileSync(join(folder, "existing"), "utf8")).toBe("leave it");
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
 describe("argv dialects", () => {
   test("claude speaks exactly the dialect the suite has always proven", () => {
     // stream-json since arc 1: the terminal result event is the old
@@ -41,8 +73,48 @@ describe("argv dialects", () => {
       "--permission-mode", "auto",
       "--model", "sonnet",
       "--disallowedTools", "ScheduleWakeup,CronCreate,Monitor",
+      "--setting-sources", "",
+      "--strict-mcp-config",
+      "--mcp-config", '{"mcpServers":{}}',
+      "--settings", '{"autoMemoryEnabled":false}',
     ]);
     expect(adapterFor("claude").argv({ ...ASK, resumeSession: "s-1" })).toContain("--resume");
+  });
+
+  test("a Claude build loads no settings file and only the MCP servers it is handed, fresh or resumed", () => {
+    const tools = ["--mcp-config", "/tmp/so-tools-x/mcp.json"];
+    for (const phase of ["plan", "build", "repair"] as const) {
+      for (const resumeSession of [null, "s-1"]) {
+        const argv = adapterFor("claude").argv({ ...ASK, phase, resumeSession, toolArgv: tools, workspace: "/work/tree" });
+        expect(argv.filter(one => one === "--settings")).toHaveLength(1);
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]!)).toEqual({ autoMemoryEnabled: false });
+        // No user, project or local settings: their hooks, plugins and permissions never load.
+        expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
+        expect(argv.filter(one => one === "--setting-sources")).toHaveLength(1);
+        // Strict: the project's named tools are the only servers; no empty list beside them.
+        expect(argv.filter(one => one === "--strict-mcp-config")).toHaveLength(1);
+        expect(argv.filter(one => one === "--mcp-config")).toEqual(["--mcp-config"]);
+        expect(argv[argv.indexOf("--mcp-config") + 1]).toBe("/tmp/so-tools-x/mcp.json");
+        // The repository's CLAUDE.md still loads, from the workspace.
+        expect(argv[argv.indexOf("--add-dir") + 1]).toBe("/work/tree");
+        expect(adapterFor("claude").env?.({ ...ASK, phase, workspace: "/work/tree" })).toEqual({ CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" });
+        // Never the review's own isolation, and never its bare mode (which would drop the user's login).
+        for (const flag of ["--restricted", "--safe-mode", "--bare"]) expect(argv).not.toContain(flag);
+      }
+    }
+    // The scout's browser joins the strict list; it does not replace the strictness.
+    const scout = adapterFor("claude").argv({ ...ASK, phase: "plan", extraMcpServers: { browser: { type: "stdio", command: "x" } } });
+    expect(scout).toContain("--strict-mcp-config");
+    expect(scout.filter(one => one === "--mcp-config")).toHaveLength(1);
+    expect(adapterFor("claude").env?.({ ...ASK })).toEqual({});
+  });
+
+  test("an installed CLI too old for a build's own setup is named plainly, not read as a failed sign-in", () => {
+    expect(isolationUnsupported("claude", "error: unknown option '--setting-sources'\n")).toBe("The installed Claude Code doesn't support --setting-sources, which builds need to run without your own hooks, plugins and MCP servers. Update Claude Code and try again.");
+    expect(isolationUnsupported("codex", "error: unexpected argument '--ignore-rules' found\n")).toContain("Update Codex");
+    expect(isolationUnsupported("claude", "error: unknown option '--frobnicate'")).toBeNull();
+    expect(isolationUnsupported("claude", "Invalid API key · Please run /login")).toBeNull();
+    expect(isolationUnsupported("gemini", "unknown option '--setting-sources'")).toBeNull();
   });
 
   test("headless claude runs cannot schedule a wakeup, cron job or monitor (run 2085)", () => {
@@ -58,10 +130,16 @@ describe("argv dialects", () => {
     const steerFolder = { dir: "/work/tree/STANDING-ORDERS-STEER-0123456789abcdef", name: "STANDING-ORDERS-STEER-0123456789abcdef" };
     const settingsOf = (argv: readonly string[]) => JSON.parse(argv[argv.indexOf("--settings") + 1]!);
     const both = settingsOf(adapterFor("claude").argv({ ...ASK, fence: ["/home/me/.toolroll"], steerFolder }));
+    expect(both.autoMemoryEnabled).toBe(false);
     expect(both.permissions.deny).toContain("Read(//home/me/.toolroll)");
     expect(both.hooks.PostToolUse[0]).toMatchObject({ matcher: "*", hooks: [{ type: "command", command: expect.stringContaining(`'${steerFolder.dir}'/[0-9]*.json`) }] });
     expect(settingsOf(adapterFor("claude").argv({ ...ASK, steerFolder }))).not.toHaveProperty("permissions");
-    expect(adapterFor("claude").argv({ ...ASK })).not.toContain("--settings");
+    // Always exactly one --settings: personal auto-memory is disabled even without a fence.
+    expect(settingsOf(adapterFor("claude").argv({ ...ASK }))).toEqual({ autoMemoryEnabled: false });
+    expect(adapterFor("claude").argv({ ...ASK, steerFolder }).filter(one => one === "--settings")).toHaveLength(1);
+    // Home configuration only Claude's file tools refuse rides the same deny list.
+    const home = settingsOf(adapterFor("claude").argv({ ...ASK, fence: ["/s/db"], fileToolFence: ["/home/me/.claude.json"] }));
+    expect(home.permissions.deny).toEqual(expect.arrayContaining(["Read(//s/db)", "Read(//home/me/.claude.json)", "Edit(//home/me/.claude.json/**)"]));
     // Every other provider relies on the brief's own rule to look.
     expect(adapterFor("codex").argv({ ...ASK, steerFolder }).join(" ")).not.toContain("STANDING-ORDERS-STEER-");
   });
@@ -105,11 +183,18 @@ describe("argv dialects", () => {
 
   test("claude review phase keeps its resumable, cwd-confined isolation argv", () => {
     const build = adapterFor("claude").argv({ ...ASK, phase: "build" });
-    expect(build).not.toContain("--strict-mcp-config");
     expect(build).not.toContain("--safe-mode");
     expect(build).not.toContain("--restricted");
 
     const argv = adapterFor("claude").argv({ ...ASK, phase: "review" });
+    // A review's argv is unchanged by the build setup: byte-for-byte.
+    expect(argv.slice(0, argv.indexOf("--json-schema"))).toEqual([
+      "-p", "do the thing", "--output-format", "stream-json", "--verbose", "--max-turns", "40", "--permission-mode", "auto",
+      "--restricted", "--safe-mode", "--tools", "Read", "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    ]);
+    const handed = adapterFor("claude").argv({ ...ASK, phase: "review", workspace: "/work/tree", fileToolFence: ["/h/.claude.json"], toolArgv: ["--mcp-config", "x"] });
+    expect(handed).toEqual(argv);
+    expect(adapterFor("claude").env?.({ ...ASK, phase: "review", workspace: "/work/tree" })).toEqual({});
     expect(argv).toEqual(
       expect.arrayContaining([
         "--restricted",
@@ -220,10 +305,26 @@ describe("argv dialects", () => {
     expect(adapterFor("codex").argv({ ...ASK, phase: "review" }).join(" ")).not.toContain("--json-schema");
   });
 
+  test("a Codex build ignores the user's config and rules, with apps, plugins and hooks off, fresh or resumed", () => {
+    for (const provider of ["codex", "openrouter"] as const) {
+      for (const phase of ["plan", "build", "repair"] as const) {
+        for (const resumeSession of [null, "thread-1"]) {
+          const argv = adapterFor(provider).argv({ ...ASK, phase, resumeSession });
+          const at = argv.indexOf("--ignore-user-config");
+          expect(argv.slice(at, at + 8)).toEqual(["--ignore-user-config", "--ignore-rules", "-c", "apps._default.enabled=false", "-c", "features.plugins=false", "-c", "features.hooks=false"]);
+          expect(argv.filter(one => one === "--ignore-user-config")).toHaveLength(1);
+          // Sign-in stays where it is: nothing points Codex at another home.
+          expect(argv.join(" ")).not.toContain("CODEX_HOME");
+        }
+      }
+    }
+  });
+
   test("codex review phase gets a read-only sandbox, refusing approvals, and ignores the user's own config — never workspace-write", () => {
     const build = adapterFor("codex").argv({ ...ASK, phase: "build" });
     expect(build).toContain("workspace-write");
-    expect(build).not.toContain("--ignore-user-config");
+    // The review argv is its own, without the build setup's extra flags.
+    expect(adapterFor("codex").argv({ ...ASK, phase: "review" })).not.toContain("--ignore-rules");
 
     const argv = adapterFor("codex").argv({ ...ASK, phase: "review" });
     expect(argv).not.toContain("workspace-write");
@@ -475,16 +576,14 @@ describe("the claude streaming transport", () => {
   });
 });
 
-describe("the provider audit — report before enforcement", () => {
-  test("facts are stated and nothing is enforced", () => {
+describe("the provider audit", () => {
+  test("Claude and Codex builds run in their own setup; Gemini's flag is only reported", () => {
     const codex = auditOf("codex");
     expect(codex.transport).toBe("streaming-jsonl");
     expect(codex.initSignal).toBe("thread.started");
-    // --ephemeral exists and is deliberately not passed: it breaks resume,
-    // and the audit says so instead of silently choosing.
-    expect(codex.isolation.flag).toBe("--ephemeral");
-    expect(codex.isolation.resumeSafe).toBe(false);
-    expect(codex.isolation.enforced).toBe(false);
+    // Never --ephemeral (repair resumes); the build setup is resume-safe and passed every time.
+    expect(codex.isolation).toEqual({ flag: "--ignore-user-config --ignore-rules", resumeSafe: true, enforced: true });
+    expect(codex.configSurface.join(" ")).not.toContain("config.toml");
 
     const claude = auditOf("claude");
     expect(claude.transport).toBe("streaming-jsonl");
@@ -492,12 +591,13 @@ describe("the provider audit — report before enforcement", () => {
     // This is CAPABILITY metadata — whether a given run saw it lives in
     // the envelope's initObserved, never here (finding 16).
     expect(claude.initSignal).toBe("system-init");
-    expect(claude.isolation).toMatchObject({ flag: "--restricted", resumeSafe: true, enforced: false });
+    expect(claude.isolation).toEqual({ flag: "--setting-sources --strict-mcp-config", resumeSafe: true, enforced: true });
+    expect(claude.configSurface.join(" ")).not.toMatch(/hooks, MCP servers, plugins|skills/);
 
     for (const id of PROVIDER_IDS) {
       const audit = auditOf(id);
       expect(audit.configSurface.length).toBeGreaterThan(0);
-      expect(audit.isolation.enforced).toBe(false);
+      expect(audit.isolation.enforced).toBe(id !== "gemini");
     }
   });
 

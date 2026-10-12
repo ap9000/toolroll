@@ -24,7 +24,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, rmSync, realpathSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, rmSync, realpathSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
@@ -97,6 +97,44 @@ export const MARKER = ".standing-orders-lease";
 /** Checkouts this process is leasing or removing right now: a lease and storage retention never overlap on one. */
 const busy = new Map<string, "leasing" | "removing">();
 
+// Outside the checkout so removal cannot erase the reservation before git and the row update finish.
+const reservationPath = (path: string) => `${path}.occupancy`;
+type Reservation = { pid: number; host: string; bootId: string | null; token: string };
+function reservation(path: string): Reservation | null {
+  try {
+    const note = JSON.parse(readFileSync(reservationPath(path), "utf8")) as Reservation;
+    if (Number.isSafeInteger(note.pid) && note.pid > 0 && typeof note.host === "string" && typeof note.token === "string") return note;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; }
+  // An unreadable reservation is occupied, never a reason to delete someone's checkout.
+  return { pid: 0, host: "unknown", bootId: null, token: "unknown" };
+}
+function reservationAlive(note: Reservation): boolean {
+  if (note.pid === 0 || note.host !== hostname()) return true;
+  if (note.bootId !== null && provenDeadByBootChange(note)) return false;
+  try { process.kill(note.pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+}
+
+/** A short store transaction arbitrates marker creation/recovery, never git, a scan or deletion.
+ * Atomic rename publishes a complete owner; a crash cannot leave a half-written reservation. */
+function reserveCheckout(store: Store, path: string): (() => void) | null {
+  const note: Reservation = { pid: process.pid, host: hostname(), bootId: currentBootId(), token: randomBytes(12).toString("hex") };
+  const file = reservationPath(path), temp = `${file}.${note.token}`;
+  const held = store.transact(() => {
+    const prior = reservation(path);
+    if (prior !== null && reservationAlive(prior)) return false;
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(temp, JSON.stringify(note), { flag: "wx", mode: 0o600 });
+      renameSync(temp, file);
+      return true;
+    } catch { return false; }
+    finally { rmSync(temp, { force: true }); }
+  });
+  if (!held) return null;
+  return () => store.transact(() => { if (reservation(path)?.token === note.token) rmSync(file, { force: true }); });
+}
+
 /** What a kept checkout drops once its run ends (only where .gitignore hides it): dependencies and build output. */
 export const SLIM_NAMES: readonly string[] = ["node_modules", "dist", "build", "out", ".next", ".nuxt", ".svelte-kit", ".turbo", ".parcel-cache", "coverage", "target"];
 
@@ -157,6 +195,8 @@ export function recordWorktreeProcess(store: Store, path: string, runner: string
 
 /** Read-only occupancy witness shared with stop settlement. */
 export function worktreeProcessOccupancy(path: string): { held: true; by: number } | { held: false } {
+  const reserved = reservation(path);
+  if (reserved !== null && (reserved.pid !== process.pid || reserved.host !== hostname()) && reservationAlive(reserved)) return { held: true, by: reserved.pid };
   const note = join(path, MARKER);
   if (!existsSync(note)) return { held: false };
 
@@ -227,6 +267,9 @@ export async function saveWorkPatch(runner: Runner, path: string, file: string, 
 export class WorktreePool {
   private readonly runner: Runner;
 
+  /** Carried to the independent storage sweep process. */
+  get root(): string { return this.options.root; }
+
   constructor(
     private readonly store: Store,
     private readonly options: PoolOptions,
@@ -285,10 +328,11 @@ export class WorktreePool {
 
   async lease(request: LeaseRequest): Promise<LeaseResult> {
     const target = worktreePath(this.options.root, request.repo, request.branch);
-    if (busy.get(target) === "removing") return { ok: false, reason: "in-use", message: `${target} is being removed; try again in a moment` };
-    const mine = !busy.has(target);
-    if (mine) busy.set(target, "leasing");
-    try { return await this.leaseNow(request); } finally { if (mine) busy.delete(target); }
+    if (busy.has(target)) return { ok: false, reason: "in-use", message: `${target} is busy; try again in a moment` };
+    const release = reserveCheckout(this.store, target);
+    if (release === null) return { ok: false, reason: "in-use", message: `${target} is busy; try again in a moment` };
+    busy.set(target, "leasing");
+    try { return await this.leaseNow(request); } finally { release(); busy.delete(target); }
   }
 
   private async leaseNow(request: LeaseRequest): Promise<LeaseResult> {
@@ -729,27 +773,34 @@ export class WorktreePool {
    * lease since keeps it) and `inspect` finds it clean. Only the working copy goes: its branch, and so every commit,
    * stays, and a later lease of the same branch makes a new one. At most `max` go per pass.
    */
-  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean, max = Infinity): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
+  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
     const removed: WorktreeRow[] = [];
     const kept: { path: string; why: KeptWhy }[] = [];
     const idle = (row: WorktreeRow | null, releasedAt: string) =>
       row !== null && row.runner === null && row.releasedAt === releasedAt && !this.inUse(row.path).held;
     for (const row of rows) {
       if (removed.length >= max) break;
-      if (row.releasedAt === null || row.runner !== null || busy.has(row.path) || !wanted(row, false)) continue;
+      if (row.releasedAt === null || row.runner !== null || busy.has(row.path)) continue;
+      const selected = wanted(row, false);
+      if (!(typeof selected === "boolean" ? selected : await selected)) continue;
       if (!existsSync(row.path) || !idle(row, row.releasedAt)) continue;
       const found = await this.inspect(row.path);
       if (found !== "clean") { kept.push({ path: row.path, why: found }); continue; }
       if (busy.has(row.path)) continue;
+      const release = reserveCheckout(this.store, row.path);
+      if (release === null) continue;
       busy.set(row.path, "removing");
       try {
         // A lease, or a task coming back, since the listing wins: look again right before removing.
         const now = this.store.getWorktree(row.path);
-        if (!idle(now, row.releasedAt) || !wanted(now as WorktreeRow, true)) continue;
+        if (!idle(now, row.releasedAt)) continue;
+        // Landed cleanup rechecks Git here; existing synchronous guards keep their synchronous path.
+        const allowed = wanted(now as WorktreeRow, true);
+        if (!(typeof allowed === "boolean" ? allowed : await allowed)) continue;
         const gone = await this.removeWorkingCopy(row);
         if (!gone) { kept.push({ path: row.path, why: "git refused" }); continue; }
         removed.push(row);
-      } finally { busy.delete(row.path); }
+      } finally { release(); busy.delete(row.path); }
     }
     return { removed, kept };
   }
@@ -768,6 +819,8 @@ export class WorktreePool {
     const drop = listed.stdout.split("\0").filter(one => one.endsWith("/")).map(one => one.slice(0, -1))
       .filter(one => { const name = one.split("/").at(-1)!; return SLIM_NAMES.includes(name) && (deps || name !== "node_modules"); });
     if (drop.length === 0) return { ok: true, dropped: [], bytes: 0 };
+    const release = reserveCheckout(this.store, row.path);
+    if (release === null) return { ok: false, message: `${row.path} is in use` };
     busy.set(row.path, "removing");
     const note = join(row.path, MARKER);
     let held = false;
@@ -782,6 +835,7 @@ export class WorktreePool {
       return { ok: true, dropped: drop, bytes: [...sizes.values()].reduce((sum, one) => sum + one, 0) };
     } finally {
       if (held) rmSync(note, { force: true });
+      release();
       busy.delete(row.path);
     }
   }
@@ -796,14 +850,18 @@ export class WorktreePool {
     if (row.releasedAt === null || row.runner !== null || busy.has(path)) return { ok: false, message: `${path} is in use — it can't be discarded now` };
     const occupied = this.inUse(path);
     if (occupied.held) return { ok: false, message: `${path} is being used by process ${occupied.by} — it can't be discarded now` };
+    const release = reserveCheckout(this.store, path);
+    if (release === null) return { ok: false, message: `${path} is in use` };
     busy.set(path, "removing");
     try {
+      const fresh = this.store.getWorktree(path);
+      if (fresh === null || fresh.runner !== null || fresh.releasedAt !== row.releasedAt || this.inUse(path).held) return { ok: false, message: `${path} is in use` };
       if (!existsSync(path)) {
         this.store.transact(() => { const still = this.store.getWorktree(path); if (still !== null && still.runner === null && still.releasedAt === row.releasedAt) this.store.forgetWorktree(path); });
         return { ok: true, row };
       }
       return (await this.removeWorkingCopy(row)) ? { ok: true, row } : { ok: false, message: `git would not remove ${path}` };
-    } finally { busy.delete(path); }
+    } finally { release(); busy.delete(path); }
   }
 
   /** Remove one idle checkout's working copy (the caller holds it in `busy`) and forget its row. */

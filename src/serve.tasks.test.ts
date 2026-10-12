@@ -2241,7 +2241,7 @@ describe("the phase route on the console (v47): one projection on the task page,
   });
 });
 
-describe("/peek: every live agent in the console (peek)", () => {
+describe("/peek: every live agent in the console, now the Agents board", () => {
   let store: Store;
   let server: Server;
   let base: string;
@@ -2272,7 +2272,7 @@ describe("/peek: every live agent in the console (peek)", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("one pane per live run with its stage and transcript tail, a poller per pane, and the set of runs as a fragment; signed-out is a redirect", async () => {
+  test("Peek opens the Agents board, whose opened agent reads its sanitized live transcript; signed-out is a redirect", async () => {
     const { openLiveLog } = await import("./live.js");
     store.createTask({ id: "t-peek", title: "Harden webhook retries" }, T0);
     const ref = store.refFor("built-in", "t-peek").id;
@@ -2291,25 +2291,27 @@ describe("/peek: every live agent in the console (peek)", () => {
     expect(anonymous.status).toBe(303);
 
     const cookie = await login();
-    const page = await (await fetch(`${base}/peek`, { headers: { cookie } })).text();
-    expect(page).toContain("Harden webhook retries");
-    expect(page).toContain("night-shift-1 · builder · agent running");
-    expect(page).toContain("Reading the retry loop now.");
-    expect(page).toContain("→ running a command");
-    expect(page).not.toContain("cat secrets");
-    expect(page).toContain(`id="live-transcript-${run}"`);
-    expect(page).toContain(`"/r/${run}"+"?fragment=transcript`);
-
-    const fragment = await (await fetch(`${base}/peek?fragment=1`, { headers: { cookie } })).json();
-    expect(fragment).toEqual({ runs: [run] });
+    // Peek became the Agents board: the old address opens it.
+    const peek = await fetch(`${base}/peek`, { headers: { cookie }, redirect: "manual" });
+    expect(peek.headers.get("location")).toBe("/agents");
+    const page = await (await fetch(`${base}/agents?run=${run}`, { headers: { cookie } })).text();
+    const view = workspaceOf(page).view as import("./browser-workspace.js").BrowserAgentsView;
+    expect(view.groups.flatMap(group => group.rows.map(row => [row.title, row.agent]))).toEqual([["Harden webhook retries", "Codex"]]);
+    // The opened agent reads its transcript through the run page's own window: our words, never the command.
+    // No pool configured here: the live look at its checkout says where it can be read rather than a server error.
+    expect(view.selected).toMatchObject({ runId: run, transcript: `/r/${run}?fragment=transcript`, peek: null });
+    const transcript = await (await fetch(`${base}${view.selected!.transcript}&from=0`, { headers: { cookie } })).json() as { text: string };
+    expect(transcript.text).toContain("Reading the retry loop now.");
+    expect(transcript.text).toContain("→ running a command");
+    expect(transcript.text).not.toContain("cat secrets");
 
     // The run page of a non-claude run carries the transcript poller too.
     const runPage = await (await fetch(`${base}/r/${run}`, { headers: { cookie } })).text();
     expect(runPage).toContain("fragment=transcript");
 
     store.finishRun(run, { outcome: "built", now: new Date() });
-    const empty = await (await fetch(`${base}/peek`, { headers: { cookie } })).text();
-    expect(empty).toContain("No agent is working right now");
+    const done = workspaceOf(await (await fetch(`${base}/agents`, { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserAgentsView;
+    expect(done.groups.map(group => [group.key, group.rows[0]!.label])).toEqual([["done", "Done"]]);
   });
 });
 

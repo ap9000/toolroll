@@ -262,3 +262,39 @@ test("PostHog connected with write access says why research can't use it, and Re
   expect(after).not.toContain("tool-note");
   expect(after).not.toContain("Reconnect read-only");
 });
+
+test("Settings → Project's Build access says what a build gets, names only tools that load, and links to Manage tools", async () => {
+  const cookie = await login();
+  const projectPage = async () => (await fetch(`${base}/settings/project?repo=${encodeURIComponent(BENTO)}`, { headers: { cookie } })).text();
+  const section = (html: string) => /<section class="build-access"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+  // No opt-in: no extra tools, the one action, and the user's own setup said to stay out.
+  const empty = section(await projectPage());
+  expect(empty).toContain("<h2 id=\"build-access-title\">Build access</h2>");
+  expect(empty).toContain("Builds work in their task's folder, with no extra tools.");
+  expect(empty).toContain("hooks, plugins and MCP servers don&#39;t load");
+  expect(empty).toContain(`<a class="manage-tools" href="/settings/tools?repo=${encodeURIComponent(BENTO)}">Manage tools</a>`);
+  expect((empty.match(/<a /g) ?? []).length).toBe(1);
+
+  // Named tools: one ready, one missing its secret (named on the page, never its value).
+  const secret = ["lin", "api", "9c".repeat(16)].join("_");
+  const long = "internal-documentation-search-server-x40";
+  expect(addToolTo(store, BENTO, { name: "linear", transport: "stdio", command: "npx", args: ["linear-mcp"], url: null, secrets: [{ name: "LINEAR_TOKEN", optional: false }], bearer: null, headerSecrets: {}, about: "Linear" }, "custom", "alex", T0, { home })).toMatchObject({ ok: true });
+  setToolSecrets(BENTO, "linear", { LINEAR_TOKEN: secret }, home);
+  expect(addToolTo(store, BENTO, { name: long, transport: "stdio", command: "npx", args: ["docs-mcp"], url: null, secrets: [{ name: "DOCS_TOKEN", optional: false }], bearer: null, headerSecrets: {}, about: "Docs" }, "custom", "alex", T0, { home })).toMatchObject({ ok: true });
+  const named = section(await projectPage());
+  expect(named).toContain('Builds work in their task\'s folder, with one tool: <span class="tool-name">linear</span>.');
+  expect(named).toContain(`<li><span class="tool-name">${long}</span> <span class="meta">· Needs DOCS_TOKEN</span></li>`);
+  expect(named).not.toContain(secret);
+});
+
+test("Build access says plainly when a project's tools can't be read, and keeps the way to fix them", async () => {
+  const { projectSettingsHtml } = await import("./project-delete-ui.js");
+  const { htmlString } = await import("./html.js");
+  const view = { repo: BENTO, name: "bentoportfolio", holdings: { tasks: 0, versions: 0, runs: 0, chats: 0, flows: 0, cards: 0, subagents: 0 }, running: [], canDelete: false };
+  const failed = htmlString(projectSettingsHtml({ ...view, access: { problem: "Couldn't read this project's tools right now." } } as never, {}));
+  expect(failed).toContain('<p class="problem" role="alert">Couldn&#39;t read this project&#39;s tools right now.</p>');
+  expect(failed).toContain(">Manage tools</a>");
+  // Many tools are counted once, in one sentence.
+  const many = htmlString(projectSettingsHtml({ ...view, access: { tools: ["a", "b", "c"].map(name => ({ name, loads: true, words: "Working · 2 tools" })) } } as never, {}));
+  expect(many).toContain('with 3 tools: <span class="tool-name">a</span>, <span class="tool-name">b</span>, <span class="tool-name">c</span>.');
+});
