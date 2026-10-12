@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.60 — 2026-10-11
+
+- **Steer a running build.** A note now reaches the agent while it works, and
+  shows when the agent has read it. Notes it misses go to the next attempt.
+- **One inbox for the lead.** Every update, including cancellations, reaches
+  the lead through one inbox.
+- **Lighter status work.** Status sweeps skip when nothing changed, and
+  `--version` and `--help` answer instantly.
+- **Signal tokens.** The console's colours and type come from the generated
+  Signal design tokens.
+
 ## 0.9.59 — 2026-10-10
 
 - **Safer deploys.** A deploy that fails before the swap releases its own
