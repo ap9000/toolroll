@@ -386,7 +386,8 @@ export async function invokeAgent(
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
   // The tools were chosen for the fence decided above: a launch that got any other starts nothing.
-  if (tools !== null && fenced.method !== containment.fence) {
+  // Only a prepared project-tool broker depends on the earlier decision. Empty Claude configs also have a privateDir.
+  if (tools?.serverPids !== undefined && fenced.method !== containment.fence) {
     tools.cleanup();
     codexHome?.cleanup();
     removeAgentDatabase(isolatedDb.dir);

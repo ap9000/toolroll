@@ -1183,13 +1183,14 @@ describe("checkout Git preflight", () => {
     } finally { store.close(); }
   });
 
-  test("a launch whose fence differs from the one its tools were chosen for starts nothing", async () => {
+  test.each([true, false])("a changed fence refuses exactly when project tools were prepared: %s", async hasTools => {
     const store = openStore(join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
     bindCheckout(store, tree);
     const cleanup = vi.fn();
+    mkdirSync(join(providerHome, "empty-config"));
     // The tools are prepared for the macOS sandbox, then the fence comes back empty: the run would have none.
-    vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: {}, omitEnv: [], cleanup });
+    vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: {}, omitEnv: [], cleanup, privateDir: join(providerHome, "empty-config"), ...(hasTools ? { serverPids: () => [] } : {}) });
     vi.mocked(fencing.agentFence).mockReturnValue([]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
     try {
@@ -1199,11 +1200,14 @@ describe("checkout Git preflight", () => {
         branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
       const runner = vi.fn(async () => OK);
       const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner, cwd: tree });
-      expect(result).toMatchObject({ kind: "refused", reason: "containment", diagnostic: expect.stringContaining("fence changed") });
+      if (hasTools) expect(result).toMatchObject({ kind: "refused", reason: "containment", diagnostic: expect.stringContaining("fence changed") });
+      else expect(result.kind).toBe("ran");
       expect(vi.mocked(projectTools.prepareRunTools).mock.calls[0]![3].containment).toEqual({ platform: process.platform, fence: "macos-sandbox" });
-      expect(runner).not.toHaveBeenCalled();
+      if (hasTools) {
+        expect(runner).not.toHaveBeenCalled();
+        expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+      } else expect(runner).toHaveBeenCalled();
       expect(cleanup).toHaveBeenCalledOnce();
-      expect(store.getRun(runId)?.providerStartedAt).toBeNull();
     } finally { store.close(); }
   });
 

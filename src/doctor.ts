@@ -118,20 +118,45 @@ function systemdParts(content: string): { env: [string, string][]; args: string[
   return { env, args, files };
 }
 
-/** The `toolroll daemon install` that rewrites a watch's definition as Toolroll writes it now, when this is one. */
+/** Only understood options may enter remediation. Free-form values are never reflected, even when they
+ * look like paths or runner names: any one could actually contain a credential. */
 function reinstallCommand(args: readonly string[]): string | null {
   const at = args.indexOf("watch");
   if (at < 0) return null;
-  const rest = args.slice(at + 1);
-  // An inline token is replaced by its file: install writes the token to that file, never the unit.
+  const freeform = new Set(["--runner", "--repo", "--token-file", "--pool", "--model", "--repair-model", "--plan-model"]);
+  const numeric = new Set(["--max", "--turns", "--tick-every", "--bridge-every", "--reconcile-every", "--max-open-decisions"]);
+  const enums: Record<string, readonly string[]> = {
+    "--provider": ["claude", "codex", "gemini", "openrouter"],
+    "--plan-provider": ["claude", "codex", "gemini", "openrouter"],
+    "--containment": ["observed", "preferred", "required"],
+  };
   const kept: string[] = [];
-  for (let index = 0; index < rest.length; index += 1) {
-    if (rest[index] === "--token") { index += 1; kept.push("--token-file", TOKEN_FILE); continue; }
-    kept.push(rest[index]!);
+  let rejected = false;
+  for (let index = at + 1; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const equal = arg.indexOf("=");
+    const flag = equal < 0 ? arg : arg.slice(0, equal);
+    const value = equal < 0 ? args[index + 1] : arg.slice(equal + 1);
+    const known = freeform.has(flag) || numeric.has(flag) || Object.hasOwn(enums, flag);
+    if (equal < 0 && (known || CREDENTIAL_FLAG.test(flag)) && value !== undefined && !value.startsWith("-")) index += 1;
+    if (flag === "--token") { kept.push("--token-file", "<set-again>"); continue; }
+    if (!known) { rejected = true; continue; }
+    const safe = value !== undefined && scanForSecrets(value).length === 0;
+    const literal = safe && numeric.has(flag) && /^[0-9]{1,8}$/.test(value) ? String(Number(value))
+      : safe ? enums[flag]?.find(candidate => candidate === value) : undefined;
+    kept.push(flag, literal ?? "<set-again>");
   }
-  return ["toolroll", "daemon", "install", ...kept].map(part => part === TOKEN_FILE ? part : quote(part)).join(" ");
+  if (rejected) kept.push("<set-again>");
+  return ["toolroll", "daemon", "install", ...kept].join(" ");
 }
-const TOKEN_FILE = "<file holding the runner token, mode 0600>";
+
+function reinstallSteps(command: string): string[] {
+  return [
+    `Prepare this reinstall command: ${command}`,
+    "Replace each <set-again> beside a flag with its non-secret setting. For --token-file, use the path to the runner token file (mode 0600). Unknown or credential arguments were omitted; remove the final standalone placeholder and re-enter only supported non-secret options from `toolroll daemon install --help`. Never put a key or token value in the command.",
+    "Save provider keys with `toolroll keys set` and project tool secrets on the project's Tools page before reinstalling. Review the completed command, then run it yourself; nothing has been changed.",
+  ];
+}
 
 /** One shell word, quoted when it needs to be. */
 const quote = (part: string) => /^[A-Za-z0-9@%+=:,./_-]+$/.test(part) ? part : `'${part.replace(/'/g, "'\\''")}'`;
@@ -174,15 +199,18 @@ export async function processCredentialNames(pid: number, deps: { platform: Node
     ]);
     if (plain.code !== 0 || full.code !== 0 || full.stdout.trim() === "") return { ok: false, problem: `its environment couldn't be read with ps (exit ${full.code})` };
     const command = plain.stdout.replace(/\n$/, ""), whole = full.stdout.replace(/\n$/, "");
-    const tail = whole.startsWith(command) ? whole.slice(command.length) : whole;
-    // ps joins NAME=value pairs with spaces: each name starts at a space, and its value runs to the next name.
-    const starts = [...tail.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)];
-    const pairs = starts.map((match, index) => {
-      const from = match.index! + match[0].length;
-      const to = index + 1 < starts.length ? starts[index + 1]!.index! : tail.length;
-      return [match[1]!, tail.slice(from, to).trim()] as [string, string];
-    });
-    return { ok: true, names: credentialNames(pairs) };
+    if (command === "" || !whole.startsWith(command) || (whole.length > command.length && whole[command.length] !== " ")) {
+      return { ok: false, problem: "the process command changed or its environment boundary is unclear" };
+    }
+    const tail = whole.slice(command.length).trimStart();
+    if (tail === "") return { ok: true, names: [] };
+    // ps has no quoting or NUL separators. A second NAME= might be a new entry OR part of a value.
+    // Never manufacture a variable name from that value, or call an ambiguous environment clean.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(tail) || /\s[A-Za-z_][A-Za-z0-9_]*=/.test(tail)) {
+      return { ok: false, problem: "ps returned ambiguous environment boundaries; values may contain spaces or NAME= text" };
+    }
+    const pair = assignment(tail);
+    return { ok: true, names: credentialNames(pair === null ? [] : [pair]) };
   }
   return { ok: false, problem: `Toolroll can't read a process's environment on ${deps.platform}` };
 }
@@ -263,20 +291,26 @@ export async function auditServiceEnvironment(deps: DoctorDeps = {}): Promise<Do
   }
 
   for (const service of services) {
-    report.checked.push(`${service.label}: its definition (${service.unitPath}).`);
+    const unreadablePlist = platform === "darwin" && (!/<plist\b/.test(service.unitContent) || !/<\/plist>/.test(service.unitContent) || service.unitContent.startsWith("bplist"));
+    if (unreadablePlist) {
+      report.unreadable.push({ where: `${service.label}'s definition (${service.unitPath})`,
+        problem: "this launchd definition is binary or unreadable XML",
+        steps: [`Inspect it locally with /usr/bin/plutil -p ${quote(service.unitPath)} and remove credential values before reinstalling; do not share that output.`] });
+    }
+    if (!unreadablePlist) report.checked.push(`${service.label}: its definition (${service.unitPath}).`);
     const reinstall = reinstallCommand(platform === "darwin" ? plistParts(service.unitContent).args : systemdParts(service.unitContent).args);
-    if (platform === "darwin") {
+    if (platform === "darwin" && !unreadablePlist) {
       const parts = plistParts(service.unitContent);
       const names = credentialNames(parts.env);
       const inline = commandCredentials(parts.args);
       find(`${service.label}'s definition (${service.unitPath})`, [...names, ...inline], [
-        ...(reinstall !== null ? [`Reinstall it, which writes a definition without them: ${reinstall}`]
+        ...(reinstall !== null ? reinstallSteps(reinstall)
           : [...names.map(name => `/usr/libexec/PlistBuddy -c ${quote(`Delete :EnvironmentVariables:${name}`)} ${quote(service.unitPath)}`),
             ...(inline.length > 0 ? [`Remove ${inline.join(", ")} from ProgramArguments in ${service.unitPath}.`] : []),
             `launchctl bootout gui/${uid}/${service.label}`, `launchctl bootstrap gui/${uid} ${quote(service.unitPath)}`]),
         ...keySteps(names),
       ]);
-    } else {
+    } else if (platform === "linux") {
       const parts = systemdParts(service.unitContent);
       const dropins = `${service.unitPath}.d`;
       let dropinFiles: string[] = [];
@@ -296,7 +330,7 @@ export async function auditServiceEnvironment(deps: DoctorDeps = {}): Promise<Do
         const names = credentialNames(source.env);
         const inline = commandCredentials(source.args);
         find(`${service.label}: ${source.where}`, [...names, ...inline], [
-          ...(source.where === service.unitPath && reinstall !== null ? [`Reinstall it, which writes a definition without them: ${reinstall}`]
+          ...(source.where === service.unitPath && reinstall !== null ? reinstallSteps(reinstall)
             : [`Remove ${[...names, ...inline].join(", ")} from ${source.where}.`]),
           ...keySteps(names),
           "systemctl --user daemon-reload", `systemctl --user restart ${service.label}`,
@@ -305,7 +339,7 @@ export async function auditServiceEnvironment(deps: DoctorDeps = {}): Promise<Do
     }
 
     const status = await daemonStatus(service, run);
-    if (status.state !== "running") { report.notes.push(`${service.label} isn't running (${status.detail}); its definition was checked.`); continue; }
+    if (status.state !== "running") { report.notes.push(`${service.label} isn't running (${status.state}); see its definition check above.`); continue; }
     if (status.pid === null) {
       report.unreadable.push({ where: `${service.label}'s running process`, problem: "its process id is unknown", steps: [platform === "darwin" ? `launchctl print gui/${uid}/${service.label}` : `systemctl --user status ${service.label}`] });
       continue;

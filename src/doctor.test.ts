@@ -100,7 +100,7 @@ describe("toolroll doctor on macOS", () => {
       if (file === "launchctl" && args[0] === "getenv") return args[1] === "OPENAI_API_KEY" ? { code: 0, stdout: `${values.inherited}\n` } : { code: 0, stdout: "\n" };
       if (file === "launchctl" && args[0] === "print") return { code: 0, stdout: "state = running\n\tpid = 4242\n" };
       if (file === "/bin/ps" && args[0] === "-ww") return { code: 0, stdout: "/usr/local/bin/node /app/controller-service.js watch\n" };
-      if (file === "/bin/ps") return { code: 0, stdout: `/usr/local/bin/node /app/controller-service.js watch PATH=/usr/bin HOME=/Users/o GEMINI_API_KEY=${values.live} with spaces LANG=C\n` };
+      if (file === "/bin/ps") return { code: 0, stdout: `/usr/local/bin/node /app/controller-service.js watch GEMINI_API_KEY=${values.live} with spaces\n` };
       return undefined;
     });
     const lines: string[] = [];
@@ -122,7 +122,7 @@ describe("toolroll doctor on macOS", () => {
     expect(inherited!.steps).toEqual(expect.arrayContaining(["launchctl unsetenv OPENAI_API_KEY", `launchctl kickstart -k gui/501/${label}`,
       "Keep the codex key in Toolroll instead: `toolroll keys set codex < <file holding the key>` (then delete that file)."]));
     // A watch is rewritten by its own installer, from the flags its definition carries; the inline token becomes its file.
-    expect(definition!.steps[0]).toBe("Reinstall it, which writes a definition without them: toolroll daemon install --runner shop --token-file <file holding the runner token, mode 0600> --repo /work/shop");
+    expect(definition!.steps[0]).toBe("Prepare this reinstall command: toolroll daemon install --runner <set-again> --token-file <set-again> --repo <set-again>");
     expect(definition!.steps).toEqual(expect.arrayContaining(["Keep the claude key in Toolroll instead: `toolroll keys set claude < <file holding the key>` (then delete that file).",
       "Set a project tool's secret on that project's Tools page; anything else the service doesn't need can simply go."]));
     expect(live!.steps.at(-1)).toBe(`launchctl kickstart -k gui/501/${label}`);
@@ -140,7 +140,7 @@ describe("toolroll doctor on macOS", () => {
     const { run } = supervisor((file, args) => {
       if (file === "launchctl" && args[0] === "getenv") return { code: 0, stdout: "\n" };
       if (file === "launchctl" && args[0] === "print") return { code: 0, stdout: "pid = 77\n" };
-      if (file === "/bin/ps") return { code: 0, stdout: `node watch${args[0] === "-wwE" ? " PATH=/usr/bin HOME=/Users/o" : ""}\n` };
+      if (file === "/bin/ps") return { code: 0, stdout: `node watch${args[0] === "-wwE" ? " PATH=/usr/bin" : ""}\n` };
       return undefined;
     });
     const ambient = marker("ambient-anthropic");
@@ -170,7 +170,7 @@ describe("toolroll doctor on macOS", () => {
   // The real read: ps -E reads KERN_PROCARGS2. It is setuid, so inside a sandbox it can't run and this proves nothing.
   test.skipIf(process.platform !== "darwin" || spawnSync("/bin/ps", ["-p", String(process.pid)]).status !== 0)("reads a real process's environment through KERN_PROCARGS2, by name only", async () => {
     const value = marker("procargs");
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { env: { PATH: "/usr/bin:/bin", SYNTHETIC_DOCTOR_TOKEN: value }, stdio: "ignore" });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { env: { SYNTHETIC_DOCTOR_TOKEN: value }, stdio: "ignore" });
     try {
       await new Promise(resolve => setTimeout(resolve, 200));
       const read = await processCredentialNames(child.pid!, { platform: "darwin", run: runCommand });
@@ -217,7 +217,7 @@ describe("toolroll doctor on Linux", () => {
       [`${label}'s running process (pid 777)`, ["OPENROUTER_API_KEY"]],
     ]);
     expect(report.findings[0]!.steps).toEqual(expect.arrayContaining(["systemctl --user unset-environment ANTHROPIC_API_KEY", `systemctl --user restart ${label}`]));
-    expect(report.findings[1]!.steps[0]).toBe("Reinstall it, which writes a definition without them: toolroll daemon install --runner shop --token-file /h/.toolroll/runner-token --repo /work/shop");
+    expect(report.findings[1]!.steps[0]).toBe("Prepare this reinstall command: toolroll daemon install --runner <set-again> --token-file <set-again> --repo <set-again>");
     expect(report.findings[2]!.steps).toEqual([`Remove SENTRY_ACCESS_TOKEN from ${dropin}.`, "Set a project tool's secret on that project's Tools page; anything else the service doesn't need can simply go.",
       "systemctl --user daemon-reload", `systemctl --user restart ${label}`]);
     expect(report.findings[4]!.steps).toEqual(expect.arrayContaining(["Keep the openrouter key in Toolroll instead: `toolroll keys set openrouter < <file holding the key>` (then delete that file)."]));
@@ -251,4 +251,73 @@ test("a platform the doctor can't check is never reported clean", async () => {
   expect(report.ok).toBe(false);
   expect(report.unreadable[0]).toMatchObject({ where: "services on win32", problem: "Toolroll can't check its services on win32" });
   expect(calls).toEqual([]);
+});
+
+describe("doctor remediation never reflects service argument values", () => {
+  test.each(["darwin", "linux"] as const)("redacts separate, equals, unknown and key-shaped arguments in text and JSON on %s", async platform => {
+    const values = {
+      token: marker("equals-token"), api: marker("api-key"), unknown: marker("unknown"),
+      key: `ghp_${"R".repeat(36)}`, runner: marker("runner"), path: marker("path"), numeric: marker("numeric"),
+      flag: marker("unknown-flag"),
+    };
+    const args = ["/usr/bin/node", "/app/cli.js", "watch", `--token=${values.token}`, "--api-key", values.api,
+      "--note", values.key, `--unknown=${values.unknown}`, `--${values.flag}`, "--runner", values.runner,
+      `--repo=${values.path}`, `--pool=${values.key}`, `--max=${values.numeric}`, "--turns=12", "--tick-every", "60000",
+      "--provider=claude", "--containment", "required"];
+    const planned = planDaemon({ platform, bin: process.execPath, binArgs: [], runner: "shop", repo: home, configDir: join(home, ".toolroll"), watchFlags: [], home });
+    if ("error" in planned) throw new Error(planned.error);
+    const dir = platform === "darwin" ? join(home, "Library", "LaunchAgents") : join(home, ".config", "systemd", "user");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(planned.unitPath, platform === "darwin"
+      ? `<plist><dict><key>ProgramArguments</key><array>${args.map(arg => `<string>${arg}</string>`).join("")}</array></dict></plist>`
+      : `[Service]\nExecStart=${args.join(" ")}\n`);
+    const before = snapshot(home);
+    const { run, calls } = supervisor((file, args) => args[0] === "getenv" || args[1] === "show-environment" ? { code: 0, stdout: "" } : undefined);
+    for (const mode of [[], ["--json"]]) {
+      const output: string[] = [];
+      expect(await runDoctorCommand(mode, line => output.push(line), { platform, home, run, env: {} })).toBe(1);
+      const text = output.join("\n");
+      for (const value of Object.values(values)) expect(text).not.toContain(value);
+      expect(text).toContain("--runner <set-again> --repo <set-again> --pool <set-again> --max <set-again> --turns 12 --tick-every 60000 --provider claude --containment required <set-again>");
+      expect(text).toContain("Unknown or credential arguments were omitted");
+      expect(text).toContain("Never put a key or token value in the command");
+      expect(text).not.toContain("writes a definition without them");
+    }
+    expect(snapshot(home)).toEqual(before);
+    expect(calls.filter(call => !READ_ONLY.test(call))).toEqual([]);
+  });
+
+  test("a binary launchd definition is unchecked in both modes, never clean or printed", async () => {
+    const dir = join(home, "Library", "LaunchAgents");
+    mkdirSync(dir, { recursive: true });
+    // Valid binary plist containing EnvironmentVariables.SYNTHETIC_TOKEN (generated with plistlib).
+    const secret = marker("binary-token");
+    writeFileSync(join(dir, "com.toolroll.watch.shop.plist"), Buffer.from("YnBsaXN0MDDRAQJfEBRFbnZpcm9ubWVudFZhcmlhYmxlc9EDBF8QD1NZTlRIRVRJQ19UT0tFTl8QLGRvY3Rvci1iaW5hcnktdG9rZW4tNWY1ZjVmNWY1ZjVmNWY1ZjVmNWY1ZjVmCAsiJTcAAAAAAAABAQAAAAAAAAAFAAAAAAAAAAAAAAAAAAAAZg==", "base64"));
+    const before = snapshot(home);
+    const { run } = supervisor((file, args) => args[0] === "getenv" ? { code: 0, stdout: "" } : undefined);
+    for (const mode of [[], ["--json"]]) {
+      const output: string[] = [];
+      expect(await runDoctorCommand(mode, line => output.push(line), { platform: "darwin", home, run, env: {} })).toBe(1);
+      expect(output.join("\n")).toContain("binary or unreadable XML");
+      expect(output.join("\n")).not.toContain(secret);
+      expect(output.join("\n")).not.toContain("No secrets found");
+    }
+    expect(snapshot(home)).toEqual(before);
+  });
+});
+
+describe("macOS process environment boundaries", () => {
+  test.each([
+    { plain: "node watch", full: `node watch NOTE=words before ghp_${"S".repeat(36)} after words`, expected: { ok: true, names: ["NOTE"] } },
+    { plain: "node watch", full: `node watch NOTE=ordinary words SYNTHETIC_TOKEN=${marker("embedded-assignment")}`, expected: { ok: false } },
+    { plain: "node watch", full: `node changed TOKEN=${marker("changed-command")}`, expected: { ok: false } },
+    { plain: "", full: `TOKEN=${marker("empty-command")}`, expected: { ok: false } },
+    { plain: "node watch", full: `node watcher TOKEN=${marker("partial-command")}`, expected: { ok: false } },
+  ])("preserves values or refuses ambiguous output: $expected.ok ($plain)", async ({ plain, full, expected }) => {
+    const { run } = supervisor((file, args) => ({ code: 0, stdout: `${args[0] === "-ww" ? plain : full}\n` }));
+    const result = await processCredentialNames(42, { platform: "darwin", run });
+    expect(result).toMatchObject(expected);
+    expect(JSON.stringify(result)).not.toContain("ghp_");
+    expect(JSON.stringify(result)).not.toContain(marker("embedded-assignment"));
+  });
 });
