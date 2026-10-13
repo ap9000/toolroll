@@ -18,7 +18,7 @@ import { describeStandingOrder } from './flow-schedule.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
 import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
-import { activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
+import { prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
 import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
 import { projectName } from './project.js';
@@ -318,7 +318,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     }
     const asked = parseUnattendedAsk({ days: text('days') ?? '1', budget: text('budget') ?? '', runs: text('runs') ?? '', include: text('include') ?? '' });
     if (!asked.ok) return fail('usage', asked.message, EXIT.usage);
-    const signed = signUnattended(store, { flow: flow.id, signer: who, ask: asked.ask }, now);
+    const signed = await signUnattended(store, { flow: flow.id, signer: who, ask: asked.ask }, now);
     if (!signed.ok) return refuse(flow.repo, 'refused', `${signed.message} Nothing was changed.`);
     record(flow.repo, 'accepted', `flow #${flow.id} on until ${signed.grant.absoluteExpiry}`);
     return ok({ applied: true, unattended: unattendedJson(store, flow, now) }, [
@@ -417,6 +417,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     }
     const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir);
     if (!made.ok) return refuse(flow.repo, 'invalid-trigger', made.message);
+    await prepareUnattendedCandidates(store, flow.id);
     record(flow.repo, 'accepted', `flow #${flow.id} trigger #${made.id}`);
     settle(flow.repo);
     // A webhook's address (and GitHub's signing secret) is shown this once, never stored readable.

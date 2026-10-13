@@ -3,7 +3,7 @@
  * they read, a wrong password and a stale page are refused, and revoking is one click with no password.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -13,11 +13,12 @@ import { createDecisionServer } from "./serve.js";
 import { flowFromSteps } from "./flows.js";
 import { T0, workspaceOf } from "../test/serve-kit.js";
 
-const REPO = "/repo/shop";
+let REPO: string;
 let store: Store, server: Server, base: string, home: string, token: string, flow: number;
 
 beforeEach(async () => {
   home = realpathSync(mkdtempSync(join(tmpdir(), "so-flow-unattended-")));
+  REPO = home;
   store = openStore(":memory:");
   const added = addApprover(store, "alex", T0);
   if (!added.ok) throw new Error("bootstrap failed");
@@ -70,4 +71,26 @@ test("the owner signs with their password; a wrong password and a stale page cha
   const off = await post(cookie, `/flows/${flow}/unattended-off`, { csrf });
   expect(off).toMatchObject({ status: 200, body: { ok: true, said: "It no longer runs on its own. New cards wait for you.", view: { unattended: { active: null } } } });
   expect(await post(cookie, `/flows/${flow}/unattended-off`, { csrf })).toMatchObject({ status: 409, body: { ok: false } });
+});
+
+
+test("HTTP signing refreshes saved script provenance while page reads leave it alone", async () => {
+  const cookie = await login();
+  const { csrf } = workspaceOf(await (await fetch(`${base}/flows/${flow}`, { headers: { cookie } })).text());
+  writeFileSync(join(home, "entry.mjs"), 'import "./data.mjs";');
+  writeFileSync(join(home, "data.mjs"), 'export default [];');
+  expect(await post(cookie, `/flows/${flow}/scripts`, { csrf, name: "issues", about: "Find issues", file: "entry.mjs", language: "node" })).toMatchObject({ status: 200, body: { ok: true } });
+  expect(await post(cookie, `/flows/${flow}/triggers`, { csrf, trigger: JSON.stringify({ kind: "schedule", schedule: "daily 09:00", script: "issues" }) })).toMatchObject({ status: 200, body: { ok: true } });
+  const read = async () => await (await fetch(`${base}/flows/${flow}?format=json`, { headers: { cookie } })).json() as { flow: { revision: number }; unattended: { schedulesDigest: string; schedules: { id: number; words: string }[] } };
+  const shown = await read();
+  const script = shown.unattended.schedules.find(one => one.words.includes("issues"))!;
+  expect(script).toBeDefined();
+  rmSync(join(home, "data.mjs"));
+  // The view consumes the last computed snapshot, even across repeated page reads.
+  expect((await read()).unattended).toEqual(shown.unattended);
+  const signed = await post(cookie, `/flows/${flow}/unattended`, { csrf, days: "2", password: token,
+    revision: String(shown.flow.revision), schedules: shown.unattended.schedulesDigest, include: String(script.id) });
+  expect(signed).toMatchObject({ status: 409, body: { ok: false } });
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flow_unattended_grant").get()!["n"]).toBe(0);
+  expect((await read()).unattended.schedules.some(one => one.id === script.id)).toBe(false);
 });

@@ -44,7 +44,7 @@ import { takeReply } from "./flow-replies.js";
 import { mailboxAccess, mailCursorOf, mailCursorText, readThroughImap, type MailReader } from "./mailbox.js";
 import type { CodeResult } from "./flow-code.js";
 import { readFlowSecrets } from "./flow-secrets.js";
-import { grantSignsScriptOf, scriptProvenanceOf, scriptRanDigestOf } from "./flow-unattended.js";
+import { prepareUnattendedCandidates, grantSignsScriptOf, scriptProvenanceOf, scriptRanDigestOf } from "./flow-unattended.js";
 import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
@@ -552,7 +552,9 @@ export type TriggerPass = { added: number; checked: number; problems: string[] }
 /** Every trigger in one project that is due: schedules and other flows here, GitHub, Linear and email by asking them. */
 export async function runFlowTriggers(store: Store, repo: string, now: Date, io: TriggerIo): Promise<TriggerPass> {
   const pass: TriggerPass = { added: 0, checked: 0, problems: [] };
-  for (const trigger of store.activeFlowTriggers(repo)) {
+  const triggers = store.activeFlowTriggers(repo);
+  for (const flow of new Set(triggers.map(one => one.flow))) await prepareUnattendedCandidates(store, flow);
+  for (const trigger of triggers) {
     const config = triggerConfigOf(trigger);
     if (config === null) continue;
     try {
@@ -718,7 +720,7 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
   const folder = cleanFolder(scratch, `flow-trigger-${trigger.id}`);
   // Its cards run on their own only if it ran the very code a grant signed: pinned just before and just after the run.
   const pin = scheduled && grantSignsScriptOf(store, flow.id, trigger.id, now) ? () => scriptProvenanceOf(store, flow.repo, script.name) : null;
-  const before = pin === null ? null : pin();
+  const before = pin === null ? null : await pin();
   let ran: CodeResult;
   try {
     ran = await runCode({ script, cwd: folder, root: flow.repo, scratch, shell: io.shell ?? io.gh,
@@ -727,7 +729,7 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
       fence: agentFence({ databaseFile: store.databaseFile(), worktree: folder }) });
   } finally { rmSync(folder, { recursive: true, force: true }); }
   if (ran.state === "failed") return done(false, ran.said.split("\n")[0]!);
-  const ranScript = pin === null ? null : scriptRanDigestOf(before, pin(), script);
+  const ranScript = pin === null ? null : scriptRanDigestOf(before, await pin(), script);
   const items = cardsFromOutput(ran.printed);
   const results = items.slice(0, CARDS_PER_CHECK).map(item => makeCard(store, trigger, config, {
     key: `script:${item.key}`, title: item.title, description: item.description, source: { kind: "script", label: `The ${script.name} script`, url: null }, onTime: scheduled, ranScript,

