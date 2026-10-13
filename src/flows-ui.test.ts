@@ -64,13 +64,13 @@ test("a scheduled flow's trigger says it's paused and what each run files, on de
   expect(trigger!.order).toEqual(["Builds: Refresh the lockfile.", "Not this: No major bumps.", "Every 7 days: up to $5.00", "One at a time: it skips while the last one is unfinished.", "Each run waits for approval under the project's rules."]);
 });
 
-test("runs on its own: the view and the fallback page say until when, and who can't sign reads why", () => {
+test("runs on its own: the view and the fallback page say until when, and who can't sign reads why", async () => {
   const flow = store.getFlow(fixture.flow)!;
   expect(view().unattended).toMatchObject({ active: null, canSign: false, scheduled: false, problem: "This flow has no schedule, so nothing would run on its own." });
   store.addFlowTrigger({ flow: flow.id, kind: "schedule", configJson: JSON.stringify({ kind: "schedule", schedule: "daily 09:00", title: "Checkout", description: null, zone: null }), hookHash: null, cursor: null, nextAt: null, by: "alex" }, now);
   expect(view().unattended).toMatchObject({ active: null, canSign: true, scheduled: true, schedules: [{ words: "“Checkout”, daily 09:00", optional: null }] });
   expect(view().unattended.terms.head[0]).toBe("Cards this flow's own schedule adds file their work approved by alex, without waiting in Needs you.");
-  const signed = signUnattended(store, { flow: flow.id, signer: "alex", ask: { days: 2, budgetMicrousd: null, dailyRunCap: 3 } }, now);
+  const signed = await signUnattended(store, { flow: flow.id, signer: "alex", ask: { days: 2, budgetMicrousd: null, dailyRunCap: 3 } }, now);
   if (!signed.ok) throw new Error(signed.message);
   const shown = view();
   expect(shown.unattended.active).toMatchObject({ until: "2026-10-09T17:00:00.000Z", untilWords: "Oct 9, 17:00 UTC", signedBy: "alex", dailyRunCap: 3, runsToday: 0, covers: ["“Checkout”, daily 09:00"] });

@@ -21,7 +21,7 @@ import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlo
 import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveLinearSigningSecret,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
-import { parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
+import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
 import { keyStatus } from "../keys.js";
 import { kitPageHtml,kitsGalleryHtml } from "../kits-ui.js";
 import { addKitGithubTrigger,addKitSample,kitOf,setUpKit } from "../kits.js";
@@ -537,6 +537,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       let raw: unknown;
       try { raw = JSON.parse(body.get("trigger") ?? "null"); } catch { return answer(400, { ok: false, said: "That trigger couldn't be read." }); }
       const made = addFlowTriggerTo(store, flow, raw, who.name, now, dir);
+      if (made.ok) await prepareUnattendedCandidates(store, flow.id);
       return made.ok ? settle(made.said, made.reveal === null ? {} : { reveal: made.reveal }) : answer(400, { ok: false, said: made.message });
     }
     if (action === "scripts") {
@@ -544,6 +545,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       if (body.get("approve") === "yes") return store.approveFlowScript(flow.repo, body.get("name") ?? "") ? settle("Approved. Zones that run it go on.") : answer(404, { ok: false, said: "That script isn't waiting for approval." });
       if (body.get("remove") === "yes") return store.removeFlowScript(flow.repo, body.get("name") ?? "", who.name, now) ? settle("Script removed. Zones that ran it wait until it's back.") : answer(404, { ok: false, said: "There's no script by that name." });
       const saved = saveScript(store, flow.repo, { name: body.get("name"), about: body.get("about"), body: body.get("body"), timeoutMinutes: body.get("timeoutMinutes"), language: body.get("language"), file: body.get("file") }, who.name, now);
+      if (saved.ok) await prepareUnattendedCandidates(store, flow.id);
       return saved.ok ? settle(saved.said) : answer(400, { ok: false, said: saved.message });
     }
     if (action === "linear-key" || action === "hooks-address") {
@@ -564,7 +566,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "That password isn't right. Nothing was signed." });
       const asked = parseUnattendedAsk({ days: body.get("days"), budget: body.get("budget"), runs: body.get("runs"), include: body.get("include") });
       if (!asked.ok) return answer(400, { ok: false, said: asked.message });
-      const signed = signUnattended(store, { flow: flow.id, signer: who.name, ask: asked.ask, sawRevision: Number(body.get("revision")), sawSchedules: body.get("schedules") ?? "" }, now);
+      const signed = await signUnattended(store, { flow: flow.id, signer: who.name, ask: asked.ask, sawRevision: Number(body.get("revision")), sawSchedules: body.get("schedules") ?? "" }, now);
       return signed.ok ? settle(`Runs on its own until ${untilWords(signed.grant.absoluteExpiry)}.`) : answer(409, { ok: false, said: signed.message });
     }
     if (action === "unattended-off") {
@@ -594,6 +596,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       // A web request's secret: written here, used only in its headers, never shown back.
       if (dir === null) return answer(409, { ok: false, said: "Secrets are kept on the console's computer." });
       const saved = setFlowSecret(dir, flow.repo, (body.get("name") ?? "").trim(), body.get("value") ?? "");
+      if (saved.ok) await prepareUnattendedCandidates(store, flow.id);
       return saved.ok ? settle(saved.said) : answer(400, { ok: false, said: saved.message });
     }
     // Adding a card.

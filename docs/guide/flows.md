@@ -130,9 +130,13 @@ and other triggers still wait for a person. Protected projects and projects
 with protected paths can't turn it on. Adding, pausing, resuming or removing
 a schedule, editing the flow, changing its owner, the owner losing access to
 the project, or protecting the project ends it, and work it approved that
-hasn't started goes back to Needs you. A covered script is signed by its code:
-saving or removing it ends the grant, and when a project file it runs has
-changed or can't be read, the next card it makes ends it too. Signing again
+hasn't started goes back to Needs you. A covered script is signed by its code,
+the secret names its schedule gives it, and the project file it runs (for a
+Node file, every project file it imports, unless the import is computed while
+it runs). Saving or removing it ends the grant, and when a project file it
+runs or imports has changed or can't be read, the next card it makes ends it
+too. Each run is checked as it starts and finishes: a card from a run that
+didn't use the signed code waits for you. Signing again
 replaces the grant the same way. The flow page shows **Runs on its own until
 <date>** with **Revoke** (one click, any approver; or `toolroll flows
 unattended <flow> off`), and `toolroll flows show` says the same.
