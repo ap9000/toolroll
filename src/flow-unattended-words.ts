@@ -50,7 +50,7 @@ export function unattendedLimitWords(budgetMicrousd: number | null, dailyRunCap:
 export const UNATTENDED_RULE_WORDS: readonly string[] = [
   "Plans are approved only when they keep the filed request exactly. Questions and plan changes still wait for you.",
   "Never covered: Person decides steps, pull request merges, publish or deploy scripts, and anything it sends. Cards people add and other triggers wait as usual.",
-  "Editing the flow, its schedules or a script they run, changing its owner, the owner losing access, or protecting the project ends this.",
+  "Editing the flow, its schedules, a script they run or a project file it imports, changing its owner, the owner losing access, or protecting the project ends this.",
   "Signing again replaces it: work it approved that hasn't started goes back to waiting for you.",
 ];
 

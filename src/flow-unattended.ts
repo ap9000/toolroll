@@ -14,14 +14,22 @@
  * only their on-time firings count: Run now, a card a person moved, a schedule
  * added, changed, paused or removed, editing the flow, changing its owner, the
  * owner losing access and protecting the project all end or fall outside it. A script schedule also pins the script's
- * code (its version and content digest) and the bytes of any project file it runs: saving the script ends the grant,
- * and a file that changed or can't be read ends it when the next card is sealed or its work is authorized.
+ * code (its version and content digest), the bytes of any project file it runs and, for a Node file, of every project
+ * file it statically imports (the module graph Node resolves from it; an import that doesn't resolve can't be signed).
+ * Imports computed at run time aren't knowable and are outside the claim. Saving the script ends the grant, and a file
+ * that changed or can't be read ends it when the next card is sealed or its work is authorized. Each on-time firing
+ * pins the code just before and just after it runs and records what it ran: its cards are covered only when that was
+ * the code signed, so swapping a file for one run and restoring it before filing leaves the cards to a person.
  *
  * This module owns the terms, digest, words and transactions; the flow engine
  * asks for coverage inside its filing transaction, and plan-auto.ts seals.
  */
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
+import { isAbsolute, relative } from "node:path";
+import type ts from "typescript-parser";
 import { isProtectedWork } from "./approval-policy.js";
 import type { AcceptanceCriterion } from "./contracts/scope.js";
 import { dollarWords as dollars, scheduleWords, UNATTENDED_RULE_WORDS, unattendedCoverWords, unattendedEndWords, unattendedHeadWords, unattendedLimitWords, untilWords } from "./flow-unattended-words.js";
@@ -70,8 +78,8 @@ export const UNATTENDED_MAX_RUNS = 50;
 export const UNATTENDED_MAX_BUDGET_MICROUSD = 100_000_000;
 
 /** The code a script schedule runs, as signed: the script's version and content digest, and for one that runs a project
- * file, that file's path and the digest of its bytes. */
-export type SignedScript = { name: string; version: number; digest: string; file: { path: string; digest: string } | null };
+ * file, that file's path and, sorted by path, the digest of its bytes and of every project file it statically imports. */
+export type SignedScript = { name: string; version: number; digest: string; file: string | null; files: { path: string; digest: string }[] };
 
 /** One schedule a grant covers: which trigger, what sort, the digest of its settings when signed, and its name in words.
  * `script` is there exactly when the kind is "script". */
@@ -129,13 +137,21 @@ function criteria(value: unknown): AcceptanceCriterion[] | null {
 
 const hex32 = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{32}$/.test(v);
 
+/** An earlier shape (one file, no imports) is unreadable: its grant covers nothing until the owner signs again. */
 function signedScript(value: unknown): SignedScript | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const s = value as Record<string, unknown>, file = s["file"] as Record<string, unknown> | null | undefined;
+  const s = value as Record<string, unknown>, file = s["file"];
   if (typeof s["name"] !== "string" || s["name"] === "" || !(typeof s["version"] === "number" && Number.isSafeInteger(s["version"]) && s["version"] > 0) || !hex32(s["digest"])) return null;
-  if (file === null) return { name: s["name"], version: s["version"], digest: s["digest"], file: null };
-  if (file === undefined || typeof file !== "object" || Array.isArray(file) || typeof file["path"] !== "string" || file["path"] === "" || !hex32(file["digest"])) return null;
-  return { name: s["name"], version: s["version"], digest: s["digest"], file: { path: file["path"], digest: file["digest"] } };
+  if (!(file === null || (typeof file === "string" && file !== "")) || !Array.isArray(s["files"])) return null;
+  const files: { path: string; digest: string }[] = [];
+  for (const one of s["files"] as unknown[]) {
+    if (one === null || typeof one !== "object" || Array.isArray(one)) return null;
+    const f = one as Record<string, unknown>;
+    if (typeof f["path"] !== "string" || f["path"] === "" || !hex32(f["digest"]) || (files.length > 0 && files.at(-1)!.path >= f["path"])) return null;
+    files.push({ path: f["path"], digest: f["digest"] });
+  }
+  if (file === null ? files.length > 0 : !files.some(one => one.path === file)) return null;
+  return { name: s["name"], version: s["version"], digest: s["digest"], file, files };
 }
 
 function coveredTriggers(value: unknown): CoveredTrigger[] | null {
@@ -285,15 +301,90 @@ export function triggerDigestOf(trigger: Pick<FlowTriggerRow, "id" | "flow" | "k
 
 const bytesDigest = (bytes: Buffer) => createHash("sha256").update("standing-orders:flow-unattended-file:").update(bytes).digest("hex").slice(0, 32);
 
+/** The most project files one script's code may span; a bigger module graph can't be signed. */
+const MAX_SCRIPT_FILES = 500;
+/** Files whose static imports are read: JavaScript and TypeScript sources. Others (JSON, addons) are pinned as bytes. */
+const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
+let compiler: typeof ts | null = null;
+const typescript = (): typeof ts => compiler ??= createRequire(import.meta.url)("typescript-parser") as typeof ts;
+
+/** Resolves [specifier, importing file] pairs as the Node that runs scripts does, without loading either: as `import`
+ * and as `require` (a .js file's mode can depend on its syntax). Each answer is a path, "builtin", or null. */
+const NODE_RESOLVER = `import { createRequire, isBuiltin } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+const tried = f => { try { return f(); } catch { return null; } };
+const named = to => isBuiltin(to) ? "builtin" : to.startsWith("file:") ? fileURLToPath(to) : to.startsWith("/") ? to : null;
+process.stdout.write(JSON.stringify(JSON.parse(readFileSync(0, "utf8")).map(([spec, from]) => ({
+  esm: tried(() => named(import.meta.resolve(spec, pathToFileURL(from).href))),
+  cjs: tried(() => named(createRequire(from).resolve(spec))) }))));`;
+
+function resolveAsNode(pairs: readonly [string, string][]): { esm: string | null; cjs: string | null }[] | null {
+  const ran = spawnSync(process.execPath, ["--experimental-import-meta-resolve", "--no-warnings", "--input-type=module", "-e", NODE_RESOLVER],
+    { input: JSON.stringify(pairs), encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+  if (ran.status !== 0) return null;
+  try { const out: unknown = JSON.parse(ran.stdout); return Array.isArray(out) && out.length === pairs.length ? out as { esm: string | null; cjs: string | null }[] : null; } catch { return null; }
+}
+
+/**
+ * A Node script file and every project file it statically imports, by path inside the project and digest, sorted; null
+ * when one can't be read, a static import doesn't resolve, or the graph is too big. Imports outside the project (Node's
+ * own modules, packages installed elsewhere) aren't project files and aren't followed; one computed at run time
+ * (`import(name)`) can't be known, so it is outside what is signed.
+ */
+function nodeModuleGraphOf(root: string, entry: string): { path: string; digest: string }[] | null {
+  const base = realpathSync(root);
+  const inside = (full: string) => { const path = relative(base, full); return path !== "" && !path.startsWith("..") && !isAbsolute(path) ? path : null; };
+  const isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } };
+  const pinned = new Map<string, string>();
+  for (let layer = [entry]; layer.length > 0;) {
+    const pairs: [string, string][] = [];
+    for (const file of layer) {
+      const bytes = readFileSync(file);
+      pinned.set(file, bytesDigest(bytes));
+      if (SOURCE_FILE.test(file)) for (const one of typescript().preProcessFile(bytes.toString("utf8"), true, true).importedFiles) pairs.push([one.fileName, file]);
+    }
+    if (pinned.size > MAX_SCRIPT_FILES) return null;
+    const answers = pairs.length === 0 ? [] : resolveAsNode(pairs);
+    if (answers === null) return null;
+    const next = new Set<string>();
+    for (const { esm, cjs } of answers) {
+      const found = [esm, cjs].filter((one): one is string => one !== null && (one === "builtin" || isFile(one)));
+      if (found.length === 0) return null;
+      for (const one of found) if (one !== "builtin") { const full = realpathSync(one); if (inside(full) !== null && !pinned.has(full)) next.add(full); }
+    }
+    layer = [...next];
+  }
+  return [...pinned].map(([full, digest]) => ({ path: inside(full)!, digest })).sort((a, b) => (a.path < b.path ? -1 : 1));
+}
+
 /** The code a script schedule in `repo` would run now, or null when it can't be read safely: no such script, one an
- * imported flow brought that waits for approval, or a project file that isn't inside the project or can't be read. */
+ * imported flow brought that waits for approval, a project file that isn't inside the project or can't be read, or a
+ * Node file whose static imports don't resolve. */
 export function scriptProvenanceOf(store: Store, repo: string, name: string): SignedScript | null {
   const script = store.flowScript(repo, name);
   if (script === null || script.held !== null) return null;
-  if (script.file === null) return { name, version: script.version, digest: script.digest, file: null };
+  if (script.file === null) return { name, version: script.version, digest: script.digest, file: null, files: [] };
   const full = projectFile(repo, script.file);
   if (full === null) return null;
-  try { return { name, version: script.version, digest: script.digest, file: { path: script.file, digest: bytesDigest(readFileSync(full)) } }; } catch { return null; }
+  try {
+    const files = script.language === "node" ? nodeModuleGraphOf(repo, full) : [{ path: script.file, digest: bytesDigest(readFileSync(full)) }];
+    return files === null ? null : { name, version: script.version, digest: script.digest, file: script.file, files };
+  } catch { return null; }
+}
+
+/** What an on-time script firing ran, as its firing records it: a digest of the code pinned just before and just after
+ * the run, when both were the same and were the script row that ran; else null (it can't have run the code signed). */
+export function scriptRanDigestOf(before: SignedScript | null, after: SignedScript | null, ran: { version: number; digest: string }): string | null {
+  if (before === null || after === null || canonicalJson(before) !== canonicalJson(after) || before.version !== ran.version || before.digest !== ran.digest) return null;
+  return ranDigestOf(before);
+}
+const ranDigestOf = (script: SignedScript) => createHash("sha256").update(`standing-orders:flow-unattended-script-ran:${canonicalJson(script)}`, "utf8").digest("hex").slice(0, 32);
+
+/** Whether `flowId`'s live grant signed `triggerId`'s script: only then does a firing pin the code it runs. */
+export function grantSignsScriptOf(store: Store, flowId: number, triggerId: number, now: Date): boolean {
+  return activeUnattendedGrant(store, flowId, now)?.terms.triggers.some(one => one.id === triggerId && one.kind === "script") === true;
 }
 
 /** Whether each script schedule the grant signed would still run the very code signed. */
@@ -337,7 +428,7 @@ export function unattendedCandidates(store: Store, flowId: number): UnattendedCa
     else if (typeof config["script"] === "string") {
       // Its code is signed with it; one whose code can't be read safely is never offered.
       const script = scriptProvenanceOf(store, flowRepo, config["script"]);
-      if (script !== null) out.push({ id: trigger.id, kind: "script", digest, words: `the ${config["script"]} script, ${when}`, script, optional: "Its cards come from what the script prints, which can be outside text." });
+      if (script !== null) out.push({ id: trigger.id, kind: "script", digest, words: `the ${config["script"]} script, ${when}`, script, optional: "Its cards come from what the script prints, which can be outside text, and wait for you unless it ran the code you signed. Files it loads by a computed name aren't checked." });
     }
     else if (typeof config["title"] === "string") out.push({ id: trigger.id, kind: "schedule", digest, words: `“${config["title"]}”, ${when}`, optional: null });
   }
@@ -353,7 +444,7 @@ function unreadableScriptSchedules(store: Store, flowId: number): number[] {
   }).map(one => one.id);
 }
 
-const UNREADABLE_SCRIPT = "can't be read safely (it's missing, waiting for approval, or the project file it runs can't be read)";
+const UNREADABLE_SCRIPT = "can't be read safely (it's missing, waiting for approval, or a project file it runs or imports can't be read)";
 
 /** A digest of the schedules the page offered, so a signature never covers one the person didn't read. */
 export const candidatesDigestOf = (candidates: readonly UnattendedCandidate[]) =>
@@ -447,13 +538,15 @@ export function revokeUnattended(store: Store, flowId: number, by: string, now: 
  * Whether a card came from one of the schedules this grant signed for, fired on time after it was signed: the firing
  * names the card and was the clock's (never Run now), its trigger is still active with the very settings signed, and no
  * person has moved the card or sent it back since. Anything else is a person's card, or one the grant never read.
- * A script schedule must still run the very code signed; when it doesn't, the grant ends here (unattendedCoverageFor).
+ * A script schedule's firing must have run the very code signed (scriptRanDigestOf), and it must still be that code;
+ * when it isn't, the grant ends here (unattendedCoverageFor).
  */
 export function cardFromSignedSchedule(store: Store, grant: UnattendedGrant, cardId: number): boolean {
-  const fired = store.handle.prepare(`SELECT t.id, t.flow, t.kind, t.state, t.config_json, e.at FROM flow_trigger_event e JOIN flow_trigger t ON t.id = e.trigger
+  const fired = store.handle.prepare(`SELECT t.id, t.flow, t.kind, t.state, t.config_json, e.at, e.ran_script FROM flow_trigger_event e JOIN flow_trigger t ON t.id = e.trigger
     WHERE e.card = ? AND t.flow = ? AND e.on_time = 1`).all(cardId, grant.flow);
   const signed = fired.some(row => String(row["at"]) >= grant.signedAt && String(row["state"]) === "active" && grant.terms.triggers.some(one => one.id === Number(row["id"]) &&
-    one.digest === triggerDigestOf({ id: Number(row["id"]), flow: Number(row["flow"]), kind: String(row["kind"]), configJson: String(row["config_json"]) })));
+    one.digest === triggerDigestOf({ id: Number(row["id"]), flow: Number(row["flow"]), kind: String(row["kind"]), configJson: String(row["config_json"]) }) &&
+    (one.kind !== "script" || (one.script !== undefined && row["ran_script"] === ranDigestOf(one.script)))));
   if (!signed) return false;
   return store.handle.prepare(`SELECT 1 AS hit FROM flow_event WHERE card = ? AND ((outcome = 'moved' AND actor <> 'flow') OR outcome = 'sent-back') LIMIT 1`).get(cardId) === undefined;
 }
@@ -470,8 +563,9 @@ export function unattendedCoverageFor(store: Store, flow: FlowRow, card: { id: n
   const grant = activeUnattendedGrant(store, flow.id, now);
   if (grant === null || grant.terms.flow !== flow.id || grant.terms.flowRevision !== flow.revision || grant.terms.repo !== flow.repo || grant.terms.owner !== grant.signedBy) return null;
   if (coverageProblem(store, flow, grant.signedBy, [repo]) !== null) return null;
-  if (!cardFromSignedSchedule(store, grant, card.id)) return null;
+  // A script that drifted ends the grant whichever card is filing; one restored since a firing leaves just that card out.
   if (endIfScriptsChanged(store, grant, now)) return null;
+  if (!cardFromSignedSchedule(store, grant, card.id)) return null;
   if (grant.terms.dailyRunCap !== null && unattendedRunsToday(store, grant.id, now) >= grant.terms.dailyRunCap) return null;
   return grant;
 }

@@ -44,6 +44,7 @@ import { takeReply } from "./flow-replies.js";
 import { mailboxAccess, mailCursorOf, mailCursorText, readThroughImap, type MailReader } from "./mailbox.js";
 import type { CodeResult } from "./flow-code.js";
 import { readFlowSecrets } from "./flow-secrets.js";
+import { grantSignsScriptOf, scriptProvenanceOf, scriptRanDigestOf } from "./flow-unattended.js";
 import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
@@ -430,8 +431,9 @@ function polled(config: TriggerConfig): config is Extract<TriggerConfig, { kind:
 
 // ---------------------------------------------------------- making cards
 
-/** `onTime`: the clock's own firing of a schedule (never Run now or Check now); only those can run on their own. */
-export type Incoming = { key: string; title: string; description: string | null; source: FlowCardSource; onTime?: boolean };
+/** `onTime`: the clock's own firing of a schedule (never Run now or Check now); only those can run on their own.
+ * `ranScript`: for a script's, what code it ran (scriptRanDigestOf), which must be the code a grant signed. */
+export type Incoming = { key: string; title: string; description: string | null; source: FlowCardSource; onTime?: boolean; ranScript?: string | null };
 type Made = "added" | "seen" | "skipped";
 
 function startZone(config: TriggerConfig, definition: FlowDefinition): string {
@@ -468,7 +470,7 @@ function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, 
       return { made: "skipped" as const, note: `${item.source.label}: ${note}`, card: null };
     }
     const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: startZone(config, definition), by, source: item.source }, now);
-    store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, null, item.onTime === true);
+    store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, null, item.onTime === true, item.ranScript ?? null);
     return { made: "added" as const, note: null, card };
   });
 }
@@ -714,6 +716,9 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
   const { agentFence } = await import("./agent-fence.js");
   const scratch = io.scratch ?? join(io.dir ?? tmpdir(), "flow-scratch");
   const folder = cleanFolder(scratch, `flow-trigger-${trigger.id}`);
+  // Its cards run on their own only if it ran the very code a grant signed: pinned just before and just after the run.
+  const pin = scheduled && grantSignsScriptOf(store, flow.id, trigger.id, now) ? () => scriptProvenanceOf(store, flow.repo, script.name) : null;
+  const before = pin === null ? null : pin();
   let ran: CodeResult;
   try {
     ran = await runCode({ script, cwd: folder, root: flow.repo, scratch, shell: io.shell ?? io.gh,
@@ -722,9 +727,10 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
       fence: agentFence({ databaseFile: store.databaseFile(), worktree: folder }) });
   } finally { rmSync(folder, { recursive: true, force: true }); }
   if (ran.state === "failed") return done(false, ran.said.split("\n")[0]!);
+  const ranScript = pin === null ? null : scriptRanDigestOf(before, pin(), script);
   const items = cardsFromOutput(ran.printed);
   const results = items.slice(0, CARDS_PER_CHECK).map(item => makeCard(store, trigger, config, {
-    key: `script:${item.key}`, title: item.title, description: item.description, source: { kind: "script", label: `The ${script.name} script`, url: null }, onTime: scheduled,
+    key: `script:${item.key}`, title: item.title, description: item.description, source: { kind: "script", label: `The ${script.name} script`, url: null }, onTime: scheduled, ranScript,
   }, `The ${script.name} script`, now));
   return done(true, items.length === 0 ? `${script.name} ran and printed nothing to add.` : outcomeWords(results, items.length > CARDS_PER_CHECK), results.filter(one => one.made === "added").length);
 }

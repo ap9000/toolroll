@@ -4750,6 +4750,9 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "plan_authorization", "basis", "TEXT NOT NULL DEFAULT 'mode' CHECK (basis IN ('mode', 'grant'))");
   // Whether a trigger's firing was the clock's own (a schedule due, not Run now): only those can run on their own.
   addColumn(db, "flow_trigger_event", "on_time", "INTEGER NOT NULL DEFAULT 0");
+  // What code an on-time script firing a grant signed for ran (flow-unattended.ts scriptRanDigestOf); null when it
+  // couldn't be pinned, changed while it ran, or no grant signed it. Additive only: older firings read null.
+  addColumn(db, "flow_trigger_event", "ran_script", "TEXT");
   // v119: planning generations, and why a question closed unanswered (additive only; saved rows read the defaults).
   for (const [table, columns] of Object.entries(V119_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
@@ -18148,8 +18151,8 @@ export class Store {
    * Record what a trigger did with one outside thing: the card it made, or why it made none, and (a standing order's
    * firing) the task it filed. False when it was already recorded.
    */
-  recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date, task: string | null = null, onTime = false): boolean {
-    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task, on_time) VALUES (?, ?, ?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString(), task, onTime ? 1 : 0);
+  recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date, task: string | null = null, onTime = false, ranScript: string | null = null): boolean {
+    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task, on_time, ran_script) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString(), task, onTime ? 1 : 0, ranScript);
     return Number(changes) === 1;
   }
 

