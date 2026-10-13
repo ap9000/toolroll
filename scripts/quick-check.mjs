@@ -12,7 +12,8 @@
  * ones. --plan prints what would run and runs nothing.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,10 +63,10 @@ export function changedSince(base) {
   return [...new Set([...nul(diff), ...nul(git("ls-files", "-z", "--others", "--exclude-standard"))])].sort();
 }
 
-function step(label, file, args) {
+function step(label, file, args, env = process.env) {
   const started = Date.now();
   console.log(`\n▶ ${label}: ${[file, ...args].join(" ")}`);
-  const ran = spawnSync(file, args, { stdio: "inherit" });
+  const ran = spawnSync(file, args, { stdio: "inherit", env });
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   if (ran.status !== 0) {
     console.error(`✗ ${label} failed (${ran.status ?? ran.signal}) after ${seconds}s`);
@@ -89,7 +90,20 @@ function main() {
   const npx = process.platform === "win32" ? "npx.cmd" : "npx";
   step("Typecheck", process.platform === "win32" ? "npm.cmd" : "npm", ["run", "typecheck"]);
   if (plan.tests.length > 0) step("Tests named after the changes", npx, ["vitest", "run", ...plan.tests]);
-  if (plan.attacks !== null) step("Attack suite", npx, ATTACK_SUITE);
+  if (plan.attacks !== null) {
+    const folder = mkdtempSync(join(tmpdir(), "toolroll-attack-skips-"));
+    const skips = join(folder, "skipped.txt");
+    try {
+      step("Attack suite", npx, ATTACK_SUITE, { ...process.env, TOOLROLL_ATTACK_SKIPS: skips });
+      const skipped = existsSync(skips) ? readFileSync(skips, "utf8").split("\n").filter(Boolean) : [];
+      if (skipped.length > 0) {
+        console.log(`! ${skipped.length} native attack check(s) skipped, so their sandbox half is unproven here:`);
+        for (const line of skipped) console.log(`  ${line}`);
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  }
 }
 
 if (process.argv[1] !== undefined && existsSync(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

@@ -42,14 +42,15 @@ describe("attack: a build swapping its own checkout for a symlink to a sibling c
     expect(work.stdout.trim(), work.stderr).toBe("ok");
   });
 
-  test("native Codex (Auto and Full): the checkout can't be replaced by a link", ctx => {
+  test("native Codex (Auto and Full): the checkout can't be replaced by a link, and the resume binds the genuine one", ctx => {
     needs(ctx, codexSandbox());
     for (const fullAccess of [false, true]) {
       const at = setup();
       const { fence, grants } = at.launch("codex");
       underCodex(swap(at), fence, fullAccess, grants, { cwd: at.active, codexHome: join(at.dir, "codex-home") });
       expect(lstatSync(at.active).isSymbolicLink()).toBe(false);
-      expect(() => trustedWorktreeBinding(at.main, at.active, [at.pool])).toThrow(CheckoutBindingError);
+      // Codex keeps .git read-only, so the swap fails whole: the checkout is still the genuine one and binds as itself.
+      expect(trustedWorktreeBinding(at.main, at.active, [at.pool]).gitdir).toBe(join(at.main, ".git", "worktrees", "task-0123abcd"));
       rmSync(at.dir, { recursive: true, force: true });
     }
   });

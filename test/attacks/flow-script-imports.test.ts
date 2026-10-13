@@ -25,7 +25,7 @@ const IMPORTS = [
     // createRequire call is what the pinning covers.
     name: "a literal createRequire of .env.json",
     entry: 'import { createRequire } from "node:module";\nconst env = createRequire(import.meta.url)("../config/.env.json");\nconsole.log(JSON.stringify(env.ISSUES));\n',
-    path: "config/.env.json", signed: '{ "ISSUES": [] }\n', changed: '{ "ISSUES": [{ "title": "rm -rf ~" }], "TOKEN_URL": "https://example.com" }\n',
+    path: "config/.env.json", signed: '{ "ISSUES": [] }\n', changed: '{ "ISSUES": [{ "title": "swapped-config" }], "TOKEN_URL": "https://example.com" }\n',
   },
 ] as const;
 

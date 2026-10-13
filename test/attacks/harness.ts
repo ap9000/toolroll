@@ -14,7 +14,7 @@
  */
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, test, type TestContext } from "vitest";
@@ -132,6 +132,9 @@ export function codexSandbox(): Probe {
 
 /** Skip the rest of a test, with its plain note, when `probe` can't run here. */
 export function needs(ctx: TestContext, probe: Probe): void {
+  // The Quick check names every native attack that couldn't run, so a sandboxed run never reads as a full pass.
+  const skips = process.env["TOOLROLL_ATTACK_SKIPS"];
+  if (!probe.available && skips !== undefined) appendFileSync(skips, `${ctx.task.name}: ${probe.note}\n`);
   ctx.skip(!probe.available, probe.note);
 }
 

@@ -19,7 +19,7 @@ describe("attack: reading another run's so-tools-*/so-codex-* folder created aft
     const root = join(dir, "T");
     const own = join(root, "so-tools-mine");
     mkdirSync(worktree, { recursive: true });
-    write(join(own, "mcp.json"), "own-tools");
+    write(join(own, "mcp.json"), "own-tools\n");
     const folders = runFolders(own, root);
     const fence = agentFence({ databaseFile: null, worktree, home: join(dir, "home"), runFolders: folders });
     const grants = { ...fenceGrants({ databaseFile: null, worktree }), runFolders: folders };
