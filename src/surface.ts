@@ -430,6 +430,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("up", "console + worker + browser, one command"),
   operator("onboard", "add this repository, report signed-in agents, install or --remove the operator skill (--yes), offer the starter flows (--starter <ids>), and print the handoff"),
   operator("daemon", "install the loop under the OS service manager"),
+  { ...operatorRead("doctor", "check that Toolroll's service holds no key, token or password a build could read; names what it finds and the steps to fix it, never a value, and changes nothing"), flags: [jsonFlag] },
 ];
 
 /**
@@ -449,7 +450,7 @@ const REMOTE_NO: readonly string[] = [
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "worker release", "reap", "tick", "build", "reconcile",
   "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
-  "serve", "serve check-public", "watch", "up", "onboard", "daemon", "bridge", "setup show", "setup clear",
+  "serve", "serve check-public", "watch", "up", "onboard", "daemon", "doctor", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
   // Publication and release.

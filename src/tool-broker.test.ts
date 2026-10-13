@@ -6,7 +6,7 @@
  * builds each get their own. (The macOS proof that a fenced shell can't read
  * the secrets by file, descriptor or process listing is in agent-fence.test.ts.)
  */
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -22,9 +22,11 @@ import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
 import { invokeAgent } from "./invoke.js";
+import * as fencing from "./agent-fence.js";
 import { macosFenceAvailable } from "./agent-fence.js";
 import { NOTES_SERVER } from "../test/notes-mcp-server.js";
 import { boundCheckout } from "../test/bound-checkout.js";
+vi.mock("./agent-fence.js", { spy: true });
 
 const T0 = new Date("2026-10-12T12:00:00.000Z");
 const SECRET = ["notes", "secret", "7c".repeat(16)].join("-");
@@ -136,6 +138,55 @@ describe("the tool broker", () => {
       expect(answers).toHaveLength(methods.length);
       for (const answer of answers.slice(0, 4)) expect(answer.result).toEqual({ tools: [{ name: "read_note" }], resources: [], resourceTemplates: [], prompts: [] });
       for (const answer of answers.slice(4)) expect(answer.error.code).toBe(-32601);
+    } finally {
+      await new Promise(resolve => web.close(resolve));
+    }
+  });
+
+  test("a research batch the web server accepts with an empty 202 still answers its refused requests as JSON; with nothing refused the 202 passes as it is", async () => {
+    let upstream: { status: number; type?: string; body: string } = { status: 202, body: "" };
+    const received: string[] = [];
+    const web = createServer((request, response) => {
+      let body = "";
+      request.on("data", chunk => { body += chunk; });
+      request.on("end", () => {
+        received.push(body);
+        response.writeHead(upstream.status, { ...(upstream.type === undefined ? {} : { "content-type": upstream.type }), "mcp-session-id": "relay-session" });
+        response.end(upstream.body);
+      });
+    });
+    await new Promise<void>(resolve => web.listen(0, "127.0.0.1", resolve));
+    try {
+      const spec: ToolSpec = { ...notesSpec(server, log), transport: "http", command: null, args: [], url: `http://127.0.0.1:${(web.address() as AddressInfo).port}`, bearer: "NOTES_TOKEN" };
+      broker = await startToolBroker([{ spec, values: { NOTES_TOKEN: SECRET }, actions: ["read_note"] }]);
+      const post = (messages: unknown[]) => fetch(broker!.url("notes"), { method: "POST", headers: { authorization: `Bearer ${broker!.token}`, "content-type": "application/json" }, body: JSON.stringify(messages) });
+      const accepted = { jsonrpc: "2.0", method: "notifications/initialized" };
+      const write = { jsonrpc: "2.0", id: "refused-write-marker", method: "tools/call", params: { name: "delete_note", arguments: {} } };
+
+      // Mixed: the notification is relayed and accepted with an empty 202; the refused write is still answered.
+      const mixed = await post([accepted, write]);
+      expect(mixed.status).toBe(200);
+      expect(mixed.headers.get("content-type")).toBe("application/json");
+      expect(mixed.headers.get("mcp-session-id")).toBe("relay-session");
+      expect(await mixed.json()).toEqual([{ jsonrpc: "2.0", id: "refused-write-marker", error: { code: -32601, message: "This step may only read: that action is not available." } }]);
+      expect(received).toEqual([JSON.stringify([accepted])]);
+
+      // Nothing refused: the server's empty 202 is passed on unchanged.
+      const plain = await post([accepted]);
+      expect(plain.status).toBe(202);
+      expect(await plain.text()).toBe("");
+
+      // A non-JSON answer passes only when nothing was refused; beside a refusal, each allowed request gets an error.
+      upstream = { status: 200, type: "text/plain", body: "relay-plain-marker" };
+      const passed = await post([{ jsonrpc: "2.0", id: 7, method: "tools/list" }]);
+      expect(passed.status).toBe(200);
+      expect(await passed.text()).toBe("relay-plain-marker");
+      const answered = await post([{ jsonrpc: "2.0", id: 8, method: "tools/list" }, write]);
+      expect(answered.status).toBe(200);
+      expect(await answered.json()).toEqual([
+        { jsonrpc: "2.0", id: 8, error: { code: -32000, message: "The tool returned an invalid response." } },
+        { jsonrpc: "2.0", id: "refused-write-marker", error: { code: -32601, message: "This step may only read: that action is not available." } },
+      ]);
     } finally {
       await new Promise(resolve => web.close(resolve));
     }
@@ -262,7 +313,7 @@ describe("through the gateway", () => {
     const took = acquire(store, ref, "builder-1", { now: T0, token: "tok", newLeaseId: () => "lease-withheld", ttlMs: 10 * 365 * 24 * 3600 * 1000 });
     if (!took.ok) throw new Error("claim");
     const id = store.startRun({ taskRef: ref, leaseId: "lease-withheld", runner: "builder-1", branch: "b", worktree, route: { routeDigest: "legacy", phase: "build", provider, model: null, chosen: "legacy" }, now: T0 });
-    const tools = await prepareRunTools(store, id, provider, { home, now: T0 });
+    const tools = await prepareRunTools(store, id, provider, { home, now: T0, containment: { platform: "darwin", fence: "macos-sandbox" } });
     try {
       expect(tools.argv.join(" ")).not.toContain("mcp_servers.notes");
       expect(tools.serverPids?.() ?? []).toEqual([]);
@@ -307,7 +358,47 @@ describe("through the gateway", () => {
     else expect((await firedBy(probeLog))["codex-build"]).toContain("named-tool");
   });
 
-  test("a fresh build and its resumed repair each reach the opted-in tool with their own token, revoked when the run ends; no config holds the secret", async () => {
+  test.each([
+    { label: "a Claude build without the macOS sandbox", platform: "darwin", bubblewrap: false, method: "claude-rules", reason: "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it." },
+    { label: "a Linux Claude build inside bubblewrap", platform: "linux", bubblewrap: true, method: "linux-bubblewrap", reason: "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool." },
+    { label: "a Linux Claude build with no fence helper", platform: "linux", bubblewrap: false, method: "claude-rules", reason: "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool." },
+  ] as const)("$label never starts a secret-bearing stdio tool, and the run says why", async ({ label, platform, bubblewrap, method, reason }) => {
+    // A distinct value per case: wherever the build could look, this exact marker must not be there.
+    const marker = ["no-fence", platform, method, "4e".repeat(12)].join("-");
+    setToolSecrets(repo, "notes", { NOTES_TOKEN: marker }, home);
+    const real = process.platform;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(false);
+    vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(bubblewrap);
+    try {
+      store.createTask({ id: "unfenced", title: label }, T0);
+      const ref = store.refFor("built-in", "unfenced").id;
+      store.placeTask(ref, repo);
+      const took = acquire(store, ref, "builder-1", { now: T0, token: "tok", newLeaseId: () => "lease-unfenced", ttlMs: 10 * 365 * 24 * 3600 * 1000 });
+      if (!took.ok) throw new Error("claim");
+      const id = store.startRun({ taskRef: ref, leaseId: "lease-unfenced", runner: "builder-1", branch: "b", worktree, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: T0 });
+      const seen: { servers: string[]; config: string; env: string; args: string }[] = [];
+      const runner = async (_file: string, args: readonly string[], options?: { env?: Record<string, string | undefined> }) => {
+        const config = readFileSync(args[args.indexOf("--mcp-config") + 1]!, "utf8");
+        seen.push({ servers: Object.keys((JSON.parse(config) as { mcpServers: Record<string, unknown> }).mcpServers), config, env: JSON.stringify(options?.env ?? {}), args: args.join(" ") });
+        return { code: 0, stderr: "", timedOut: false, notFound: false, stdout: "" };
+      };
+      await invokeAgent(store, id, { provider: "claude", model: null }, { phase: "build", brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: true, resumeSession: null }, { keyHome: home, clock: () => T0, cwd: worktree, runner: runner as never });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.servers).toEqual([]);
+      for (const where of [seen[0]!.config, seen[0]!.env, seen[0]!.args]) expect(where).not.toContain(marker);
+      // The server never started, so no process held the marker for the build to read.
+      expect(existsSync(join(dir, "notes.log"))).toBe(false);
+      expect(store.runTools(id)).toEqual({ tools: [], skipped: [{ name: "notes", reason }] });
+      expect(store.runFence(id)).toMatchObject({ method });
+    } finally {
+      Object.defineProperty(process, "platform", { value: real, configurable: true });
+      vi.mocked(fencing.macosFenceAvailable).mockRestore();
+      vi.mocked(fencing.linuxFenceAvailable).mockRestore();
+    }
+  });
+
+  test.skipIf(!macosFenceAvailable())("a fresh build and its resumed repair each reach the opted-in tool with their own token, revoked when the run ends; no config holds the secret", async () => {
     store.createTask({ id: "t-tools", title: "t-tools" }, T0);
     const ref = store.refFor("built-in", "t-tools").id;
     store.placeTask(ref, repo);
