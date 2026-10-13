@@ -14,13 +14,12 @@
  * (oauth-run-token.ts).
  */
 import { createHash, randomBytes } from "node:crypto";
-import { homedir } from "node:os";
 import { basename } from "node:path";
-import { LOCAL_APPS, addToolTo, catalogTool, localAppOf, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
+import { LOCAL_APPS, addToolTo, catalogTool, localAppOf, projectToolsOf, readToolSecrets, renewingSignIn, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
 import { readAuthorizationServer, readProtectedResource, readRegistration, readTokenResponse, type TokenResponse } from "./contracts/integration-metadata.js";
-import { ACCESS, CLIENT, CLIENT_SECRET, EXPIRES, GRANTED, REFRESH, RESOURCE, REVOKE_URL, TOKEN_URL, oneAtATime, readScope, scopeList } from "./oauth-run-token.js";
+import { ACCESS, CLIENT, CLIENT_SECRET, EXPIRES, GRANTED, REFRESH, RESOURCE, REVOKE_URL, TOKEN_URL, readScope, scopeList } from "./oauth-run-token.js";
 
 export { readScope, scopeList };
 
@@ -108,7 +107,7 @@ export const localConnectOf = (id: string): { id: string; label: string; about: 
  * `local` connects with no sign-in. `research` says, for a connected service research can't use because of the access
  * it was granted, why (shown on its Tools entry beside Reconnect read-only).
  */
-export function connectionsOf(store: Store, repo: string, home: string = homedir()): { id: string; label: string; about: string; state: "connected" | "open" | "taken"; local?: true; research?: string }[] {
+export function connectionsOf(store: Store, repo: string, home?: string): { id: string; label: string; about: string; state: "connected" | "open" | "taken"; local?: true; research?: string }[] {
   const tools = projectToolsOf(store, repo);
   const signIn = oneClickServices().map(service => {
     const had = tools.find(one => one.name === service.id);
@@ -150,7 +149,7 @@ const GRANTED_ANYWAY = new Set(["introspection"]);
 export const readOnlyGrant = (grant: readonly string[] | null): boolean =>
   grant !== null && grant.some(readScope) && grant.every(scope => readScope(scope) || GRANTED_ANYWAY.has(scope));
 /** The scope a connected service's sign-in was granted, as saved beside its token; null when it was never proved. */
-export function grantOf(repo: string, tool: string, home: string = homedir()): string[] | null {
+export function grantOf(repo: string, tool: string, home?: string): string[] | null {
   try { return scopeList(readToolSecrets(repo, tool, home)[GRANTED]); } catch { return null; }
 }
 
@@ -333,9 +332,9 @@ const tokensFrom = (body: TokenResponse, now: number) => ({
  * (or refresh its sign-in, when it's there already), keep the tokens in its
  * secrets, and test it.
  */
-export async function finishConnect(store: Store, visit: ConnectVisit, code: string, now: Date, options: { fetcher?: Fetch; home?: string; test?: boolean; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; said: string } | { ok: false; said: string }> {
+export async function finishConnect(store: Store, visit: ConnectVisit, code: string, now: Date, options: { fetcher?: Fetch; home?: string | undefined; test?: boolean; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; said: string } | { ok: false; said: string }> {
   const service = oneClickOf(visit.service)!;
-  const fetcher = options.fetcher ?? fetch, home = options.home ?? homedir();
+  const fetcher = options.fetcher ?? fetch, home = options.home;
   const spec = connectedSpec(service.id)!;
   const had = projectToolsOf(store, visit.repo).find(one => one.name === spec.name);
   if (had !== undefined && (had.spec.url !== spec.url || had.spec.bearer !== ACCESS)) return { ok: false, said: `This project already has a tool called ${spec.name}, set up another way. Remove it on this page to connect ${service.label} by signing in.` };
@@ -370,8 +369,8 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
 }
 
 /** Keep connected services signed in: any token expiring within ten minutes is refreshed (the worker's pass, and before a subagent's call). */
-export async function refreshConnections(store: Store, repos: readonly string[], now: Date, options: { fetcher?: Fetch; home?: string } = {}): Promise<{ refreshed: number; problems: string[] }> {
-  const fetcher = options.fetcher ?? fetch, home = options.home ?? homedir();
+export async function refreshConnections(store: Store, repos: readonly string[], now: Date, options: { fetcher?: Fetch; home?: string | undefined } = {}): Promise<{ refreshed: number; problems: string[] }> {
+  const fetcher = options.fetcher ?? fetch, home = options.home;
   const report = { refreshed: 0, problems: [] as string[] };
   for (const repo of repos) for (const tool of projectToolsOf(store, repo)) {
     if (tool.spec.bearer !== ACCESS) continue;
@@ -382,8 +381,8 @@ export async function refreshConnections(store: Store, repos: readonly string[],
     const key = `${repo}\0${tool.name}`;
     if (now.getTime() - (renewTried.get(key) ?? 0) < RENEW_RETRY_MS) continue;
     renewTried.set(key, now.getTime());
-    // Renewed one at a time with a run's own sign-in (oauth-run-token.ts): a rotated refresh token is never used twice.
-    const problem = await oneAtATime(key, async () => {
+    // Renewed one at a time with a run's own sign-in, across Toolroll's processes: a rotated refresh token is never used twice.
+    const problem = await renewingSignIn(repo, tool.name, home, async () => {
       const latest = readToolSecrets(repo, tool.name, home);
       if (!latest[REFRESH] || !latest[TOKEN_URL] || !latest[CLIENT]) return null;
       try {
@@ -394,8 +393,10 @@ export async function refreshConnections(store: Store, repos: readonly string[],
         const tokens = tokensFrom(body, now.getTime());
         if (!answer.ok || tokens.access === null) return `${tool.name}: its sign-in ran out; connect it again on the Tools page`;
         // A refresh carries the same grant or a narrower one, and says so when it changes; said badly, it is unknown.
-        setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }),
-          ...(body.scopeSaid ? { [GRANTED]: scopeList(body.scope)?.join(" ") ?? "" } : {}) }, home);
+        // Not saved (a locked keychain): the saved sign-in stays as it was, and this says so.
+        try { setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }),
+          ...(body.scopeSaid ? { [GRANTED]: scopeList(body.scope)?.join(" ") ?? "" } : {}) }, home); }
+        catch { return `${tool.name}: its renewed sign-in couldn't be saved; check that the keychain is unlocked`; }
         return false;
       } catch {
         return `${tool.name}: couldn't reach it to renew its sign-in`;

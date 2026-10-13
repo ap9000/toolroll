@@ -17,7 +17,6 @@
  */
 import { connect as tcpConnect } from "node:net";
 import { connect as tlsConnect } from "node:tls";
-import { homedir } from "node:os";
 import { basename } from "node:path";
 import type { Store } from "./store.js";
 import type { Runner } from "./backend.js";
@@ -90,7 +89,7 @@ export type IntegrationIo = {
   /** The same sign-in check Settings → AI providers makes. */
   checkConnection?: ConnectionChecker;
   /** Where project tool secrets live. */
-  toolHome?: string;
+  toolHome?: string | undefined;
   /** Whether a mail server answers at host:port (tests replace it). */
   reach?: (host: string, port: number, secure: boolean) => Promise<void>;
   clock?: () => Date;
@@ -432,7 +431,7 @@ function targets(io: IntegrationIo): Target[] {
   });
 
   // Each project's MCP tools: the server starts and lists its tools.
-  const toolHome = io.toolHome ?? homedir();
+  const toolHome = io.toolHome;
   let anyTool = false;
   for (const repo of io.repos) {
     for (const tool of projectToolsOf(store, repo)) {
@@ -541,11 +540,23 @@ export function integrationsBrokenLine(list: readonly Integration[]): string | n
 
 const whenText = (at: string | null) => (at === null ? "never" : `${at.slice(0, 16).replace("T", " ")} UTC`);
 
-/** The CLI's lines: one per integration, then the fix under anything Broken; last, where tool secrets are kept when
- * that is files only (`secrets`: toolSecretStorage's words, said only then). */
-export function renderIntegrations(list: readonly Integration[], secrets: { words: string; filesOnly: boolean } | null = null): string[] {
+/** Where secrets rest (project-tools.ts toolSecretStorage), as Settings and the CLI take it. */
+export type SecretsKept = { words: string; filesOnly: boolean; problem?: string };
+/** Integrations whose secrets Toolroll holds: project tools, the Linear key, a Google mail connection. */
+const holdsSecrets = (one: Integration) => one.group === "tools" || one.key === "linear" || one.key === "email";
+/** The one line about where secrets rest, or null: a folder that can't be used always; files only once something set up holds secrets. */
+export function secretsNote(list: readonly Integration[], secrets: SecretsKept | null | undefined): { words: string; problem: boolean } | null {
+  if (secrets === null || secrets === undefined) return null;
+  if (secrets.problem !== undefined) return { words: secrets.problem, problem: true };
+  return secrets.filesOnly && list.some(one => holdsSecrets(one) && one.state !== "not-set-up") ? { words: secrets.words, problem: false } : null;
+}
+
+/** The CLI's lines: one per integration, then the fix under anything Broken; last, where secrets are kept when that is
+ * files only, or why they can't be used (secretsNote). */
+export function renderIntegrations(list: readonly Integration[], secrets: SecretsKept | null = null): string[] {
   const width = Math.min(24, Math.max(...list.map(one => one.name.length)));
-  const note = secrets?.filesOnly === true && list.some(one => one.group === "tools" && one.state !== "not-set-up") ? [`Tool secrets: ${secrets.words}`] : [];
+  const said = secretsNote(list, secrets);
+  const note = said === null ? [] : [said.words];
   return [...list.flatMap(one => {
     const facts = [one.account, one.detail, one.credentials].filter(Boolean).join(" · ");
     const lines = [`${one.name.padEnd(width)}  ${STATE_WORDS[one.state].padEnd(10)}${facts === "" ? "" : `  ${facts}`}`];

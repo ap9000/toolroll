@@ -608,7 +608,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       }, who.role === "approver" && csrf !== "" ? (() => {
         // v87: the mail server flows send email through; the password is never shown back.
         // v89: where Inbox triggers read it, and a connected Google account (its client secret is never shown back either).
-        const email = readEmailSettings(options.configDir ?? null), google = readGoogleMail(options.configDir ?? null), origin = consoleOrigin(request.headers.host);
+        const email = readEmailSettings(options.configDir ?? null), google = (() => { try { return readGoogleMail(options.configDir ?? null); } catch { return null; } })(), origin = consoleOrigin(request.headers.host);
         const googleView = { connected: googleConnected(options.configDir ?? null)?.address ?? null, clientId: google?.clientId ?? "", redirect: origin === null ? null : `${origin}${GOOGLE_CALLBACK}` };
         return email === null ? { set: false, host: "", port: 587, secure: false, user: "", from: "", imapHost: "", imapPort: 993, google: googleView }
           : { set: true, host: email.host, port: email.port, secure: email.secure, user: email.user, from: email.from, imapHost: email.imap?.host ?? "", imapPort: email.imap?.port ?? 993, google: googleView };

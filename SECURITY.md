@@ -62,7 +62,8 @@ user. What it promises:
   fenced from agents), never in the database or the ledger; `/metrics` needs
   an instance operator. Addresses are https (http only to this machine).
 - **Secrets stay out of the database, URLs and logs,** in 0600 files. Project
-  tool secrets rest in the OS keychain, sealed with a key the fence denies,
+  tool secrets, the Linear key, Google mail tokens and flow webhook secrets
+  rest in the OS keychain, sealed with a key the fence denies,
   and a service connected by signing in gives each run only a short-lived
   access token, never its refresh token. See the README's "How build
   sessions are protected".

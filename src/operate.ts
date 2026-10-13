@@ -53,7 +53,7 @@ import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-trigger
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
-import { toolSecretStorage } from "./project-tools.js";
+import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
 import { followTeams } from "./teams.js";
@@ -1001,6 +1001,8 @@ async function runOperateLocal(
   } catch (error) {
     return databaseFailure(write, json, command, file, error);
   }
+  // Toolroll's folder for the secrets it holds, beside this database: made before any build can run.
+  if (file !== ":memory:") startToolSecrets(store, file, () => new Date(), { eager: SECRETS_FIRST.has(command) });
   // The lead (a lead token, as --token or TOOLROLL_LEAD_TOKEN) acts for its owner in single commands; its work
   // pings nobody. Anyone else who signs in inside one of these commands is who acted. Services name nobody.
   const presentedFlag = text(flags, "token");
@@ -2292,6 +2294,7 @@ async function mcpCommand(
   const door = openStoreNoMigrate(file);
   if (!door.ok) return said(door.message);
   const store = door.store;
+  startToolSecrets(store, file, () => new Date(), { eager: false });
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       chmodSync(`${file}${suffix}`, 0o600);
@@ -9431,7 +9434,7 @@ async function integrationsCommand(positional: readonly string[], flags: Map<str
   const counts = { connected: 0, "not-set-up": 0, broken: 0 };
   for (const one of list) counts[one.state] += 1;
   const secrets = toolSecretStorage();
-  return succeed(context.write, context.json, command, { integrations: list, counts, secrets: { kind: secrets.kind, words: secrets.words } }, () => renderIntegrations(list, secrets));
+  return succeed(context.write, context.json, command, { integrations: list, counts, secrets: { kind: secrets.kind, words: secrets.words, ...(secrets.problem === undefined ? {} : { problem: secrets.problem }) } }, () => renderIntegrations(list, secrets));
 }
 
 async function waitTask(

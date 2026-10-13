@@ -17,6 +17,7 @@ import { runOperate } from "./operate.js";
 import type { ExecResult } from "./exec.js";
 import { addToolTo, setToolSecrets, validateToolSpec } from "./project-tools.js";
 import { checkIntegrations, createIntegrationMonitor, integrationsBrokenLine, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
+import { UNANSWERED_WORDS } from "./tool-secret-store.js";
 import { integrationsHtml } from "./integrations-ui.js";
 
 const T0 = new Date("2026-09-30T09:00:00.000Z");
@@ -256,11 +257,17 @@ test("each MCP tool says how its runs get credentials, by name only; the CLI and
   const files = { words: "Secrets are protected by owner-only files on this computer.", filesOnly: true };
   const lines = renderIntegrations(list, files);
   expect(lines.find(line => line.startsWith("linear"))).toMatch(/^linear\s+Connected\s+shop · Short-lived token per run$/);
-  expect(lines.at(-1)).toBe("Tool secrets: Secrets are protected by owner-only files on this computer.");
-  expect(renderIntegrations(list, { words: "Secrets are kept in the macOS Keychain.", filesOnly: false }).join("\n")).not.toContain("Tool secrets:");
+  expect(lines.at(-1)).toBe("Secrets are protected by owner-only files on this computer.");
+  expect(renderIntegrations(list, { words: "Secrets are kept in the macOS Keychain.", filesOnly: false }).join("\n")).not.toContain("Secrets are");
   const page = htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", { secrets: files })));
   expect(page.split("Secrets are protected by owner-only files on this computer.")).toHaveLength(2);
-  expect(page).toContain('<h2>MCP tools</h2><p class="meta integration-secrets" role="note">Secrets are protected by owner-only files on this computer.</p>');
+  expect(page).toContain('<p class="meta integration-secrets" role="note">Secrets are protected by owner-only files on this computer.</p><h2>');
+  // A keyring that is installed but doesn't answer is files too, and says why; a folder that can't be used says so instead, as a problem.
+  const unanswered = { words: UNANSWERED_WORDS, filesOnly: true };
+  expect(renderIntegrations(list, unanswered).at(-1)).toBe("Secrets are protected by owner-only files on this computer: its keyring isn't answering.");
+  const refused = { words: "Secrets are kept in the macOS Keychain.", filesOnly: false, problem: "Secrets are switched off: /x/tool-secrets wasn't made by Toolroll. Remove it and restart Toolroll." };
+  expect(renderIntegrations(list, refused).at(-1)).toBe(refused.problem);
+  expect(htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", { secrets: refused })))).toContain(`<p class="problem integration-secrets" role="alert">${refused.problem.replace("'", "&#39;")}</p>`);
   expect(page).toContain("shop · Short-lived token per run");
   for (const secret of [TOOL_KEY, "access-fixture", "refresh-fixture", "client-1"]) {
     expect(page).not.toContain(secret);

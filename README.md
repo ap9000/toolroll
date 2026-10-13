@@ -589,8 +589,9 @@ confined to their own files. See [SECURITY.md](SECURITY.md).
 
 ### How build sessions are protected
 
-A build runs as your own user, so Toolroll keeps a project's tool secrets
-away from it in layers:
+A build runs as your own user, so Toolroll keeps the secrets it holds (tool
+keys and sign-ins, the Linear key, a Google mail connection, flow webhook
+secrets) away from it in layers:
 
 - **The fence.** The operating system denies the build Toolroll's own
   folders, your home configuration and other projects (the table above).
@@ -598,21 +599,26 @@ away from it in layers:
   process, outside the fence. The agent gets only the broker's local address
   and a key for that run, which stops working when the run ends. Another
   run's key opens nothing.
-- **The keychain.** At rest, tool secrets are in the macOS Keychain (through
-  `security`, with the value on its input) or the Linux Secret Service
-  (`secret-tool`). A fenced build can still ask the keychain for an item, so
-  each is sealed with a key kept in Toolroll's fenced folder: what a build
-  reads is ciphertext. Secrets are read only when a run starts. Files from
-  before move into the keychain the first time they are used, and the
-  plaintext copy is removed. Where there is no keychain, secrets stay in
-  owner-only files, and Settings → Tools and `toolroll integrations` say so.
+- **The keychain.** At rest, secrets are in the macOS Keychain (through
+  `security`, with the value on its input) or the Linux Secret Service (the
+  system's `secret-tool`, value on its input). A fenced build can still ask
+  the keychain for an item, so each is sealed with a key in `tool-secrets`
+  beside Toolroll's database. Toolroll makes that folder when it starts,
+  before any build, and records which key it made; a folder, key or link put
+  there by anything else is refused. What a build reads is ciphertext.
+  Secrets are read only when a run starts. Files from before move into the
+  keychain the first time they are used, and the plaintext copy is removed.
+  Where there is no keychain, or the keyring doesn't answer, secrets stay in
+  owner-only files, and Settings and `toolroll integrations` say so.
 - **Short-lived tokens.** A service connected by signing in gives each run
   a fresh access token of its own, made outside the fence when the run starts
   and limited to read access for research steps where the service allows.
-  The refresh token never leaves Toolroll. The run's token is revoked when
-  the run ends, or runs out on its own where the service has no way to revoke
-  it. Keys you paste in stay in the broker. Settings → Tools shows which each
-  tool uses.
+  The refresh token never leaves Toolroll, and one renewal runs at a time
+  across Toolroll's processes. If a renewed sign-in can't be saved, the run
+  doesn't start and every token made for it is revoked. The run's token is
+  revoked when the run ends, or runs out on its own where the service has no
+  way to revoke it. Keys you paste in stay in the broker. Settings → Tools
+  shows which each tool uses.
 
 What remains: any program of yours running outside the fence (not started by
 a build) can read what you can, including Toolroll's folder and the keychain.

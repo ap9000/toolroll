@@ -5,7 +5,7 @@
  * render never waits on one (see integrations.ts).
  */
 import { html, joinHtml, postForm, type Html } from "./html.js";
-import { STATE_WORDS, type Integration, type IntegrationGroup } from "./integrations.js";
+import { STATE_WORDS, secretsNote, type Integration, type IntegrationGroup, type SecretsKept } from "./integrations.js";
 import { whenUtc } from "./when-html.js";
 import { brandMarkHtml } from "./brand-mark.js";
 
@@ -66,16 +66,17 @@ function row(one: Integration, csrf: string): Html {
     action(one, csrf)}<div class="integration-body">${facts === "" ? "" : html`<p class="meta">${facts}</p>`}${fix}${run}${history}${lastError}</div></div>`;
 }
 
-export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean; secrets?: { words: string; filesOnly: boolean } }): Html {
+export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean; secrets?: SecretsKept }): Html {
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const broken = list.filter(one => one.state === "broken").length;
   const summary = broken > 0 ? html`<p><strong>${broken} need${broken === 1 ? "s" : ""} fixing.</strong></p>`
     : notice.checking || list.some(one => !one.checked) ? html`<p class="meta" role="status">Checking in the background. Refresh in a few seconds.</p>` : "";
   const sections = GROUPS.map(([group, title]) => {
     const rows = list.filter(one => one.group === group);
-    // No keychain here: said once, under the tools whose secrets it is about.
-    const kept = group === "tools" && notice.secrets?.filesOnly === true && rows.some(one => one.state !== "not-set-up") ? html`<p class="meta integration-secrets" role="note">${notice.secrets.words}</p>` : "";
-    return rows.length === 0 ? "" : html`<h2>${title}</h2>${kept}${rows.map(one => row(one, csrf))}`;
+    return rows.length === 0 ? "" : html`<h2>${title}</h2>${rows.map(one => row(one, csrf))}`;
   });
-  return html`<section class="integrations">${note}${summary}${sections}</section>`;
+  // No keychain here, or Toolroll's folder for secrets can't be used: said once, plainly.
+  const said = secretsNote(list, notice.secrets);
+  const kept = said === null ? "" : said.problem ? html`<p class="problem integration-secrets" role="alert">${said.words}</p>` : html`<p class="meta integration-secrets" role="note">${said.words}</p>`;
+  return html`<section class="integrations">${note}${summary}${kept}${sections}</section>`;
 }

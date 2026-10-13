@@ -7,14 +7,18 @@
  * request it gets.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
-import { addToolTo, prepareRunTools, readToolSecrets, setToolSecrets, type ToolLaunchArgs, type ToolSpec } from "./project-tools.js";
+import { RunSignInError, addToolTo, prepareRunTools, readToolSecrets, setToolSecrets, toolSecretsDir, type ToolLaunchArgs, type ToolSpec } from "./project-tools.js";
+import { SecretStoreError, chooseSecretStore, type SecretBackend } from "./tool-secret-store.js";
 import { runScope } from "./oauth-run-token.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
@@ -27,7 +31,7 @@ const STORED_ACCESS = ["stored", "access", "4e".repeat(12)].join("-");
 
 type Seen = { path: string; form: Record<string, string>; authorization: string | null; body: string };
 /** The service: a token endpoint that rotates its refresh token on every use and refuses a used one, a revocation endpoint, and an MCP server that answers only a live access token. */
-function provider(options: { narrow?: boolean; fail?: boolean } = {}) {
+function provider(options: { narrow?: boolean; fail?: boolean; delayMs?: number } = {}) {
   const seen: Seen[] = [];
   let refresh = REFRESH_0, issued = 0;
   const live = new Set<string>();
@@ -38,7 +42,8 @@ function provider(options: { narrow?: boolean; fail?: boolean } = {}) {
       const path = request.url ?? "";
       const form = request.headers["content-type"]?.includes("x-www-form-urlencoded") ? Object.fromEntries(new URLSearchParams(body)) : {};
       seen.push({ path, form, authorization: request.headers.authorization ?? null, body });
-      const json = (status: number, value: unknown) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      // A slow service answers its token requests late: the window in which a second renewal could race this one.
+      const json = (status: number, value: unknown) => setTimeout(() => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); }, path === "/token" ? options.delayMs ?? 0 : 0);
       if (path === "/token") {
         if (options.fail === true) return json(400, { error: "invalid_grant", error_description: `refresh ${form["refresh_token"]} is gone` });
         if (form["refresh_token"] !== refresh) return json(400, { error: "invalid_grant" });
@@ -70,14 +75,14 @@ const runs = () => ({
 }) as unknown as Parameters<typeof prepareRunTools>[0];
 let recorded: string[] = [];
 
-async function connect(options: Parameters<typeof provider>[0] = {}, values: Record<string, string> = {}) {
+async function connect(options: Parameters<typeof provider>[0] = {}, values: Record<string, string> = {}, name = "linear") {
   svc = provider(options);
   await new Promise<void>(done => svc.server.listen(0, "127.0.0.1", done));
   base = `http://127.0.0.1:${(svc.server.address() as AddressInfo).port}`;
-  const spec: ToolSpec = { name: "linear", transport: "http", command: null, args: [], url: `${base}/mcp`, bearer: "OAUTH_ACCESS_TOKEN", headerSecrets: {}, about: "Issues.",
+  const spec: ToolSpec = { name, transport: "http", command: null, args: [], url: `${base}/mcp`, bearer: "OAUTH_ACCESS_TOKEN", headerSecrets: {}, about: "Issues.",
     secrets: ["OAUTH_ACCESS_TOKEN", "OAUTH_REFRESH_TOKEN", "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_TOKEN_URL", "OAUTH_EXPIRES_AT", "OAUTH_RESOURCE"].map(name => ({ name, optional: name !== "OAUTH_ACCESS_TOKEN" })) };
   expect(addToolTo(store, repo, spec, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
-  setToolSecrets(repo, "linear", { OAUTH_ACCESS_TOKEN: STORED_ACCESS, OAUTH_REFRESH_TOKEN: REFRESH_0, OAUTH_CLIENT_ID: "client-7", OAUTH_TOKEN_URL: `${base}/token`,
+  setToolSecrets(repo, name, { OAUTH_ACCESS_TOKEN: STORED_ACCESS, OAUTH_REFRESH_TOKEN: REFRESH_0, OAUTH_CLIENT_ID: "client-7", OAUTH_TOKEN_URL: `${base}/token`,
     OAUTH_REVOKE_URL: `${base}/revoke`, OAUTH_RESOURCE: `${base}/mcp`, OAUTH_GRANTED_SCOPE: "issues:read issues:write openid", ...values }, dir);
 }
 
@@ -98,6 +103,7 @@ beforeEach(() => {
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
 });
 afterEach(async () => {
+  chooseSecretStore(null);
   store.close();
   await new Promise<void>(done => svc?.server.close(() => done()) ?? done());
   rmSync(dir, { recursive: true, force: true });
@@ -256,4 +262,104 @@ test("through the gateway: a fresh build, a resumed repair whose provider crashe
     expect(one.config).not.toContain(secret);
     expect(one.env).not.toContain(secret);
   }
+});
+
+/** A keychain kept in memory that refuses to save one tool's secrets while `failing`. */
+function keychainFailingFor(tool: string): { backend: SecretBackend; failing: boolean } {
+  const items = new Map<string, string>(), key = (item: { service: string; account: string }) => `${item.service}/${item.account}`;
+  const control = { failing: false, backend: null as unknown as SecretBackend };
+  control.backend = {
+    kind: "macos-keychain", limit: 3_000,
+    get: item => items.get(key(item)) ?? null,
+    set: (item, value, options = {}) => {
+      if (control.failing && item.account.includes(`.${tool}`)) throw new SecretStoreError("The macOS Keychain refused to save a tool's secrets. Unlock it and try again.");
+      if (options.create === true && items.has(key(item))) return "exists";
+      items.set(key(item), value);
+      return "ok";
+    },
+    remove: item => { items.delete(key(item)); },
+  };
+  return control;
+}
+
+test("a renewed sign-in that can't be saved stops the run: every token made for it is revoked, and the saved sign-ins stay as they were", async () => {
+  const keychain = keychainFailingFor("notion");
+  chooseSecretStore(keychain.backend);
+  await connect();
+  const linear = svc;
+  await connect({}, {}, "notion");
+  const notion = svc;
+  keychain.failing = true;
+  await expect(prepareRunTools(runs(), 1, "claude", { home: dir, now: T0 })).rejects.toThrow(new RunSignInError("notion's renewed sign-in couldn't be saved, so this run didn't start. Check that the keychain is unlocked, then try again."));
+  // Both services made this run a token; both were revoked before the run could start, and nothing was recorded for it.
+  for (const one of [linear, notion]) {
+    expect(one.seen.filter(seen => seen.path === "/token")).toHaveLength(1);
+    expect(one.seen.filter(seen => seen.path === "/revoke").map(seen => seen.form["token"])).toEqual(["run-access-1"]);
+    expect(one.live.size).toBe(0);
+  }
+  expect(recorded).toEqual([]);
+  // Notion's saved sign-in is the one from before; Linear's rotation was saved, as it happened before the failure.
+  keychain.failing = false;
+  expect(readToolSecrets(repo, "notion", dir)["OAUTH_REFRESH_TOKEN"]).toBe(REFRESH_0);
+  expect(readToolSecrets(repo, "linear", dir)["OAUTH_REFRESH_TOKEN"]).toBe("refresh-rotated-1");
+  await new Promise<void>(done => linear.server.close(() => done()));
+});
+
+test("renewals are one at a time across Toolroll's processes: four processes starting runs at once all sign in against a service that rotates on every use", async () => {
+  await connect({ delayMs: 150 });
+  const key = readFileSync(join(toolSecretsDir(dir), ".keychain-key"));
+  const env = {
+    modules: { store: pathToFileURL(fileURLToPath(new URL("./tool-secret-store.ts", import.meta.url))).href, tools: pathToFileURL(fileURLToPath(new URL("./project-tools.ts", import.meta.url))).href },
+    state: dir, repo, rows: store.projectTools(repo), policy: store.orgPolicy(),
+    digest: createHash("sha256").update("toolroll:sealing-key:v1\u0000").update(key).digest("hex"),
+  };
+  const child = `
+const env = JSON.parse(process.env.RENEW);
+const { prepareSecretFolder } = await import(env.modules.store);
+const { prepareRunTools } = await import(env.modules.tools);
+const made = prepareSecretFolder(env.state, { read: () => env.digest, swap: () => false });
+if (!made.ok) { process.stdout.write(JSON.stringify({ problem: made.problem })); process.exit(0); }
+let recorded = null;
+const runs = { projectTools: () => env.rows, orgPolicy: () => env.policy, getRun: () => ({ taskRef: 1 }), refById: () => ({ repo: env.repo, externalId: "task" }), getScope: () => null, toolSealFor: () => null, recordRunTools: (_run, json) => { recorded = json; } };
+try { await prepareRunTools(runs, env.id, "claude", { home: env.state, now: new Date() }); process.stdout.write(JSON.stringify({ recorded: JSON.parse(recorded) })); }
+catch (error) { process.stdout.write(JSON.stringify({ error: String(error.message) })); }
+process.exit(0);
+`;
+  const run = (id: number) => new Promise<unknown>((resolve, reject) => execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", child],
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), env: { ...process.env, RENEW: JSON.stringify({ ...env, id }) }, timeout: 60_000 },
+    (error, stdout) => error === null ? resolve(JSON.parse(stdout) as unknown) : reject(error)));
+  const answers = await Promise.all([1, 2, 3, 4].map(run));
+  expect(answers).toEqual([1, 2, 3, 4].map(() => ({ recorded: { provider: "claude", tools: [{ name: "linear", digest: expect.any(String) }], skipped: [] } })));
+  // Each renewal used the refresh token the one before it saved: never the same one twice.
+  expect(svc.seen.filter(one => one.path === "/token").map(one => one.form["refresh_token"])).toEqual([REFRESH_0, "refresh-rotated-1", "refresh-rotated-2", "refresh-rotated-3"]);
+  expect(readToolSecrets(repo, "linear", dir)["OAUTH_REFRESH_TOKEN"]).toBe("refresh-rotated-4");
+}, 90_000);
+
+test("through the gateway: a run whose renewed sign-in can't be saved is refused before any agent starts, with its token revoked", async () => {
+  repo = join(dir, "repo");
+  const worktree = join(dir, "state", "worktrees", "repo", "task");
+  for (const path of [repo, worktree]) mkdirSync(path, { recursive: true });
+  store.close();
+  store = openStore(join(dir, "state", "orders.db"));
+  boundCheckout(store, repo, worktree);
+  register(store, { name: "builder-1", host: "test", capacity: 9, repos: [repo], now: T0, newToken: () => "tok" });
+  const keychain = keychainFailingFor("linear");
+  chooseSecretStore(keychain.backend);
+  await connect();
+  store.createTask({ id: "t-oauth", title: "t-oauth" }, T0);
+  const ref = store.refFor("built-in", "t-oauth").id;
+  store.placeTask(ref, repo);
+  const took = acquire(store, ref, "builder-1", { now: T0, token: "tok", newLeaseId: () => "lease-oauth", ttlMs: 10 * 365 * 24 * 3600 * 1000 });
+  if (!took.ok) throw new Error("claim");
+  const run = store.startRun({ taskRef: ref, leaseId: "lease-oauth", runner: "builder-1", branch: "b", worktree, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: T0 });
+  keychain.failing = true;
+  let spawned = false;
+  const invoked = await invokeAgent(store, run, { provider: "claude", model: null }, { phase: "build", brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: true, resumeSession: null },
+    { keyHome: dir, clock: () => T0, cwd: worktree, runner: (async () => { spawned = true; throw new Error("never started"); }) as never });
+  expect(invoked).toMatchObject({ kind: "refused", reason: "containment", diagnostic: "linear's renewed sign-in couldn't be saved, so this run didn't start. Check that the keychain is unlocked, then try again." });
+  expect(spawned).toBe(false);
+  expect(svc.seen.filter(one => one.path === "/revoke").map(one => one.form["token"])).toEqual(["run-access-1"]);
+  expect(svc.live.size).toBe(0);
+  keychain.failing = false;
+  expect(readToolSecrets(repo, "linear", dir)["OAUTH_REFRESH_TOKEN"]).toBe(REFRESH_0);
 });

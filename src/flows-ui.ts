@@ -83,7 +83,7 @@ const historyText = (event: { fromStage: string | null; toStage: string; outcome
 };
 
 /** One flow's canvas for one person. */
-export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string; now?: Date } = { dir: null, repos: [] }): BrowserFlowView {
+export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string | undefined; now?: Date } = { dir: null, repos: [] }): BrowserFlowView {
   const definition = flowDefinitionOf(flow);
   const stages = definition?.stages ?? [];
   const title = (id: string) => stages.find(one => one.id === id)?.title ?? id;

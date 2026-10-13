@@ -22,7 +22,7 @@ export type ToolsView = {
   catalog: (ToolSpec & { label: string })[];
   found: FoundTool[];
   /** Where this computer keeps tool secrets (project-tools.ts toolSecretStorage): said plainly when it's files only. */
-  storage?: { words: string; filesOnly: boolean };
+  storage?: { words: string; filesOnly: boolean; problem?: string };
   /** The person's other projects and the one-click services still open there: where a connection here can also go. */
   others?: { repo: string; project: string; open: string[] }[];
 };
@@ -79,7 +79,8 @@ export function toolsHtml(view: ToolsView, csrf: string, canManage: boolean, mes
   const to = ` to ${view.project}`;
   const keptIn = view.storage === undefined || view.storage.filesOnly ? "Secrets stay on this computer" : view.storage.words.replace(/\.$/, "");
   // No keychain here: said once, plainly, where it can't be missed.
-  const storage = view.storage?.filesOnly === true ? html`<p class="tool-storage" role="note">${view.storage.words}</p>` : "";
+  const storage = view.storage?.problem !== undefined ? html`<p class="problem tool-storage" role="alert">${view.storage.problem}</p>`
+    : view.storage?.filesOnly === true ? html`<p class="tool-storage" role="note">${view.storage.words}</p>` : "";
   const intro = html`<p>Builds in ${view.project} use exactly these tools. MCP servers set up elsewhere on this computer aren't used.</p><details><summary>How tools work</summary><ul><li>A tool you add reaches work you approve from now on. Approve a task again to give it a new tool.</li><li>Removing a tool takes it away from every build right away.</li><li>${keptIn}, are never shown again, and go only to the tool that needs them.</li><li>Reviewers and the lead chat never get tools. Gemini builds don't use tools yet.</li></ul></details>`;
   const cards = view.tools.length === 0 ? html`<p class="meta">No tools yet. Builds in this project get none.</p>` : view.tools.map(one => toolCard(one, base, manage, view.project, view.connections.find(c => c.id === one.tool.name && c.state === "connected")?.research ?? null));
   const fromList = view.catalog.length === 0 ? "" : postForm("/settings/tools/change", html`<label>Common tools<select name="catalog">${view.catalog.map(one => html`<option value="${one.name}">${one.label}: ${one.about}</option>`)}</select></label>${password}<button>Add${to}</button>`, { hidden: { ...base, action: "add-catalog" } });
