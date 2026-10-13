@@ -1618,8 +1618,8 @@ await journey("flows", SCRIPTED, "Starter kits: the Support desk kit sets up May
 });
 
 await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the kit's checklist, allow it on Stripe's page, and Maya can use it; the sign-in stays out of the database and the worker renews it", ["Starter kits: the Support desk kit sets up Maya and its flow in one click, its checklist says what's left, and Try it has Maya draft a reply for you to check (real Claude turn)"], async () => {
-  const { namedPath } = await import(new URL("../dist/names.js", import.meta.url).href);
-  const secrets = join(namedPath(homedir(), ["tool-secrets"], { dot: true }), createHash("sha256").update(repo).digest("hex").slice(0, 16), "stripe.json");
+  // Toolroll's own secrets folder beside its database (as files: the kit keeps every run out of the login keychain).
+  const secrets = join(dirname(w.db), "tool-secrets", createHash("sha256").update(repo).digest("hex").slice(0, 16), "stripe.json");
   try {
     await page.goto(`${base}/kits/support-desk?repo=${encodeURIComponent(repo)}`);
     await Promise.all([page.waitForNavigation(), page.locator('[data-step="tool-stripe"] a:has-text("Connect")').click()]);
