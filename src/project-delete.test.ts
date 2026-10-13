@@ -271,3 +271,31 @@ test("a checkout Toolroll made that someone switched to a branch of their own is
   expect(readFileSync(join(mine, "unsaved.txt"), "utf8")).toBe("work in progress\n");
   expect(git("branch", "--list", "feature/customer-work")).toContain("feature/customer-work");
 });
+
+test("project deletion hardens every Git call and suppresses planted reference hooks", async () => {
+  task(repo);
+  const marker = join(dir, "hook-ran");
+  writeFileSync(join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  const { run } = await import("./exec.js");
+  let calls = 0;
+  const result = await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool,
+    runner: (file, args, options) => {
+      calls++;
+      expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+      expect(args.includes("--no-includes") || args.includes("core.hooksPath=/dev/null")).toBe(true);
+      return run(file, args, options);
+    } });
+  expect(result).toMatchObject({ ok: true, removed: { checkouts: 1, branches: 1 }, left: [] });
+  expect(calls).toBeGreaterThan(0);
+  expect(existsSync(marker)).toBe(false);
+});
+
+test("project config refusal keeps its checkouts instead of taking the missing-repository fallback", async () => {
+  task(repo);
+  const path = store.listWorktrees()[0]!.path;
+  git("config", "core.fsmonitor", "touch should-not-run");
+  const result = await deleteProject(store, repo, { actor: "alex", via: "command line", now: NOW, evidenceRoot: evidence, poolRoot: pool });
+  expect(result).toMatchObject({ ok: true, removed: { branches: 0 } });
+  expect(existsSync(path)).toBe(true);
+  if (result.ok) expect(result.left.join(" ")).toContain("core.fsmonitor");
+});

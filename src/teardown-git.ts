@@ -10,6 +10,8 @@
  * any of them the command never runs. The refusal is a failed git result, so every caller's existing doubt applies and
  * nothing is removed.
  */
+import { existsSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
@@ -26,10 +28,11 @@ export const TEARDOWN_FLAGS: readonly string[] = [
 export const REFUSED_CODE = 128;
 const REFUSED_PREFIX = "Toolroll won't run git here: ";
 
-/** Config keys that run a command, or bring in config unread. `*` is one subsection, any name. */
+/** Config keys that run a command, bring in unread config, or redirect inspection away from the checked path.
+ * `*` is one subsection, any name. */
 const COMMAND_KEYS: readonly RegExp[] = [
   "core.sshcommand", "core.gitproxy", "core.askpass", "core.pager", "core.editor", "core.alternaterefscommand",
-  "sequence.editor", "diff.external", "credential.helper", "credential.*.helper", "filter.*.clean", "filter.*.smudge", "filter.*.process",
+  "core.worktree", "gpg.ssh.defaultkeycommand", "trailer.*.command", "trailer.*.cmd", "submodule.*.update", "sequence.editor", "diff.external", "credential.helper", "credential.*.helper", "filter.*.clean", "filter.*.smudge", "filter.*.process",
   "diff.*.command", "diff.*.textconv", "merge.*.driver", "gpg.program", "gpg.*.program", "uploadpack.packobjectshook",
   "remote.*.uploadpack", "remote.*.receivepack", "remote.*.vcs", "pager.*", "include.path", "includeif.*.path",
 ].map(key => new RegExp(`^${key.replace(/\./g, "\\.").replace(/\*/g, ".+")}$`));
@@ -59,14 +62,54 @@ export function refusal(result: ExecResult): string | null {
 
 const refused = (why: string): ExecResult => ({ code: REFUSED_CODE, stdout: "", stderr: `${REFUSED_PREFIX}${why}\n`, timedOut: false, notFound: false });
 
-/** The one way teardown runs git: each command checks the repository's config where it runs, then runs hardened. */
+/** Refuse nested repositories without asking Git to enter them or evaluate their config.
+ * Includes ignored/untracked repositories and bare repositories; never follows symlinks. */
+function nestedRepository(path: string): boolean {
+  const pending = [path];
+  while (pending.length > 0) {
+    const dir = pending.pop()!;
+    const entries = readdirSync(dir, { withFileTypes: true });
+    if (dir !== path && (entries.some(entry => entry.name === ".git") ||
+      ["HEAD", "objects", "config"].every(name => entries.some(entry => entry.name === name)))) return true;
+    for (const entry of entries) if (entry.isDirectory() && entry.name !== ".git") pending.push(join(dir, entry.name));
+  }
+  return false;
+}
+
+/** The one way teardown runs git, including the target checkout immediately before removal. */
 export function teardownGit(runner: Runner = run): Git {
   const options = (cwd: string) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: ENV, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
-  return async (cwd, args) => {
+  const configProblem = async (cwd: string): Promise<ExecResult | null> => {
     const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options(cwd));
     if (config.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(config.stdout);
-    if (key !== null) return refused(`the project's git config sets ${key}, which can run a command`);
-    return runner("git", [...TEARDOWN_FLAGS, ...args], options(cwd));
+    return key === null ? null : refused(`the project's git config sets ${key}, which can run a command`);
+  };
+  return async (cwd, args) => {
+    const problem = await configProblem(cwd);
+    if (problem !== null) return problem;
+    const removal = args[0] === "worktree" && args[1] === "remove";
+    const inspection = args.includes("status") || args.includes("diff");
+    const target = removal ? resolve(cwd, args.at(-1)!) : cwd;
+    if (removal) {
+      const targetProblem = await configProblem(target);
+      if (targetProblem !== null) return targetProblem;
+    }
+    if (removal || inspection || args.includes("checkout") || args.includes("clean")) {
+      try {
+        if (existsSync(target) && nestedRepository(target)) return refused("the checkout contains a nested repository");
+      } catch { return refused("the checkout couldn't be inspected for nested repositories"); }
+      // ls-files reads index entries only; it cannot run submodule filters. Even an uninitialized
+      // gitlink is kept, so worktree remove's internal status can never traverse it.
+      const index = await runner("git", [...TEARDOWN_FLAGS, "ls-files", "--stage", "-z"], options(target));
+      if (index.code !== 0) return refused("the checkout's index couldn't be read");
+      if (index.stdout.split("\0").some(entry => entry.startsWith("160000 "))) return refused("the checkout contains a gitlink");
+    }
+    const safeArgs = [...args];
+    if (inspection && !safeArgs.includes("--ignore-submodules=all")) {
+      const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
+      safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
+    }
+    return runner("git", [...TEARDOWN_FLAGS, ...safeArgs], options(cwd));
   };
 }

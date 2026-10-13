@@ -30,3 +30,82 @@ describe("command-running settings refuse teardown", () => {
     expect(refusal({ code: REFUSED_CODE, stdout: "", stderr: "fatal: not a git repository\n", timedOut: false, notFound: false })).toBeNull();
   });
 });
+
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { WorktreePool } from "./worktree.js";
+import { openStore } from "./store.js";
+
+test.each(["GPG.SSH.defaultKeyCommand", "FiLtEr.X.ClEaN", "IncludeIf.gitdir:X.PATH", "submodule.x.update"])("refuses mixed-case %s", key => {
+  expect(commandSetting(listing(["local", key, "!command"]))).toBe(key.toLowerCase());
+});
+
+test("removal scans the target config immediately and refuses its command", async () => {
+  const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
+  const git = teardownGit(async (_file, args, options) => {
+    calls.push({ cwd: options?.cwd, args });
+    return { code: 0, stdout: options?.cwd === "/target" ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
+  });
+  expect(refusal(await git("/repo", ["worktree", "remove", "--force", "/target"]))).toContain("gpg.ssh.defaultkeycommand");
+  expect(calls.map(call => call.cwd)).toEqual(["/repo", "/target"]);
+  expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+});
+
+test("status and removal refuse an initialized staged gitlink without executing its clean filter", async () => {
+  const root = mkdtempSync(join(tmpdir(), "teardown-nested-"));
+  const repo = join(root, "repo"), nested = join(repo, "nested"), marker = join(root, "ran");
+  const sh = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
+  try {
+    mkdirSync(nested, { recursive: true });
+    for (const cwd of [repo, nested]) { sh(cwd, "init", "-q"); sh(cwd, "commit", "--allow-empty", "-qm", "initial"); }
+    writeFileSync(join(nested, ".gitattributes"), "payload filter=x\n");
+    writeFileSync(join(nested, "payload"), "before\n");
+    sh(nested, "add", "."); sh(nested, "commit", "-qm", "payload");
+    sh(repo, "update-index", "--add", "--cacheinfo", `160000,${sh(nested, "rev-parse", "HEAD")},nested`);
+    sh(nested, "config", "filter.x.clean", `echo ran > '${marker}'; cat`);
+    writeFileSync(join(nested, "payload"), "after!\n");
+    sh(repo, "status", "--porcelain");
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    const store = openStore(":memory:");
+    try { expect(await new WorktreePool(store, { root }).inspect(repo)).toBe("unreadable"); } finally { store.close(); }
+    const git = teardownGit();
+    expect(refusal(await git(repo, ["status", "--porcelain"]))).toContain("nested repository");
+    expect(refusal(await git(repo, ["worktree", "remove", "--force", repo]))).toContain("nested repository");
+    expect(existsSync(marker)).toBe(false);
+    rmSync(nested, { recursive: true });
+    expect(refusal(await git(repo, ["status", "--porcelain"]))).toContain("gitlink");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("inspection always has non-recursing flags and the hardened environment", async () => {
+  const git = teardownGit(async (_file, args, options) => {
+    expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+    if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
+    if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
+    return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+  });
+  await git("/nonexistent-fixture", ["status", "--porcelain"]);
+  await git("/nonexistent-fixture", ["diff", "--", "file"]);
+});
+
+test("removal from the shared repository refuses the target worktree's fsmonitor command", async () => {
+  const root = mkdtempSync(join(tmpdir(), "teardown-target-"));
+  const target = join(root, "checkout"), repo = join(root, "repo"), marker = join(root, "ran");
+  const sh = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+  try {
+    mkdirSync(repo);
+    sh(repo, "init", "-q"); sh(repo, "commit", "--allow-empty", "-qm", "initial");
+    sh(repo, "worktree", "add", "-qb", "disposable", target);
+    sh(repo, "config", "extensions.worktreeConfig", "true");
+    const script = join(root, "monitor");
+    writeFileSync(script, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+    sh(target, "config", "--worktree", "core.fsmonitor", script);
+    expect(refusal(await teardownGit()(repo, ["worktree", "remove", "--force", target]))).toContain("core.fsmonitor");
+    expect(existsSync(target)).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

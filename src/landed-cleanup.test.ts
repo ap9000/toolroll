@@ -912,7 +912,9 @@ describe("teardown runs no command a build planted in the shared repository", ()
       expect(call.options).toMatchObject({ envAllowlist: ENV_ALLOWLIST, env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" } });
     }
     const ran = calls.filter(call => call.args[1] !== "config").map(call => call.args.slice(TEARDOWN_FLAGS.length));
-    expect(calls.filter(call => call.args[1] === "config")).toHaveLength(ran.length);
+    // Every operation has a config scan; removal also scans its target. Index preflights share that scan.
+    expect(calls.filter(call => call.args[1] === "config")).toHaveLength(
+      ran.filter(args => !args.includes("ls-files")).length + ran.filter(args => args[0] === "worktree" && args[1] === "remove").length);
     for (const done of [["worktree", "remove", work.path], ["update-ref", "--no-deref", "-d", "refs/heads/toolroll/routed", work.head]])
       expect(ran).toContainEqual(done);
     expect(ran.some(args => args.includes("status"))).toBe(true);

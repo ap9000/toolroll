@@ -34,7 +34,7 @@ import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } fr
 import { parseHandoff } from "./decision.js";
 import { diskBytes } from "./storage.js";
 import { markNeverIndex } from "./never-index.js";
-import type { Git } from "./teardown-git.js";
+import { teardownGit, type Git } from "./teardown-git.js";
 
 export type Runner = (
   file: string,
@@ -272,18 +272,19 @@ export function worktreeProcessOccupancy(path: string): { held: true; by: number
  * reset or clean a tree saves this first.
  */
 export async function saveWorkPatch(runner: Runner, path: string, file: string, header: string): Promise<{ ok: true; file: string } | { ok: false; message: string }> {
-  const status = await runner(GIT, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+  const git = teardownGit(runner);
+  const status = await git(path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]);
   if (status.code !== 0) return { ok: false, message: `${path} could not be inspected before its work was saved` };
   const untracked = status.stdout
     .split("\n")
     .filter(line => line.startsWith("?? ") && !line.trimEnd().endsWith(MARKER))
     .map(line => line.slice(3).trim());
-  const tracked = await runner(GIT, [...READ_ONLY, "diff", "--binary", "HEAD"], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+  const tracked = await git(path, [...READ_ONLY, "diff", "--binary", "--ignore-submodules=all", "HEAD"]);
   if (tracked.code !== 0) return { ok: false, message: `${path}: git diff failed while saving its work (${firstLine(tracked.stderr)})` };
   const parts = [tracked.stdout];
   for (const one of untracked) {
     // --no-index exits 1 when the sides differ; that is the expected answer.
-    const diff = await runner(GIT, [...READ_ONLY, "diff", "--binary", "--no-index", "--", "/dev/null", one], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const diff = await git(path, [...READ_ONLY, "diff", "--binary", "--no-index", "--ignore-submodules=all", "--", "/dev/null", one]);
     if (diff.code > 1) return { ok: false, message: `${path}: ${one} could not be captured (${firstLine(diff.stderr)})` };
     parts.push(diff.stdout);
   }
@@ -474,7 +475,7 @@ export class WorktreePool {
       }
       const add = await this.git(request.repo, ["worktree", "add", path, request.branch]);
       if (add.code !== 0) {
-        if (made !== null) await this.git(request.repo, ["update-ref", "-d", `refs/heads/${request.branch}`, made]);
+        if (made !== null) await this.teardown(request.repo, ["update-ref", "-d", `refs/heads/${request.branch}`, made]);
         return { ok: false, reason: "git", message: firstLine(add.stderr) };
       }
     }
@@ -634,9 +635,9 @@ export class WorktreePool {
 
   /** Back to HEAD, untracked gone, our lease note kept; proven clean after. */
   private async resetTree(path: string): Promise<{ ok: true } | { ok: false; message: string }> {
-    const checkout = await this.runner(GIT, ["checkout", "--", "."], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const checkout = await this.teardown(path, ["checkout", "--", "."]);
     if (checkout.code !== 0) return { ok: false, message: `${path}: git checkout failed while resetting (${firstLine(checkout.stderr)})` };
-    const clean = await this.runner(GIT, ["clean", "-fd", "-e", MARKER], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const clean = await this.teardown(path, ["clean", "-fd", "-e", MARKER]);
     if (clean.code !== 0) return { ok: false, message: `${path}: git clean failed while resetting (${firstLine(clean.stderr)})` };
     const dirty = await this.isDirty(path);
     if (dirty !== false) return { ok: false, message: `${path} is still not clean after the reset — leaving it for a person` };
@@ -723,10 +724,10 @@ export class WorktreePool {
     if (existing.releasedAt === null) return { ok: false, message: `${path} is still leased — release it first` };
     const occupied = this.inUse(path);
     if (occupied.held) return { ok: false, message: `${path} is being used by process ${occupied.by} — leaving it alone` };
-    const removed = await this.git(existing.repo, ["worktree", "remove", "--force", path]);
+    const removed = await this.teardown(existing.repo, ["worktree", "remove", "--force", path]);
     if (removed.code !== 0) return { ok: false, message: `git worktree remove: ${removed.stderr.trim() || `exit ${removed.code}`}` };
     // The branch is disposable too; a failure here is bookkeeping, not custody.
-    await this.git(existing.repo, ["branch", "-D", existing.branch]);
+    await this.teardown(existing.repo, ["branch", "-D", existing.branch]);
     this.store.forgetWorktree(path);
     void now;
     return { ok: true };
@@ -735,7 +736,7 @@ export class WorktreePool {
   async orphans(
     repo: string,
   ): Promise<{ ok: true; untracked: string[]; missing: string[] } | { ok: false; message: string }> {
-    const listed = await this.git(repo, ["worktree", "list", "--porcelain"], READ_ONLY);
+    const listed = await this.teardown(repo, ["worktree", "list", "--porcelain"]);
     // A listing that failed is not a listing that came back empty. Treating
     // it as empty would report every stored row as missing — and anything
     // acting on that answer would erase real bookkeeping over a git hiccup.
@@ -841,7 +842,7 @@ export class WorktreePool {
    * work, and neither are the files Toolroll itself wrote in there), and everything its HEAD reaches on a branch, tag
    * or remote. Reads only, through `git` when given (teardown's hardened git).
    */
-  async inspect(path: string, git: Git = this.plain): Promise<"clean" | KeptWhy> {
+  async inspect(path: string, git: Git = this.teardown): Promise<"clean" | KeptWhy> {
     const dirty = await this.isDirty(path, true, git);
     if (dirty !== false) return dirty === null ? "unreadable" : "has changes";
     // Commits only this checkout's HEAD reaches (a detached HEAD moved on) exist nowhere else.
@@ -858,7 +859,7 @@ export class WorktreePool {
    * stays, and a later lease of the same branch makes a new one. At most `max` go per pass. Every git command goes
    * through `git` when given: landed cleanup passes its hardened teardown git (teardown-git.ts).
    */
-  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.plain): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
+  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.teardown): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
     const removed: WorktreeRow[] = [];
     const kept: { path: string; why: KeptWhy }[] = [];
     const idle = (row: WorktreeRow | null, releasedAt: string) =>
@@ -899,7 +900,7 @@ export class WorktreePool {
   async slim(row: WorktreeRow, wanted: (row: WorktreeRow) => boolean, deps = true): Promise<{ ok: true; dropped: string[]; bytes: number } | { ok: false; message: string }> {
     const idle = (now: WorktreeRow | null) => now !== null && now.runner === null && now.releasedAt !== null && now.releasedAt === row.releasedAt && !this.inUse(row.path).held;
     if (busy.has(row.path) || !existsSync(row.path) || !idle(this.store.getWorktree(row.path))) return { ok: false, message: `${row.path} is in use` };
-    const listed = await this.runner(GIT, [...READ_ONLY, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { cwd: row.path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const listed = await this.teardown(row.path, [...READ_ONLY, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
     if (listed.code !== 0) return { ok: false, message: `git couldn't list ${row.path}` };
     const drop = listed.stdout.split("\0").filter(one => one.endsWith("/")).map(one => one.slice(0, -1))
       .filter(one => { const name = one.split("/").at(-1)!; return SLIM_NAMES.includes(name) && (deps || name !== "node_modules"); });
@@ -955,7 +956,7 @@ export class WorktreePool {
     // Held while it goes: another process's lease sees this process in it (the busy map is this process's only).
     const note = join(row.path, MARKER);
     try { writeFileSync(note, `${process.pid} storage-retention removing ${currentBootId() ?? "unknown"} ${hostname()}\n`, "utf8"); } catch { return false; }
-    const gone = await this.git(row.repo, ["worktree", "remove", "--force", row.path]);
+    const gone = await this.teardown(row.repo, ["worktree", "remove", "--force", row.path]);
     if (gone.code !== 0) { rmSync(note, { force: true }); return false; }
     this.forgetRemoved(row);
     return true;
@@ -970,7 +971,7 @@ export class WorktreePool {
   private async removeCleanCopy(row: WorktreeRow, git: Git): Promise<"removed" | KeptWhy> {
     const found = await this.inspect(row.path, git);
     if (found !== "clean") return found;
-    const status = await git(row.path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"]);
+    const status = await git(row.path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]);
     if (status.code !== 0) return "unreadable";
     for (const line of status.stdout.split("\n")) {
       const name = line.startsWith("?? ") ? line.slice(3).trim() : "";
@@ -996,8 +997,8 @@ export class WorktreePool {
    * `--untracked-files=all` and no `--ignored`: build output that .gitignore
    * hides is not work, but a file somebody dropped in and never staged is.
    */
-  private async isDirty(path: string, ignoreOwnFiles = false, git: Git = this.plain): Promise<boolean | null> {
-    const status = await git(path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"]);
+  private async isDirty(path: string, ignoreOwnFiles = false, git: Git = this.teardown): Promise<boolean | null> {
+    const status = await git(path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]);
     if (status.code !== 0) return null;
 
     // Our own lease note is not the operator's work. Without this the marker
@@ -1012,8 +1013,8 @@ export class WorktreePool {
       .some(line => !line.trimEnd().endsWith(MARKER) && !(ignoreOwnFiles && line.startsWith("?? ") && looksLikeProtocolFile(line.slice(3).trim())));
   }
 
-  /** Ordinary git, as the pool always ran it. */
-  private readonly plain: Git = (cwd, args) => this.runner(GIT, args, { cwd, timeoutMs: WORKTREE_TIMEOUT_MS });
+  /** All disposal and inspection paths share the hardened teardown boundary. */
+  private readonly teardown: Git = (cwd, args) => teardownGit(this.runner)(cwd, args);
 
   private git(
     cwd: string,
