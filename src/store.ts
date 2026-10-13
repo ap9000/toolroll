@@ -14701,6 +14701,13 @@ export class Store {
       .run(authMode, terminalClass, id);
   }
 
+  /** A launch refused before any model turn (an installed CLI too old for a
+   * build's flags): the start stamp goes, its version and evidence stay. Only
+   * while the run is open, so a settled run's account never changes. */
+  withdrawProviderStart(id: number): void {
+    this.db.prepare("UPDATE run SET provider_started_at = NULL WHERE id = ? AND outcome IS NULL").run(id);
+  }
+
   /** The race-refusal stamp (Phase 3 C5): the version that was REFUSED,
    * recorded without provider_started_at — no provider process started. */
   stampProviderVersion(id: number, providerVersion: string): void {

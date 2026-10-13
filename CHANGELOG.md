@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Tool secrets stay outside the build.** A broker outside the sandbox
+  holds them. Codex refuses tools that carry secrets. Shared dependencies and
+  `git gc` work inside the fence.
+- **Tighter sandbox.** Builds can no longer rename folders above protected
+  paths or inspect other processes' memory; tool servers get only the
+  environment they need.
+
 ## 0.9.62 — 2026-10-12
 
 - **Release checks in minutes.** The upgrade path runs on a sample, CI's

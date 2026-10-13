@@ -11,8 +11,9 @@
  * Secret values (API keys, tokens, any env value) never enter the
  * database, a chat, a card or a log: they live in one 0600 file per tool
  * under ~/.toolroll/tool-secrets/ (or an older ~/.standing-orders/), are written only from the
- * console's password-gated screen, and reach exactly that project's
- * server processes at launch.
+ * console's password-gated screen, and at launch reach only the run's tool
+ * broker (tool-broker.ts), which gives them to that project's server
+ * processes and sign-in headers — never to the agent.
  */
 import { toolRefusal } from "./policy.js";
 import { createHash } from "node:crypto";
@@ -24,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { scanForSecrets } from "./evidence.js";
 import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
+import { startToolBroker, type BrokerOptions, type ToolBroker } from "./tool-broker.js";
 import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
 
 export type { ToolSecret, ToolSpec };
@@ -506,30 +508,39 @@ function safeLine(text: string): string {
 export type ToolLaunch = { tools: ResolvedTool[]; skipped: { name: string; reason: string }[] };
 
 /** Everything a provider spawn needs to use exactly these tools, and the
- * cleanup. `privateDir` holds the run's secret launch files: Codex starts
- * tool servers outside its command sandbox, so its agent can be fenced out
- * of that folder while the tools still read it. */
-export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omitEnv: string[]; cleanup: () => void; privateDir?: string };
+ * cleanup. `privateDir` holds the run's launch files, which name the broker
+ * and its token, never a tool's secret (tool-broker.ts). */
+export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omitEnv: string[]; cleanup: () => void; privateDir?: string; serverPids?: () => number[] };
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const tomlList = (values: readonly string[]): string => `[${values.map(toml).join(",")}]`;
 
-/** Claude: only these servers, written to a private 0600 file removed after the run (the provider adds `--strict-mcp-config`). */
-export function claudeToolArgs(launch: ToolLaunch): ToolLaunchArgs {
-  const servers: Record<string, unknown> = {};
-  for (const tool of launch.tools) {
-    const spec = tool.spec;
-    if (spec.transport === "stdio") {
-      servers[spec.name] = { type: "stdio", command: spec.command, args: spec.args, env: tool.values };
-    } else {
-      const headers: Record<string, string> = {};
-      if (spec.bearer !== null && tool.values[spec.bearer]) headers["Authorization"] = `Bearer ${tool.values[spec.bearer]}`;
-      for (const [header, secret] of Object.entries(spec.headerSecrets)) if (tool.values[secret]) headers[header] = tool.values[secret]!;
-      servers[spec.name] = { type: "http", url: spec.url, headers };
-    }
-  }
+/** How a launch's tools are offered: research steps' servers only their read-only actions. */
+export type ToolLaunchOptions = { broker?: BrokerOptions; enabledTools?: Readonly<Record<string, readonly string[]>> };
+
+/** The launch's broker, holding its tools' values; the agent gets only its address and token. */
+function brokerFor(launch: ToolLaunch, options: ToolLaunchOptions): Promise<ToolBroker> {
+  return startToolBroker(launch.tools.map(tool => ({ spec: tool.spec, values: tool.values, ...(options.enabledTools?.[tool.spec.name] === undefined ? {} : { actions: options.enabledTools[tool.spec.name]! }) })), options.broker);
+}
+
+/** A private 0700 folder for one launch's files, and its cleanup with the broker's. */
+function launchFolder(broker: ToolBroker | null): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "so-tools-"));
   chmodSync(dir, 0o700);
+  return { dir, cleanup: () => { broker?.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+/**
+ * Claude: only these servers, in a private 0600 file removed after the run
+ * (the provider adds `--strict-mcp-config`). Each is the broker's address
+ * with this launch's token: Claude and its shell share one sandbox, so the
+ * file holds nothing a tool signs in with.
+ */
+export async function claudeToolArgs(launch: ToolLaunch, options: ToolLaunchOptions = {}): Promise<ToolLaunchArgs> {
+  const broker = launch.tools.length === 0 ? null : await brokerFor(launch, options);
+  const servers: Record<string, unknown> = {};
+  for (const tool of launch.tools) servers[tool.spec.name] = { type: "http", url: broker!.url(tool.spec.name), headers: { Authorization: `Bearer ${broker!.token}` } };
+  const { dir, cleanup } = launchFolder(broker);
   const file = join(dir, "mcp.json");
   writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
   return {
@@ -537,7 +548,9 @@ export function claudeToolArgs(launch: ToolLaunch): ToolLaunchArgs {
     // A first `npx` download can take longer than the default start-up wait.
     env: launch.tools.length > 0 ? { MCP_TIMEOUT: "60000" } : {},
     omitEnv: [],
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup,
+    privateDir: dir,
+    ...(broker === null ? {} : { serverPids: broker.pids }),
   };
 }
 
@@ -546,24 +559,29 @@ export function toolLauncherPath(): string {
   return fileURLToPath(new URL("./tool-launcher.js", import.meta.url));
 }
 
+/** The secret name a launch file gives the broker's token. */
+const BROKER_TOKEN = "TOOLROLL_TOOL_TOKEN";
+
 /**
- * Codex: each tool is named by `-c` and started through the launcher. The
- * operator's config.toml, rules, apps, plugins and hooks are already off
- * (the provider's CODEX_BUILD_ISOLATION_ARGV), and nothing of config.toml
- * is carried. Codex gives its own environment to the agent's shell whatever
- * its policy says, so no secret rides it: each tool's values sit in the
- * run's private 0600 file and reach only that tool's process.
+ * Codex: each tool is named by `-c` and started through the launcher, which
+ * relays it to the launch's broker. The operator's config.toml, rules, apps,
+ * plugins and hooks are already off (the provider's
+ * CODEX_BUILD_ISOLATION_ARGV), and nothing of config.toml is carried. Codex
+ * gives its own environment to the agent's shell whatever its policy says,
+ * so nothing rides it: the launch files name the broker and its token, and
+ * the folder holding them is fenced from the agent.
  */
-export function codexToolArgs(launch: ToolLaunch, options: { launcher?: string; node?: string; enabledTools?: Readonly<Record<string, readonly string[]>> } = {}): ToolLaunchArgs {
+export async function codexToolArgs(launch: ToolLaunch, options: ToolLaunchOptions & { launcher?: string; node?: string } = {}): Promise<ToolLaunchArgs> {
   const argv: string[] = [];
   if (launch.tools.length === 0) return { argv, env: {}, omitEnv: [], cleanup: () => undefined };
-  const dir = mkdtempSync(join(tmpdir(), "so-tools-"));
-  chmodSync(dir, 0o700);
+  const broker = await brokerFor(launch, options);
+  const { dir, cleanup } = launchFolder(broker);
   const launcher = options.launcher ?? toolLauncherPath();
   const node = options.node ?? process.execPath;
   for (const tool of launch.tools) {
     const file = join(dir, `${tool.spec.name}.json`);
-    writeFileSync(file, JSON.stringify({ spec: tool.spec, values: tool.values }), { mode: 0o600 });
+    const relay: ToolSpec = { ...tool.spec, transport: "http", command: null, args: [], url: broker.url(tool.spec.name), secrets: [{ name: BROKER_TOKEN, optional: false }], bearer: BROKER_TOKEN, headerSecrets: {} };
+    writeFileSync(file, JSON.stringify({ spec: relay, values: { [BROKER_TOKEN]: broker.token } }), { mode: 0o600 });
     const key = `mcp_servers.${tool.spec.name}`;
     argv.push(
       "-c", `${key}.command=${toml(node)}`,
@@ -576,7 +594,7 @@ export function codexToolArgs(launch: ToolLaunch, options: { launcher?: string; 
     const enabled = options.enabledTools?.[tool.spec.name];
     if (enabled !== undefined) argv.push("-c", `${key}.enabled_tools=${tomlList(enabled)}`);
   }
-  return { argv, env: {}, omitEnv: [], cleanup: () => rmSync(dir, { recursive: true, force: true }), privateDir: dir };
+  return { argv, env: {}, omitEnv: [], cleanup, privateDir: dir, serverPids: broker.pids };
 }
 
 /** Gemini: no way yet to hand it exactly these servers, so it gets none. */
@@ -640,16 +658,26 @@ export function toolLaunchFor(store: Pick<Store, "projectTools" | "getRun" | "re
  * what it launched with and what was left out and why. The caller spawns
  * with `argv`/`env` and calls `cleanup` when the process is done.
  */
-export function prepareRunTools(
+export async function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
   provider: "claude" | "codex" | "openrouter" | "gemini",
-  options: { home?: string; now: Date; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>> },
-): ToolLaunchArgs {
+  options: { home?: string; now: Date; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions },
+): Promise<ToolLaunchArgs> {
   const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
-  const enabledTools = options.readOnly === undefined ? {} : { enabledTools: options.readOnly };
-  const prepared = provider === "claude" ? claudeToolArgs(launch)
-    : provider === "codex" || provider === "openrouter" ? codexToolArgs(launch, enabledTools)
+  // Codex's filesystem policy cannot deny KERN_PROCARGS2. Its command
+  // sandbox can inspect an external stdio server's environment, so do not
+  // start secret-bearing servers there (OpenRouter uses the same harness).
+  if (provider === "codex" || provider === "openrouter") {
+    launch.tools = launch.tools.filter(one => {
+      if (one.spec.transport === "http" || Object.keys(one.values).length === 0) return true;
+      launch.skipped.push({ name: one.spec.name, reason: "This tool needs a Claude build to protect its sign-in details." });
+      return false;
+    });
+  }
+  const offered: ToolLaunchOptions = { ...(options.readOnly === undefined ? {} : { enabledTools: options.readOnly }), ...(options.broker === undefined ? {} : { broker: options.broker }) };
+  const prepared = provider === "claude" ? await claudeToolArgs(launch, offered)
+    : provider === "codex" || provider === "openrouter" ? await codexToolArgs(launch, offered)
         : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
   const skipped = provider === "gemini"
     ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: "Gemini builds can't use project tools yet" }))]
@@ -676,7 +704,7 @@ function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonl
 export function noToolsArgs(provider: "claude" | "codex" | "openrouter" | "gemini"): ToolLaunchArgs {
   if (provider === "claude") return { argv: ["--mcp-config", '{"mcpServers":{}}'], env: {}, omitEnv: [], cleanup: () => undefined };
   if (provider === "gemini") return { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
-  return codexToolArgs({ tools: [], skipped: [] });
+  return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
 }
 
 // ---- changing a project's tools (console and the lead share these) ------------------------

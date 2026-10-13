@@ -2,10 +2,11 @@
  * The launcher a Codex build starts each project tool through (v80):
  * `node tool-launcher.js <config.json>`. Codex hands its own environment
  * to the agent's shell whatever `shell_environment_policy` says (checked
- * against codex-cli 0.156), so a tool's secrets never ride Codex's
- * environment: they sit in the run's private 0600 file, and this process
- * gives them to exactly one server — as its environment for a local
- * program, or as sign-in headers for a web server it relays to over stdio.
+ * against codex-cli 0.156), so nothing rides Codex's environment. A build's
+ * launch file names its run's tool broker (tool-broker.ts) and that launch's
+ * token, and this process relays stdio to it over HTTP; the tool's own
+ * secrets stay in the broker. A launch file naming a local program or a web
+ * server with its values is still run as before.
  */
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";

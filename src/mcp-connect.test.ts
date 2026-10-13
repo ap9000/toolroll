@@ -289,7 +289,7 @@ test("read-only is an allow-list of reading verbs: any word nobody listed withho
   expect(readsOnly("insight-create-from-query", ["insight"])).toBe(false);
 });
 
-test("a research launch gets only connected services' read-only actions: Codex enables just those per server, and the rest are left out", () => {
+test("a research launch gets only connected services' read-only actions: Codex enables just those per server, and the rest are left out", async () => {
   const ids = ["mobbin", "posthog", "stripe"];
   for (const id of ids) {
     expect(addToolTo(store, repo, connectedSpec(id)!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
@@ -302,7 +302,7 @@ test("a research launch gets only connected services' read-only actions: Codex e
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   const readOnly = { mobbin: ["search_screens", "search_flows"], posthog: [] };
-  const launched = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly });
+  const launched = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly });
   try {
     const argv = launched.argv.join(" ");
     expect(argv).toContain('mcp_servers.mobbin.enabled_tools=["search_screens","search_flows"]');
@@ -316,11 +316,11 @@ test("a research launch gets only connected services' read-only actions: Codex e
     launched.cleanup();
   }
   // Nothing readable: no project server at all.
-  const none = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: {} });
+  const none = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: {} });
   expect(none.argv.join(" ")).not.toContain("mcp_servers.");
   none.cleanup();
   // A build is not limited: every server, every action.
-  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
+  const build = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
   try {
     expect(ids.every(id => build.argv.join(" ").includes(`mcp_servers.${id}.command`))).toBe(true);
     expect(build.argv.join(" ")).not.toContain("enabled_tools");
@@ -354,7 +354,7 @@ test("the gallery's research tools read only: Sentry, Cloudflare, Vercel, Interc
   expect(researchToolsOf(projectToolsOf(store, repo)).reads).toEqual(Object.fromEntries(Object.entries(services).map(([id, one]) => [id, one.reads])));
 });
 
-test("a build gets the project's Figma desktop app with every action", () => {
+test("a build gets the project's Figma desktop app with every action", async () => {
   const { label: _label, ...figma } = catalogTool("figma-desktop")!;
   expect(addToolTo(store, repo, figma, "Figma (desktop app), connected on this computer", "alex", T0, { home: dir })).toMatchObject({ ok: true });
   let recorded = "";
@@ -364,7 +364,7 @@ test("a build gets the project's Figma desktop app with every action", () => {
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   for (const provider of ["claude", "codex"] as const) {
-    const build = prepareRunTools(runs, 9, provider, { home: dir, now: T0 });
+    const build = await prepareRunTools(runs, 9, provider, { home: dir, now: T0 });
     try {
       expect(JSON.parse(recorded), provider).toMatchObject({ tools: [{ name: "figma-desktop" }], skipped: [] });
       if (provider === "codex") expect(build.argv.join(" ")).toContain("figma-desktop");
@@ -440,7 +440,7 @@ test("a granted scope is read-only only by an allow-list: reads and identity, no
   for (const grant of [null, [], ["*"], ["insight:read", "insight:write"], ["Insight:READ"], ["read"], ["insight:read:all"]]) expect(readOnlyGrant(grant), JSON.stringify(grant)).toBe(false);
 });
 
-test("PostHog's exec reaches research only with a read-only grant; a write or unknown grant is skipped with a plain reason on the run and its Tools entry", () => {
+test("PostHog's exec reaches research only with a read-only grant; a write or unknown grant is skipped with a plain reason on the run and its Tools entry", async () => {
   expect(addToolTo(store, repo, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home: dir })).toMatchObject({ ok: true });
   store.recordProjectToolTest(repo, "posthog", JSON.stringify({ at: T0.toISOString(), ok: true, tools: ["exec"], problem: null }));
   const research = () => researchToolsOf(projectToolsOf(store, repo), null, tool => grantOf(repo, tool, dir));
@@ -455,15 +455,17 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   grant("openid profile email user:read query:read error_tracking:read");
   expect(research()).toEqual({ services: [{ id: "posthog", label: "PostHog" }], allowed: ["mcp__posthog__exec"], reads: { posthog: ["exec"] }, local: [] });
   expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")).toEqual({ id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "connected" });
-  const allowed = prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: research().reads });
+  const allowed = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: research().reads });
   try {
     expect(allowed.argv.join(" ")).toContain('mcp_servers.posthog.enabled_tools=["exec"]');
     expect(JSON.parse(recorded)).toEqual({ provider: "codex", tools: [{ name: "posthog", digest: expect.any(String) }], skipped: [] });
-    // Its token rides only the run's private file, never argv or the record; the saved grant isn't even there.
+    // Its token stays in the run's broker, never argv, the record or the launch file; the saved grant isn't there either.
     expect(allowed.argv.join(" ")).not.toContain("ph-secret-token");
     expect(recorded).not.toContain("ph-secret-token");
     const file = allowed.argv.find(one => one.startsWith("mcp_servers.posthog.args="))!;
-    expect(readFileSync(JSON.parse(file.slice("mcp_servers.posthog.args=".length))[1], "utf8")).not.toContain("OAUTH_GRANTED_SCOPE");
+    const launchFile = readFileSync(JSON.parse(file.slice("mcp_servers.posthog.args=".length))[1], "utf8");
+    expect(launchFile).not.toContain("OAUTH_GRANTED_SCOPE");
+    expect(launchFile).not.toContain("ph-secret-token");
   } finally {
     allowed.cleanup();
   }
@@ -472,7 +474,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   expect(research()).toEqual({ services: [], allowed: [], reads: {}, local: [], withheld: { posthog: WRITE_REASON } });
   expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")?.research).toBe("PostHog is connected with write access, so research runs can't use it.");
   const { reads, withheld } = research();
-  const skipped = prepareRunTools(runs, 7, "claude", { home: dir, now: T0, readOnly: reads, withheld: withheld! });
+  const skipped = await prepareRunTools(runs, 7, "claude", { home: dir, now: T0, readOnly: reads, withheld: withheld! });
   skipped.cleanup();
   expect(JSON.parse(recorded)).toEqual({ provider: "claude", tools: [], skipped: [{ name: "posthog", reason: WRITE_REASON }] });
 
@@ -490,7 +492,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
 
   // A builder launch is unchanged whatever the grant: the whole server, no allow-list, nothing skipped.
   grant("insight:read insight:write");
-  const build = prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
+  const build = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
   try {
     expect(build.argv.join(" ")).toContain("mcp_servers.posthog.command");
     expect(build.argv.join(" ")).not.toContain("enabled_tools");
@@ -563,7 +565,7 @@ test("the grant is saved from the token answer (or the scope asked for, when it 
   expect(seen.filter(one => one.body.includes("ph-refresh")).every(one => one.url === "https://oauth.posthog.com/oauth/token/")).toBe(true);
 });
 
-test("a build's MCP servers are exactly its project's named, sealed tools: none is an explicit empty list, and Codex carries nothing of the operator's config", () => {
+test("a build's MCP servers are exactly its project's named, sealed tools: none is an explicit empty list, and Codex carries nothing of the operator's config", async () => {
   let recorded = "";
   let seal: { name: string; digest: string }[] | null = null;
   const runs = {
@@ -572,12 +574,12 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   // No opt-in: Claude gets its strict list, written out empty; Codex names no server.
-  const none = prepareRunTools(runs, 11, "claude", { home: dir, now: T0 });
+  const none = await prepareRunTools(runs, 11, "claude", { home: dir, now: T0 });
   try {
     expect(none.argv).toEqual(["--mcp-config", expect.stringMatching(/mcp\.json$/)]);
     expect(JSON.parse(readFileSync(none.argv[1]!, "utf8"))).toEqual({ mcpServers: {} });
   } finally { none.cleanup(); }
-  const noneCodex = prepareRunTools(runs, 11, "codex", { home: dir, now: T0 });
+  const noneCodex = await prepareRunTools(runs, 11, "codex", { home: dir, now: T0 });
   expect(noneCodex.argv).toEqual([]);
   noneCodex.cleanup();
 
@@ -589,20 +591,26 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     setToolSecrets(repo, name, { NOTES_TOKEN: token }, dir);
   }
   seal = projectToolsOf(store, repo).filter(one => one.name === "notes").map(one => ({ name: one.name, digest: one.digest }));
-  const claude = prepareRunTools(runs, 12, "claude", { home: dir, now: T0 });
+  const claude = await prepareRunTools(runs, 12, "claude", { home: dir, now: T0 });
   try {
     expect(claude.argv.filter(one => one === "--mcp-config")).toHaveLength(1);
     const file = claude.argv[claude.argv.indexOf("--mcp-config") + 1]!;
     expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).mcpServers)).toEqual(["notes"]);
-    // The value reaches only the private 0600 file, never the argv.
+    // The value reaches neither the argv nor the file: the file names the run's broker and its token (tool-broker.ts).
     expect(claude.argv.join(" ")).not.toContain(token);
+    expect(readFileSync(file, "utf8")).not.toContain(token);
+    expect(JSON.parse(readFileSync(file, "utf8")).mcpServers.notes).toEqual({ type: "http", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/notes$/), headers: { Authorization: expect.stringMatching(/^Bearer [\w-]{43}$/) } });
     expect(JSON.parse(recorded)).toMatchObject({ provider: "claude", tools: [{ name: "notes" }], skipped: [{ name: "later", reason: expect.stringContaining("after this task was approved") }] });
   } finally { claude.cleanup(); }
 
-  const codex = prepareRunTools(runs, 13, "codex", { home: dir, now: T0 });
+  const codex = await prepareRunTools(runs, 13, "codex", { home: dir, now: T0 });
   try {
     const argv = codex.argv.join(" ");
-    expect(argv).toContain("mcp_servers.notes.command=");
+    expect(codex.argv).toEqual([]);
+    expect(JSON.parse(recorded)).toMatchObject({ provider: "codex", tools: [], skipped: [
+      { name: "later", reason: expect.stringContaining("after this task was approved") },
+      { name: "notes", reason: "This tool needs a Claude build to protect its sign-in details." },
+    ] });
     expect(argv).not.toContain("mcp_servers.later.");
     expect(argv).not.toContain(token);
     // The operator's config.toml is ignored by the provider's own flags; nothing of it is carried here.

@@ -581,8 +581,11 @@ and `~/.toolroll` (stored provider keys and project tool secrets).
 Each attempt records how it was fenced. Two limits to know: in **API-key
 mode** an agent's own provider key is in its environment, so its shell can
 read it (subscription mode, the default, puts no key there); and a project's
-own tool secrets reach that project's tools. Reviews and the lead chat run
-with no tools and are confined to their own files. See [SECURITY.md](SECURITY.md).
+own tool secrets reach that project's tools. They stay in a per-run broker
+outside the fence: the agent gets only its address and a token that stops
+working when the run ends, and on macOS it can't read another process's
+arguments or environment. Reviews and the lead chat run with no tools and are
+confined to their own files. See [SECURITY.md](SECURITY.md).
 
 Every new-task and task-scope form has the same two-choice control. A task's
 choice is durable through planning rewrites and is sealed into the approved

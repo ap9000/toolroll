@@ -30,6 +30,56 @@ const ASK = {
   resumeSession: null as string | null,
 };
 
+test("the provider canary passes only when every unisolated control fires every sentinel and each isolated launch, fresh or resumed, fires only its named tool", async () => {
+  const { firedBy, judgeIsolation } = await import("../scripts/provider-canary.mjs");
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-canary-judge-")));
+  try {
+    const all = ["project-hook", "local-hook", "repository-mcp", "plugin", "adjacent-folder", "named-tool"];
+    const log = join(dir, "fired.log");
+    writeFileSync(log, [...["control-fresh", "control-resumed"].flatMap(launch => all.map(kind => `${launch} ${kind}`)), "isolated-fresh named-tool", "isolated-resumed named-tool", "isolated-fresh named-tool", ""].join("\n"));
+    const fired = await firedBy(log);
+    expect(judgeIsolation("claude", fired, ["control-fresh", "control-resumed"], ["isolated-fresh", "isolated-resumed"])).toEqual({
+      "control-fresh": [...all].sort(), "control-resumed": [...all].sort(), "isolated-fresh": ["named-tool"], "isolated-resumed": ["named-tool"],
+    });
+    // A control that misses a sentinel proves nothing about isolation.
+    expect(() => judgeIsolation("claude", { ...fired, "control-resumed": ["named-tool"] }, ["control-fresh", "control-resumed"], ["isolated-fresh"])).toThrow(/control-resumed launch did not fire .*plugin/);
+    // A plugin, an adjacent folder or a repository hook reaching a resumed build fails it; so does a tool that never started.
+    expect(() => judgeIsolation("claude", { ...fired, "isolated-resumed": ["adjacent-folder", "named-tool", "plugin"] }, [], ["isolated-fresh", "isolated-resumed"])).toThrow(/isolated-resumed launch fired adjacent-folder, plugin/);
+    expect(() => judgeIsolation("claude", { "isolated-fresh": [] }, [], ["isolated-fresh"])).toThrow(/named tool did not start for the isolated-fresh/);
+    expect(() => judgeIsolation("claude", { ...fired, unknown: ["project-hook"] }, ["control-fresh", "control-resumed"], ["isolated-fresh", "isolated-resumed"])).toThrow(/unexpected launch: unknown \(project-hook\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the canary's opted-in server names its launch from the launch file when the broker's environment drops CANARY_LAUNCH", async () => {
+  const { OPT_IN_SERVER, firedBy } = await import("../scripts/provider-canary.mjs");
+  const { serverEnv } = await import("./tool-broker.js");
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-canary-launch-")));
+  try {
+    const server = join(dir, "opt-in-server.mjs"), log = join(dir, "fired.log"), launch = join(dir, "launch");
+    writeFileSync(server, OPT_IN_SERVER);
+    writeFileSync(launch, "isolated-fresh\n");
+    const env = serverEnv({ ...process.env, CANARY_LAUNCH: "isolated-fresh" }, [], {}, {});
+    expect(env["CANARY_LAUNCH"]).toBeUndefined();
+    // Its stdin closes at once: it logs on start, then exits.
+    spawnSync(process.execPath, [server, log, join(dir, "no-adjacent", "secret.txt"), launch], { env, input: "", timeout: 10_000 });
+    expect(await firedBy(log)).toEqual({ "isolated-fresh": ["named-tool"] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the canary's filed goal carries no quote marks for a model to copy into the file", async () => {
+  const { canaryGoal } = await import("../scripts/provider-canary.mjs");
+  for (const provider of ["claude", "codex", "gemini"]) for (const marker of [null, "TOOLROLL_MEMORY_CANARY_x"]) {
+    const goal = canaryGoal(provider, marker) as string;
+    expect(goal).not.toContain('"');
+    expect(goal).toContain(`standing-orders ${provider} canary passed`);
+    expect(goal.length).toBeLessThanOrEqual(200);
+  }
+});
+
 test("the Claude memory canary owns only its unique marker and removes it on success and failure", async () => {
   const { withClaudeMemoryCanary } = await import("../scripts/provider-canary.mjs");
   const base = realpathSync(mkdtempSync(join(tmpdir(), "so-memory-canary-")));
@@ -318,6 +368,38 @@ describe("argv dialects", () => {
         }
       }
     }
+  });
+
+  test("a build routed with no model keeps the operator's own model, Claude's always-on thinking and Codex's effort; an explicit model or a review never does", () => {
+    const inherited = { model: "opus", alwaysThinking: true, effort: "high" };
+    const settingsOf = (argv: string[]) => JSON.parse(argv[argv.lastIndexOf("--settings") + 1]!) as Record<string, unknown>;
+    for (const resumeSession of [null, "session-1"]) {
+      const claude = adapterFor("claude").argv({ ...ASK, resumeSession, inherited });
+      expect(claude[claude.indexOf("--model") + 1]).toBe("opus");
+      expect(settingsOf(claude)).toMatchObject({ autoMemoryEnabled: false, alwaysThinkingEnabled: true });
+      // Still no settings file, plugin, hook or repository MCP server: only the choices themselves ride along.
+      expect(claude[claude.indexOf("--setting-sources") + 1]).toBe("");
+      expect(claude).toContain("--strict-mcp-config");
+      const codex = adapterFor("codex").argv({ ...ASK, resumeSession, model: null, inherited: { model: "gpt-5.6-sol", effort: "xhigh" } });
+      expect(codex.join(" ")).toContain("-m gpt-5.6-sol -c model_reasoning_effort=\"xhigh\"");
+      expect(codex).toContain("--ignore-user-config");
+      expect(codex).toContain("features.plugins=false");
+    }
+    // Thinking switched off is kept off.
+    expect(settingsOf(adapterFor("claude").argv({ ...ASK, inherited: { alwaysThinking: false } }))).toMatchObject({ alwaysThinkingEnabled: false });
+    // An explicit route model wins, and nothing else of the operator's setup is carried.
+    const pinned = adapterFor("claude").argv({ ...ASK, model: "sonnet", inherited });
+    expect(pinned[pinned.indexOf("--model") + 1]).toBe("sonnet");
+    expect(settingsOf(pinned)).not.toHaveProperty("alwaysThinkingEnabled");
+    const pinnedCodex = adapterFor("codex").argv({ ...ASK, model: "gpt-5-codex", inherited });
+    expect(pinnedCodex.join(" ")).not.toContain("model_reasoning_effort");
+    expect(pinnedCodex[pinnedCodex.indexOf("-m") + 1]).toBe("gpt-5-codex");
+    // A review keeps its own isolation: none of it.
+    expect(adapterFor("claude").argv({ ...ASK, phase: "review", inherited })).not.toContain("--model");
+    expect(adapterFor("codex").argv({ ...ASK, phase: "review", inherited }).join(" ")).not.toMatch(/model_reasoning_effort|-m /);
+    // Nothing inherited: the CLI's own default, as before.
+    expect(adapterFor("claude").argv({ ...ASK })).not.toContain("--model");
+    expect(adapterFor("codex").argv({ ...ASK })).not.toContain("-m");
   });
 
   test("codex review phase gets a read-only sandbox, refusing approvals, and ignores the user's own config — never workspace-write", () => {
