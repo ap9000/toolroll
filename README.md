@@ -409,7 +409,7 @@ do not loosen when you leave the room:
 | touch a default branch | builds land on `toolroll/<task>` in a leased worktree; push + PR happen only under a publication grant naming the exact repo, branch prefix, and base |
 | approve its own work | approval nonces are minted only on screens that restate the digest-bound terms, and require your approver token typed again — **no LLM sits in any approval path** — and the [agent fence](#what-an-agent-can-reach) keeps your remembered login, runner tokens and the database out of the agent's reach |
 | act on an irreversible option | `reversible` is a schema field; irreversible choices never auto-apply, and answering one from a phone takes a second minted confirmation tap |
-| see Toolroll's secrets | the [agent fence](#what-an-agent-can-reach) blocks your login, runner and bot tokens, stored provider keys and project tool secrets at the operating system; other providers' keys are stripped from each agent's environment; secrets live in 0600 files, never in the database, URLs, or logs |
+| see Toolroll's secrets | the [agent fence](#what-an-agent-can-reach) blocks your login, runner and bot tokens, stored provider keys and project tool secrets at the operating system; other providers' keys are stripped from each agent's environment; tool secrets rest sealed in the OS keychain ([how](#how-build-sessions-are-protected)) and other secrets in 0600 files, never in the database, URLs, or logs |
 | spend while idle | **an LLM never polls** — the daemon does every no-judgement chore at zero token cost and wakes an agent only on a real event |
 | spend without being counted | every provider spawn is stamped *before* it spends, so cost is measured, never asserted |
 | guess at a judgement call | it parks a typed decision — recap, options with reversibility, recommendation, evidence — and the other eleven tasks keep going |
@@ -586,6 +586,38 @@ outside the fence: the agent gets only its address and a token that stops
 working when the run ends, and on macOS it can't read another process's
 arguments or environment. Reviews and the lead chat run with no tools and are
 confined to their own files. See [SECURITY.md](SECURITY.md).
+
+### How build sessions are protected
+
+A build runs as your own user, so Toolroll keeps a project's tool secrets
+away from it in layers:
+
+- **The fence.** The operating system denies the build Toolroll's own
+  folders, your home configuration and other projects (the table above).
+- **The broker.** A run's tools are served by a broker in Toolroll's own
+  process, outside the fence. The agent gets only the broker's local address
+  and a key for that run, which stops working when the run ends. Another
+  run's key opens nothing.
+- **The keychain.** At rest, tool secrets are in the macOS Keychain (through
+  `security`, with the value on its input) or the Linux Secret Service
+  (`secret-tool`). A fenced build can still ask the keychain for an item, so
+  each is sealed with a key kept in Toolroll's fenced folder: what a build
+  reads is ciphertext. Secrets are read only when a run starts. Files from
+  before move into the keychain the first time they are used, and the
+  plaintext copy is removed. Where there is no keychain, secrets stay in
+  owner-only files, and Settings → Tools and `toolroll integrations` say so.
+- **Short-lived tokens.** A service connected by signing in gives each run
+  a fresh access token of its own, made outside the fence when the run starts
+  and limited to read access for research steps where the service allows.
+  The refresh token never leaves Toolroll. The run's token is revoked when
+  the run ends, or runs out on its own where the service has no way to revoke
+  it. Keys you paste in stay in the broker. Settings → Tools shows which each
+  tool uses.
+
+What remains: any program of yours running outside the fence (not started by
+a build) can read what you can, including Toolroll's folder and the keychain.
+Toolroll protects your secrets from its builds, not from other software you
+run.
 
 Every new-task and task-scope form has the same two-choice control. A task's
 choice is durable through planning rewrites and is sealed into the approved

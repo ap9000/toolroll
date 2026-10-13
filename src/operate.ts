@@ -53,6 +53,7 @@ import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-trigger
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
+import { toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
 import { followTeams } from "./teams.js";
@@ -9429,7 +9430,8 @@ async function integrationsCommand(positional: readonly string[], flags: Map<str
   const list = flag(flags, "saved") ? integrationsNow(io) : await checkIntegrations(io);
   const counts = { connected: 0, "not-set-up": 0, broken: 0 };
   for (const one of list) counts[one.state] += 1;
-  return succeed(context.write, context.json, command, { integrations: list, counts }, () => renderIntegrations(list));
+  const secrets = toolSecretStorage();
+  return succeed(context.write, context.json, command, { integrations: list, counts, secrets: { kind: secrets.kind, words: secrets.words } }, () => renderIntegrations(list, secrets));
 }
 
 async function waitTask(

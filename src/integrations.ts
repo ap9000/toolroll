@@ -32,7 +32,7 @@ import { effectivePrimary } from "./webhooks.js";
 import { readEmailSettings } from "./email-settings.js";
 import { googleConnected } from "./google-mail.js";
 import { LINEAR_URL, readHooksBase, readLinearKey } from "./flow-triggers.js";
-import { projectToolsOf, readToolSecrets, missingSecrets, testToolOf } from "./project-tools.js";
+import { credentialModeOf, projectToolsOf, readToolSecrets, missingSecrets, secretsSetFor, testToolOf } from "./project-tools.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
 import { targetOf } from "./monitoring.js";
 
@@ -65,6 +65,8 @@ export type Integration = {
   action: IntegrationAction;
   /** A project's own MCP tool: it shows a letter, never a logo matched by name. */
   custom?: true;
+  /** A project's MCP tool: how its runs get credentials ("Short-lived token per run", "Key held by Toolroll"). */
+  credentials?: string;
 };
 
 export const STATE_WORDS: Record<IntegrationState, string> = { connected: "Connected", "not-set-up": "Not set up", broken: "Broken" };
@@ -109,6 +111,7 @@ type Target = {
   activity: Activity;
   probe: ((io: IntegrationIo) => Promise<ProbeResult>) | null;
   custom?: true;
+  credentials?: string;
 };
 
 const PROBE_MS = 8_000;
@@ -436,8 +439,11 @@ function targets(io: IntegrationIo): Target[] {
       anyTool = true;
       const href = `/settings/tools?repo=${encodeURIComponent(repo)}#tool-${encodeURIComponent(tool.name)}`;
       const test = tool.lastTest;
+      // Which secrets are set, by name only: no value is read to say how runs get them.
+      let credentials: string | undefined;
+      try { credentials = credentialModeOf(tool.spec, secretsSetFor(repo, tool.spec, toolHome))?.words; } catch { credentials = undefined; }
       list.push({
-        key: `mcp:${repo}:${tool.name}`, group: "tools", name: tool.name, configured: true, account: basename(repo), ...(tool.source === "custom" ? { custom: true as const } : {}),
+        key: `mcp:${repo}:${tool.name}`, group: "tools", name: tool.name, configured: true, account: basename(repo), ...(tool.source === "custom" ? { custom: true as const } : {}), ...(credentials === undefined ? {} : { credentials }),
         setup: place(href), fix: place(href), usedBy: [`Tasks in ${basename(repo)}`],
         activity: test === null ? NO_ACTIVITY : test.ok ? { okAt: test.at, error: null, errorAt: null, failing: false } : { okAt: null, error: test.problem, errorAt: test.at, failing: false },
         probe: async check => {
@@ -486,7 +492,7 @@ function targets(io: IntegrationIo): Target[] {
 // ---------------------------------------------------------------- the list
 
 function combine(target: Target, row: CheckRow | undefined): Integration {
-  const base = { key: target.key, group: target.group, name: target.name, usedBy: target.usedBy, ...(target.custom ? { custom: true as const } : {}) };
+  const base = { key: target.key, group: target.group, name: target.name, usedBy: target.usedBy, ...(target.custom ? { custom: true as const } : {}), ...(target.credentials === undefined ? {} : { credentials: target.credentials }) };
   const checked = target.probe === null || row !== undefined;
   const lastSuccessAt = later(row?.okAt ?? null, target.activity.okAt);
   const checkError = row?.error ?? null, checkErrorAt = row?.errorAt ?? null;
@@ -535,17 +541,19 @@ export function integrationsBrokenLine(list: readonly Integration[]): string | n
 
 const whenText = (at: string | null) => (at === null ? "never" : `${at.slice(0, 16).replace("T", " ")} UTC`);
 
-/** The CLI's lines: one per integration, then the fix under anything Broken. */
-export function renderIntegrations(list: readonly Integration[]): string[] {
+/** The CLI's lines: one per integration, then the fix under anything Broken; last, where tool secrets are kept when
+ * that is files only (`secrets`: toolSecretStorage's words, said only then). */
+export function renderIntegrations(list: readonly Integration[], secrets: { words: string; filesOnly: boolean } | null = null): string[] {
   const width = Math.min(24, Math.max(...list.map(one => one.name.length)));
-  return list.flatMap(one => {
-    const facts = [one.account, one.detail].filter(Boolean).join(" · ");
+  const note = secrets?.filesOnly === true && list.some(one => one.group === "tools" && one.state !== "not-set-up") ? [`Tool secrets: ${secrets.words}`] : [];
+  return [...list.flatMap(one => {
+    const facts = [one.account, one.detail, one.credentials].filter(Boolean).join(" · ");
     const lines = [`${one.name.padEnd(width)}  ${STATE_WORDS[one.state].padEnd(10)}${facts === "" ? "" : `  ${facts}`}`];
     if (one.state !== "not-set-up") lines.push(`${"".padEnd(width)}  last success ${whenText(one.lastSuccessAt)}${one.lastError === null ? "" : ` · last error ${whenText(one.lastErrorAt)}: ${one.lastError}`}`);
     if (one.action.kind === "fix") lines.push(`${"".padEnd(width)}  Fix: ${one.action.words}${one.action.command === null || one.action.words.includes(one.action.command) ? "" : ` (run ${one.action.command})`}`);
     if (one.action.kind === "setup") lines.push(`${"".padEnd(width)}  Set up: ${one.action.command !== null ? `run ${one.action.command}` : `Settings (${one.action.href ?? "/settings"})`}`);
     return lines;
-  });
+  }), ...note];
 }
 
 // ---------------------------------------------------------------- background

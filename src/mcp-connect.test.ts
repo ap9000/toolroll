@@ -210,7 +210,7 @@ test("a sign-in on another origin is found through the server's resource metadat
     return reply(404, {});
   }) as typeof fetch;
   expect(await discoverSignIn("https://api.mobbin.com/mcp", fetcher)).toEqual({ authorize: `${auth}/oauth/authorize`, token: `${auth}/oauth/token`, register: `${auth}/oauth/clients/register`,
-    scopes: ["openid", "email"], resource: "https://api.mobbin.com/mcp" });
+    scopes: ["openid", "email"], resource: "https://api.mobbin.com/mcp", revoke: null });
   expect(asked.some(one => one.startsWith("https://api.mobbin.com/.well-known/oauth-authorization-server"))).toBe(false);
   // An auth server that only answers OpenID's form under its own path is found too.
   const oidc = (async (input: string | URL | Request, init?: RequestInit) => {

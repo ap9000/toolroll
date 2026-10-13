@@ -9,16 +9,19 @@
  * leaves every build at once. Reviewers and the lead chat never get tools.
  *
  * Secret values (API keys, tokens, any env value) never enter the
- * database, a chat, a card or a log: they live in one 0600 file per tool
- * under ~/.toolroll/tool-secrets/ (or an older ~/.standing-orders/), are written only from the
- * console's password-gated screen, and at launch reach only the run's tool
- * broker (tool-broker.ts), which gives them to that project's server
- * processes and sign-in headers — never to the agent.
+ * database, a chat, a card or a log: they live in the operating system's
+ * keychain (tool-secret-store.ts) or, where there is none, in one 0600 file
+ * per tool under ~/.toolroll/tool-secrets/ (or an older ~/.standing-orders/).
+ * They are written only from the console's password-gated screen, read when a
+ * run starts, and reach only that run's tool broker (tool-broker.ts), which
+ * gives them to the project's server processes and sign-in headers — never to
+ * the agent. A tool connected by signing in gives a run only an access token
+ * of its own (oauth-run-token.ts).
  */
 import { toolRefusal } from "./policy.js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +29,8 @@ import { scanForSecrets } from "./evidence.js";
 import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
 import { startToolBroker, type BrokerOptions, type ToolBroker } from "./tool-broker.js";
+import { STORE_WORDS, SecretStoreError, readValue, removeValue, seal, secretBackend, secretStoreKind, unseal, writeValue, type SecretBackend, type SecretItem, type SecretStoreKind } from "./tool-secret-store.js";
+import { ACCESS, GRANTED, REFRESH, mintRunToken, mintsRunTokens, oneAtATime, runScope, scopeList, signedIn } from "./oauth-run-token.js";
 import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
 
 export type { ToolSecret, ToolSpec };
@@ -202,19 +207,118 @@ function secretFile(repo: string, tool: string, home: string): string {
   return join(toolSecretsDir(home), createHash("sha256").update(repo).digest("hex").slice(0, 16), `${tool}.json`);
 }
 
-export function readToolSecrets(repo: string, tool: string, home: string = homedir()): Record<string, string> {
-  const file = secretFile(repo, tool, home);
+/** A tool's keychain item: this home's Toolroll and the project, hashed, and the tool's name. Never a secret. */
+function secretItem(repo: string, tool: string, home: string): SecretItem {
+  if (!NAME.test(tool)) throw new Error("Choose a tool by its name.");
+  const hash = (text: string, length: number) => createHash("sha256").update(text).digest("hex").slice(0, length);
+  return { service: `toolroll-tool-secrets.${hash(home, 12)}`, account: `${hash(repo, 16)}.${tool}` };
+}
+
+/** The key that seals what Toolroll keeps in the keychain: in Toolroll's own folder, which every build's fence denies. */
+const sealingKeyFile = (home: string) => join(toolSecretsDir(home), ".keychain-key");
+const sealValues = (values: Record<string, string>, item: SecretItem, home: string) => seal(JSON.stringify(values), item, sealingKeyFile(home));
+const unsealValues = (text: string, item: SecretItem, home: string): Record<string, string> => {
+  try { return secretValues(JSON.parse(unseal(text, item, sealingKeyFile(home)))); } catch (error) { throw error instanceof SecretStoreError ? error : new SecretStoreError("A tool's stored secrets are damaged."); }
+};
+
+const secretValues = (parsed: unknown): Record<string, string> => parsed === null || typeof parsed !== "object" || Array.isArray(parsed) ? {}
+  : Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => SECRET_NAME.test(entry[0]) && typeof entry[1] === "string"));
+
+/** A tool's 0600 file, as it was kept before the keychain (and still is where there is none); null when unreadable. */
+function readSecretFile(file: string): Record<string, string> | null {
   if (!existsSync(file)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => SECRET_NAME.test(entry[0]) && typeof entry[1] === "string"));
-  } catch {
-    return {};
+  try { return secretValues(JSON.parse(readFileSync(file, "utf8"))); } catch { return null; }
+}
+
+const held = new Map<string, number>();
+/** One change to a tool's secrets at a time, across Toolroll's processes (a lock file beside its secrets), re-entrant within one. */
+function withToolLock<T>(repo: string, tool: string, home: string, work: () => T): T {
+  const lock = secretFile(repo, tool, home).replace(/\.json$/, ".lock");
+  if ((held.get(lock) ?? 0) > 0) { held.set(lock, held.get(lock)! + 1); try { return work(); } finally { held.set(lock, held.get(lock)! - 1); } }
+  mkdirSync(join(lock, ".."), { recursive: true, mode: 0o700 });
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  for (let tries = 0; ; tries++) {
+    try { closeSync(openSync(lock, "wx", 0o600)); break; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // A lock left by a process that died is old: taken over after 30 seconds.
+      try { if (Date.now() - statSync(lock).mtimeMs > 30_000) { rmSync(lock, { force: true }); continue; } } catch { continue; }
+      if (tries > 400) throw new SecretStoreError("A tool's secrets are being changed elsewhere. Try again in a moment.");
+      Atomics.wait(wait, 0, 0, 25);
+    }
   }
+  held.set(lock, 1);
+  try { return work(); } finally { held.delete(lock); rmSync(lock, { force: true }); }
+}
+
+/** The names of a tool's secrets that have a value, kept beside them so a page never reads a value to say so. */
+const namesFile = (repo: string, tool: string, home: string) => secretFile(repo, tool, home).replace(/\.json$/, ".names.json");
+function writeNames(repo: string, tool: string, names: readonly string[], home: string): void {
+  const file = namesFile(repo, tool, home);
+  if (names.length === 0) { rmSync(file, { force: true }); return; }
+  mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 });
+  writeFileSync(file, JSON.stringify([...names].sort()), { mode: 0o600 });
+}
+
+/** A plaintext file's bytes overwritten, then the file removed: what the keychain now holds leaves no copy here. */
+function destroySecretFile(file: string): void {
+  try {
+    const size = statSync(file).size;
+    const handle = openSync(file, "r+");
+    try { writeSync(handle, Buffer.alloc(size)); fsyncSync(handle); } finally { closeSync(handle); }
+  } catch { /* removed below either way */ }
+  rmSync(file, { force: true });
+}
+
+/**
+ * A tool's secrets moved from its 0600 file into the keychain, the first time they are used there: stored, read back
+ * and compared, and only then is the file destroyed. Secrets already in the keychain (an earlier move, or a change
+ * since) win over the file. A failure leaves the file as it was, and says so.
+ */
+function moveToKeychain(backend: SecretBackend, repo: string, tool: string, home: string): void {
+  const file = secretFile(repo, tool, home);
+  if (!existsSync(file)) return;
+  withToolLock(repo, tool, home, () => {
+    const values = readSecretFile(file);
+    // Unreadable: kept as it is, and never used.
+    if (values === null || !existsSync(file)) return;
+    const item = secretItem(repo, tool, home);
+    if (Object.keys(values).length > 0) {
+      if (writeValue(backend, item, sealValues(values, item, home), { create: true }) === "ok") {
+        let back: Record<string, string> | null = null;
+        try { const text = readValue(backend, item); back = text === null ? null : unsealValues(text, item, home); } catch { back = null; }
+        if (back === null || JSON.stringify(back) !== JSON.stringify(values)) {
+          try { removeValue(backend, item); } catch { /* the file stays the copy that counts */ }
+          throw new SecretStoreError("A tool's secrets couldn't be moved to the keychain; they stay in their file until they can.");
+        }
+        writeNames(repo, tool, Object.keys(values), home);
+      } else {
+        const kept = readValue(backend, item);
+        writeNames(repo, tool, kept === null ? [] : Object.keys(unsealValues(kept, item, home)), home);
+      }
+    }
+    destroySecretFile(file);
+  });
+}
+
+/** A tool's secret values. Read only to test it, change it or start a run: a page reads which are set (secretsSetFor). */
+export function readToolSecrets(repo: string, tool: string, home: string = homedir()): Record<string, string> {
+  const backend = secretBackend();
+  if (backend === null) return readSecretFile(secretFile(repo, tool, home)) ?? {};
+  moveToKeychain(backend, repo, tool, home);
+  const item = secretItem(repo, tool, home);
+  const text = readValue(backend, item);
+  return text === null ? {} : unsealValues(text, item, home);
 }
 
 function writeSecrets(repo: string, tool: string, values: Record<string, string>, home: string): void {
+  const backend = secretBackend();
+  if (backend !== null) {
+    const item = secretItem(repo, tool, home);
+    if (Object.keys(values).length === 0) removeValue(backend, item);
+    else writeValue(backend, item, sealValues(values, item, home));
+    writeNames(repo, tool, Object.keys(values), home);
+    return;
+  }
   const file = secretFile(repo, tool, home);
   const dir = join(file, "..");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -227,20 +331,32 @@ function writeSecrets(repo: string, tool: string, values: Record<string, string>
 
 /** Set (or, with an empty value, clear) one secret of one tool. */
 export function setToolSecret(repo: string, tool: string, name: string, value: string, home: string = homedir()): void {
-  if (!SECRET_NAME.test(name) || RESERVED_ENV.has(name)) throw new Error("Choose one of the tool's secrets.");
-  if (value.length > 8_192 || /[\u0000\r\n]/.test(value)) throw new Error("A secret is one line, up to 8,192 characters.");
-  const values = readToolSecrets(repo, tool, home);
-  if (value === "") delete values[name];
-  else values[name] = value;
-  writeSecrets(repo, tool, values, home);
+  setToolSecrets(repo, tool, { [name]: value }, home);
 }
 
+/** Set (or, with empty values, clear) some secrets of one tool, in one change. */
 export function setToolSecrets(repo: string, tool: string, values: Record<string, string>, home: string = homedir()): void {
-  for (const [name, value] of Object.entries(values)) setToolSecret(repo, tool, name, value, home);
+  for (const [name, value] of Object.entries(values)) {
+    if (!SECRET_NAME.test(name) || RESERVED_ENV.has(name)) throw new Error("Choose one of the tool's secrets.");
+    if (value.length > 8_192 || /[\u0000\r\n]/.test(value)) throw new Error("A secret is one line, up to 8,192 characters.");
+  }
+  withToolLock(repo, tool, home, () => {
+    const current = readToolSecrets(repo, tool, home);
+    for (const [name, value] of Object.entries(values)) {
+      if (value === "") delete current[name];
+      else current[name] = value;
+    }
+    writeSecrets(repo, tool, current, home);
+  });
 }
 
 export function clearToolSecrets(repo: string, tool: string, home: string = homedir()): void {
-  rmSync(secretFile(repo, tool, home), { force: true });
+  withToolLock(repo, tool, home, () => {
+    const backend = secretBackend();
+    if (backend !== null) removeValue(backend, secretItem(repo, tool, home));
+    rmSync(secretFile(repo, tool, home), { force: true });
+    rmSync(namesFile(repo, tool, home), { force: true });
+  });
 }
 
 /** Required secrets with no value yet: the tool is left out of builds until they are set. */
@@ -504,8 +620,8 @@ function safeLine(text: string): string {
 
 // ---- launch ------------------------------------------------------------------------
 
-/** The exact servers one launch gets, and those left out with why. */
-export type ToolLaunch = { tools: ResolvedTool[]; skipped: { name: string; reason: string }[] };
+/** The exact servers one launch gets, and those left out with why (`repo`: the project, from the run's record). */
+export type ToolLaunch = { tools: ResolvedTool[]; skipped: { name: string; reason: string }[]; repo?: string };
 
 /** Everything a provider spawn needs to use exactly these tools, and the
  * cleanup. `privateDir` holds the run's launch files, which name the broker
@@ -630,7 +746,7 @@ export function toolLaunchFor(store: Pick<Store, "projectTools" | "getRun" | "re
   if (ref === null || ref.repo === null) return { tools: [], skipped: [] };
   const approved = store.getScope(ref.externalId)?.approvedDigest ?? null;
   const seal = approved === null ? null : store.toolSealFor(ref.externalId, approved);
-  const launch: ToolLaunch = { tools: [], skipped: [] };
+  const launch: ToolLaunch = { tools: [], skipped: [], repo: ref.repo };
   const claimed = new Map<string, string>();
   const policy = store.orgPolicy();
   for (const tool of projectToolsOf(store, ref.repo)) {
@@ -644,7 +760,10 @@ export function toolLaunchFor(store: Pick<Store, "projectTools" | "getRun" | "re
     const values = readToolSecrets(ref.repo, tool.name, home);
     const missing = missingSecrets(tool.spec, values);
     if (missing.length > 0) { launch.skipped.push({ name: tool.name, reason: `needs ${missing.join(", ")} set on the Tools page` }); continue; }
-    const kept = Object.fromEntries(tool.spec.secrets.filter(one => (values[one.name] ?? "") !== "").map(one => [one.name, values[one.name]!]));
+    // A tool connected by signing in launches with its access token alone: its refresh token, client and the rest
+    // stay in the store, and a run that renews gets an access token of its own (prepareRunTools).
+    const kept = signedIn(tool.spec) ? { [ACCESS]: values[ACCESS]! }
+      : Object.fromEntries(tool.spec.secrets.filter(one => (values[one.name] ?? "") !== "").map(one => [one.name, values[one.name]!]));
     const clash = Object.entries(kept).find(([name, value]) => claimed.has(name) && claimed.get(name) !== value);
     if (clash !== undefined) { launch.skipped.push({ name: tool.name, reason: `uses ${clash[0]} with a different value than another tool` }); continue; }
     for (const [name, value] of Object.entries(kept)) claimed.set(name, value);
@@ -662,7 +781,7 @@ export async function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
   provider: "claude" | "codex" | "openrouter" | "gemini",
-  options: { home?: string; now: Date; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions },
+  options: { home?: string; now: Date; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions; fetcher?: typeof fetch },
 ): Promise<ToolLaunchArgs> {
   const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
   // Codex's filesystem policy cannot deny KERN_PROCARGS2. Its command
@@ -675,10 +794,20 @@ export async function prepareRunTools(
       return false;
     });
   }
+  const revokes = provider === "gemini" ? [] : await signInRun(launch, { readOnly: options.readOnly !== undefined, now: options.now, ...(options.home === undefined ? {} : { home: options.home }), ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }) });
+  const revoke = () => { for (const one of revokes.splice(0)) void one(); };
   const offered: ToolLaunchOptions = { ...(options.readOnly === undefined ? {} : { enabledTools: options.readOnly }), ...(options.broker === undefined ? {} : { broker: options.broker }) };
-  const prepared = provider === "claude" ? await claudeToolArgs(launch, offered)
-    : provider === "codex" || provider === "openrouter" ? await codexToolArgs(launch, offered)
-        : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
+  let launched: ToolLaunchArgs;
+  try {
+    launched = provider === "claude" ? await claudeToolArgs(launch, offered)
+      : provider === "codex" || provider === "openrouter" ? await codexToolArgs(launch, offered)
+          : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
+  } catch (error) {
+    revoke();
+    throw error;
+  }
+  // The run's own sign-ins end with it: the broker closes first, so nothing uses a token as it is revoked.
+  const prepared: ToolLaunchArgs = revokes.length === 0 ? launched : { ...launched, cleanup: () => { launched.cleanup(); revoke(); } };
   const skipped = provider === "gemini"
     ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: "Gemini builds can't use project tools yet" }))]
     : launch.skipped;
@@ -690,11 +819,43 @@ export async function prepareRunTools(
   return prepared;
 }
 
+/**
+ * Each signed-in tool's own access token for this run (oauth-run-token.ts), read and renewed here, outside the fence,
+ * one renewal at a time; a rotated refresh token is kept, and only the new access token joins the launch. A tool that
+ * can't be signed in is left out, saying why. Returns how to revoke the run's tokens.
+ */
+async function signInRun(launch: ToolLaunch, options: { readOnly: boolean; now: Date; home?: string; fetcher?: typeof fetch }): Promise<(() => Promise<void>)[]> {
+  const repo = launch.repo;
+  const revokes: (() => Promise<void>)[] = [];
+  if (repo === undefined) return revokes;
+  const home = options.home ?? homedir();
+  const kept: ResolvedTool[] = [];
+  for (const tool of launch.tools) {
+    if (!signedIn(tool.spec)) { kept.push(tool); continue; }
+    const minted = await oneAtATime(`${repo}\0${tool.spec.name}`, async () => {
+      const values = readToolSecrets(repo, tool.spec.name, home);
+      // No refresh token: the one access token the sign-in gave stays in the broker, like a key.
+      if (!mintsRunTokens(values)) return { ok: true as const, token: null };
+      const scope = runScope(scopeList(values[GRANTED]), options.readOnly);
+      const answer = await mintRunToken(values, { scope, now: options.now, ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }) });
+      if (answer.ok && answer.token.rotated !== null) setToolSecrets(repo, tool.spec.name, { [REFRESH]: answer.token.rotated }, home);
+      return answer;
+    });
+    if (!minted.ok) { launch.skipped.push({ name: tool.spec.name, reason: minted.reason }); continue; }
+    if (minted.token === null) { kept.push(tool); continue; }
+    if (minted.token.revoke !== null) revokes.push(minted.token.revoke);
+    kept.push({ ...tool, values: { [ACCESS]: minted.token.access } });
+  }
+  launch.tools = kept;
+  return revokes;
+}
+
 /** A research step's launch: only the servers it may read, each limited to its read-only actions; the rest left out, saying why (`withheld`, when a service has its own reason). */
 function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> = {}): ToolLaunch {
   if (readOnly === undefined) return launch;
   const readable = (name: string) => (readOnly[name] ?? []).length > 0;
   return {
+    ...launch,
     tools: launch.tools.filter(one => readable(one.spec.name)),
     skipped: [...launch.skipped, ...launch.tools.filter(one => !readable(one.spec.name)).map(one => ({ name: one.spec.name, reason: withheld[one.spec.name] ?? "research reads only connected services' read-only actions" }))],
   };
@@ -754,10 +915,40 @@ export function toolStanding(tool: ProjectTool, secretsSet: readonly string[]): 
   return { ready: true, words: `Working · ${tool.lastTest.tools.length} tool${tool.lastTest.tools.length === 1 ? "" : "s"}` };
 }
 
-/** Names of a tool's secrets that have a value (never the values). */
-export function secretsSetFor(repo: string, tool: ToolSpec, home?: string): string[] {
-  const values = readToolSecrets(repo, tool.name, home);
-  return tool.secrets.filter(one => (values[one.name] ?? "") !== "").map(one => one.name);
+/** How a tool's runs get its credentials, in the words Settings and `toolroll integrations` share. */
+export type CredentialMode = { mode: "run-token" | "held-key" | "no-key"; words: string; detail: string | null };
+export const CREDENTIAL_MODES: Readonly<Record<CredentialMode["mode"], Omit<CredentialMode, "mode">>> = {
+  "run-token": { words: "Short-lived token per run", detail: "Each run gets its own access token when it starts, revoked or left to expire when it ends. The refresh token stays with Toolroll." },
+  "held-key": { words: "Key held by Toolroll", detail: "Runs reach this tool through Toolroll, which adds the key. The key never enters a build." },
+  "no-key": { words: "No key needed", detail: null },
+};
+/** A tool's credential mode from the names of its secrets that are set (never their values); null while a key it needs is missing. */
+export function credentialModeOf(spec: ToolSpec, secretsSet: readonly string[]): CredentialMode | null {
+  const mode = spec.secrets.every(one => one.optional && !secretsSet.includes(one.name)) ? "no-key" as const
+    : signedIn(spec) && mintsRunTokens(secretsSet) ? "run-token" as const
+      : spec.secrets.some(one => !one.optional && !secretsSet.includes(one.name)) ? null
+        : "held-key" as const;
+  return mode === null ? null : { mode, ...CREDENTIAL_MODES[mode] };
+}
+
+/** Names of a tool's secrets that have a value, never the values: in the keychain, from the names kept beside them. */
+export function secretsSetFor(repo: string, tool: ToolSpec, home: string = homedir()): string[] {
+  let names: string[] | null = null;
+  if (secretBackend() !== null && !existsSync(secretFile(repo, tool.name, home))) {
+    try { const listed = JSON.parse(readFileSync(namesFile(repo, tool.name, home), "utf8")) as unknown; names = Array.isArray(listed) ? listed.filter((one): one is string => typeof one === "string") : null; } catch { names = null; }
+  }
+  if (names === null) {
+    const values = readToolSecrets(repo, tool.name, home);
+    names = Object.keys(values).filter(name => values[name] !== "");
+    if (secretBackend() !== null) writeNames(repo, tool.name, names, home);
+  }
+  return tool.secrets.filter(one => names!.includes(one.name)).map(one => one.name);
+}
+
+/** Where this computer keeps tool secrets, in the words Settings and `toolroll integrations` share. */
+export function toolSecretStorage(): { kind: SecretStoreKind; words: string; filesOnly: boolean } {
+  const kind = secretStoreKind();
+  return { kind, words: STORE_WORDS[kind], filesOnly: kind === "files" };
 }
 
 /** A command line split into program and arguments, honouring "double" and 'single' quotes. */

@@ -7,9 +7,11 @@
  * authorization server at its origin), registers Toolroll as a client
  * with this console's callback, and sends the person to the service to sign
  * in. The callback trades the code for tokens, which live in the tool's own
- * secrets file (never the database, never a log), and the tool joins the
- * project like any other: tested, listed, and given to subagents under rules.
- * The worker refreshes tokens before they expire.
+ * secrets (the OS keychain, or its file where there is none; never the
+ * database, never a log), and the tool joins the project like any other:
+ * tested, listed, and given to subagents under rules. The worker refreshes
+ * tokens before they expire, and each run gets an access token of its own
+ * (oauth-run-token.ts).
  */
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
@@ -17,7 +19,10 @@ import { basename } from "node:path";
 import { LOCAL_APPS, addToolTo, catalogTool, localAppOf, projectToolsOf, readToolSecrets, setToolSecrets, testToolOf, type ProjectTool, type ToolSpec } from "./project-tools.js";
 import type { Store } from "./store.js";
 import { envValue } from "./names.js";
-import { SCOPE_TOKEN, readAuthorizationServer, readProtectedResource, readRegistration, readTokenResponse, type TokenResponse } from "./contracts/integration-metadata.js";
+import { readAuthorizationServer, readProtectedResource, readRegistration, readTokenResponse, type TokenResponse } from "./contracts/integration-metadata.js";
+import { ACCESS, CLIENT, CLIENT_SECRET, EXPIRES, GRANTED, REFRESH, RESOURCE, REVOKE_URL, TOKEN_URL, oneAtATime, readScope, scopeList } from "./oauth-run-token.js";
+
+export { readScope, scopeList };
 
 /**
  * A one-click service. `reads` names what a research step may read there:
@@ -138,26 +143,12 @@ export function readsOnly(action: string, subjects: readonly string[]): boolean 
   return words.some(word => READING.has(word)) && words.every(word => READING.has(word) || QUALIFIERS.has(word) || subject(word));
 }
 
-/**
- * Identity scopes a read-only grant may carry beside `<resource>:read` ones. An allow-list: any other scope (a
- * write, a wildcard, `introspection`, one nobody listed) makes the grant unsafe for research.
- */
-const IDENTITY_SCOPES = new Set(["openid", "profile", "email"]);
-const READ_SCOPE = /^[a-z][a-z0-9_]{0,63}:read$/;
-export const readScope = (scope: string) => IDENTITY_SCOPES.has(scope) || READ_SCOPE.test(scope);
 /** Whether a saved grant only reads: it names at least one scope and every one is a read or identity scope. Unknown (null) never is. */
 // A scope a server adds to every token without being asked, that grants no access to data. PostHog adds
 // `introspection` (its ALWAYS_ALLOWED_SCOPES): it lets the token be checked, and has no write form. Never requested.
 const GRANTED_ANYWAY = new Set(["introspection"]);
 export const readOnlyGrant = (grant: readonly string[] | null): boolean =>
   grant !== null && grant.some(readScope) && grant.every(scope => readScope(scope) || GRANTED_ANYWAY.has(scope));
-/** An OAuth `scope` value as scope tokens (RFC 6749), sorted and deduplicated; null when absent, empty or malformed. */
-export function scopeList(value: unknown): string[] | null {
-  if (typeof value !== "string") return null;
-  const tokens = value.split(" ").filter(one => one !== "");
-  if (tokens.length === 0 || tokens.length > 512 || !tokens.every(one => SCOPE_TOKEN.test(one))) return null;
-  return [...new Set(tokens)].sort();
-}
 /** The scope a connected service's sign-in was granted, as saved beside its token; null when it was never proved. */
 export function grantOf(repo: string, tool: string, home: string = homedir()): string[] | null {
   try { return scopeList(readToolSecrets(repo, tool, home)[GRANTED]); } catch { return null; }
@@ -209,23 +200,21 @@ export function researchToolsOf(tools: readonly ProjectTool[], launched: Readonl
   return research;
 }
 
-/** The secrets a connected tool keeps: the bearer the MCP server takes, and what refreshing it needs. */
-const ACCESS = "OAUTH_ACCESS_TOKEN", REFRESH = "OAUTH_REFRESH_TOKEN", CLIENT = "OAUTH_CLIENT_ID", CLIENT_SECRET = "OAUTH_CLIENT_SECRET", TOKEN_URL = "OAUTH_TOKEN_URL", EXPIRES = "OAUTH_EXPIRES_AT", RESOURCE = "OAUTH_RESOURCE";
-/** The scope the sign-in granted, kept beside its token. Not one of the spec's secrets, so it never reaches a launch. */
-const GRANTED = "OAUTH_GRANTED_SCOPE";
 /** Where a service sends the person back after they sign in. */
 export const CONNECT_CALLBACK = "/settings/tools/connected";
 const VISIT_MS = 15 * 60_000, RENEW_RETRY_MS = 5 * 60_000;
 const renewTried = new Map<string, number>();
 
 type Fetch = typeof fetch;
-type Server = { authorize: string; token: string; register: string; scopes: string[]; resource: string | null };
+type Server = { authorize: string; token: string; register: string; scopes: string[]; resource: string | null; revoke: string | null };
 /** The most scope text a sign-in address carries (addresses stay well under 8 KB). */
 const SCOPE_PARAM_LIMIT = 6_000;
 /** A sign-in on its way: what the callback needs to finish it (kept in the console's memory, 15 minutes). `kit` or `template` is the page it returns to. */
 export type ConnectVisit = { service: string; repo: string; by: string; kit: string | null; template: string | null; verifier: string; clientId: string; clientSecret: string | null; token: string; resource: string; redirect: string; expires: number;
   /** The scope asked for, when one was: the grant when the token answer leaves `scope` out (RFC 6749 §5.1). */
-  scope?: string | null };
+  scope?: string | null;
+  /** Where the service revokes a token, when its metadata said: a run's own token is revoked there when the run ends. */
+  revoke?: string | null };
 
 const json = async (fetcher: Fetch, url: string): Promise<Record<string, unknown> | null> => {
   try {
@@ -275,7 +264,7 @@ export async function discoverSignIn(mcpUrl: string, fetcher: Fetch = fetch): Pr
   for (const one of listed) { if (scopes.join(" ").length + one.length + 1 > SCOPE_PARAM_LIMIT) break; scopes.push(one); }
   // A token is for the resource the server names (Stripe's has no trailing slash), when it names one.
   const named = resource.resource;
-  return { authorize, token, register, scopes, resource: https(named) ? named : null };
+  return { authorize, token, register, scopes, resource: https(named) ? named : null, revoke: https(meta.revocation_endpoint) ? meta.revocation_endpoint : null };
 }
 
 /**
@@ -322,7 +311,7 @@ export async function startConnect(input: { service: string; repo: string; by: s
   if (input.readOnly === true && service.readActions !== undefined && scopes.length === 0) return { ok: false, said: `${service.label} didn't list any read-only access to ask for.` };
   const scope = scopes.length > 0 ? scopes.join(" ") : null;
   if (scope !== null) go.searchParams.set("scope", scope);
-  return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, template: input.template ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS, scope } };
+  return { ok: true, go: go.toString(), state, visit: { service: service.id, repo: input.repo, by: input.by, kit: input.kit ?? null, template: input.template ?? null, verifier, clientId, clientSecret, token: server.token, resource, redirect, expires: now + VISIT_MS, scope, revoke: server.revoke } };
 }
 
 /** The spec a connected service joins the project with: its MCP address, signed in with the token its sign-in gave. */
@@ -342,7 +331,7 @@ const tokensFrom = (body: TokenResponse, now: number) => ({
 /**
  * Finish connecting: trade the code for tokens, add the tool to the project
  * (or refresh its sign-in, when it's there already), keep the tokens in its
- * secrets file, and test it.
+ * secrets, and test it.
  */
 export async function finishConnect(store: Store, visit: ConnectVisit, code: string, now: Date, options: { fetcher?: Fetch; home?: string; test?: boolean; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; said: string } | { ok: false; said: string }> {
   const service = oneClickOf(visit.service)!;
@@ -370,7 +359,7 @@ export async function finishConnect(store: Store, visit: ConnectVisit, code: str
   }
   // The grant: what the answer says, or what was asked for when it says nothing; never one from an earlier sign-in.
   const granted = body.scopeSaid ? scopeList(body.scope) : scopeList(visit.scope ?? null);
-  setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource, [GRANTED]: granted?.join(" ") ?? "",
+  setToolSecrets(visit.repo, spec.name, { [ACCESS]: tokens.access, [CLIENT]: visit.clientId, [TOKEN_URL]: visit.token, [RESOURCE]: visit.resource, [GRANTED]: granted?.join(" ") ?? "", [REVOKE_URL]: visit.revoke ?? "", [REFRESH]: "",
     ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }), ...(visit.clientSecret === null ? {} : { [CLIENT_SECRET]: visit.clientSecret }) }, home);
   // The success line names the project it went to: the page and chat may be looking at another.
   const to = basename(visit.repo);
@@ -393,21 +382,27 @@ export async function refreshConnections(store: Store, repos: readonly string[],
     const key = `${repo}\0${tool.name}`;
     if (now.getTime() - (renewTried.get(key) ?? 0) < RENEW_RETRY_MS) continue;
     renewTried.set(key, now.getTime());
-    try {
-      const answer = await fetcher(values[TOKEN_URL], { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, signal: AbortSignal.timeout(15_000),
-        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: values[REFRESH], client_id: values[CLIENT], ...(values[CLIENT_SECRET] === undefined ? {} : { client_secret: values[CLIENT_SECRET] }), ...(values[RESOURCE] === undefined ? {} : { resource: values[RESOURCE] }) }) });
-      const body = readTokenResponse(await answer.json());
-      if (body === null) { report.problems.push(`${tool.name}: couldn't reach it to renew its sign-in`); continue; }
-      const tokens = tokensFrom(body, now.getTime());
-      if (!answer.ok || tokens.access === null) { report.problems.push(`${tool.name}: its sign-in ran out; connect it again on the Tools page`); continue; }
-      // A refresh carries the same grant or a narrower one, and says so when it changes; said badly, it is unknown.
-      setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }),
-        ...(body.scopeSaid ? { [GRANTED]: scopeList(body.scope)?.join(" ") ?? "" } : {}) }, home);
-      renewTried.delete(key);
-      report.refreshed++;
-    } catch {
-      report.problems.push(`${tool.name}: couldn't reach it to renew its sign-in`);
-    }
+    // Renewed one at a time with a run's own sign-in (oauth-run-token.ts): a rotated refresh token is never used twice.
+    const problem = await oneAtATime(key, async () => {
+      const latest = readToolSecrets(repo, tool.name, home);
+      if (!latest[REFRESH] || !latest[TOKEN_URL] || !latest[CLIENT]) return null;
+      try {
+        const answer = await fetcher(latest[TOKEN_URL], { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, signal: AbortSignal.timeout(15_000),
+          body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: latest[REFRESH], client_id: latest[CLIENT], ...(latest[CLIENT_SECRET] === undefined ? {} : { client_secret: latest[CLIENT_SECRET] }), ...(latest[RESOURCE] === undefined ? {} : { resource: latest[RESOURCE] }) }) });
+        const body = readTokenResponse(await answer.json());
+        if (body === null) return `${tool.name}: couldn't reach it to renew its sign-in`;
+        const tokens = tokensFrom(body, now.getTime());
+        if (!answer.ok || tokens.access === null) return `${tool.name}: its sign-in ran out; connect it again on the Tools page`;
+        // A refresh carries the same grant or a narrower one, and says so when it changes; said badly, it is unknown.
+        setToolSecrets(repo, tool.name, { [ACCESS]: tokens.access, ...(tokens.refresh === null ? {} : { [REFRESH]: tokens.refresh }), ...(tokens.expires === null ? {} : { [EXPIRES]: tokens.expires }),
+          ...(body.scopeSaid ? { [GRANTED]: scopeList(body.scope)?.join(" ") ?? "" } : {}) }, home);
+        return false;
+      } catch {
+        return `${tool.name}: couldn't reach it to renew its sign-in`;
+      }
+    });
+    if (typeof problem === "string") { report.problems.push(problem); continue; }
+    if (problem === false) { renewTried.delete(key); report.refreshed++; }
   }
   return report;
 }

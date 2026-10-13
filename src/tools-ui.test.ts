@@ -58,3 +58,36 @@ test("PostHog connected with write access stays Connected, says once why researc
   expect(viewer).toContain(said);
   expect(viewer).not.toContain("Reconnect read-only");
 });
+
+test("each tool says in one line how its runs get credentials, explains it under Details, and the page says once when secrets are file-protected only", () => {
+  const tool = (name: string, spec: Partial<ToolsView["tools"][number]["tool"]["spec"]>) => ({ id: 1, repo: "/work/shop", name, digest: "d", source: "custom", createdAt: "2026-10-05T00:00:00.000Z", createdBy: "alex", lastTest: null,
+    spec: { name, transport: "http" as const, command: null, args: [], url: `https://mcp.${name}.example/mcp`, bearer: null, headerSecrets: {}, secrets: [], about: `${name} tools.`, ...spec } });
+  const oauth = { bearer: "OAUTH_ACCESS_TOKEN", secrets: ["OAUTH_ACCESS_TOKEN", "OAUTH_REFRESH_TOKEN", "OAUTH_CLIENT_ID", "OAUTH_TOKEN_URL"].map(name => ({ name, optional: name !== "OAUTH_ACCESS_TOKEN" })) };
+  const tools = [
+    { tool: tool("linear", oauth), secretsSet: ["OAUTH_ACCESS_TOKEN", "OAUTH_REFRESH_TOKEN", "OAUTH_CLIENT_ID", "OAUTH_TOKEN_URL"] },
+    { tool: tool("notion", oauth), secretsSet: ["OAUTH_ACCESS_TOKEN"] },
+    { tool: tool("github", { bearer: "GITHUB_TOKEN", secrets: [{ name: "GITHUB_TOKEN", optional: false }] }), secretsSet: ["GITHUB_TOKEN"] },
+    { tool: tool("playwright", {}), secretsSet: [] },
+    { tool: tool("sentry", { secrets: [{ name: "SENTRY_ACCESS_TOKEN", optional: false }] }), secretsSet: [] },
+  ];
+  const files = { words: "Secrets are protected by owner-only files on this computer.", filesOnly: true };
+  const html = toolsHtml({ ...view(null), tools, storage: files }, "csrf", true);
+  const line = (name: string) => /<p class="tool-credential" data-credential="([a-z-]+)">([^<]+)<\/p>/.exec(html.slice(html.indexOf(`id="tool-${name}"`)).split("</article>")[0]!)?.slice(1) ?? null;
+  expect(line("linear")).toEqual(["run-token", "Short-lived token per run"]);
+  expect(line("notion")).toEqual(["held-key", "Key held by Toolroll"]);
+  expect(line("github")).toEqual(["held-key", "Key held by Toolroll"]);
+  expect(line("playwright")).toEqual(["no-key", "No key needed"]);
+  // A key not set yet: the state says what's missing, and no mode is claimed.
+  expect(line("sentry")).toBeNull();
+  expect(html).toContain('<span class="tool-state" data-ready="false">Needs SENTRY_ACCESS_TOKEN</span>');
+  expect(html).toContain("<details><summary>Details</summary><div class=\"tool-facts\"><p>Each run gets its own access token when it starts, revoked or left to expire when it ends. The refresh token stays with Toolroll.</p>");
+  // A service connected by signing in renews by signing in again: none of its tokens is offered to paste.
+  expect(html.slice(html.indexOf('id="tool-linear"')).split("</article>")[0]).not.toMatch(/<summary>(Set|Replace) OAUTH_/);
+  expect(html).toContain("<summary>Replace GITHUB_TOKEN</summary>");
+  expect(html.split(files.words)).toHaveLength(2);
+  expect(html).toContain(`<p class="tool-storage" role="note">${files.words}</p>`);
+  // With a keychain, the note is gone and How tools work says where secrets are kept.
+  const keychain = toolsHtml({ ...view(null), tools, storage: { words: "Secrets are kept in the macOS Keychain.", filesOnly: false } }, "csrf", true);
+  expect(keychain).not.toContain("tool-storage");
+  expect(keychain).toContain("<li>Secrets are kept in the macOS Keychain, are never shown again, and go only to the tool that needs them.</li>");
+});

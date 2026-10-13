@@ -61,7 +61,11 @@ user. What it promises:
   secret and a collector's header value live in `monitoring.json` (0600,
   fenced from agents), never in the database or the ledger; `/metrics` needs
   an instance operator. Addresses are https (http only to this machine).
-- **Secrets stay out of the database, URLs and logs,** in 0600 files.
+- **Secrets stay out of the database, URLs and logs,** in 0600 files. Project
+  tool secrets rest in the OS keychain, sealed with a key the fence denies,
+  and a service connected by signing in gives each run only a short-lived
+  access token, never its refresh token. See the README's "How build
+  sessions are protected".
 - **Reviews** run with no tools, confined to their sealed files.
 
 Known limits:
@@ -76,6 +80,8 @@ Known limits:
   the command line or before schema 102 name no filer, and turning a rule on
   doesn't withdraw approvals already given.
 
+- Programs you run yourself, outside the fence, can read what you can:
+  Toolroll's folder and your keychain included.
 - In API-key mode, an agent's own provider key is in its environment.
   Subscription mode (the default) puts no key there.
 - **Full access** lets an agent change files anywhere on your computer

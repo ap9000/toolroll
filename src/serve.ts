@@ -16,7 +16,7 @@ import { startMaintenance } from './maintenance.js';
 import { connectionsOf,localConnectOf,oneClickOf,type ConnectVisit } from "./mcp-connect.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
-import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG,toolStanding } from "./project-tools.js";
+import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
 import { toolRefusal } from "./policy.js";
 import { isEdgeAddress,refuseEdge } from "./server/edge-refusal.js";
 import { announcePasswordBearer, isPasswordBearer, PASSWORD_BEARER_REFUSED, passwordBearerAccepted } from "./password-bearer.js";
@@ -460,6 +460,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
       connections: connectionsOf(store, repo, toolHome), kit, wanted,
       found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
+      storage: toolSecretStorage(),
     };
   };
   const codingProjects = (): string[] => [...new Set([...managedRepos(), ...store.listProjects().map(project => project.path)])].filter(repo => rowVisible(liveCeiling(), repo));

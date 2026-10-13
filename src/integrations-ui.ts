@@ -53,7 +53,7 @@ function row(one: Integration, csrf: string): Html {
   const badge = !one.checked && one.state === "connected"
     ? html`<span class="integration-state integration-state--checking"><i aria-hidden="true"></i>Checking</span>`
     : html`<span class="integration-state integration-state--${one.state}"><i aria-hidden="true"></i>${STATE_WORDS[one.state]}</span>`;
-  const facts = [one.account, one.detail].filter(Boolean).join(" · ");
+  const facts = [one.account, one.detail, one.credentials].filter(Boolean).join(" · ");
   const command = one.action.kind !== "test" ? one.action.command : null;
   const fix = one.action.kind === "fix" ? html`<p class="integration-fix" role="status">${one.action.words}</p>` : "";
   const run = command === null || (one.action.kind === "fix" && one.action.words.includes(command)) ? "" : html`<p class="meta">Run <code>${command}</code> on the computer running Toolroll.</p>`;
@@ -66,14 +66,16 @@ function row(one: Integration, csrf: string): Html {
     action(one, csrf)}<div class="integration-body">${facts === "" ? "" : html`<p class="meta">${facts}</p>`}${fix}${run}${history}${lastError}</div></div>`;
 }
 
-export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean }): Html {
+export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean; secrets?: { words: string; filesOnly: boolean } }): Html {
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const broken = list.filter(one => one.state === "broken").length;
   const summary = broken > 0 ? html`<p><strong>${broken} need${broken === 1 ? "s" : ""} fixing.</strong></p>`
     : notice.checking || list.some(one => !one.checked) ? html`<p class="meta" role="status">Checking in the background. Refresh in a few seconds.</p>` : "";
   const sections = GROUPS.map(([group, title]) => {
     const rows = list.filter(one => one.group === group);
-    return rows.length === 0 ? "" : html`<h2>${title}</h2>${rows.map(one => row(one, csrf))}`;
+    // No keychain here: said once, under the tools whose secrets it is about.
+    const kept = group === "tools" && notice.secrets?.filesOnly === true && rows.some(one => one.state !== "not-set-up") ? html`<p class="meta integration-secrets" role="note">${notice.secrets.words}</p>` : "";
+    return rows.length === 0 ? "" : html`<h2>${title}</h2>${kept}${rows.map(one => row(one, csrf))}`;
   });
   return html`<section class="integrations">${note}${summary}${sections}</section>`;
 }
