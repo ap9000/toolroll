@@ -14,7 +14,9 @@
  */
 import { existsSync, lstatSync, rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { run, type ExecResult } from "./exec.js";
+import type { ExecResult } from "./exec.js";
+import type { Runner } from "./worktree.js";
+import { teardownGit, refusal } from "./teardown-git.js";
 import { BUILT_IN, type Database, type Store } from "./store.js";
 import { BRANCH_PREFIX, BRANCH_PREFIXES, isOwnBranch } from "./names.js";
 
@@ -120,7 +122,6 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
 }
 
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<ExecResult>;
-const defaultGit: GitRunner = (args, cwd) => run("git", ["--no-optional-locks", ...args], { cwd, timeoutMs: 60_000 });
 
 /** Whether `path` is inside `root` (not the root itself). */
 const inside = (root: string, path: string) => { const rel = relative(resolve(root), resolve(path)); return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel); };
@@ -143,7 +144,9 @@ async function removeCheckoutsAndBranches(store: Store, repo: string, d: Doomed,
   const ours = new Set(named);
   const left: string[] = [];
   let checkouts = 0, branches = 0;
-  const isRepo = existsSync(repo) && (await git(["rev-parse", "--git-dir"], repo)).code === 0;
+  const probe = existsSync(repo) ? await git(["rev-parse", "--git-dir"], repo) : null;
+  if (probe !== null && refusal(probe) !== null) return { checkouts, branches, left: [refusal(probe)!] };
+  const isRepo = probe?.code === 0;
   if (!isRepo) {
     // No repository to ask: only checkouts in Toolroll's own folder go.
     for (const row of recorded) {
@@ -328,9 +331,11 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
  * starts while the checkouts and branches go.
  */
 export async function deleteProject(store: Store, repo: string, options: {
-  actor: string; via: "console" | "command line"; now: Date; evidenceRoot: string | null; poolRoot: string | null; git?: GitRunner;
+  actor: string; via: "console" | "command line"; now: Date; evidenceRoot: string | null; poolRoot: string | null; git?: GitRunner; runner?: Runner;
 }): Promise<ProjectDeleteResult> {
-  const git = options.git ?? defaultGit;
+  const hardened = teardownGit(options.runner ?? (options.git === undefined ? undefined :
+    (_file, args, execOptions) => options.git!(args, execOptions!.cwd!)));
+  const git: GitRunner = (args, cwd) => hardened(cwd, args);
   const running = projectRunning(store, repo, options.now);
   if (running.length > 0) return { ok: false, reason: "running", said: `Nothing was deleted: ${running.join(", ")}. Stop it, then try again.`, running };
   const db = store.handle;

@@ -411,3 +411,16 @@ test("without a setup to restore them, a kept checkout keeps its dependencies an
   expect(existsSync(join(review, "node_modules", "x.js"))).toBe(true);
   expect(existsSync(join(review, "dist"))).toBe(false);
 });
+
+test("checkout cleanup sends every Git invocation through the hardened boundary", async () => {
+  const path = await task("hardened", "completed");
+  let calls = 0;
+  const checked = new WorktreePool(store, { root: join(dir, "worktrees"), runner: (file, args, options) => {
+    calls++;
+    expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+    expect(args.includes("--no-includes") || args.includes("core.hooksPath=/dev/null")).toBe(true);
+    return run(file, args, options);
+  } });
+  expect((await cleanCheckouts(store, checked, () => at(1000), { manual: true, actor: "test", repo })).removed.map(row => row.path)).toEqual([path]);
+  expect(calls).toBeGreaterThan(0);
+});

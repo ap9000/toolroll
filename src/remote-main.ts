@@ -25,9 +25,9 @@ const SHA = /^[0-9a-f]{40}$/;
 const FETCH_TIMEOUT_MS = 120_000;
 
 /** What the private directory's git may see of this process's environment: nothing that names a repository, an
- * object store or config. The fixed settings below go on top. */
-const ENV_ALLOWLIST = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SSH_AUTH_SOCK", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
-const ENV: Record<string, string> = {
+ * object store or config. The fixed settings below go on top. Teardown git (teardown-git.ts) uses the same. */
+export const ENV_ALLOWLIST = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SSH_AUTH_SOCK", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
+export const ENV: Record<string, string> = {
   GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "", SSH_ASKPASS: "", GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
 };
