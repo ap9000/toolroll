@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.9.63 — 2026-10-13
 
+- **Scheduled flows run on their own.** Sign a flow once with limits
+  (runs a day, budget, end date); its on-time firings build without a
+  person, and the script it runs is checked again when it fires.
+- **Secrets in the OS keychain.** Tool keys, the Linear key, Google mail and
+  flow secrets move into the macOS Keychain or Linux Secret Service, never
+  argv or the database. OAuth tools give each run a short-lived token, never
+  the refresh token. Settings shows how each tool's runs get credentials.
+- **Builds stay in their own checkout.** A build can't read or write another
+  project's or another task's checkout, and a checkout swapped for a link
+  is refused at the next launch.
+- **Safer cleanup.** Removing finished checkouts runs git with hooks,
+  filters and nested-repo config switched off.
+- **Attack suite.** Every bypass found in review is a permanent test, run by
+  the Quick check whenever sandbox or secrets code changes.
 - **Tool secrets stay outside the build.** A broker outside the sandbox
   holds them. Codex refuses tools that carry secrets. Shared dependencies and
   `git gc` work inside the fence.
