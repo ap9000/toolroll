@@ -216,9 +216,11 @@ export const SECRETS_FIRST: ReadonlySet<string> = new Set(["serve", "up", "daemo
  * recorded: made now when `eager` (a command that can start builds), else the first time a secret is used.
  * A folder that can't be used is said in Settings and `toolroll integrations`; every secret is refused until then.
  */
-export function startToolSecrets(store: Pick<Store, "toolSecretKeyDigest" | "swapToolSecretKeyDigest">, databaseFile: string, clock: () => Date, options: { eager: boolean }): void {
+export function startToolSecrets(store: Pick<Store, "toolSecretKeyDigest" | "swapToolSecretKeyDigest" | "toolSecretLegacyDir">, databaseFile: string, clock: () => Date, options: { eager: boolean }): void {
   const anchor = { read: () => store.toolSecretKeyDigest(), swap: (expected: string | null, next: string) => store.swapToolSecretKeyDigest(expected, next, clock()) };
-  const state = dirname(databaseFile), legacy = legacyToolSecretsDir();
+  // The old folder is found once, at the first start of a command that can start builds (so before any build ran), then
+  // read from the record.
+  const state = dirname(databaseFile), legacy = store.toolSecretLegacyDir(() => legacyToolSecretsDir(), clock(), { record: options.eager });
   if (options.eager) prepareSecretFolder(state, anchor, { standing: true, legacy });
   else registerSecretFolder(state, anchor, { legacy });
 }

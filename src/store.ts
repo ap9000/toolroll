@@ -548,6 +548,13 @@ CREATE TABLE IF NOT EXISTS tool_secret_key (
   digest  TEXT NOT NULL CHECK (length(digest) = 64),
   made_at TEXT NOT NULL
 );
+-- Where secrets were kept before Toolroll's folder, decided once at this database's first start (null: none) and never
+-- probed again, so a folder a build makes later under an old name is never migrated in.
+CREATE TABLE IF NOT EXISTS tool_secret_legacy (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  dir        TEXT,
+  decided_at TEXT NOT NULL
+);
 `;
 /** Sprint 8: database backups. One settings row (off, or every so many hours, keeping the newest N in a folder; no
  * folder means `backups` beside the database), every backup's outcome, and a lease the console's backup loop holds
@@ -5958,6 +5965,22 @@ export class Store {
     if (!tableExists(this.db, "tool_secret_key")) return null;
     const row = this.db.prepare("SELECT digest FROM tool_secret_key WHERE id = 1").get();
     return row === undefined ? null : String(row["digest"]);
+  }
+
+  /**
+   * The folder secrets were kept in before Toolroll's own, as decided at this database's first start of a command that
+   * can start builds (`record`): `probe` runs until then, and its answer (null: none) is kept for every later start.
+   * Other commands never write, so a preview stays read-only and a busy database doesn't stop them.
+   */
+  toolSecretLegacyDir(probe: () => string | null, now: Date, options: { record: boolean }): string | null {
+    const read = () => tableExists(this.db, "tool_secret_legacy") ? this.db.prepare("SELECT dir FROM tool_secret_legacy WHERE id = 1").get() : undefined;
+    let row = read();
+    if (row === undefined) {
+      if (!options.record) return probe();
+      this.db.prepare("INSERT OR IGNORE INTO tool_secret_legacy (id, dir, decided_at) VALUES (1, ?, ?)").run(probe(), now.toISOString());
+      row = read();
+    }
+    return row?.["dir"] === null || row?.["dir"] === undefined ? null : String(row["dir"]);
   }
 
   /** Record a new sealing key's digest only if the one recorded is still `expected` (null: none yet). */

@@ -412,6 +412,43 @@ describe("the keyring on Linux: the system's own secret-tool, and plainly files 
 });
 
 describe("what was kept in files moves in on first use, verified, and no plaintext copy is left", () => {
+  test("bypass: an old-named folder a build makes after the database's first start is never migrated in; one there at the first start is", () => {
+    vi.stubEnv("HOME", home);
+    const database = join(state, "orders.db");
+    const store = openStore(database);
+    try {
+      const keychain = memoryKeychain();
+      chooseSecretStore(keychain);
+      // A fresh install: no old folder at the first start, and that is recorded.
+      startToolSecrets(store, database, () => T0, { eager: true });
+      expect(store.toolSecretLegacyDir(() => { throw new Error("probed again"); }, T0, { record: true })).toBeNull();
+      // A build then makes one under an old name with values of its choosing for a tool's declared secrets.
+      const planted = join(home, ".standing-orders", "tool-secrets", REPO_HASH);
+      mkdirSync(planted, { recursive: true, mode: 0o700 });
+      writeFileSync(join(planted, "sentry.json"), JSON.stringify({ SENTRY_ACCESS_TOKEN: CANARY, SENTRY_HOST: "attacker.example" }), { mode: 0o600 });
+      forgetSecretFolders();
+      startToolSecrets(store, database, () => T0, { eager: true });
+      expect(readToolSecrets(REPO, "sentry") ?? {}).toEqual({});
+      setToolSecrets(REPO, "sentry", { SENTRY_ACCESS_TOKEN: "owner-token" });
+      expect(readToolSecrets(REPO, "sentry")).toEqual({ SENTRY_ACCESS_TOKEN: "owner-token" });
+      expect(existsSync(join(planted, "sentry.json"))).toBe(true);
+    } finally { store.close(); vi.unstubAllEnvs(); }
+    // Legitimate: an upgrade whose old folder is there at the database's first start moves it in.
+    const upgraded = join(dir, "upgraded");
+    mkdirSync(upgraded, { mode: 0o700 });
+    mkdirSync(join(legacy, REPO_HASH), { recursive: true, mode: 0o700 });
+    writeFileSync(join(legacy, REPO_HASH, "sentry.json"), JSON.stringify({ SENTRY_ACCESS_TOKEN: "old-token" }), { mode: 0o600 });
+    vi.stubEnv("HOME", home);
+    const again = openStore(join(upgraded, "orders.db"));
+    try {
+      chooseSecretStore(memoryKeychain());
+      forgetSecretFolders();
+      startToolSecrets(again, join(upgraded, "orders.db"), () => T0, { eager: true });
+      expect(again.toolSecretLegacyDir(() => null, T0, { record: true })).toBe(legacy);
+      expect(readToolSecrets(REPO, "sentry")).toEqual({ SENTRY_ACCESS_TOKEN: "old-token" });
+    } finally { again.close(); vi.unstubAllEnvs(); }
+  });
+
   test("every credential family: a project tool's (old home folder), the Linear key, Google mail's client secret and refresh token, a flow's signing secret", () => {
     const linear = `lin_api_${"L".repeat(32)}`, refresh = `1//refresh-${"g".repeat(40)}`, clientSecret = `GOCSPX-${"s".repeat(28)}`, signing = `whsec_${"h".repeat(40)}`;
     mkdirSync(join(legacy, REPO_HASH), { recursive: true, mode: 0o700 });
