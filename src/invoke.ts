@@ -32,7 +32,8 @@ import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeA
 import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-tools.js";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { poolRootOf } from "./worktree.js";
 import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
@@ -804,7 +805,10 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
       fence: agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders }),
       fileTools: boundary?.fileTools ?? [],
       // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
-      grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree) }),
+      // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
+      // checkout was recorded in (a --pool elsewhere), so another project's worktree, made now or later, is out of reach.
+      grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
+        poolRoots: [join(dirname(databaseFile), "worktrees"), worktree === null || row === null ? null : poolRootOf(worktree, row.repo)] }),
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };

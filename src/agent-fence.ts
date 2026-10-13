@@ -29,7 +29,9 @@
  * tasks' git metadata is read but never written and their checkouts can be
  * looked up, so `git gc` and `git worktree prune` see live siblings and keep
  * them; the shared dependencies this checkout links are read and run, never
- * written. On macOS the agent also can't read another process's arguments
+ * written. Every plane checkout pool is denied whole, this build's own checkout given back
+ * (`CheckoutPool`), so another project's worktree, even one made after launch, is out of reach.
+ * On macOS the agent also can't read another process's arguments
  * and environment (`kern.procargs`) or inspect a process outside its own
  * sandbox, so a tool server's or Toolroll's own secrets don't leak through
  * a process listing, and every other run's launch folder in the system temp
@@ -264,14 +266,61 @@ function otherRunFolders(folders: RunFolders): string[] {
  * dependencies this checkout links); `lookup` is only looked up, never
  * listed or read (the deps root and the copy linked, other tasks' checkout
  * roots); `runFolders` denies every launch folder in the temp folder but
- * this launch's own (macOS: by pattern, so a later one is denied too).
+ * this launch's own (macOS: by pattern, so a later one is denied too);
+ * `pool` denies the plane's checkout pools whole and gives this build's own
+ * checkout back (CheckoutPool).
  */
-export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders };
+export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool };
 export const NO_GRANTS: FenceGrants = { readOnly: [], readable: [], lookup: [] };
 
-/** The grants for one build: its task boundary's git rules, and the shared dependencies its checkout links. */
+/**
+ * The plane's checkout pools, denied whole: every project's worktrees, and any made there after launch. `agentFence`
+ * drops a path at or above the checkout, so the deny lives here and each sandbox gives back, right after it, only
+ * `own` (this build's checkout, read and written) and `lookup` (the folders between, looked up, never listed).
+ */
+export type CheckoutPool = { deny: string[]; own: string | null; lookup: string[] };
+
+/**
+ * The pool deny for one launch. `roots` come from the plane's own records (the pool beside the database, and the one
+ * the recorded checkout was made in), never from the checkout. A root that holds this checkout's own Git data (the
+ * binding's gitdir or the repository's .git) is never denied whole: it is split around that data instead, entry by
+ * entry, so it is denied as far as it can be (fail closed by denying more, never by refusing). A root inside the
+ * checkout, the home folder, a folder above it or / is left alone: the first is the build's own work, the others the
+ * whole machine.
+ */
+export function checkoutPool(options: { roots: readonly (string | null)[]; worktree: string | null; binding?: WorktreeBinding | null; home?: string },
+  list: (path: string) => string[] = path => readdirSync(path)): CheckoutPool {
+  const own = options.worktree === null ? null : real(options.worktree);
+  const home = real(options.home ?? homedir());
+  const binding = options.binding ?? null;
+  const needed = binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
+  const deny = new Set<string>();
+  const split = (path: string): void => {
+    if (!needed.some(target => target === path || inside(target, path))) { deny.add(path); return; }
+    if (needed.includes(path)) return;
+    let entries: string[];
+    try { entries = list(path); } catch (error) {
+      process.stderr.write(`toolroll: fence: couldn't list ${path} (${error instanceof Error ? error.message : String(error)}); it holds this checkout's Git data, so only what could be listed is denied\n`);
+      return;
+    }
+    for (const entry of entries) split(join(path, entry));
+  };
+  for (const root of options.roots) {
+    if (root === null || !existsSync(root)) continue;
+    const path = real(root);
+    if (path === dirname(path) || path === home || inside(home, path) || (own !== null && (path === own || inside(path, own)))) continue;
+    split(path);
+  }
+  const holding = own === null ? [] : [...deny].filter(path => inside(own, path));
+  const lookup = new Set<string>();
+  for (const path of holding) for (let folder = dirname(own!); folder === path || inside(folder, path); folder = dirname(folder)) lookup.add(folder);
+  return { deny: [...deny].sort(), own: holding.length === 0 ? null : own, lookup: [...lookup].sort() };
+}
+
+/** The grants for one build: its task boundary's git rules, the shared dependencies its checkout links, and the
+ * checkout pools (`poolRoots`, from the plane's records) denied around its own checkout. */
 export function fenceGrants(options: { databaseFile: string | null; worktree: string | null; boundary?: TaskBoundary | null; runFolders?: RunFolders;
-  linked?: { repo: string; setupDigest: string | null } | null }): FenceGrants {
+  linked?: { repo: string; setupDigest: string | null } | null; poolRoots?: readonly (string | null)[]; binding?: WorktreeBinding | null; home?: string }): FenceGrants {
   const readable: string[] = [];
   const lookup = [...options.boundary?.lookup ?? []];
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:" && options.worktree !== null && options.linked != null) {
@@ -289,7 +338,9 @@ export function fenceGrants(options: { databaseFile: string | null; worktree: st
       readable.push(join(deps, key, "node_modules"));
     }
   }
-  return { readOnly: [...options.boundary?.readOnly ?? []], readable, lookup: [...new Set(lookup)].sort(), ...(options.runFolders === undefined ? {} : { runFolders: options.runFolders }) };
+  const pool = options.poolRoots === undefined ? undefined : checkoutPool({ roots: options.poolRoots, worktree: options.worktree, binding: options.binding ?? null, ...(options.home === undefined ? {} : { home: options.home }) });
+  return { readOnly: [...options.boundary?.readOnly ?? []], readable, lookup: [...new Set(lookup)].sort(), ...(options.runFolders === undefined ? {} : { runFolders: options.runFolders }),
+    ...(pool === undefined || pool.deny.length === 0 ? {} : { pool }) };
 }
 
 /** The setup a shared copy was installed by (its ready note), or null. */
@@ -328,7 +379,9 @@ const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '
  * `--sandbox workspace-write` already gives (workspace and temp writes, no
  * network). Full access: the same profile widened to write anywhere with
  * network on, instead of no sandbox at all. Either way the fenced paths are
- * denied, which in Codex outranks any write or read grant.
+ * denied, which in Codex outranks any write or read grant. The checkout pools
+ * are never `flattened` (which leaves what is made after launch readable): see
+ * `codexPool`, which denies them around the build's own checkout, written back.
  */
 export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, grants: FenceGrants = NO_GRANTS): string[] {
   const { deny, readOnly } = flattened(fence, grants);
@@ -343,8 +396,18 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   // TOML forbids duplicate keys, even with identical values. Normalize aliases
   // at this boundary and apply stronger access restrictions last.
   const access = new Map<string, "write" | "read" | "deny">();
+  const pool = grants.pool;
+  // Codex lets the more specific path win: no read grant inside a pool, but the build's own checkout.
+  const pooled = (path: string) => pool !== undefined && pool.deny.some(one => path === one || inside(path, one))
+    && !(pool.own !== null && (path === pool.own || inside(path, pool.own)));
   if (fullAccess) access.set("/", "write");
-  for (const path of readOnly) access.set(real(path), "read");
+  for (const path of readOnly) if (!pooled(real(path))) access.set(real(path), "read");
+  if (pool !== undefined) {
+    const held = codexPool(pool);
+    for (const path of held.read) access.set(path, "read");
+    for (const path of held.deny) access.set(path, "deny");
+    for (const path of held.write) access.set(path, "write");
+  }
   for (const path of deny) access.set(real(path), "deny");
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
@@ -353,6 +416,56 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
     "-c", `permissions.standing-orders.filesystem={${filesystem.join(",")}}`,
     ...(fullAccess ? ["-c", "permissions.standing-orders.network.enabled=true", "-c", 'approval_policy="never"'] : []),
   ];
+}
+
+/** A name Codex's glob patterns can spell letter by letter: what the plane names its checkouts and projects with. */
+const PLAIN_NAME = /^[A-Za-z0-9._-]+$/;
+/** Glob syntax: a folder spelt with any of it can't be the literal start of a pattern. */
+const GLOB_SYNTAX = /[*?[\]{}\\]/;
+
+/**
+ * Patterns matching every name in a folder but `name`, and whatever is inside one (for names PLAIN_NAME allows):
+ * a different first letter, the same start then a different letter, a shorter name, or a longer plain one.
+ */
+export function otherNames(folder: string, name: string): string[] {
+  const names: string[] = [];
+  for (let at = 0; at < name.length; at++) {
+    names.push(`${name.slice(0, at)}[!${name[at]}]*`);
+    if (at > 0 && name.slice(0, at) !== "." && name.slice(0, at) !== "..") names.push(`${name.slice(0, at - 1)}[${name[at - 1]}]`);
+  }
+  // Never a class holding "/": Codex reads a pattern as a path. A longer name made by the plane is a plain one.
+  names.push(`${name}[A-Za-z0-9._-]*`);
+  return names.flatMap(one => [join(folder, one), join(folder, one, "**")]);
+}
+
+/**
+ * A checkout pool as Codex can hold it. Codex's deny covers the denied folder itself too, even the `lstat` every path
+ * resolution makes on the way down, and it has no look-up-only grant: a pool denied whole leaves the build unable to
+ * resolve its own checkout. So a pool holding the checkout is made read-only, never denied as a path, and in it and
+ * every folder between it and the checkout each entry but the one on the way is denied: those there now by path (read
+ * and write), any made after launch by name (read; `otherNames`). The checkout itself is written back. A pool not
+ * holding it is denied whole. Fail closed: a folder that can't be listed or spelt as a pattern still has its entries
+ * there now denied, never the way to the checkout.
+ */
+export function codexPool(pool: CheckoutPool, list: (path: string) => string[] = path => readdirSync(path)): { read: string[]; deny: string[]; write: string[] } {
+  const read: string[] = [], deny: string[] = [];
+  const own = pool.own;
+  for (const root of pool.deny) {
+    if (own === null || !inside(own, root)) { deny.push(root); continue; }
+    read.push(root);
+    for (let folder = root; folder !== own; ) {
+      const next = join(folder, relative(folder, own).split(sep)[0]!);
+      let entries: string[] = [];
+      try { entries = list(folder); } catch (error) {
+        process.stderr.write(`toolroll: fence: couldn't list ${folder} (${error instanceof Error ? error.message : String(error)}); only checkouts made in it after launch are denied there\n`);
+      }
+      for (const entry of entries) if (join(folder, entry) !== next) deny.push(join(folder, entry));
+      if (PLAIN_NAME.test(basename(next)) && !GLOB_SYNTAX.test(folder)) deny.push(...otherNames(folder, basename(next)));
+      else process.stderr.write(`toolroll: fence: ${next} can't be spelt as a pattern; a checkout made beside it after launch isn't denied\n`);
+      folder = next;
+    }
+  }
+  return { read, deny, write: own === null || read.length === 0 ? [] : [own] };
 }
 
 /** Secret-looking names denied by pattern inside a folder `flattened` makes read-only, so one written there after
@@ -436,15 +549,20 @@ export function ownedAncestors(paths: readonly string[], roots: readonly string[
  * and environment stay out of reach. Last, every folder of the user's above
  * a fenced or read-only path and above the temp folder (and the temp folder
  * itself) can't be renamed or removed, though what is inside them stays
- * writable as before.
+ * writable as before. The checkout pools are denied first, and the build's own
+ * checkout given back right after, so every later deny still holds inside it.
  */
 export function macosFenceProfile(fence: readonly string[], grants: FenceGrants = NO_GRANTS): string {
   const paths = (filter: "subpath" | "literal", list: readonly string[]) => list.map(path => `(${filter} ${seatbelt(path)})`).join(" ");
   const folders = grants.runFolders;
-  const above = ownedAncestors([...fence, ...grants.readOnly], [folders?.root ?? real(tmpdir())]);
+  const pool = grants.pool;
+  const above = ownedAncestors([...fence, ...grants.readOnly, ...pool?.deny ?? []], [folders?.root ?? real(tmpdir())]);
   return [
     "(version 1)",
     "(allow default)",
+    ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
+    ...(pool?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [pool.own])})`]),
+    ...(pool === undefined || pool.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", pool.lookup)})`]),
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),
     ...(folders === undefined ? [] : [`(deny file-read* file-write* (regex #"^${seatbeltRegex(folders.root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`]),
@@ -519,16 +637,18 @@ function linuxGrants(fence: readonly string[], grants: FenceGrants): string[] {
   return [...new Set([...grants.readOnly.filter(path => ok(path, true)), ...grants.readable.filter(path => ok(path, false))])];
 }
 
-/** The spawn that runs `file args` inside the Linux fence: the whole filesystem as it is, every fenced path masked
- * whole (an empty folder, or /dev/null for a file), so what is made there after launch is masked too; then only the
- * explicit grants bound back read-only (bubblewrap binds from the original root, so a grant inside a mask still
- * reaches its files). */
+/** The spawn that runs `file args` inside the Linux fence: the whole filesystem as it is, the checkout pools masked
+ * and the build's own checkout bound back read-write over them, then every fenced path masked whole (an empty
+ * folder, or /dev/null for a file), so what is made there after launch is masked too; then only the explicit grants
+ * bound back read-only (bubblewrap binds from the original root, so a grant inside a mask still reaches its files). */
 export function linuxFenced(file: string, args: readonly string[], fence: readonly string[], grants: FenceGrants = NO_GRANTS): { file: string; args: string[] } {
-  const masks = fence.flatMap(path => {
+  const mask = (path: string) => {
     let folder = true;
     try { folder = statSync(path).isDirectory(); } catch { folder = true; }
     return folder ? ["--tmpfs", path] : ["--ro-bind", "/dev/null", path];
-  });
-  const kept = linuxGrants(fence, grants).flatMap(path => ["--ro-bind", path, path]);
-  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...masks, ...kept, "--die-with-parent", "--", file, ...args] };
+  };
+  const pool = grants.pool?.deny ?? [];
+  const own = grants.pool?.own != null && existsSync(grants.pool.own) ? ["--bind", grants.pool.own, grants.pool.own] : [];
+  const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
+  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, "--die-with-parent", "--", file, ...args] };
 }

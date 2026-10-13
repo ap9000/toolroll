@@ -26,7 +26,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, rmSync, realpathSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
 import type { Run, Store, WorktreeRow } from "./store.js";
@@ -193,6 +193,12 @@ export function worktreePath(root: string, repo: string, branch: string): string
     .slice(0, 8);
 
   return join(root, safeSegment(basenameOf(repo)), `${safeSegment(branch)}-${digest}`);
+}
+
+/** The pool root a checkout at `path` of `repo` was made under (worktreePath's layout), or null for one it didn't make. */
+export function poolRootOf(path: string, repo: string): string | null {
+  const project = dirname(path);
+  return basename(project) === safeSegment(basenameOf(repo)) && /-[0-9a-f]{8}$/.test(basename(path)) ? dirname(project) : null;
 }
 
 function normalisePath(path: string): string {
