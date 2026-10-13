@@ -30,7 +30,7 @@
  * looked up, so `git gc` and `git worktree prune` see live siblings and keep
  * them; the shared dependencies this checkout links are read and run, never
  * written. Every plane checkout pool is denied whole, this build's own checkout given back
- * (`CheckoutPool`), so another project's worktree, even one made after launch, is out of reach.
+ * (`CheckoutPool`), so another project's worktree is out of reach (Codex covers projects present at launch).
  * On macOS the agent also can't read another process's arguments
  * and environment (`kern.procargs`) or inspect a process outside its own
  * sandbox, so a tool server's or Toolroll's own secrets don't leak through
@@ -278,7 +278,7 @@ export const NO_GRANTS: FenceGrants = { readOnly: [], readable: [], lookup: [] }
  * drops a path at or above the checkout, so the deny lives here and each sandbox gives back, right after it, only
  * `own` (this build's checkout, read and written) and `lookup` (the folders between, looked up, never listed).
  */
-export type CheckoutPool = { deny: string[]; own: string | null; lookup: string[] };
+export type CheckoutPool = { deny: string[]; own: string | null; lookup: string[]; gitPaths?: string[] };
 
 /**
  * The pool deny for one launch. `roots` come from the plane's own records (the pool beside the database, and the one
@@ -293,16 +293,16 @@ export function checkoutPool(options: { roots: readonly (string | null)[]; workt
   const own = options.worktree === null ? null : real(options.worktree);
   const home = real(options.home ?? homedir());
   const binding = options.binding ?? null;
-  const needed = binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
+  const needed = binding === null ? [] : [realpathSync(binding.gitdir), realpathSync(join(binding.main, ".git"))];
   const deny = new Set<string>();
-  const split = (path: string): void => {
+  const visited = new Set<string>();
+  const split = (input: string): void => {
+    const path = realpathSync(input);
+    if (visited.has(path)) return;
+    visited.add(path);
     if (!needed.some(target => target === path || inside(target, path))) { deny.add(path); return; }
     if (needed.includes(path)) return;
-    let entries: string[];
-    try { entries = list(path); } catch (error) {
-      process.stderr.write(`toolroll: fence: couldn't list ${path} (${error instanceof Error ? error.message : String(error)}); it holds this checkout's Git data, so only what could be listed is denied\n`);
-      return;
-    }
+    const entries = list(path); // An unreadable pool must refuse preparation, never silently widen access.
     for (const entry of entries) split(join(path, entry));
   };
   for (const root of options.roots) {
@@ -314,7 +314,7 @@ export function checkoutPool(options: { roots: readonly (string | null)[]; workt
   const holding = own === null ? [] : [...deny].filter(path => inside(own, path));
   const lookup = new Set<string>();
   for (const path of holding) for (let folder = dirname(own!); folder === path || inside(folder, path); folder = dirname(folder)) lookup.add(folder);
-  return { deny: [...deny].sort(), own: holding.length === 0 ? null : own, lookup: [...lookup].sort() };
+  return { deny: [...deny].sort(), own: holding.length === 0 ? null : own, lookup: [...lookup].sort(), ...(needed.length === 0 ? {} : { gitPaths: needed }) };
 }
 
 /** The grants for one build: its task boundary's git rules, the shared dependencies its checkout links, and the
@@ -418,54 +418,28 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   ];
 }
 
-/** A name Codex's glob patterns can spell letter by letter: what the plane names its checkouts and projects with. */
-const PLAIN_NAME = /^[A-Za-z0-9._-]+$/;
-/** Glob syntax: a folder spelt with any of it can't be the literal start of a pattern. */
-const GLOB_SYNTAX = /[*?[\]{}\\]/;
-
 /**
- * Patterns matching every name in a folder but `name`, and whatever is inside one (for names PLAIN_NAME allows):
- * a different first letter, the same start then a different letter, a shorter name, or a longer plain one.
- */
-export function otherNames(folder: string, name: string): string[] {
-  const names: string[] = [];
-  for (let at = 0; at < name.length; at++) {
-    names.push(`${name.slice(0, at)}[!${name[at]}]*`);
-    if (at > 0 && name.slice(0, at) !== "." && name.slice(0, at) !== "..") names.push(`${name.slice(0, at - 1)}[${name[at - 1]}]`);
-  }
-  // Never a class holding "/": Codex reads a pattern as a path. A longer name made by the plane is a plain one.
-  names.push(`${name}[A-Za-z0-9._-]*`);
-  return names.flatMap(one => [join(folder, one), join(folder, one, "**")]);
-}
-
-/**
- * A checkout pool as Codex can hold it. Codex's deny covers the denied folder itself too, even the `lstat` every path
- * resolution makes on the way down, and it has no look-up-only grant: a pool denied whole leaves the build unable to
- * resolve its own checkout. So a pool holding the checkout is made read-only, never denied as a path, and in it and
- * every folder between it and the checkout each entry but the one on the way is denied: those there now by path (read
- * and write), any made after launch by name (read; `otherNames`). The checkout itself is written back. A pool not
- * holding it is denied whole. Fail closed: a folder that can't be listed or spelt as a pattern still has its entries
- * there now denied, never the way to the checkout.
+ * Codex cannot deny an ancestor and still traverse it to the own checkout. Deny existing
+ * siblings individually, from the trusted pool roots and a fresh listing, never through
+ * flattened or name patterns. A project added after launch is covered on the next launch;
+ * Seatbelt and bubblewrap retain the stronger whole-pool rule for later-created projects.
  */
 export function codexPool(pool: CheckoutPool, list: (path: string) => string[] = path => readdirSync(path)): { read: string[]; deny: string[]; write: string[] } {
-  const read: string[] = [], deny: string[] = [];
+  const deny = new Set<string>();
   const own = pool.own;
-  for (const root of pool.deny) {
-    if (own === null || !inside(own, root)) { deny.push(root); continue; }
-    read.push(root);
-    for (let folder = root; folder !== own; ) {
-      const next = join(folder, relative(folder, own).split(sep)[0]!);
-      let entries: string[] = [];
-      try { entries = list(folder); } catch (error) {
-        process.stderr.write(`toolroll: fence: couldn't list ${folder} (${error instanceof Error ? error.message : String(error)}); only checkouts made in it after launch are denied there\n`);
-      }
-      for (const entry of entries) if (join(folder, entry) !== next) deny.push(join(folder, entry));
-      if (PLAIN_NAME.test(basename(next)) && !GLOB_SYNTAX.test(folder)) deny.push(...otherNames(folder, basename(next)));
-      else process.stderr.write(`toolroll: fence: ${next} can't be spelt as a pattern; a checkout made beside it after launch isn't denied\n`);
-      folder = next;
-    }
-  }
-  return { read, deny, write: own === null || read.length === 0 ? [] : [own] };
+  const needed = [...pool.gitPaths ?? [], ...(own === null ? [] : [own])].map(path => realpathSync(path));
+  const visited = new Set<string>();
+  const split = (input: string): void => {
+    const path = realpathSync(input);
+    if (visited.has(path)) return;
+    visited.add(path);
+    if (needed.some(target => path === target || inside(path, target))) return;
+    if (!needed.some(target => inside(target, path))) { deny.add(path); return; }
+    // Listing or realpath failure propagates to launch preparation: never run with partial coverage.
+    for (const entry of list(path)) split(join(path, entry));
+  };
+  for (const root of pool.deny) split(root);
+  return { read: [], deny: [...deny].sort(), write: own === null ? [] : [own] };
 }
 
 /** Secret-looking names denied by pattern inside a folder `flattened` makes read-only, so one written there after

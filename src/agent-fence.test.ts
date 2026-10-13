@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { agentFence, checkoutPool, codexPool, otherNames, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
+import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
 import { adapterFor } from "./provider.js";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
@@ -476,6 +476,10 @@ describe("the agent fence", () => {
 
     test("every build is launched fenced and the run says how", async () => {
       bind(store);
+      const remotePool = join(dir, "custom-pool", "other", "task-0123abcd");
+      mkdirSync(remotePool, { recursive: true });
+      store.saveWorktree({ path: remotePool, repo: join(dir, "other"), branch: "task", runner: null, taskRef: null,
+        createdAt: T0.toISOString(), leasedAt: null, releasedAt: null, verified: true });
       const seen: { file: string; args: readonly string[] }[] = [];
       const ask = { phase: "build" as const, brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: true, resumeSession: null };
       const codexRun = open("t-codex", "codex");
@@ -485,9 +489,11 @@ describe("the agent fence", () => {
       const filesystem = codex.args.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
       expect(filesystem).toContain(`"${join(state, "up-login.txt")}"="deny"`);
       expect(filesystem).toContain(`"${join(home, ".standing-orders")}"="deny"`);
-      // The plane's checkout pool is denied whole, and this build's own checkout written back by its more specific path.
-      expect(filesystem).toContain(`"${join(state, "worktrees")}"="read"`);
+      // Codex keeps ancestors traversable, with explicit launch-time sibling denies.
+      expect(filesystem).not.toContain(`"${join(state, "worktrees")}"=`);
       expect(filesystem).toContain(`"${worktree}"="write"`);
+      expect(filesystem).toContain(`"${join(dir, "custom-pool")}"="deny"`);
+      expect(filesystem).not.toContain("[!");
       expect(store.runFence(codexRun)).toEqual({ method: "codex-profile", paths: expect.any(Number) });
       const claudeRun = open("t-claude", "claude");
       let wrap: readonly string[] | undefined;
@@ -1050,13 +1056,15 @@ describe("another project's checkouts are out of reach", () => {
     writeFileSync(join(path, "secret.txt"), MARKER);
     return path;
   };
-  const probe = (late: string, tools: boolean) => [
+  const probe = (late: string | null, tools: boolean) => [
     `cat ${q(join(theirs, "secret.txt"))} 2>/dev/null || echo other-unreadable`,
     `(echo x > ${q(join(theirs, "planted.txt"))}) 2>/dev/null && echo other-written || echo other-unwritable`,
     `ls ${q(join(pool, "other"))} >/dev/null 2>&1 && echo pool-listed || echo pool-unlisted`,
     "cat link/secret.txt 2>/dev/null || echo link-unreadable",
-    `cat ${q(join(late, "secret.txt"))} 2>/dev/null || echo later-unreadable`,
-    `(echo x > ${q(join(late, "planted.txt"))}) 2>/dev/null && echo later-written || echo later-unwritable`,
+    ...(late === null ? [] : [`cat ${q(join(late, "secret.txt"))} 2>/dev/null || echo later-unreadable`,
+    `(echo x > ${q(join(late, "planted.txt"))}) 2>/dev/null && echo later-written || echo later-unwritable`]),
+    `pwd -P`,
+    `${q(process.execPath)} -e 'console.log(require("fs").realpathSync(process.cwd()))'`,
     `git ${HARDENED_GIT_ARGS.join(" ")} rev-parse HEAD`,
     `git ${HARDENED_GIT_ARGS.join(" ")} status --porcelain >/dev/null && echo status-ok`,
     "echo mine > mine.txt && cat mine.txt",
@@ -1065,7 +1073,7 @@ describe("another project's checkouts are out of reach", () => {
     ...(tools ? [`cat ${q(join(own, "mcp.json"))}`] : []),
   ].join("\n");
   const HELD = ["other-unreadable", "other-unwritable", "pool-unlisted", "link-unreadable", "later-unreadable", "later-unwritable"];
-  const WORKS = () => [head, "status-ok", "mine", `node-${LINKED_KEY}`, "npm-ok"];
+  const WORKS = () => [active, active, head, "status-ok", "mine", `node-${LINKED_KEY}`, "npm-ok"];
 
   test("the plane names its checkouts' pool by their layout only", () => {
     expect(poolRootOf(active, main)).toBe(pool);
@@ -1077,7 +1085,7 @@ describe("another project's checkouts are out of reach", () => {
 
   test("the pool is denied whole, the own checkout given back with only the folders between looked up", () => {
     const { fence, grants } = launch("claude");
-    expect(grants.pool).toEqual({ deny: [pool], own: active, lookup: [pool, join(pool, "app")] });
+    expect(grants.pool).toMatchObject({ deny: [pool], own: active, lookup: [pool, join(pool, "app")] });
     // agentFence never fences at or above the checkout; the pool deny lives in the grants alone.
     expect(fence).not.toContain(pool);
     expect(grants.readable).toEqual([join(state, "deps", LINKED_KEY, "node_modules")]);
@@ -1096,6 +1104,9 @@ describe("another project's checkouts are out of reach", () => {
     expect(result.deny).toEqual([join(pool, "app"), join(pool, "late"), join(pool, "other"), join(inner, "src")].filter(path => existsSync(path)).sort());
     for (const path of [pool, inner, join(inner, ".git"), gitdir]) expect(result.deny).not.toContain(path);
     expect(result.own).toBe(active);
+    const codex = codexPool(result);
+    for (const path of [pool, inner, join(inner, ".git"), gitdir, active]) expect(codex.deny).not.toContain(path);
+    expect(codex.deny).toContain(join(pool, "other"));
     // Never the whole machine, the home folder or one above it, or a root inside the checkout itself.
     for (const roots of [["/"], [home], [dir], [active], [join(active, "node_modules")]]) expect(checkoutPool({ roots, worktree: active, home }).deny).toEqual([]);
   });
@@ -1132,57 +1143,39 @@ describe("another project's checkouts are out of reach", () => {
     expect(bound.filter(path => path.startsWith(pool + "/"))).toEqual([active]);
   });
 
-  /** A glob as a regex, the way globset reads one: `*` within one name or (`crossing`) across names, `**` across names. */
-  const globRegex = (pattern: string, crossing: boolean) => new RegExp(`^${pattern.replace(/\*\*|\*|\?|\[!?[^\]]+\]|[.+^${}()|\\]/g, token =>
-    token === "**" ? ".*" : token === "*" ? (crossing ? ".*" : "[^/]*") : token === "?" ? (crossing ? "." : "[^/]") : token.startsWith("[!") ? `[^${token.slice(2)}` : token.startsWith("[") ? token : `\\${token}`)}$`);
-  /** Whether Codex's policy refuses reading `path`: a denied path at or above it, or a pattern naming it, under either reading of `*`. */
-  const codexDenies = (filesystem: Map<string, string>, path: string, crossing: boolean) => [...filesystem].some(([key, mode]) => mode === "deny"
-    && (/[*?[]/.test(key) ? globRegex(key, crossing).test(path) : path === key || path.startsWith(key + "/")));
-
-  test("Codex: the pool holding the checkout is read-only, never denied as a path, so every folder on the way resolves; all beside it is denied, a later worktree by name", () => {
+  test("Codex denies launch-time siblings without denying or pattern-matching own ancestors", () => {
     for (const fullAccess of [false, true]) {
       const { fence, grants } = launch("codex");
-      const argv = codexFenceArgv(fence, fullAccess, grants);
-      const filesystem = parseFilesystem(argv);
-      // #3123: a deny on the pool covered its own lstat too, so node couldn't resolve its checkout.
-      expect(filesystem.get(pool)).toBe("read");
+      const filesystem = parseFilesystem(codexFenceArgv(fence, fullAccess, grants));
+      expect(filesystem.has(pool)).toBe(false);
       expect(filesystem.has(join(pool, "app"))).toBe(false);
       expect(filesystem.get(active)).toBe("write");
-      // What is there now is denied by path, read and write; never `flattened` into a read-only split.
       expect(filesystem.get(join(pool, "other"))).toBe("deny");
       expect(filesystem.get(join(pool, "app", "sibling-4567cdef"))).toBe("deny");
-      expect([...filesystem].filter(([path, mode]) => path.startsWith(pool + "/") && mode !== "deny")).toEqual([[active, "write"]]);
-      for (const crossing of [false, true]) {
-        for (const path of [pool, join(pool, "app"), active, join(active, "src", "index.ts"), join(active, ".git")]) expect(codexDenies(filesystem, path, crossing), path).toBe(false);
-        // Made after launch: another project, a same-named project's checkout beside this one, and names one letter off.
-        for (const path of [join(pool, "late", "task-fedcba98", "secret.txt"), join(pool, "app", "task-fedcba98", "secret.txt"), join(pool, "ap", "x"), join(pool, "apps", "x"),
-          join(pool, "App", "x"), join(pool, "app", "task-0123abcd2", "x"), join(pool, "app", "task-0123abc"), join(pool, "app", "Task-0123abcd"), join(pool, ".hidden")]) {
-          expect(codexDenies(filesystem, path, crossing), path).toBe(true);
-        }
-      }
-      // A later worktree is denied by the patterns already there; a launch after it names it too.
+      expect([...filesystem.keys()].filter(path => path.startsWith(pool + "/")).some(path => /[*?[]/.test(path))).toBe(false);
+      // New projects are picked up by the next launch, not by the previous policy.
       later();
-      expect(parseFilesystem(codexFenceArgv(fence, fullAccess, grants))).toEqual(new Map([...filesystem, [join(pool, "late"), "deny"]]));
+      expect(filesystem.has(join(pool, "late"))).toBe(false);
+      expect(parseFilesystem(codexFenceArgv(fence, fullAccess, grants)).get(join(pool, "late"))).toBe("deny");
       rmSync(join(pool, "late"), { recursive: true, force: true });
     }
-    // Fail closed: a read grant inside the pool is dropped (Codex would let it outrank the deny); a deny on the own checkout stays a deny.
     const { fence, grants } = launch("codex");
     const filesystem = parseFilesystem(codexFenceArgv([...fence, active], false, { ...grants, readOnly: [theirs] }));
     expect(filesystem.has(theirs)).toBe(false);
     expect(filesystem.get(active)).toBe("deny");
-    // A pool not holding this checkout (no checkout, or one made in another pool) is denied whole.
     expect(codexPool({ deny: [pool], own: null, lookup: [] })).toEqual({ read: [], deny: [pool], write: [] });
   });
 
-  test("Codex: the patterns name every other name and never the one on the way", () => {
-    const names = otherNames("/p", "task-0a.b");
-    for (const crossing of [false, true]) {
-      const denied = (path: string) => names.some(one => globRegex(one, crossing).test(path));
-      for (const path of ["/p/task-0a.b", "/p/task-0a.b/x/y"]) expect(denied(path), path).toBe(false);
-      for (const path of ["/p/t", "/p/task", "/p/task-0a.", "/p/task-0a.bc", "/p/task-0a.b-1/x", "/p/xask-0a.b", "/p/task_0a.b", "/p/task-0a,b", "/p/task-0a.b.", "/p/.task-0a.b"]) expect(denied(path), path).toBe(true);
-    }
-    // Never a class holding "/", which Codex would read as a folder.
-    expect(names.every(one => !/\[[^\]]*\/[^\]]*\]/.test(one))).toBe(true);
+  test("Codex resolves aliases without denying own checkout or Git data and refuses an incomplete listing", () => {
+    const { grants } = launch("codex");
+    symlinkSync(join(pool, "other"), join(pool, "alias"));
+    symlinkSync(active, join(pool, "own-alias"));
+    symlinkSync(join(main, ".git"), join(pool, "git-alias"));
+    const held = codexPool(grants.pool!);
+    expect(held.deny).toContain(join(pool, "other"));
+    expect(held.deny).not.toContain(active);
+    expect(held.deny).not.toContain(join(main, ".git"));
+    expect(() => codexPool(grants.pool!, () => { throw new Error("listing denied"); })).toThrow("listing denied");
   });
 
   test.skipIf(!macosFenceAvailable())("on macOS another project's worktree, and one made after launch, can't be read or written; the own checkout, git, node, npm, shared deps and tools still work", () => {
@@ -1200,6 +1193,17 @@ describe("another project's checkouts are out of reach", () => {
     expect(spawnSync(open.file, open.args, { cwd: active, encoding: "utf8", env }).stdout).toContain(MARKER);
   }, 60_000);
 
+  test.skipIf(!linuxFenceAvailable())("bubblewrap denies existing and later projects while own checkout and tools work", () => {
+    const { fence, grants } = launch("claude");
+    const late = join(pool, "late", "task-fedcba98");
+    const wrapped = linuxFenced("/bin/sh", ["-c", probe(late, true)], fence, grants);
+    later();
+    const result = spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual([...HELD, ...WORKS(), "own-tools"]);
+    expect(existsSync(join(theirs, "planted.txt")) || existsSync(join(late, "planted.txt"))).toBe(false);
+  });
+
   // Whether Codex's own sandbox runs here at all (it can't inside another Seatbelt sandbox).
   const codexSandbox = (() => {
     const scratch = mkdtempSync(join(tmpdir(), "so-codex-probe-"));
@@ -1207,20 +1211,18 @@ describe("another project's checkouts are out of reach", () => {
       return spawnSync("codex", ["sandbox", ...codexFenceArgv([], false), "-P", "standing-orders", "--", "/usr/bin/true"], { encoding: "utf8", env: { ...process.env, CODEX_HOME: scratch }, timeout: 30_000 }).status === 0;
     } catch { return false; } finally { rmSync(scratch, { recursive: true, force: true }); }
   })();
-  test.skipIf(!codexSandbox)("under the installed Codex sandbox another project's worktree, and one made after launch, can't be read or written; the own checkout, git, node, npm and shared deps still work", () => {
+  test.skipIf(!codexSandbox)("under the installed Codex sandbox an existing other project is denied; own cwd, realpath, git, node, npm and shared deps work", () => {
     const codexHome = join(dir, "codex-home");
     mkdirSync(codexHome);
     for (const fullAccess of [false, true]) {
       const { fence, grants } = launch("codex");
       const argv = codexFenceArgv(fence, fullAccess, grants);
-      const late = later();
-      const result = spawnSync("codex", ["sandbox", ...argv, "-P", "standing-orders", "--", "/bin/sh", "-c", probe(late, false)], {
+      const result = spawnSync("codex", ["sandbox", ...argv, "-P", "standing-orders", "--", "/bin/sh", "-c", probe(null, false)], {
         cwd: active, encoding: "utf8", env: { ...process.env, CODEX_HOME: codexHome, NODE_OPTIONS: undefined }, timeout: 60_000,
       });
       expect(result.stdout, result.stderr).not.toContain(MARKER);
-      expect(result.stdout.trim().split("\n"), result.stderr).toEqual([...HELD, ...WORKS()]);
-      expect(existsSync(join(theirs, "planted.txt")) || existsSync(join(late, "planted.txt"))).toBe(false);
-      rmSync(join(pool, "late"), { recursive: true, force: true });
+      expect(result.stdout.trim().split("\n"), result.stderr).toEqual([...HELD.slice(0, 4), ...WORKS()]);
+      expect(existsSync(join(theirs, "planted.txt"))).toBe(false);
     }
     // Control: unsandboxed, the same probe reads the other project's marker.
     expect(spawnSync("/bin/sh", ["-c", probe(later(), false)], { cwd: active, encoding: "utf8" }).stdout).toContain(MARKER);

@@ -572,6 +572,13 @@ runner and coordinator tokens, chat bot tokens, the database and its backups,
 other runs' evidence) — everything there except the build's own worktree —
 and `~/.toolroll` (stored provider keys and project tool secrets).
 
+Seatbelt and bubblewrap deny the whole checkout pool and allow the build’s own
+checkout back, covering other projects created after launch too. Codex keeps
+the own checkout’s ancestors traversable and denies each other project folder
+found in trusted checkout pools at launch. A project added after a Codex build
+starts is covered on the next launch. Own Git data, linked shared dependencies
+and launch tools remain available.
+
 | | Auto | Full access |
 |---|---|---|
 | **Codex / OpenRouter** (any OS) | Codex's workspace sandbox (workspace writes, no network) with the fence | Codex's sandbox widened to write anywhere with network, with the fence |

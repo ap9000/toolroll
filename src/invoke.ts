@@ -806,9 +806,9 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
       fileTools: boundary?.fileTools ?? [],
       // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
       // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
-      // checkout was recorded in (a --pool elsewhere), so another project's worktree, made now or later, is out of reach.
+      // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
       grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
-        poolRoots: [join(dirname(databaseFile), "worktrees"), worktree === null || row === null ? null : poolRootOf(worktree, row.repo)] }),
+        poolRoots: [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))] }),
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
