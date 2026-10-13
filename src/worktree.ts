@@ -34,6 +34,7 @@ import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } fr
 import { parseHandoff } from "./decision.js";
 import { diskBytes } from "./storage.js";
 import { markNeverIndex } from "./never-index.js";
+import type { Git } from "./teardown-git.js";
 
 export type Runner = (
   file: string,
@@ -838,13 +839,13 @@ export class WorktreePool {
   /**
    * Whether a let-go checkout could go without losing anything: clean (build output that .gitignore hides is not
    * work, and neither are the files Toolroll itself wrote in there), and everything its HEAD reaches on a branch, tag
-   * or remote. Reads only.
+   * or remote. Reads only, through `git` when given (teardown's hardened git).
    */
-  async inspect(path: string): Promise<"clean" | KeptWhy> {
-    const dirty = await this.isDirty(path, true);
+  async inspect(path: string, git: Git = this.plain): Promise<"clean" | KeptWhy> {
+    const dirty = await this.isDirty(path, true, git);
     if (dirty !== false) return dirty === null ? "unreadable" : "has changes";
     // Commits only this checkout's HEAD reaches (a detached HEAD moved on) exist nowhere else.
-    const own = await this.runner(GIT, [...READ_ONLY, "rev-list", "-1", "HEAD", "--not", "--branches", "--tags", "--remotes"], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const own = await git(path, [...READ_ONLY, "rev-list", "-1", "HEAD", "--not", "--branches", "--tags", "--remotes"]);
     if (own.code !== 0) return "unreadable";
     return own.stdout.trim() === "" ? "clean" : "has commits";
   }
@@ -854,9 +855,10 @@ export class WorktreePool {
    * let go, nothing holds it, `wanted` says it may go (asked again right before it goes, so a task coming back or a
    * lease since keeps it) and `inspect` finds it clean, then clean still right before it goes (git refuses an edit
    * made after that). Only the working copy goes: its branch, and so every commit,
-   * stays, and a later lease of the same branch makes a new one. At most `max` go per pass.
+   * stays, and a later lease of the same branch makes a new one. At most `max` go per pass. Every git command goes
+   * through `git` when given: landed cleanup passes its hardened teardown git (teardown-git.ts).
    */
-  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
+  async prune(rows: readonly WorktreeRow[], wanted: (row: WorktreeRow, fresh: boolean) => boolean | Promise<boolean>, max = Infinity, git: Git = this.plain): Promise<{ removed: WorktreeRow[]; kept: { path: string; why: KeptWhy }[] }> {
     const removed: WorktreeRow[] = [];
     const kept: { path: string; why: KeptWhy }[] = [];
     const idle = (row: WorktreeRow | null, releasedAt: string) =>
@@ -867,7 +869,7 @@ export class WorktreePool {
       const selected = wanted(row, false);
       if (!(typeof selected === "boolean" ? selected : await selected)) continue;
       if (!existsSync(row.path) || !idle(row, row.releasedAt)) continue;
-      const found = await this.inspect(row.path);
+      const found = await this.inspect(row.path, git);
       if (found !== "clean") { kept.push({ path: row.path, why: found }); continue; }
       if (busy.has(row.path)) continue;
       const release = reserveCheckout(this.store, row.path);
@@ -880,7 +882,7 @@ export class WorktreePool {
         // Landed cleanup rechecks Git here; existing synchronous guards keep their synchronous path.
         const allowed = wanted(now as WorktreeRow, true);
         if (!(typeof allowed === "boolean" ? allowed : await allowed)) continue;
-        const gone = await this.removeCleanCopy(row);
+        const gone = await this.removeCleanCopy(row, git);
         if (gone !== "removed") { kept.push({ path: row.path, why: gone }); continue; }
         removed.push(row);
       } finally { release(); busy.delete(row.path); }
@@ -965,17 +967,17 @@ export class WorktreePool {
    * removed without --force, so git itself refuses an edit made since. Only Toolroll's own files go first, because
    * git's check would count them.
    */
-  private async removeCleanCopy(row: WorktreeRow): Promise<"removed" | KeptWhy> {
-    const found = await this.inspect(row.path);
+  private async removeCleanCopy(row: WorktreeRow, git: Git): Promise<"removed" | KeptWhy> {
+    const found = await this.inspect(row.path, git);
     if (found !== "clean") return found;
-    const status = await this.runner(GIT, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"], { cwd: row.path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const status = await git(row.path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"]);
     if (status.code !== 0) return "unreadable";
     for (const line of status.stdout.split("\n")) {
       const name = line.startsWith("?? ") ? line.slice(3).trim() : "";
       if (name === MARKER || (name !== "" && looksLikeProtocolFile(name))) rmSync(join(row.path, name), { recursive: true, force: true });
     }
-    const gone = await this.git(row.repo, ["worktree", "remove", row.path]);
-    if (gone.code !== 0) return (await this.isDirty(row.path)) === false ? "git refused" : "has changes";
+    const gone = await git(row.repo, ["worktree", "remove", row.path]);
+    if (gone.code !== 0) return (await this.isDirty(row.path, false, git)) === false ? "git refused" : "has changes";
     this.forgetRemoved(row);
     return "removed";
   }
@@ -994,12 +996,8 @@ export class WorktreePool {
    * `--untracked-files=all` and no `--ignored`: build output that .gitignore
    * hides is not work, but a file somebody dropped in and never staged is.
    */
-  private async isDirty(path: string, ignoreOwnFiles = false): Promise<boolean | null> {
-    const status = await this.runner(
-      GIT,
-      [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"],
-      { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS },
-    );
+  private async isDirty(path: string, ignoreOwnFiles = false, git: Git = this.plain): Promise<boolean | null> {
+    const status = await git(path, [...READ_ONLY, "status", "--porcelain", "--untracked-files=all"]);
     if (status.code !== 0) return null;
 
     // Our own lease note is not the operator's work. Without this the marker
@@ -1013,6 +1011,9 @@ export class WorktreePool {
       .filter(line => line.trim() !== "")
       .some(line => !line.trimEnd().endsWith(MARKER) && !(ignoreOwnFiles && line.startsWith("?? ") && looksLikeProtocolFile(line.slice(3).trim())));
   }
+
+  /** Ordinary git, as the pool always ran it. */
+  private readonly plain: Git = (cwd, args) => this.runner(GIT, args, { cwd, timeoutMs: WORKTREE_TIMEOUT_MS });
 
   private git(
     cwd: string,
