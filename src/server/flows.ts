@@ -21,6 +21,7 @@ import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlo
 import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveLinearSigningSecret,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
+import { parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
 import { keyStatus } from "../keys.js";
 import { kitPageHtml,kitsGalleryHtml } from "../kits-ui.js";
 import { addKitGithubTrigger,addKitSample,kitOf,setUpKit } from "../kits.js";
@@ -150,7 +151,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const selected = Number(url.searchParams.get("card")), start = Number(url.searchParams.get("start"));
     const view = flowView(store, flow, { name: who.name, approver: who.via === "cookie" && who.role === "approver" }, Number.isSafeInteger(selected) && selected > 0 ? selected : null,
       { dir: options.configDir ?? null, repos: consoleProjects(), startTrigger: Number.isSafeInteger(start) && start > 0 ? start : null,
-        sortReady: keyStatus("openrouter", providerHome).set, toolHome });
+        sortReady: keyStatus("openrouter", providerHome).set, toolHome, now: clock() });
     if (url.searchParams.get("format") === "json") return respond(response, 200, "application/json; charset=utf-8", JSON.stringify(checkResponse("flowView", view)));
     return sendScreen(response, 200, screen(flow.name, html`<p><a href="/flows">Flows</a></p><h1>${flow.name}</h1>${flowFallbackHtml(view)}`, { chrome: chromeFor(flow.repo, "flows"), workspace: { view } }));
   }
@@ -517,7 +518,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (flow === null) { answer(404, { ok: false, said: "No such flow in your projects." }); return null; }
     const definition = flowDefinitionOf(flow);
     const dir = options.configDir ?? null;
-    const viewNow = () => flowView(store, store.getFlow(flow.id) ?? flow, { name: who.name, approver: true }, null, { dir, repos: projects, sortReady: keyStatus("openrouter", providerHome).set, toolHome });
+    const viewNow = () => flowView(store, store.getFlow(flow.id) ?? flow, { name: who.name, approver: true }, null, { dir, repos: projects, sortReady: keyStatus("openrouter", providerHome).set, toolHome, now });
     const settle = (said: string, extra: Record<string, unknown> = {}) => {
       // Move what can move right away (a message, a decision's next zone); workers file and run the tasks.
       try { advanceFlows(store, flow.repo, now, { evidenceRoot }); } catch { /* the next worker pass retries */ }
@@ -526,7 +527,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     return { body, now, answer, projects, flow, definition, dir, viewNow, settle };
   }
 
-  type FlowAction = "save" | "cards" | "archive" | "scripts" | "linear-key" | "hooks-address" | "secrets" | "triggers";
+  type FlowAction = "save" | "cards" | "archive" | "scripts" | "linear-key" | "hooks-address" | "secrets" | "triggers" | "unattended" | "unattended-off";
   const flowAct = (action: FlowAction) => async (ctx: HandlerContext): Promise<void> => {
     const { who, response } = ctx;
     const change = openFlowChange(ctx);
@@ -541,7 +542,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (action === "scripts") {
       // The project's script library, reached from any of its flows.
       if (body.get("approve") === "yes") return store.approveFlowScript(flow.repo, body.get("name") ?? "") ? settle("Approved. Zones that run it go on.") : answer(404, { ok: false, said: "That script isn't waiting for approval." });
-      if (body.get("remove") === "yes") return store.removeFlowScript(flow.repo, body.get("name") ?? "") ? settle("Script removed. Zones that ran it wait until it's back.") : answer(404, { ok: false, said: "There's no script by that name." });
+      if (body.get("remove") === "yes") return store.removeFlowScript(flow.repo, body.get("name") ?? "", who.name, now) ? settle("Script removed. Zones that ran it wait until it's back.") : answer(404, { ok: false, said: "There's no script by that name." });
       const saved = saveScript(store, flow.repo, { name: body.get("name"), about: body.get("about"), body: body.get("body"), timeoutMinutes: body.get("timeoutMinutes"), language: body.get("language"), file: body.get("file") }, who.name, now);
       return saved.ok ? settle(saved.said) : answer(400, { ok: false, said: saved.message });
     }
@@ -558,6 +559,17 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       return saved.ok ? settle("Linear key saved on this computer.") : answer(400, { ok: false, said: saved.message });
     }
     if (action === "archive") { store.archiveFlow(flow.id, who.name, now); return redirect(response, "/flows"); }
+    if (action === "unattended") {
+      // The owner's password signs exactly the terms the panel showed; a flow saved meanwhile is refused (sawRevision).
+      if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "That password isn't right. Nothing was signed." });
+      const asked = parseUnattendedAsk({ days: body.get("days"), budget: body.get("budget"), runs: body.get("runs"), include: body.get("include") });
+      if (!asked.ok) return answer(400, { ok: false, said: asked.message });
+      const signed = signUnattended(store, { flow: flow.id, signer: who.name, ask: asked.ask, sawRevision: Number(body.get("revision")), sawSchedules: body.get("schedules") ?? "" }, now);
+      return signed.ok ? settle(`Runs on its own until ${untilWords(signed.grant.absoluteExpiry)}.`) : answer(409, { ok: false, said: signed.message });
+    }
+    if (action === "unattended-off") {
+      return revokeUnattended(store, flow.id, who.name, now) ? settle("It no longer runs on its own. New cards wait for you.") : answer(409, { ok: false, said: "It wasn't running on its own." });
+    }
     if (action === "save") {
       let saved, drawn: unknown;
       try {
@@ -640,8 +652,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     const { body, now, answer, flow, dir, viewNow, settle } = change;
     const trigger = store.getFlowTrigger(Number(pathPart(url, 4)));
     if (trigger === null || trigger.flow !== flow.id || trigger.state === "removed") return answer(404, { ok: false, said: "That trigger isn't on this flow." });
-    if (verb === "pause" || verb === "resume") { setFlowTriggerOn(store, trigger, verb === "resume", now); return settle(verb === "pause" ? "Trigger paused." : "Trigger on again."); }
-    if (verb === "remove") { removeFlowTrigger(store, trigger, now, dir); return settle("Trigger removed."); }
+    if (verb === "pause" || verb === "resume") { setFlowTriggerOn(store, trigger, verb === "resume", now, who.name); return settle(verb === "pause" ? "Trigger paused." : "Trigger on again."); }
+    if (verb === "remove") { removeFlowTrigger(store, trigger, now, dir, who.name); return settle("Trigger removed."); }
     if (verb === "share") {
       const shared = shareFlowButton(store, trigger, now, dir);
       return shared.ok ? settle(shared.said, { reveal: shared.reveal }) : answer(409, { ok: false, said: shared.message });
@@ -789,6 +801,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flow.linear-key": flowAct("linear-key"),
     "flow.hooks-address": flowAct("hooks-address"),
     "flow.secrets": flowAct("secrets"),
+    "flow.unattended": flowAct("unattended"),
+    "flow.unattended-off": flowAct("unattended-off"),
     "flow.triggers": flowAct("triggers"),
     "flow.card.move": cardAct("move"),
     "flow.card.decide": cardAct("decide"),

@@ -18,6 +18,8 @@ import { describeStandingOrder } from './flow-schedule.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
 import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
+import { activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
+import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
 import { projectName } from './project.js';
 import type { FlowRow, Store } from './store.js';
@@ -65,11 +67,16 @@ export const FLOWS_DESCRIPTORS = [
   { action: 'import', synopsis: 'make a flow from a flow file or a gist/GitHub https address; previews in plain words until --yes; triggers arrive off and scripts wait for approval', mutation: 'unkeyed', positionals: ['file'], flags: [...write, yes, repo,
     { name: 'param', takesValue: true, meaning: 'a value the file asks for, as name=value (repeat for more)' }] },
   { action: 'script approve', synopsis: 'approve a script an imported flow brought, so it runs', mutation: 'identity-idempotent', flags: [...write, repo, { name: 'name', takesValue: true, meaning: "the script's name" }] },
+  { action: 'unattended', synopsis: `let a flow's own schedule run without approving each card (on: the owner signs, 1 to ${MODE_MAX_DAYS} days; off: any approver revokes)`, mutation: 'identity-idempotent', audience: 'operator', positionals: ['flow', 'on|off'], flags: [...write,
+    { name: 'days', takesValue: true, meaning: `how long it lasts: 1 to ${MODE_MAX_DAYS} days (default 1)` },
+    { name: 'budget', takesValue: true, meaning: 'optional dollar cap per attempt, like 5 or 2.50' },
+    { name: 'runs', takesValue: true, meaning: `optional limit on runs a day (UTC), 1 to ${UNATTENDED_MAX_RUNS}` },
+    { name: 'include', takesValue: true, meaning: 'also cover these script or plane-review schedules (trigger ids, like 12,14); plain schedules are covered already' }] },
   { action: 'archive', synopsis: 'archive a flow: its cards stop moving and its triggers stop; previews until --yes', mutation: 'identity-idempotent', positionals: ['flow'], flags: [...write, yes] },
 ] as const;
 
-/** `--file` is a value here (a path in the project), where elsewhere it is a switch. */
-export const FLOWS_VALUE_FLAGS: ReadonlySet<string> = new Set(['file', 'param']);
+/** `--file` is a value here (a path in the project), where elsewhere it is a switch; so are unattended's `--budget`, `--runs` and `--include`. */
+export const FLOWS_VALUE_FLAGS: ReadonlySet<string> = new Set(['file', 'param', 'budget', 'runs', 'include']);
 
 export type FlowsCliContext = {
   store: Store;
@@ -127,7 +134,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
   if (action === 'show') {
     const flow = flowOf(args[0], context.projects);
     if (flow === null) return fail('unknown-flow', 'No such flow in your projects. toolroll flows list names them.');
-    const shown = describeFlow(store, flow);
+    const shown = describeFlow(store, flow, context.clock());
     return ok({ flow: shown }, showLines(shown));
   }
   if (action === 'export') {
@@ -189,7 +196,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       const switched = switchOnStarter(store, starter, project, who, now, context.configDir);
       if (!switched.ok) return refuse(project, 'refused', switched.said);
       record(project, 'accepted', `flow #${switched.flow}`);
-      return ok({ applied: true, flow: describeFlow(store, store.getFlow(switched.flow)!) }, [`${switched.said} Flow #${switched.flow}.`]);
+      return ok({ applied: true, flow: describeFlow(store, store.getFlow(switched.flow)!, context.clock()) }, [`${switched.said} Flow #${switched.flow}.`]);
     }
     const template = templateId === null ? null : FLOW_TEMPLATES.find(one => one.id === templateId) ?? null;
     if (templateId !== null && template === null) return fail('usage', `Choose a template: ${[...FLOW_TEMPLATES.map(one => one.id), ...STARTER_FLOWS.map(one => one.id)].join(', ')}.`, EXIT.usage);
@@ -224,7 +231,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       });
     } catch (error) { return refuse(project, 'invalid-trigger', error instanceof Error ? error.message : 'Its trigger isn\'t valid.'); }
     record(project, 'accepted', `flow #${id}`);
-    return ok({ applied: true, flow: describeFlow(store, store.getFlow(id)!) }, [`Created ${flowName}, flow #${id}. Add cards with toolroll flows card add ${id} --title "…".`]);
+    return ok({ applied: true, flow: describeFlow(store, store.getFlow(id)!, context.clock()) }, [`Created ${flowName}, flow #${id}. Add cards with toolroll flows card add ${id} --title "…".`]);
   }
 
   if (action === 'script save') {
@@ -276,7 +283,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     try { made = importFlow(store, plan, who, now, context.configDir); }
     catch (error) { return refuse(project, 'invalid-file', error instanceof Error ? error.message : 'That flow couldn\'t be imported.'); }
     record(project, 'accepted', `flow #${made.id}`);
-    return ok({ applied: true, flow: describeFlow(store, store.getFlow(made.id)!), said: made.said }, [`${made.said} Flow #${made.id}.`]);
+    return ok({ applied: true, flow: describeFlow(store, store.getFlow(made.id)!, context.clock()), said: made.said }, [`${made.said} Flow #${made.id}.`]);
   }
 
   if (action === 'script approve') {
@@ -298,6 +305,28 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
   if (flow === null) return refuse(null, 'unknown-flow', 'No such flow in your projects. toolroll flows list names them.');
   const definition = flowDefinitionOf(flow);
 
+  if (action === 'unattended') {
+    const flow = flowOf(args[0], reachable);
+    if (flow === null) return refuse(null, 'unknown-flow', 'No such flow in your projects. toolroll flows list names them.');
+    const turn = args[1];
+    if (turn !== 'on' && turn !== 'off') return fail('usage', `Use flows unattended ${flow.id} on --days N, or flows unattended ${flow.id} off.`, EXIT.usage);
+    if (turn === 'off') {
+      // Lowering authority is one step for any approver on the project.
+      if (!revokeUnattended(store, flow.id, who, now)) return refuse(flow.repo, 'not-on', `${flow.name} isn't running on its own. Nothing was changed.`);
+      record(flow.repo, 'accepted', `flow #${flow.id} off`);
+      return ok({ applied: true, unattended: null }, [`${flow.name} no longer runs on its own. Its next cards wait for you; running work is untouched.`]);
+    }
+    const asked = parseUnattendedAsk({ days: text('days') ?? '1', budget: text('budget') ?? '', runs: text('runs') ?? '', include: text('include') ?? '' });
+    if (!asked.ok) return fail('usage', asked.message, EXIT.usage);
+    const signed = signUnattended(store, { flow: flow.id, signer: who, ask: asked.ask }, now);
+    if (!signed.ok) return refuse(flow.repo, 'refused', `${signed.message} Nothing was changed.`);
+    record(flow.repo, 'accepted', `flow #${flow.id} on until ${signed.grant.absoluteExpiry}`);
+    return ok({ applied: true, unattended: unattendedJson(store, flow, now) }, [
+      `${flow.name} runs on its own until ${untilWords(signed.grant.absoluteExpiry)}. Signed by ${who}:`,
+      ...unattendedWords(signed.grant.terms).map(line => `  ${line}`),
+      `Revoke: toolroll flows unattended ${flow.id} off`,
+    ]);
+  }
   if (action === 'archive') {
     const cards = store.flowCards(flow.id, false).length, triggers = store.flowTriggers(flow.id).filter(one => one.state === 'active').length;
     if (!flags.has('yes')) return preview(flow.repo, `Archive the ${flow.name} flow`, [
@@ -329,7 +358,7 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     if (!store.saveFlow(flow.id, { name, definitionJson: JSON.stringify(next), sawRevision: flow.revision, by: who }, now)) return refuse(flow.repo, 'stale', 'Someone else changed this flow. Look again, then make yours.');
     record(flow.repo, 'accepted', `flow #${flow.id}`);
     settle(flow.repo);
-    return ok({ applied: true, flow: describeFlow(store, store.getFlow(flow.id)!) }, [`Saved ${name}.`]);
+    return ok({ applied: true, flow: describeFlow(store, store.getFlow(flow.id)!, context.clock()) }, [`Saved ${name}.`]);
   }
 
   if (action === 'card add') {
@@ -406,8 +435,8 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     settle(flow.repo);
     return checked.ok ? ok({ applied: true, triggerId: trigger.id, said: checked.said }, [checked.said]) : fail('check-failed', checked.said);
   }
-  if (action === 'trigger remove') removeFlowTrigger(store, trigger, now, context.configDir);
-  else setFlowTriggerOn(store, trigger, action !== 'trigger pause', now);
+  if (action === 'trigger remove') removeFlowTrigger(store, trigger, now, context.configDir, who);
+  else setFlowTriggerOn(store, trigger, action !== 'trigger pause', now, who);
   record(flow.repo, 'accepted', `flow #${flow.id} trigger #${trigger.id}`);
   settle(flow.repo);
   const said = action === 'trigger remove' ? 'Trigger removed.' : action === 'trigger pause' ? 'Trigger paused.' : 'Trigger on again.';
@@ -447,7 +476,7 @@ function cardOf(definition: FlowDefinition | null, card: { id: number; title: st
   return { id: card.id, title: card.title, zone: card.stage, zoneTitle: definition?.stages.find(one => one.id === card.stage)?.title ?? card.stage, state: card.state, waiting: card.waiting, task: card.task ?? card.primaryTask, updatedAt: card.updatedAt };
 }
 
-function describeFlow(store: Store, flow: FlowRow) {
+function describeFlow(store: Store, flow: FlowRow, now: Date) {
   const definition = flowDefinitionOf(flow);
   return {
     id: flow.id, name: flow.name, repo: flow.repo, project: projectName(flow.repo), owner: flow.owner, revision: flow.revision, readable: definition !== null,
@@ -460,7 +489,14 @@ function describeFlow(store: Store, flow: FlowRow) {
         ...(config?.kind === 'schedule' && config.order !== undefined ? { order: describeStandingOrder(config.order, flow.repo, config.schedule) } : {}) };
     }),
     cards: store.flowCards(flow.id, true).slice(0, 10).map(card => cardOf(definition, card)),
+    unattended: unattendedJson(store, flow, now),
   };
+}
+
+/** Whether a flow runs on its own, and until when: null when it doesn't. */
+function unattendedJson(store: Store, flow: FlowRow, now: Date) {
+  const live = activeUnattendedGrant(store, flow.id, now) === null ? null : unattendedViewOf(store, flow, { name: flow.owner, approver: true }, now).active;
+  return live === null ? null : { until: live.until, signedBy: live.signedBy, budgetMicrousd: live.budgetMicrousd, dailyRunCap: live.dailyRunCap, runsToday: live.runsToday, covers: live.covers };
 }
 
 function showLines(flow: ReturnType<typeof describeFlow>): string[] {
@@ -468,6 +504,10 @@ function showLines(flow: ReturnType<typeof describeFlow>): string[] {
   if (!flow.readable) return [`#${flow.id} ${flow.name} · ${flow.project}`, 'This flow\'s drawing can\'t be read. Save it again from the editor.'];
   return [
     `#${flow.id} ${flow.name} · ${flow.project} · owner ${flow.owner}`,
+    flow.unattended === null
+      ? `Runs on its own: no · turn on: toolroll flows unattended ${flow.id} on --days N`
+      : `Runs on its own until ${untilWords(flow.unattended.until)} · revoke: toolroll flows unattended ${flow.id} off`,
+    ...(flow.unattended === null ? [] : [`  Covers: ${flow.unattended.covers.join('; ')}`]),
     '', 'Zones',
     ...flow.zones.flatMap((zone, index) => [
       `  ${index + 1}. ${zone.title} (${zone.id}) — ${zone.does}${zone.id === flow.start ? ' · start' : ''}`,

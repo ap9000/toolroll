@@ -1900,6 +1900,68 @@ $ contract --commands --json → 0
       "remote": "step-up"
     },
     {
+      "invocation": "flows unattended",
+      "synopsis": "let a flow's own schedule run without approving each card (on: the owner signs, 1 to 7 days; off: any approver revokes)",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "identity-idempotent",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        },
+        {
+          "name": "as",
+          "takesValue": true,
+          "meaning": "the approver making the change (default: the remembered login)"
+        },
+        {
+          "name": "token",
+          "takesValue": true,
+          "meaning": "that approver's password"
+        },
+        {
+          "name": "days",
+          "takesValue": true,
+          "meaning": "how long it lasts: 1 to 7 days (default 1)"
+        },
+        {
+          "name": "budget",
+          "takesValue": true,
+          "meaning": "optional dollar cap per attempt, like 5 or 2.50"
+        },
+        {
+          "name": "runs",
+          "takesValue": true,
+          "meaning": "optional limit on runs a day (UTC), 1 to 50"
+        },
+        {
+          "name": "include",
+          "takesValue": true,
+          "meaning": "also cover these script or plane-review schedules (trigger ids, like 12,14); plain schedules are covered already"
+        }
+      ],
+      "positionals": [
+        {
+          "name": "flow",
+          "required": true,
+          "meaning": "a flow id from flows list"
+        },
+        {
+          "name": "on|off",
+          "required": true,
+          "meaning": "on signs the grant, off revokes it"
+        }
+      ],
+      "remote": "step-up"
+    },
+    {
       "invocation": "flows archive",
       "synopsis": "archive a flow: its cards stop moving and its triggers stop; previews until --yes",
       "audience": "agent",

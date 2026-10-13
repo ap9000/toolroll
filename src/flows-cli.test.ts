@@ -282,3 +282,39 @@ test("at a Person chooses step, card approve takes --option, through the console
   expect(chosen).toMatchObject({ code: 0, body: { ok: true, said: "Ship it. Moved to Ship." } });
   expect(look(store => store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = 'flow choice'").all())).toEqual([{ outcome: "chosen", detail: `Triage · card ${card} · What next?: “Ship it” · via the command line` }]);
 });
+
+test("unattended on signs the owner's grant, show says until when, off revokes it, and both are in the ledger", async () => {
+  const flow = look(store => {
+    const id = store.createFlow({ repo, name: "Weekly upkeep", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "update", title: "Update them", kind: "task", instructions: "Update the outdated dependencies." }], null)) }, NOW);
+    store.addFlowTrigger({ flow: id, kind: "schedule", configJson: JSON.stringify({ kind: "schedule", schedule: "monday 09:00", title: "Weekly upkeep", description: null, zone: null }), hookHash: null, cursor: null, nextAt: null, by: "alex" }, NOW);
+    return id;
+  });
+  expect((await flows(["unattended", String(flow), "on", "--days", "9", ...as()])).body).toMatchObject({ ok: false, reason: "usage", message: "Choose 1 to 7 days: it always ends." });
+  expect((await flows(["unattended", String(flow), "sideways", ...as()])).code).toBe(2);
+  const on = await flows(["unattended", String(flow), "on", "--days", "3", "--budget", "2.50", "--runs", "2", ...as()]);
+  expect(on.body).toMatchObject({ ok: true, command: "flows unattended", applied: true, unattended: { until: "2026-10-03T12:00:00.000Z", signedBy: "alex", budgetMicrousd: 2_500_000, dailyRunCap: 2, runsToday: 0 } });
+  const shown = await flows(["show", String(flow)]);
+  expect(shown.body.flow.unattended).toMatchObject({ until: "2026-10-03T12:00:00.000Z", signedBy: "alex" });
+  const lines: string[] = [];
+  await runOperate("flows", ["show", String(flow)], line => { lines.push(line); }, { databaseFile: file, now: NOW });
+  expect(lines.join("\n")).toContain(`Runs on its own until Oct 3, 12:00 UTC · revoke: toolroll flows unattended ${flow} off\n  Covers: “Weekly upkeep”, monday 09:00`);
+  expect(shown.body.flow.unattended.covers).toEqual(["“Weekly upkeep”, monday 09:00"]);
+  const off = await flows(["unattended", String(flow), "off", ...as()]);
+  expect(off.body).toMatchObject({ ok: true, applied: true, unattended: null });
+  expect((await flows(["show", String(flow)])).body.flow.unattended).toBeNull();
+  expect((await flows(["unattended", String(flow), "off", ...as()])).body).toMatchObject({ ok: false, reason: "not-on" });
+  expect(ledger().filter(one => one["outcome"] === "accepted").map(one => one["action"])).toEqual(["flows unattended", "flows unattended"]);
+  expect(look(store => store.handle.prepare("SELECT action FROM action_ledger WHERE action LIKE 'flow % on its own%' ORDER BY id").all().map(row => row["action"])))
+    .toEqual(["flow runs on its own: signed", "flow stopped running on its own: revoked"]);
+});
+
+test("unattended on refuses a flow with no schedule and a protected project, changing nothing", async () => {
+  const flow = look(store => store.createFlow({ repo, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "build", title: "Build", kind: "task", instructions: "{{card.title}}" }], null)) }, NOW));
+  expect((await flows(["unattended", String(flow), "on", ...as()])).body).toMatchObject({ ok: false, reason: "refused", message: "This flow has no schedule, so nothing would run on its own. Nothing was changed." });
+  look(store => {
+    store.addFlowTrigger({ flow, kind: "schedule", configJson: JSON.stringify({ kind: "schedule", schedule: "daily 09:00", title: "Fixes", description: null, zone: null }), hookHash: null, cursor: null, nextAt: null, by: "alex" }, NOW);
+    store.setApprovalRules(repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", NOW);
+  });
+  expect((await flows(["unattended", String(flow), "on", ...as()])).body).toMatchObject({ ok: false, message: "This project is protected: a person approves its work. Nothing was changed." });
+  expect((await flows(["show", String(flow)])).body.flow.unattended).toBeNull();
+});

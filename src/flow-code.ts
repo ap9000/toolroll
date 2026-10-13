@@ -15,15 +15,18 @@
  *   keys are out of reach), under a time limit, with the setup's plain
  *   environment rather than this process's.
  */
-import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { isAbsolute, join, relative } from "node:path";
+import { join } from "node:path";
 import type { Runner } from "./backend.js";
 import { SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { scrubSecrets } from "./flow-secrets.js";
 import type { FlowScriptRow } from "./store.js";
 import { TEXT_LIMITS } from "./text-limits.js";
+import { projectFile } from "./project-file.js";
+
+export { projectFile };
 
 import { LANGUAGE_WORDS, type ScriptLanguage } from "./flows.js";
 export { LANGUAGE_WORDS, SCRIPT_LANGUAGES, type ScriptLanguage } from "./flows.js";
@@ -36,16 +39,6 @@ const LOG_CHARS = 64_000;
 /** How a file runs in each language: sh, Python 3, and the Node this app runs on. */
 function runtimeOf(language: ScriptLanguage, file: string): { file: string; args: string[] } {
   return language === "python" ? { file: "python3", args: [file] } : language === "node" ? { file: process.execPath, args: [file] } : { file: "/bin/sh", args: [file] };
-}
-
-/** A project file a script names, if it is one: inside the project, and there. */
-export function projectFile(root: string, path: string): string | null {
-  if (path === "" || isAbsolute(path) || path.split(/[\\/]/).includes("..")) return null;
-  try {
-    const base = realpathSync(root), full = realpathSync(join(root, path));
-    const inside = relative(base, full);
-    return inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) && statSync(full).isFile() ? full : null;
-  } catch { return null; }
 }
 
 export type CodeRun = {

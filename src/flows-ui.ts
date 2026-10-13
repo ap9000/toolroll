@@ -20,6 +20,7 @@ import { labelOf, nameOf } from "./subagent-admin.js";
 import { callWords, receiptWords } from "./subagent-tools.js";
 import { undoFor } from "./subagent-week.js";
 import { flowCardTaskLine } from "./flow-card-task.js";
+import { unattendedViewOf } from "./flow-unattended.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
@@ -82,7 +83,7 @@ const historyText = (event: { fromStage: string | null; toStage: string; outcome
 };
 
 /** One flow's canvas for one person. */
-export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string } = { dir: null, repos: [] }): BrowserFlowView {
+export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string; now?: Date } = { dir: null, repos: [] }): BrowserFlowView {
   const definition = flowDefinitionOf(flow);
   const stages = definition?.stages ?? [];
   const title = (id: string) => stages.find(one => one.id === id)?.title ?? id;
@@ -219,6 +220,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     selectedCard,
     live: flowFingerprint(store, flow.id),
     canEdit: viewer.approver,
+    unattended: unattendedViewOf(store, flow, viewer, setup.now ?? now),
     approvers: store.listApprovers().map(one => one.name).filter(name => store.accountCanAccess(name, flow.repo)),
     projects: [flow.repo, ...setup.repos.filter(one => one !== flow.repo)].map(path => ({ path, name: projectName(path) })),
     kinds: FLOW_STAGE_KINDS.map(kind => ({ kind, label: FLOW_KIND_WORDS[kind].label, about: FLOW_KIND_WORDS[kind].about })),
@@ -228,7 +230,8 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
 
 /** The page the canvas replaces when scripts can't run: each zone and its cards, in order. */
 export function flowFallbackHtml(view: BrowserFlowView): Html {
-  return html`<section class="flows flow-fallback"><p class="meta">${view.flow.project}</p><ol>${view.stages.map(stage => {
+  const own = view.unattended.active;
+  return html`<section class="flows flow-fallback"><p class="meta">${view.flow.project}</p>${own !== null && html`<p data-flow-unattended>Runs on its own until ${own.untilWords}</p>`}<ol>${view.stages.map(stage => {
     const cards = view.cards.filter(card => card.stage === stage.id && card.state === "active");
     return html`<li><strong>${stage.title}</strong> · ${FLOW_KIND_WORDS[stage.kind].label}${cards.length > 0 && html`<ul>${cards.map(card => html`<li>${card.title}${card.waiting !== null && ` — ${card.waiting}`}</li>`)}</ul>`}</li>`;
   })}</ol></section>`;

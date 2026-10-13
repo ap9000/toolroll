@@ -412,14 +412,14 @@ export function renewFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
  * Pause a trigger, or turn it on again. A schedule that never had a time (a routine moved to a flow while it waited
  * for approval, v115) starts counting from now, as a new schedule does; one that was due while it was off fires once.
  */
-export function setFlowTriggerOn(store: Store, trigger: FlowTriggerRow, on: boolean, now: Date): void {
+export function setFlowTriggerOn(store: Store, trigger: FlowTriggerRow, on: boolean, now: Date, by?: string): void {
   const config = on && trigger.nextAt === null ? triggerConfigOf(trigger) : null;
   const schedule = config !== null && (config.kind === "schedule" || config.kind === "plane-review") ? parseSchedule(config.schedule) : null;
-  store.updateFlowTrigger(trigger.id, { state: on ? "active" : "paused", ...(schedule === null ? {} : { nextAt: firstFireAt(schedule, now) }) }, now);
+  store.updateFlowTrigger(trigger.id, { state: on ? "active" : "paused", ...(schedule === null ? {} : { nextAt: firstFireAt(schedule, now) }) }, now, by);
 }
 
-export function removeFlowTrigger(store: Store, trigger: FlowTriggerRow, now: Date, dir: string | null): void {
-  store.updateFlowTrigger(trigger.id, { state: "removed", hookHash: null }, now);
+export function removeFlowTrigger(store: Store, trigger: FlowTriggerRow, now: Date, dir: string | null, by?: string): void {
+  store.updateFlowTrigger(trigger.id, { state: "removed", hookHash: null }, now, by);
   if (dir !== null) dropHookSecret(dir, trigger.id);
 }
 
@@ -430,7 +430,8 @@ function polled(config: TriggerConfig): config is Extract<TriggerConfig, { kind:
 
 // ---------------------------------------------------------- making cards
 
-export type Incoming = { key: string; title: string; description: string | null; source: FlowCardSource };
+/** `onTime`: the clock's own firing of a schedule (never Run now or Check now); only those can run on their own. */
+export type Incoming = { key: string; title: string; description: string | null; source: FlowCardSource; onTime?: boolean };
 type Made = "added" | "seen" | "skipped";
 
 function startZone(config: TriggerConfig, definition: FlowDefinition): string {
@@ -467,7 +468,7 @@ function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, 
       return { made: "skipped" as const, note: `${item.source.label}: ${note}`, card: null };
     }
     const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: startZone(config, definition), by, source: item.source }, now);
-    store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now);
+    store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, null, item.onTime === true);
     return { made: "added" as const, note: null, card };
   });
 }
@@ -604,7 +605,7 @@ function fireSchedule(store: Store, trigger: FlowTriggerRow, config: Extract<Tri
   const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: schedule.kind === "every" ? "UTC" : schedule.timezone ?? "UTC" }).format(new Date(slot));
   const fill = (text: string) => text.replace(/\{\{\s*date\s*\}\}/g, day);
   const title = /\{\{\s*date\s*\}\}/.test(config.title) ? fill(config.title) : `${config.title} — ${day}`;
-  const item: Incoming = { key: `slot:${slot}`, title, description: config.description === null ? null : fill(config.description), source: { kind: "schedule", label: "Schedule", url: null } };
+  const item: Incoming = { key: `slot:${slot}`, title, description: config.description === null ? null : fill(config.description), source: { kind: "schedule", label: "Schedule", url: null }, onTime: true };
   const made = config.order === undefined ? makeCard(store, trigger, config, item, "Schedule", now) : fileOrderCard(store, trigger, config, config.order, item, slot, now);
   store.updateFlowTrigger(trigger.id, { nextAt: next, lastAt: now.toISOString(), lastOutcome: made.made === "added" ? made.note ?? "Added a card." : made.note ?? "Nothing new." }, now);
   return made.made === "added" ? 1 : 0;
@@ -663,7 +664,7 @@ export async function firePlaneReview(store: Store, trigger: FlowTriggerRow, con
       continue;
     }
     const text = problemCard(problem, dayWords);
-    const made = makeCard(store, trigger, config, { key, title: text.title, description: text.description, source: { kind: "plane-review", label: "Plane review", url: null } }, "Plane review", now);
+    const made = makeCard(store, trigger, config, { key, title: text.title, description: text.description, source: { kind: "plane-review", label: "Plane review", url: null }, onTime: scheduled }, "Plane review", now);
     if (made.made === "added") added++;
     else if (made.note !== null) skipped.push(made.note);
   }
@@ -723,7 +724,7 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
   if (ran.state === "failed") return done(false, ran.said.split("\n")[0]!);
   const items = cardsFromOutput(ran.printed);
   const results = items.slice(0, CARDS_PER_CHECK).map(item => makeCard(store, trigger, config, {
-    key: `script:${item.key}`, title: item.title, description: item.description, source: { kind: "script", label: `The ${script.name} script`, url: null },
+    key: `script:${item.key}`, title: item.title, description: item.description, source: { kind: "script", label: `The ${script.name} script`, url: null }, onTime: scheduled,
   }, `The ${script.name} script`, now));
   return done(true, items.length === 0 ? `${script.name} ran and printed nothing to add.` : outcomeWords(results, items.length > CARDS_PER_CHECK), results.filter(one => one.made === "added").length);
 }

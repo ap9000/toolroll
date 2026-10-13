@@ -12,6 +12,7 @@ const view = (waiting: string, live: string): BrowserFlowView => ({
   chatHref: "/chat", triggers: [], triggerSetup: { kinds: [], githubRepo: null, linearKey: false, hooksBase: null, hooksPath: "/hooks", mailbox: null, otherFlows: [] },
   startTrigger: null, me: "alex", sortReady: false, emailReady: false, requestSecrets: [], tools: [], scripts: [],
   start: definition.start, stages: definition.stages, selectedCard: null, live, canEdit: false, approvers: [], kinds: [], colors: [],
+  unattended: { active: null, canSign: false, problem: "Only an approver can change this.", maxDays: 7, scheduled: false, terms: { head: [], rules: [] }, schedules: [], schedulesDigest: "d0" },
   cards: [{ id: 1, title: "Fix checkout rounding", description: null, stage: "build", state: "active", waiting,
     task: { id: "checkout", href: "/t/checkout" }, createdBy: "alex", updatedAt: "2026-10-07T17:00:00Z", canDecide: false,
     outputs: [], history: [], source: null, owner: null, watchers: [], watching: false, mine: false, comments: [], sorted: null, draft: null }],
@@ -94,4 +95,76 @@ test("a nudge during a read is kept, a failed read retries on its own, reload re
     await act(async () => vi.advanceTimersByTimeAsync(120_000));
     expect(fetcher).toHaveBeenCalledTimes(5);
   } finally { vi.useRealTimers(); }
+});
+
+const menu = () => document.querySelector<HTMLButtonElement>("[data-flow-menu]")!;
+/** The way in to sign: the canvas's ⋯ menu on a desktop, a disclosure under the title on a phone. */
+async function openSigning(phone: boolean): Promise<void> {
+  if (phone) { await act(async () => document.querySelector<HTMLElement>('details[data-flow-unattended="off"] summary')!.click()); return; }
+  await act(async () => { menu().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); menu().click(); });
+  await act(async () => document.querySelector<HTMLElement>('[data-flow-unattended="off"]')!.click());
+}
+
+const TERMS = { head: ["Cards this flow's own schedule adds file their work approved by alex, without waiting in Needs you.", "Builds use safe permissions: routine project commands and edits proceed; risky acts stop for approval."],
+  rules: ["Never covered: Person decides steps, pull request merges, publish or deploy scripts, and anything it sends. Cards people add and other triggers wait as usual."] };
+const SCHEDULES = [{ id: 4, words: "“Weekly upkeep”, Mondays at 09:00", optional: null }, { id: 5, words: "the issues script, daily at 07:00", optional: "Its cards come from what the script prints, which can be outside text." }];
+
+test.each([false, true])("runs on its own: the live line with one-click Revoke, and every term before the password (phone=%s)", async phone => {
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 767px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  const off: BrowserFlowView = { ...view("Ready", "off"), canEdit: true, unattended: { active: null, canSign: true, problem: null, maxDays: 7, scheduled: true, terms: TERMS, schedules: SCHEDULES, schedulesDigest: "d1" } };
+  const on: BrowserFlowView = { ...off, live: "on", unattended: { ...off.unattended, active: { until: "2026-10-15T08:00:00.000Z", untilWords: "Oct 15, 08:00 UTC", signedBy: "alex", budgetMicrousd: null, dailyRunCap: 3, runsToday: 1, words: [], covers: ["“Weekly upkeep”, Mondays at 09:00"] } } };
+  const posted: Array<{ path: string; body: string }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init: { body: URLSearchParams }) => {
+    posted.push({ path, body: String(init.body) });
+    return { ok: true, json: async () => path.endsWith("/unattended") ? { ok: true, said: "Runs on its own until Oct 15, 08:00 UTC.", view: on } : { ok: true, said: "It no longer runs on its own. New cards wait for you.", view: off } };
+  }));
+  await act(async () => root!.render(createElement(FlowView, { view: off, csrf: "fixture" })));
+  await openSigning(phone);
+  const panel = document.querySelector("[data-flow-unattended-panel]")!;
+  expect(panel).not.toBeNull();
+  const terms = () => [...panel.querySelectorAll("[data-flow-unattended-terms] li")].map(one => one.textContent);
+  const covers = (words: string[]) => `It covers ${words.length === 1 ? "this schedule" : "these schedules"} when ${words.length === 1 ? "it fires" : "they fire"} on time: ${words.join("; ")}. Run now, and schedules added or changed later, wait for you.`;
+  expect(terms()).toEqual([...TERMS.head, covers(["“Weekly upkeep”, Mondays at 09:00"]), "No dollar cap per attempt.", "No daily limit on runs.", ...TERMS.rules, "Ends 1 day after you sign. Revoking it earlier is one click."]);
+  // Every input is named by its visible label.
+  const labelOf = (selector: string) => panel.querySelector<HTMLInputElement>(selector)!.labels![0]!.querySelector("span")!.textContent;
+  expect([labelOf("[data-flow-unattended-days]"), labelOf("[data-flow-unattended-budget]"), labelOf("[data-flow-unattended-runs]")]).toEqual(["Lasts", "Budget per attempt ($)", "Runs a day"]);
+  // A script's schedule is covered only when picked, and the terms say so as it is.
+  const script = panel.querySelector<HTMLInputElement>("[data-flow-unattended-schedules] input[type=checkbox]")!;
+  expect(script.labels![0]!.textContent).toBe("the issues script, daily at 07:00Its cards come from what the script prints, which can be outside text.");
+  await act(async () => script.click());
+  expect(terms()[TERMS.head.length]).toBe(covers(["“Weekly upkeep”, Mondays at 09:00", "the issues script, daily at 07:00"]));
+  await act(async () => script.click());
+  const runs = panel.querySelector<HTMLInputElement>("[data-flow-unattended-runs]")!;
+  const type = (input: HTMLInputElement, value: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await type(runs, "3");
+  expect(terms()).toContain("At most 3 runs a day (UTC); after that, cards wait for you.");
+  const sign = [...panel.querySelectorAll("button")].find(one => one.textContent === "Sign")!;
+  expect(sign.disabled).toBe(true);
+  await type(panel.querySelector<HTMLInputElement>('input[type="password"]')!, "correct horse");
+  await act(async () => sign.click());
+  expect(posted[0]!.path).toBe("/flows/1/unattended");
+  expect(Object.fromEntries(new URLSearchParams(posted[0]!.body))).toEqual({ csrf: "fixture", days: "1", budget: "", runs: "3", include: "", schedules: "d1", password: "correct horse", revision: "1" });
+  const line = document.querySelector('[data-flow-unattended="on"]')!;
+  expect(line.textContent).toBe("Runs on its own until Oct 15" + "Revoke");
+  expect(line.querySelector("[title]")?.getAttribute("title")).toBe("Ends Oct 15, 08:00 UTC · covers “Weekly upkeep”, Mondays at 09:00");
+  await act(async () => line.querySelector<HTMLButtonElement>("[data-flow-unattended-revoke]")!.click());
+  expect(posted[1]).toMatchObject({ path: "/flows/1/unattended-off", body: "csrf=fixture" });
+  expect(document.querySelector('[data-flow-unattended="on"]')).toBeNull();
+});
+
+test("a person who can't sign reads why, and a flow without a schedule shows nothing", async () => {
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  const refused: BrowserFlowView = { ...view("Ready", "x"), canEdit: true, unattended: { active: null, canSign: false, problem: "This project is protected: a person approves its work.", maxDays: 7, scheduled: true, terms: TERMS, schedules: SCHEDULES, schedulesDigest: "d1" } };
+  await act(async () => root!.render(createElement(FlowView, { view: refused, csrf: "fixture" })));
+  await openSigning(false);
+  expect(document.querySelector("[data-flow-unattended-problem]")?.textContent).toBe("This project is protected: a person approves its work.");
+  expect(document.querySelector('[data-flow-unattended-panel] input[type="password"]')).toBeNull();
+  // The canvas keeps its own copy of the view: a fresh page for the flow with no schedule.
+  await act(async () => root!.unmount());
+  root = createRoot(host);
+  await act(async () => root!.render(createElement(FlowView, { view: { ...refused, unattended: { ...refused.unattended, scheduled: false } }, csrf: "fixture" })));
+  await act(async () => { menu().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); menu().click(); });
+  expect(document.querySelector('[data-flow-unattended="off"]')).toBeNull();
 });

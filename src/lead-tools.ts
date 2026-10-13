@@ -54,6 +54,7 @@ import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromStep
 import { parseContract, toModelSchema, type ContractResult } from "./contracts/contract.js";
 import { LEAD_TOOL_INPUTS, LEAD_TOOL_READ_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutput, type LeadToolInput, type LeadToolName } from "./contracts/lead-tools.js";
 import { flowCardHref, flowDefinitionOf } from "./flow-engine.js";
+import { activeUnattendedGrant } from "./flow-unattended.js";
 import { planInChat } from "./chat-decide.js";
 import { flowDecisionAt } from "./telegram-flow.js";
 import { flowPersonOf } from "./flow-send.js";
@@ -847,7 +848,13 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
             return { trigger: trigger.id, kind: trigger.kind, what: config === null ? "can't be read" : describeTrigger(config, ctx.store),
               startsIn: titleOf(config?.zone ?? definition.start), state: trigger.state, lastCheck: trigger.lastOutcome };
           }),
-          rule: "Change it with propose_flow. Build and research steps file ordinary tasks under the usual approvals.",
+          // "Runs on its own" is signed with the owner's password on the flow page, never in chat; revoking is one click there.
+          runsOnItsOwn: (() => {
+            const own = activeUnattendedGrant(ctx.store, flow.id, ctx.now);
+            return own === null || own.terms.flowRevision !== flow.revision ? { on: false, change: `Turn it on (the owner's password) on the flow page: /flows/${flow.id}` }
+              : { on: true, until: own.absoluteExpiry, change: `Revoke it on the flow page: /flows/${flow.id}` };
+          })(),
+          rule: "Change it with propose_flow. Build and research steps file ordinary tasks under the usual approvals, unless runsOnItsOwn is on: then its schedule's cards are approved by the owner's signed grant. Signing or revoking that is on the flow page; send the person there.",
         } };
       }
       const repo = args["repo"] === undefined ? null : repoPathOf(ctx.who, args["repo"]);

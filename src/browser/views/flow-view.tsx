@@ -15,6 +15,7 @@ import { threadWhen } from "./task-view.js";
 import { deadlineWords, shortWhen, viewerZone } from "../../when-html.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BrowserFlowCard, BrowserFlowSentItem, BrowserFlowStage, BrowserFlowTrigger, BrowserFlowView } from "../../browser-workspace.js";
+import { unattendedCoverWords, unattendedEndAfterWords, unattendedLimitWords, untilDayWords } from "../../flow-unattended-words.js";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Input, Label, Textarea, cn, toast } from "../components/ui/index.js";
 
 /** A person's initials in a small circle, the same colour for the same name everywhere. */
@@ -1115,6 +1116,72 @@ function LinearSecret({ trigger, view, csrf, apply }: { trigger: BrowserFlowTrig
   </form>;
 }
 
+/** "Runs on its own", live: one line with its end (the exact time on hover), and Revoke (one click, no password). */
+function UnattendedStatus({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
+  const [busy, setBusy] = useState(false);
+  const own = view.unattended.active;
+  if (own === null) return null;
+  return <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 text-caption font-normal" data-flow-unattended="on">
+    <Badge tone="success" className="whitespace-normal" title={`Ends ${own.untilWords} · covers ${own.covers.join("; ")}`}>Runs on its own until {untilDayWords(own.until)}</Badge>
+    {view.canEdit && <button type="button" className="min-h-8 rounded px-1 text-caption text-muted-foreground underline hover:text-foreground disabled:opacity-50 phone:min-h-11" disabled={busy}
+      onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/unattended-off`, {}, csrf)); setBusy(false); }} data-flow-unattended-revoke>Revoke</button>}
+  </span>;
+}
+
+/** Signing "Runs on its own": every term visible before the password, the limits chosen here said as they'll be signed. */
+function UnattendedPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose?: () => void }) {
+  const [days, setDays] = useState(1);
+  const [budget, setBudget] = useState("");
+  const [runs, setRuns] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [include, setInclude] = useState<number[]>([]);
+  const terms = view.unattended.terms;
+  const schedules = view.unattended.schedules;
+  const covered = schedules.filter(one => one.optional === null || include.includes(one.id));
+  const budgetMicro = /^\d+(\.\d{1,2})?$/.test(budget.trim().replace(/^\$/, "")) && Number(budget.trim().replace(/^\$/, "")) > 0 ? Math.round(Number(budget.trim().replace(/^\$/, "")) * 1_000_000) : null;
+  const runCap = /^\d+$/.test(runs.trim()) && Number(runs.trim()) > 0 ? Number(runs.trim()) : null;
+  return <div className="flex flex-col gap-3" data-flow-unattended-panel>
+    {onClose !== undefined && <div className="flex items-center gap-2"><h2 className="flex-1 text-title">Run on its own</h2>
+      <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button></div>}
+    {!view.unattended.canSign
+      ? <p className="text-body text-muted-foreground" data-flow-unattended-problem>{view.unattended.problem}</p>
+      : <form className="flex flex-col gap-3" onSubmit={async event => {
+          event.preventDefault(); setBusy(true); setProblem(null);
+          const result = await send(`${view.flow.href}/unattended`, { days: String(days), budget, runs, include: include.join(","), schedules: view.unattended.schedulesDigest, password, revision: String(view.flow.revision) }, csrf);
+          setBusy(false);
+          // A refusal is said once, beside the password; only a signature changes the page.
+          if (!result.ok) { setProblem(result.said); return; }
+          apply(result);
+          setPassword(""); onClose?.();
+        }}>
+          <Field label="Lasts"><select className={SELECT} value={days} onChange={event => setDays(Number(event.target.value))} data-flow-unattended-days>
+            {Array.from({ length: view.unattended.maxDays }, (_, index) => index + 1).map(n => <option key={n} value={n}>{n} day{n === 1 ? "" : "s"}</option>)}</select></Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Budget per attempt ($)"><Input inputMode="decimal" placeholder="No cap" value={budget} onChange={event => setBudget(event.target.value)} data-flow-unattended-budget /></Field>
+            <Field label="Runs a day"><Input inputMode="numeric" placeholder="No limit" value={runs} onChange={event => setRuns(event.target.value)} data-flow-unattended-runs /></Field>
+          </div>
+          {schedules.some(one => one.optional !== null) && <fieldset className="flex flex-col gap-2" data-flow-unattended-schedules>
+            <legend className="mb-1 text-body font-medium">Also cover</legend>
+            {schedules.filter(one => one.optional !== null).map(one => <label key={one.id} className="flex items-start gap-2 text-body">
+              <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={include.includes(one.id)} onChange={event => setInclude(event.target.checked ? [...include, one.id] : include.filter(id => id !== one.id))} />
+              <span className="min-w-0 break-words">{one.words}<span className="block text-caption text-muted-foreground font-normal">{one.optional}</span></span></label>)}
+          </fieldset>}
+          <div className="rounded-md border p-3" data-flow-unattended-terms>
+            <p className="text-body font-medium">Your password signs exactly this</p>
+            <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 text-caption font-normal">
+              {[...terms.head, ...(covered.length === 0 ? [] : [unattendedCoverWords(covered)]), ...unattendedLimitWords(budgetMicro, runCap), ...terms.rules, unattendedEndAfterWords(days)].map((line, index) => <li key={index} className="break-words">{line}</li>)}
+            </ul>
+          </div>
+          <StepUp view={view} password={password} setPassword={setPassword} />
+          {covered.length === 0 && <p className="text-body text-muted-foreground" data-flow-unattended-none>Pick a schedule above to sign.</p>}
+          {problem !== null && <p className="text-body text-destructive" role="alert">{problem}</p>}
+          <Button type="submit" className="self-start" disabled={busy || covered.length === 0 || !stepUpReady(view, password)}>{busy ? "Signing…" : "Sign"}</Button>
+        </form>}
+  </div>;
+}
+
 function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; focus: number | null; onPress: (id: number) => void; onClose: () => void }) {
   const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1334,7 +1401,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
   const [view, setView] = useState(initial);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<{ name: string; start: string; stages: BrowserFlowStage[]; owner: string } | null>(null);
-  const [selected, setSelected] = useState<{ card: number } | { zone: string } | { triggers: number | null } | { press: number } | { scripts: true } | { insights: true } | null>(
+  const [selected, setSelected] = useState<{ card: number } | { zone: string } | { triggers: number | null } | { press: number } | { scripts: true } | { insights: true } | { unattended: true } | null>(
     initial.selectedCard !== null ? { card: initial.selectedCard } : initial.startTrigger !== null && initial.triggers.some(one => one.id === initial.startTrigger && one.button !== null) ? { press: initial.startTrigger } : null);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1526,6 +1593,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
   const triggersOpen = selected !== null && "triggers" in selected && !editing;
   const scriptsOpen = selected !== null && "scripts" in selected;
   const insightsOpen = selected !== null && "insights" in selected && !editing;
+  const unattendedOpen = selected !== null && "unattended" in selected && !editing;
   const selectedZone = selected !== null && "zone" in selected ? stages.find(one => one.id === selected.zone) ?? null : null;
   const waitingOnYou = view.cards.filter(card => card.canDecide).length;
 
@@ -1536,6 +1604,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
         : <h1 className="text-title">{view.flow.name}</h1>}
       <span className="text-caption text-muted-foreground font-normal">{view.flow.project}</span>
       <AlsoHere others={others} cards={view.cards} />
+      {!editing && <UnattendedStatus view={view} csrf={csrf} apply={apply} />}
       {editing && draft !== null && <label className="inline-flex items-center gap-1.5 text-caption text-muted-foreground font-normal">Owner
         <select className="h-8 rounded-md border bg-transparent px-2 text-caption text-foreground font-normal" value={draft.owner} onChange={event => setDraft({ ...draft, owner: event.target.value })} aria-label="Flow owner">
           {[...new Set([draft.owner, ...view.approvers])].map(name => <option key={name} value={name}>{name === view.me ? `${name} (you)` : name}</option>)}
@@ -1564,6 +1633,8 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
               <DropdownMenuTrigger asChild><Button size="sm" variant="ghost" aria-label="More" data-flow-menu><Ellipsis className="size-4" /></Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem asChild><a href={`${view.flow.href}/export`} download data-export-flow><Download className="size-4" />Export as a file</a></DropdownMenuItem>
+                {view.canEdit && view.unattended.scheduled && view.unattended.active === null &&
+                  <DropdownMenuItem onSelect={() => { setAdding(false); setSelected({ unattended: true }); }} data-flow-unattended="off"><CalendarClock className="size-4" />Run on its own…</DropdownMenuItem>}
               </DropdownMenuContent>
             </DropdownMenu>
           </>}
@@ -1582,7 +1653,7 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
         </ReactFlow>
         {editing && <p className="pointer-events-none absolute bottom-3 left-14 max-w-md rounded-lg bg-foreground/85 px-3 py-1.5 text-caption text-background font-normal">Drag zones to arrange them. Drag from a zone's right dot to say where work goes next, from its bottom dot for where it goes if sent back.</p>}
       </div>
-      {(selectedZone !== null && editing) || selectedCard !== null || (adding && !editing) || triggersOpen || pressing !== null || scriptsOpen || insightsOpen ? <aside className="absolute inset-y-0 right-0 z-10 w-[360px] max-w-full overflow-y-auto border-l bg-card p-4 shadow-xl" data-flow-drawer>
+      {(selectedZone !== null && editing) || selectedCard !== null || (adding && !editing) || triggersOpen || pressing !== null || scriptsOpen || insightsOpen || unattendedOpen ? <aside className="absolute inset-y-0 right-0 z-10 w-[360px] max-w-full overflow-y-auto border-l bg-card p-4 shadow-xl" data-flow-drawer>
         {selectedZone !== null && editing
           ? <ZonePanel stage={selectedZone} stages={stages} view={view} csrf={csrf} apply={apply} update={change => updateStage(selectedZone.id, change)}
               remove={() => { setDraft(current => current === null ? current : { ...current, start: current.start === selectedZone.id ? current.stages.find(one => one.id !== selectedZone.id)!.id : current.start,
@@ -1592,6 +1663,8 @@ function Canvas({ view: initial, csrf }: { view: BrowserFlowView; csrf: string }
             ? <ScriptsPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
           : insightsOpen
             ? <InsightsPanel view={view} onClose={() => setSelected(null)} />
+          : unattendedOpen
+            ? <UnattendedPanel view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
           : pressing !== null
             ? <PressPanel key={pressing.id} trigger={pressing} view={view} csrf={csrf} apply={apply} onClose={() => setSelected(null)} />
           : triggersOpen
@@ -1624,7 +1697,10 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
   if (card !== null) return <div className="p-4"><CardPanel card={card} view={view} csrf={csrf} apply={apply} onClose={() => setOpen(null)} /></div>;
   return <div className="flex flex-col gap-3 p-4" data-flow={view.flow.id}>
     <div><h1 className="text-[17px] font-semibold">{view.flow.name}</h1><p className="text-caption text-muted-foreground font-normal">{view.flow.project}{view.canEdit ? <> · <a className="underline" href={view.chatHref}>change it in chat</a>, or edit it on a larger screen</> : null} · <a className="underline" href={`${view.flow.href}/export`} download data-export-flow>Export</a></p>
-      {others.length > 0 && <div className="mt-1.5"><AlsoHere others={others} cards={view.cards} /></div>}</div>
+      {others.length > 0 && <div className="mt-1.5"><AlsoHere others={others} cards={view.cards} /></div>}
+      {view.unattended.active !== null && <div className="mt-1.5"><UnattendedStatus view={view} csrf={csrf} apply={apply} /></div>}</div>
+    {view.unattended.active === null && view.canEdit && view.unattended.scheduled && <details className="rounded-lg border p-3" data-flow-unattended="off">
+      <summary className="cursor-pointer text-title-sm">Run on its own</summary><div className="pt-3"><UnattendedPanel view={view} csrf={csrf} apply={apply} /></div></details>}
     {view.canEdit && live.some(one => one.button !== null && one.state === "active") && <div className="flex flex-wrap gap-2">
       {live.filter(one => one.button !== null && one.state === "active").map(one => <Button key={one.id} size="sm" onClick={() => setPressing(one.id)}><MousePointerClick className="size-4" />{one.button!.label}</Button>)}</div>}
     {view.canEdit && <details className="rounded-lg border p-3"><summary className="cursor-pointer text-title-sm">New card</summary><div className="pt-3"><NewCard view={view} csrf={csrf} apply={apply} /></div></details>}

@@ -297,6 +297,8 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   // Flows, cards and subagents.
   del("flow_trigger_event", `${IN("card")} OR trigger IN (SELECT id FROM flow_trigger WHERE ${IN("flow")})`, C, F);
   del("flow_trigger", IN("flow"), F);
+  del("flow_unattended_run", `grant_id IN (SELECT id FROM flow_unattended_grant WHERE ${IN("flow")})`, F);
+  del("flow_unattended_grant", IN("flow"), F);
   for (const table of ["flow_card_watcher", "flow_comment", "flow_event", "flow_mail", "flow_step_run"]) del(table, IN("card"), C);
   del("subagent_question", IN("id"), questions);
   del("subagent_call", `${IN("subagent")} OR ${IN("card")}`, M, C);
