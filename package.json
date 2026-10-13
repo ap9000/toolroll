@@ -8,6 +8,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/browser-build.mjs && node scripts/postbuild.mjs",
     "test": "vitest run",
+    "test:attacks": "vitest run --config test/attacks/vitest.config.ts",
+    "check:quick": "node scripts/quick-check.mjs",
     "dev": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json",
     "certify:provider": "npm run build && node scripts/provider-canary.mjs",
