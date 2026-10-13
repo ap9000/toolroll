@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, symlinkSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
@@ -104,6 +104,22 @@ describe("the pool, against a stubbed git", () => {
   });
 
   afterEach(() => store.close());
+
+  test.each(["project", "target", "root", "dangling", "loop"])("refuses a symlinked %s before creating any lease files or invoking git", async kind => {
+    const stash = join(root, "stash");
+    mkdirSync(stash);
+    const target = worktreePath(root, "/code/thing", "feat/a");
+    const project = join(root, "thing");
+    if (kind === "target") mkdirSync(project);
+    const poisoned = kind === "target" ? target : kind === "root" ? join(root, "pool-link") : project;
+    symlinkSync(kind === "dangling" ? join(root, "absent") : kind === "loop" ? poisoned : stash, poisoned);
+    const subject = kind === "root" ? new WorktreePool(store, { root: poisoned, runner: async () => { throw new Error("git must not run"); } }) : pool();
+    const result = await subject.lease({ repo: "/code/thing", branch: "feat/a", runner: "builder-1", now: T0 });
+    expect(result).toMatchObject({ ok: false, reason: "git" });
+    expect(calls).toEqual([]);
+    expect(readdirSync(stash)).toEqual([]);
+    expect(store.getWorktree(target)).toBeNull();
+  });
 
   test("creates a worktree and records the lease", async () => {
     const result = await pool().lease({
