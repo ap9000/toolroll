@@ -11,6 +11,9 @@ import { join } from "node:path";
 import { auditServiceEnvironment, credentialNames, doctorLines, processCredentialNames, runDoctorCommand } from "./doctor.js";
 import { planDaemon, planDesktopService, type SupervisorRunner } from "./daemon.js";
 import { run as runCommand } from "./exec.js";
+import { fakePid } from "../test/fake-pid.js";
+
+const [PID_LAUNCHD, PID_RUNNING, PID_UNREAD, PID_PROC, PID_GONE] = [1, 2, 3, 4, 5].map(fakePid) as [number, number, number, number, number];
 
 const marker = (what: string) => ["doctor", what, "5f".repeat(12)].join("-");
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
@@ -98,7 +101,7 @@ describe("toolroll doctor on macOS", () => {
     const before = snapshot(home);
     const { run, calls } = supervisor((file, args) => {
       if (file === "launchctl" && args[0] === "getenv") return args[1] === "OPENAI_API_KEY" ? { code: 0, stdout: `${values.inherited}\n` } : { code: 0, stdout: "\n" };
-      if (file === "launchctl" && args[0] === "print") return { code: 0, stdout: "state = running\n\tpid = 4242\n" };
+      if (file === "launchctl" && args[0] === "print") return { code: 0, stdout: `state = running\n\tpid = ${PID_LAUNCHD}\n` };
       if (file === "/bin/ps" && args[0] === "-ww") return { code: 0, stdout: "/usr/local/bin/node /app/controller-service.js watch\n" };
       if (file === "/bin/ps") return { code: 0, stdout: `/usr/local/bin/node /app/controller-service.js watch GEMINI_API_KEY=${values.live} with spaces\n` };
       return undefined;
@@ -116,7 +119,7 @@ describe("toolroll doctor on macOS", () => {
     expect(report.findings.map(one => [one.where, one.names])).toEqual([
       ["launchd's environment for your login, which every service started by launchd inherits", ["OPENAI_API_KEY"]],
       [`${label}'s definition (${unitPath})`, ["ANTHROPIC_API_KEY", "NOTES_TOKEN", "--token (command line)"]],
-      [`${label}'s running process (pid 4242)`, ["GEMINI_API_KEY"]],
+      [`${label}'s running process (pid ${PID_LAUNCHD})`, ["GEMINI_API_KEY"]],
     ]);
     const [inherited, definition, live] = report.findings;
     expect(inherited!.steps).toEqual(expect.arrayContaining(["launchctl unsetenv OPENAI_API_KEY", `launchctl kickstart -k gui/501/${label}`,
@@ -139,14 +142,14 @@ describe("toolroll doctor on macOS", () => {
     writeFileSync(planned.unitPath, planned.unitContent);
     const { run } = supervisor((file, args) => {
       if (file === "launchctl" && args[0] === "getenv") return { code: 0, stdout: "\n" };
-      if (file === "launchctl" && args[0] === "print") return { code: 0, stdout: "pid = 77\n" };
+      if (file === "launchctl" && args[0] === "print") return { code: 0, stdout: `pid = ${PID_RUNNING}\n` };
       if (file === "/bin/ps") return { code: 0, stdout: `node watch${args[0] === "-wwE" ? " PATH=/usr/bin" : ""}\n` };
       return undefined;
     });
     const ambient = marker("ambient-anthropic");
     const report = await auditServiceEnvironment({ platform: "darwin", home, uid: 501, run, env: { ANTHROPIC_API_KEY: ambient, PATH: "/bin" } });
     expect(report).toMatchObject({ ok: true, findings: [], unreadable: [] });
-    expect(report.checked).toEqual(expect.arrayContaining([expect.stringMatching(/^`toolroll daemon install` writes PATH, TOOLROLL_SERVICE_DIGEST, STANDING_ORDERS_SERVICE_DIGEST into the service/), `${planned.label}: its running process (pid 77).`]));
+    expect(report.checked).toEqual(expect.arrayContaining([expect.stringMatching(/^`toolroll daemon install` writes PATH, TOOLROLL_SERVICE_DIGEST, STANDING_ORDERS_SERVICE_DIGEST into the service/), `${planned.label}: its running process (pid ${PID_RUNNING}).`]));
     expect(report.notes).toEqual([expect.stringContaining("This terminal exports ANTHROPIC_API_KEY. A Toolroll started from here still uses it when no key is saved")]);
     const lines = doctorLines(report);
     expect(lines[0]).toBe("No secrets found in Toolroll's service. A build can't read a key from it.");
@@ -158,13 +161,13 @@ describe("toolroll doctor on macOS", () => {
     if ("error" in planned) throw new Error(planned.error);
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
     writeFileSync(planned.unitPath, planned.unitContent);
-    const { run } = supervisor((file, args) => file === "launchctl" && args[0] === "print" ? { code: 0, stdout: "pid = 78\n" } : undefined);
+    const { run } = supervisor((file, args) => file === "launchctl" && args[0] === "print" ? { code: 0, stdout: `pid = ${PID_UNREAD}\n` } : undefined);
     const lines: string[] = [];
     expect(await runDoctorCommand([], line => lines.push(line), { platform: "darwin", home, uid: 501, run, env: {} })).toBe(1);
     expect(lines[0]).toBe("Toolroll couldn't check everything, so it can't say the service is clean. Nothing was changed.");
     // Neither launchd's environment (getenv failed) nor the process (ps failed) is taken for clean.
     expect(lines).toContain("Not checked: launchd's environment for your login: launchctl getenv failed (exit 1).");
-    expect(lines).toContain("  1. Run `ps -wwE -o command= -p 78` yourself and check it shows no API key, token or password.");
+    expect(lines).toContain(`  1. Run \`ps -wwE -o command= -p ${PID_UNREAD}\` yourself and check it shows no API key, token or password.`);
   });
 
   // The real read: ps -E reads KERN_PROCARGS2. It is setuid, so inside a sandbox it can't run and this proves nothing.
@@ -222,14 +225,14 @@ describe("toolroll doctor on Linux", () => {
     const dropin = join(units, `${label}.service.d`, "override.conf");
     writeFileSync(dropin, `[Service]\nEnvironment=SENTRY_ACCESS_TOKEN=${values.dropin}\n`);
     const proc = join(home, "proc");
-    mkdirSync(join(proc, "777"), { recursive: true });
-    writeFileSync(join(proc, "777", "environ"), `HOME=/home/o\0PATH=/usr/bin\0OPENROUTER_API_KEY=${values.live}\0`);
+    mkdirSync(join(proc, String(PID_PROC)), { recursive: true });
+    writeFileSync(join(proc, String(PID_PROC), "environ"), `HOME=/home/o\0PATH=/usr/bin\0OPENROUTER_API_KEY=${values.live}\0`);
     const before = snapshot(home);
     const { run, calls } = supervisor((file, args) => {
       if (file !== "systemctl") return undefined;
       if (args[1] === "show-environment") return { code: 0, stdout: `LANG=C\nANTHROPIC_API_KEY=${values.manager}\n` };
       if (args[1] === "is-active") return { code: 0, stdout: "active\n" };
-      if (args[1] === "show") return { code: 0, stdout: "MainPID=777\n" };
+      if (args[1] === "show") return { code: 0, stdout: `MainPID=${PID_PROC}\n` };
       return undefined;
     });
     const json: string[] = [];
@@ -243,7 +246,7 @@ describe("toolroll doctor on Linux", () => {
       [`${label}: ${unitPath}`, ["GITHUB_TOKEN"]],
       [`${label}: ${dropin}`, ["SENTRY_ACCESS_TOKEN"]],
       [`${label}: ${envFile} (its EnvironmentFile)`, ["DB_PASSWORD"]],
-      [`${label}'s running process (pid 777)`, ["OPENROUTER_API_KEY"]],
+      [`${label}'s running process (pid ${PID_PROC})`, ["OPENROUTER_API_KEY"]],
     ]);
     expect(report.findings[0]!.steps).toEqual(expect.arrayContaining(["systemctl --user unset-environment ANTHROPIC_API_KEY", `systemctl --user restart ${label}`]));
     expect(report.findings[1]!.steps[0]).toBe("Prepare this reinstall command: toolroll daemon install --runner <set-again> --token-file <set-again> --repo <set-again>");
@@ -259,10 +262,10 @@ describe("toolroll doctor on Linux", () => {
     if ("error" in planned) throw new Error(planned.error);
     mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
     writeFileSync(planned.unitPath, planned.unitContent);
-    const { run } = supervisor((file, args) => args[1] === "show-environment" ? { code: 0, stdout: "LANG=C\n" } : args[1] === "is-active" ? { code: 0, stdout: "active\n" } : args[1] === "show" ? { code: 0, stdout: "MainPID=31337\n" } : undefined);
+    const { run } = supervisor((file, args) => args[1] === "show-environment" ? { code: 0, stdout: "LANG=C\n" } : args[1] === "is-active" ? { code: 0, stdout: "active\n" } : args[1] === "show" ? { code: 0, stdout: `MainPID=${PID_GONE}\n` } : undefined);
     const report = await auditServiceEnvironment({ platform: "linux", home, uid: 1000, run, procRoot: join(home, "no-proc"), env: {} });
-    expect(report).toMatchObject({ ok: false, findings: [], unreadable: [{ where: `${planned.label}'s running process (pid 31337)`, problem: "its environment (/proc/31337/environ) couldn't be read (ENOENT)",
-      steps: ["Run `tr '\\0' '\\n' < /proc/31337/environ | cut -d= -f1` yourself and check no name is a key, token or password."] }] });
+    expect(report).toMatchObject({ ok: false, findings: [], unreadable: [{ where: `${planned.label}'s running process (pid ${PID_GONE})`, problem: `its environment (/proc/${PID_GONE}/environ) couldn't be read (ENOENT)`,
+      steps: [`Run \`tr '\\0' '\\n' < /proc/${PID_GONE}/environ | cut -d= -f1\` yourself and check no name is a key, token or password.`] }] });
   });
 
   test.runIf(process.platform === "linux")("reads a real process's /proc/<pid>/environ, by name only", async () => {
