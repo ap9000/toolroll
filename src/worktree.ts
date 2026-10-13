@@ -24,9 +24,9 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, rmSync, realpathSync, mkdirSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, writeFileSync, rmSync, realpathSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { currentBootId, provenDeadByBootChange } from "./boot-identity.js";
 import type { Run, Store, WorktreeRow } from "./store.js";
@@ -201,6 +201,20 @@ export function poolRootOf(path: string, repo: string): string | null {
   return basename(project) === safeSegment(basenameOf(repo)) && /-[0-9a-f]{8}$/.test(basename(path)) ? dirname(project) : null;
 }
 
+/** Inspect names, not their destinations, before the plane writes into a pool. */
+function safePoolPath(root: string, target: string): boolean {
+  const base = resolve(root);
+  const rel = relative(base, resolve(target));
+  if (rel.startsWith("..") || rel.startsWith(sep)) return false;
+  let path = base;
+  for (const component of ["", ...rel.split(sep)]) {
+    path = join(path, component);
+    try { if (!lstatSync(path).isDirectory()) return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
+  }
+  return true;
+}
+
 function normalisePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }
@@ -365,6 +379,7 @@ export class WorktreePool {
 
   async lease(request: LeaseRequest): Promise<LeaseResult> {
     const target = worktreePath(this.options.root, request.repo, request.branch);
+    if (!safePoolPath(this.options.root, target)) return { ok: false, reason: "git", message: "The checkout pool contains a symlink or an unreadable folder." };
     if (busy.has(target)) return { ok: false, reason: "in-use", message: `${target} is busy; try again in a moment` };
     const release = reserveCheckout(this.store, target);
     if (release === null) return { ok: false, reason: "in-use", message: `${target} is busy; try again in a moment` };
@@ -386,6 +401,8 @@ export class WorktreePool {
     }
 
     const path = worktreePath(this.options.root, request.repo, request.branch);
+    const unsafe = (): LeaseResult => ({ ok: false, reason: "git", message: "The checkout pool contains a symlink or an unreadable folder." });
+    if (!safePoolPath(this.options.root, path)) return unsafe();
     const existing = this.store.getWorktree(path);
 
     // The machine outranks the database here. A row can say "released" while a
@@ -464,7 +481,8 @@ export class WorktreePool {
       const fromBase = request.base !== undefined && !branchExists;
       // Spotlight leaves the checkouts alone: the marker sits in the pool and the project's folder, never inside a
       // checkout, where a build's `git add -A` would commit it (never-index.ts).
-      try { mkdirSync(dirname(path), { recursive: true }); } catch { /* git reports it */ }
+      if (!safePoolPath(this.options.root, path)) return unsafe();
+      try { mkdirSync(dirname(path), { recursive: true }); } catch { return unsafe(); }
       markNeverIndex(this.options.root);
       markNeverIndex(dirname(path));
       // A new branch is created first, on its own, so its reflog's first entry says Toolroll made it and when.
@@ -477,6 +495,7 @@ export class WorktreePool {
         if (branch.code !== 0) return { ok: false, reason: "git", message: firstLine(branch.stderr) };
         made = oid;
       }
+      if (!safePoolPath(this.options.root, path)) return unsafe();
       const add = await this.git(request.repo, ["worktree", "add", path, request.branch]);
       if (add.code !== 0) {
         if (made !== null) await this.git(request.repo, ["update-ref", "-d", `refs/heads/${request.branch}`, made]);

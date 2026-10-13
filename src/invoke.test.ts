@@ -1185,6 +1185,9 @@ describe("checkout Git preflight", () => {
         expect(checked.cwd).toBe(launch!.cwd);
         expect(checked.fence).toBe(launch!.fence);
         expect(checked.fenceGrants).toBe(launch!.fenceGrants);
+        expect(fencing.fenceGrants).toHaveBeenCalledWith(expect.objectContaining({
+          poolRoots: expect.arrayContaining([join(dirname(store.databaseFile()!), "worktrees")]),
+        }));
       }
     } finally { store.close(); }
   });

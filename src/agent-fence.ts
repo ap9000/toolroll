@@ -72,12 +72,27 @@ export function checkoutGitEnv(base: Readonly<NodeJS.ProcessEnv> = process.env):
   return Object.fromEntries(GIT_ENV_NAMES.flatMap(name => base[name] === undefined ? [] : [[name, base[name]!]]));
 }
 
-export function trustedWorktreeBinding(repository: string, worktree: string): WorktreeBinding {
+export function trustedWorktreeBinding(repository: string, worktree: string, poolRoots: readonly (string | null)[] = []): WorktreeBinding {
   const main = real(repository);
   const checkout = real(worktree);
   const fail = () => new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
   const registry = join(main, ".git", "worktrees");
   try {
+    // The registry may legitimately contain the destination of an attacker link.
+    // Check the recorded name before accepting that destination as this run's checkout.
+    if (realpathSync(worktree) !== join(realpathSync(dirname(worktree)), basename(worktree))) throw fail();
+    for (const root of poolRoots) {
+      if (root === null) continue;
+      const components: string[] = [];
+      for (let component = resolve(worktree); component !== dirname(component); component = dirname(component)) {
+        components.push(component);
+        // Permit system aliases above the trusted pool (e.g. /var -> /private/var),
+        // but no redirect at or below it, including older checkout names.
+        if (real(component) !== real(root) && component !== resolve(root)) continue;
+        for (const one of components) if (lstatSync(one).isSymbolicLink()) throw fail();
+        break;
+      }
+    }
     if (!lstatSync(join(main, ".git")).isDirectory() || !lstatSync(registry).isDirectory()) throw fail();
     // Query the trusted checkout, never the candidate's configurable Git pointer.
     const listed = spawnSync("git", [...HARDENED_GIT_ARGS, "worktree", "list", "--porcelain", "-z"],
@@ -312,7 +327,7 @@ export function checkoutPool(options: { roots: readonly (string | null)[]; workt
     split(path);
   }
   const holding = own === null ? [] : [...deny].filter(path => inside(own, path));
-  const lookup = new Set<string>();
+  const lookup = new Set<string>([...visited].filter(path => needed.some(target => inside(target, path))));
   for (const path of holding) for (let folder = dirname(own!); folder === path || inside(folder, path); folder = dirname(folder)) lookup.add(folder);
   return { deny: [...deny].sort(), own: holding.length === 0 ? null : own, lookup: [...lookup].sort(), ...(needed.length === 0 ? {} : { gitPaths: needed }) };
 }
@@ -426,20 +441,23 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
  */
 export function codexPool(pool: CheckoutPool, list: (path: string) => string[] = path => readdirSync(path)): { read: string[]; deny: string[]; write: string[] } {
   const deny = new Set<string>();
+  const read = new Set(pool.lookup);
   const own = pool.own;
   const needed = [...pool.gitPaths ?? [], ...(own === null ? [] : [own])].map(path => realpathSync(path));
   const visited = new Set<string>();
   const split = (input: string): void => {
-    const path = realpathSync(input);
+    let path: string;
+    try { path = realpathSync(input); } catch { deny.add(resolve(input)); return; }
     if (visited.has(path)) return;
     visited.add(path);
     if (needed.some(target => path === target || inside(path, target))) return;
     if (!needed.some(target => inside(target, path))) { deny.add(path); return; }
-    // Listing or realpath failure propagates to launch preparation: never run with partial coverage.
+    // Only ancestors needed for traversal stay readable, never writable in Full access.
+    read.add(path);
     for (const entry of list(path)) split(join(path, entry));
   };
   for (const root of pool.deny) split(root);
-  return { read: [], deny: [...deny].sort(), write: own === null ? [] : [own] };
+  return { read: [...read].sort(), deny: [...deny].sort(), write: own === null ? [] : [own] };
 }
 
 /** Secret-looking names denied by pattern inside a folder `flattened` makes read-only, so one written there after
@@ -535,7 +553,10 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     "(version 1)",
     "(allow default)",
     ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
-    ...(pool?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [pool.own])})`]),
+    ...(pool?.own == null ? [] : [
+      `(allow file-read* file-write* ${paths("subpath", [pool.own])})`,
+      `(deny file-write* ${paths("literal", [pool.own])})`,
+    ]),
     ...(pool === undefined || pool.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", pool.lookup)})`]),
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),

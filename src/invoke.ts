@@ -798,7 +798,8 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
     const home = keyHome === undefined ? {} : { home: keyHome };
     const row = worktree === null ? null : store.getWorktree(worktree);
     if (worktree !== null && row === null) throw new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
-    const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree);
+    const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+    const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree, poolRoots);
     const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding });
     const folders = runFolders(ownTools);
     return {
@@ -808,7 +809,7 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
       // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
       // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
       grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
-        poolRoots: [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))] }),
+        poolRoots }),
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
