@@ -61,6 +61,38 @@ function inside(child: string, parent: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
+/** Only the plane's recorded repository may supply an own-Git exemption. */
+export type WorktreeBinding = { main: string; gitdir: string };
+export class CheckoutBindingError extends Error {}
+export const HARDENED_GIT_ARGS = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"] as const;
+const GIT_ENV_NAMES = ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "LANG", "LC_ALL", "CODEX_HOME"];
+export function checkoutGitEnv(base: Readonly<NodeJS.ProcessEnv> = process.env): Record<string, string> {
+  return Object.fromEntries(GIT_ENV_NAMES.flatMap(name => base[name] === undefined ? [] : [[name, base[name]!]]));
+}
+
+export function trustedWorktreeBinding(repository: string, worktree: string): WorktreeBinding {
+  const main = real(repository);
+  const checkout = real(worktree);
+  const fail = () => new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
+  const registry = join(main, ".git", "worktrees");
+  try {
+    if (!lstatSync(join(main, ".git")).isDirectory() || !lstatSync(registry).isDirectory()) throw fail();
+    // Query the trusted checkout, never the candidate's configurable Git pointer.
+    const listed = spawnSync("git", [...HARDENED_GIT_ARGS, "worktree", "list", "--porcelain", "-z"],
+      { cwd: main, env: checkoutGitEnv(), encoding: "utf8" });
+    if (listed.status !== 0 || !listed.stdout.split("\0").includes(`worktree ${checkout}`)) throw fail();
+    for (const entry of readdirSync(registry)) {
+      const path = join(registry, entry);
+      if (!lstatSync(path).isDirectory() || !inside(real(path), real(registry))) continue;
+      if (real(readFileSync(join(path, "gitdir"), "utf8").trim()) !== join(checkout, ".git")) continue;
+      const gitdir = real(path);
+      if (worktreeGitDir(checkout) !== gitdir || real(join(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim())) !== real(join(main, ".git"))) throw fail();
+      return { main, gitdir };
+    }
+  } catch { throw fail(); }
+  throw fail();
+}
+
 /**
  * Every path an agent must not reach: the Toolroll state folder
  * beside the database (all of it, except the folder that holds this run's
@@ -69,7 +101,7 @@ function inside(child: string, parent: string): boolean {
  * database sits anywhere else (a shared folder), only the database and
  * secret-looking entries there are fenced.
  */
-export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; runFolders?: RunFolders }): string[] {
+export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; binding?: WorktreeBinding | null; runFolders?: RunFolders }): string[] {
   const fence = new Set<string>();
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
@@ -85,7 +117,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // The entries this run's worktree needs stay reachable: the one it lives
     // under, and the repository its git metadata belongs to.
     const keep = new Set<string>();
-    for (const needed of [worktree, worktree === null ? null : mainRepositoryOf(worktree)]) {
+    for (const needed of [worktree, options.binding?.main ?? null]) {
       if (needed !== null && inside(needed, state)) keep.add(relative(state, needed).split(sep)[0]!);
     }
     let entries: string[] = [];
@@ -103,14 +135,16 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     if (stream !== undefined && existsSync(stream)) fence.add(real(stream));
   }
   for (const path of options.extra ?? []) if (existsSync(path)) fence.add(real(path));
-  for (const path of options.boundary?.shell ?? []) fence.add(path);
+  // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
-  const main = worktree === null ? null : mainRepositoryOf(worktree);
-  const needed = [worktree, worktree === null ? null : worktreeGitDir(worktree),
-    main === null ? null : real(join(main, ".git"))].filter((path): path is string => path !== null);
+  for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
+  const protectedPaths = new Set([...fence].map(real));
+  for (const path of options.boundary?.shell ?? []) fence.add(path);
+  const binding = options.binding;
+  const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
   return [...new Set([...fence].map(real))].filter(path => {
-    if (!needed.some(target => target === path || inside(target, path))) return true;
-    console.warn(`Dropped build fence entry covering this checkout's own Git data or worktree: ${path}`);
+    if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
+    console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
   }).sort();
 }
@@ -130,7 +164,7 @@ const CLAUDE_FILE_TOOL_HOME = [".claude.json", join(".claude", ".credentials.jso
 
 /** The task's boundary: `shell` joins the OS fence; `fileTools` only Claude's file-tool deny rules; `readOnly` and
  * `lookup` are other tasks' git metadata and checkout roots (see FenceGrants). */
-export type TaskBoundary = { shell: string[]; fileTools: string[]; readOnly: string[]; lookup: string[] };
+export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileTools: string[]; readOnly: string[]; lookup: string[] };
 
 /**
  * Everything outside a task's own folders that a build could otherwise
@@ -140,15 +174,16 @@ export type TaskBoundary = { shell: string[]; fileTools: string[]; readOnly: str
  * The task's worktree, the files Toolroll makes for the run (in the
  * system temp folder) and everything else stay as they are.
  */
-export function taskBoundary(options: { worktree: string; provider: string; home?: string }): TaskBoundary {
+export function taskBoundary(options: { worktree: string; provider: string; home?: string; binding?: WorktreeBinding | null }): TaskBoundary {
   const home = real(options.home ?? homedir());
   const worktree = real(options.worktree);
-  const main = mainRepositoryOf(worktree);
-  const gitdir = worktreeGitDir(worktree);
+  const main = options.binding?.main ?? null;
+  const gitdir = options.binding?.gitdir ?? null;
   const needed = [worktree, main, gitdir].filter((path): path is string => path !== null);
   const own = new Set(PROVIDER_HOME[options.provider] ?? []);
   const present = (names: readonly string[]) => names.map(name => join(home, name)).filter(path => existsSync(path)).map(real);
   const shell = new Set(present(HOME_CONFIGURATION.filter(name => !own.has(name))));
+  const protectedShell = [...shell];
   const repository = (path: string) => existsSync(join(path, ".git"));
   for (const parent of new Set([dirname(worktree), ...(main === null ? [] : [dirname(main)])])) {
     // Home contains toolchain clones such as .nvm and .oh-my-zsh. The
@@ -203,7 +238,7 @@ export function taskBoundary(options: { worktree: string; provider: string; home
     }
   }
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
-  return { shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
+  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
@@ -284,14 +319,6 @@ function worktreeGitDir(worktree: string): string | null {
   } catch {
     return null;
   }
-}
-
-function mainRepositoryOf(worktree: string): string | null {
-  const gitdir = worktreeGitDir(worktree);
-  if (gitdir === null) return null;
-  // <repo>/.git/worktrees/<name> → <repo>
-  const at = gitdir.lastIndexOf(`${sep}.git${sep}worktrees${sep}`);
-  return at < 0 ? null : gitdir.slice(0, at);
 }
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;

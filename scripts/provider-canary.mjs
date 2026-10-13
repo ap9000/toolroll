@@ -310,31 +310,41 @@ async function runtimeIdentity() {
 }
 
 /** Verify Git from the produced checkout through the provider's generated policy, without a model turn. */
-export async function checkCheckoutGit({ provider, worktree, databaseFile, home = homedir() }, execute = run) {
-  if (provider !== "claude" && provider !== "codex") return null;
+export async function checkCheckoutGit({ provider, worktree, databaseFile, repository, home = homedir() }, execute = run) {
+  if (!["claude", "codex", "gemini"].includes(provider)) return null;
   if (typeof worktree !== "string" || worktree === "") throw new Error("the builder did not retain its worktree for the Git fence check");
-  const { agentFence, taskBoundary, fenceGrants, codexFenceArgv, macosFenceAvailable, macosFenced, linuxFenceAvailable, linuxFenced } = await import(join(root, "dist", "agent-fence.js"));
-  const boundary = taskBoundary({ worktree, provider, home });
-  const fence = agentFence({ databaseFile, worktree, home, boundary });
+  const { agentFence, taskBoundary, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, fenceGrants, codexFenceArgv, macosFenceAvailable, macosFenced, linuxFenceAvailable, linuxFenced } = await import(join(root, "dist", "agent-fence.js"));
+  const binding = trustedWorktreeBinding(repository, worktree);
+  const boundary = taskBoundary({ worktree, provider, home, binding });
+  const fence = agentFence({ databaseFile, worktree, home, boundary, binding });
   const grants = fenceGrants({ databaseFile, worktree, boundary });
   const codexHome = provider === "codex" ? await mkdtemp(join(tmpdir(), "so-codex-canary-")) : null;
   try {
     let head = null;
+    let skipped = false;
+    const env = checkoutGitEnv({ ...process.env, ...(codexHome === null ? {} : { CODEX_HOME: codexHome }) });
     for (const args of [["rev-parse", "HEAD"], ["status", "--porcelain"]]) {
-      const control = await execute("git", args, { cwd: worktree });
+      const gitArgs = [...HARDENED_GIT_ARGS, ...args];
+      const control = await execute("git", gitArgs, { cwd: worktree, env });
       if (control.code !== 0) throw new Error(`unfenced git ${args.join(" ")} failed: ${control.stderr}`);
       const wrapped = provider === "codex"
-        ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "git", ...args] }
-        : macosFenceAvailable() ? macosFenced("git", args, fence, grants)
-        : linuxFenceAvailable() ? linuxFenced("git", args, fence, grants) : null;
-      if (wrapped === null) throw new Error("the Claude Git fence check needs a working native sandbox");
+        ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "git", ...gitArgs] }
+        : macosFenceAvailable() ? macosFenced("git", gitArgs, fence, grants)
+        : linuxFenceAvailable() ? linuxFenced("git", gitArgs, fence, grants) : null;
+      if (wrapped === null || fence.length === 0) { skipped = true; if (args[0] === "rev-parse") head = control.stdout.trim(); continue; }
       const checked = await execute(wrapped.file, wrapped.args, { cwd: worktree,
-        env: { ...process.env, ...(codexHome === null ? {} : { CODEX_HOME: codexHome }) } });
-      if (checked.code !== 0) throw new Error(`The build fence blocks this checkout's own Git data. git ${args.join(" ")}: ${checked.stderr}`);
+        env });
+      if (checked.code !== 0) {
+        const trivial = provider === "codex"
+          ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "true"] }
+          : macosFenceAvailable() ? macosFenced("true", [], fence, grants) : linuxFenced("true", [], fence, grants);
+        const sandbox = await execute(trivial.file, trivial.args, { cwd: worktree, env });
+        throw new Error(sandbox.code === 0 ? `The build fence blocks this checkout's own Git data. git ${args.join(" ")}: ${checked.stderr}` : `The provider sandbox could not run its control: ${sandbox.stderr}`);
+      }
       if (checked.stdout !== control.stdout) throw new Error(`fenced git ${args.join(" ")} disagrees with its control`);
       if (args[0] === "rev-parse") head = checked.stdout.trim();
     }
-    return { head, revParse: "passed", status: "passed", provider };
+    return { head, revParse: skipped ? "unfenced-only" : "passed", status: skipped ? "unfenced-only" : "passed", provider };
   } finally { if (codexHome !== null) await rm(codexHome, { recursive: true, force: true }); }
 }
 
@@ -502,7 +512,7 @@ async function main() {
       if (buildRun === null || buildRun === undefined || typeof buildRun.branch !== "string") {
         throw new Error("no completed builder run named its branch");
       }
-      const checkoutGit = await checkCheckoutGit({ provider: options.provider, worktree: buildRun.worktree, databaseFile: db });
+      const checkoutGit = await checkCheckoutGit({ provider: options.provider, worktree: buildRun.worktree, databaseFile: db, repository: repo });
       const branchSha = await git("rev-parse", buildRun.branch);
       if (checkoutGit !== null && checkoutGit.head !== branchSha) throw new Error("the fenced checkout is not the completed build candidate");
       if (branchSha === baseSha) throw new Error("the build branch did not advance");

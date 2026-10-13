@@ -1127,7 +1127,12 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
   const { checkCheckoutGit } = await import("../scripts/provider-canary.mjs");
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-canary-git-")));
   const worktree = join(dir, "checkout");
-  mkdirSync(worktree);
+  const repository = join(dir, "repo");
+  mkdirSync(repository);
+  for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "probe", worktree]]) {
+    const result = spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+  }
   const secret = join(dir, "orders.db");
   writeFileSync(secret, "fixture");
   try {
@@ -1136,7 +1141,7 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
       calls.push({ file, args, options });
       return { code: 0, stdout: args.includes("rev-parse") ? "candidate-head\n" : "", stderr: "" };
     };
-    const result = await checkCheckoutGit({ provider: "codex", worktree, databaseFile: secret, home: dir }, execute);
+    const result = await checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir }, execute);
     expect(result).toEqual({ provider: "codex", head: "candidate-head", revParse: "passed", status: "passed" });
     expect(calls.map(call => call.file)).toEqual(["git", "codex", "git", "codex"]);
     for (const call of [calls[1]!, calls[3]!]) {
@@ -1145,10 +1150,25 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
       expect(call.options.cwd).toBe(worktree);
       expect(existsSync(call.options.env!["CODEX_HOME"]!)).toBe(false);
     }
-    expect(calls[3]!.args.slice(-3)).toEqual(["git", "status", "--porcelain"]);
-    await expect(checkCheckoutGit({ provider: "codex", worktree, databaseFile: secret, home: dir },
-      async (file: string) => ({ code: file === "git" ? 0 : 128, stdout: "", stderr: "denied" }))).rejects.toThrow("The build fence blocks this checkout's own Git data.");
-    await expect(checkCheckoutGit({ provider: "claude", worktree, databaseFile: secret, home: dir },
+    for (const call of calls) {
+      expect(call.args).toEqual(expect.arrayContaining(["--no-optional-locks", "core.fsmonitor=false", "core.hooksPath=/dev/null"]));
+      expect(call.options.env).not.toHaveProperty("GIT_CONFIG_COUNT");
+    }
+    for (const provider of ["claude", "gemini"]) {
+      const before = calls.length;
+      const native = await checkCheckoutGit({ provider, worktree, repository, databaseFile: secret, home: dir }, execute);
+      const newCalls = calls.slice(before);
+      expect(native?.provider).toBe(provider);
+      if (native?.revParse === "unfenced-only") expect(newCalls.map(call => call.file)).toEqual(["git", "git"]);
+      else expect(newCalls).toHaveLength(4);
+      for (const call of newCalls) expect(call.args).toContain("core.fsmonitor=false");
+    }
+    await expect(checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir },
+      async (file: string) => ({ code: file === "git" ? 0 : 71, stdout: "", stderr: "sandbox unavailable" }))).rejects.toThrow("The provider sandbox could not run its control");
+    expect(calls[3]!.args.slice(-2)).toEqual(["status", "--porcelain"]);
+    await expect(checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir },
+      async (file: string, args: string[]) => ({ code: file === "git" || args.at(-1) === "true" ? 0 : 128, stdout: "", stderr: "denied" }))).rejects.toThrow("The build fence blocks this checkout's own Git data.");
+    await expect(checkCheckoutGit({ provider: "claude", worktree, repository, databaseFile: secret, home: dir },
       async () => ({ code: 128, stdout: "", stderr: "broken checkout" }))).rejects.toThrow("unfenced git rev-parse HEAD failed");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

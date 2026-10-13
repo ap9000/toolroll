@@ -33,7 +33,7 @@ import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-too
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { agentFence, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
@@ -368,7 +368,13 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  if (fenceOf.problem !== undefined) {
+    tools?.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
+  }
   const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
   const grants = fenceOf.grants;
   const inherited = spec.model === null && invocation.phase !== "review" ? inheritedDefaults(spec.provider, { ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()) : undefined;
@@ -461,23 +467,26 @@ export async function invokeAgent(
   let result: Awaited<ReturnType<typeof spawn>>;
   let spawnedAt: number;
   try {
-    if (fence.length > 0 && workspace !== null) {
+    if (fence.length > 0 && workspace !== null && (codexHarness || launchOptions.fence !== undefined)) {
+      const inheritedEnv = launchOptions.envAllowlist === undefined ? process.env
+        : Object.fromEntries(launchOptions.envAllowlist.map(name => [name, process.env[name]]));
       const probeOptions: RunOptions = {
-        cwd: workspace, env: childEnv, omitEnv: childOmitEnv,
-        ...(launchOptions.envAllowlist === undefined ? {} : { envAllowlist: launchOptions.envAllowlist }),
+        cwd: workspace, env: checkoutGitEnv({ ...inheritedEnv, ...childEnv }), omitEnv: childOmitEnv, envAllowlist: [],
       };
       // A broken checkout is not evidence of a broken fence. No provider is invoked by either check.
-      const control = await runCommand("git", ["rev-parse", "HEAD"], probeOptions);
+      const gitArgs = [...HARDENED_GIT_ARGS, "rev-parse", "HEAD"];
+      const control = await runCommand("git", gitArgs, probeOptions);
       if (control.code === 0) {
         const executable = attested !== null ? attested.executable : adapter.binary;
-        const check = codexHarness
-          ? await runCommand(executable, ["sandbox", ...codexFenceArgv(fence, invocation.skipPermissions, grants),
-            "-P", "standing-orders", "--", "git", "rev-parse", "HEAD"], probeOptions)
-          : await runCommand("git", ["rev-parse", "HEAD"], {
-            ...probeOptions, ...(launchOptions.fence === undefined ? {} : { fence: launchOptions.fence, ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }) }),
-          });
+        const insideFence = (file: string, args: readonly string[]) => codexHarness
+          ? runCommand(executable, ["sandbox", ...codexFenceArgv(fence, invocation.skipPermissions, grants),
+            "-P", "standing-orders", "--", file, ...args], probeOptions)
+          : runCommand(file, args, { ...probeOptions, fence: launchOptions.fence!,
+            ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }) });
+        const check = await insideFence("git", gitArgs);
         if (check.code !== 0) {
-          return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
+          const trivial = await insideFence("true", []);
+          if (trivial.code === 0) return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
             diagnostic: "The build fence blocks this checkout's own Git data.\n\nDetails:\n" + check.stderr.slice(0, 2000) + "\nDenied paths:\n" + fence.join("\n").slice(0, 12000) };
         }
       }
@@ -779,23 +788,26 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return { fence: [], fileTools: [], grants: NO_GRANTS };
     const worktree = store.getRun(runId)?.worktree ?? null;
     const home = keyHome === undefined ? {} : { home: keyHome };
-    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home });
+    const row = worktree === null ? null : store.getWorktree(worktree);
+    if (worktree !== null && row === null) throw new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
+    const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree);
+    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding });
     const folders = runFolders(ownTools);
     return {
-      fence: agentFence({ databaseFile, worktree, ...home, boundary, runFolders: folders }),
+      fence: agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders }),
       fileTools: boundary?.fileTools ?? [],
       // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
       grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree) }),
     };
-  } catch {
-    return { fence: [], fileTools: [], grants: NO_GRANTS };
+  } catch (error) {
+    return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
   }
 }
 

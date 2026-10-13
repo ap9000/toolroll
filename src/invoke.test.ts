@@ -4,6 +4,7 @@
  * spawn, and every completed process's usage is read, exit code be damned.
  */
 
+import { spawnSync } from "node:child_process";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1059,12 +1060,43 @@ describe("the architecture rule", () => {
 describe("checkout Git preflight", () => {
   afterEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); resetAttestationCache(); });
 
+  function bindCheckout(store: Store, tree: string) {
+    const repo = join(providerHome, "repository");
+    mkdirSync(repo);
+    for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "probe", tree]]) {
+      const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    store.saveWorktree({ path: tree, repo, branch: "probe", runner: null, taskRef: null, createdAt: T0.toISOString(), leasedAt: null, releasedAt: null, verified: true });
+    return repo;
+  }
+
+  test.each(["ssh", "state", "database"])("changed %s pointer refuses before provider stamp or spawn", async target => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    const pointer = target === "ssh" ? join(providerHome, ".ssh", "x") : target === "state" ? join(providerHome, ".toolroll", ".git", "worktrees", "x") : join(providerHome, "orders.db");
+    writeFileSync(join(tree, ".git"), `gitdir: ${pointer}\n`);
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      const runner = vi.fn(async () => OK);
+      const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner, cwd: tree });
+      expect(result).toMatchObject({ kind: "refused", reason: "containment", diagnostic: expect.stringContaining("The checkout's Git pointer was changed") });
+      expect(runner).not.toHaveBeenCalled();
+      expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+    } finally { store.close(); }
+  });
+
   test.each(["claude", "codex", "gemini"] as const)("%s checks the completed fence before stamping or starting, and cleans refused launches", async provider => {
     const store = openStore(join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
     const blocked = join(providerHome, "main", ".git");
     const privateDir = join(providerHome, "so-tools-fixture");
     for (const path of [tree, blocked, privateDir]) mkdirSync(path, { recursive: true });
+    bindCheckout(store, tree);
     const cleanup = vi.fn(() => rmSync(privateDir, { recursive: true, force: true }));
     vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: { FENCE_FIXTURE: "same" }, omitEnv: [], privateDir, cleanup });
     vi.mocked(fencing.agentFence).mockReturnValue([blocked]);
@@ -1085,7 +1117,7 @@ describe("checkout Git preflight", () => {
       vi.mocked(command.run).mockImplementation(async (file, args, options = {}) => {
         expect(store.getRun(runId)?.providerStartedAt).toBeNull();
         calls.push({ file, args, options });
-        return calls.length === 1 ? OK : { ...OK, code: 128, stderr: `denied ${blocked}` };
+        return calls.length !== 2 ? OK : { ...OK, code: 128, stderr: `denied ${blocked}` };
       });
       const result = await invokeAgent(store, runId, { provider, model: null }, ASK, { runner, cwd: tree, env: { PROBE_MARKER: "same" }, omitEnv: ["UNWANTED"] });
       expect(result).toMatchObject({ kind: "refused", reason: "containment" });
@@ -1094,10 +1126,10 @@ describe("checkout Git preflight", () => {
       expect(result.diagnostic).toContain(blocked);
       expect(runner).not.toHaveBeenCalled();
       expect(store.getRun(runId)?.providerStartedAt).toBeNull();
-      expect(calls).toHaveLength(2);
-      expect(calls[0]).toMatchObject({ file: "git", args: ["rev-parse", "HEAD"] });
+      expect(calls).toHaveLength(3);
+      expect(calls[0]).toMatchObject({ file: "git", args: [...fencing.HARDENED_GIT_ARGS, "rev-parse", "HEAD"] });
       expect(calls[0]!.options.fence).toBeUndefined();
-      expect(calls[1]!.options).toMatchObject({ cwd: tree, env: { PROBE_MARKER: "same", FENCE_FIXTURE: "same" }, omitEnv: expect.arrayContaining(["UNWANTED"]) });
+      expect(calls[1]!.options).toMatchObject({ cwd: tree, envAllowlist: [], omitEnv: expect.arrayContaining(["UNWANTED"]) });
       expect(calls[1]!.options.env).toBe(calls[0]!.options.env);
       if (provider === "codex") {
         expect(calls[1]!.file).toBe("codex");
@@ -1114,18 +1146,18 @@ describe("checkout Git preflight", () => {
       }
       expect(cleanup).toHaveBeenCalledOnce();
       expect(existsSync(privateDir)).toBe(false);
-      const db = calls[0]!.options.env!["STANDING_ORDERS_DB"];
-      expect(db).toBeDefined();
-      expect(existsSync(dirname(db!))).toBe(false);
+      expect(calls[0]!.options.env).not.toHaveProperty("GIT_DIR");
+      expect(calls[2]!.args.at(-1)).toBe(provider === "codex" ? "true" : undefined);
     } finally { store.close(); process.env["PATH"] = savedPath; }
   });
 
-  test.each(["no-fence", "bad-control", "passes"])("%s preserves ordinary launch behavior", async scenario => {
+  test.each(["no-fence", "no-native-wrapper", "bad-control", "passes", "broken-sandbox"])("%s preserves ordinary launch behavior", async scenario => {
     const store = openStore(scenario === "no-fence" ? ":memory:" : join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
-    mkdirSync(tree);
+    bindCheckout(store, tree);
     vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
-    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(scenario !== "no-native-wrapper");
+    vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
     try {
       registerBuilder(store);
       store.createTask({ id: "probe", title: "probe" }, T0);
@@ -1133,7 +1165,7 @@ describe("checkout Git preflight", () => {
         branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
       const probe = vi.mocked(command.run).mockImplementation(async () => {
         expect(store.getRun(runId)?.providerStartedAt).toBeNull();
-        return { ...OK, code: scenario === "bad-control" ? 128 : 0 };
+        return { ...OK, code: scenario === "bad-control" || (scenario === "broken-sandbox" && probe.mock.calls.length > 1) ? 128 : 0 };
       });
       let launch: RunOptions | undefined;
       const runner = vi.fn(async (_file: string, _args: readonly string[], options?: RunOptions) => {
@@ -1144,10 +1176,11 @@ describe("checkout Git preflight", () => {
       const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner, cwd: tree });
       expect(result.kind).toBe("ran");
       expect(runner).toHaveBeenCalledOnce();
-      expect(probe).toHaveBeenCalledTimes(scenario === "no-fence" ? 0 : scenario === "bad-control" ? 1 : 2);
+      expect(probe).toHaveBeenCalledTimes((scenario === "no-fence" || scenario === "no-native-wrapper") ? 0 : scenario === "bad-control" ? 1 : scenario === "broken-sandbox" ? 3 : 2);
       if (scenario === "passes") {
         const checked = probe.mock.calls[1]![2]!;
-        expect(checked.env).toBe(launch!.env);
+        expect(checked.env).toEqual(fencing.checkoutGitEnv({ ...process.env, ...launch!.env }));
+        expect(checked.envAllowlist).toEqual([]);
         expect(checked.omitEnv).toBe(launch!.omitEnv);
         expect(checked.cwd).toBe(launch!.cwd);
         expect(checked.fence).toBe(launch!.fence);
