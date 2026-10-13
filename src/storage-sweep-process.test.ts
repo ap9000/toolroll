@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { lastSweep, nextSweepAt, RETRY_MS, type SweepDeps, type SweepRecord } from "./storage-sweep.js";
 import { idleStorageSweep } from "./storage-sweep-schedule.js";
-import { createSweepSupervisor, storageSweepSupervisor, sweepLaunch, SWEEP_NICE, sweepRequest, sweepResponse, type SweepRequest, type SweepSupervisor } from "./storage-sweep-process.js";
+import { createSweepSupervisor, storageSweepSupervisor, enterSweepBackground, sweepBackground, SWEEP_NICE, sweepRequest, sweepResponse, type SweepRequest, type SweepSupervisor } from "./storage-sweep-process.js";
 import { hangingSweep, observeSweep } from "../test/sweep-process.js";
 import { sweepObservations } from "../test/sweep-observations.js";
 
@@ -73,8 +73,13 @@ test("parent heartbeat and database renewals continue while the production child
   const sweep = flight.completed.finally(() => { settled = true; });
   expect(dailyStorageSweep(store, { databaseFile, pool: null, tempRoots: [temp] }, () => new Date(), flight.supervisor)).toBeNull();
   // Behind everything else: the child's own work, like the du/rm it starts, runs at a positive nice.
-  await vi.waitFor(() => expect(existsSync(duGate.entered)).toBe(true), { timeout: 30_000 });
-  expect(JSON.parse(readFileSync(duGate.entered, "utf8")).nice).toBeGreaterThanOrEqual(SWEEP_NICE);
+  // Its 300 removals before du run under the background policy, which a busy machine (a CI runner in the middle of the
+  // suite) holds back by design; the suite's own limit still bounds the test.
+  await vi.waitFor(() => expect(existsSync(duGate.entered)).toBe(true), { timeout: 60_000 });
+  const entered = JSON.parse(readFileSync(duGate.entered, "utf8")) as { nice: number; startedBackground: boolean | null; background: boolean | null };
+  expect(entered.nice).toBeGreaterThanOrEqual(SWEEP_NICE);
+  // On macOS the work runs under the background policy, but Node's own start doesn't wait behind everything else first.
+  if (process.platform === "darwin") expect([entered.startedBackground, entered.background]).toEqual([false, true]);
   const during: boolean[] = [];
   const heartbeat = setInterval(() => {
     if (!existsSync(duGate.entered)) return;
@@ -119,10 +124,15 @@ test("a production child failure is recorded without raw errors and retries afte
   expect(lastSweep(store)!.parts.every(one => one.problem === undefined && one.failed === 0)).toBe(true);
 });
 
-test("the child starts at low priority: under taskpolicy -b on macOS when present, the same Node otherwise", () => {
-  expect(sweepLaunch("darwin", path => path === "/usr/sbin/taskpolicy")).toEqual({ execPath: "/usr/sbin/taskpolicy", prefix: ["-b", process.execPath] });
-  expect(sweepLaunch("darwin", () => false)).toEqual({ execPath: process.execPath, prefix: [] });
-  expect(sweepLaunch("linux", () => true)).toEqual({ execPath: process.execPath, prefix: [] });
+test("the child works at low priority: it enters taskpolicy's background policy itself on macOS when present, else only the nice", () => {
+  expect(sweepBackground(4242, "darwin", path => path === "/usr/sbin/taskpolicy")).toEqual({ file: "/usr/sbin/taskpolicy", args: ["-b", "-p", "4242"] });
+  expect(sweepBackground(4242, "darwin", () => false)).toBeNull();
+  expect(sweepBackground(4242, "linux", () => true)).toBeNull();
+  const ran: [string, string[]][] = [];
+  expect(enterSweepBackground((file, args) => { ran.push([file, args]); })).toBe(sweepBackground(process.pid) !== null);
+  expect(ran).toEqual(sweepBackground(process.pid) === null ? [] : [["/usr/sbin/taskpolicy", ["-b", "-p", String(process.pid)]]]);
+  // A taskpolicy that fails leaves the sweep running at its nice.
+  expect(enterSweepBackground(() => { throw new Error("refused"); })).toBe(false);
   expect(SWEEP_NICE).toBeGreaterThan(0);
 });
 

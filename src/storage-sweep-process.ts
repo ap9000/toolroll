@@ -1,5 +1,5 @@
 /** The storage child's bounded IPC protocol. No paths or process arguments are written to logs. */
-import { fork, type ChildProcess } from "node:child_process";
+import { execFileSync, fork, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setPriority } from "node:os";
 import { resolve } from "node:path";
@@ -41,17 +41,28 @@ export const SWEEP_KILL_GRACE_MS = 5_000;
 export const SWEEP_NICE = 10;
 const TASKPOLICY = "/usr/sbin/taskpolicy";
 
-/** How the child starts: taskpolicy execs Node in place, so the pid, its group and the IPC channel stay the same. */
-export function sweepLaunch(platform: NodeJS.Platform = process.platform, exists: (path: string) => boolean = existsSync): { execPath: string; prefix: string[] } {
-  return platform === "darwin" && exists(TASKPOLICY) ? { execPath: TASKPOLICY, prefix: ["-b", process.execPath] } : { execPath: process.execPath, prefix: [] };
+/**
+ * How the child enters the background policy on macOS, or null elsewhere (or without taskpolicy): the child runs it on
+ * its own pid once Node has started and loaded the sweep, before any sweep work. Everything it starts after that (rm,
+ * du, git) inherits the policy. Starting Node itself under it let a busy machine hold the child's start for as long
+ * as anything else wanted the CPU, before it had done any of the work the policy is for.
+ */
+export function sweepBackground(pid: number, platform: NodeJS.Platform = process.platform, exists: (path: string) => boolean = existsSync): { file: string; args: string[] } | null {
+  return platform === "darwin" && exists(TASKPOLICY) ? { file: TASKPOLICY, args: ["-b", "-p", String(pid)] } : null;
+}
+
+/** In the child: the background policy from now on. Without it the sweep still runs, at the nice its parent set. */
+export function enterSweepBackground(run: (file: string, args: string[]) => void = (file, args) => { execFileSync(file, args, { stdio: "ignore", timeout: 5_000 }); }): boolean {
+  const command = sweepBackground(process.pid);
+  if (command === null) return false;
+  try { run(command.file, command.args); return true; } catch { return false; }
 }
 
 /** Only source checkouts need tsx; installed builds use the sibling child and the same Node. */
 function forkSweep(): ChildProcess {
   const source = import.meta.url.endsWith(".ts");
-  const launch = sweepLaunch();
   const child = fork(fileURLToPath(new URL(source ? "./storage-sweep-child.ts" : "./storage-sweep-child.js", import.meta.url)), [], {
-    execPath: launch.execPath, execArgv: [...launch.prefix, ...(source ? ["--import", "tsx"] : [])], stdio: ["ignore", "ignore", "ignore", "ipc"], detached: true,
+    execArgv: source ? ["--import", "tsx"] : [], stdio: ["ignore", "ignore", "ignore", "ipc"], detached: true,
   });
   // Before the request is sent, so every rm/du the child starts inherits it.
   if (child.pid !== undefined) { try { setPriority(child.pid, SWEEP_NICE); } catch { /* the default priority still works */ } }

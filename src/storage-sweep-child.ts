@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { openStoreNoMigrate, type Store } from "./store.js";
 import { WorktreePool } from "./worktree.js";
 import { executeSweep } from "./storage-sweep.js";
-import { sweepRequest } from "./storage-sweep-process.js";
+import { enterSweepBackground, sweepRequest } from "./storage-sweep-process.js";
 
 const parent = process.ppid;
 let store: Store | undefined;
@@ -45,6 +45,8 @@ if (parent <= 1 || !process.connected) abandon();
 
 process.once("message", async (request: unknown) => {
   if (!sweepRequest(request)) { finish(1); return; }
+  // Node and the sweep's code are loaded: from here on, on macOS, the work and everything it starts runs in the background.
+  enterSweepBackground();
   try {
     const opened = openStoreNoMigrate(request.databaseFile);
     if (!opened.ok) throw new Error("Sweep database unavailable");

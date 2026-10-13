@@ -40,10 +40,13 @@ export function sweepObservations(root: string) {
       if (match) { const row = rows().find(row => row.pid === Number(match[1])); if (row?.[match[2]]) return row[match[2]]; throw Error('missing fixture path'); }
       return link(file, ...rest);
     };
+    // macOS's background policy shows as scheduling priority 4: whether this process started under it, and has it at du.
+    const darwinBackground = () => process.platform !== 'darwin' ? null : exec('/bin/ps', ['-o', 'pri=', '-p', String(process.pid)], { encoding: 'utf8' }).trim() === '4';
+    const startedBackground = data().duGate ? darwinBackground() : null;
     cp.spawnSync = (file, args, options) => {
       const gate = data().duGate;
       if (file === 'du' && gate) {
-        fs.writeFileSync(gate.entered, JSON.stringify({ nice: os.getPriority() }));
+        fs.writeFileSync(gate.entered, JSON.stringify({ nice: os.getPriority(), startedBackground, background: darwinBackground() }));
         const end = Date.now() + 2000;
         while (!fs.existsSync(gate.release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
         fs.writeFileSync(gate.result, JSON.stringify({ released: fs.existsSync(gate.release) }));
