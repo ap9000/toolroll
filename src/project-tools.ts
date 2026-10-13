@@ -763,7 +763,9 @@ export function toolLaunchFor(store: Pick<Store, "projectTools" | "getRun" | "re
       launch.skipped.push({ name: tool.name, reason: "added or changed after this task was approved; approve it again to use it" });
       continue;
     }
-    const values = readToolSecrets(ref.repo, tool.name, home);
+    // A tool that declares no secret never reads the store: a store that isn't ready (a process that didn't start
+    // Toolroll's folder) or a keychain that refuses can't take a keyless tool out of the run.
+    const values = tool.spec.secrets.length === 0 ? {} : readToolSecrets(ref.repo, tool.name, home);
     const missing = missingSecrets(tool.spec, values);
     if (missing.length > 0) { launch.skipped.push({ name: tool.name, reason: `needs ${missing.join(", ")} set on the Tools page` }); continue; }
     // A tool connected by signing in launches with its access token alone: its refresh token, client and the rest

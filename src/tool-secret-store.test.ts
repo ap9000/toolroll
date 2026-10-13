@@ -540,6 +540,25 @@ test("a keychain that refuses is never quietly replaced by files: a run leaves t
   } finally { store.close(); }
 });
 
+test("a tool that needs no secret launches without the secret store: a resumed run in a process that never started it keeps its tools", async () => {
+  const store = openStore(join(dir, "orders.db"));
+  try {
+    expect(addApprover(store, "alex", T0).ok).toBe(true);
+    const notes: ToolSpec = { name: "notes", transport: "stdio", command: process.execPath, args: ["-e", "process.exit(0)"], url: null, secrets: [], bearer: null, headerSecrets: {}, about: "Notes." };
+    expect(addToolTo(store, REPO, notes, "custom", "alex", T0)).toMatchObject({ ok: true });
+    // A process that calls invokeAgent without Toolroll's start (an embedding, the provider canary's resumed turn):
+    // no folder for secrets, so every read of the store is refused.
+    forgetSecretFolders();
+    expect(() => readToolSecrets(REPO, "notes")).toThrow(SecretStoreError);
+    let recorded = "";
+    const runs = { projectTools: (one: string) => store.projectTools(one), orgPolicy: () => store.orgPolicy(), getRun: () => ({ taskRef: 1 }), refById: () => ({ repo: REPO, externalId: "t" }), getScope: () => null, toolSealFor: () => null, recordRunTools: (_run: number, json: string) => { recorded = json; } } as unknown as Parameters<typeof prepareRunTools>[0];
+    const launched = await prepareRunTools(runs, 1, "claude", { now: T0, containment: { platform: "darwin", fence: "macos-sandbox" } });
+    try {
+      expect(JSON.parse(recorded)).toMatchObject({ provider: "claude", tools: [{ name: "notes" }], skipped: [] });
+    } finally { launched.cleanup(); }
+  } finally { store.close(); }
+});
+
 test("bypass: an item copied onto another tool's address is refused, never read as the other tool's", () => {
   const keychain = memoryKeychain();
   chooseSecretStore(keychain);
