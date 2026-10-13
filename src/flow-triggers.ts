@@ -31,7 +31,8 @@ import { html, htmlString, postForm, styleElement, type Html } from "./html.js";
  * and a card's work is an ordinary task under the usual approvals.
  */
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { SecretStoreError, readHeldSecret, writeHeldSecret } from "./tool-secret-store.js";
 import { join } from "node:path";
 import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
@@ -320,36 +321,39 @@ export function takesDeliveries(config: TriggerConfig): boolean {
 // ------------------------------------------------------ secrets on disk
 
 const hookHash = (token: string) => createHash("sha256").update(token).digest("hex");
-const secretFile = (dir: string, trigger: number) => join(dir, "flow-hooks", `${trigger}.json`);
+/** A webhook's signing secret: kept by Toolroll (tool-secret-store.ts) as `flow-hook.<trigger>`, in a file of that name before. */
+const hookSecret = (trigger: number) => ({ name: `flow-hook.${trigger}`, file: ["flow-hooks", `${trigger}.json`] });
 
-/** A webhook's signing secret (GitHub: made here; Linear: pasted from Linear). 0600, beside the database, never a column. */
+/** A webhook's signing secret (GitHub: made here; Linear: pasted from Linear). In the keychain (or an owner-only file where there's none), never a column. */
 export function saveHookSecret(dir: string, trigger: number, secret: string): void {
-  mkdirSync(join(dir, "flow-hooks"), { recursive: true, mode: 0o700 });
-  writeFileSync(secretFile(dir, trigger), `${JSON.stringify({ secret })}\n`, { mode: 0o600 });
-  chmodSync(secretFile(dir, trigger), 0o600);
+  const held = hookSecret(trigger);
+  writeHeldSecret(dir, held.name, held.file, `${JSON.stringify({ secret })}\n`);
 }
 export function readHookSecret(dir: string, trigger: number): string | null {
-  try { const parsed = JSON.parse(readFileSync(secretFile(dir, trigger), "utf8")) as { secret?: unknown }; return typeof parsed.secret === "string" && parsed.secret !== "" ? parsed.secret : null; } catch { return null; }
+  const held = hookSecret(trigger);
+  try { const parsed = JSON.parse(readHeldSecret(dir, held.name, held.file) ?? "null") as { secret?: unknown } | null; return typeof parsed?.secret === "string" && parsed.secret !== "" ? parsed.secret : null; } catch { return null; }
 }
-function dropHookSecret(dir: string, trigger: number): void { rmSync(secretFile(dir, trigger), { force: true }); }
+function dropHookSecret(dir: string, trigger: number): void {
+  const held = hookSecret(trigger);
+  try { writeHeldSecret(dir, held.name, held.file, null); } catch { /* the trigger is gone; an orphan is never read */ }
+}
 
-const LINEAR_FILE = "linear-key";
+const LINEAR = { name: "linear-key", file: ["linear-key"] };
 export const LINEAR_ENV = "TOOLROLL_LINEAR_KEY";
-/** The Linear API key the worker checks Linear with: the environment, or a 0600 file beside the database. */
+/** The Linear API key the worker checks Linear with: the environment, or kept by Toolroll (the keychain, or an owner-only file beside the database). */
 export function readLinearKey(dir: string | null): string | null {
   const env = envValue(process.env, "LINEAR_KEY")?.trim();
   if (env) return env;
   if (dir === null) return null;
-  try { const key = readFileSync(join(dir, LINEAR_FILE), "utf8").trim(); return key === "" ? null : key; } catch { return null; }
+  try { const key = (readHeldSecret(dir, LINEAR.name, LINEAR.file) ?? "").trim(); return key === "" ? null : key; } catch { return null; }
 }
 export function saveLinearKey(dir: string, key: string): { ok: true } | { ok: false; message: string } {
   const clean = key.trim();
   if (!/^lin_(api|oauth)_[A-Za-z0-9]{20,}$/.test(clean)) return { ok: false, message: "That doesn't look like a Linear API key. Copy it from Linear → Settings → Security & access → Personal API keys." };
-  writeFileSync(join(dir, LINEAR_FILE), `${clean}\n`, { mode: 0o600 });
-  chmodSync(join(dir, LINEAR_FILE), 0o600);
+  try { writeHeldSecret(dir, LINEAR.name, LINEAR.file, `${clean}\n`); } catch (error) { return { ok: false, message: error instanceof SecretStoreError ? error.message : "The key couldn't be saved." }; }
   return { ok: true };
 }
-export function removeLinearKey(dir: string): void { rmSync(join(dir, LINEAR_FILE), { force: true }); }
+export function removeLinearKey(dir: string): void { writeHeldSecret(dir, LINEAR.name, LINEAR.file, null); }
 
 const HOOKS_FILE = "hooks-url";
 /** The public address webhooks reach this console at (a reverse proxy such as Caddy, exposing /hooks/ only). */
@@ -998,7 +1002,7 @@ export function hookReady(trigger: FlowTriggerRow, dir: string | null): boolean 
   const config = triggerConfigOf(trigger);
   if (config === null || !takesDeliveries(config)) return false;
   if (config.kind === "webhook") return true;
-  return dir !== null && existsSync(secretFile(dir, trigger.id));
+  return dir !== null && readHookSecret(dir, trigger.id) !== null;
 }
 
 // ------------------------------------------------------ public forms (v84)

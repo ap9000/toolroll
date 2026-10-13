@@ -49,7 +49,7 @@ import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
 import { agentsSummary, chosenWords, PHASES, postureWords, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
 import type { Phase } from "./provider.js";
-import { TOOL_CATALOG, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolStanding, type FoundTool } from "./project-tools.js";
+import { TOOL_CATALOG, credentialModeOf, discoverTools, projectToolsOf, secretsSetFor, toolCommandLine, toolSecretStorage, toolStanding, type FoundTool } from "./project-tools.js";
 import { deciderOf, durationWords, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowFromSteps, stepsFor, withKeptSteps, type FlowDefinition } from "./flows.js";
 import { parseContract, toModelSchema, type ContractResult } from "./contracts/contract.js";
 import { LEAD_TOOL_INPUTS, LEAD_TOOL_READ_INPUTS, LEAD_TOOL_OPTIONS, LEAD_TOOL_OUTPUTS, reportToolOutput, type LeadToolInput, type LeadToolName } from "./contracts/lead-tools.js";
@@ -771,13 +771,14 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         rule: "Builds in this project get exactly these tools and nothing else configured on this computer. A tool reaches work approved after it was added; earlier approvals need approving again. Reviewers and this chat never get tools; Gemini builds get none.",
         tools: tools.map(tool => {
           const set = secretsSetFor(repo, tool.spec);
-          return { name: tool.name, about: tool.spec.about, starts: toolCommandLine(tool.spec), standing: toolStanding(tool, set).words,
+          return { name: tool.name, about: tool.spec.about, starts: toolCommandLine(tool.spec), standing: toolStanding(tool, set).words, credentials: credentialModeOf(tool.spec, set)?.words ?? null,
             secrets: tool.spec.secrets.map(one => ({ name: one.name, optional: one.optional, set: set.includes(one.name) })),
             lastTest: tool.lastTest === null ? null : { ok: tool.lastTest.ok, at: tool.lastTest.at, tools: tool.lastTest.tools.slice(0, 40), problem: tool.lastTest.problem } };
         }),
         connectBySigningIn: connectionsOf(ctx.store, repo).map(one => ({ service: one.id, label: one.label, about: one.about, state: one.state, connect: `/settings/tools?repo=${encodeURIComponent(repo)}&connect=${one.id}#connect` })),
         commonTools: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null).map(one => ({ catalog: one.name, label: one.label, about: one.about, needs: one.secrets.filter(secret => !secret.optional).map(secret => secret.name) })),
         foundOnThisComputer: found.filter(one => !names.has(one.spec.name)).map(one => ({ name: one.spec.name, source: one.source })),
+        secretsKept: toolSecretStorage().words,
         notice: "Never ask for, accept or repeat a secret's value in chat. Name the secret and open the Tools page (show_control tools with this repo).",
       } };
     },

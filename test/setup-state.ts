@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { freshStoreOpener } from "./fresh-store.js";
+import { memoryAnchor, registerSecretFolder } from "../src/tool-secret-store.js";
 
 // Runs before each test file's imports. A reporting command, subprocess, or
 // failed fixture must never fall back to the developer's control-plane state.
@@ -13,6 +14,7 @@ const before = {
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
   TOOLROLL_NO_UPDATE_CHECK: process.env.TOOLROLL_NO_UPDATE_CHECK,
   TOOLROLL_STORAGE_SWEEP: process.env.TOOLROLL_STORAGE_SWEEP,
+  TOOLROLL_SECRET_STORE: process.env.TOOLROLL_SECRET_STORE,
 };
 // Both names: the new one is read first, and neither may name the live store.
 process.env.TOOLROLL_DB = join(state, "orders.db");
@@ -22,6 +24,10 @@ process.env.XDG_CONFIG_HOME = join(state, "config");
 process.env.TOOLROLL_NO_UPDATE_CHECK = "1";
 // No worker pass a test runs sweeps the machine's temp folders or processes; the sweep's own tests turn it on.
 process.env.TOOLROLL_STORAGE_SWEEP = "off";
+// No test reads or writes the developer's own keychain: tool secrets stay in files unless a test picks a keychain of its own.
+process.env.TOOLROLL_SECRET_STORE = "files";
+// Toolroll's folder for secrets, as a started Toolroll has one: this file's state folder, never the developer's.
+registerSecretFolder(state, memoryAnchor());
 // Fresh databases start from one copy per test file instead of rerunning every migration.
 vi.mock("../src/store.js", async importOriginal => {
   const real = await importOriginal<typeof import("../src/store.js")>();

@@ -26,7 +26,7 @@ import type { Store, SubagentCallRow, SubagentGrantRow, SubagentRow, ToolActionI
 
 /** Lists what a tool offers; injectable so tests never start a server. */
 export type ToolLister = (spec: ToolSpec, values: Record<string, string>) => Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }>;
-export type ToolIo = { callTool?: ToolCaller; listTools?: ToolLister; toolHome?: string };
+export type ToolIo = { callTool?: ToolCaller; listTools?: ToolLister; toolHome?: string | undefined };
 
 /** Actions whose names say they only read start as "do it"; everything else asks first until its manager says otherwise. */
 export const READ_VERB = /^(get|list|search|find|read|fetch|lookup|look_up|query|show|describe|count|check|view|retrieve)([_.-]|$)/i;

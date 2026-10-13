@@ -90,7 +90,8 @@ import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type
 import { changeLearning } from "../project-learning.js";
 import { listDecisions,recordDecision,retireDecision,searchMemory } from "../project-memory.js";
 import { changeSkills,githubSkill,importSkill,reviseSkillTest,skillsView,testSkill,type SkillFile } from "../project-skills.js";
-import { addToolTo,catalogTool,localAppOf,removeToolFrom,setToolSecret,splitCommandLine,testToolOf,type ToolSpec } from "../project-tools.js";
+import { signedIn } from "../oauth-run-token.js";
+import { addToolTo,catalogTool,localAppOf,removeToolFrom,setToolSecret,splitCommandLine,testToolOf,toolSecretStorage,type ToolSpec } from "../project-tools.js";
 import { liftAuthPause } from "../provider-auth.js";
 import { isProviderId,PROVIDER_IDS,validateSpec,validModelId } from "../provider.js";
 import { checkPublishing,MERGE_METHODS,saveMergeSettings,savePublishing,type MergeMethod } from '../pull-request-flow.js';
@@ -352,7 +353,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     if (!options.configDir) return refuse(response, who, 403, "An installation approver sees integrations.", "/settings");
     const list = integrations.list();
-    return sendScreen(response, 200, screen("Integrations", html`<p><a href="/settings">Settings</a></p><h1>Integrations</h1>${(integrationsHtml(list, who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), checking: integrations.checking }))}`,
+    return sendScreen(response, 200, screen("Integrations", html`<p><a href="/settings">Settings</a></p><h1>Integrations</h1>${(integrationsHtml(list, who.session.csrf, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem"), checking: integrations.checking, secrets: toolSecretStorage() }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
   // v104: Settings → Monitoring, where the audit stream and traces go. An instance operator's page.
@@ -607,7 +608,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       }, who.role === "approver" && csrf !== "" ? (() => {
         // v87: the mail server flows send email through; the password is never shown back.
         // v89: where Inbox triggers read it, and a connected Google account (its client secret is never shown back either).
-        const email = readEmailSettings(options.configDir ?? null), google = readGoogleMail(options.configDir ?? null), origin = consoleOrigin(request.headers.host);
+        const email = readEmailSettings(options.configDir ?? null), google = (() => { try { return readGoogleMail(options.configDir ?? null); } catch { return null; } })(), origin = consoleOrigin(request.headers.host);
         const googleView = { connected: googleConnected(options.configDir ?? null)?.address ?? null, clientId: google?.clientId ?? "", redirect: origin === null ? null : `${origin}${GOOGLE_CALLBACK}` };
         return email === null ? { set: false, host: "", port: 587, secure: false, user: "", from: "", imapHost: "", imapPort: 993, google: googleView }
           : { set: true, host: email.host, port: email.port, secure: email.secure, user: email.user, from: email.from, imapHost: email.imap?.host ?? "", imapPort: email.imap?.port ?? 993, google: googleView };
@@ -1225,6 +1226,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (action === "secret") {
         const secret = body.get("secret") ?? "";
         if (!tool.spec.secrets.some(one => one.name === secret)) return back("problem", "Choose one of this tool's secrets.");
+        if (signedIn(tool.spec)) return back("problem", `${name} is connected by signing in. Sign in again from Connect to renew it.`, `#tool-${name}`);
         setToolSecret(repo, name, secret, body.get("value") ?? "", toolHome);
         return back("said", `Saved ${secret} for ${name}. It is never shown again.`, `#tool-${name}`);
       }

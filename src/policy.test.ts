@@ -211,7 +211,7 @@ describe("in the store", () => {
     const run = store.startRun({ taskRef: ref, leaseId: "l-9", runner: "b1", branch: "b9", worktree: "/w9", route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: T0 });
     expect(toolLaunchFor(store, run).tools.map(one => one.spec.name)).toEqual(["shop"]);
     store.setOrgPolicy(policy({ tools: ["github"] }), "alex", T0);
-    expect(toolLaunchFor(store, run)).toEqual({ tools: [], skipped: [{ name: "shop", reason: "The organisation policy doesn't allow the tool shop. An instance operator can change it in Settings → Policy." }] });
+    expect(toolLaunchFor(store, run)).toEqual({ tools: [], repo: REPO, skipped: [{ name: "shop", reason: "The organisation policy doesn't allow the tool shop. An instance operator can change it in Settings → Policy." }] });
   });
 });
 

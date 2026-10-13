@@ -15,8 +15,9 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import type { ExecResult } from "./exec.js";
-import { addToolTo, validateToolSpec } from "./project-tools.js";
-import { checkIntegrations, createIntegrationMonitor, integrationsBrokenLine, integrationsNow, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
+import { addToolTo, setToolSecrets, validateToolSpec } from "./project-tools.js";
+import { checkIntegrations, createIntegrationMonitor, integrationsBrokenLine, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
+import { UNANSWERED_WORDS } from "./tool-secret-store.js";
 import { integrationsHtml } from "./integrations-ui.js";
 
 const T0 = new Date("2026-09-30T09:00:00.000Z");
@@ -237,3 +238,47 @@ test("a render never waits on an integration check: the page answers while every
     expect(integrationsBrokenLine(list)).toBe("Broken integration: Telegram. See `toolroll integrations` or Settings → Integrations.");
     expect(scrubIntegrationText(`failed with ${BOT_TOKEN} and xoxb-1234567890-abcdef and https://user:pw@host/x`)).not.toMatch(/AAAA|xoxb-1|user:pw/);
   });
+
+test("each MCP tool says how its runs get credentials, by name only; the CLI and page say plainly when secrets are file-protected only", async () => {
+  const oauth = (name: string) => validateToolSpec({ name, transport: "http", url: `https://mcp.${name}.example/mcp`, bearer: "OAUTH_ACCESS_TOKEN", about: name,
+    secrets: ["OAUTH_ACCESS_TOKEN", "OAUTH_REFRESH_TOKEN", "OAUTH_CLIENT_ID", "OAUTH_TOKEN_URL"].map(one => ({ name: one, optional: one !== "OAUTH_ACCESS_TOKEN" })) });
+  const add = (spec: ReturnType<typeof validateToolSpec>, values: Record<string, string> = {}) => expect(addToolTo(store, repo, spec, "test", "alex", T0, { values, home: dir }).ok).toBe(true);
+  add(validateToolSpec({ name: "shop", command: process.execPath, args: [mcpServer()], secrets: [{ name: "SHOP_KEY", optional: false }], about: "The shop" }), { SHOP_KEY: TOOL_KEY });
+  add(validateToolSpec({ name: "docs", command: process.execPath, args: ["docs.mjs"], secrets: [], about: "Docs" }));
+  add(oauth("linear"));
+  setToolSecrets(repo, "linear", { OAUTH_ACCESS_TOKEN: "access-fixture-1", OAUTH_REFRESH_TOKEN: "refresh-fixture-1", OAUTH_CLIENT_ID: "client-1", OAUTH_TOKEN_URL: "https://linear.example/token" }, dir);
+  add(oauth("notion"));
+  setToolSecrets(repo, "notion", { OAUTH_ACCESS_TOKEN: "access-fixture-2" }, dir);
+  add(validateToolSpec({ name: "sentry", command: process.execPath, args: ["sentry.mjs"], secrets: [{ name: "SENTRY_TOKEN", optional: false }], about: "Sentry" }));
+  const list = integrationsNow(io());
+  expect(Object.fromEntries(list.filter(row => row.group === "tools").map(row => [row.name, row.credentials ?? null]))).toEqual({
+    shop: "Key held by Toolroll", docs: "No key needed", linear: "Short-lived token per run", notion: "Key held by Toolroll", sentry: null,
+  });
+  const files = { words: "Secrets are protected by owner-only files on this computer.", filesOnly: true };
+  const lines = renderIntegrations(list, files);
+  expect(lines.find(line => line.startsWith("linear"))).toMatch(/^linear\s+Connected\s+shop · Short-lived token per run$/);
+  expect(lines.at(-1)).toBe("Secrets are protected by owner-only files on this computer.");
+  expect(renderIntegrations(list, { words: "Secrets are kept in the macOS Keychain.", filesOnly: false }).join("\n")).not.toContain("Secrets are");
+  const page = htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", { secrets: files })));
+  expect(page.split("Secrets are protected by owner-only files on this computer.")).toHaveLength(2);
+  expect(page).toContain('<p class="meta integration-secrets" role="note">Secrets are protected by owner-only files on this computer.</p><h2>');
+  // A keyring that is installed but doesn't answer is files too, and says why; a folder that can't be used says so instead, as a problem.
+  const unanswered = { words: UNANSWERED_WORDS, filesOnly: true };
+  expect(renderIntegrations(list, unanswered).at(-1)).toBe("Secrets are protected by owner-only files on this computer: its keyring isn't answering.");
+  const refused = { words: "Secrets are kept in the macOS Keychain.", filesOnly: false, problem: "Secrets are switched off: /x/tool-secrets wasn't made by Toolroll. Remove it and restart Toolroll." };
+  expect(renderIntegrations(list, refused).at(-1)).toBe(refused.problem);
+  expect(htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", { secrets: refused })))).toContain(`<p class="problem integration-secrets" role="alert">${refused.problem.replace("'", "&#39;")}</p>`);
+  expect(page).toContain("shop · Short-lived token per run");
+  for (const secret of [TOOL_KEY, "access-fixture", "refresh-fixture", "client-1"]) {
+    expect(page).not.toContain(secret);
+    expect(JSON.stringify(list)).not.toContain(secret);
+    expect(lines.join("\n")).not.toContain(secret);
+  }
+  // `toolroll integrations --json` says where secrets are kept, the same words.
+  store.close();
+  try {
+    const out: string[] = [];
+    expect(await runOperate("integrations", ["--json", "--saved"], line => out.push(line), { databaseFile: join(dir, "orders.db"), now: T0, integrationIo: { toolHome: dir } } as Parameters<typeof runOperate>[3])).toBe(0);
+    expect((JSON.parse(out.join("\n")) as { secrets: unknown }).secrets).toEqual({ kind: "files", words: "Secrets are protected by owner-only files on this computer." });
+  } finally { store = openStore(join(dir, "orders.db")); }
+});

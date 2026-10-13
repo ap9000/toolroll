@@ -539,6 +539,23 @@ CREATE TABLE IF NOT EXISTS integration_check (
   error_at    TEXT
 );
 `;
+/** Tool secrets (no version bump): which sealing key Toolroll made for the secrets it keeps in the keychain, as a
+ * digest of the key, never the key. A key found beside them that isn't this one was put there by something else and is
+ * refused (tool-secret-store.ts). */
+export const TOOL_SECRET_KEY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS tool_secret_key (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  digest  TEXT NOT NULL CHECK (length(digest) = 64),
+  made_at TEXT NOT NULL
+);
+-- Where secrets were kept before Toolroll's folder, decided once at this database's first start (null: none) and never
+-- probed again, so a folder a build makes later under an old name is never migrated in.
+CREATE TABLE IF NOT EXISTS tool_secret_legacy (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  dir        TEXT,
+  decided_at TEXT NOT NULL
+);
+`;
 /** Sprint 8: database backups. One settings row (off, or every so many hours, keeping the newest N in a folder; no
  * folder means `backups` beside the database), every backup's outcome, and a lease the console's backup loop holds
  * and renews while it runs: one process backs up at a time, and a restore sees that the console is running. */
@@ -4660,6 +4677,7 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(LEDGER_CHAIN_SCHEMA);
   db.exec(MONITORING_SCHEMA);
   db.exec(INTEGRATIONS_SCHEMA);
+  db.exec(TOOL_SECRET_KEY_SCHEMA);
   db.exec(LEAD_ASK_SCHEMA);
   // Decisions in the chat app (no version bump: additive only): result, plan and merge buttons, and Request changes.
   db.exec(CHAT_DECIDE_SCHEMA);
@@ -5943,6 +5961,37 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /** The digest of the sealing key Toolroll made for its tool secrets; null before it made one (or in an older database). */
+  toolSecretKeyDigest(): string | null {
+    if (!tableExists(this.db, "tool_secret_key")) return null;
+    const row = this.db.prepare("SELECT digest FROM tool_secret_key WHERE id = 1").get();
+    return row === undefined ? null : String(row["digest"]);
+  }
+
+  /**
+   * The folder secrets were kept in before Toolroll's own, as decided at this database's first start of a command that
+   * can start builds (`record`): `probe` runs until then, and its answer (null: none) is kept for every later start.
+   * Other commands never write, so a preview stays read-only and a busy database doesn't stop them.
+   */
+  toolSecretLegacyDir(probe: () => string | null, now: Date, options: { record: boolean }): string | null {
+    const read = () => tableExists(this.db, "tool_secret_legacy") ? this.db.prepare("SELECT dir FROM tool_secret_legacy WHERE id = 1").get() : undefined;
+    let row = read();
+    if (row === undefined) {
+      if (!options.record) return probe();
+      this.db.prepare("INSERT OR IGNORE INTO tool_secret_legacy (id, dir, decided_at) VALUES (1, ?, ?)").run(probe(), now.toISOString());
+      row = read();
+    }
+    return row?.["dir"] === null || row?.["dir"] === undefined ? null : String(row["dir"]);
+  }
+
+  /** Record a new sealing key's digest only if the one recorded is still `expected` (null: none yet). */
+  swapToolSecretKeyDigest(expected: string | null, next: string, now: Date): boolean {
+    const changed = expected === null
+      ? this.db.prepare("INSERT OR IGNORE INTO tool_secret_key (id, digest, made_at) VALUES (1, ?, ?)").run(next, now.toISOString()).changes
+      : this.db.prepare("UPDATE tool_secret_key SET digest = ?, made_at = ? WHERE id = 1 AND digest = ?").run(next, now.toISOString(), expected).changes;
+    return Number(changed) === 1;
   }
 
   // ---- the built-in task store -------------------------------------------

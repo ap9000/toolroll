@@ -49,11 +49,12 @@ export const protectedResourceSchema = z.object({
   scopes_supported: z.array(z.string().regex(SCOPE_TOKEN)).optional(),
 });
 
-/** RFC 8414 (or OpenID) authorization-server metadata: where to sign in, trade a code, and register. */
+/** RFC 8414 (or OpenID) authorization-server metadata: where to sign in, trade a code, register, and revoke. */
 export const authorizationServerSchema = z.object({
   authorization_endpoint: z.string().optional(),
   token_endpoint: z.string().optional(),
   registration_endpoint: z.string().optional(),
+  revocation_endpoint: z.string().optional(),
   code_challenge_methods_supported: z.array(z.string()).optional(),
 });
 

@@ -29,7 +29,7 @@ import type { RunOptions } from "./exec.js";
 import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
-import { noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
+import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -347,13 +347,18 @@ export async function invokeAgent(
   // The project's tools (v80): exactly its MCP servers, and none of the
   // operator's global or a repository's own, served by this launch's broker
   // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
-  const tools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
+  const launchTools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
     env: { ...process.env, ...(runOptions.env ?? {}) },
     omitEnv: [...(runOptions.omitEnv ?? []), ...ALL_CREDENTIAL_ENV],
     pass: childDatabaseEnv(isolatedDb.file),
     ...(workspace === null ? {} : { cwd: workspace }),
     wrap: () => serverFence,
   });
+  if (launchTools !== null && "refused" in launchTools) {
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: launchTools.refused };
+  }
+  const tools = launchTools;
   const codexHarness = spec.provider === "codex" || spec.provider === "openrouter";
   // A Codex build's own CODEX_HOME (provider-home.ts): the operator's sign-in and sessions, linked, and nothing else.
   let codexHome: { dir: string; cleanup: () => void } | null = null;
@@ -854,10 +859,12 @@ function fenceMethod(provider: AgentSpec["provider"], fenced: boolean): FenceMet
 }
 
 /** One launch's tools, or — when they cannot be prepared — the same isolation with none, never the operator's global servers. */
-async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined, containment: ToolContainment, broker: BrokerOptions): Promise<ToolLaunchArgs> {
+async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined, containment: ToolContainment, broker: BrokerOptions): Promise<ToolLaunchArgs | { refused: string }> {
   try {
     return await prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), containment, ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }), broker });
-  } catch {
+  } catch (error) {
+    // Sign-ins made for this run couldn't all be kept (and were revoked): it doesn't start.
+    if (error instanceof RunSignInError) return { refused: error.message };
     return noToolsArgs(spec.provider);
   }
 }
