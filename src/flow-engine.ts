@@ -12,6 +12,8 @@ import { passOn, TEXT_LIMITS } from "./text-limits.js";
 import { deciderOf, durationWords, fillFlowText, flowGoal, flowValueLabel, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
 import { reportFillIns, reportSummaryFor } from "./report-summary.js";
 import { fileTaskProposal } from "./proposal.js";
+import { FLOW_ACCEPTANCE, unattendedCoverageFor } from "./flow-unattended.js";
+import { sealFlowFilingUnderGrant } from "./plan-auto.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { readVerifiedReport, scanForSecrets } from "./evidence.js";
@@ -34,10 +36,7 @@ export const flowCardHref = (flow: number, card: number) => `/flows/${flow}?card
 /** Where a confirmed flow action may point: a flow's canvas, maybe with one card open. */
 export const FLOW_HREF = /^\/flows\/[1-9][0-9]{0,9}(\?card=[1-9][0-9]{0,9})?$/;
 
-const ACCEPTANCE = {
-  report: [{ id: "c1", statement: "The report answers the request, citing where in the repository each point comes from", how: null, evidence: ["manual-review"] }],
-  task: [{ id: "c1", statement: "The requested change is made and the project's existing checks still pass", how: null, evidence: ["manual-review"] }],
-};
+const ACCEPTANCE = FLOW_ACCEPTANCE;
 
 function fill(template: string, card: FlowCardRow): string {
   return fillFlowText(template, { title: card.title, description: card.description, note: card.note, outputs: card.outputs });
@@ -241,6 +240,10 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
     const filed = store.transact(() => {
       const fresh = store.getFlowCard(card.id);
       if (fresh === null || fresh.state !== "active" || fresh.entry !== card.entry || fresh.stage !== stage.id || fresh.task !== null) return null;
+      // A card this flow's own schedule added, while the flow runs on its own (flow-unattended.ts): the grant's frozen
+      // criteria and budget, sealed here, in the same transaction. Any other card files as it always did and waits.
+      const grant = unattendedCoverageFor(store, flow, fresh, repo, now);
+      const kind = report ? "report" : "task";
       const made = fileTaskProposal(store, {
         title: (report ? `${stage.title}: ${card.title}` : card.title).slice(0, 200),
         repo,
@@ -248,10 +251,12 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
         filedVia: `flow:${flow.id}`, filedBy: filerFor(card.createdBy), // who made the card asked for the work (an owner can be reassigned by anyone)
         deliverable: report ? "report" : "branch",
         planning: report ? "skip" : stage.planning ?? "auto",
-        acceptance: report ? ACCEPTANCE.report : ACCEPTANCE.task,
+        acceptance: grant === null ? ACCEPTANCE[kind] : grant.terms.acceptance[kind],
+        ...(grant?.terms.perAttemptBudgetMicrousd == null ? {} : { budgetMicrousd: grant.terms.perAttemptBudgetMicrousd }),
         admittedRepos: [repo],
       }, now);
-      if (made.ok) store.updateFlowCard(card.id, { task: made.id, ...(report || fresh.primaryTask !== null ? {} : { primaryTask: made.id }), waiting: "Filed as a task" }, now);
+      const ranOnItsOwn = made.ok && grant !== null && sealFlowFilingUnderGrant(store, made.id, grant, fresh, now);
+      if (made.ok) store.updateFlowCard(card.id, { task: made.id, ...(report || fresh.primaryTask !== null ? {} : { primaryTask: made.id }), waiting: ranOnItsOwn ? "Filed as a task, approved: this flow runs on its own" : "Filed as a task" }, now);
       return made;
     });
     if (filed === null) return;

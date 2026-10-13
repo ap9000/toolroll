@@ -4,7 +4,7 @@ import { matchRoute, ROUTES } from './route-table.js';
 // Independent of both ROUTES and the password list: browser-only actions without passwords remain distinct from step-up ceremonies.
 const COOKIE_ONLY_POSTS = [
   'edge.oauth-consent', 'code.act-other', 'code.answer-send', 'code.continue-send', 'code.recover-send', 'code.resume-send',
-  'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret',
+  'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret', 'flow.unattended',
   'spend.budget', 'settings.project-delete', 'settings.policy-send', 'settings.approval-send',
   'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
   'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',

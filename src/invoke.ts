@@ -17,7 +17,7 @@
  * `invokeAgent`.
  */
 
-import { adapterFor, auditOf, isolationUnsupported, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
+import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV } from "./keys.js";
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
@@ -33,7 +33,9 @@ import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-too
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { agentFence, linuxFenceAvailable, macosFenceAvailable, taskBoundary, type FenceMethod } from "./agent-fence.js";
+import { agentFence, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import type { BrokerOptions } from "./tool-broker.js";
+import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 
 export type { ProviderRunner } from "./provider.js";
@@ -401,23 +403,53 @@ export async function invokeAgent(
   // already ambient in the environment keeps working; the managed file,
   // being deliberate, wins.
   const isolatedDb = isolatedAgentDatabase(runId);
+  // Where the build runs: Claude reads the repository's CLAUDE.md from here.
+  const workspace = invocation.phase === "review" ? null : runOptions.cwd ?? run.worktree ?? null;
+  // How a tool server the broker starts is fenced: as its agent is, once that fence is fixed below.
+  let serverFence: ((file: string, args: readonly string[]) => { file: string; args: string[] }) | null = null;
   // The project's tools (v80): exactly its MCP servers, and none of the
-  // operator's global or a repository's own. A review keeps its isolation.
-  const tools = invocation.phase === "review" ? null : runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld);
+  // operator's global or a repository's own, served by this launch's broker
+  // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
+  const tools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, {
+    env: { ...process.env, ...(runOptions.env ?? {}) },
+    omitEnv: [...(runOptions.omitEnv ?? []), ...ALL_CREDENTIAL_ENV],
+    pass: childDatabaseEnv(isolatedDb.file),
+    ...(workspace === null ? {} : { cwd: workspace }),
+    wrap: () => serverFence,
+  });
+  const codexHarness = spec.provider === "codex" || spec.provider === "openrouter";
+  // A Codex build's own CODEX_HOME (provider-home.ts): the operator's sign-in and sessions, linked, and nothing else.
+  let codexHome: { dir: string; cleanup: () => void } | null = null;
+  if (codexHarness && invocation.phase !== "review") {
+    try { codexHome = isolatedCodexHome(codexHomeDir({ ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir())); }
+    catch {
+      tools?.cleanup();
+      removeAgentDatabase(isolatedDb.dir);
+      store.withdrawProviderStart(runId);
+      return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: "The build's private Codex home could not be created; check access to its sign-in and sessions folders, then retry." };
+    }
+  }
   // The agent fence: Toolroll's own secrets, database and other runs'
   // evidence stay out of reach, whatever the permission mode. A review is
   // already confined to its sealed files.
   // A build's fence also holds its task boundary: home configuration and
-  // the repositories beside its own, fresh and resumed alike.
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [] } : runFence(store, runId, spec.provider, options.keyHome);
-  const baseFence = fenceOf.fence;
-  const toolsDir = (spec.provider === "codex" || spec.provider === "openrouter") && baseFence.length > 0 ? tools?.privateDir : undefined;
-  const fence = toolsDir === undefined ? baseFence : [...baseFence, realpathSync(toolsDir)];
-  // Where the build runs: Claude reads the repository's CLAUDE.md from here.
-  const workspace = invocation.phase === "review" ? null : runOptions.cwd ?? run.worktree ?? null;
-  const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }) };
+  // the repositories beside its own, fresh and resumed alike. Codex starts
+  // tool servers outside its command sandbox, so its own launch folder is
+  // fenced too; Claude reads its config from there, inside the sandbox.
+  const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
+  const grants = fenceOf.grants;
+  const inherited = spec.model === null && invocation.phase !== "review" ? inheritedDefaults(spec.provider, { ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()) : undefined;
+  const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
+  // A tool server the broker starts is fenced by what this platform supports, whatever the provider: Codex's own
+  // profile fences only its agent's commands, and the broker starts servers outside it.
+  if (fence.length > 0) {
+    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, fence, grants);
+    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, fence, grants);
+  }
   if (invocation.phase !== "review") store.recordRunFence(runId, { method: fenced.method, paths: fence.length }, clock());
   const billingSeen: { keySource: string | null; model: string | null; planWindows: boolean; answered: boolean } = { keySource: null, model: null, planWindows: false, answered: false };
   // v105: a Codex run on its sign-in bills as Codex says it's signed in (a ChatGPT plan, or a saved key, or Bedrock),
@@ -433,7 +465,7 @@ export async function invokeAgent(
     // handle registered under its owner tag — the exact-attempt road,
     // never the global sweep. Settlement then reads the same row.
     result = await underStopWatch(store, runId, () => spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, {
-      ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap }),
+      ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants }),
       ...runOptions,
       // v105: how the CLI really billed this turn (its key source, its plan's windows), read off its own stream.
       onStreamEvent: event => {
@@ -462,6 +494,9 @@ export async function invokeAgent(
         ...(runOptions.env ?? {}),
         ...(adapter.env?.(buildInvocation) ?? {}),
         ...(tools?.env ?? {}),
+        // A fenced build's git never expires a reflog, so gc never rewrites another task's (agent-fence.ts).
+        ...(fence.length > 0 ? fencedGitEnv({ ...process.env, ...(runOptions.env ?? {}) }) : {}),
+        ...(codexHome === null ? {} : { CODEX_HOME: codexHome.dir }),
         ...(managedKey === null ? {} : { [PROVIDER_KEY_ENV[spec.provider]]: managedKey }),
         // This key is deliberately last: no caller may point an agent back at
         // the live control database through a generic RunOptions override.
@@ -470,6 +505,8 @@ export async function invokeAgent(
       omitEnv: [
         ...(runOptions.omitEnv ?? []),
         ...adapter.extraOmitEnv,
+        // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
+        ...(spec.provider === "claude" && invocation.phase !== "review" ? claudePluginEnv({ ...process.env, ...(runOptions.env ?? {}) }) : []),
         // Subscription mode: shed this provider's OWN key too, so an ambient
         // one cannot force API billing over the login the operator prefers.
         // Api-key mode: shed every OTHER own-key alias (finding 1) — gemini
@@ -497,6 +534,7 @@ export async function invokeAgent(
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
+    codexHome?.cleanup();
   }
 
   // v105: the run's billing, fixed from evidence before its usage is priced: a key it was given is a key; otherwise
@@ -516,6 +554,8 @@ export async function invokeAgent(
   // before it starts: nothing ran, and the run says what to update.
   const unsupported = result.code !== 0 && envelope.initObserved !== true && invocation.phase !== "review" ? isolationUnsupported(spec.provider, result.stderr) : null;
   if (unsupported !== null) {
+    // The CLI refused its flags before any model turn: the run never started, whatever the stamp said.
+    store.withdrawProviderStart(runId);
     return { kind: "refused", reason: "provider-unattested", providerVersion: attested === null ? null : attested.version, diagnostic: unsupported };
   }
   // The callback is the crash-safe early stamp; the parsed envelope is the
@@ -706,20 +746,40 @@ function usageOf(raw: string | null): { usage?: unknown } {
   try { return { usage: JSON.parse(raw) as unknown }; } catch { return {}; }
 }
 
+/** What the plane recorded of a checkout's setup: its project and the setup stamped on it (null: none recorded). */
+function linkedFor(store: Store, worktree: string | null): { repo: string; setupDigest: string | null } | null {
+  const row = worktree === null ? null : store.getWorktree(worktree);
+  return row === null ? null : { repo: row.repo, setupDigest: row.setupDigest ?? null };
+}
+
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
- * ~/.toolroll (or its older name), and its task boundary; plus what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined): { fence: string[]; fileTools: string[] } {
+ * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
+ * (FenceGrants); and what only Claude's file tools refuse. */
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
-    if (databaseFile === null) return { fence: [], fileTools: [] };
+    if (databaseFile === null) return { fence: [], fileTools: [], grants: NO_GRANTS };
     const worktree = store.getRun(runId)?.worktree ?? null;
     const home = keyHome === undefined ? {} : { home: keyHome };
     const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home });
-    return { fence: agentFence({ databaseFile, worktree, ...home, boundary }), fileTools: boundary?.fileTools ?? [] };
+    const folders = runFolders(ownTools);
+    return {
+      fence: agentFence({ databaseFile, worktree, ...home, boundary, runFolders: folders }),
+      fileTools: boundary?.fileTools ?? [],
+      // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
+      grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree) }),
+    };
   } catch {
-    return { fence: [], fileTools: [] };
+    return { fence: [], fileTools: [], grants: NO_GRANTS };
   }
+}
+
+/** The operator's own model choices a build routed with no model keeps (provider-home.ts). */
+function inheritedDefaults(provider: AgentSpec["provider"], env: Readonly<Record<string, string | undefined>>, home: string): ProviderDefaults | undefined {
+  if (provider === "claude") return claudeDefaults(claudeConfigDir(env, home));
+  if (provider === "codex") return codexDefaults(codexHomeDir(env, home));
+  return undefined;
 }
 
 /** How the fence reaches a provider: Codex through its own sandbox profile
@@ -735,9 +795,9 @@ function fenceLaunch(provider: AgentSpec["provider"], fence: readonly string[]):
 }
 
 /** One launch's tools, or — when they cannot be prepared — the same isolation with none, never the operator's global servers. */
-function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined): ToolLaunchArgs {
+async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined, broker: BrokerOptions): Promise<ToolLaunchArgs> {
   try {
-    return prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }) });
+    return await prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }), broker });
   } catch {
     return noToolsArgs(spec.provider);
   }

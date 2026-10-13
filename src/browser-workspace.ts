@@ -477,6 +477,13 @@ export type BrowserFlowView = {
   /** Where the flow stands (v88): the live stream's nudge names it, and a page that already shows it doesn't read again. */
   live: string | null;
   canEdit: boolean;
+  /** "Runs on its own" (flow-unattended.ts): the live grant, and whether this person can sign one (why not, when not). */
+  unattended: {
+    active: { until: string; untilWords: string; signedBy: string; budgetMicrousd: number | null; dailyRunCap: number | null; runsToday: number; words: string[]; covers: string[] } | null;
+    canSign: boolean; problem: string | null; maxDays: number; scheduled: boolean; terms: { head: string[]; rules: string[] };
+    /** The schedules a signature could cover: plain ones always, `optional` ones (outside content, said why) only when picked. */
+    schedules: { id: number; words: string; optional: string | null }[]; schedulesDigest: string;
+  };
   approvers: string[];
   /** The projects a Build zone may work in: the flow's own first, then others the viewer can reach. */
   projects?: { path: string; name: string }[];

@@ -19,7 +19,7 @@
  * shell the model itself launches (Codex provider review, Q5).
  */
 
-import { claudeFenceSettings, codexFenceArgv } from "./agent-fence.js";
+import { claudeFenceSettings, codexFenceArgv, type FenceGrants } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
 import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, CLAUDE_COST_UNKNOWN } from "./exec.js";
@@ -82,6 +82,13 @@ export type Invocation = {
    * Codex renders it as its own sandbox profile; Claude as deny rules for
    * its file tools (its shell is fenced by the macOS sandbox around it). */
   fence?: readonly string[];
+  /** What the fence gives back (agent-fence.ts): Codex renders read-only
+   * paths as "read", Claude's file tools never edit them. */
+  fenceGrants?: FenceGrants;
+  /** The operator's own model choices, for a build routed with no model
+   * (provider-home.ts): the model, Claude's always-on thinking and Codex's
+   * reasoning effort. Never rendered for a review or an explicit model. */
+  inherited?: { model?: string; alwaysThinking?: boolean; effort?: string };
   /** More paths Claude's own file tools refuse, beside the fence: home
    * configuration its CLI still reads itself (so the sandbox around the
    * whole process can't deny them). */
@@ -350,6 +357,17 @@ const CLAUDE_REVIEW_JSON_SCHEMA = {
  * planted user, project and local hooks and MCP servers: none loaded.
  */
 export const CLAUDE_BUILD_ISOLATION_ARGV: readonly string[] = ["--setting-sources", "", "--strict-mcp-config"];
+
+/**
+ * Plugins also ride the environment: a plugin named in CLAUDE_CODE_PLUGIN_DIRS
+ * loads its hooks whatever `--setting-sources` says (Claude Code 2.1.290,
+ * the provider canary's plugin sentinel). A build's launch sheds every
+ * plugin variable of the environment it would inherit.
+ */
+const CLAUDE_PLUGIN_ENV = /^CLAUDE_(CODE_\w*PLUGIN|AI_PLUGINS)\w*$/;
+export function claudePluginEnv(env: Readonly<Record<string, string | undefined>>): string[] {
+  return Object.keys(env).filter(name => CLAUDE_PLUGIN_ENV.test(name));
+}
 const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
 
 /** Claude's own tools that only make sense with a person to wake them. */
@@ -374,7 +392,7 @@ const claudeArgv = (invocation: Invocation): string[] => [
     : invocation.skipPermissions
       ? ["--dangerously-skip-permissions"]
       : ["--permission-mode", invocation.permissionMode]),
-  ...(invocation.model === null ? [] : ["--model", invocation.model]),
+  ...modelArgv("--model", invocation),
   ...(invocation.maxBudgetUsd === undefined ? [] : ["--max-budget-usd", String(invocation.maxBudgetUsd)]),
   ...(invocation.phase === "review"
     ? [...CLAUDE_REVIEW_ISOLATION_ARGV, "--json-schema", JSON.stringify(CLAUDE_REVIEW_JSON_SCHEMA)]
@@ -393,12 +411,24 @@ const claudeArgv = (invocation: Invocation): string[] => [
         ...(invocation.jsonSchema === undefined ? [] : ["--json-schema", JSON.stringify(invocation.jsonSchema)])]),
 ];
 
+/** The route's model, or for a build routed with none, the operator's own (never for a review). */
+function modelArgv(flag: string, invocation: Invocation): string[] {
+  const model = invocation.model ?? (invocation.phase === "review" ? undefined : invocation.inherited?.model);
+  return model === undefined ? [] : [flag, model];
+}
+
+/** What else a no-model build keeps of the operator's setup. */
+const inheritedFrom = (invocation: Invocation): NonNullable<Invocation["inherited"]> => invocation.model === null && invocation.phase !== "review" ? invocation.inherited ?? {} : {};
+
 /** The build's one --settings: no personal memory, plus the fence and steering doorbell. */
 function claudeSettingsArgv(invocation: Invocation): string[] {
   const denied = [...(invocation.fence ?? []), ...(invocation.fileToolFence ?? [])];
+  const readOnly = invocation.fenceGrants?.readOnly ?? [];
+  const thinking = inheritedFrom(invocation).alwaysThinking;
   return ["--settings", JSON.stringify({
     autoMemoryEnabled: false,
-    ...(denied.length > 0 ? JSON.parse(claudeFenceSettings(denied)) : {}),
+    ...(thinking === undefined ? {} : { alwaysThinkingEnabled: thinking }),
+    ...(denied.length > 0 || readOnly.length > 0 ? JSON.parse(claudeFenceSettings(denied, readOnly)) : {}),
     ...(invocation.steerFolder === undefined ? {} : { hooks: claudeSteerHooks(invocation.steerFolder.dir, invocation.steerFolder.name) }),
   })];
 }
@@ -619,9 +649,10 @@ const codexSandboxArgv = (mode: "read-only" | "workspace-write", resuming: boole
  * A Codex build's own setup, the equivalent of Claude's: the operator's
  * config.toml (its MCP servers, model choices, profiles) and execpolicy
  * rules ignored, ChatGPT apps and plugins off (plugins carry their own MCP
- * servers), and hooks off. Sign-in still comes from CODEX_HOME, which
- * `--ignore-user-config` leaves alone. The project's named tools follow as
- * `-c mcp_servers.*` (project-tools.ts).
+ * servers), and hooks off. The gateway gives each launch its own CODEX_HOME
+ * linking only the operator's sign-in and sessions (provider-home.ts), so no
+ * skills or AGENTS.md of theirs load either. The project's named tools follow
+ * as `-c mcp_servers.*` (project-tools.ts).
  */
 export const CODEX_BUILD_ISOLATION_ARGV: readonly string[] = [
   "--ignore-user-config",
@@ -669,11 +700,12 @@ const codexArgv = (extra: readonly string[]) => (invocation: Invocation): string
       // denied. Full access becomes that sandbox widened to write anywhere
       // with network, instead of no sandbox (which fenced nothing).
       : invocation.fence !== undefined && invocation.fence.length > 0
-        ? codexFenceArgv(invocation.fence, invocation.skipPermissions)
+        ? codexFenceArgv(invocation.fence, invocation.skipPermissions, invocation.fenceGrants)
         : invocation.skipPermissions
           ? ["--dangerously-bypass-approvals-and-sandbox"]
           : codexSandboxArgv("workspace-write", resuming)),
-    ...(invocation.model === null ? [] : ["-m", invocation.model]),
+    ...modelArgv("-m", invocation),
+    ...(inheritedFrom(invocation).effort === undefined ? [] : ["-c", `model_reasoning_effort=${toml(inheritedFrom(invocation).effort!)}`]),
     ...extra,
     // After `extra`: the tools' shell_environment_policy must be the last word (it keeps OpenRouter's key out too).
     ...(invocation.phase === "review" ? [] : invocation.toolArgv ?? []),
@@ -1081,6 +1113,7 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
     isolation: { flag: CLAUDE_BUILD_ISOLATION_ARGV.filter(one => one !== "").join(" "), resumeSafe: true, enforced: true },
     configSurface: [
       "Toolroll's own --settings (the fence and steering hook)",
+      "your model and alwaysThinkingEnabled, when the route names no model",
       "the project's named tools (Settings → Tools)",
       "repository CLAUDE.md",
       "organisation-managed settings",
@@ -1093,10 +1126,11 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
     sessionIdentity: "announced",
     terminalContract: "none",
     // Builds ignore config.toml and execpolicy rules, with apps, plugins and
-    // hooks off (CODEX_BUILD_ISOLATION_ARGV); sign-in stays in CODEX_HOME.
+    // hooks off (CODEX_BUILD_ISOLATION_ARGV), in a per-launch CODEX_HOME that
+    // links only the sign-in and sessions (provider-home.ts).
     // Never --ephemeral: repair resumes sessions.
     isolation: { flag: "--ignore-user-config --ignore-rules", resumeSafe: true, enforced: true },
-    configSurface: ["the project's named tools (Settings → Tools)", "~/.codex/AGENTS.md and repository AGENTS.md", "sign-in from CODEX_HOME"],
+    configSurface: ["the project's named tools (Settings → Tools)", "repository AGENTS.md", "sign-in and sessions linked from CODEX_HOME (no skills or AGENTS.md)", "your model and reasoning effort, when the route names no model"],
   },
   openrouter: {
     transport: "streaming-jsonl",
@@ -1106,7 +1140,7 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
     terminalContract: "none",
     // Codex's build setup, with the model provider pinned by constant -c overrides.
     isolation: { flag: "--ignore-user-config --ignore-rules", resumeSafe: true, enforced: true },
-    configSurface: ["the project's named tools (Settings → Tools)", "~/.codex/AGENTS.md and repository AGENTS.md", `${OPENROUTER_ENV_KEY}`],
+    configSurface: ["the project's named tools (Settings → Tools)", "repository AGENTS.md", `${OPENROUTER_ENV_KEY}`],
   },
   gemini: {
     transport: "streaming-jsonl",

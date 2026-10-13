@@ -10,10 +10,19 @@ import { tmpdir } from "node:os";
 import { resetAttestationCache } from "./attest.js";
 import { dirname, join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { invokeAgent, type InvokeResult } from "./invoke.js";
+import { invokeAgent as invokeGateway, type InvokeResult } from "./invoke.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
 import { acquire } from "./claim.js";
 import { fakePid } from "../test/fake-pid.js";
+
+// Gateway tests must use a disposable provider home, never the operator's
+// credentials. Private-home setup is mandatory even with an injected runner.
+let providerHome: string;
+beforeEach(() => { providerHome = mkdtempSync(join(tmpdir(), "so-invoke-home-")); });
+afterEach(() => rmSync(providerHome, { recursive: true, force: true }));
+function invokeAgent(...args: Parameters<typeof invokeGateway>): ReturnType<typeof invokeGateway> {
+  return invokeGateway(args[0], args[1], args[2], args[3], { keyHome: providerHome, ...args[4] });
+}
 
 /** A task with no scope presents the bare word `legacy` for the exact pair
  * it spends as (atomic authority closure): nothing opens unstamped. */
@@ -158,6 +167,33 @@ describe("the invocation gateway", () => {
     });
 
     expect(stampAtSpawn).toBe(T0.toISOString());
+  });
+
+  test("a CLI that refuses a build's own flags before any turn leaves the run not started, with its diagnostic", async () => {
+    let stampAtSpawn: string | null = null;
+    const result = await invokeAgent(store, runId, CLAUDE, ASK, {
+      clock: () => T0,
+      runner: async () => {
+        stampAtSpawn = store.getRun(runId)?.providerStartedAt ?? null;
+        return { ...OK, code: 1, stderr: "error: unknown option '--setting-sources'\n" };
+      },
+    });
+    expect(stampAtSpawn).toBe(T0.toISOString());
+    expect(result).toMatchObject({ kind: "refused", reason: "provider-unattested", diagnostic: expect.stringContaining("doesn't support --setting-sources") });
+    expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+    // A turn that did run keeps its stamp whatever it ended with.
+    await invokeRan(store, runId, CLAUDE, ASK, { clock: () => T0, runner: async () => ({ ...OK, code: 1, stderr: "boom" }) });
+    expect(store.getRun(runId)?.providerStartedAt).toBe(T0.toISOString());
+  });
+
+  test("a Claude build sheds plugins named in the environment; a review is left as it was", async () => {
+    let omitted: readonly string[] = [];
+    await invokeRan(store, runId, CLAUDE, ASK, {
+      env: { CLAUDE_CODE_PLUGIN_DIRS: "/plugins/sentinel", CLAUDE_CODE_PLUGIN_SEED_DIR: "/plugins/seed", CLAUDE_CODE_ENTRYPOINT: "cli" },
+      runner: async (_file, _args, options) => { omitted = options?.omitEnv ?? []; return OK; },
+    });
+    expect(omitted).toEqual(expect.arrayContaining(["CLAUDE_CODE_PLUGIN_DIRS", "CLAUDE_CODE_PLUGIN_SEED_DIR"]));
+    expect(omitted).not.toContain("CLAUDE_CODE_ENTRYPOINT");
   });
 
   test("the provider gets a disposable control database, never the caller's live one", async () => {

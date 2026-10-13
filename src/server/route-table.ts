@@ -311,6 +311,9 @@ post("flows", "flows.example", "/flows/example", { project: "form", ...CREATE_FL
 post("flows", "flows.import", "/flows/import", { project: "form", limited: "resource", bodyCap: LARGE_FORM, ...CREATE_FLOWS });
 for (const one of ["save", "cards", "archive", "scripts"]) post("flows", `flow.${one}`, `^\\/flows\\/${FLOW}\\/${one}$`, { project: "flow", limited: "resource", sample: `/flows/1/${one}`, ...EDIT_FLOWS });
 for (const one of ["linear-key", "hooks-address", "secrets"]) post("flows", `flow.${one}`, `^\\/flows\\/${FLOW}\\/${one}$`, { scope: "step-up", project: "flow", sample: `/flows/1/${one}`, ...EDIT_FLOWS });
+// "Runs on its own": signing raises authority (the owner's password, a step-up); revoking is one click for any approver.
+post("flows", "flow.unattended", `^\\/flows\\/${FLOW}\\/unattended$`, { scope: "step-up", project: "flow", sample: "/flows/1/unattended", ...EDIT_FLOWS });
+post("flows", "flow.unattended-off", `^\\/flows\\/${FLOW}\\/unattended-off$`, { project: "flow", sample: "/flows/1/unattended-off", ...EDIT_FLOWS });
 post("flows", "flow.triggers", `^\\/flows\\/${FLOW}\\/triggers$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers", ...EDIT_FLOWS });
 for (const one of ["move", "decide", "cancel", "comment", "assign", "watch"]) post("flows", `flow.card.${one}`, `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/${one}$`, { project: "flow", limited: "resource", sample: `/flows/1/cards/2/${one}`, ...EDIT_FLOWS });
 post("flows", "flow.card.choose", `^\\/flows\\/${FLOW}\\/cards\\/${FLOW}\\/choose$`, { project: "flow", sample: "/flows/1/cards/2/choose", ...EDIT_FLOWS });

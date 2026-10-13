@@ -1428,8 +1428,8 @@ function runFlowAction(store: Store, payload: SharedAction, actor: string, repos
   }
   if (payload.operation.startsWith("flow_trigger_")) {
     const trigger = store.getFlowTrigger(Number(req["trigger"]))!;
-    if (payload.operation === "flow_trigger_remove") removeFlowTrigger(store, trigger, now, configDirOf(store));
-    else store.updateFlowTrigger(trigger.id, { state: payload.operation === "flow_trigger_pause" ? "paused" : "active" }, now);
+    if (payload.operation === "flow_trigger_remove") removeFlowTrigger(store, trigger, now, configDirOf(store), actor);
+    else store.updateFlowTrigger(trigger.id, { state: payload.operation === "flow_trigger_pause" ? "paused" : "active" }, now, actor);
     return { said: payload.operation === "flow_trigger_remove" ? "Trigger removed." : payload.operation === "flow_trigger_pause" ? "Trigger paused." : "Trigger on again.", href: `/flows/${trigger.flow}` };
   }
   const card = store.getFlowCard(Number(req["card"]))!;

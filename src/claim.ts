@@ -1470,7 +1470,7 @@ function sealPlan(store: Store, leaseId: string, args: PlanSeal): PlanFinalize {
             ? ""
             : "The filed goal, exclusions, touches, and acceptance criteria are reproduced exactly.\n"
           : `It AMENDS the filed contract (${oneLine(describeContractChanges(contractChanges).join("; "), 300)})${amendment === null ? "" : ` — because: ${oneLine(amendment, 200)}`}\n`) +
-        (autoApproved ? "Approved under the signed operating mode. The next build may proceed with the original terms and required quality checks." : "Review, edit, and approve the scope — nothing builds until you do."),
+        (autoApproved ? `${store.getScope(taskId)?.approvalBasis === "grant" ? "Approved because its flow runs on its own." : "Approved under the signed operating mode."} The next build may proceed with the original terms and required quality checks.` : "Review, edit, and approve the scope — nothing builds until you do."),
     },
     now,
   );

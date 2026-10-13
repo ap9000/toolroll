@@ -117,9 +117,10 @@ import type { QualityMode } from "./quality.js";
 import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
-import { normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
+import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
+import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
 import { POLICY_SCHEMA, agentRefusal, approvalRefusal, policyParts, readPolicy, underCeiling, sessionCeilingRefusal, type OrgPolicy, type SavedPolicy } from "./policy.js";
@@ -4743,6 +4744,12 @@ function initializeStore(db: Database, file: string): Store {
   // v115: the task each standing-order firing filed, kept on the firing itself (a card's task changes as it moves).
   addColumn(db, "flow_trigger_event", "task", "TEXT");
   db.exec(PLAN_AUTO_SCHEMA);
+  // A flow that runs on its own (flow-unattended.ts): its grants and daily runs, and which authority armed a plan's
+  // unchanged-plan approval (saved rows read the operating mode). No version bump: additive only.
+  db.exec(FLOW_UNATTENDED_SCHEMA);
+  addColumn(db, "plan_authorization", "basis", "TEXT NOT NULL DEFAULT 'mode' CHECK (basis IN ('mode', 'grant'))");
+  // Whether a trigger's firing was the clock's own (a schedule due, not Run now): only those can run on their own.
+  addColumn(db, "flow_trigger_event", "on_time", "INTEGER NOT NULL DEFAULT 0");
   // v119: planning generations, and why a question closed unanswered (additive only; saved rows read the defaults).
   for (const [table, columns] of Object.entries(V119_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
@@ -7673,7 +7680,7 @@ export class Store {
    * approved profile — one UPDATE, no re-resolution, so what is sealed is
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
-  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat"; modeDigest: string }, approverKind?: ApproverKind): boolean {
+  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant"; modeDigest: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
@@ -7762,7 +7769,9 @@ export class Store {
                     ? `Approved by ${currentActor()?.lead === true ? "the lead" : lifecycleWords(by, 40)}. A connected worker can take it next.`
                     : basis.kind === "chat"
                       ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected worker can take it next.`
-                      : "Approved automatically under the operating mode. A connected worker can take it next.",
+                      : basis.kind === "grant"
+                        ? "Approved automatically: its flow runs on its own. A connected worker can take it next."
+                        : "Approved automatically under the operating mode. A connected worker can take it next.",
                   link: chatControlHref("task", taskId),
                 },
                 now,
@@ -7801,18 +7810,21 @@ export class Store {
    * scopes answer true: this belt only ever REMOVES mode authority.
    */
   modeApprovalLive(taskRef: number, now: Date): boolean {
+    // A flow's "runs on its own" grant (flow-unattended.ts) is held to the same belt.
     const dead = this.db
       .prepare(
         `SELECT 1 AS dead FROM task_scope
           JOIN task_ref ON task_ref.id = ? AND task_ref.backend = 'built-in' AND task_scope.task_id = task_ref.external_id
-         WHERE task_scope.approval_basis = 'mode' AND task_scope.approved_at IS NOT NULL
+         WHERE task_scope.approved_at IS NOT NULL
+           AND ((task_scope.approval_basis = 'mode'
            AND NOT EXISTS (SELECT 1 FROM operating_mode om
                             JOIN approver signer ON signer.name = om.signed_by
                            WHERE om.repo = task_ref.repo AND om.revoked_at IS NULL
                              AND om.absolute_expiry > ? AND om.digest = task_scope.mode_digest
-                             AND signer.revoked_at IS NULL AND signer.role = 'approver')`,
+                             AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", "task_ref.repo")}))
+             OR (task_scope.approval_basis = 'grant' AND NOT ${grantStandsSql("task_scope.mode_digest", "?", "task_ref.repo")}))`,
       )
-      .get(taskRef, now.toISOString());
+      .get(taskRef, now.toISOString(), now.toISOString());
     return dead === undefined;
   }
 
@@ -7951,6 +7963,32 @@ export class Store {
       this.reconcileIntentsForMode(repo, null, now);
       return true;
     });
+  }
+
+  /** A flow's "runs on its own" grant ended (revoked, expired, renewed): the undispatched work it sealed falls back
+   * to a person, as a mode's does, and plans it armed lose their pre-authorization. Running and finished work keeps
+   * its history. */
+  withdrawGrantApprovals(digest: string, now: Date): void {
+    const demotable = `WHERE approval_basis = 'grant' AND approved_at IS NOT NULL AND mode_digest = ?
+            AND EXISTS (SELECT 1 FROM task_ref JOIN task ON task.id = task_ref.external_id
+                         WHERE task_ref.backend = 'built-in' AND task_ref.external_id = task_scope.task_id AND task.state = 'queued')
+            AND NOT EXISTS (SELECT 1 FROM claim JOIN task_ref tr ON tr.id = claim.task_ref
+                             WHERE tr.backend = 'built-in' AND tr.external_id = task_scope.task_id
+                               AND claim.released_at IS NULL AND claim.expires_at > ?)`;
+    const demoted = this.db.prepare(`SELECT task_id FROM task_scope ${demotable}`).all(digest, now.toISOString()).map(row => String(row["task_id"]));
+    this.db
+      .prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL,
+                approved_profile_json = NULL, approval_basis = 'password', mode_digest = NULL ${demotable}`)
+      .run(digest, now.toISOString());
+    this.db.prepare("DELETE FROM plan_authorization WHERE basis = 'grant' AND mode_digest = ?").run(digest);
+    for (const taskId of demoted) {
+      const ref = this.lookupRef(taskId);
+      if (ref === null) continue;
+      this.noteLifecycle(
+        { taskRef: ref.id, kind: "approval-withdrawn", identity: `t${ref.id}`, subject: "Approval needs renewing", body: "Its flow no longer runs on its own. Approve it before it runs.", link: chatControlHref("approval", taskId) },
+        now,
+      );
+    }
   }
 
   /** F2/R-REVOKE: the ONE reconciliation road. newMode null = no live
@@ -8190,6 +8228,7 @@ export class Store {
       for (const row of this.db.prepare("SELECT repo FROM operating_mode WHERE signed_by = ? AND revoked_at IS NULL").all(name)) {
         this.revokeMode(String(row["repo"]), by, "operator", now);
       }
+      endUnattendedGrants(this, { signer: name }, by, "access changed", now);
       this.revokeDerivedAuthority(name, by, now);
       for (const repo of [...new Set([...(account.projects ?? []), ...(access ?? [])])]) {
         this.recordAction({ at: now.toISOString(), actor: by, repo, taskId: null, runId: null,
@@ -8219,6 +8258,9 @@ export class Store {
         ON CONFLICT(repo) DO UPDATE SET not_requester = excluded.not_requester, protect_project = excluded.protect_project, protected_paths = excluded.protected_paths, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
         .run(repo, next.notRequester ? 1 : 0, next.protectProject ? 1 : 0, JSON.stringify(next.protectedPaths), by, now.toISOString());
       this.recordPolicy(by, repo, "approval rules changed", rulesWords(before), rulesWords(next), now);
+      // Protected work is always a person's: a flow here (or building here) stops running on its own, and its queued
+      // approvals are withdrawn (flow-unattended.ts). The dispatch belts check the rules again for any race.
+      if (isProtectedWork(next, [])) endUnattendedGrants(this, { repo }, by, "project protected", now);
     });
   }
 
@@ -14701,6 +14743,13 @@ export class Store {
       .run(authMode, terminalClass, id);
   }
 
+  /** A launch refused before any model turn (an installed CLI too old for a
+   * build's flags): the start stamp goes, its version and evidence stay. Only
+   * while the run is open, so a settled run's account never changes. */
+  withdrawProviderStart(id: number): void {
+    this.db.prepare("UPDATE run SET provider_started_at = NULL WHERE id = ? AND outcome IS NULL").run(id);
+  }
+
   /** The race-refusal stamp (Phase 3 C5): the version that was REFUSED,
    * recorded without provider_started_at — no provider process started. */
   stampProviderVersion(id: number, providerVersion: string): void {
@@ -17904,6 +17953,8 @@ export class Store {
       const current = this.flowScript(script.repo, script.name);
       const version = (current?.version ?? Number(this.db.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM flow_script WHERE repo = ? AND name = ?").get(script.repo, script.name)?.["v"] ?? 0)) + 1;
       if (current !== null) this.db.prepare("UPDATE flow_script SET state = 'removed' WHERE id = ?").run(current.id);
+      // A "runs on its own" grant signed this script's code: a new version ends it (flow-unattended.ts).
+      endUnattendedGrants(this, { script: { repo: script.repo, name: script.name } }, script.by, "script changed", now);
       this.db.prepare(`INSERT INTO flow_script (repo, name, about, body, timeout_minutes, version, digest, saved_by, saved_at, state, language, file, held)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(script.repo, script.name, script.about, script.body, script.timeoutMinutes, version, script.digest, script.by, now.toISOString(), script.language ?? "shell", script.file ?? null, script.held ?? null);
       return version;
@@ -17916,9 +17967,13 @@ export class Store {
     return Number(changes) === 1;
   }
 
-  removeFlowScript(repo: string, name: string): boolean {
-    const { changes } = this.db.prepare("UPDATE flow_script SET state = 'removed' WHERE repo = ? AND name = ? AND state = 'active'").run(repo, name);
-    return Number(changes) === 1;
+  removeFlowScript(repo: string, name: string, by = "flow", now = new Date()): boolean {
+    return this.transact(() => {
+      const { changes } = this.db.prepare("UPDATE flow_script SET state = 'removed' WHERE repo = ? AND name = ? AND state = 'active'").run(repo, name);
+      // A grant that signed this script's code covers nothing without it: it ends (flow-unattended.ts).
+      if (Number(changes) === 1) endUnattendedGrants(this, { script: { repo, name } }, by, "script changed", now);
+      return Number(changes) === 1;
+    });
   }
 
   /** Claim a card's visit to a step zone. False when another pass holds it or it already finished. */
@@ -18022,6 +18077,12 @@ export class Store {
 
   addFlowTrigger(trigger: { flow: number; kind: string; configJson: string; hookHash: string | null; cursor: string | null; nextAt: string | null; by: string }, now: Date): number {
     const stamp = now.toISOString();
+    // A new schedule is one the flow's "runs on its own" grant never read: it ends (flow-unattended.ts).
+    if (trigger.kind === "schedule") return this.transact(() => {
+      endUnattendedGrants(this, { flow: trigger.flow }, trigger.by, "schedule changed", now);
+      return Number(this.db.prepare("INSERT INTO flow_trigger (flow, kind, config_json, state, hook_hash, cursor, next_at, created_by, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)")
+        .run(trigger.flow, trigger.kind, trigger.configJson, trigger.hookHash, trigger.cursor, trigger.nextAt, trigger.by, stamp, stamp).lastInsertRowid);
+    });
     return Number(this.db.prepare("INSERT INTO flow_trigger (flow, kind, config_json, state, hook_hash, cursor, next_at, created_by, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)")
       .run(trigger.flow, trigger.kind, trigger.configJson, trigger.hookHash, trigger.cursor, trigger.nextAt, trigger.by, stamp, stamp).lastInsertRowid);
   }
@@ -18047,10 +18108,11 @@ export class Store {
     return row === undefined ? null : readFlowTriggerRow(row);
   }
 
-  updateFlowTrigger(id: number, change: { state?: "active" | "paused" | "removed"; cursor?: string | null; nextAt?: string | null; lastAt?: string; lastOutcome?: string; failures?: number; hookHash?: string | null }, now: Date): void {
+  updateFlowTrigger(id: number, change: { state?: "active" | "paused" | "removed"; cursor?: string | null; nextAt?: string | null; lastAt?: string; lastOutcome?: string; failures?: number; hookHash?: string | null }, now: Date, by = "a person"): void {
     const trigger = this.getFlowTrigger(id);
     if (trigger === null) return;
-    this.db.prepare("UPDATE flow_trigger SET state = ?, cursor = ?, next_at = ?, last_at = ?, last_outcome = ?, failures = ?, hook_hash = ?, updated_at = ? WHERE id = ?").run(
+    // Pausing, resuming or removing a schedule ends the flow's "runs on its own" grant (flow-unattended.ts).
+    const write = () => this.db.prepare("UPDATE flow_trigger SET state = ?, cursor = ?, next_at = ?, last_at = ?, last_outcome = ?, failures = ?, hook_hash = ?, updated_at = ? WHERE id = ?").run(
       change.state ?? trigger.state,
       change.cursor === undefined ? trigger.cursor : change.cursor,
       change.nextAt === undefined ? trigger.nextAt : change.nextAt,
@@ -18060,6 +18122,8 @@ export class Store {
       change.hookHash === undefined ? trigger.hookHash : change.hookHash,
       now.toISOString(), id,
     );
+    if (trigger.kind !== "schedule" || change.state === undefined || change.state === trigger.state) { write(); return; }
+    this.transact(() => { endUnattendedGrants(this, { flow: trigger.flow }, by, "schedule changed", now); write(); });
   }
 
   /** Whether a trigger already handled this outside thing (an issue, a run, a schedule slot). */
@@ -18084,8 +18148,8 @@ export class Store {
    * Record what a trigger did with one outside thing: the card it made, or why it made none, and (a standing order's
    * firing) the task it filed. False when it was already recorded.
    */
-  recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date, task: string | null = null): boolean {
-    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task) VALUES (?, ?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString(), task);
+  recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date, task: string | null = null, onTime = false): boolean {
+    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task, on_time) VALUES (?, ?, ?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString(), task, onTime ? 1 : 0);
     return Number(changes) === 1;
   }
 
@@ -22544,7 +22608,7 @@ function readScope(row: Record<string, unknown>): Scope {
     approvalBasis:
       row["approval_basis"] === null || row["approval_basis"] === undefined
         ? null
-        : (String(row["approval_basis"]) as "password" | "mode" | "chat"),
+        : (String(row["approval_basis"]) as "password" | "mode" | "chat" | "grant"),
     modeDigest: row["mode_digest"] === null || row["mode_digest"] === undefined ? null : String(row["mode_digest"]),
     approvedAt: row["approved_at"] === null ? null : String(row["approved_at"]),
     approvedBy: row["approved_by"] === null ? null : String(row["approved_by"]),

@@ -129,8 +129,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   ...KNOWLEDGE_DESCRIPTORS.map(spec => ({ invocation: `knowledge ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text or source file for impact" }] } : {}) })),
   ...MEMORY_DESCRIPTORS.map(spec => ({ invocation: `memory ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "query", required: true, meaning: "search text, a decision id, or the decision sentence" }] } : {}) })),
   // Flow writes carry an approver's credential: an agent runs them only as the person asked, after showing the preview.
-  ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags,
-    ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : name === "card" ? "a card id from flows show" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
+  // Letting a flow run on its own raises authority: the owner's own password ceremony, never an agent's act.
+  ...FLOWS_DESCRIPTORS.map(spec => ({ invocation: `flows ${spec.action}`, synopsis: spec.synopsis, audience: "audience" in spec ? spec.audience : "agent" as const, agentMayInvoke: !("audience" in spec), mutation: spec.mutation, flags: spec.flags,
+    ...("positionals" in spec ? { positionals: spec.positionals.map(name => ({ name, required: true, meaning: name === "flow" ? "a flow id from flows list" : name === "card" ? "a card id from flows show" : name === "on|off" ? "on signs the grant, off revokes it" : "a trigger id from flows show, or for trigger add its settings as JSON, a JSON file, or -" })) } : {}) })),
   ...MODELS_DESCRIPTORS.map(spec => ({ invocation: `models ${spec.action}`, synopsis: spec.synopsis, audience: "agent" as const, agentMayInvoke: true, mutation: spec.mutation, flags: spec.flags, ...(spec.takesQuery ? { positionals: [{ name: "target", required: true, meaning: "the CLI to update, or on/off" }] } : {}) })),
 
   // ---- the queue (agent surface) ----
@@ -462,7 +463,7 @@ const REMOTE_NO: readonly string[] = [
 ];
 const REMOTE_STEP_UP: readonly string[] = [
   "proposals", "decide", "task regate", "task approve", "task accept", "task merge", "run settle", "knowledge apply", "memory apply",
-  "flows card approve", "flows card send-back", "flows script approve",
+  "flows card approve", "flows card send-back", "flows script approve", "flows unattended",
   "approver list", "approver add", "people list", "people invite", "people projects", "people revoke",
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
   "tokens create", "tokens list", "tokens revoke", "tokens rotate",

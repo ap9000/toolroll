@@ -82,16 +82,37 @@ function run(file, args, options = {}) {
 }
 
 /**
- * Build isolation sentinels: a hook in the repository's own and local Claude
- * settings and a server in its .mcp.json, each of which would leave a file
- * if it ran, beside one MCP server the project opts in to by name. A build
- * must start only the named one. They write outside the disposable state
- * folder, which the agent fence covers.
+ * Build isolation sentinels. Each fires on its own, with no help from the
+ * model, and appends "<launch> <sentinel>" to fired.log, where <launch> is
+ * the CANARY_LAUNCH of the process tree that ran it:
+ *
+ * - project-hook and local-hook: hooks in the repository's own and local
+ *   Claude settings; repository-mcp: a server in its .mcp.json (the local
+ *   settings enable every project server, so nothing waits on approval).
+ * - plugin: a Claude plugin named in CLAUDE_CODE_PLUGIN_DIRS, which the
+ *   canary puts in every launch's environment; its hooks run whatever a
+ *   launch's setting sources are.
+ * - adjacent-folder: the project's opted-in server reads a file in a
+ *   repository beside the project's own as it starts. The agent fence keeps
+ *   a build's tools inside its task boundary.
+ * - named-tool: that opted-in server started at all.
+ *
+ * The control launches the provider CLI unisolated (the repository's own
+ * setup loaded, the tool started directly, no fence), fresh and resumed:
+ * every sentinel must fire. The isolated launches are the real build and a
+ * resumed turn through the same gateway: only named-tool may fire. Claude
+ * only; other providers keep the repository checks without a control.
  */
-const MAKE = file => `node -e "require('fs').writeFileSync(process.argv[1],'ran')" ${JSON.stringify(file)}`;
-const OPT_IN_SERVER = `import { writeFileSync } from "node:fs";
+const LOG = (log, kind) => `node -e "require('fs').appendFileSync(process.argv[1],(process.env.CANARY_LAUNCH||'unknown')+' '+process.argv[2]+'\\n')" ${JSON.stringify(log)} ${kind}`;
+/** The opted-in tool's server. A brokered server gets only an allowlisted environment (tool-broker.ts), so it reads
+ * which launch it serves from the launch file the canary keeps beside the log; the control passes CANARY_LAUNCH. */
+export const OPT_IN_SERVER = `import { appendFileSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-writeFileSync(process.argv[2], "ran");
+const [log, adjacent, launchFile] = process.argv.slice(2);
+const launch = () => { try { return readFileSync(launchFile, "utf8").trim(); } catch { return ""; } };
+const fired = kind => appendFileSync(log, (process.env.CANARY_LAUNCH || launch() || "unknown") + " " + kind + "\\n");
+fired("named-tool");
+try { readFileSync(adjacent); fired("adjacent-folder"); } catch { /* fenced */ }
 const send = message => process.stdout.write(JSON.stringify(message) + "\\n");
 createInterface({ input: process.stdin }).on("line", line => {
   const message = JSON.parse(line);
@@ -100,35 +121,132 @@ createInterface({ input: process.stdin }).on("line", line => {
   else if (message.id !== undefined) send({ jsonrpc: "2.0", id: message.id, result: {} });
 });
 `;
+const SENTINELS = ["project-hook", "local-hook", "repository-mcp", "plugin", "adjacent-folder", "named-tool"];
 
-async function plantIsolationSentinels(repo, sentinels) {
-  const hook = file => ({ hooks: [{ type: "command", command: MAKE(file) }] });
+async function plantIsolationSentinels(base, repo, sentinels) {
+  const log = join(sentinels, "fired.log");
+  const hook = kind => ({ hooks: [{ type: "command", command: LOG(log, kind) }] });
   await mkdir(join(repo, ".claude"), { recursive: true });
-  await writeFile(join(repo, ".claude", "settings.json"), `${JSON.stringify({ hooks: { SessionStart: [hook(join(sentinels, "project-hook"))], UserPromptSubmit: [hook(join(sentinels, "project-hook"))] } }, null, 2)}\n`);
-  await writeFile(join(repo, ".claude", "settings.local.json"), `${JSON.stringify({ hooks: { UserPromptSubmit: [hook(join(sentinels, "local-hook"))] } }, null, 2)}\n`);
-  await writeFile(join(repo, ".mcp.json"), `${JSON.stringify({ mcpServers: { "repo-sentinel": { type: "stdio", command: "node", args: ["-e", `require('fs').writeFileSync(${JSON.stringify(join(sentinels, "project-mcp"))},'ran')`] } } }, null, 2)}\n`);
+  await writeFile(join(repo, ".claude", "settings.json"), `${JSON.stringify({ hooks: { SessionStart: [hook("project-hook")], UserPromptSubmit: [hook("project-hook")] } }, null, 2)}\n`);
+  await writeFile(join(repo, ".claude", "settings.local.json"), `${JSON.stringify({ enableAllProjectMcpServers: true, hooks: { UserPromptSubmit: [hook("local-hook")] } }, null, 2)}\n`);
+  await writeFile(join(repo, ".mcp.json"), `${JSON.stringify({ mcpServers: { "repo-sentinel": { type: "stdio", command: "node", args: ["-e", `require('fs').appendFileSync(${JSON.stringify(log)},(process.env.CANARY_LAUNCH||'unknown')+' repository-mcp\\n')`] } } }, null, 2)}\n`);
+  await mkdir(join(sentinels, "plugin", ".claude-plugin"), { recursive: true });
+  await mkdir(join(sentinels, "plugin", "hooks"), { recursive: true });
+  await writeFile(join(sentinels, "plugin", ".claude-plugin", "plugin.json"), `${JSON.stringify({ name: "toolroll-canary-sentinel", version: "1.0.0", description: "Toolroll provider canary" })}\n`);
+  await writeFile(join(sentinels, "plugin", "hooks", "hooks.json"), `${JSON.stringify({ hooks: { SessionStart: [hook("plugin")], UserPromptSubmit: [hook("plugin")] } })}\n`);
   await writeFile(join(sentinels, "opt-in-server.mjs"), OPT_IN_SERVER);
+  // A repository beside the project's own, inside the build's task boundary.
+  await mkdir(join(base, "adjacent", ".git"), { recursive: true });
+  await writeFile(join(base, "adjacent", "secret.txt"), "adjacent\n");
+  await writeFile(launchFile(sentinels), "");
+  return { log, plugin: join(sentinels, "plugin"), server: [join(sentinels, "opt-in-server.mjs"), log, join(base, "adjacent", "secret.txt"), launchFile(sentinels)] };
+}
+
+/** Where the canary says which launch is running, for the brokered tool server that can't see CANARY_LAUNCH. */
+const launchFile = sentinels => join(sentinels, "launch");
+/** Name the launch about to run (null: none), in the environment its own processes inherit and in the launch file. */
+async function tagLaunch(sentinels, launch) {
+  if (launch === null) delete process.env.CANARY_LAUNCH;
+  else process.env.CANARY_LAUNCH = launch;
+  await writeFile(launchFile(sentinels), launch ?? "");
+}
+
+/** The task the canary files: no quote marks, which a model may copy into the file. */
+export function canaryGoal(provider, marker) {
+  return marker === null
+    ? `Add canary.txt: exactly standing-orders ${provider} canary passed plus newline. Add canary.test.js using node:test. Only these files; no questions; acceptance evidence: check and changed-path only.`
+    : `Add canary.txt: line 1 exactly standing-orders ${provider} canary passed; line 2 the TOOLROLL_MEMORY_CANARY marker memory gave you (never search), else NO_MEMORY. Add canary.test.js (node:test).`;
 }
 
 /** The project's one named tool, added the way the console adds it, before approval seals the task's tools. */
-async function optInNamedTool(db, repo, sentinels) {
+async function optInNamedTool(db, repo, server) {
   const { openStore } = await import(join(root, "dist", "store.js"));
   const { addToolTo } = await import(join(root, "dist", "project-tools.js"));
   const store = openStore(db);
   try {
-    const added = addToolTo(store, repo, { name: "canary-notes", transport: "stdio", command: process.execPath, args: [join(sentinels, "opt-in-server.mjs"), join(sentinels, "opt-in-mcp")], url: null, secrets: [], bearer: null, headerSecrets: {}, about: "The canary's opt-in server" }, "provider canary", "canary", new Date());
+    const added = addToolTo(store, repo, { name: "canary-notes", transport: "stdio", command: process.execPath, args: server, url: null, secrets: [], bearer: null, headerSecrets: {}, about: "The canary's opt-in server" }, "provider canary", "canary", new Date());
     if (!added.ok) throw new Error(`the canary's named tool was refused: ${added.message}`);
   } finally {
     store.close();
   }
 }
 
-function isolationOf(provider, sentinels) {
-  const ran = name => existsSync(join(sentinels, name));
-  const result = { projectHook: ran("project-hook"), localHook: ran("local-hook"), repositoryMcp: ran("project-mcp"), namedTool: ran("opt-in-mcp") };
-  if (result.projectHook || result.localHook || result.repositoryMcp) throw new Error(`the build loaded the repository's own Claude setup: ${JSON.stringify(result)}`);
-  if ((provider === "claude" || provider === "codex") && !result.namedTool) throw new Error("the project's named tool did not start for its build");
-  return result;
+/** Which sentinels each launch fired. */
+export async function firedBy(log) {
+  const fired = {};
+  const text = existsSync(log) ? await readFile(log, "utf8") : "";
+  for (const line of text.split("\n").filter(Boolean)) {
+    const [launch, kind] = line.split(" ");
+    (fired[launch] ??= new Set()).add(kind);
+  }
+  return Object.fromEntries(Object.entries(fired).map(([launch, kinds]) => [launch, [...kinds].sort()]));
+}
+
+/**
+ * Every control launch fired every sentinel; every isolated launch fired
+ * only its named tool (Claude and Codex start it; the others have none).
+ */
+export function judgeIsolation(provider, fired, controls, isolated, fence = null) {
+  const problems = [];
+  for (const launch of controls) {
+    const missing = SENTINELS.filter(kind => !(fired[launch] ?? []).includes(kind));
+    if (missing.length > 0) problems.push(`the unisolated ${launch} launch did not fire ${missing.join(", ")}, so the canary can't tell isolation from a sentinel that never runs`);
+  }
+  for (const launch of isolated) {
+    const leaked = (fired[launch] ?? []).filter(kind => kind !== "named-tool");
+    if (leaked.length > 0) problems.push(`the isolated ${launch} launch fired ${leaked.join(", ")}${fence !== null && leaked.includes("adjacent-folder") ? ` (its fence: ${fence})` : ""}`);
+    if ((provider === "claude" || provider === "codex") && !(fired[launch] ?? []).includes("named-tool")) problems.push(`the project's named tool did not start for the ${launch} launch`);
+  }
+  const unknown = Object.keys(fired).filter(launch => !controls.includes(launch) && !isolated.includes(launch));
+  if (unknown.length > 0) problems.push(`sentinels fired from an unexpected launch: ${unknown.map(launch => `${launch} (${fired[launch].join(", ")})`).join("; ")}`);
+  if (problems.length > 0) throw new Error(`Build isolation: ${problems.join("; ")}.`);
+  return Object.fromEntries([...controls, ...isolated].map(launch => [launch, fired[launch] ?? []]));
+}
+
+/** The unisolated control: the CLI as a build ran before isolation, in the repository, fresh and then resumed. */
+async function claudeControl(repo, model, sentinels, server) {
+  const config = join(sentinels, "control-mcp.json");
+  await writeFile(config, JSON.stringify({ mcpServers: { "canary-notes": { type: "stdio", command: process.execPath, args: server } } }));
+  const turn = async (launch, resume) => {
+    const answer = await run("claude", ["-p", "Reply with exactly: control", "--model", model, "--max-turns", "1", "--output-format", "json",
+      "--setting-sources", "project,local", "--mcp-config", config, ...(resume === null ? [] : ["--resume", resume])], { cwd: repo, env: { ...process.env, CANARY_LAUNCH: launch } });
+    const envelope = parseEnvelope(answer, `the unisolated control (${launch})`);
+    if (typeof envelope.session_id !== "string") throw new Error(`the unisolated control (${launch}) named no session`);
+    return envelope.session_id;
+  };
+  const session = await turn("control-fresh", null);
+  await turn("control-resumed", session);
+}
+
+/** A resumed turn of the finished build through the real gateway: the same fence, broker and isolation a repair gets. */
+async function resumeThroughGateway({ db, repo, provider, model, runnerToken, buildRunId, sentinels }) {
+  const { openStore } = await import(join(root, "dist", "store.js"));
+  const { acquire } = await import(join(root, "dist", "claim.js"));
+  const { invokeAgent } = await import(join(root, "dist", "invoke.js"));
+  const store = openStore(db);
+  try {
+    const build = store.getRun(buildRunId);
+    if (build?.sessionId == null || build.worktree == null) throw new Error("the build run kept no session or worktree to resume");
+    // Claude finds a session by the folder it ran in; a released worktree's path is made again, empty.
+    await mkdir(build.worktree, { recursive: true });
+    const now = new Date();
+    store.createTask({ id: `${TASK_ID}-resume`, title: "Resume the canary build once" }, now);
+    const ref = store.refFor("built-in", `${TASK_ID}-resume`).id;
+    store.placeTask(ref, repo);
+    const leaseId = `canary-resume-${randomUUID()}`;
+    const took = acquire(store, ref, "canary-worker", { now, token: runnerToken, newLeaseId: () => leaseId, ttlMs: 30 * 60_000 });
+    if (!took.ok) throw new Error(`the resumed turn could not claim its task: ${took.reason}`);
+    const id = store.startRun({ taskRef: ref, leaseId, runner: "canary-worker", branch: build.branch ?? "canary", worktree: build.worktree, route: { routeDigest: "legacy", phase: "build", provider, model, chosen: "legacy" }, now });
+    store.stampRun(id, { sessionId: build.sessionId });
+    await tagLaunch(sentinels, "isolated-resumed");
+    const result = await invokeAgent(store, id, { provider, model }, { phase: "repair", brief: "Reply with exactly: resumed. Do not change any file.", maxTurns: 2, permissionMode: "plan", skipPermissions: false, resumeSession: build.sessionId },
+      { cwd: build.worktree, env: { CANARY_LAUNCH: "isolated-resumed" }, timeoutMs: 600_000 }).finally(() => tagLaunch(sentinels, null));
+    store.finishRun(id, { outcome: result.kind === "ran" && result.outcome.code === 0 ? "built" : "failed", now: new Date() });
+    if (result.kind !== "ran" || result.outcome.code !== 0) throw new Error(`the resumed turn did not run: ${result.kind === "ran" ? `exit ${result.outcome.code}` : `${result.reason}: ${result.diagnostic ?? ""}`}`);
+    return { run: id, fence: store.runFence(id) };
+  } finally {
+    store.close();
+  }
 }
 
 /** Own only this disposable repository's memory directory. Never overwrite a
@@ -253,7 +371,9 @@ async function main() {
       `${JSON.stringify({ name: "standing-orders-provider-canary", private: true, type: "module", scripts: { test: "node --test" } }, null, 2)}\n`,
     );
     await writeFile(join(repo, "README.md"), "# Toolroll provider canary\n\nThis repository is disposable.\n");
-    await plantIsolationSentinels(repo, sentinels);
+    const planted = await plantIsolationSentinels(base, repo, sentinels);
+    // Every launch from here on (the CLI's planner and builder included) inherits the plugin sentinel.
+    process.env.CLAUDE_CODE_PLUGIN_DIRS = planted.plugin;
     await git("add", ".");
     await git("commit", "-qm", "seed provider canary");
     const baseSha = await git("rev-parse", "HEAD");
@@ -284,13 +404,9 @@ async function main() {
         "--as", "canary", "--token", password,
       ]);
 
-      await optInNamedTool(db, repo, sentinels);
-      const title = [
-        `Add canary.txt: ${memoryMarker === null ? "exactly" : "first line exactly"} "standing-orders ${options.provider} canary passed" plus newline.`,
-        ...(memoryMarker === null ? [] : ["On its second line, report the TOOLROLL_MEMORY_CANARY marker only if automatic memory already supplied one; otherwise write NO_MEMORY. Do not read home files or search for memory. End that line with a newline."]),
-        "Add canary.test.js using node:test.",
-        "Only these files; no questions; acceptance evidence: check and changed-path only.",
-      ].join(" ");
+      await optInNamedTool(db, repo, planted.server);
+      // A title is at most 200 characters, so the memory check says only what it must.
+      const title = canaryGoal(options.provider, memoryMarker);
       await cli("file the task", ["task", "add", title, "--id", TASK_ID, "--repo", repo]);
       let filedDigest = null;
       if (options.autoApprove) {
@@ -313,6 +429,7 @@ async function main() {
         "--as", "canary", "--token", password,
       ]);
       if (options.autoApprove && requested.autoPlan !== true) throw new Error("the exact filed plan was not pre-authorized");
+      await tagLaunch(sentinels, "isolated-plan");
       const planned = await cli("run the planning pass", [
         "tick", "--runner", "canary-worker", "--token", runnerToken,
         "--repo", repo, "--pool", pool,
@@ -336,10 +453,13 @@ async function main() {
         "--as", "canary", "--token", password,
       ]);
 
+      await tagLaunch(sentinels, "isolated-fresh");
       const built = await cli("run the build and evidence pass", [
         "tick", "--runner", "canary-worker", "--token", runnerToken,
         "--repo", repo, "--pool", pool,
       ]);
+      // Anything launched after the build is no isolated launch of this canary's: it would fire as "unknown".
+      await tagLaunch(sentinels, null);
       if (!Array.isArray(built.dispatched) || !built.dispatched.some(item => item?.outcome === "built")) {
         throw new Error(`builder did not complete the task: ${JSON.stringify(built)}`);
       }
@@ -376,7 +496,23 @@ async function main() {
       if (await git("rev-parse", "main") !== baseSha) throw new Error("the default branch changed");
       if (Number(await git("rev-list", "--count", `${baseSha}..${branchSha}`)) !== 1) throw new Error("expected exactly one work commit");
       await assertRuntime();
-      const isolation = isolationOf(options.provider, sentinels);
+      const controls = [];
+      const isolatedLaunches = ["isolated-plan", "isolated-fresh"];
+      let resumed = null;
+      if (options.provider === "claude") {
+        resumed = await resumeThroughGateway({ db, repo, provider: options.provider, model: options.model, runnerToken, buildRunId: buildRun.id, sentinels });
+        isolatedLaunches.push("isolated-resumed");
+        // The control names its launch in its own environment; the launch file stays empty.
+        await tagLaunch(sentinels, null);
+        await claudeControl(repo, options.model, sentinels, planted.server);
+        controls.push("control-fresh", "control-resumed");
+      }
+      const fence = await (async () => {
+        const { openStore } = await import(join(root, "dist", "store.js"));
+        const store = openStore(db);
+        try { return store.runFence(buildRun.id)?.method ?? null; } finally { store.close(); }
+      })();
+      const isolation = { fence, launches: judgeIsolation(options.provider, await firedBy(planted.log), controls, isolatedLaunches, fence), resumedRun: resumed };
       if (memoryMarker !== null) {
         if (JSON.stringify(final).includes(memoryMarker)) throw new Error("Claude supplied the disposable automatic-memory marker to the task.");
         isolation.autoMemory = "NO_MEMORY";

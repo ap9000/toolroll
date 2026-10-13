@@ -31,6 +31,11 @@ export function projectAccessAllows(access: ProjectAccess, repo: string | null):
   return access === null || (repo !== null && access.includes(canonicalProject(repo) ?? resolve(repo)));
 }
 
+/** SQL: projectAccessAllows for an `approver` row (`alias`) and a project path expression, for the dispatch belts. A
+ * null list reaches every project; an unreadable one reaches none. */
+export const accountReachesSql = (alias: string, repo: string) =>
+  `(${alias}.projects_json IS NULL OR (json_valid(${alias}.projects_json) AND EXISTS (SELECT 1 FROM json_each(${alias}.projects_json) WHERE json_each.value = ${repo})))`;
+
 /** A server-proved resource, never an unchecked header or submitted path.
  * CLI ceremonies must pass their resource explicitly; global ceremonies
  * without a project refuse project-scoped credentials. */

@@ -210,7 +210,9 @@ export const COMMAND_OUTPUTS = {
   "task unhold": answers("task unhold", { id: str }),
   "task wait": answers("task wait", { task: str, outcome: str }),
   "flows list": answers("flows list", { flows: z.array(flowListed) }),
-  "flows show": answers("flows show", { flow: z.looseObject({ id: int, name: str, repo: str, project: str, readable: z.boolean(), zones: list, triggers: list }) }),
+  "flows show": answers("flows show", { flow: z.looseObject({ id: int, name: str, repo: str, project: str, readable: z.boolean(), zones: list, triggers: list,
+    // Whether the flow runs on its own, and until when (null: it doesn't).
+    unattended: nullable(z.looseObject({ until: str, signedBy: str, budgetMicrousd: nullable(int), dailyRunCap: nullable(int), runsToday: int, covers: z.array(str) })) }) }),
   grants: answers("grants", { count: int, grants: list }),
   "runner list": answers("runner list", { count: int, runners: list }),
   "incident list": answers("incident list", { incidents: list }),

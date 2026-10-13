@@ -5,7 +5,7 @@ import { leadNameOf } from './lead-identity.js';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { readProjectAccess } from './project-access.js';
+import { accountReachesSql, readProjectAccess } from './project-access.js';
 import { pauseOnTaskProviders, providerName, signInReason } from './provider-auth.js';
 import type { ProviderId } from './provider.js';
 import { scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
@@ -22,6 +22,7 @@ import { withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedKey, type WaitKey } from './needs-you.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
+import { grantStandsSql } from './flow-unattended.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
 export type WorkIndexItem = {
@@ -179,9 +180,10 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       UNION ALL SELECT json_extract(leg.value,'$.provider') FROM json_each(CASE WHEN json_valid(sc.approved_route_json) THEN sc.approved_route_json ELSE '{}' END,'$.legs') leg
         WHERE json_extract(leg.value,'$.phase')='build'))) signed_out,
     (sc.approved_at IS NOT NULL AND sc.approved_by IS NOT NULL AND sc.approved_digest=sc.digest) approved,
-    (sc.approval_basis IS NOT 'mode' OR EXISTS(SELECT 1 FROM operating_mode om JOIN approver signer ON signer.name=om.signed_by
+    ((sc.approval_basis IS NOT 'mode' AND sc.approval_basis IS NOT 'grant') OR (sc.approval_basis='mode' AND EXISTS(SELECT 1 FROM operating_mode om JOIN approver signer ON signer.name=om.signed_by
       WHERE om.repo=c.repo AND om.digest=sc.mode_digest AND om.revoked_at IS NULL AND om.absolute_expiry>$now
-      AND signer.role='approver' AND signer.revoked_at IS NULL)) dispatch_approval,
+      AND signer.role='approver' AND signer.revoked_at IS NULL AND ${accountReachesSql("signer", "c.repo")}))
+      OR (sc.approval_basis='grant' AND ${grantStandsSql("sc.mode_digest", "$now", "c.repo")})) dispatch_approval,
     CASE WHEN sc.task_id IS NULL THEN 0 ELSE so_work_scope_valid(json_object(
       'touches',sc.touches,'acceptance_json',sc.acceptance_json,'budget_microusd',sc.budget_microusd,
       'goal',CASE WHEN typeof(sc.goal)='text' THEN '' ELSE sc.goal END,

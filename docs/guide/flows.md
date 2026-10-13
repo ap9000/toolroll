@@ -110,6 +110,33 @@ thread join the card's discussion. `flow off` stops it. In Teams, mention
 Toolroll in each message; in a Telegram group, turn the bot's privacy
 mode off in BotFather so it sees every message, not just commands.
 
+### Runs on its own
+
+Work a schedule's cards file waits in Needs you for approval, like any other
+task. A flow's owner can let its schedule run on its own instead: **Run on its
+own** at the top of the flow, or `toolroll flows unattended <flow> on --days N`
+(optionally `--budget <dollars>` per attempt and `--runs <n>` a day). It takes
+the owner's password, lasts 1 to 7 days, and every term is shown before you
+sign. It names the schedules it covers: plain schedules are covered; a
+schedule that runs a script or a plane review brings in outside content, so
+it's covered only when you tick it (or pass `--include <trigger ids>`). While
+it's on, the build and research tasks that cards from those schedules file
+when they fire on time are approved as you, with safe permissions and the
+flow's fixed acceptance criteria; a plan approves itself only when it keeps
+the filed request exactly. Run now, cards made before you signed, cards a
+person moved or sent back, questions, plan changes, Person decides zones,
+pull request merges, publish or deploy scripts, messages, cards people add
+and other triggers still wait for a person. Protected projects and projects
+with protected paths can't turn it on. Adding, pausing, resuming or removing
+a schedule, editing the flow, changing its owner, the owner losing access to
+the project, or protecting the project ends it, and work it approved that
+hasn't started goes back to Needs you. A covered script is signed by its code:
+saving or removing it ends the grant, and when a project file it runs has
+changed or can't be read, the next card it makes ends it too. Signing again
+replaces the grant the same way. The flow page shows **Runs on its own until
+<date>** with **Revoke** (one click, any approver; or `toolroll flows
+unattended <flow> off`), and `toolroll flows show` says the same.
+
 ## People
 
 Every flow has an **owner**: whoever made it, until changed in **Edit flow**.
