@@ -204,13 +204,18 @@ export async function processCredentialNames(pid: number, deps: { platform: Node
     }
     const tail = whole.slice(command.length).trimStart();
     if (tail === "") return { ok: true, names: [] };
-    // ps has no quoting or NUL separators. A second NAME= might be a new entry OR part of a value.
-    // Never manufacture a variable name from that value, or call an ambiguous environment clean.
-    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(tail) || /\s[A-Za-z_][A-Za-z0-9_]*=/.test(tail)) {
-      return { ok: false, problem: "ps returned ambiguous environment boundaries; values may contain spaces or NAME= text" };
+    // ps separates entries with spaces and doesn't quote, so a value with spaces can look like more entries. Read it
+    // names-only: every NAME= at the start or after a space is a candidate (a few may be text inside a value, which
+    // only ever adds a name to report), each candidate's value runs to the next one, and the whole tail is also scanned
+    // for key-shaped text so a secret inside a value is never missed. Fail closed only when nothing parses.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(tail)) {
+      return { ok: false, problem: "ps returned an environment Toolroll couldn't parse" };
     }
-    const pair = assignment(tail);
-    return { ok: true, names: credentialNames(pair === null ? [] : [pair]) };
+    const starts = [...tail.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(m => ({ name: m[1]!, at: m.index! + m[0].length }));
+    const pairs = starts.map((one, i) => [one.name, tail.slice(one.at, i + 1 < starts.length ? starts[i + 1]!.at - starts[i + 1]!.name.length - 1 : tail.length).trim()] as const);
+    const names = new Set(credentialNames(pairs));
+    if (scanForSecrets(tail).length > 0 && names.size === 0) names.add("(a key-shaped value; its variable couldn't be told apart)");
+    return { ok: true, names: [...names].sort() };
   }
   return { ok: false, problem: `Toolroll can't read a process's environment on ${deps.platform}` };
 }

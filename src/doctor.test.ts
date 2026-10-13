@@ -179,6 +179,35 @@ describe("toolroll doctor on macOS", () => {
   });
 });
 
+describe("toolroll doctor reads a macOS environment with many variables", () => {
+  const psRun = (command: string, env: string) => async (file: string, args: readonly string[]) => ({ code: 0, stderr: "", stdout: `${file === "/bin/ps" && args.includes("-wwE") ? `${command} ${env}` : command}\n` });
+
+  test("a clean environment with several variables is clean, not ambiguous", async () => {
+    const read = await processCredentialNames(42, { platform: "darwin", run: psRun("/usr/bin/node /app/cli.js watch", "PATH=/usr/bin:/bin HOME=/Users/o LANG=en_US.UTF-8 TMPDIR=/var/folders/x") as never });
+    expect(read).toEqual({ ok: true, names: [] });
+  });
+
+  test("a credential among several variables is named, and a key-shaped value inside a spaced value is still caught, never echoed", async () => {
+    const value = marker("ps-many");
+    const named = await processCredentialNames(42, { platform: "darwin", run: psRun("/usr/bin/node /app/cli.js watch", `PATH=/usr/bin HOME=/Users/o SYNTHETIC_DOCTOR_TOKEN=${value} LANG=en`) as never });
+    expect(named).toEqual({ ok: true, names: ["SYNTHETIC_DOCTOR_TOKEN"] });
+    const keyShaped = `ghp_${"K".repeat(36)}`;
+    const hidden = await processCredentialNames(42, { platform: "darwin", run: psRun("/usr/bin/node /app/cli.js watch", `PATH=/usr/bin NOTE=hello there ${keyShaped} LANG=en`) as never });
+    expect(hidden).toEqual({ ok: true, names: ["NOTE"] });
+    expect(JSON.stringify(hidden)).not.toContain(keyShaped);
+  });
+
+  test.skipIf(process.platform !== "darwin" || spawnSync("/bin/ps", ["-p", String(process.pid)]).status !== 0)("a real process with several variables is read by name", async () => {
+    const value = marker("procargs-many");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { env: { PATH: "/usr/bin:/bin", HOME: "/tmp", LANG: "en_US.UTF-8", SYNTHETIC_DOCTOR_TOKEN: value }, stdio: "ignore" });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const read = await processCredentialNames(child.pid!, { platform: "darwin", run: runCommand });
+      expect(read).toEqual({ ok: true, names: ["SYNTHETIC_DOCTOR_TOKEN"] });
+    } finally { child.kill(); }
+  });
+});
+
 describe("toolroll doctor on Linux", () => {
   const label = "com.toolroll.watch.shop";
 
@@ -309,7 +338,8 @@ describe("doctor remediation never reflects service argument values", () => {
 describe("macOS process environment boundaries", () => {
   test.each([
     { plain: "node watch", full: `node watch NOTE=words before ghp_${"S".repeat(36)} after words`, expected: { ok: true, names: ["NOTE"] } },
-    { plain: "node watch", full: `node watch NOTE=ordinary words SYNTHETIC_TOKEN=${marker("embedded-assignment")}`, expected: { ok: false } },
+    // A NAME= inside a value can't be told apart from a new entry; reading names-only, it is reported (never its value).
+    { plain: "node watch", full: `node watch NOTE=ordinary words SYNTHETIC_TOKEN=${marker("embedded-assignment")}`, expected: { ok: true, names: ["SYNTHETIC_TOKEN"] } },
     { plain: "node watch", full: `node changed TOKEN=${marker("changed-command")}`, expected: { ok: false } },
     { plain: "", full: `TOKEN=${marker("empty-command")}`, expected: { ok: false } },
     { plain: "node watch", full: `node watcher TOKEN=${marker("partial-command")}`, expected: { ok: false } },
