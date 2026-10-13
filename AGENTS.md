@@ -36,6 +36,16 @@ Carry this check into Toolroll task acceptance criteria and review feedback for 
 - Report the checks actually run, the exact candidate they cover, and any remaining gaps. Broaden checks only for a specific uncovered risk; say why.
 - Screenshots and journey output go in the run's evidence folder, `evidence/` (ignored by Git), never anywhere else in the working tree. Never commit them: the handoff leaves images added under `evidence/` out of the commit and says so.
 
+## Trust boundary (security work)
+
+A build agent controls everything it can write: its checkout and `.git` (pointer file, config, hooks, refs, nested repos), `node_modules` and any note files in them, symlinks it creates, scripts it edits, and anything in the folders its fence allows. Treat all of it as attacker input.
+
+- Never make a security decision from build-writable data. Take repositories, paths, owners, URLs, grants and digests from Toolroll's own records (the store, the plane's state folder, signed terms), and resolve them with `realpath` before comparing.
+- Fail closed: when trusted state and what the checkout says disagree, or something can't be read, deny or refuse. Never widen a grant to make a case work.
+- Never run `git` or a tool inside a build-controlled folder without the hardened environment (no system/global config, no includes, `core.hooksPath=/dev/null`, `core.fsmonitor=false`, `--ignore-submodules=all`, allowlisted env), and route every such call through the shared helper, not a direct spawn.
+- Check at the moment of use, not only earlier: re-verify right before acting when a file can change in between.
+- Every guard ships with a test that tries to get around it, run against the real sandbox where it applies (`sandbox-exec`, `codex sandbox`). Add each reproduced bypass to the attack suite so it stays fixed.
+
 ## Keep the installed tool current
 
 - Always use the latest verified Toolroll build for new live work. Check the running UI, background worker and resolved CLI before dispatch; deploy an available newer verified build first. If the update is blocked, resolve the update instead of continuing ordinary tasks on the old runtime. A source commit, passing build or merge does not count as deployment.
