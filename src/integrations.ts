@@ -17,7 +17,6 @@
  */
 import { connect as tcpConnect } from "node:net";
 import { connect as tlsConnect } from "node:tls";
-import { homedir } from "node:os";
 import { basename } from "node:path";
 import type { Store } from "./store.js";
 import type { Runner } from "./backend.js";
@@ -32,7 +31,7 @@ import { effectivePrimary } from "./webhooks.js";
 import { readEmailSettings } from "./email-settings.js";
 import { googleConnected } from "./google-mail.js";
 import { LINEAR_URL, readHooksBase, readLinearKey } from "./flow-triggers.js";
-import { projectToolsOf, readToolSecrets, missingSecrets, testToolOf } from "./project-tools.js";
+import { credentialModeOf, projectToolsOf, readToolSecrets, missingSecrets, secretsSetFor, testToolOf } from "./project-tools.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
 import { targetOf } from "./monitoring.js";
 
@@ -65,6 +64,8 @@ export type Integration = {
   action: IntegrationAction;
   /** A project's own MCP tool: it shows a letter, never a logo matched by name. */
   custom?: true;
+  /** A project's MCP tool: how its runs get credentials ("Short-lived token per run", "Key held by Toolroll"). */
+  credentials?: string;
 };
 
 export const STATE_WORDS: Record<IntegrationState, string> = { connected: "Connected", "not-set-up": "Not set up", broken: "Broken" };
@@ -88,7 +89,7 @@ export type IntegrationIo = {
   /** The same sign-in check Settings → AI providers makes. */
   checkConnection?: ConnectionChecker;
   /** Where project tool secrets live. */
-  toolHome?: string;
+  toolHome?: string | undefined;
   /** Whether a mail server answers at host:port (tests replace it). */
   reach?: (host: string, port: number, secure: boolean) => Promise<void>;
   clock?: () => Date;
@@ -109,6 +110,7 @@ type Target = {
   activity: Activity;
   probe: ((io: IntegrationIo) => Promise<ProbeResult>) | null;
   custom?: true;
+  credentials?: string;
 };
 
 const PROBE_MS = 8_000;
@@ -429,15 +431,18 @@ function targets(io: IntegrationIo): Target[] {
   });
 
   // Each project's MCP tools: the server starts and lists its tools.
-  const toolHome = io.toolHome ?? homedir();
+  const toolHome = io.toolHome;
   let anyTool = false;
   for (const repo of io.repos) {
     for (const tool of projectToolsOf(store, repo)) {
       anyTool = true;
       const href = `/settings/tools?repo=${encodeURIComponent(repo)}#tool-${encodeURIComponent(tool.name)}`;
       const test = tool.lastTest;
+      // Which secrets are set, by name only: no value is read to say how runs get them.
+      let credentials: string | undefined;
+      try { credentials = credentialModeOf(tool.spec, secretsSetFor(repo, tool.spec, toolHome))?.words; } catch { credentials = undefined; }
       list.push({
-        key: `mcp:${repo}:${tool.name}`, group: "tools", name: tool.name, configured: true, account: basename(repo), ...(tool.source === "custom" ? { custom: true as const } : {}),
+        key: `mcp:${repo}:${tool.name}`, group: "tools", name: tool.name, configured: true, account: basename(repo), ...(tool.source === "custom" ? { custom: true as const } : {}), ...(credentials === undefined ? {} : { credentials }),
         setup: place(href), fix: place(href), usedBy: [`Tasks in ${basename(repo)}`],
         activity: test === null ? NO_ACTIVITY : test.ok ? { okAt: test.at, error: null, errorAt: null, failing: false } : { okAt: null, error: test.problem, errorAt: test.at, failing: false },
         probe: async check => {
@@ -486,7 +491,7 @@ function targets(io: IntegrationIo): Target[] {
 // ---------------------------------------------------------------- the list
 
 function combine(target: Target, row: CheckRow | undefined): Integration {
-  const base = { key: target.key, group: target.group, name: target.name, usedBy: target.usedBy, ...(target.custom ? { custom: true as const } : {}) };
+  const base = { key: target.key, group: target.group, name: target.name, usedBy: target.usedBy, ...(target.custom ? { custom: true as const } : {}), ...(target.credentials === undefined ? {} : { credentials: target.credentials }) };
   const checked = target.probe === null || row !== undefined;
   const lastSuccessAt = later(row?.okAt ?? null, target.activity.okAt);
   const checkError = row?.error ?? null, checkErrorAt = row?.errorAt ?? null;
@@ -535,17 +540,31 @@ export function integrationsBrokenLine(list: readonly Integration[]): string | n
 
 const whenText = (at: string | null) => (at === null ? "never" : `${at.slice(0, 16).replace("T", " ")} UTC`);
 
-/** The CLI's lines: one per integration, then the fix under anything Broken. */
-export function renderIntegrations(list: readonly Integration[]): string[] {
+/** Where secrets rest (project-tools.ts toolSecretStorage), as Settings and the CLI take it. */
+export type SecretsKept = { words: string; filesOnly: boolean; problem?: string };
+/** Integrations whose secrets Toolroll holds: project tools, the Linear key, a Google mail connection. */
+const holdsSecrets = (one: Integration) => one.group === "tools" || one.key === "linear" || one.key === "email";
+/** The one line about where secrets rest, or null: a folder that can't be used always; files only once something set up holds secrets. */
+export function secretsNote(list: readonly Integration[], secrets: SecretsKept | null | undefined): { words: string; problem: boolean } | null {
+  if (secrets === null || secrets === undefined) return null;
+  if (secrets.problem !== undefined) return { words: secrets.problem, problem: true };
+  return secrets.filesOnly && list.some(one => holdsSecrets(one) && one.state !== "not-set-up") ? { words: secrets.words, problem: false } : null;
+}
+
+/** The CLI's lines: one per integration, then the fix under anything Broken; last, where secrets are kept when that is
+ * files only, or why they can't be used (secretsNote). */
+export function renderIntegrations(list: readonly Integration[], secrets: SecretsKept | null = null): string[] {
   const width = Math.min(24, Math.max(...list.map(one => one.name.length)));
-  return list.flatMap(one => {
-    const facts = [one.account, one.detail].filter(Boolean).join(" · ");
+  const said = secretsNote(list, secrets);
+  const note = said === null ? [] : [said.words];
+  return [...list.flatMap(one => {
+    const facts = [one.account, one.detail, one.credentials].filter(Boolean).join(" · ");
     const lines = [`${one.name.padEnd(width)}  ${STATE_WORDS[one.state].padEnd(10)}${facts === "" ? "" : `  ${facts}`}`];
     if (one.state !== "not-set-up") lines.push(`${"".padEnd(width)}  last success ${whenText(one.lastSuccessAt)}${one.lastError === null ? "" : ` · last error ${whenText(one.lastErrorAt)}: ${one.lastError}`}`);
     if (one.action.kind === "fix") lines.push(`${"".padEnd(width)}  Fix: ${one.action.words}${one.action.command === null || one.action.words.includes(one.action.command) ? "" : ` (run ${one.action.command})`}`);
     if (one.action.kind === "setup") lines.push(`${"".padEnd(width)}  Set up: ${one.action.command !== null ? `run ${one.action.command}` : `Settings (${one.action.href ?? "/settings"})`}`);
     return lines;
-  });
+  }), ...note];
 }
 
 // ---------------------------------------------------------------- background

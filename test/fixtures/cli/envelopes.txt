@@ -5622,6 +5622,10 @@ $ integrations --saved --json → 0
     "connected": 3,
     "not-set-up": 8,
     "broken": 0
+  },
+  "secrets": {
+    "kind": "files",
+    "words": "Secrets are protected by owner-only files on this computer."
   }
 }
 

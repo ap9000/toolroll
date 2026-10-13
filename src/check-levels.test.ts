@@ -184,6 +184,12 @@ describe("c1: a project is Quick, Full or Off, and a task can override it", () =
     expect(requiredCheckCommandFor(store, REPO, "checks-off", "off")).toBeNull();
     expect(requiredCheckCommandFor(store, REPO, "checks-off", null)).toBeNull();
     expect(suggestQuickCommand(REPO)).toBe("npm run typecheck && npx vitest related --run $(git diff --name-only HEAD~1)");
+    // A project's own quick script (Toolroll's runs the attack suite when a guard changes) is suggested instead.
+    const own = mkdtempSync(join(tmpdir(), "quick-script-"));
+    try {
+      writeFileSync(join(own, "package.json"), JSON.stringify({ scripts: { typecheck: "tsc", "check:quick": "node scripts/quick-check.mjs" }, devDependencies: { vitest: "4" } }));
+      expect(suggestQuickCommand(own)).toBe("npm run check:quick");
+    } finally { rmSync(own, { recursive: true, force: true }); }
   });
 
   test("in chat: \"skip the tests\" and \"run the full checks\" become the task's checks", () => {

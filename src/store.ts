@@ -539,6 +539,23 @@ CREATE TABLE IF NOT EXISTS integration_check (
   error_at    TEXT
 );
 `;
+/** Tool secrets (no version bump): which sealing key Toolroll made for the secrets it keeps in the keychain, as a
+ * digest of the key, never the key. A key found beside them that isn't this one was put there by something else and is
+ * refused (tool-secret-store.ts). */
+export const TOOL_SECRET_KEY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS tool_secret_key (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  digest  TEXT NOT NULL CHECK (length(digest) = 64),
+  made_at TEXT NOT NULL
+);
+-- Where secrets were kept before Toolroll's folder, decided once at this database's first start (null: none) and never
+-- probed again, so a folder a build makes later under an old name is never migrated in.
+CREATE TABLE IF NOT EXISTS tool_secret_legacy (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  dir        TEXT,
+  decided_at TEXT NOT NULL
+);
+`;
 /** Sprint 8: database backups. One settings row (off, or every so many hours, keeping the newest N in a folder; no
  * folder means `backups` beside the database), every backup's outcome, and a lease the console's backup loop holds
  * and renews while it runs: one process backs up at a time, and a restore sees that the console is running. */
@@ -702,7 +719,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v122 adds, and changes no saved row: the remote URL an owner's project add recorded (project.remote_url), the only
 // remote whose main automatic completion trusts (remote-main.ts; saved projects read none until it is recorded), and
 // fresh base's record of a task branch moved to current main before an attempt (branch_base_move).
-export const SCHEMA_VERSION = 122;
+// v123 adds, and changes no saved row: flows that run on their own (flow_script_provenance, flow_unattended_grant,
+// flow_unattended_run, plan_authorization.basis, flow_trigger_event.on_time and ran_script) and the tool-secret
+// sealing key's record (tool_secret_key, tool_secret_legacy).
+export const SCHEMA_VERSION = 123;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -834,9 +854,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * three nullable task_steer columns (the running build's steering folder), checked the same way. v121 only adds
  * new tables and the columns in V121_ADDED_COLUMNS (null, or no sends), checked the same way. v122 only adds a new
  * table (branch_base_move) and the nullable column in V122_ADDED_COLUMNS (a project's recorded remote), checked the
- * same way.
+ * same way. v123 only adds new tables (unattended flows, tool secrets) and the columns in V123_ADDED_COLUMNS ('mode',
+ * 0 or null), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -891,6 +912,17 @@ export const V121_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
  * recorded (projects added before it read none, until `repos add <project> --remote <url>` records one). */
 export const V122_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   project: { remote_url: { definition: "TEXT", saved: "NULL" } },
+});
+
+/** v123: the columns it adds, with the value every row saved before it reads: which authority armed a plan's
+ * unchanged-plan approval (saved rows read the operating mode), whether a trigger's firing was the clock's own (saved
+ * firings read not), and what code an on-time script firing a grant signed for ran (saved firings read none). */
+export const V123_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  plan_authorization: { basis: { definition: "TEXT NOT NULL DEFAULT 'mode' CHECK (basis IN ('mode', 'grant'))", saved: "'mode'" } },
+  flow_trigger_event: {
+    on_time: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
+    ran_script: { definition: "TEXT", saved: "NULL" },
+  },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -4660,6 +4692,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(LEDGER_CHAIN_SCHEMA);
   db.exec(MONITORING_SCHEMA);
   db.exec(INTEGRATIONS_SCHEMA);
+  // v123: the tool-secret sealing key's record and where secrets were kept before (tool-secret-store.ts): new tables.
+  db.exec(TOOL_SECRET_KEY_SCHEMA);
   db.exec(LEAD_ASK_SCHEMA);
   // Decisions in the chat app (no version bump: additive only): result, plan and merge buttons, and Request changes.
   db.exec(CHAT_DECIDE_SCHEMA);
@@ -4744,15 +4778,15 @@ function initializeStore(db: Database, file: string): Store {
   // v115: the task each standing-order firing filed, kept on the firing itself (a card's task changes as it moves).
   addColumn(db, "flow_trigger_event", "task", "TEXT");
   db.exec(PLAN_AUTO_SCHEMA);
-  // A flow that runs on its own (flow-unattended.ts): its grants and daily runs, and which authority armed a plan's
-  // unchanged-plan approval (saved rows read the operating mode). No version bump: additive only.
+  // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
+  // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
-  addColumn(db, "plan_authorization", "basis", "TEXT NOT NULL DEFAULT 'mode' CHECK (basis IN ('mode', 'grant'))");
-  // Whether a trigger's firing was the clock's own (a schedule due, not Run now): only those can run on their own.
-  addColumn(db, "flow_trigger_event", "on_time", "INTEGER NOT NULL DEFAULT 0");
-  // What code an on-time script firing a grant signed for ran (flow-unattended.ts scriptRanDigestOf); null when it
-  // couldn't be pinned, changed while it ran, or no grant signed it. Additive only: older firings read null.
-  addColumn(db, "flow_trigger_event", "ran_script", "TEXT");
+  // v123: whether a trigger's firing was the clock's own (flow_trigger_event.on_time, V123_ADDED_COLUMNS: a schedule
+  // due, not Run now; only those can run on their own), and what code an on-time script firing a grant signed for ran
+  // (flow_trigger_event.ran_script, V123_ADDED_COLUMNS: flow-unattended.ts scriptRanDigestOf; older firings read null).
+  for (const [table, columns] of Object.entries(V123_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   // v119: planning generations, and why a question closed unanswered (additive only; saved rows read the defaults).
   for (const [table, columns] of Object.entries(V119_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
@@ -5943,6 +5977,37 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /** The digest of the sealing key Toolroll made for its tool secrets; null before it made one (or in an older database). */
+  toolSecretKeyDigest(): string | null {
+    if (!tableExists(this.db, "tool_secret_key")) return null;
+    const row = this.db.prepare("SELECT digest FROM tool_secret_key WHERE id = 1").get();
+    return row === undefined ? null : String(row["digest"]);
+  }
+
+  /**
+   * The folder secrets were kept in before Toolroll's own, as decided at this database's first start of a command that
+   * can start builds (`record`): `probe` runs until then, and its answer (null: none) is kept for every later start.
+   * Other commands never write, so a preview stays read-only and a busy database doesn't stop them.
+   */
+  toolSecretLegacyDir(probe: () => string | null, now: Date, options: { record: boolean }): string | null {
+    const read = () => tableExists(this.db, "tool_secret_legacy") ? this.db.prepare("SELECT dir FROM tool_secret_legacy WHERE id = 1").get() : undefined;
+    let row = read();
+    if (row === undefined) {
+      if (!options.record) return probe();
+      this.db.prepare("INSERT OR IGNORE INTO tool_secret_legacy (id, dir, decided_at) VALUES (1, ?, ?)").run(probe(), now.toISOString());
+      row = read();
+    }
+    return row?.["dir"] === null || row?.["dir"] === undefined ? null : String(row["dir"]);
+  }
+
+  /** Record a new sealing key's digest only if the one recorded is still `expected` (null: none yet). */
+  swapToolSecretKeyDigest(expected: string | null, next: string, now: Date): boolean {
+    const changed = expected === null
+      ? this.db.prepare("INSERT OR IGNORE INTO tool_secret_key (id, digest, made_at) VALUES (1, ?, ?)").run(next, now.toISOString()).changes
+      : this.db.prepare("UPDATE tool_secret_key SET digest = ?, made_at = ? WHERE id = 1 AND digest = ?").run(next, now.toISOString(), expected).changes;
+    return Number(changed) === 1;
   }
 
   // ---- the built-in task store -------------------------------------------

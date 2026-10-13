@@ -97,7 +97,7 @@ export interface ServerRuntime {
   consoleProjects: () => string[];
   flowRooms: FlowRooms;
   providerHome: string;
-  toolHome: string;
+  toolHome: string | undefined;
   leadPrincipal: (who: Who & { via: "cookie"; }) => VerifiedApprover | null;
   chatScopeOf: (focusTask: TaskChatFocus | null, chatProject: string | null) => LeadThreadScope;
   liveTurns: Map<number, LiveTurn>;

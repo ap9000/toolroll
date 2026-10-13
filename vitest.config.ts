@@ -3,8 +3,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    // Review snapshots under output/ are artifacts, never runnable suites.
-    include: ["src/**/*.test.ts"],
+    // Review snapshots under output/ are artifacts, never runnable suites. The attack suite (test/attacks) runs with
+    // everything else, and on its own through its config there.
+    include: ["src/**/*.test.ts", "test/attacks/**/*.test.ts"],
     setupFiles: ["./test/setup-state.ts"],
     // The run's own temp root first (every worker inherits it; the teardown removes it), then the build.
     globalSetup: ["./test/temp-root.ts", "./test/ensure-build.ts"],

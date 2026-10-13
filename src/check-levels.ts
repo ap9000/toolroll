@@ -161,6 +161,8 @@ export function suggestQuickCommand(repo: string): string | null {
   const has = (name: string) => typeof scripts[name] === "string";
   const runner = existsSync(join(repo, "pnpm-lock.yaml")) ? "pnpm" : existsSync(join(repo, "yarn.lock")) ? "yarn" : "npm";
   const run = (name: string) => runner === "npm" ? `npm run ${name}` : `${runner} ${name}`;
+  // A project's own quick script knows its tests best (Toolroll's runs the attack suite when a guard changes).
+  if (has("check:quick")) return run("check:quick");
   const exec = runner === "npm" ? "npx" : `${runner} exec`;
   const typecheck = ["typecheck", "type-check", "check-types", "tsc"].find(has) ?? null;
   const changed = "$(git diff --name-only HEAD~1)";

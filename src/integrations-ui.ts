@@ -5,7 +5,7 @@
  * render never waits on one (see integrations.ts).
  */
 import { html, joinHtml, postForm, type Html } from "./html.js";
-import { STATE_WORDS, type Integration, type IntegrationGroup } from "./integrations.js";
+import { STATE_WORDS, secretsNote, type Integration, type IntegrationGroup, type SecretsKept } from "./integrations.js";
 import { whenUtc } from "./when-html.js";
 import { brandMarkHtml } from "./brand-mark.js";
 
@@ -53,7 +53,7 @@ function row(one: Integration, csrf: string): Html {
   const badge = !one.checked && one.state === "connected"
     ? html`<span class="integration-state integration-state--checking"><i aria-hidden="true"></i>Checking</span>`
     : html`<span class="integration-state integration-state--${one.state}"><i aria-hidden="true"></i>${STATE_WORDS[one.state]}</span>`;
-  const facts = [one.account, one.detail].filter(Boolean).join(" · ");
+  const facts = [one.account, one.detail, one.credentials].filter(Boolean).join(" · ");
   const command = one.action.kind !== "test" ? one.action.command : null;
   const fix = one.action.kind === "fix" ? html`<p class="integration-fix" role="status">${one.action.words}</p>` : "";
   const run = command === null || (one.action.kind === "fix" && one.action.words.includes(command)) ? "" : html`<p class="meta">Run <code>${command}</code> on the computer running Toolroll.</p>`;
@@ -66,7 +66,7 @@ function row(one: Integration, csrf: string): Html {
     action(one, csrf)}<div class="integration-body">${facts === "" ? "" : html`<p class="meta">${facts}</p>`}${fix}${run}${history}${lastError}</div></div>`;
 }
 
-export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean }): Html {
+export function integrationsHtml(list: readonly Integration[], csrf: string, notice: { said?: string | null; problem?: string | null; checking?: boolean; secrets?: SecretsKept }): Html {
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const broken = list.filter(one => one.state === "broken").length;
   const summary = broken > 0 ? html`<p><strong>${broken} need${broken === 1 ? "s" : ""} fixing.</strong></p>`
@@ -75,5 +75,8 @@ export function integrationsHtml(list: readonly Integration[], csrf: string, not
     const rows = list.filter(one => one.group === group);
     return rows.length === 0 ? "" : html`<h2>${title}</h2>${rows.map(one => row(one, csrf))}`;
   });
-  return html`<section class="integrations">${note}${summary}${sections}</section>`;
+  // No keychain here, or Toolroll's folder for secrets can't be used: said once, plainly.
+  const said = secretsNote(list, notice.secrets);
+  const kept = said === null ? "" : said.problem ? html`<p class="problem integration-secrets" role="alert">${said.words}</p>` : html`<p class="meta integration-secrets" role="note">${said.words}</p>`;
+  return html`<section class="integrations">${note}${summary}${kept}${sections}</section>`;
 }

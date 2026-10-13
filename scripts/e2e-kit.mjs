@@ -32,6 +32,10 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+
+// Every Toolroll an end-to-end run starts keeps tool secrets as files in its own temporary state folder, never in the
+// person's login keychain (tool-secret-store.ts): the keychain is the person's, and a run's sign-ins are throwaway.
+process.env.TOOLROLL_SECRET_STORE = "files";
 // A journey's worker never sweeps the machine it runs on (src/storage-sweep.ts); set it to sweep on purpose.
 process.env.TOOLROLL_STORAGE_SWEEP ??= "off";
 
