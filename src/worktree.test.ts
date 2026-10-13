@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, symlinkSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
@@ -104,6 +104,22 @@ describe("the pool, against a stubbed git", () => {
   });
 
   afterEach(() => store.close());
+
+  test.each(["project", "target", "root", "dangling", "loop"])("refuses a symlinked %s before creating any lease files or invoking git", async kind => {
+    const stash = join(root, "stash");
+    mkdirSync(stash);
+    const target = worktreePath(root, "/code/thing", "feat/a");
+    const project = join(root, "thing");
+    if (kind === "target") mkdirSync(project);
+    const poisoned = kind === "target" ? target : kind === "root" ? join(root, "pool-link") : project;
+    symlinkSync(kind === "dangling" ? join(root, "absent") : kind === "loop" ? poisoned : stash, poisoned);
+    const subject = kind === "root" ? new WorktreePool(store, { root: poisoned, runner: async () => { throw new Error("git must not run"); } }) : pool();
+    const result = await subject.lease({ repo: "/code/thing", branch: "feat/a", runner: "builder-1", now: T0 });
+    expect(result).toMatchObject({ ok: false, reason: "git" });
+    expect(calls).toEqual([]);
+    expect(readdirSync(stash)).toEqual([]);
+    expect(store.getWorktree(target)).toBeNull();
+  });
 
   test("creates a worktree and records the lease", async () => {
     const result = await pool().lease({
@@ -834,10 +850,32 @@ describe("the pool, against real git", () => {
     expect(await pool.lease({ repo, branch, reuseBranch: true, runner: "builder-1", now: later(1_000) })).toMatchObject({ ok: true });
   });
 
+  test.each(["discard", "discardChanges", "prune"])("%s uses only hardened Git and never runs planted hooks", async method => {
+    const ordinary = new WorktreePool(store, { root: join(base, "pool") });
+    const made = await ordinary.lease({ repo, branch: "toolroll/disposable", base: "main", runner: "builder-1", now: T0 });
+    if (!made.ok) throw new Error(made.message);
+    await ordinary.release(made.worktree.path, T0);
+    const marker = join(base, "hook-ran");
+    for (const hook of ["post-checkout", "reference-transaction"]) writeFileSync(join(repo, ".git", "hooks", hook), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+    let calls = 0;
+    const hardened = new WorktreePool(store, { root: join(base, "pool"), runner: (file, args, options) => {
+      calls++;
+      expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+      expect(args.includes("--no-includes") || args.includes("core.hooksPath=/dev/null")).toBe(true);
+      return run(file, args, options);
+    } });
+    if (method === "prune") expect((await hardened.prune(store.listWorktrees(), () => true)).removed).toHaveLength(1);
+    else if (method === "discard") expect((await hardened.discard(made.worktree.path, T0)).ok).toBe(true);
+    else expect((await hardened.discardChanges(made.worktree.path)).ok).toBe(true);
+    expect(calls).toBeGreaterThan(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(made.worktree.path)).toBe(false);
+  });
+
   test("a checkout edited after its clean check is never removed: not before the final check, nor between it and git's removal", async () => {
     let edit: ((path: string) => void) | null = null;
     const editing: typeof run = async (file, args, options) => {
-      if (edit !== null && args[0] === "worktree" && args[1] === "remove") { edit(String(args.at(-1))); edit = null; }
+      if (edit !== null && args.includes("worktree") && args.includes("remove")) { edit(String(args.at(-1))); edit = null; }
       return run(file, args, options);
     };
     const pool = new WorktreePool(store, { root: join(base, "pool"), runner: editing });

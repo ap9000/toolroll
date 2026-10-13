@@ -28,12 +28,12 @@ import { basename } from "node:path";
 import { assignmentOf, owedAcceptance, type AssignmentSnapshot } from "./assignment.js";
 import { noteAssignmentStatus } from "./assignment-status.js";
 import { checkoutKeepWhy, taskStatuses, whyWords, type KeepWhy } from "./checkout-cleanup.js";
-import { run, type ExecResult } from "./exec.js";
 import { taskBranches } from "./names.js";
 import type { RemoteMainRead, RemoteMains } from "./remote-main.js";
 import { COMPLETION_ACTION, LANDED_ACTOR, familyChangedFiles } from "./result-completion.js";
 import type { Store, WorktreeRow } from "./store.js";
-import { SCOUT_PREFIX, WORKTREE_TIMEOUT_MS, branchCreatedMessage, type Runner, type WorktreePool } from "./worktree.js";
+import { refusal, teardownGit, type Git } from "./teardown-git.js";
+import { SCOUT_PREFIX, branchCreatedMessage, type Runner, type WorktreePool } from "./worktree.js";
 
 const DAY_MS = 86_400_000;
 /** `storage clean --landed` takes only what has waited at least this long. */
@@ -48,9 +48,10 @@ export const AUTO_ITEMS = 40;
 const MAIN = "refs/heads/main";
 const SHA = /^[0-9a-f]{40}$/;
 
-export type Git = (cwd: string, args: readonly string[]) => Promise<ExecResult>;
-export function gitOf(runner: Runner = run): Git {
-  return (cwd, args) => runner("git", ["--no-optional-locks", ...args], { cwd, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
+export type { Git };
+/** Landed cleanup's git, reads and teardown alike: always the hardened teardown helper (teardown-git.ts). */
+export function gitOf(runner?: Runner): Git {
+  return teardownGit(runner);
 }
 
 export type LandedHow = "merged" | "in-main" | "content-in-main";
@@ -545,6 +546,9 @@ export async function finishLanded(store: Store, pool: WorktreePool, git: Git, r
       mark(item, outcome === "waits" ? "pending" : outcome === "kept" ? "kept" : "done", why);
     };
     if (!stillCurrent(store, item)) { step("kept", "its task has newer work"); continue; }
+    // A project whose config could run a command during teardown waits, saying why, with nothing removed.
+    const refused = existsSync(item.repo) ? refusal(await git(item.repo, ["rev-parse", "--git-dir"])) : null;
+    if (refused !== null) { step("waits", refused); continue; }
     if (item.kind === "checkout") {
       const outcome = await removeCheckout(store, pool, git, remotes, item, now);
       if (outcome.outcome === "removed") store.recordAction({ at: now().toISOString(), actor: item.actor, repo: item.repo, taskId: item.taskId, runId: null,
@@ -600,7 +604,7 @@ async function removeCheckout(store: Store, pool: WorktreePool, git: Git, remote
   };
   const first = checkoutKeepWhy(pool, row, taskStatuses(store, now()), now());
   if (first !== null) return { outcome: "waits", why: whyWords({ why: first }) };
-  const pruned = await pool.prune([row], wanted, 1);
+  const pruned = await pool.prune([row], wanted, 1, git);
   if (pruned.removed.length === 1) return { outcome: "removed", why: null };
   const kept = pruned.kept[0];
   return { outcome: "waits", why: landingHold ?? (kept === undefined ? "in use" : whyWords({ why: kept.why })) };

@@ -1151,6 +1151,66 @@ describe("checkout Git preflight", () => {
     } finally { store.close(); process.env["PATH"] = savedPath; }
   });
 
+  test.each([
+    { own: "with", macos: true, database: true, fence: "macos-sandbox" },
+    { own: "without", macos: true, database: true, fence: "macos-sandbox" },
+    { own: "with", macos: false, database: true, fence: "claude-rules" },
+    { own: "without", macos: false, database: false, fence: "none" },
+  ] as const)("a build's tool containment is fixed before its tools or fence, the same $own a launch folder ($fence)", async ({ own, macos, database, fence }) => {
+    const store = openStore(database ? join(providerHome, "orders.db") : ":memory:");
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    const privateDir = join(providerHome, "so-tools-fixture");
+    mkdirSync(privateDir, { recursive: true });
+    vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(macos);
+    vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
+    vi.mocked(command.run).mockResolvedValue(OK);
+    vi.mocked(projectTools.prepareRunTools).mockImplementation(async () => {
+      // Nothing of the fence exists yet: the decision can't have come from it, or from the launch's own folder.
+      expect(fencing.agentFence).not.toHaveBeenCalled();
+      return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined, ...(own === "with" ? { privateDir } : {}) };
+    });
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree });
+      expect(result.kind).toBe("ran");
+      expect(vi.mocked(projectTools.prepareRunTools).mock.calls[0]![3].containment).toEqual({ platform: process.platform, fence });
+      expect(store.runFence(runId)).toMatchObject({ method: fence });
+    } finally { store.close(); }
+  });
+
+  test.each([true, false])("a changed fence refuses exactly when project tools were prepared: %s", async hasTools => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    const cleanup = vi.fn();
+    mkdirSync(join(providerHome, "empty-config"));
+    // The tools are prepared for the macOS sandbox, then the fence comes back empty: the run would have none.
+    vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: {}, omitEnv: [], cleanup, privateDir: join(providerHome, "empty-config"), ...(hasTools ? { serverPids: () => [] } : {}) });
+    vi.mocked(fencing.agentFence).mockReturnValue([]);
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      const runner = vi.fn(async () => OK);
+      const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner, cwd: tree });
+      if (hasTools) expect(result).toMatchObject({ kind: "refused", reason: "containment", diagnostic: expect.stringContaining("fence changed") });
+      else expect(result.kind).toBe("ran");
+      expect(vi.mocked(projectTools.prepareRunTools).mock.calls[0]![3].containment).toEqual({ platform: process.platform, fence: "macos-sandbox" });
+      if (hasTools) {
+        expect(runner).not.toHaveBeenCalled();
+        expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+      } else expect(runner).toHaveBeenCalled();
+      expect(cleanup).toHaveBeenCalledOnce();
+    } finally { store.close(); }
+  });
+
   test.each(["no-fence", "no-native-wrapper", "bad-control", "passes", "broken-sandbox"])("%s preserves ordinary launch behavior", async scenario => {
     const store = openStore(scenario === "no-fence" ? ":memory:" : join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
@@ -1185,6 +1245,9 @@ describe("checkout Git preflight", () => {
         expect(checked.cwd).toBe(launch!.cwd);
         expect(checked.fence).toBe(launch!.fence);
         expect(checked.fenceGrants).toBe(launch!.fenceGrants);
+        expect(fencing.fenceGrants).toHaveBeenCalledWith(expect.objectContaining({
+          poolRoots: expect.arrayContaining([join(dirname(store.databaseFile()!), "worktrees")]),
+        }));
       }
     } finally { store.close(); }
   });

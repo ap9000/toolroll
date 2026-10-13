@@ -29,10 +29,11 @@ import type { RunOptions } from "./exec.js";
 import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
-import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-tools.js";
+import { noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { poolRootOf } from "./worktree.js";
 import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
@@ -339,10 +340,14 @@ export async function invokeAgent(
   const workspace = invocation.phase === "review" ? null : runOptions.cwd ?? run.worktree ?? null;
   // How a tool server the broker starts is fenced: as its agent is, once that fence is fixed below.
   let serverFence: ((file: string, args: readonly string[]) => { file: string; args: string[] }) | null = null;
+  // The run's containment, fixed before any tool is prepared: this platform and the OS fence its run gets (a build
+  // has one wherever the plane has a database to fence). It decides which tools may hold secrets in a process the
+  // build could otherwise read; nothing the launch or the checkout writes feeds it.
+  const containment: ToolContainment = { platform: process.platform, fence: invocation.phase === "review" ? "none" : fenceMethod(spec.provider, store.databaseFile() !== null) };
   // The project's tools (v80): exactly its MCP servers, and none of the
   // operator's global or a repository's own, served by this launch's broker
   // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
-  const tools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, {
+  const tools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
     env: { ...process.env, ...(runOptions.env ?? {}) },
     omitEnv: [...(runOptions.omitEnv ?? []), ...ALL_CREDENTIAL_ENV],
     pass: childDatabaseEnv(isolatedDb.file),
@@ -381,6 +386,14 @@ export async function invokeAgent(
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
+  // The tools were chosen for the fence decided above: a launch that got any other starts nothing.
+  // Only a prepared project-tool broker depends on the earlier decision. Empty Claude configs also have a privateDir.
+  if (tools?.serverPids !== undefined && fenced.method !== containment.fence) {
+    tools.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: "The build's fence changed while its tools were prepared. Nothing was started; retry the task." };
+  }
   // A tool server the broker starts is fenced by what this platform supports, whatever the provider: Codex's own
   // profile fences only its agent's commands, and the broker starts servers outside it.
   if (fence.length > 0) {
@@ -797,14 +810,18 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
     const home = keyHome === undefined ? {} : { home: keyHome };
     const row = worktree === null ? null : store.getWorktree(worktree);
     if (worktree !== null && row === null) throw new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
-    const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree);
+    const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+    const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree, poolRoots);
     const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding });
     const folders = runFolders(ownTools);
     return {
       fence: agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders }),
       fileTools: boundary?.fileTools ?? [],
       // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
-      grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree) }),
+      // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
+      // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
+      grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
+        poolRoots }),
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
@@ -823,17 +840,23 @@ function inheritedDefaults(provider: AgentSpec["provider"], env: Readonly<Record
  * Gemini inside the macOS sandbox the spawn road applies (`wrap`), Claude
  * elsewhere through its own file-tool rules only. */
 function fenceLaunch(provider: AgentSpec["provider"], fence: readonly string[]): { wrap: readonly string[]; method: FenceMethod } {
-  if (fence.length === 0) return { wrap: [], method: "none" };
-  if (provider === "codex" || provider === "openrouter") return { wrap: [], method: "codex-profile" };
-  if (macosFenceAvailable()) return { wrap: fence, method: "macos-sandbox" };
-  if (linuxFenceAvailable()) return { wrap: fence, method: "linux-bubblewrap" };
-  return { wrap: [], method: provider === "claude" ? "claude-rules" : "none" };
+  const method = fenceMethod(provider, fence.length > 0);
+  return { wrap: method === "macos-sandbox" || method === "linux-bubblewrap" ? fence : [], method };
+}
+
+/** The fence a launch gets, from its provider, whether it has anything to fence, and what this platform supports. */
+function fenceMethod(provider: AgentSpec["provider"], fenced: boolean): FenceMethod {
+  if (!fenced) return "none";
+  if (provider === "codex" || provider === "openrouter") return "codex-profile";
+  if (macosFenceAvailable()) return "macos-sandbox";
+  if (linuxFenceAvailable()) return "linux-bubblewrap";
+  return provider === "claude" ? "claude-rules" : "none";
 }
 
 /** One launch's tools, or — when they cannot be prepared — the same isolation with none, never the operator's global servers. */
-async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined, broker: BrokerOptions): Promise<ToolLaunchArgs> {
+async function runTools(store: Store, runId: number, spec: AgentSpec, keyHome: string | undefined, clock: () => Date, readOnly: Readonly<Record<string, readonly string[]>> | undefined, withheld: Readonly<Record<string, string>> | undefined, containment: ToolContainment, broker: BrokerOptions): Promise<ToolLaunchArgs> {
   try {
-    return await prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }), broker });
+    return await prepareRunTools(store, runId, spec.provider, { ...(keyHome === undefined ? {} : { home: keyHome }), now: clock(), containment, ...(readOnly === undefined ? {} : { readOnly }), ...(withheld === undefined ? {} : { withheld }), broker });
   } catch {
     return noToolsArgs(spec.provider);
   }

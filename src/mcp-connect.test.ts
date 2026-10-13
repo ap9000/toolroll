@@ -12,11 +12,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
-import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, removeToolFrom, setToolSecrets, testTool } from "./project-tools.js";
+import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, removeToolFrom, secretToolRefusal, setToolSecrets, testTool } from "./project-tools.js";
 import { CONNECT_CALLBACK, ONE_CLICK, connectedSpec, connectionsOf, discoverSignIn, finishConnect, grantOf, oneClickServices, readOnlyGrant, refreshConnections, readsOnly, researchToolsOf, scopeList, startConnect } from "./mcp-connect.js";
 import { scoutProxyEnv } from "./scout.js";
 
 const T0 = new Date("2026-09-26T23:00:00.000Z");
+/** A Claude build behind the macOS sandbox: the one containment where a tool with secrets starts. */
+const FENCED = { platform: "darwin", fence: "macos-sandbox" } as const;
 let dir: string, repo: string, store: Store;
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-connect-")));
@@ -302,7 +304,7 @@ test("a research launch gets only connected services' read-only actions: Codex e
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   const readOnly = { mobbin: ["search_screens", "search_flows"], posthog: [] };
-  const launched = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly });
+  const launched = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, containment: FENCED, readOnly });
   try {
     const argv = launched.argv.join(" ");
     expect(argv).toContain('mcp_servers.mobbin.enabled_tools=["search_screens","search_flows"]');
@@ -316,11 +318,11 @@ test("a research launch gets only connected services' read-only actions: Codex e
     launched.cleanup();
   }
   // Nothing readable: no project server at all.
-  const none = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: {} });
+  const none = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, containment: FENCED, readOnly: {} });
   expect(none.argv.join(" ")).not.toContain("mcp_servers.");
   none.cleanup();
   // A build is not limited: every server, every action.
-  const build = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
+  const build = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, containment: FENCED });
   try {
     expect(ids.every(id => build.argv.join(" ").includes(`mcp_servers.${id}.command`))).toBe(true);
     expect(build.argv.join(" ")).not.toContain("enabled_tools");
@@ -364,7 +366,7 @@ test("a build gets the project's Figma desktop app with every action", async () 
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   for (const provider of ["claude", "codex"] as const) {
-    const build = await prepareRunTools(runs, 9, provider, { home: dir, now: T0 });
+    const build = await prepareRunTools(runs, 9, provider, { home: dir, now: T0, containment: FENCED });
     try {
       expect(JSON.parse(recorded), provider).toMatchObject({ tools: [{ name: "figma-desktop" }], skipped: [] });
       if (provider === "codex") expect(build.argv.join(" ")).toContain("figma-desktop");
@@ -455,7 +457,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   grant("openid profile email user:read query:read error_tracking:read");
   expect(research()).toEqual({ services: [{ id: "posthog", label: "PostHog" }], allowed: ["mcp__posthog__exec"], reads: { posthog: ["exec"] }, local: [] });
   expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")).toEqual({ id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "connected" });
-  const allowed = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, readOnly: research().reads });
+  const allowed = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, containment: FENCED, readOnly: research().reads });
   try {
     expect(allowed.argv.join(" ")).toContain('mcp_servers.posthog.enabled_tools=["exec"]');
     expect(JSON.parse(recorded)).toEqual({ provider: "codex", tools: [{ name: "posthog", digest: expect.any(String) }], skipped: [] });
@@ -474,7 +476,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
   expect(research()).toEqual({ services: [], allowed: [], reads: {}, local: [], withheld: { posthog: WRITE_REASON } });
   expect(connectionsOf(store, repo, dir).find(one => one.id === "posthog")?.research).toBe("PostHog is connected with write access, so research runs can't use it.");
   const { reads, withheld } = research();
-  const skipped = await prepareRunTools(runs, 7, "claude", { home: dir, now: T0, readOnly: reads, withheld: withheld! });
+  const skipped = await prepareRunTools(runs, 7, "claude", { home: dir, now: T0, containment: FENCED, readOnly: reads, withheld: withheld! });
   skipped.cleanup();
   expect(JSON.parse(recorded)).toEqual({ provider: "claude", tools: [], skipped: [{ name: "posthog", reason: WRITE_REASON }] });
 
@@ -492,7 +494,7 @@ test("PostHog's exec reaches research only with a read-only grant; a write or un
 
   // A builder launch is unchanged whatever the grant: the whole server, no allow-list, nothing skipped.
   grant("insight:read insight:write");
-  const build = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0 });
+  const build = await prepareRunTools(runs, 7, "codex", { home: dir, now: T0, containment: FENCED });
   try {
     expect(build.argv.join(" ")).toContain("mcp_servers.posthog.command");
     expect(build.argv.join(" ")).not.toContain("enabled_tools");
@@ -574,12 +576,12 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     recordRunTools: (_run: number, json: string) => { recorded = json; },
   } as unknown as Parameters<typeof prepareRunTools>[0];
   // No opt-in: Claude gets its strict list, written out empty; Codex names no server.
-  const none = await prepareRunTools(runs, 11, "claude", { home: dir, now: T0 });
+  const none = await prepareRunTools(runs, 11, "claude", { home: dir, now: T0, containment: FENCED });
   try {
     expect(none.argv).toEqual(["--mcp-config", expect.stringMatching(/mcp\.json$/)]);
     expect(JSON.parse(readFileSync(none.argv[1]!, "utf8"))).toEqual({ mcpServers: {} });
   } finally { none.cleanup(); }
-  const noneCodex = await prepareRunTools(runs, 11, "codex", { home: dir, now: T0 });
+  const noneCodex = await prepareRunTools(runs, 11, "codex", { home: dir, now: T0, containment: FENCED });
   expect(noneCodex.argv).toEqual([]);
   noneCodex.cleanup();
 
@@ -591,7 +593,7 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     setToolSecrets(repo, name, { NOTES_TOKEN: token }, dir);
   }
   seal = projectToolsOf(store, repo).filter(one => one.name === "notes").map(one => ({ name: one.name, digest: one.digest }));
-  const claude = await prepareRunTools(runs, 12, "claude", { home: dir, now: T0 });
+  const claude = await prepareRunTools(runs, 12, "claude", { home: dir, now: T0, containment: FENCED });
   try {
     expect(claude.argv.filter(one => one === "--mcp-config")).toHaveLength(1);
     const file = claude.argv[claude.argv.indexOf("--mcp-config") + 1]!;
@@ -603,7 +605,7 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     expect(JSON.parse(recorded)).toMatchObject({ provider: "claude", tools: [{ name: "notes" }], skipped: [{ name: "later", reason: expect.stringContaining("after this task was approved") }] });
   } finally { claude.cleanup(); }
 
-  const codex = await prepareRunTools(runs, 13, "codex", { home: dir, now: T0 });
+  const codex = await prepareRunTools(runs, 13, "codex", { home: dir, now: T0, containment: FENCED });
   try {
     const argv = codex.argv.join(" ");
     expect(codex.argv).toEqual([]);
@@ -616,4 +618,43 @@ test("a build's MCP servers are exactly its project's named, sealed tools: none 
     // The operator's config.toml is ignored by the provider's own flags; nothing of it is carried here.
     for (const carried of ["model=", "model_reasoning_effort", "personality", "service_tier"]) expect(argv).not.toContain(carried);
   } finally { codex.cleanup(); }
+});
+
+test("a local tool with secrets starts only for a Claude build behind the macOS sandbox; every other launch leaves it out, saying why", () => {
+  const unsandboxed = "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it.";
+  const linux = "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool.";
+  const codex = "This tool needs a Claude build to protect its sign-in details.";
+  expect(secretToolRefusal("claude", FENCED)).toBeNull();
+  for (const fence of ["claude-rules", "none", "codex-profile", "linux-bubblewrap"] as const) expect(secretToolRefusal("claude", { platform: "darwin", fence })).toBe(unsandboxed);
+  // Linux refuses outright, whatever fence it reports: hidepid hides nothing from the same user.
+  for (const fence of ["linux-bubblewrap", "claude-rules", "none", "macos-sandbox"] as const) expect(secretToolRefusal("claude", { platform: "linux", fence })).toBe(linux);
+  expect(secretToolRefusal("claude", { platform: "win32", fence: "macos-sandbox" })).toBe(unsandboxed);
+  for (const provider of ["codex", "openrouter"] as const) expect(secretToolRefusal(provider, FENCED)).toBe(codex);
+});
+
+test("a Linux build keeps its web and secret-free tools; only the local one with secrets is left out, and it never starts", async () => {
+  let recorded = "";
+  const runs = {
+    projectTools: (one: string) => store.projectTools(one), orgPolicy: () => store.orgPolicy(),
+    getRun: () => ({ taskRef: 1 }), refById: () => ({ repo, externalId: "linux-tools" }), getScope: () => null, toolSealFor: () => null,
+    recordRunTools: (_run: number, json: string) => { recorded = json; },
+  } as unknown as Parameters<typeof prepareRunTools>[0];
+  const marker = ["linux", "stdio", "marker", "9d".repeat(12)].join("-");
+  const log = join(dir, "started.log");
+  const stdio = (name: string, secrets: { name: string; optional: boolean }[]) => ({ name, transport: "stdio" as const, command: "/bin/sh", args: ["-c", `echo ${name} >> ${log}`], url: null, secrets, bearer: null, headerSecrets: {}, about: name });
+  expect(addToolTo(store, repo, stdio("vault", [{ name: "VAULT_TOKEN", optional: false }]), "custom", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+  expect(addToolTo(store, repo, stdio("browser", []), "custom", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+  expect(addToolTo(store, repo, { name: "issues", transport: "http", command: null, args: [], url: "https://issues.example.test/mcp", secrets: [{ name: "ISSUES_TOKEN", optional: false }], bearer: "ISSUES_TOKEN", headerSecrets: {}, about: "Issues" }, "custom", "alex", T0, { home: dir })).toMatchObject({ ok: true });
+  setToolSecrets(repo, "vault", { VAULT_TOKEN: marker }, dir);
+  setToolSecrets(repo, "issues", { ISSUES_TOKEN: ["issues", "4b".repeat(12)].join("-") }, dir);
+  const launched = await prepareRunTools(runs, 21, "claude", { home: dir, now: T0, containment: { platform: "linux", fence: "linux-bubblewrap" } });
+  try {
+    const file = launched.argv[launched.argv.indexOf("--mcp-config") + 1]!;
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).mcpServers).sort()).toEqual(["browser", "issues"]);
+    expect(readFileSync(file, "utf8")).not.toContain(marker);
+    expect(launched.serverPids?.() ?? []).toEqual([]);
+    expect(existsSync(log)).toBe(false);
+    expect(JSON.parse(recorded)).toMatchObject({ provider: "claude", skipped: [{ name: "vault", reason: "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool." }] });
+    expect(JSON.parse(recorded).tools.map((one: { name: string }) => one.name).sort()).toEqual(["browser", "issues"]);
+  } finally { launched.cleanup(); }
 });

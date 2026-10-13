@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
@@ -25,7 +25,8 @@ import { runOperate, EXIT } from "./operate.js";
 import { WorktreePool, branchCreatedMessage } from "./worktree.js";
 import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
 import { admitProject } from "./project-admission.js";
-import { RemoteMains } from "./remote-main.js";
+import { ENV_ALLOWLIST, RemoteMains } from "./remote-main.js";
+import { TEARDOWN_FLAGS } from "./teardown-git.js";
 import { AUTO_ITEMS, LANDED_CLEANED_ACTION, finishLanded as finishWith, gitOf, landedBacklog, landedProof, landedResults as resultsWith, recordBranchIntent, recordLandedIntent, remoteLandedProof, type Git } from "./landed-cleanup.js";
 
 const DAY = 86_400_000;
@@ -477,17 +478,14 @@ describe("review regressions: eligibility and teardown fences", () => {
       changed = true;
       store.handle.prepare("UPDATE publication SET remote_state = 'OPEN' WHERE run = ?").run(work.runId);
     };
-    const duringInspection = new WorktreePool(store, { root: poolRoot, runner: async (file, args, options) => {
-      const result = await run(file, args, options);
-      if (!changed && kind === "checkout" && args.includes("rev-list")) invalidate();
-      return result;
-    } });
-    const duringBranch: Git = async (cwd, args) => {
+    // The checkout's inspection runs through teardown's git too, so one hook sees both.
+    const during: Git = async (cwd, args) => {
       const result = await git(cwd, args);
+      if (!changed && kind === "checkout" && args.includes("rev-list")) invalidate();
       if (!changed && kind === "branch" && args[0] === "rev-parse" && args.includes("refs/heads/toolroll/changed-proof^{commit}")) invalidate();
       return result;
     };
-    const steps = await finishLanded(store, duringInspection, duringBranch, () => NOW);
+    const steps = await finishLanded(store, pool, during, () => NOW);
     expect(changed).toBe(true);
     expect(steps.every(one => one.outcome === "waits")).toBe(true);
     expect(existsSync(work.path)).toBe(kind === "checkout");
@@ -830,5 +828,95 @@ describe("follow-ups: branch age and provenance, waiting items, duplicate intent
     expect(branch("toolroll/twice")).toBeNull();
     expect(store.handle.prepare("SELECT id FROM landed_cleanup WHERE finished_at IS NULL").all()).toEqual([]);
     expect(ledger(LANDED_CLEANED_ACTION).map(one => one.detail).sort()).toEqual(["its commits are in main: 0 removed, 1 kept", "its commits are in main: 1 removed"]);
+  });
+});
+
+describe("teardown runs no command a build planted in the shared repository", () => {
+  const marker = () => join(dir, "planted-ran");
+  const script = (path: string, name: string) => { writeFileSync(path, `#!/bin/sh\necho ${name} >> "${marker()}"\nexit 0\n`); chmodSync(path, 0o755); };
+  const plantHooks = () => {
+    for (const hook of ["post-checkout", "reference-transaction", "pre-auto-gc", "post-index-change"]) script(join(repo, ".git", "hooks", hook), hook);
+    // Live as planted: plain git runs them.
+    sh(repo, ["update-ref", "refs/probe/live", "HEAD"]);
+    expect(existsSync(marker())).toBe(true);
+    sh(repo, ["update-ref", "-d", "refs/probe/live"]);
+    rmSync(marker());
+  };
+
+  test("c1: post-checkout and reference-transaction hooks never run while reconcile tears landed work down", async () => {
+    const work = await built("hooked", { "src/hooked.ts": "hooked\n" });
+    merged(work, 21);
+    plantHooks();
+    const first = await reconcile();
+    expect(JSON.parse(first.text).landed.completed).toEqual(["hooked"]);
+    expect(existsSync(work.path)).toBe(false);
+    expect(branch("toolroll/hooked")).toBeNull();
+    expect(branch("toolroll-plan/hooked")).toBeNull();
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  test("c1: an fsmonitor command in the project's or the checkout's config keeps teardown waiting, and never runs", async () => {
+    const work = await built("watched", { "src/watched.ts": "watched\n" });
+    merged(work, 22);
+    const candidate = (await landedResults(store, git, repo, root, NOW)).found[0]!;
+    expect(recordLandedIntent(store, candidate, NOW, root).ok).toBe(true);
+    const monitor = join(dir, "monitor.sh");
+    script(monitor, "fsmonitor");
+    sh(repo, ["config", "core.fsmonitor", monitor]);
+    // Live as planted: plain git status runs it.
+    sh(work.path, ["status", "--porcelain"]);
+    expect(existsSync(marker())).toBe(true);
+    rmSync(marker());
+    plantHooks();
+    // Discovery refuses too: nothing new is found while it is set.
+    expect((await landedResults(store, git, repo, root, NOW)).found).toEqual([]);
+    const steps = await finishLanded(store, pool, git, () => NOW);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) expect(step).toMatchObject({ outcome: "waits", why: "the project's git config sets core.fsmonitor, which can run a command" });
+    expect(existsSync(work.path)).toBe(true);
+    expect(branch("toolroll/watched")).toBe(work.head);
+    expect(existsSync(marker())).toBe(false);
+
+    // Only in the checkout's own config: its commands are refused, so it stays, and its branch waits behind it.
+    sh(repo, ["config", "--unset", "core.fsmonitor"]);
+    sh(repo, ["config", "extensions.worktreeConfig", "true"]);
+    sh(work.path, ["config", "--worktree", "core.fsmonitor", monitor]);
+    expect((await finishLanded(store, pool, git, () => NOW)).every(step => step.outcome === "waits")).toBe(true);
+    expect(existsSync(work.path)).toBe(true);
+    expect(branch("toolroll/watched")).toBe(work.head);
+    expect(existsSync(marker())).toBe(false);
+
+    // Taken out, the same teardown finishes, still without running anything planted.
+    sh(work.path, ["config", "--worktree", "--unset", "core.fsmonitor"]);
+    expect((await finishLanded(store, pool, git, () => NOW)).map(step => step.outcome)).toEqual(["removed", "removed", "removed"]);
+    expect(existsSync(work.path)).toBe(false);
+    expect(branch("toolroll/watched")).toBeNull();
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  test("c2: every teardown git command goes through the hardened helper, none through the pool's own runner", async () => {
+    const work = await built("routed", { "src/routed.ts": "routed\n" });
+    merged(work, 23);
+    const calls: { args: readonly string[]; options: Parameters<typeof run>[2] }[] = [];
+    const poolRan: (readonly string[])[] = [];
+    const routed = gitOf((file, args, options) => { calls.push({ args, options }); return run(file, args, options); });
+    const plainPool = new WorktreePool(store, { root: poolRoot, runner: (file, args, options) => { poolRan.push(args); return run(file, args, options); } });
+    const candidate = (await landedResults(store, routed, repo, root, NOW)).found[0]!;
+    expect(recordLandedIntent(store, candidate, NOW, root).ok).toBe(true);
+    expect((await finishLanded(store, plainPool, routed, () => NOW)).map(step => step.outcome)).toEqual(["removed", "removed", "removed"]);
+    expect(poolRan).toEqual([]);
+    const listing = ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"];
+    for (const call of calls) {
+      if (call.args[1] === "config") expect(call.args).toEqual(listing);
+      else expect(call.args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
+      expect(call.options).toMatchObject({ envAllowlist: ENV_ALLOWLIST, env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" } });
+    }
+    const ran = calls.filter(call => call.args[1] !== "config").map(call => call.args.slice(TEARDOWN_FLAGS.length));
+    // Every operation has a config scan; removal also scans its target. Index preflights share that scan.
+    expect(calls.filter(call => call.args[1] === "config")).toHaveLength(
+      ran.filter(args => !args.includes("ls-files")).length + ran.filter(args => args[0] === "worktree" && args[1] === "remove").length);
+    for (const done of [["worktree", "remove", work.path], ["update-ref", "--no-deref", "-d", "refs/heads/toolroll/routed", work.head]])
+      expect(ran).toContainEqual(done);
+    expect(ran.some(args => args.includes("status"))).toBe(true);
   });
 });

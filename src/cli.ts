@@ -391,6 +391,8 @@ async function dispatch(
   // A saved API token sends commands marked remote to the central server, before anything local opens.
   // Command families below load when their command runs, so one command never pays for the others.
   if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
+  // This computer's own service, read here and never on a central server.
+  if (argv[0] === 'doctor') return (await import("./doctor.js")).runDoctorCommand(argv.slice(1), write);
   const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);
   if (typeof central === "number") return central;
   if (central !== null) argv = central.local;

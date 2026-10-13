@@ -196,9 +196,11 @@ async function relayWeb(tool: BrokeredTool, request: IncomingMessage, body: stri
   }
 }
 
-/** A relayed answer with a research step's list limited, JSON or event stream alike. */
+/** A relayed answer with a research step's list limited, JSON or event stream alike. An answer that isn't JSON (an
+ * accepted notification's empty 202) carries no list and passes as it is. */
 function limitAnswer(answer: Answer, actions: readonly string[] | undefined): Answer {
   if (actions === undefined) return answer;
+  if (!answer.type.includes("text/event-stream") && jsonOf(answer.body) === undefined) return answer;
   const limit = (text: string) => {
     try {
       const parsed = JSON.parse(text) as Message | Message[];
@@ -214,6 +216,29 @@ function limitAnswer(answer: Answer, actions: readonly string[] | undefined): An
     }).join("\n\n")
     : limit(answer.body);
   return { ...answer, body };
+}
+
+/** A body's JSON, or undefined when it is empty or not JSON. */
+function jsonOf(body: string): Message | Message[] | undefined {
+  if (body.trim() === "") return undefined;
+  try { return JSON.parse(body) as Message | Message[]; } catch { return undefined; }
+}
+
+/**
+ * A research batch's relayed answer with the broker's refusals added: always something the agent can read. An event
+ * stream gets them as further events; anything else becomes one JSON 200 holding the server's answers, when it gave
+ * some as JSON, and the refusals. An empty or non-JSON answer (an accepted notification's 202) is never passed on
+ * alone, which would drop the refusals; a request the server left unanswered gets an error instead.
+ */
+function withRefusals(answer: Answer, allowed: readonly Message[], refusals: readonly Message[]): Answer {
+  if (answer.type.includes("text/event-stream")) {
+    return { ...answer, body: answer.body + refusals.map(one => `\nevent: message\ndata: ${JSON.stringify(one)}\n\n`).join("") };
+  }
+  const parsed = answer.status >= 200 && answer.status < 300 ? jsonOf(answer.body) : undefined;
+  const upstream = parsed === undefined ? [] : Array.isArray(parsed) ? parsed : [parsed];
+  const why = answer.status >= 200 && answer.status < 300 ? "The tool returned an invalid response." : `The tool's server answered HTTP ${answer.status}.`;
+  const unanswered = allowed.filter(one => isRequest(one) && !upstream.some(reply => reply !== null && typeof reply === "object" && reply.id === one.id)).map(one => rpcError(one.id, why));
+  return { ...answer, status: 200, type: "application/json", body: JSON.stringify([...upstream, ...unanswered, ...refusals]) };
 }
 
 function readBody(request: IncomingMessage): Promise<string | null> {
@@ -274,16 +299,8 @@ export async function startToolBroker(tools: readonly BrokeredTool[], options: B
     if (server === undefined) {
       const allowed = messages.filter((_, index) => refusals[index] === null);
       // Relay exactly what was parsed and authorized, never ambiguous raw JSON.
-      let answer = limitAnswer(await relayWeb(tool, request, JSON.stringify(Array.isArray(parsed) ? allowed : allowed[0])), tool.actions);
-      if (deniedAnswers.length > 0) {
-        if (answer.type.includes("text/event-stream")) {
-          answer = { ...answer, body: answer.body + deniedAnswers.map(one => `\nevent: message\ndata: ${JSON.stringify(one)}\n\n`).join("") };
-        } else if (answer.status >= 200 && answer.status < 300) {
-          const upstream = answer.body.trim() === "" ? [] : JSON.parse(answer.body) as Message | Message[];
-          answer = { ...answer, status: 200, type: "application/json", body: JSON.stringify([...(Array.isArray(upstream) ? upstream : [upstream]), ...deniedAnswers]) };
-        }
-      }
-      return reply(response, answer);
+      const answer = limitAnswer(await relayWeb(tool, request, JSON.stringify(Array.isArray(parsed) ? allowed : allowed[0])), tool.actions);
+      return reply(response, deniedAnswers.length === 0 ? answer : withRefusals(answer, allowed, deniedAnswers));
     }
     const answers: Message[] = [];
     for (const [index, message] of messages.entries()) {
