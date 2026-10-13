@@ -315,7 +315,7 @@ test("a production child sweep while a build runs leaves everything the build us
   expect(alive(server)).toBe(false);
   expect(sharedCopies(join(dir, "deps"))).toEqual([]);
   expect(lastSweep(store)).toMatchObject({ actor: "test-operator", parts: after.parts });
-}, 30_000);
+});
 
 test("with a build running and its processes unreadable, nothing goes; with nothing running, the sweep is as before", async () => {
   const stale = leftovers(1);

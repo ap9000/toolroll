@@ -190,7 +190,9 @@ describe("the agent fence", () => {
   test.skipIf(!macosFenceAvailable())("generated Codex and Claude fences permit linked checkout Git commands", () => {
     const { main, sibling, head } = linkedCheckout();
     const binding = trustedWorktreeBinding(main, worktree);
-    for (const provider of ["claude", "codex"]) {
+    // Codex's half needs the Codex CLI (not on every macOS runner); Claude's runs wherever Seatbelt does.
+    const codexInstalled = spawnSync("codex", ["--version"], { encoding: "utf8" }).error === undefined;
+    for (const provider of codexInstalled ? ["claude", "codex"] : ["claude"]) {
       const boundary = taskBoundary({ worktree, provider, home, binding });
       const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
       const grants = fenceGrants({ databaseFile: null, worktree, boundary });
