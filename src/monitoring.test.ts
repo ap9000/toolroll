@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -266,7 +266,8 @@ test("the settings file and the stream folder are fenced from agents wherever th
   mkdirSync(stream);
   saveMonitoring(shared, { webhook: "https://logs.example.com/x", folder: stream, tracesEndpoint: "", headerName: "", headerValue: "", rotate: false }, NO_MONITORING);
   const fence = agentFence({ databaseFile: join(shared, "orders.db"), worktree: null });
-  expect(fence).toContain(join(shared, "monitoring.json"));
+  // The fence holds canonical paths (the macOS sandbox matches only those; its temp folder is a link).
+  expect(fence).toContain(join(realpathSync(shared), "monitoring.json"));
   // So is the folder the audit stream writes to: it holds the whole instance's history.
   expect(fence.some(path => path.endsWith("/audit-stream"))).toBe(true);
 });

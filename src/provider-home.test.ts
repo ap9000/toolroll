@@ -5,14 +5,15 @@
  * agent, removed after the run, fresh and resumed alike.
  */
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { claudeDefaults, codexDefaults, isolatedCodexHome } from "./provider-home.js";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
 import { invokeAgent } from "./invoke.js";
+import { boundCheckout } from "../test/bound-checkout.js";
 
 const T0 = new Date("2026-10-12T12:00:00.000Z");
 
@@ -75,8 +76,9 @@ describe("what a build keeps of the provider's own home", () => {
   });
 
   describe("through the gateway", () => {
-    let store: Store, home: string, worktree: string;
+    let store: Store, home: string, worktree: string, savedPath: string | undefined;
     beforeEach(() => {
+      savedPath = process.env["PATH"];
       home = join(dir, "home");
       worktree = join(dir, "standing-orders", "worktrees", "app", "task");
       mkdirSync(join(home, ".codex", "skills"), { recursive: true });
@@ -85,9 +87,22 @@ describe("what a build keeps of the provider's own home", () => {
       writeFileSync(join(home, ".codex", "AGENTS.md"), "Global instructions");
       writeFileSync(join(home, ".codex", "config.toml"), 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n');
       store = openStore(join(dir, "standing-orders", "orders.db"));
+      // The checkout is a recorded linked worktree, as the pool hands one over: a fenced launch trusts nothing else.
+      boundCheckout(store, join(dir, "app"), worktree);
+      // The launch's fence self-check runs `codex sandbox -- git ...` before the (injected) provider starts. A stand-in
+      // runs the command unsandboxed, so the private home holds only what the launch itself put there, whether or not
+      // this machine has a real Codex (whose start-up writes its own scratch folder there).
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "codex"), '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ "$#" -gt 0 ] && shift\nexec "$@"\n');
+      chmodSync(join(bin, "codex"), 0o755);
+      process.env["PATH"] = `${bin}${delimiter}${savedPath ?? ""}`;
       register(store, { name: "builder-1", host: "test", capacity: 9, repos: [dir], now: T0, newToken: () => "tok" });
     });
-    afterEach(() => store.close());
+    afterEach(() => {
+      store.close();
+      if (savedPath === undefined) delete process.env["PATH"]; else process.env["PATH"] = savedPath;
+    });
 
     test.each([null, "thread-1"])("private home failure refuses before spawn and leaves no started stamp (resume %s)", async resumeSession => {
       store.createTask({ id: "home-failure", title: "home-failure" }, T0);

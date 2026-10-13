@@ -4,7 +4,8 @@
  * spawn, and every completed process's usage is read, exit code be damned.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { spawnSync } from "node:child_process";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resetAttestationCache } from "./attest.js";
@@ -13,6 +14,14 @@ import { openStore, type Store } from "./store.js";
 import { invokeAgent as invokeGateway, type InvokeResult } from "./invoke.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
 import { acquire } from "./claim.js";
+import * as command from "./exec.js";
+import * as fencing from "./agent-fence.js";
+import * as projectTools from "./project-tools.js";
+import type { RunOptions } from "./exec.js";
+vi.mock("./exec.js", { spy: true });
+vi.mock("./agent-fence.js", { spy: true });
+vi.mock("./project-tools.js", { spy: true });
+
 import { fakePid } from "../test/fake-pid.js";
 
 // Gateway tests must use a disposable provider home, never the operator's
@@ -1044,5 +1053,139 @@ describe("the architecture rule", () => {
     expect(spawners).toEqual([]);
     // build-review.ts: the one automatic read-only review per build, admitted through admitReview's run and budget.
     expect(invokers.sort()).toEqual(["build-review.ts", "builder.ts", "planner.ts", "scout.ts"]);
+  });
+});
+
+
+describe("checkout Git preflight", () => {
+  afterEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); resetAttestationCache(); });
+
+  function bindCheckout(store: Store, tree: string) {
+    const repo = join(providerHome, "repository");
+    mkdirSync(repo);
+    for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "probe", tree]]) {
+      const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    store.saveWorktree({ path: tree, repo, branch: "probe", runner: null, taskRef: null, createdAt: T0.toISOString(), leasedAt: null, releasedAt: null, verified: true });
+    return repo;
+  }
+
+  test.each(["ssh", "state", "database"])("changed %s pointer refuses before provider stamp or spawn", async target => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    const pointer = target === "ssh" ? join(providerHome, ".ssh", "x") : target === "state" ? join(providerHome, ".toolroll", ".git", "worktrees", "x") : join(providerHome, "orders.db");
+    writeFileSync(join(tree, ".git"), `gitdir: ${pointer}\n`);
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      const runner = vi.fn(async () => OK);
+      const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner, cwd: tree });
+      expect(result).toMatchObject({ kind: "refused", reason: "containment", diagnostic: expect.stringContaining("The checkout's Git pointer was changed") });
+      expect(runner).not.toHaveBeenCalled();
+      expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+    } finally { store.close(); }
+  });
+
+  test.each(["claude", "codex", "gemini"] as const)("%s checks the completed fence before stamping or starting, and cleans refused launches", async provider => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    const blocked = join(providerHome, "main", ".git");
+    const privateDir = join(providerHome, "so-tools-fixture");
+    for (const path of [tree, blocked, privateDir]) mkdirSync(path, { recursive: true });
+    bindCheckout(store, tree);
+    const cleanup = vi.fn(() => rmSync(privateDir, { recursive: true, force: true }));
+    vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: { FENCE_FIXTURE: "same" }, omitEnv: [], privateDir, cleanup });
+    vi.mocked(fencing.agentFence).mockReturnValue([blocked]);
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
+    const binary = join(providerHome, "gemini");
+    writeFileSync(binary, "#!/bin/sh\necho 0.57.0\n");
+    chmodSync(binary, 0o755);
+    const savedPath = process.env["PATH"];
+    process.env["PATH"] = `${providerHome}:${savedPath ?? ""}`;
+    resetAttestationCache();
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build", provider), now: T0 });
+      const runner = vi.fn(async () => OK);
+      const calls: { file: string; args: readonly string[]; options: RunOptions }[] = [];
+      vi.mocked(command.run).mockImplementation(async (file, args, options = {}) => {
+        expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+        calls.push({ file, args, options });
+        return calls.length !== 2 ? OK : { ...OK, code: 128, stderr: `denied ${blocked}` };
+      });
+      const result = await invokeAgent(store, runId, { provider, model: null }, ASK, { runner, cwd: tree, env: { PROBE_MARKER: "same" }, omitEnv: ["UNWANTED"] });
+      expect(result).toMatchObject({ kind: "refused", reason: "containment" });
+      if (result.kind !== "refused") throw new Error("expected refusal");
+      expect(result.diagnostic?.split("\n")[0]).toBe("The build fence blocks this checkout's own Git data.");
+      expect(result.diagnostic).toContain(blocked);
+      expect(runner).not.toHaveBeenCalled();
+      expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+      expect(calls).toHaveLength(3);
+      expect(calls[0]).toMatchObject({ file: "git", args: [...fencing.HARDENED_GIT_ARGS, "rev-parse", "HEAD"] });
+      expect(calls[0]!.options.fence).toBeUndefined();
+      expect(calls[1]!.options).toMatchObject({ cwd: tree, envAllowlist: [], omitEnv: expect.arrayContaining(["UNWANTED"]) });
+      expect(calls[1]!.options.env).toBe(calls[0]!.options.env);
+      if (provider === "codex") {
+        expect(calls[1]!.file).toBe("codex");
+        expect(calls[1]!.args[0]).toBe("sandbox");
+        const policy = calls[1]!.args.join(" ");
+        expect(policy).toContain(blocked);
+        expect(policy).toContain(privateDir);
+        const home = calls[1]!.options.env!["CODEX_HOME"]!;
+        expect(policy).toContain(home);
+        expect(existsSync(home)).toBe(false);
+      } else {
+        expect(calls[1]!.options.fence).toEqual([blocked]);
+        expect(calls[1]!.options.fenceGrants).toBeDefined();
+      }
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(existsSync(privateDir)).toBe(false);
+      expect(calls[0]!.options.env).not.toHaveProperty("GIT_DIR");
+      expect(calls[2]!.args.at(-1)).toBe(provider === "codex" ? "true" : undefined);
+    } finally { store.close(); process.env["PATH"] = savedPath; }
+  });
+
+  test.each(["no-fence", "no-native-wrapper", "bad-control", "passes", "broken-sandbox"])("%s preserves ordinary launch behavior", async scenario => {
+    const store = openStore(scenario === "no-fence" ? ":memory:" : join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
+    vi.mocked(fencing.macosFenceAvailable).mockReturnValue(scenario !== "no-native-wrapper");
+    vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
+    try {
+      registerBuilder(store);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      const probe = vi.mocked(command.run).mockImplementation(async () => {
+        expect(store.getRun(runId)?.providerStartedAt).toBeNull();
+        return { ...OK, code: scenario === "bad-control" || (scenario === "broken-sandbox" && probe.mock.calls.length > 1) ? 128 : 0 };
+      });
+      let launch: RunOptions | undefined;
+      const runner = vi.fn(async (_file: string, _args: readonly string[], options?: RunOptions) => {
+        launch = options;
+        expect(store.getRun(runId)?.providerStartedAt).not.toBeNull();
+        return OK;
+      });
+      const result = await invokeAgent(store, runId, CLAUDE, ASK, { runner, cwd: tree });
+      expect(result.kind).toBe("ran");
+      expect(runner).toHaveBeenCalledOnce();
+      expect(probe).toHaveBeenCalledTimes((scenario === "no-fence" || scenario === "no-native-wrapper") ? 0 : scenario === "bad-control" ? 1 : scenario === "broken-sandbox" ? 3 : 2);
+      if (scenario === "passes") {
+        const checked = probe.mock.calls[1]![2]!;
+        expect(checked.env).toEqual(fencing.checkoutGitEnv({ ...process.env, ...launch!.env }));
+        expect(checked.envAllowlist).toEqual([]);
+        expect(checked.omitEnv).toBe(launch!.omitEnv);
+        expect(checked.cwd).toBe(launch!.cwd);
+        expect(checked.fence).toBe(launch!.fence);
+        expect(checked.fenceGrants).toBe(launch!.fenceGrants);
+      }
+    } finally { store.close(); }
   });
 });

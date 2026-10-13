@@ -33,7 +33,7 @@ import { noToolsArgs, prepareRunTools, type ToolLaunchArgs } from "./project-too
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { agentFence, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
@@ -325,74 +325,6 @@ export async function invokeAgent(
     store.stampRun(runId, { sessionId: startSessionId });
   }
 
-  // The stamp precedes the spawn, so a crash between the two leaves a run
-  // that claims spend which never happened — the honest direction. A spawn
-  // before the stamp would leave spend no record claims, which is the lie
-  // the invariant exists to rule out. For attested providers the probed
-  // version rides the SAME durable write (B2).
-  // The spawn leg of the runner gate (MCP spec v6, review finding 4):
-  // the tuple re-proven against LIVE rows AFTER every awaited step, in
-  // the same breath as the stamp — a takeover during the attestation
-  // await can no longer slip a stale process through.
-  // THE PLANNER'S ROUTE, RE-PROVED AT THE SPAWN (final authority closure):
-  // the provenance the planner was admitted under is held to the authority
-  // its task holds RIGHT NOW — the strict working projection of a filed
-  // scope (exact terms, resolved profile, route parity, digest,
-  // live auth mode), or the bare word `legacy` on a task with no scope. A
-  // scope rewritten, corrupted, or unresolved between the claim and this
-  // instant invokes no provider: a value-shaped refusal, no spend.
-  if (run.role === "planner") {
-    const proved = store.proveRouteForSpawn(runId, clock());
-    if (!proved.ok) {
-      return {
-        kind: "refused",
-        reason: "route-authority",
-        providerVersion: attested === null ? null : attested.version,
-        diagnostic: `the planner's route authority lapsed before spawn — ${proved.problem}`,
-      };
-    }
-  }
-  if (!store.proveRunnerCustodyForSpawn(runId, clock())) {
-    return {
-      kind: "refused",
-      reason: "runner-custody",
-      providerVersion: attested === null ? null : attested.version,
-      diagnostic: "the run's runner custody lapsed before spawn — the lease, the runner, or its repo binding no longer stands",
-    };
-  }
-  // THE STOP FENCE at the spawn (v52): a stop recorded against this run
-  // — or the attempt it runs under — before this instant spawns nothing.
-  // A value-shaped refusal, no stamp, no process, no spend; the road's
-  // settlement seals the attempt as interrupted.
-  const stopBeforeSpawn = store.applicableStopFor(runId);
-  if (stopBeforeSpawn !== null) {
-    return {
-      kind: "refused",
-      reason: "stopped",
-      providerVersion: attested === null ? null : attested.version,
-      diagnostic: `stopped by ${stopBeforeSpawn.requestedBy} (run #${stopBeforeSpawn.run}) before the provider spawned — nothing was spent`,
-    };
-  }
-
-  // THE CONTAINMENT FENCE at the spawn (OS containment plan): a required
-  // native policy this runner cannot meet — macOS, an undelegated cgroup,
-  // a missing helper — spawns nothing. A value-shaped refusal in the
-  // policy's own words, no stamp, no process, no spend.
-  const containment = currentContainment();
-  if (containment.refusal !== null) {
-    return {
-      kind: "refused",
-      reason: "containment",
-      providerVersion: attested === null ? null : attested.version,
-      diagnostic: containment.refusal,
-    };
-  }
-
-  if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
-  else store.stampProviderStart(runId, clock());
-  // The brief is the live session's first message, queued before the spawn writes it.
-  liveInput?.begin(invocation.brief);
-
   const spawn = witnessedRunner(store, runId, clock, runner ?? adapter.defaultRunner);
   let transportAnnouncedSessionId: string | null = null;
   let transportSessionConflict = false;
@@ -425,7 +357,6 @@ export async function invokeAgent(
     catch {
       tools?.cleanup();
       removeAgentDatabase(isolatedDb.dir);
-      store.withdrawProviderStart(runId);
       return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: "The build's private Codex home could not be created; check access to its sign-in and sessions folders, then retry." };
     }
   }
@@ -437,7 +368,13 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  if (fenceOf.problem !== undefined) {
+    tools?.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
+  }
   const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
   const grants = fenceOf.grants;
   const inherited = spec.model === null && invocation.phase !== "review" ? inheritedDefaults(spec.provider, { ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()) : undefined;
@@ -457,80 +394,176 @@ export async function invokeAgent(
   const codexLogin = spec.provider === "codex" && authMode === "subscription" && runner === undefined
     ? await codexLoginBilling(attested !== null ? attested.executable : adapter.binary, [...(runOptions.omitEnv ?? []), ...adapter.extraOmitEnv, ...ownKeyEnv])
     : null;
+  const childEnv = {
+    ...(runOptions.env ?? {}),
+    ...(adapter.env?.(buildInvocation) ?? {}),
+    ...(tools?.env ?? {}),
+    // A fenced build's git never expires a reflog, so gc never rewrites another task's (agent-fence.ts).
+    ...(fence.length > 0 ? fencedGitEnv({ ...process.env, ...(runOptions.env ?? {}) }) : {}),
+    ...(codexHome === null ? {} : { CODEX_HOME: codexHome.dir }),
+    ...(managedKey === null ? {} : { [PROVIDER_KEY_ENV[spec.provider]]: managedKey }),
+    // This key is deliberately last: no caller may point an agent back at
+    // the live control database through a generic RunOptions override.
+    ...childDatabaseEnv(isolatedDb.file),
+  };
+  const childOmitEnv = [
+    ...(runOptions.omitEnv ?? []),
+    ...adapter.extraOmitEnv,
+    // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
+    ...(spec.provider === "claude" && invocation.phase !== "review" ? claudePluginEnv({ ...process.env, ...(runOptions.env ?? {}) }) : []),
+    // Subscription mode: shed this provider's OWN key too, so an ambient
+    // one cannot force API billing over the login the operator prefers.
+    // Api-key mode: shed every OTHER own-key alias (finding 1) — gemini
+    // reads GOOGLE_API_KEY as well as GEMINI_API_KEY, and a stray alias
+    // must not override the ONE canonical key this mode injected.
+    ...(authMode === "subscription"
+      ? ownKeyEnv
+      : ownKeyEnv.filter(name => name !== PROVIDER_KEY_ENV[spec.provider])),
+  ];
+  const launchOptions: RunOptions = {
+    ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants }),
+    ...runOptions,
+    ...(workspace === null ? {} : { cwd: workspace }),
+    // v105: how the CLI really billed this turn (its key source, its plan's windows), read off its own stream.
+    onStreamEvent: event => {
+      if (event["type"] === "system" && event["subtype"] === "init") {
+        if (typeof event["apiKeySource"] === "string") billingSeen.keySource = event["apiKeySource"].slice(0, 80);
+        if (typeof event["model"] === "string") billingSeen.model = event["model"].slice(0, 200);
+      } else if (event["type"] === "rate_limit_event") {
+        billingSeen.planWindows = true;
+      } else if (event["type"] === "result" && event["is_error"] !== true && event["subtype"] === "success") {
+        billingSeen.answered = true;
+      }
+      runOptions.onStreamEvent?.(event);
+    },
+    owner: runOwnerTag(store, runId),
+    beforeSpawn: () => store.applicableStopFor(runId) === null && store.getRun(runId)?.outcome === null,
+    onSpawn: pid => {
+      runOptions.onSpawn?.(pid);
+      if (store.applicableStopFor(runId) !== null) throw new Error("the attempt was stopped before spawn custody completed");
+    },
+    ...(stdin === undefined ? {} : { stdin }),
+    ...(liveInput === null ? {} : { liveInput }),
+    ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
+    ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+    ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
+    env: childEnv,
+    omitEnv: childOmitEnv,
+    // Providers run in their own process group (M6.12): the harness spawns
+    // shells and tools of its own, and both the timeout and the watch's
+    // hard stop must end the whole tree, not orphan the grandchildren.
+    processGroup: true,
+    // The session registry's crash guarantee (M6.9): the id is stamped the
+    // moment the stream announces it, first write wins — a daemon that
+    // dies mid-turn still knows which session to offer the successor.
+    onSessionId: id => {
+      const normalized = transportSessionId(id);
+      if (normalized === null) return;
+      if (transportAnnouncedSessionId === null) transportAnnouncedSessionId = normalized;
+      else if (transportAnnouncedSessionId !== normalized) transportSessionConflict = true;
+      store.stampRun(runId, { sessionId: normalized });
+    },
+  };
   let result: Awaited<ReturnType<typeof spawn>>;
-  const spawnedAt = Date.now();
+  let spawnedAt: number;
   try {
+    if (fence.length > 0 && workspace !== null && (codexHarness || launchOptions.fence !== undefined)) {
+      const inheritedEnv = launchOptions.envAllowlist === undefined ? process.env
+        : Object.fromEntries(launchOptions.envAllowlist.map(name => [name, process.env[name]]));
+      const probeOptions: RunOptions = {
+        cwd: workspace, env: checkoutGitEnv({ ...inheritedEnv, ...childEnv }), omitEnv: childOmitEnv, envAllowlist: [],
+      };
+      // A broken checkout is not evidence of a broken fence. No provider is invoked by either check.
+      const gitArgs = [...HARDENED_GIT_ARGS, "rev-parse", "HEAD"];
+      const control = await runCommand("git", gitArgs, probeOptions);
+      if (control.code === 0) {
+        const executable = attested !== null ? attested.executable : adapter.binary;
+        const insideFence = (file: string, args: readonly string[]) => codexHarness
+          ? runCommand(executable, ["sandbox", ...codexFenceArgv(fence, invocation.skipPermissions, grants),
+            "-P", "standing-orders", "--", file, ...args], probeOptions)
+          : runCommand(file, args, { ...probeOptions, fence: launchOptions.fence!,
+            ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }) });
+        const check = await insideFence("git", gitArgs);
+        if (check.code !== 0) {
+          const trivial = await insideFence("true", []);
+          if (trivial.code === 0) return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
+            diagnostic: "The build fence blocks this checkout's own Git data.\n\nDetails:\n" + check.stderr.slice(0, 2000) + "\nDenied paths:\n" + fence.join("\n").slice(0, 12000) };
+        }
+      }
+    }
+    // The stamp precedes the spawn, so a crash between the two leaves a run
+    // that claims spend which never happened — the honest direction. A spawn
+    // before the stamp would leave spend no record claims, which is the lie
+    // the invariant exists to rule out. For attested providers the probed
+    // version rides the SAME durable write (B2).
+    // The spawn leg of the runner gate (MCP spec v6, review finding 4):
+    // the tuple re-proven against LIVE rows AFTER every awaited step, in
+    // the same breath as the stamp — a takeover during the attestation
+    // await can no longer slip a stale process through.
+    // THE PLANNER'S ROUTE, RE-PROVED AT THE SPAWN (final authority closure):
+    // the provenance the planner was admitted under is held to the authority
+    // its task holds RIGHT NOW — the strict working projection of a filed
+    // scope (exact terms, resolved profile, route parity, digest,
+    // live auth mode), or the bare word `legacy` on a task with no scope. A
+    // scope rewritten, corrupted, or unresolved between the claim and this
+    // instant invokes no provider: a value-shaped refusal, no spend.
+    if (run.role === "planner") {
+      const proved = store.proveRouteForSpawn(runId, clock());
+      if (!proved.ok) {
+        return {
+          kind: "refused",
+          reason: "route-authority",
+          providerVersion: attested === null ? null : attested.version,
+          diagnostic: `the planner's route authority lapsed before spawn — ${proved.problem}`,
+        };
+      }
+    }
+    if (!store.proveRunnerCustodyForSpawn(runId, clock())) {
+      return {
+        kind: "refused",
+        reason: "runner-custody",
+        providerVersion: attested === null ? null : attested.version,
+        diagnostic: "the run's runner custody lapsed before spawn — the lease, the runner, or its repo binding no longer stands",
+      };
+    }
+    // THE STOP FENCE at the spawn (v52): a stop recorded against this run
+    // — or the attempt it runs under — before this instant spawns nothing.
+    // A value-shaped refusal, no stamp, no process, no spend; the road's
+    // settlement seals the attempt as interrupted.
+    const stopBeforeSpawn = store.applicableStopFor(runId);
+    if (stopBeforeSpawn !== null) {
+      return {
+        kind: "refused",
+        reason: "stopped",
+        providerVersion: attested === null ? null : attested.version,
+        diagnostic: `stopped by ${stopBeforeSpawn.requestedBy} (run #${stopBeforeSpawn.run}) before the provider spawned — nothing was spent`,
+      };
+    }
+
+    // THE CONTAINMENT FENCE at the spawn (OS containment plan): a required
+    // native policy this runner cannot meet — macOS, an undelegated cgroup,
+    // a missing helper — spawns nothing. A value-shaped refusal in the
+    // policy's own words, no stamp, no process, no spend.
+    const containment = currentContainment();
+    if (containment.refusal !== null) {
+      return {
+        kind: "refused",
+        reason: "containment",
+        providerVersion: attested === null ? null : attested.version,
+        diagnostic: containment.refusal,
+      };
+    }
+
+    if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
+    else store.stampProviderStart(runId, clock());
+    // The brief is queued only once the checkout has passed the fence check.
+    liveInput?.begin(invocation.brief);
+    spawnedAt = Date.now();
     // Under the stop watch (v52): the run's stop row is re-read while the
     // provider runs, and a stop kills THIS run's process group through the
     // handle registered under its owner tag — the exact-attempt road,
     // never the global sweep. Settlement then reads the same row.
-    result = await underStopWatch(store, runId, () => spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, {
-      ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants }),
-      ...runOptions,
-      // v105: how the CLI really billed this turn (its key source, its plan's windows), read off its own stream.
-      onStreamEvent: event => {
-        if (event["type"] === "system" && event["subtype"] === "init") {
-          if (typeof event["apiKeySource"] === "string") billingSeen.keySource = event["apiKeySource"].slice(0, 80);
-          if (typeof event["model"] === "string") billingSeen.model = event["model"].slice(0, 200);
-        } else if (event["type"] === "rate_limit_event") {
-          billingSeen.planWindows = true;
-        } else if (event["type"] === "result" && event["is_error"] !== true && event["subtype"] === "success") {
-          billingSeen.answered = true;
-        }
-        runOptions.onStreamEvent?.(event);
-      },
-      owner: runOwnerTag(store, runId),
-      beforeSpawn: () => store.applicableStopFor(runId) === null && store.getRun(runId)?.outcome === null,
-      onSpawn: pid => {
-        runOptions.onSpawn?.(pid);
-        if (store.applicableStopFor(runId) !== null) throw new Error("the attempt was stopped before spawn custody completed");
-      },
-      ...(stdin === undefined ? {} : { stdin }),
-      ...(liveInput === null ? {} : { liveInput }),
-      ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
-      ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
-      ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
-      env: {
-        ...(runOptions.env ?? {}),
-        ...(adapter.env?.(buildInvocation) ?? {}),
-        ...(tools?.env ?? {}),
-        // A fenced build's git never expires a reflog, so gc never rewrites another task's (agent-fence.ts).
-        ...(fence.length > 0 ? fencedGitEnv({ ...process.env, ...(runOptions.env ?? {}) }) : {}),
-        ...(codexHome === null ? {} : { CODEX_HOME: codexHome.dir }),
-        ...(managedKey === null ? {} : { [PROVIDER_KEY_ENV[spec.provider]]: managedKey }),
-        // This key is deliberately last: no caller may point an agent back at
-        // the live control database through a generic RunOptions override.
-        ...childDatabaseEnv(isolatedDb.file),
-      },
-      omitEnv: [
-        ...(runOptions.omitEnv ?? []),
-        ...adapter.extraOmitEnv,
-        // A Claude build loads no plugin, from settings or the environment (a review's safe mode already loads none).
-        ...(spec.provider === "claude" && invocation.phase !== "review" ? claudePluginEnv({ ...process.env, ...(runOptions.env ?? {}) }) : []),
-        // Subscription mode: shed this provider's OWN key too, so an ambient
-        // one cannot force API billing over the login the operator prefers.
-        // Api-key mode: shed every OTHER own-key alias (finding 1) — gemini
-        // reads GOOGLE_API_KEY as well as GEMINI_API_KEY, and a stray alias
-        // must not override the ONE canonical key this mode injected.
-        ...(authMode === "subscription"
-          ? ownKeyEnv
-          : ownKeyEnv.filter(name => name !== PROVIDER_KEY_ENV[spec.provider])),
-      ],
-      // Providers run in their own process group (M6.12): the harness spawns
-      // shells and tools of its own, and both the timeout and the watch's
-      // hard stop must end the whole tree, not orphan the grandchildren.
-      processGroup: true,
-      // The session registry's crash guarantee (M6.9): the id is stamped the
-      // moment the stream announces it, first write wins — a daemon that
-      // dies mid-turn still knows which session to offer the successor.
-      onSessionId: id => {
-        const normalized = transportSessionId(id);
-        if (normalized === null) return;
-        if (transportAnnouncedSessionId === null) transportAnnouncedSessionId = normalized;
-        else if (transportAnnouncedSessionId !== normalized) transportSessionConflict = true;
-        store.stampRun(runId, { sessionId: normalized });
-      },
-    }));
+    result = await underStopWatch(store, runId, () => spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions));
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
@@ -755,23 +788,26 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return { fence: [], fileTools: [], grants: NO_GRANTS };
     const worktree = store.getRun(runId)?.worktree ?? null;
     const home = keyHome === undefined ? {} : { home: keyHome };
-    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home });
+    const row = worktree === null ? null : store.getWorktree(worktree);
+    if (worktree !== null && row === null) throw new CheckoutBindingError("The checkout's Git pointer was changed or its trusted binding could not be verified.");
+    const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree);
+    const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding });
     const folders = runFolders(ownTools);
     return {
-      fence: agentFence({ databaseFile, worktree, ...home, boundary, runFolders: folders }),
+      fence: agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders }),
       fileTools: boundary?.fileTools ?? [],
       // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
       grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree) }),
     };
-  } catch {
-    return { fence: [], fileTools: [], grants: NO_GRANTS };
+  } catch (error) {
+    return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
   }
 }
 

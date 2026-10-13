@@ -6,10 +6,10 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { agentFence, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
+import { agentFence, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
 import { adapterFor } from "./provider.js";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
@@ -115,6 +115,96 @@ describe("the agent fence", () => {
     },
   );
 
+  function linkedCheckout() {
+    const main = join(dir, "projects", "main");
+    mkdirSync(main, { recursive: true });
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: main, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    git("init", "-q");
+    git("-c", "user.name=Fence test", "-c", "user.email=fence@example.invalid", "commit", "--allow-empty", "-qm", "fixture");
+    git("worktree", "add", "-qb", "task", worktree);
+    symlinkSync(main, join(dir, "projects", "alias"), "dir");
+    const sibling = join(dir, "projects", "sibling");
+    mkdirSync(join(sibling, ".git"), { recursive: true });
+    return { main, sibling, head: git("rev-parse", "HEAD") };
+  }
+
+  test("canonical siblings exclude aliases of main and preserve real repositories", () => {
+    const { main, sibling } = linkedCheckout();
+    const binding = trustedWorktreeBinding(main, worktree);
+    const boundary = taskBoundary({ worktree, provider: "codex", home, binding });
+    expect(boundary.shell).toContain(sibling);
+    expect(boundary.shell).not.toContain(main);
+    expect(boundary.shell).not.toContain(join(dir, "projects", "alias"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const gitdir = realpathSync(join(main, ".git", "worktrees", "task-1"));
+      const fence = agentFence({ databaseFile: null, home, worktree, binding,
+        boundary: { ...boundary, shell: [...boundary.shell, join(dir, "projects", "alias"), join(main, ".git"), gitdir] } });
+      expect(fence).toContain(sibling);
+      for (const path of [main, join(main, ".git"), gitdir]) {
+        expect(fence).not.toContain(path);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(path));
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  test("hardened Git probes never execute checkout fsmonitor or index hooks", () => {
+    const { main, head } = linkedCheckout();
+    const marker = join(dir, "git-helper-ran");
+    const monitor = join(dir, "monitor");
+    const hook = join(main, ".git", "hooks", "post-index-change");
+    for (const script of [monitor, hook]) {
+      writeFileSync(script, `#!/bin/sh\necho fired >> '${marker}'\n`);
+      chmodSync(script, 0o755);
+    }
+    expect(spawnSync("git", ["config", "core.fsmonitor", monitor], { cwd: main }).status).toBe(0);
+    const env = checkoutGitEnv({ ...process.env, GIT_DIR: join(home, ".ssh"), GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.fsmonitor", GIT_CONFIG_VALUE_0: monitor });
+    for (const args of [["rev-parse", "HEAD"], ["status", "--porcelain"]]) {
+      const check = spawnSync("git", [...HARDENED_GIT_ARGS, ...args], { cwd: worktree, env, encoding: "utf8" });
+      expect(check.status, check.stderr).toBe(0);
+      expect(check.stdout.trim()).toBe(args[0] === "rev-parse" ? head : "");
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test.each(["ssh", "state", "database"])("a hostile %s pointer cannot remove protected denies", target => {
+    const { main } = linkedCheckout();
+    const binding = trustedWorktreeBinding(main, worktree);
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    mkdirSync(join(home, ".toolroll"), { recursive: true });
+    const database = join(state, "orders.db");
+    writeFileSync(database, "fixture");
+    const hostile = target === "ssh" ? join(home, ".ssh", "x") : target === "state" ? join(home, ".toolroll", ".git", "worktrees", "x") : database;
+    writeFileSync(join(worktree, ".git"), `gitdir: ${hostile}\n`);
+    const boundary = taskBoundary({ worktree, provider: "codex", home, binding });
+    const fence = agentFence({ databaseFile: database, worktree, home, boundary, binding });
+    for (const denied of [join(home, ".ssh"), join(home, ".toolroll"), database]) expect(fence).toContain(denied);
+    expect(() => trustedWorktreeBinding(main, worktree)).toThrow("The checkout's Git pointer was changed");
+  });
+
+  test.skipIf(!macosFenceAvailable())("generated Codex and Claude fences permit linked checkout Git commands", () => {
+    const { main, sibling, head } = linkedCheckout();
+    const binding = trustedWorktreeBinding(main, worktree);
+    for (const provider of ["claude", "codex"]) {
+      const boundary = taskBoundary({ worktree, provider, home, binding });
+      const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
+      const grants = fenceGrants({ databaseFile: null, worktree, boundary });
+      expect(fence).toContain(sibling);
+      for (const args of [["rev-parse", "HEAD"], ["status", "--porcelain"]]) {
+        const wrapped = provider === "codex"
+          ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "git", ...HARDENED_GIT_ARGS, ...args] }
+          : macosFenced("git", [...HARDENED_GIT_ARGS, ...args], fence, grants);
+        const result = spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8", env: { ...process.env, CODEX_HOME: home } });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout.trim()).toBe(args[0] === "rev-parse" ? head : "");
+      }
+    }
+  });
+
   test("Codex denies future tool and home folders by namespace, including descendants", () => {
     const folders = runFolders(null, dir);
     const argv = codexFenceArgv([], true, { readOnly: [], readable: [], lookup: [], runFolders: folders });
@@ -167,7 +257,7 @@ describe("the agent fence", () => {
     });
 
     test("other repositories, other tasks' worktrees, the primary checkout (all but .git) and home configuration; never the task's own folder or its git", () => {
-      const claude = taskBoundary({ worktree: tree, provider: "claude", home });
+      const claude = taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "claude", home });
       expect(claude.shell).toEqual([
         join(home, ".codex"), join(home, ".config", "gh"), join(home, ".ssh"),
         join(main, "package.json"), join(main, "src"), join(projects, "other"), join(state, "worktrees", "app", "task-2"),
@@ -175,11 +265,11 @@ describe("the agent fence", () => {
       // Another task's git metadata is read, never written; the checkout it names is looked up, never read.
       expect(claude.readOnly).toEqual([join(main, ".git", "worktrees", "task-2")]);
       writeFileSync(join(main, ".git", "worktrees", "task-2", "gitdir"), `${join(state, "worktrees", "app", "task-2", ".git")}\n`);
-      expect(taskBoundary({ worktree: tree, provider: "claude", home }).lookup).toEqual([join(state, "worktrees", "app", "task-2"), join(state, "worktrees", "app", "task-2", ".git")]);
+      expect(taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "claude", home }).lookup).toEqual([join(state, "worktrees", "app", "task-2"), join(state, "worktrees", "app", "task-2", ".git")]);
       // Claude's CLI reads its own home to sign in and resume, so the OS fence leaves it; its file tools still refuse the sensitive files.
       expect(claude.fileTools).toEqual([join(home, ".claude", "settings.json"), join(home, ".claude.json"), join(home, ".npmrc")].sort());
       // Codex fences only its agent's commands, so its own home is fenced too: its CLI still signs in from outside the sandbox.
-      const codex = taskBoundary({ worktree: tree, provider: "codex", home });
+      const codex = taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "codex", home });
       expect(codex.shell).toEqual(expect.arrayContaining([join(home, ".codex"), join(home, ".claude"), join(home, ".claude.json"), join(projects, "other")]));
       expect(codex.fileTools).toEqual([]);
       for (const boundary of [claude, codex]) {
@@ -198,12 +288,12 @@ describe("the agent fence", () => {
       mkdirSync(join(homeRepo, ".git", "worktrees", "task-1"), { recursive: true });
       for (const checkout of [homeRepo, tree]) {
         writeFileSync(join(tree, ".git"), `gitdir: ${join(homeRepo, ".git", "worktrees", "task-1")}\n`);
-        const boundary = taskBoundary({ worktree: checkout, provider: "claude", home });
+        const boundary = taskBoundary({ binding: { main: homeRepo, gitdir: join(homeRepo, ".git", "worktrees", "task-1") }, worktree: checkout, provider: "claude", home });
         for (const name of [".nvm", ".oh-my-zsh", "ordinary-project"]) expect(boundary.shell).not.toContain(join(home, name));
         expect(boundary.shell).toContain(join(home, ".ssh"));
       }
       writeFileSync(join(tree, ".git"), `gitdir: ${relative(tree, join(main, ".git", "worktrees", "task-1"))}\n`);
-      const boundary = taskBoundary({ worktree: tree, provider: "claude", home });
+      const boundary = taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "claude", home });
       expect(boundary.shell).not.toContain(join(projects, ".hidden-toolchain"));
       expect(boundary.shell).toContain(join(projects, "other"));
       expect(boundary.readOnly).toContain(join(main, ".git", "worktrees", "task-2"));
@@ -214,7 +304,7 @@ describe("the agent fence", () => {
       writeFileSync(join(projects, "other", "secret.txt"), "adjacent");
       writeFileSync(join(home, ".ssh", "id_canary"), "key");
       writeFileSync(join(tree, "mine.txt"), "mine");
-      const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: tree, home, boundary: taskBoundary({ worktree: tree, provider: "claude", home }) });
+      const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: tree, home, boundary: taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "claude", home }) });
       const script = `const fs=require("fs");const out=[];for(const f of process.argv.slice(1)){try{out.push(fs.readFileSync(f,"utf8").trim())}catch(e){out.push(e.code)}}try{fs.writeFileSync(${JSON.stringify(join(projects, "other", "x.txt"))},"x");out.push("wrote-adjacent")}catch(e){out.push(e.code)}console.log(out.join(" "))`;
       const { file, args } = macosFenced(process.execPath, ["-e", script, join(projects, "other", "secret.txt"), join(home, ".ssh", "id_canary"), join(tree, "mine.txt"), join(home, ".claude.json")], fence);
       expect(spawnSync(file, args, { encoding: "utf8" }).stdout.trim()).toBe("EPERM EPERM mine {} EPERM");
@@ -240,7 +330,7 @@ describe("the agent fence", () => {
       const staged = git(other, "rev-parse", ":staged.txt");
       const metadata = join(repo, ".git", "worktrees", "other");
       const before = readFileSync(join(metadata, "HEAD"), "utf8");
-      const boundary = taskBoundary({ worktree: active, provider: "claude", home });
+      const boundary = taskBoundary({ binding: trustedWorktreeBinding(repo, active), worktree: active, provider: "claude", home });
       expect(boundary.shell).toContain(other);
       expect(boundary.readOnly).toEqual([metadata]);
       const grants = fenceGrants({ databaseFile: null, worktree: active, boundary });
@@ -318,11 +408,17 @@ describe("the agent fence", () => {
   });
 
   describe("through the gateway", () => {
+    function bind(local: Store) {
+      const { main } = linkedCheckout();
+      local.saveWorktree({ path: worktree, repo: main, branch: "task", runner: null, taskRef: null,
+        createdAt: T0.toISOString(), leasedAt: null, releasedAt: null, verified: true });
+    }
     test("a fresh build and its resumed repair get the same setup: no settings sources, strict MCP, the task boundary, and the user's own sign-in", async () => {
       mkdirSync(join(state, "worktrees", "app", "task-2", ".git"), { recursive: true });
       mkdirSync(join(home, ".ssh"), { recursive: true });
       writeFileSync(join(home, ".claude.json"), "{}");
       const local = openStore(join(state, "orders.db.boundary"));
+      bind(local);
       try {
         register(local, { name: "builder-1", host: "test", capacity: 9, repos: [dir], now: T0, newToken: () => "tok" });
         local.createTask({ id: "t-bound", title: "t-bound" }, T0);
@@ -378,6 +474,7 @@ describe("the agent fence", () => {
     const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 
     test("every build is launched fenced and the run says how", async () => {
+      bind(store);
       const seen: { file: string; args: readonly string[] }[] = [];
       const ask = { phase: "build" as const, brief: "go", maxTurns: 5, permissionMode: "auto", skipPermissions: true, resumeSession: null };
       const codexRun = open("t-codex", "codex");
@@ -827,7 +924,7 @@ describe("a link planted among the repository's worktree entries grants nothing"
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const launch = (provider: string) => {
-    const boundary = taskBoundary({ worktree: active, provider, home });
+    const boundary = taskBoundary({ binding: trustedWorktreeBinding(repo, active), worktree: active, provider, home });
     const fence = agentFence({ databaseFile: null, worktree: active, home, boundary });
     return { boundary, fence, grants: fenceGrants({ databaseFile: null, worktree: active, boundary }) };
   };
