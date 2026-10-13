@@ -1121,3 +1121,34 @@ test("provider certification rejects retired review flags and invalid routes bef
     expect(check.stdout).toBe("");
   }
 });
+
+
+test("provider canary checks checkout Git through the Codex fence and rejects a failed check", async () => {
+  const { checkCheckoutGit } = await import("../scripts/provider-canary.mjs");
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-canary-git-")));
+  const worktree = join(dir, "checkout");
+  mkdirSync(worktree);
+  const secret = join(dir, "orders.db");
+  writeFileSync(secret, "fixture");
+  try {
+    const calls: { file: string; args: string[]; options: { cwd: string; env?: NodeJS.ProcessEnv } }[] = [];
+    const execute = async (file: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+      calls.push({ file, args, options });
+      return { code: 0, stdout: args.includes("rev-parse") ? "candidate-head\n" : "", stderr: "" };
+    };
+    const result = await checkCheckoutGit({ provider: "codex", worktree, databaseFile: secret, home: dir }, execute);
+    expect(result).toEqual({ provider: "codex", head: "candidate-head", revParse: "passed", status: "passed" });
+    expect(calls.map(call => call.file)).toEqual(["git", "codex", "git", "codex"]);
+    for (const call of [calls[1]!, calls[3]!]) {
+      expect(call.args[0]).toBe("sandbox");
+      expect(call.args.join(" ")).toContain(secret);
+      expect(call.options.cwd).toBe(worktree);
+      expect(existsSync(call.options.env!["CODEX_HOME"]!)).toBe(false);
+    }
+    expect(calls[3]!.args.slice(-3)).toEqual(["git", "status", "--porcelain"]);
+    await expect(checkCheckoutGit({ provider: "codex", worktree, databaseFile: secret, home: dir },
+      async (file: string) => ({ code: file === "git" ? 0 : 128, stdout: "", stderr: "denied" }))).rejects.toThrow("The build fence blocks this checkout's own Git data.");
+    await expect(checkCheckoutGit({ provider: "claude", worktree, databaseFile: secret, home: dir },
+      async () => ({ code: 128, stdout: "", stderr: "broken checkout" }))).rejects.toThrow("unfenced git rev-parse HEAD failed");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

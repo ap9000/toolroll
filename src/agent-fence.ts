@@ -105,8 +105,14 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.extra ?? []) if (existsSync(path)) fence.add(real(path));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
-  // Never fence the run's own worktree or anything above it.
-  return [...fence].filter(path => worktree === null || (path !== worktree && !inside(worktree, path))).sort();
+  const main = worktree === null ? null : mainRepositoryOf(worktree);
+  const needed = [worktree, worktree === null ? null : worktreeGitDir(worktree),
+    main === null ? null : real(join(main, ".git"))].filter((path): path is string => path !== null);
+  return [...new Set([...fence].map(real))].filter(path => {
+    if (!needed.some(target => target === path || inside(target, path))) return true;
+    console.warn(`Dropped build fence entry covering this checkout's own Git data or worktree: ${path}`);
+    return false;
+  }).sort();
 }
 
 /**
@@ -138,6 +144,8 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   const home = real(options.home ?? homedir());
   const worktree = real(options.worktree);
   const main = mainRepositoryOf(worktree);
+  const gitdir = worktreeGitDir(worktree);
+  const needed = [worktree, main, gitdir].filter((path): path is string => path !== null);
   const own = new Set(PROVIDER_HOME[options.provider] ?? []);
   const present = (names: readonly string[]) => names.map(name => join(home, name)).filter(path => existsSync(path)).map(real);
   const shell = new Set(present(HOME_CONFIGURATION.filter(name => !own.has(name))));
@@ -150,8 +158,10 @@ export function taskBoundary(options: { worktree: string; provider: string; home
     try { entries = readdirSync(parent); } catch { entries = []; }
     for (const entry of entries) {
       if (entry.startsWith(".")) continue;
-      const path = join(parent, entry);
-      if (path === worktree || path === main || inside(worktree, path) || !repository(path)) continue;
+      const candidate = join(parent, entry);
+      if (!repository(candidate)) continue;
+      const path = real(candidate);
+      if (needed.some(target => target === path || inside(target, path))) continue;
       shell.add(path);
     }
   }
@@ -170,7 +180,6 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   // one `git worktree prune` deletes the entry of.
   const readOnly = new Set<string>();
   const lookup = new Set<string>();
-  const gitdir = worktreeGitDir(worktree);
   if (gitdir !== null && main !== null) {
     const siblings = dirname(gitdir);
     let entries: string[] = [];

@@ -11,7 +11,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -309,6 +309,35 @@ async function runtimeIdentity() {
     trackedChanges: changes.code === 0 ? changes.stdout.trim() !== "" : null };
 }
 
+/** Verify Git from the produced checkout through the provider's generated policy, without a model turn. */
+export async function checkCheckoutGit({ provider, worktree, databaseFile, home = homedir() }, execute = run) {
+  if (provider !== "claude" && provider !== "codex") return null;
+  if (typeof worktree !== "string" || worktree === "") throw new Error("the builder did not retain its worktree for the Git fence check");
+  const { agentFence, taskBoundary, fenceGrants, codexFenceArgv, macosFenceAvailable, macosFenced, linuxFenceAvailable, linuxFenced } = await import(join(root, "dist", "agent-fence.js"));
+  const boundary = taskBoundary({ worktree, provider, home });
+  const fence = agentFence({ databaseFile, worktree, home, boundary });
+  const grants = fenceGrants({ databaseFile, worktree, boundary });
+  const codexHome = provider === "codex" ? await mkdtemp(join(tmpdir(), "so-codex-canary-")) : null;
+  try {
+    let head = null;
+    for (const args of [["rev-parse", "HEAD"], ["status", "--porcelain"]]) {
+      const control = await execute("git", args, { cwd: worktree });
+      if (control.code !== 0) throw new Error(`unfenced git ${args.join(" ")} failed: ${control.stderr}`);
+      const wrapped = provider === "codex"
+        ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "git", ...args] }
+        : macosFenceAvailable() ? macosFenced("git", args, fence, grants)
+        : linuxFenceAvailable() ? linuxFenced("git", args, fence, grants) : null;
+      if (wrapped === null) throw new Error("the Claude Git fence check needs a working native sandbox");
+      const checked = await execute(wrapped.file, wrapped.args, { cwd: worktree,
+        env: { ...process.env, ...(codexHome === null ? {} : { CODEX_HOME: codexHome }) } });
+      if (checked.code !== 0) throw new Error(`The build fence blocks this checkout's own Git data. git ${args.join(" ")}: ${checked.stderr}`);
+      if (checked.stdout !== control.stdout) throw new Error(`fenced git ${args.join(" ")} disagrees with its control`);
+      if (args[0] === "rev-parse") head = checked.stdout.trim();
+    }
+    return { head, revParse: "passed", status: "passed", provider };
+  } finally { if (codexHome !== null) await rm(codexHome, { recursive: true, force: true }); }
+}
+
 async function main() {
   let options;
   try {
@@ -377,6 +406,7 @@ async function main() {
     await git("add", ".");
     await git("commit", "-qm", "seed provider canary");
     const baseSha = await git("rev-parse", "HEAD");
+    await symlink(repo, join(base, "repo-alias"), "dir");
 
     const checkBuild = async memoryMarker => {
 
@@ -472,7 +502,9 @@ async function main() {
       if (buildRun === null || buildRun === undefined || typeof buildRun.branch !== "string") {
         throw new Error("no completed builder run named its branch");
       }
+      const checkoutGit = await checkCheckoutGit({ provider: options.provider, worktree: buildRun.worktree, databaseFile: db });
       const branchSha = await git("rev-parse", buildRun.branch);
+      if (checkoutGit !== null && checkoutGit.head !== branchSha) throw new Error("the fenced checkout is not the completed build candidate");
       if (branchSha === baseSha) throw new Error("the build branch did not advance");
       const canaryText = await git("show", `${buildRun.branch}:canary.txt`);
       const expectedText = `standing-orders ${options.provider} canary passed${memoryMarker === null ? "" : "\nNO_MEMORY"}`;
@@ -539,6 +571,7 @@ async function main() {
           humanActionsAfterPlanningStarted: options.autoApprove ? 0 : 1,
           filedScopeDigest: filedDigest,
           worktreeBuild: "passed",
+          checkoutGit,
           commit: branchSha,
           verificationCommand: "node --test",
           proofVerdict: final.proofVerdict,

@@ -115,6 +115,60 @@ describe("the agent fence", () => {
     },
   );
 
+  function linkedCheckout() {
+    const main = join(dir, "projects", "main");
+    mkdirSync(main, { recursive: true });
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: main, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    git("init", "-q");
+    git("-c", "user.name=Fence test", "-c", "user.email=fence@example.invalid", "commit", "--allow-empty", "-qm", "fixture");
+    git("worktree", "add", "-qb", "task", worktree);
+    symlinkSync(main, join(dir, "projects", "alias"), "dir");
+    const sibling = join(dir, "projects", "sibling");
+    mkdirSync(join(sibling, ".git"), { recursive: true });
+    return { main, sibling, head: git("rev-parse", "HEAD") };
+  }
+
+  test("canonical siblings exclude aliases of main and preserve real repositories", () => {
+    const { main, sibling } = linkedCheckout();
+    const boundary = taskBoundary({ worktree, provider: "codex", home });
+    expect(boundary.shell).toContain(sibling);
+    expect(boundary.shell).not.toContain(main);
+    expect(boundary.shell).not.toContain(join(dir, "projects", "alias"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const gitdir = realpathSync(join(main, ".git", "worktrees", "task-1"));
+      const fence = agentFence({ databaseFile: null, home, worktree,
+        boundary: { ...boundary, shell: [...boundary.shell, join(dir, "projects", "alias"), join(main, ".git"), gitdir] } });
+      expect(fence).toContain(sibling);
+      for (const path of [main, join(main, ".git"), gitdir]) {
+        expect(fence).not.toContain(path);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(path));
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  test.skipIf(!macosFenceAvailable())("generated Codex and Claude fences permit linked checkout Git commands", () => {
+    const { sibling, head } = linkedCheckout();
+    for (const provider of ["claude", "codex"]) {
+      const boundary = taskBoundary({ worktree, provider, home });
+      const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
+      const grants = fenceGrants({ databaseFile: null, worktree, boundary });
+      expect(fence).toContain(sibling);
+      for (const args of [["rev-parse", "HEAD"], ["status", "--porcelain"]]) {
+        const wrapped = provider === "codex"
+          ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "git", ...args] }
+          : macosFenced("git", args, fence, grants);
+        const result = spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8", env: { ...process.env, CODEX_HOME: home } });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout.trim()).toBe(args[0] === "rev-parse" ? head : "");
+      }
+    }
+  });
+
   test("Codex denies future tool and home folders by namespace, including descendants", () => {
     const folders = runFolders(null, dir);
     const argv = codexFenceArgv([], true, { readOnly: [], readable: [], lookup: [], runFolders: folders });
