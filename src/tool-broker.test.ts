@@ -24,6 +24,7 @@ import { acquire } from "./claim.js";
 import { invokeAgent } from "./invoke.js";
 import { macosFenceAvailable } from "./agent-fence.js";
 import { NOTES_SERVER } from "../test/notes-mcp-server.js";
+import { boundCheckout } from "../test/bound-checkout.js";
 
 const T0 = new Date("2026-10-12T12:00:00.000Z");
 const SECRET = ["notes", "secret", "7c".repeat(16)].join("-");
@@ -246,6 +247,8 @@ describe("through the gateway", () => {
     for (const path of [home, repo, worktree]) mkdirSync(path, { recursive: true });
     writeFileSync(join(dir, "notes.mjs"), NOTES_SERVER);
     store = openStore(join(dir, "state", "orders.db"));
+    // The checkout is a recorded linked worktree of the project, as the pool hands one over: a fenced launch trusts nothing else.
+    boundCheckout(store, repo, worktree);
     register(store, { name: "builder-1", host: "test", capacity: 9, repos: [repo], now: T0, newToken: () => "tok" });
     expect(addToolTo(store, repo, notesSpec(join(dir, "notes.mjs"), join(dir, "notes.log")), "custom", "alex", T0, { home })).toMatchObject({ ok: true });
     setToolSecrets(repo, "notes", { NOTES_TOKEN: SECRET }, home);

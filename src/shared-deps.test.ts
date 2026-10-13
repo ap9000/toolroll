@@ -11,6 +11,7 @@ import { acquire } from "./claim.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { depsKey, installsOnly, linkedKey, lockDigest, nodeIdentity, readyCopy, sharingFor, sharedCopies, sharedUse, unusedShared, removeShared, SHARED_GRACE_MS, linkInto, promoteInstall, SHARED_UNUSED_MS, pruneUnusedShared } from "./shared-deps.js";
 import { versionOnly } from "../scripts/release-check.mjs";
+import { boundCheckout, fixtureRepository } from "../test/bound-checkout.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-08-11T22:00:00.000Z");
@@ -21,11 +22,13 @@ const gitIn = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir
   ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x",
 } }).trim();
 
-/** A real checkout with an npm lockfile, as a lease would hand over. */
-function checkout(root: string, name: string, lock = '{"version":"1.0.0","lockfileVersion":3,"packages":{"":{"version":"1.0.0"},"node_modules/left-pad":{"version":"1.3.0"}}}\n'): string {
+/** A real checkout with an npm lockfile: a stand-alone repository, or (given `repo`) a linked worktree of it, as a lease would hand over. */
+function checkout(root: string, name: string, lock = '{"version":"1.0.0","lockfileVersion":3,"packages":{"":{"version":"1.0.0"},"node_modules/left-pad":{"version":"1.3.0"}}}\n', repo: string | null = null): string {
   const dir = join(root, name);
-  mkdirSync(dir, { recursive: true });
-  gitIn(dir, "init", "-q", "-b", "main");
+  if (repo === null) {
+    mkdirSync(dir, { recursive: true });
+    gitIn(dir, "init", "-q", "-b", "main");
+  } else boundCheckout(null, repo, dir, name);
   writeFileSync(join(dir, ".gitignore"), "node_modules/\n.evidence/\n");
   writeFileSync(join(dir, "package.json"), '{"name":"thing","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}\n');
   writeFileSync(join(dir, "package-lock.json"), lock);
@@ -168,12 +171,17 @@ describe("dependency identity and existing installs", () => {
 
 describe("shared dependencies through the builder", () => {
   let state: string;
+  // A launch trusts only the recorded repository and its worktree registry, so here the project is a real
+  // repository and every leased checkout a linked worktree of it (this REPO shadows the placeholder path above).
+  let REPO: string;
+  const linkedCheckout = (name: string, lock?: string) => checkout(state, name, lock, REPO);
   let store: Store;
   let approverToken: string;
   const refs = new Map<string, number>();
 
   beforeEach(() => {
     state = realpathSync(mkdtempSync(join(tmpdir(), "deps-state-")));
+    REPO = fixtureRepository(join(state, "repo"));
     store = openStore(join(state, "orders.db"));
     for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", T0);
     const added = addApprover(store, "alex", T0);
@@ -223,8 +231,8 @@ describe("shared dependencies through the builder", () => {
 
   test("c1: the first checkout's install becomes the shared copy and a new checkout links it instead of installing", async () => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first");
-    const second = checkout(state, "second");
+    const first = linkedCheckout("first");
+    const second = linkedCheckout("second");
     const setups: string[] = [];
     const setup: Runner = async (_file, args, options) => { setups.push(options!.cwd!); expect(args.at(-1)).toBe("npm ci"); fakeInstall(options!.cwd!); return OK; };
     const seen: boolean[] = [];
@@ -254,7 +262,7 @@ describe("shared dependencies through the builder", () => {
 
   test.each([false, true])("a version-only bump links the existing install, including a prepared release check (prepared: %s)", async prepared => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first"), second = checkout(state, "release");
+    const first = linkedCheckout("first"), second = linkedCheckout("release");
     let installs = 0, checks = 0;
     const setup: Runner = async (_file, _args, options) => { installs++; fakeInstall(options!.cwd!); return OK; };
     expect(await build(store, { ...leaseTask("t-1", first), agent: agentDoing(() => {}), git: fakeGit("feat/t-1"), setup, verify: async () => OK })).toMatchObject({ ok: true });
@@ -282,7 +290,7 @@ describe("shared dependencies through the builder", () => {
 
   test("c2: a task that changes the lockfile gets its own install and the shared copy is never altered", async () => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     const setups: string[] = [];
     const setup: Runner = async (_file, _args, options) => { setups.push(options!.cwd!); fakeInstall(options!.cwd!); return OK; };
     await build(store, { ...leaseTask("t-1", first), agent: agentDoing(() => {}), git: fakeGit("feat/t-1"), setup, verify: async () => OK });
@@ -290,7 +298,7 @@ describe("shared dependencies through the builder", () => {
     const shared = join(deps, key, "node_modules");
     const before = readFileSync(join(shared, ".package-lock.json"), "utf8");
 
-    const changer = checkout(state, "changer");
+    const changer = linkedCheckout("changer");
     let blocked = false;
     let ownAtCheck = false;
     const agent = agentDoing(cwd => {
@@ -318,7 +326,7 @@ describe("shared dependencies through the builder", () => {
 
   test("a shared copy changed after it was made is retired: never linked again, while a checkout using it keeps working", () => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     fakeInstall(first);
     const facts = { root: deps, repo: REPO, worktree: first, key: "a".repeat(24), lock: lockDigest(first)!, node: "v22 darwin arm64", setupDigest: "s", now: T0 };
     expect(promoteInstall(facts)).toBe("link");
@@ -332,7 +340,7 @@ describe("shared dependencies through the builder", () => {
 
   test("storage clean removes a copy no checkout uses, once nothing has linked it for the grace period", () => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     fakeInstall(first);
     const key = "b".repeat(24);
     promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 });
@@ -348,7 +356,7 @@ describe("shared dependencies through the builder", () => {
 
   test("the daily sweep removes a copy only once no checkout has used it for a week, and marks installs for Spotlight", async () => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     fakeInstall(first);
     const key = "d".repeat(24);
     expect(promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 })).toBe("link");
@@ -363,7 +371,7 @@ describe("shared dependencies through the builder", () => {
     expect(await pruneUnusedShared(deps, () => rows, new Date(Date.now() + SHARED_UNUSED_MS - 60_000))).toEqual({ removed: [], failed: [] });
     // A checkout picks it up between the look and the removal: stays.
     let looks = 0;
-    const second = checkout(state, "second");
+    const second = linkedCheckout("second");
     expect(linkInto(second, join(deps, key, "node_modules"))).toBe("link");
     expect((await pruneUnusedShared(deps, () => (++looks === 1 ? [] : [{ path: second, repo: REPO }]), weekLater)).removed).toEqual([]);
     expect(sharedCopies(deps).map(one => one.key)).toEqual([key]);
@@ -376,10 +384,10 @@ describe("shared dependencies through the builder", () => {
 
   test("a checkout that can't link falls back: a new checkout gets nothing linked over an existing node_modules", () => {
     const deps = join(state, "deps");
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     fakeInstall(first);
     promoteInstall({ root: deps, repo: REPO, worktree: first, key: "c".repeat(24), lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 });
-    const own = checkout(state, "own");
+    const own = linkedCheckout("own");
     fakeInstall(own);
     expect(linkInto(own, join(deps, "c".repeat(24), "node_modules"))).toBeNull();
     expect(lstatSync(join(own, "node_modules")).isDirectory()).toBe(true);
@@ -388,7 +396,7 @@ describe("shared dependencies through the builder", () => {
 
   test("a same-lockfile checkout arriving at quarantine cannot link a half-deleted copy; the late user restores it", async () => {
     const deps = join(state, "deps"), key = "e".repeat(24);
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     fakeInstall(first);
     promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 });
     const shared = readyCopy(deps, key)!;
@@ -400,7 +408,7 @@ describe("shared dependencies through the builder", () => {
         expect(sharedCopies(deps)).toEqual([]);
         expect(readyCopy(deps, key)).toBeNull();
         expect(readyCopy(deps, trash.split("/").at(-1)!)).toBeNull();
-        late = checkout(state, "late");
+        late = linkedCheckout("late");
         users.push({ path: late, repo: REPO });
         expect(linkInto(late, shared)).toBeNull();
         expect(linkInto(late, join(trash, "node_modules"))).toBeNull();
@@ -415,7 +423,7 @@ describe("shared dependencies through the builder", () => {
 
   test("a failed dependency deletion stays undiscoverable and the next sweep removes its trash", async () => {
     const deps = join(state, "deps"), key = "f".repeat(24);
-    const first = checkout(state, "first");
+    const first = linkedCheckout("first");
     fakeInstall(first);
     promoteInstall({ root: deps, repo: REPO, worktree: first, key, lock: lockDigest(first)!, node: "v22", setupDigest: "s", now: T0 });
     rmSync(first, { recursive: true });
