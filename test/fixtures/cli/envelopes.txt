@@ -4884,6 +4884,21 @@ $ contract --commands --json → 0
       "agentMayInvoke": false,
       "mutation": "unkeyed",
       "remote": "no"
+    },
+    {
+      "invocation": "doctor",
+      "synopsis": "check that Toolroll's service holds no key, token or password a build could read; names what it finds and the steps to fix it, never a value, and changes nothing",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "none",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        }
+      ],
+      "remote": "no"
     }
   ]
 }

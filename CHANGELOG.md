@@ -8,6 +8,12 @@
 - **Tighter sandbox.** Builds can no longer rename folders above protected
   paths or inspect other processes' memory; tool servers get only the
   environment they need.
+- **Tools with secrets need the macOS sandbox.** A build without it, and
+  every build on Linux, leaves those tools out and says why.
+- **`toolroll doctor`.** Checks that Toolroll's service holds no key a build
+  could read, and lists the steps to fix it. It reads only.
+- **Research tools answer every refusal**, even when the service accepts the
+  rest with an empty reply.
 
 ## 0.9.62 — 2026-10-12
 

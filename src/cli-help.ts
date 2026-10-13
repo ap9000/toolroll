@@ -65,6 +65,7 @@ and any queue command + --help prints it too
                                (--editor vscode with --runner: file links
                                open in VS Code on the device you browse from)
   toolroll watch / daemon install   advanced: run only the builder
+  toolroll doctor           check that Toolroll's service holds no key a build could read
   toolroll reconcile        recover what the last stretch left behind
 
 With nothing connected it reports everything it can find below the working

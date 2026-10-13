@@ -26,6 +26,7 @@ import { scanForSecrets } from "./evidence.js";
 import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
 import { startToolBroker, type BrokerOptions, type ToolBroker } from "./tool-broker.js";
+import type { FenceMethod } from "./agent-fence.js";
 import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
 
 export type { ToolSecret, ToolSpec };
@@ -653,6 +654,24 @@ export function toolLaunchFor(store: Pick<Store, "projectTools" | "getRun" | "re
   return launch;
 }
 
+/** What stops a build reading a local tool server's environment: this computer's platform and the OS fence its run
+ * gets, both fixed by the gateway before any tool is prepared (never from a launch's own files or the checkout). */
+export type ToolContainment = { platform: NodeJS.Platform; fence: FenceMethod };
+
+/**
+ * Why a local tool that carries secrets can't start for this launch, or null when it can. Its server's environment
+ * holds the values, and a process of the same user can read another's (KERN_PROCARGS2, /proc/<pid>/environ) unless
+ * an OS fence stops it: only the macOS sandbox around a Claude build does. Codex's filesystem policy can't deny that
+ * read (OpenRouter uses the same harness); Claude's own file rules and Linux's bubblewrap don't stop it, and on Linux
+ * hidepid hides nothing from the same user, so Linux never starts one.
+ */
+export function secretToolRefusal(provider: "claude" | "codex" | "openrouter" | "gemini", containment: ToolContainment): string | null {
+  if (provider === "codex" || provider === "openrouter") return "This tool needs a Claude build to protect its sign-in details.";
+  if (containment.platform === "linux") return "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool.";
+  if (containment.platform !== "darwin" || containment.fence !== "macos-sandbox") return "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it.";
+  return null;
+}
+
 /**
  * One attempt's tools, ready for its provider, and recorded on the run:
  * what it launched with and what was left out and why. The caller spawns
@@ -662,16 +681,16 @@ export async function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
   provider: "claude" | "codex" | "openrouter" | "gemini",
-  options: { home?: string; now: Date; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions },
+  options: { home?: string; now: Date; containment: ToolContainment; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions },
 ): Promise<ToolLaunchArgs> {
   const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
-  // Codex's filesystem policy cannot deny KERN_PROCARGS2. Its command
-  // sandbox can inspect an external stdio server's environment, so do not
-  // start secret-bearing servers there (OpenRouter uses the same harness).
-  if (provider === "codex" || provider === "openrouter") {
+  // A local server with secrets starts only where the build can't read its environment; the rest are left out,
+  // saying why, before the broker exists. Gemini starts none (below).
+  const refusal = provider === "gemini" ? null : secretToolRefusal(provider, options.containment);
+  if (refusal !== null) {
     launch.tools = launch.tools.filter(one => {
       if (one.spec.transport === "http" || Object.keys(one.values).length === 0) return true;
-      launch.skipped.push({ name: one.spec.name, reason: "This tool needs a Claude build to protect its sign-in details." });
+      launch.skipped.push({ name: one.spec.name, reason: refusal });
       return false;
     });
   }
