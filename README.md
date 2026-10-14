@@ -79,7 +79,7 @@ checked and marked Complete.
 Slack, Discord or Teams with buttons. One tap answers; the build resumes.
 
 **Triage issues as they arrive.** A new GitHub or Linear issue starts a card
-in a flow. Jev sorts it; real bugs become tasks you approve.
+in a flow. Jev, a small sorting model, triages it; real bugs become tasks you approve.
 
 **Repeat work on a schedule.** Dependency bumps, coverage, docs drift: a
 scheduled flow files the same approved terms each time, with a per-run budget
@@ -98,7 +98,7 @@ the CLI or MCP. Every act lands in one ledger.
 - **Your machine, your logins.** Agents use the Claude and Codex subscriptions
   you already have. An OS-level fence keeps them away from Toolroll's secrets.
 - **Any agent.** Claude Code, Codex, Gemini and OpenRouter, routed per phase.
-- **Open source.** MIT, zero runtime dependencies, one SQLite file.
+- **Open source.** MIT. Your data is one SQLite file on your disk.
 
 ## Features
 
@@ -107,7 +107,7 @@ the CLI or MCP. Every act lands in one ledger.
 | **Approvals** | Digest-bound scopes, password step-up, typed decisions with reversibility, expiring operating modes |
 | **Agents** | Claude Code, Codex, Gemini, OpenRouter; an exact model per phase; subscription or API key |
 | **Surfaces** | Web console (desktop and phone), CLI, Telegram, Slack, Discord, Teams, MCP |
-| **Flows** | Zones on a canvas; triggers from schedules, GitHub, Linear, webhooks, email and chat; scripts, drafts, Jev sorting |
+| **Flows** | Zones on a canvas; triggers from schedules, GitHub, Linear, webhooks, email and chat; scripts, drafts, AI triage |
 | **Team** | Team server, OpenID Connect sign-in, per-person API tokens, project grants, subagents |
 | **Audit** | Hash-chained action ledger (`toolroll ledger verify`), evidence packs, full export |
 | **Spend** | Measured cost per run, monthly budgets, plan windows, zero tokens while idle |
