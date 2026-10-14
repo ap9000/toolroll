@@ -7,9 +7,8 @@
 
 ### Your agents build. You decide.
 
-A control plane for coding agents: Claude Code, Codex, Gemini.<br>
-Approve the exact scope once. Get results back Ready with the diff, the passing check and screenshots.<br>
-Runs on your machine.
+For Claude Code, Codex and Gemini, on your own machine.<br>
+Approve the exact scope once. Get results back Ready with the diff, the passing check and screenshots.
 
 [![npm](https://img.shields.io/npm/v/toolroll?color=171717)](https://www.npmjs.com/package/toolroll)
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
@@ -103,7 +102,7 @@ the CLI or MCP. Every act lands in one ledger.
 
 ## Features
 
-| | |
+| Area | What you get |
 |---|---|
 | **Approvals** | Digest-bound scopes, password step-up, typed decisions with reversibility, expiring operating modes |
 | **Agents** | Claude Code, Codex, Gemini, OpenRouter; an exact model per phase; subscription or API key |
