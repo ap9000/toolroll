@@ -37,7 +37,7 @@ the installed app yet.
 
 ## Optional Telegram shortcuts
 
-After [pairing Telegram](../README.md#the-phone-both-directions), send these as new messages in
+After [pairing Telegram](guide/chat-and-phone.md#telegram-from-the-terminal), send these as new messages in
 the paired private chat:
 
 | Message | Answer |
