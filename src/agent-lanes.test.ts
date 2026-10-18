@@ -37,23 +37,42 @@ test("another project's runs never reach the timeline, and nothing in the window
   expect(lanesAt(["/projects/none"])).toBeNull();
 });
 
-test("the window keeps running runs and runs that ended inside it; needs-you rows come first; the rest past the cap are a count", () => {
+test("the window keeps running runs and runs that ended inside it, a long one included; rows follow the board, newest first; counts cover every task", () => {
   const old = task("old"); build(old, at(-5 * 60 * MIN), at(-4 * 60 * MIN));
-  const late = task("late"); build(late, at(-3 * 60 * MIN), at(-30 * MIN));
+  const long = task("long"); build(long, at(-9 * 60 * MIN), at(-1 * MIN));
   const live = task("live"); build(live, at(-10 * MIN), null);
   const asks = task("asks"); build(asks, at(-50 * MIN), at(-40 * MIN), "failed");
-  const lanes = lanesAt(null, [{ rows: [{ taskId: "asks", group: "needs-you" }, { taskId: "live", group: "working" }, { taskId: "late", group: "done" }] }])!;
-  expect(lanes.lanes.map(lane => [lane.taskId, lane.group])).toEqual([["asks", "needs-you"], ["live", "working"], ["late", "done"]]);
+  const board = [{ rows: [{ taskId: "asks", group: "needs-you" as const }, { taskId: "live", group: "working" as const }, { taskId: "long", group: "done" as const }] }];
+  const lanes = lanesAt(null, board)!;
+  expect(lanes.lanes.map(lane => [lane.taskId, lane.group])).toEqual([["asks", "needs-you"], ["live", "working"], ["long", "done"]]);
   expect(lanes.lanes.find(lane => lane.taskId === "live")!.segments[0]).toMatchObject({ role: "builder", endedAt: null });
   expect(lanes.since).toBe(laneSinceOf("2h", T0).toISOString());
 
-  for (let n = 0; n < LANE_ROWS + 3; n++) build(task(`many-${n}`), at(-(n + 1) * MIN), null);
-  expect(lanesAt(null)!.lanes).toHaveLength(LANE_ROWS);
-  expect(lanesAt(null)!.more).toBe(LANE_ROWS + 3 + 3 - LANE_ROWS);
+  // Twenty running tasks: twelve rows, the newest first, and counts over all of them.
+  for (let n = 0; n < 20; n++) build(task(`many-${n}`), at(-(n + 1) * MIN), null);
+  const working = [{ rows: [...board[0]!.rows, ...Array.from({ length: 20 }, (_, n) => ({ taskId: `many-${n}`, group: "working" as const }))] }];
+  const many = lanesAt(null, working)!;
+  expect(many.lanes).toHaveLength(LANE_ROWS);
+  // Needs you first, then working with the newest start first ("live" began ten minutes ago, after many-8).
+  expect(many.lanes.slice(0, 3).map(lane => lane.taskId)).toEqual(["asks", "many-0", "many-1"]);
+  expect([many.running, many.needsYou, many.more]).toEqual([21, 1, 23 - LANE_ROWS]);
 });
 
-test("the timeline's query reads index ranges, never a scan of every run", () => {
+test("a long history outside the window hides nothing current and is never walked", () => {
+  const busy = task("busy");
+  for (let n = 0; n < 700; n++) build(busy, at(-3 * 24 * 60 * MIN - n * MIN), at(-3 * 24 * 60 * MIN - n * MIN + 30_000));
+  build(task("now"), at(-5 * MIN), null);
+  expect(lanesAt(null)!.lanes.map(lane => lane.taskId)).toEqual(["now"]);
   const plan = store.handle.prepare(`EXPLAIN QUERY PLAN ${agentLanesSql()}`)
-    .all({ $lookback: at(-8 * 60 * MIN).toISOString(), $since: at(-2 * 60 * MIN).toISOString(), $all: 1, $repos: "[]" }).map(row => String(row["detail"]));
+    .all({ $lookback: at(-26 * 60 * MIN).toISOString(), $since: at(-2 * 60 * MIN).toISOString(), $all: 1, $repos: "[]" }).map(row => String(row["detail"]));
+  // The candidates come from the start range and the unfinished index, and drive the join; no plain scan of runs.
+  expect(plan.some(step => step.includes("run_started"))).toBe(true);
+  expect(plan.some(step => step.includes("work_unfinished"))).toBe(true);
   expect(plan.filter(step => /^SCAN (run|r)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
+  expect(plan.some(step => /SEARCH r USING INTEGER PRIMARY KEY/.test(step))).toBe(true);
+});
+
+test("the indexes the timeline names exist (a missing one would be an SQL error, not a slow page)", () => {
+  const names = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'run'").all().map(row => String(row["name"]));
+  expect(names).toEqual(expect.arrayContaining(["run_started", "work_unfinished"]));
 });

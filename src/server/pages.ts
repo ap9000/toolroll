@@ -460,7 +460,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
     const lanes = selected === null ? agentLanesOf(store, now, access, groups, laneWindowOf(url.searchParams.get("window"))) : null;
     const view: BrowserAgentsView = { kind: "agents", groups, selected, lanes,
-      empty: groups.length === 0 ? "No agents in the last day. They show here the moment one starts." : null };
+      // Empty only when nothing ran at all: a planner or review on the timeline is activity too.
+      empty: groups.length === 0 && (lanes === null || lanes === undefined) ? "No agents in the last day. They show here the moment one starts." : null };
     const fallback = joinHtml([
       html`<h1>Agents</h1>`,
       groups.length === 0 ? html`<p class="meta">${view.empty ?? ""}</p>` : joinHtml(groups.map(group => joinHtml([

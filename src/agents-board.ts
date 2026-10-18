@@ -234,45 +234,50 @@ export function agentRunFingerprint(store: Store, run: number): string | null {
 }
 
 
-/** The timeline's windows; two hours by default (a plan, a build and a review usually fit). */
-export const LANE_WINDOWS: readonly { key: AgentLaneWindow; label: string }[] = [{ key: "30m", label: "30m" }, { key: "2h", label: "2h" }, { key: "today", label: "Today" }];
+/** The timeline's windows, all rolling (so no server time zone decides what "today" means); two hours by default. */
+export const LANE_WINDOWS: readonly { key: AgentLaneWindow; label: string }[] = [{ key: "30m", label: "30m" }, { key: "2h", label: "2h" }, { key: "24h", label: "24h" }];
 /** Rows the timeline shows: twenty running tasks read as twelve rows and a count, not a wall. */
 export const LANE_ROWS = 12;
-const LANE_ORDER: readonly (AgentGroupKey | "planning")[] = ["needs-you", "stuck", "working", "planning", "done", "idle"];
-/** A run that began this long before the window and ended inside it still shows; longer ones are left out. */
-const LANE_LOOKBACK_MS = 6 * 60 * 60_000;
+/** The board's own order (AGENT_GROUPS), with planning beside working. */
+const LANE_ORDER: readonly (AgentGroupKey | "planning")[] = ["needs-you", "working", "planning", "stuck", "done", "idle"];
+/** A run is found by its start: one that began up to a day before the window and ended inside it still shows. Every
+ * window is at most a day, and no agent run is allowed to outlast that, so the start range covers the window. */
+const LANE_LOOKBACK_MS = 24 * 60 * 60_000;
+/** Runs read for one timeline at most; past it the oldest are left out and the count says so. */
+const LANE_RUNS = 5000;
+const WINDOW_MS: Record<AgentLaneWindow, number> = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "24h": 24 * 60 * 60_000 };
 
 export function laneWindowOf(value: string | null): AgentLaneWindow {
-  return value === "30m" || value === "today" ? value : "2h";
+  return value === "30m" || value === "24h" ? value : "2h";
 }
 
 export function laneSinceOf(window: AgentLaneWindow, now: Date): Date {
-  if (window === "30m") return new Date(now.getTime() - 30 * 60_000);
-  if (window === "2h") return new Date(now.getTime() - 2 * 60 * 60_000);
-  const day = new Date(now); day.setHours(0, 0, 0, 0); return day;
+  return new Date(now.getTime() - WINDOW_MS[window]);
 }
 
-/** The timeline's runs, through bounded index ranges (run_started, work_unfinished): those that started in the window
- * or a little before it and ended inside it, and those still running, in the admitted projects. */
+/** The timeline's runs. The candidates come from two bounded index ranges (run_started for runs begun since the
+ * lookback; work_unfinished, named so SQLite never walks every run's index, for anything still running) and drive the join (CROSS JOIN keeps SQLite from starting at
+ * the task and walking its whole history), in the admitted projects only. */
 export function agentLanesSql(): string {
   return `WITH candidate AS (
       SELECT DISTINCT id FROM (
-        SELECT id FROM run INDEXED BY run_started WHERE started_at >= $lookback
+        SELECT id FROM run WHERE started_at >= $lookback
         UNION ALL SELECT id FROM run INDEXED BY work_unfinished WHERE outcome IS NULL
       )
     )
     SELECT r.id, r.role, r.provider, r.outcome, r.started_at, r.finished_at, tr.external_id AS task_id, tr.repo, t.title
-    FROM candidate c JOIN run r ON r.id = c.id
-    JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
-    JOIN task t ON t.id = tr.external_id
+    FROM candidate c CROSS JOIN run r ON r.id = c.id
+    CROSS JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
+    CROSS JOIN task t ON t.id = tr.external_id
     WHERE r.role IN ('planner', 'builder', 'repair', 'reviewer', 'scout')
       AND (r.outcome IS NULL OR r.finished_at >= $since)
       AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))
-    ORDER BY r.started_at, r.id LIMIT 600`;
+    ORDER BY r.started_at DESC, r.id DESC LIMIT ${LANE_RUNS}`;
 }
 
-/** The timeline: one row per task that ran in the window, ordered as the board is (needs you first), capped at
- * LANE_ROWS. A task's place comes from its board row; a task with only a planner run so far is planning. */
+/** The timeline: one row per task that ran in the window, in the board's order (needs you first, then the newest), the
+ * first LANE_ROWS of them; the counts cover every task in the window, not just the rows shown. A task's place comes
+ * from its board row; one with only a planner running is planning, otherwise idle. */
 export function agentLanesOf(store: Store, now: Date, access: { repos: readonly string[] | null }, board: readonly { rows: readonly BrowserAgentRow[] }[], window: AgentLaneWindow, path = "/agents"): BrowserAgentLanes | null {
   const since = laneSinceOf(window, now);
   const rows = store.handle.prepare(agentLanesSql()).all({
@@ -282,6 +287,7 @@ export function agentLanesOf(store: Store, now: Date, access: { repos: readonly 
   const placed = new Map<string, AgentGroupKey>();
   for (const group of board) for (const row of group.rows) if (!placed.has(row.taskId)) placed.set(row.taskId, row.group);
   const lanes = new Map<string, BrowserAgentLane>();
+  // Newest first from the query; each lane's segments go back into start order below.
   for (const row of rows) {
     const taskId = String(row["task_id"]);
     const role = String(row["role"]);
@@ -295,14 +301,21 @@ export function agentLanesOf(store: Store, now: Date, access: { repos: readonly 
     lane.segments.push(segment);
     lanes.set(taskId, lane);
   }
-  // No build on the board yet: planning while a planner runs, otherwise idle (waiting on a person or done with planning).
-  for (const lane of lanes.values()) if (!placed.has(lane.taskId) && lane.segments.some(one => one.role === "planner" && one.endedAt === null)) lane.group = "planning";
   if (lanes.size === 0) return null;
-  const latest = (lane: BrowserAgentLane) => lane.segments.reduce((at, one) => (one.endedAt ?? now.toISOString()) > at ? (one.endedAt ?? now.toISOString()) : at, "");
-  const ordered = [...lanes.values()].sort((a, b) => LANE_ORDER.indexOf(a.group) - LANE_ORDER.indexOf(b.group) || latest(b).localeCompare(latest(a)));
+  for (const lane of lanes.values()) {
+    lane.segments.sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.runId - b.runId);
+    if (!placed.has(lane.taskId) && lane.segments.some(one => one.role === "planner" && one.endedAt === null)) lane.group = "planning";
+  }
+  // Within a group, the task whose newest run started last comes first (the run id breaks a tie).
+  const newest = (lane: BrowserAgentLane) => lane.segments[lane.segments.length - 1]!;
+  const ordered = [...lanes.values()].sort((a, b) => LANE_ORDER.indexOf(a.group) - LANE_ORDER.indexOf(b.group)
+    || newest(b).startedAt.localeCompare(newest(a).startedAt) || newest(b).runId - newest(a).runId);
   return {
     since: since.toISOString(), now: now.toISOString(),
     windows: LANE_WINDOWS.map(one => ({ ...one, href: `${path}?window=${one.key}`, active: one.key === window })),
     lanes: ordered.slice(0, LANE_ROWS), more: Math.max(0, ordered.length - LANE_ROWS),
+    running: ordered.filter(lane => lane.segments.some(one => one.endedAt === null)).length,
+    needsYou: ordered.filter(lane => lane.group === "needs-you").length,
+    truncated: rows.length >= LANE_RUNS,
   };
 }

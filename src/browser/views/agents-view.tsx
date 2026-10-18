@@ -233,6 +233,7 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
 
 /** Each task's place on the timeline as the glyph the rest of the console wears for it. */
 const LANE_GLYPH: Record<BrowserAgentLane["group"], GlyphKind> = { "needs-you": "decide", stuck: "unblock", working: "building", planning: "building", done: "done", idle: "idle" };
+const LANE_STATE: Record<BrowserAgentLane["group"], string> = { "needs-you": "Needs you", stuck: "Stuck", working: "Working", planning: "Planning", done: "Done", idle: "Idle" };
 const ROLE_WORD: Record<BrowserLaneSegment["role"], string> = { planner: "Plan", builder: "Build", reviewer: "Review", scout: "Scout" };
 const FAILED = new Set(["failed", "refused"]);
 /** A run's look: the role sets the fill (plan quiet, build solid, review outlined), the outcome only tints a failure. */
@@ -257,10 +258,10 @@ function tickWords(ms: number): string {
 export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
   const start = Date.parse(lanes.since), end = Date.parse(lanes.now), span = Math.max(1, end - start);
   const at = (iso: string) => Math.min(100, Math.max(0, ((Date.parse(iso) - start) / span) * 100));
-  const running = lanes.lanes.filter(lane => lane.segments.some(one => one.endedAt === null)).length;
-  const waiting = lanes.lanes.filter(lane => lane.group === "needs-you").length;
+  const { running, needsYou: waiting } = lanes;
+  const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const ticks = [0.2, 0.4, 0.6, 0.8].map(f => ({ left: f * 100, words: tickWords((1 - f) * span) }));
-  return <section aria-labelledby="agent-lanes-title" className="rounded-card border border-border bg-card px-4 pb-3 pt-3 phone:hidden" data-agent-lanes>
+  return <section aria-labelledby="agent-lanes-title" className="rounded-card border border-border bg-card px-4 pb-3 pt-3 phone:px-3" data-agent-lanes>
     <div className="flex items-center gap-3">
       <h2 id="agent-lanes-title" className="text-[14px] font-semibold">Timeline</h2>
       <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running{waiting > 0 && <> · <span className="text-foreground">{waiting} need you</span></>}</span>
@@ -269,23 +270,25 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
           className={cn("rounded px-2 py-0.5 text-muted-foreground hover:text-foreground", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
       </nav>
     </div>
-    <div className="mt-2 grid grid-cols-[minmax(0,210px)_minmax(0,1fr)] gap-x-3">
+    <div className="mt-2 grid grid-cols-[minmax(0,210px)_minmax(0,1fr)] gap-x-3 phone:grid-cols-[minmax(0,110px)_minmax(0,1fr)] phone:gap-x-2">
       <span />
       <div className="relative h-5 text-[11px] text-muted-foreground tabular-nums" aria-hidden="true">
-        {ticks.map(tick => <span key={tick.left} className="absolute -translate-x-1/2" style={{ left: `${tick.left}%` }}>{tick.words}</span>)}
+        {ticks.map((tick, index) => <span key={tick.left} className={cn("absolute -translate-x-1/2", index % 2 === 0 && "phone:hidden")} style={{ left: `${tick.left}%` }}>{tick.words}</span>)}
         <span className="absolute right-0 rounded bg-raised px-1 text-foreground">now</span>
       </div>
       {lanes.lanes.map(lane => <div key={lane.taskId} className="contents" data-lane={lane.taskId} data-lane-group={lane.group}>
         <a href={lane.href} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px] hover:underline hover:underline-offset-4">
-          <StatusGlyph kind={LANE_GLYPH[lane.group]} />
+          <StatusGlyph kind={LANE_GLYPH[lane.group]} /><span className="sr-only">{LANE_STATE[lane.group]}: </span>
           <span className="truncate font-medium" title={lane.project ? `${lane.title} · ${lane.project}` : lane.title}>{lane.title}</span>
         </a>
         <div className="relative my-1 h-6 border-b border-border/60">
           {lane.segments.map((one, index) => {
-            const left = at(one.startedAt), right = at(one.endedAt ?? lanes.now), width = Math.max(0.6, right - left);
+            // At least a sliver wide, and never past the now edge: a just-started run sits against it.
+            const width = Math.max(0.8, at(one.endedAt ?? lanes.now) - at(one.startedAt));
+            const left = Math.min(at(one.startedAt), 100 - width), right = left + width;
             const next = lane.segments[index + 1];
             const gapTo = next === undefined || one.endedAt === null ? null : at(next.startedAt);
-            const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
+            const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))} from ${clock(one.startedAt)}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
             return <span key={one.runId} className="contents">
               <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
                 className={cn("absolute top-0.5 flex h-5 items-center overflow-hidden whitespace-nowrap rounded-[5px] border px-1.5 text-[11px] font-medium", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
@@ -296,7 +299,9 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
         </div>
       </div>)}
     </div>
-    {lanes.more > 0 && <a href="/work?view=running" className="mt-1 inline-block text-[12.5px] text-muted-foreground hover:text-foreground">+{lanes.more} more in this window</a>}
+    {(lanes.more > 0 || lanes.truncated) && <p className="mt-1 text-[12.5px] text-muted-foreground">
+      {lanes.more > 0 && `${lanes.more} more ${lanes.more === 1 ? "task" : "tasks"} in this window, below the twelve shown.`}{lanes.truncated && " The oldest runs in this window are left out."}
+    </p>}
   </section>;
 }
 

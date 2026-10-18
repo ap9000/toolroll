@@ -535,8 +535,12 @@ export type BrowserAgentLanes = {
   lanes: BrowserAgentLane[];
   /** Tasks in the window past the rows shown. */
   more: number;
+  /** Over every task in the window, not just the rows shown. */
+  running: number; needsYou: number;
+  /** The window held more runs than one timeline reads; the oldest are left out. */
+  truncated: boolean;
 };
-export type AgentLaneWindow = '30m' | '2h' | 'today';
+export type AgentLaneWindow = '30m' | '2h' | '24h';
 
 export type BrowserAgentsView = {
   kind: 'agents';
