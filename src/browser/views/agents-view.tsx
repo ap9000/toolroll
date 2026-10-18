@@ -291,7 +291,7 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
             const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))} from ${clock(one.startedAt)}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
             return <span key={one.runId} className="contents">
               <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
-                className={cn("absolute top-0.5 flex h-5 items-center overflow-hidden whitespace-nowrap rounded-[5px] border px-1.5 text-[11px] font-medium", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
+                className={cn("absolute top-0.5 box-border flex h-5 min-w-0 items-center overflow-hidden whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
                 style={{ left: `${left}%`, width: `${width}%` }}>{width >= 7 ? ROLE_WORD[one.role] : ""}</a>
               {gapTo !== null && gapTo > right && <span aria-hidden="true" className="absolute top-1/2 border-t border-dotted border-foreground/30" style={{ left: `${right}%`, width: `${gapTo - right}%` }} />}
             </span>;
