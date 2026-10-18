@@ -6,7 +6,9 @@
 import { useEffect, useState } from "react";
 import type { BrowserFirstRun, BrowserPhoneCard } from "../browser-workspace.js";
 import type { JourneyStep } from "../first-run.js";
-import { Button, PostForm } from "./ui/index.js";
+import { Card } from "./components/ui/card.js";
+import { Button } from "./components/ui/button.js";
+import { PostForm } from "./ui/index.js";
 
 function Command({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -59,7 +61,7 @@ export function FirstRun({ firstRun }: { firstRun: BrowserFirstRun }) {
         <span className="so-first-run-title">{step.title}<span className="so-sr-only">{step.done ? ": done" : step.checking ? ": checking" : ": not yet"}</span></span>
         {step.checking && <span className="so-first-run-checking" aria-hidden="true">Checking…</span>}
         {step.action !== null && (step.key === "agent" && firstRun.sandbox !== null ? null
-          : step.action.kind === "link" ? <Button asChild variant="secondary" size="sm"><a href={step.action.href}>{step.action.label}</a></Button>
+          : step.action.kind === "link" ? <Button asChild variant="outline" size="sm"><a href={step.action.href}>{step.action.label}</a></Button>
           : <Command command={step.action.command} />)}
         {step.key === "agent" && !step.done && firstRun.sandbox !== null && step.action?.kind === "command" && <div className="so-first-run-choices" data-first-run-choices>
           <div data-sign-in-command><p className="so-first-run-choice-title">Sign in an agent</p><p className="so-first-run-choice-hint">Run this on this computer. Chat turns on by itself once you’re signed in.</p><Command command={step.action.command} /></div>
@@ -76,7 +78,7 @@ export function FirstRequest({ firstRun, onDraft }: { firstRun: BrowserFirstRun;
   return <div className="so-first-request" data-first-request>
     {firstRun.intro && <p className="so-first-request-intro" data-how-it-works>{firstRun.intro}</p>}
     {firstRun.suggestions.length > 0 && <div className="so-suggestions so-first-request-suggestions" aria-label="First tasks to try" data-first-tasks>
-      {firstRun.suggestions.map(one => <button key={one.draft} type="button" className="so-suggestion" data-source={one.source} onClick={() => onDraft(one.draft)}>{one.label}</button>)}
+      {firstRun.suggestions.map(one => <Button key={one.draft} variant="outline" size="sm" className="so-suggestion" data-source={one.source} onClick={() => onDraft(one.draft)}>{one.label}</Button>)}
     </div>}
     {firstRun.lead && <p className="so-first-request-lead" data-lead-line>{firstRun.lead.words} · <a href={firstRun.lead.href}>Change</a></p>}
   </div>;
@@ -87,13 +89,13 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
   const [hidden, setHidden] = useState(false);
   if (hidden) return null;
   const [first, ...others] = phone.chatApps;
-  return <section className="so-phone-card" aria-labelledby="phone-card-title" data-phone-card>
+  return <Card className="so-phone-card" aria-labelledby="phone-card-title" data-phone-card>
     <h2 id="phone-card-title">Use it from your phone</h2>
     <div className="so-phone-options">
       <div>
         <p className="so-first-run-choice-title">A chat app</p>
         <p className="so-first-run-choice-hint">Get results and approve plans in {first?.label ?? "Telegram"}: add the bot, then pair your phone.</p>
-        {first && <Button asChild variant="secondary" size="sm"><a href={first.href}>Pair {first.label}</a></Button>}
+        {first && <Button asChild variant="outline" size="sm"><a href={first.href}>Pair {first.label}</a></Button>}
         {others.length > 0 && <p className="so-phone-others">Or {others.map((one, index) => <span key={one.href}>{index > 0 && (index === others.length - 1 ? " or " : ", ")}<a href={one.href}>{one.label}</a></span>)}</p>}
       </div>
       <div data-phone-tailnet>
@@ -110,7 +112,7 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
       setHidden(true);
       void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
     }}><Button variant="ghost" size="sm" type="submit">Not now</Button></PostForm>}
-  </section>;
+  </Card>;
 }
 
 /** The first task's way to Ready: Plan → You approve → Build → Checks → Ready, filled in as it moves. */

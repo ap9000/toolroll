@@ -732,7 +732,7 @@ describe("the phone shell (mobile pass): one header row, drawn controls, thumb-s
     expect(css).toContain("color: var(--muted-foreground); margin: 2rem 0 .5rem; font-family: var(--font-sans);");
     expect(css).toContain("border: 1px solid var(--border); border-radius: .375rem;");
     expect(css).toContain(".count {");
-    expect(css).toContain("border-radius: 9999px;");
+    expect(css).toContain("border-radius: var(--so-radius-full);");
     expect(css).not.toContain(".badge-running::before");
   });
 

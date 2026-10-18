@@ -40,7 +40,8 @@ function useRevealHashTarget() {
   }, []);
 }
 
-function Html({ html, className }: { html: string; className?: string }) {
+/** Trusted server HTML through GuardedHtml; the result view uses this one too. */
+export function Html({ html, className }: { html: string; className?: string }) {
   return <GuardedHtml html={html} immutable {...(className === undefined ? {} : { className })} />;
 }
 

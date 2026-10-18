@@ -3,6 +3,7 @@
  * icon, colour only on the icon. A problem that doesn't undo the outcome is an
  * amber icon and one action on its own row; red belongs to Failed alone. The
  * exact technical reasons sit behind More. */
+import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, Check, ChevronRight, Circle, CircleDot, X } from "lucide-react";
 import type { ReactNode } from "react";
@@ -89,12 +90,14 @@ export function headlineToneOf(tone: string): HeadlineTone {
 }
 
 /** A headline in a list (Tasks, Crew): neutral words with a coloured dot, the
- * ink accent only for Needs you, red only for Failed (on the dot). */
+ * ink accent only for Needs you, red only for Failed; state is the glyph's shape (components/ui/status-glyph). */
+const HEADLINE_GLYPH: Record<HeadlineTone, GlyphKind> = { attention: "decide", danger: "failed", live: "building", ready: "review", success: "done", neutral: "idle" };
+
 export function HeadlineBadge({ label, tone, className, ...rest }: { label: string; tone: string; className?: string } & Record<`data-${string}`, string>) {
   const headline = headlineToneOf(tone);
-  return <span {...rest} data-headline={label} className={cn("inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap rounded-badge px-1.5 py-px text-badge",
-    headline === "attention" ? "bg-attention-soft text-attention" : "bg-neutral-soft text-neutral-ink", className)}>
-    <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", headline === "ready" ? "bg-transparent ring-[1.5px] ring-inset ring-success" : HEADLINE_DOT[headline])} />{label}
+  return <span {...rest} data-headline={label} className={cn("inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap py-px text-badge",
+    headline === "attention" ? "font-medium text-foreground" : "text-muted-foreground", className)}>
+    <StatusGlyph kind={HEADLINE_GLYPH[headline]} />{label}
   </span>;
 }
 

@@ -18,7 +18,7 @@ import {
 import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultActsOf, type ResultActKind, type ResultActs } from "../../result-acts.js";
 import { toneOf } from "./tone.js";
 import { ConfirmStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
-import { RetryForm, threadWhen, whenTitle } from "./task-view.js";
+import { Html, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
@@ -26,9 +26,6 @@ const DOT: Record<string, string> = {
   attention: "bg-attention", danger: "bg-destructive", info: "bg-info", success: "bg-success", neutral: "bg-muted-foreground", warning: "bg-warning",
 };
 
-function Html({ html, className }: { html: string; className?: string }) {
-  return <GuardedHtml html={html} immutable {...(className === undefined ? {} : { className })} />;
-}
 
 /** The one formatter (when-html.ts), in the viewer's zone. */
 const shortWhen = (iso: string): string => threadWhen(iso);

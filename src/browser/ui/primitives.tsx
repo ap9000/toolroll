@@ -1,44 +1,30 @@
 /**
- * Button and Dialog adapt shadcn/ui's Radix composition (MIT).
+ * Dialog adapts shadcn/ui's Radix composition (MIT); Badge and Textarea are the shared
+ * components/ui ones under this layer's names; Button is components/ui/button itself.
  * See THIRD_PARTY_NOTICES.md for the pinned upstream source and modifications.
  */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Slot } from "@radix-ui/react-slot";
+import { Badge as KeptBadge } from "../components/ui/badge.js";
+import { Textarea as KeptTextarea } from "../components/ui/form-controls.js";
 import type { ComponentProps, ReactNode } from "react";
 
 export function cn(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
-export type ButtonProps = ComponentProps<"button"> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "default" | "sm" | "icon";
-  asChild?: boolean;
-};
-
-export function Button({ className, variant = "primary", size = "default", asChild = false, type, ...props }: ButtonProps) {
-  const Component = asChild ? Slot : "button";
-  return <Component
-    data-slot="button"
-    data-variant={variant}
-    data-size={size}
-    className={cn("ui-button", `ui-button--${variant}`, `ui-button--${size}`, className)}
-    {...(!asChild ? { type: type ?? "button" } : {})}
-    {...props}
-  />;
-}
-
 export type BadgeProps = ComponentProps<"span"> & {
   tone?: "neutral" | "success" | "warning" | "attention" | "danger" | "info";
 };
+/** The console's one Badge (components/ui/badge); `ui-badge` stays as a hook. */
 export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
-  return <span data-slot="badge" data-tone={tone} className={cn("ui-badge", `ui-badge--${tone}`, className)} {...props} />;
+  return <KeptBadge data-tone={tone} tone={tone} className={cn("ui-badge", className)} {...props} />;
 }
 export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn("ui-input", className)} {...props} />;
 }
+/** The console's one Textarea (components/ui/form-controls); `ui-textarea` stays as a hook. */
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
-  return <textarea className={cn("ui-textarea", className)} {...props} />;
+  return <KeptTextarea className={cn("ui-textarea", className)} {...props} />;
 }
 export function Label({ className, ...props }: ComponentProps<"label">) {
   return <label className={cn("ui-label", className)} {...props} />;
