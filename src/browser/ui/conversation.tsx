@@ -20,7 +20,7 @@ export function ConversationScrollButton({ className, children, onClick, ...prop
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
   if (isAtBottom) return null;
   return <Button
-    className={cn("ui-conversation-scroll", className)}
+    className={cn("ui-conversation-scroll max-[901px]:h-11 max-[901px]:min-h-11", className)}
     variant="outline"
     size="sm"
     onClick={(event) => {
