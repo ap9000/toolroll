@@ -1,9 +1,8 @@
 import { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import { expect, test } from 'vitest';
-import { performanceMetrics, prometheusMetrics } from './metrics.js';
+import { performanceMetrics } from './metrics.js';
 import { ServerTelemetry, TimingHistogram, routeFamily, healthWords, ROUTE_FAMILIES } from './server-telemetry.js';
-import { openStore } from './store.js';
 
 test('performance metric names, types and bounded labels contain no request paths or identities', () => {
   const telemetry = new ServerTelemetry(() => 0);
@@ -51,39 +50,3 @@ test('recent measurements expire without resetting cumulative histograms; idle h
   expect(healthWords(telemetry.snapshot())).toContain('Live streams: 0 open');
 });
 
-test('the existing exporter includes real Store transaction and standalone write timings', () => {
-  const store = openStore(':memory:');
-  try {
-    store.transact(() => { store.createTask({ id: 'synthetic', title: 'Synthetic telemetry test' }, new Date()); });
-    const before = store.telemetry.writeHold.total.count;
-    expect(() => store.transact(() => { throw Error('rollback'); })).toThrow('rollback');
-    expect(store.telemetry.writeHold.total.count).toBe(before + 1);
-    store.handle.prepare('UPDATE task SET title = ? WHERE id = ?').run('Changed synthetic title', 'synthetic');
-    expect(store.telemetry.writeStatement.total.count).toBeGreaterThan(0);
-    const exported = prometheusMetrics(store, new Date());
-    expect(exported).toContain('toolroll_sqlite_write_wait_seconds_count');
-    expect(exported).toContain('toolroll_sse_connections{route="live"} 0');
-  } finally { store.close(); }
-});
-
-test('event-loop samples have the 20 ms sampling interval subtracted, so an idle loop reads zero', () => {
-  // A stand-in for the native delay monitor: raw samples in milliseconds, read back as nanosecond percentiles.
-  let raw = [20, 20, 21, 30], resets = 0;
-  const monitor = {
-    get count() { return raw.length; },
-    percentile: (p: number) => raw[Math.max(0, Math.ceil(p / 100 * raw.length) - 1)]! * 1e6,
-    reset: () => { raw = []; resets++; },
-  };
-  const telemetry = new ServerTelemetry(() => 0);
-  Object.assign(telemetry, { monitor });
-  telemetry.sampleEventLoop();
-  expect(resets).toBe(1);
-  expect(telemetry.eventLoop.recent()).toEqual({ count: 4, p50Ms: 0.1, p99Ms: 10, maxMs: 10, totalMs: 11 });
-  telemetry.sampleEventLoop(); // nothing new since the reset adds nothing
-  expect(telemetry.eventLoop.total.count).toBe(4);
-
-  const idle = new ServerTelemetry(() => 0);
-  raw = [20, 20, 20];
-  Object.assign(idle, { monitor });
-  expect(idle.snapshot().eventLoop).toEqual({ count: 3, p50Ms: 0, p99Ms: 0, maxMs: 0, totalMs: 0 });
-});

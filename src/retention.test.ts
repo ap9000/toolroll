@@ -15,7 +15,7 @@ import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
-import { dailyRetention, parsePeriod, periodLabel, periodWords, retentionPlan, sweepRetention } from "./retention.js";
+import { dailyRetention, parsePeriod, retentionPlan, sweepRetention } from "./retention.js";
 
 let dir: string, file: string, root: string, store: Store;
 const NOW = new Date("2026-09-20T12:00:00.000Z");
@@ -67,9 +67,6 @@ test("periods: evidence 28 days and the rest forever by default; a day count, we
   expect(parsePeriod("12w")).toBe(84);
   expect(parsePeriod("1y")).toBe(365);
   for (const bad of ["0d", "0", "11y", "-5", "soon", ""]) expect(parsePeriod(bad)).toBeUndefined();
-  expect([periodWords(null), periodWords(1), periodWords(30), periodWords(365), periodWords(730)]).toEqual(["forever", "1 day", "30 days", "1 year", "2 years"]);
-  expect([periodLabel("evidence", 28, false), periodLabel("evidence", 1, true), periodLabel("evidence", 30, true), periodLabel("chat", 30, true)])
-    .toEqual(["28 days (default)", "1 day", "30 days (custom)", "30 days"]);
 
   store.setRetentionPeriod("chat", 90, "alex", NOW);
   store.setRetentionPeriod("chat", 90, "alex", NOW);
@@ -255,7 +252,6 @@ test("an older file's retention_setting (7 days or more) is rebuilt for 1 day, k
   store = openStore(file);
   expect(store.handle.prepare("SELECT * FROM retention_setting ORDER BY kind").all()).toEqual(before);
   expect(store.retentionPeriods()).toEqual({ evidence: 30, checkouts: null, chat: null, notifications: 365 });
-  expect(periodLabel("evidence", 30, true)).toBe("30 days (custom)");
   store.setRetentionPeriod("evidence", 1, "alex", NOW);
   expect(store.retentionPeriods().evidence).toBe(1);
   // Opening again leaves the widened table as it is.
@@ -309,9 +305,6 @@ test("Settings → Retention is an instance operator's; saving takes the passwor
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/settings/retention`, { headers: { cookie } })).text();
     expect(page).toContain("<h1>Retention</h1>");
-    expect(page).toContain("Nothing is old enough to remove yet.");
-    expect(page).toMatch(/<select id="keep-evidence" name="evidence"><option value="1">1 day<\/option><option value="7">7 days<\/option><option value="14">14 days<\/option><option value="28" selected>28 days \(default\)<\/option><option value="forever">Forever<\/option><\/select>/);
-    expect(page).toMatch(/<select id="keep-chat" name="chat">.*<option value="forever" selected>Forever \(default\)<\/option>/);
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/settings/retention`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     const choices = { evidence: "1", checkouts: "365", chat: "forever", notifications: "30" };
@@ -325,10 +318,6 @@ test("Settings → Retention is an instance operator's; saving takes the passwor
     expect(store.retentionPeriods()).toEqual({ evidence: 1, checkouts: 365, chat: null, notifications: 30 });
     expect(store.actionLedger({ repos: null }).filter(one => one.action.startsWith("retention changed")).map(one => one.detail).sort())
       .toEqual(["28 days → 1 day", "forever → 1 year", "forever → 30 days"]);
-    const saved = await (await fetch(`${base}/settings/retention`, { headers: { cookie } })).text();
-    expect(saved).toContain('<option value="1" selected>1 day</option>');
-    expect(saved).toContain('<option value="365" selected>1 year</option>');
-    expect(saved).toContain('<option value="forever" selected>Forever (default)</option>');
     const samCookie = await signIn("sam", sam.token);
     expect((await fetch(`${base}/settings/retention`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
   } finally {

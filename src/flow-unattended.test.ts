@@ -602,36 +602,19 @@ describe("a script schedule is pinned by its code, not its name", () => {
     expect(sealed(await fireScript(trigger, at(2 * HOUR)))).toBe(false);
   });
 
-  test("the previous script record shape becomes inactive at upgrade", async () => {
-    const { flow, trigger } = scriptFlow();
+  // A grant whose recorded script provenance is an older or incomplete shape covers nothing.
+  test.each([
+    ["the previous script record shape (no provenance)", false, (terms: Record<string, any>) => { delete terms.triggers[0].script.provenance; return terms; }, true],
+    ["a grant signed before imports were pinned", true, (terms: Record<string, any>) => { const { files, file, ...script } = terms.triggers[0].script; return { ...terms, triggers: [{ ...terms.triggers[0], script: { ...script, file: { path: file, digest: files[0].digest } } }] }; }, true],
+    ["a grant signed without its script's code", false, (terms: Record<string, any>) => { const { script: _dropped, ...bare } = terms.triggers[0]; return { ...terms, triggers: [bare] }; }, false],
+  ] as const)("%s covers nothing", async (_name, withFile, mutate, redigest) => {
+    if (withFile) { mkdirSync(join(repo, "scripts")); writeFileSync(join(repo, "scripts", "issues.sh"), "echo '[]'\n"); }
+    const { flow, trigger } = scriptFlow(withFile ? "scripts/issues.sh" : null);
     const signed = await sign(flow, { include: [trigger] });
     if (!signed.ok) throw Error(signed.message);
-    const terms = JSON.parse(unattendedTermsJson(signed.grant.terms));
-    delete terms.triggers[0].script.provenance;
-    store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ?, digest = ? WHERE id = ?")
-      .run(JSON.stringify(terms), unattendedDigestOf(terms), signed.grant.id);
-    expect(activeUnattendedGrant(store, flow, T0)).toBeNull();
-  });
-
-  test("a grant signed before imports were pinned covers nothing", async () => {
-    mkdirSync(join(repo, "scripts"));
-    writeFileSync(join(repo, "scripts", "issues.sh"), "echo '[]'\n");
-    const { flow, trigger } = scriptFlow("scripts/issues.sh");
-    const signed = await sign(flow, { include: [trigger] });
-    if (!signed.ok) throw Error(signed.message);
-    const { files, file, ...script } = signed.grant.terms.triggers[0]!.script!;
-    const terms = { ...signed.grant.terms, triggers: [{ ...signed.grant.terms.triggers[0]!, script: { ...script, file: { path: file, digest: files[0]!.digest } } }] } as unknown as typeof signed.grant.terms;
-    store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ?, digest = ? WHERE id = ?").run(unattendedTermsJson(terms), unattendedDigestOf(terms), signed.grant.id);
-    expect(activeUnattendedGrant(store, flow, at(HOUR))).toBeNull();
-  });
-
-  test("a grant signed without its script's code covers nothing", async () => {
-    const { flow, trigger } = scriptFlow();
-    const signed = await sign(flow, { include: [trigger] });
-    if (!signed.ok) throw Error(signed.message);
-    const { script: _dropped, ...bare } = signed.grant.terms.triggers[0]!;
-    const terms = { ...signed.grant.terms, triggers: [bare] };
-    store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ? WHERE id = ?").run(JSON.stringify(terms), signed.grant.id);
+    const terms = mutate(JSON.parse(unattendedTermsJson(signed.grant.terms)));
+    if (redigest) store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ?, digest = ? WHERE id = ?").run(JSON.stringify(terms), unattendedDigestOf(terms as never), signed.grant.id);
+    else store.handle.prepare("UPDATE flow_unattended_grant SET terms_json = ? WHERE id = ?").run(JSON.stringify(terms), signed.grant.id);
     expect(activeUnattendedGrant(store, flow, at(HOUR))).toBeNull();
   });
 

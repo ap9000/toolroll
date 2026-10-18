@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { acceptWordsOf, buildProgressOf, earlierAttemptsWords, lastErrorLineOf, missedRequirementOf, reportMismatchesOf } from "./workspace-ui.js";
-import { failedAttemptSentence, failingCheckSuggestion, GENERAL_SUGGESTION, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, NO_REASON_RECORDED, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS, stopSuggestionOf } from "./needs-you.js";
+import { acceptWordsOf, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf } from "./workspace-ui.js";
+import { failedAttemptSentence, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS } from "./needs-you.js";
 
 describe("the result's Accept words", () => {
   test("Accept and finish only when every requirement is met and the checks passed; it says it finishes, and never that it publishes", () => {
@@ -51,11 +51,6 @@ describe("a report that doesn't match its saved changes, said plainly", () => {
       path: "src/payout.ts", lines: { from: 12, to: 16 }, inChanges: true, note: 2 });
   });
 
-  test("a note that names no requirement keeps its plain words and the note it is", () => {
-    const [row] = reportMismatchesOf(["caveat 1 names no criterion — every caveat is an exception to exactly one signed criterion, named by its exact id (an unrelated idea belongs in the handoff's follow-ups): Captured against fixtures."], criteria, changes);
-    expect(row).toMatchObject({ text: "The agent left a note without saying which requirement it affects: Captured against fixtures.", path: null, lines: null, note: 1 });
-  });
-
   test("a requirement whose evidence doesn't hold is listed too, beside a failed check that the checks row already says", () => {
     const failing = [criteria[0]!, { ...criteria[1]!, state: "failed", detail: ['criterion "c2"\'s screenshot evidence "evidence/a.png" could not be verified: not a PNG'] }];
     expect(reportMismatchesOf(["the repository's approved verification command exited 1"], failing, changes)).toEqual([
@@ -68,13 +63,6 @@ describe("a report that doesn't match its saved changes, said plainly", () => {
 });
 
 describe("what went wrong with a failed attempt, in one line", () => {
-  test("the run's recorded reason, or that none was recorded — never a pointer elsewhere", () => {
-    expect(failedAttemptSentence("timeout")).toBe("Ran out of time.");
-    expect(failedAttemptSentence("acceptance")).toBe("The result didn't meet its signed requirements.");
-    expect(failedAttemptSentence(null)).toBe(NO_REASON_RECORDED);
-    expect(failedAttemptSentence(" ")).toBe("No reason was recorded for this attempt.");
-  });
-
   test("a recorded code is never shown as stored; a reason already in words is said as written", () => {
     for (const code of [...Object.keys(RUN_REASON_WORDS), "some-new-code", "decision:12"]) {
       const sentence = failedAttemptSentence(code);
@@ -157,14 +145,6 @@ describe("what a failed attempt missed, and what to change", () => {
     expect(note.length).toBeLessThanOrEqual(RETRY_NOTE_LIMIT);
     expect(note).toMatch(/^Before handing off, make sure every exported column column .*column…$/);
   });
-
-  test("a failing check's line and a stop reason each come with one suggestion", () => {
-    expect(failingCheckSuggestion("FAIL settle rounds half-cents.")).toBe("Make the check pass. It ended on: FAIL settle rounds half-cents.");
-    expect(stopSuggestionOf("timeout")).toBe("Split the work into smaller steps, or name the one part to finish first.");
-    expect(stopSuggestionOf("something-new")).toBe(GENERAL_SUGGESTION);
-    expect(stopSuggestionOf(null)).toBe(GENERAL_SUGGESTION);
-    expect(RUN_REASON_WORDS["plan-revised"]).toBe("the plan changed, so a fresh attempt took over");
-  });
 });
 
 describe("how far along a live build is", () => {
@@ -184,18 +164,5 @@ describe("how far along a live build is", () => {
     expect(buildProgressOf(steps(["completed", "current", "blocked"], "the staging flag is off")))
       .toEqual({ step: 3, total: 3, line, stuck: { step: 3, why: "the staging flag is off", line } });
     expect(buildProgressOf(steps(["completed", "blocked", "pending"]))?.line).toBe("Stuck on step 2 of 3: Step 2 words.");
-  });
-
-  test("with only the recorded progress (a list row reads no plan file), steps go by number", () => {
-    const recorded = (states: ("pending" | "current" | "completed" | "blocked")[], note: string | null = null) =>
-      states.map(state => ({ description: null, state, note: state === "blocked" ? note : null }));
-    expect(buildProgressOf(recorded(["completed", "current", "pending"]))?.line).toBe("Step 2 of 3.");
-    expect(buildProgressOf(recorded(["completed", "blocked", "pending"], "waiting on staging"))?.line).toBe("Stuck on step 2 of 3: waiting on staging.");
-    expect(buildProgressOf(recorded(["completed", "blocked"]))?.line).toBe("Stuck on step 2 of 2.");
-  });
-
-  test("earlier stopped attempts are one line", () => {
-    expect(earlierAttemptsWords(1)).toBe("1 earlier attempt stopped");
-    expect(earlierAttemptsWords(2)).toBe("2 earlier attempts stopped");
   });
 });

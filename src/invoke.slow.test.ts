@@ -307,40 +307,19 @@ describe("the invocation gateway", () => {
     });
   };
 
-  test("a codex turn with no thread.started and nothing to show is an init failure", async () => {
-    const id = codexRunFor("t-init-1");
+  test.each([
+    ["no thread.started and nothing to show is an init failure", "t-init-1", { code: 1, stdout: "", stderr: "error: bad config.toml" }, true, null],
+    ["a completed turn without the init event is NOT an init failure", "t-init-2", { stdout: JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fine" } }) }, false, null],
+    ["a nonzero exit WITH an agent message is a failed turn, never an init failure (audit C-8)", "t-init-4", { code: 1, stdout: JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "I tried and failed" } }), stderr: "turn failed" }, false, "I tried and failed"],
+    ["a timeout is a timeout, not an init failure", "t-init-3", { code: 1, stdout: "", timedOut: true }, false, null],
+  ] as const)("codex init classification: %s", async (_label, task, reply, initFailed, finalMessage) => {
+    const id = codexRunFor(task);
     const result = await invokeRan(store, id, { provider: "codex", model: null }, ASK, {
-      runner: async () => ({ ...OK, code: 1, stdout: "", stderr: "error: bad config.toml" }),
+      runner: async () => ({ ...OK, ...reply }),
     });
-    expect(result.initFailed).toBe(true);
-  });
-
-  test("a completed turn without the init event is NOT an init failure — a renamed event must not read as broken", async () => {
-    const id = codexRunFor("t-init-2");
-    const jsonl = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fine" } });
-    const result = await invokeRan(store, id, { provider: "codex", model: null }, ASK, {
-      runner: async () => ({ ...OK, stdout: jsonl }),
-    });
-    expect(result.initFailed).toBe(false);
-  });
-
-  test("a nonzero exit WITH an agent message is a failed turn, never an init failure (audit C-8)", async () => {
-    const id = codexRunFor("t-init-4");
-    const jsonl = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "I tried and failed" } });
-    const result = await invokeRan(store, id, { provider: "codex", model: null }, ASK, {
-      runner: async () => ({ ...OK, code: 1, stdout: jsonl, stderr: "turn failed" }),
-    });
-    expect(result.initFailed).toBe(false);
-    expect(result.finalMessage).toBe("I tried and failed");
-  });
-
-  test("a timeout is a timeout, not an init failure — even with no init event seen", async () => {
-    const id = codexRunFor("t-init-3");
-    const result = await invokeRan(store, id, { provider: "codex", model: null }, ASK, {
-      runner: async () => ({ ...OK, code: 1, stdout: "", timedOut: true }),
-    });
-    expect(result.initFailed).toBe(false);
-    expect(result.timedOut).toBe(true);
+    expect(result.initFailed).toBe(initFailed);
+    if (finalMessage !== null) expect(result.finalMessage).toBe(finalMessage);
+    if ("timedOut" in reply) expect(result.timedOut).toBe(true);
   });
 
   test("claude gained the init signal with the streaming transport — an empty failed stream is an init failure", async () => {

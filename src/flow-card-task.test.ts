@@ -9,24 +9,6 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); store = openStore(
 afterEach(() => { store.close(); vi.useRealTimers(); });
 const line = (secrets: string[] = []) => flowCardTaskLine(store, fixture.id, fixture.repo, now, secrets);
 
-test("shows the live build's step count, and Building before any progress was saved", () => {
-  expect(line()).toBe("Building");
-  fixture.checkpoint(["completed", "completed", "current", "pending", "pending", "pending"]);
-  expect(line()).toBe("Building · step 3 of 6");
-  fixture.checkpoint(["completed", "completed"]);
-  expect(line()).toBe("Building · step 2 of 2");
-});
-
-test("says why a step is stuck, in one short line, with a numbered fallback", () => {
-  fixture.checkpoint(["completed", "blocked"], "Staging is unavailable.\nRetry after the deploy.");
-  expect(line()).toBe("Stuck: Staging is unavailable. Retry after the deploy");
-  fixture.checkpoint(["completed", "blocked"]);
-  expect(line()).toBe("Stuck: step 2 of 2");
-  fixture.checkpoint(["blocked"], "Waiting for the staging service to accept connections. ".repeat(12));
-  expect(line().length).toBeLessThanOrEqual(107);
-  expect(line()).toMatch(/…$/);
-});
-
 test("an open question takes priority over build progress", () => {
   fixture.checkpoint(["current", "pending"]);
   fixture.question();

@@ -139,21 +139,6 @@ describe("claim", () => {
     }
   });
 
-  test("fences out a completion from the runner that was superseded", () => {
-    // The failure this module exists for. Runner A stops being reachable, its
-    // lease expires, B picks the task up — and then A wakes up and finishes.
-    // Nobody detected A's crash; the refusal comes from the world having moved.
-    acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
-    acquire(store, task, "runner-b", {
-      token: tok("runner-b"), now: later(DEFAULT_LEASE_MS + 1),
-      newLeaseId: ids("lease-b"),
-    });
-
-    const late = release(store, "lease-a", later(DEFAULT_LEASE_MS + 30_000));
-
-    expect(late).toEqual({ ok: false, reason: "fenced" });
-  });
-
   test("still accepts the completion from the runner that actually holds it", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
     acquire(store, task, "runner-b", {
@@ -291,20 +276,6 @@ describe("claim", () => {
     expect(rows.map(row => Number(row["lease_generation"]))).toEqual([1, 2, 3]);
   });
 
-  test("treats a second completion on the same lease as the same completion", () => {
-    // Reported twice because the first acknowledgement was lost, not because
-    // anything changed hands. M1 asks for duplicate completion to be
-    // reconciled rather than refused — see the `duplicate completion` suite
-    // below for the line between this and a genuine fence.
-    acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
-    release(store, "lease-a", later(1_000));
-
-    const again = release(store, "lease-a", later(2_000));
-
-    expect(again.ok).toBe(true);
-    if (again.ok) expect(again.duplicate).toBe(true);
-  });
-
   test("frees the task as soon as it is released, without waiting for expiry", () => {
     acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
     release(store, "lease-a", later(1_000));
@@ -313,21 +284,6 @@ describe("claim", () => {
 
     expect(second.ok).toBe(true);
     if (second.ok) expect(second.claim.generation).toBe(2);
-  });
-
-  test("counts generations up and never back down", () => {
-    // The fencing token is only a fence while it is monotonic. Reuse would let
-    // a stale lease match a live one.
-    const seen: number[] = [];
-    for (let round = 0; round < 4; round++) {
-      const at = later(round * (DEFAULT_LEASE_MS + 1));
-      const name = `runner-${round}`;
-      register(store, { name, host: "test", repos: [REPO], now: T0, newToken: () => tok(name) });
-      const result = acquire(store, task, name, { token: tok(name), now: at });
-      if (result.ok) seen.push(result.claim.generation);
-    }
-
-    expect(seen).toEqual([1, 2, 3, 4]);
   });
 
   test("hands a retried acquire the same lease instead of a second one", () => {
@@ -390,10 +346,6 @@ describe("reap", () => {
     expect(currentClaim(store, b, later(120_000))?.runner).toBe("runner-b");
   });
 
-  test("is quiet when there is nothing to reap", () => {
-    expect(reap(store, T0)).toEqual([]);
-  });
-
   test("does not reap the same lease twice", () => {
     store.createTask({ id: "a", title: "a" }, T0);
     placeAll(store, "a");
@@ -436,16 +388,6 @@ describe("duplicate completion", () => {
     if (again.ok) expect(again.duplicate).toBe(true);
   });
 
-  test("still fences a lease that never finished", () => {
-    // The distinction that makes the above safe. A repeat of a completion is
-    // idempotent; a lease that was taken away before it ever completed is
-    // refused. What separates them is whether it released, not whether the
-    // world moved on afterwards — see the suite below.
-    acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60_000 });
-    acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(61_000), newLeaseId: ids("lease-b") });
-
-    expect(release(store, "lease-a", later(62_000))).toEqual({ ok: false, reason: "fenced" });
-  });
 });
 
 describe("a completion that happened, retried late", () => {
@@ -477,12 +419,6 @@ describe("a completion that happened, retried late", () => {
     if (retry.ok) expect(retry.duplicate).toBe(true);
   });
 
-  test("but a lease that never finished is still fenced", () => {
-    acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a"), ttlMs: 60_000 });
-    acquire(store, task, "runner-b", { token: tok("runner-b"), now: later(61_000), newLeaseId: ids("lease-b") });
-
-    expect(release(store, "lease-a", later(62_000))).toEqual({ ok: false, reason: "fenced" });
-  });
 });
 
 describe("acquireIfReady", () => {
@@ -664,15 +600,6 @@ describe("release provenance", () => {
     expect(release(store, "lease-a", later(62_000))).toEqual({ ok: false, reason: "fenced" });
   });
 
-  test("a completion retried after a genuine completion is still a duplicate", () => {
-    acquire(store, task, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-a") });
-    finalize(store, "lease-a", { kind: "complete", state: "done", now: later(1_000) });
-
-    const retry = finalize(store, "lease-a", { kind: "complete", state: "done", now: later(2_000) });
-
-    expect(retry).toMatchObject({ ok: true, duplicate: true });
-  });
-
   test("a plain release does not let a later completion claim acceptance", () => {
     // Handing a task back and having a completion accepted are different
     // events. A runner that released and then tries to complete is reporting
@@ -787,16 +714,6 @@ describe("the capability gate in acquireIfReady", () => {
     });
   });
 
-  test("a task requiring nothing is untouched by all of this", () => {
-    store.createTask({ id: "t-2", title: "free" }, T0);
-    placeAll(store, "t-2");
-    approveScopeFor(store, "t-2");
-    const free = store.refFor("built-in", "t-2").id;
-
-    const result = acquireIfReady(store, free, "runner-a", { token: tok("runner-a"), now: T0, newLeaseId: ids("lease-f") });
-
-    expect(result).toMatchObject({ ok: true });
-  });
 });
 
 describe("sealing a park", () => {

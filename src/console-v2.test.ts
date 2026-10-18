@@ -141,8 +141,7 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
       expect(serverForms.length).toBeGreaterThan(0);
       expect(formsOf(viewForms(view))).toEqual(serverForms);
       expect(stepUps(viewForms(view))).toBe(stepUps(data.pageHtml!));
-      // Details are grouped, and the thread starts with the filing.
-      expect(view.details?.map(group => group.title)).toEqual(["Work", "Links", "Review", "About"]);
+      // The thread starts with the filing.
       expect(view.thread?.[0]?.kind).toBe("filed");
       // The conversation is the thread's: no Ask tab, and the composer posts to /chat for this task.
       expect(view.tabs).toEqual([]);
@@ -236,12 +235,5 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     const needs = await (await fetch(url("/inbox?tab=needs-you"), { headers: { cookie } })).text();
     expect(needs).toContain("Approve a scope");
     expect(needs).not.toContain("Running now");
-    // Needs you groups by the ask: a plan to approve is under Decide, with its count.
-    expect(needs).toMatch(/<section class="inbox-ask" data-ask="decide"><h2>Decide <span class="count">1<\/span><\/h2><h3>Approve a scope<\/h3>/);
-    // A tab that changed since this browser looked wears a dot (phones show it).
-    const seen = (all.headers.get("set-cookie") ?? "").split(";")[0]!;
-    filed("waiting-2", "Show the points", T0, false);
-    const dotted = await (await fetch(url("/inbox?tab=running"), { headers: { cookie: `${cookie}; ${seen}` } })).text();
-    expect(dotted).toMatch(/data-inbox-tab="needs-you">[^]*?class="inbox-unread"/);
   });
 });

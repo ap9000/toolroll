@@ -4,7 +4,7 @@
  * this launch only — its opted-in tools, a research step's read-only actions
  * — and the token stops working when the launch ends. Fresh and resumed
  * builds each get their own. (The macOS proof that a fenced shell can't read
- * the secrets by file, descriptor or process listing is in agent-fence.test.ts.)
+ * the secrets by file, descriptor or process listing is in agent-fence.slow.test.ts.)
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";

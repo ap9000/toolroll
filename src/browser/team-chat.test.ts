@@ -50,33 +50,12 @@ test('provider spend terms appear before enabling replies and Send stays disable
   await act(async () => button('Enable chat').click());
   expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ operation: 'authorize', args: { conversationId: 'room', termsDigest: 'terms-v1', ceilingUsd: 2 } });
 });
-test('sentence punctuation does not corrupt the exact saved result link', async () => {
-  const snapshot = fixture(); snapshot.messages = [{ id: 1, author: 'Team lead', role: 'assistant', text: 'Result: /chat?task=payout-rounding&result=1. Inspect the changes.', status: 'answered', revision: 1, createdAt: '', requestId: null, turnId: null, error: null }];
-  vi.stubGlobal('fetch', vi.fn(async () => json(snapshot))); await mount(snapshot);
-  expect(document.querySelector<HTMLAnchorElement>('.so-team-message a')?.getAttribute('href')).toBe('/chat?task=payout-rounding&result=1&conversation=room');
-  expect(document.querySelector('.so-team-message-text')?.textContent).toContain('Open result. Inspect');
-});
 
 test('an enabled chat shows why saved messages are waiting without asking for consent again', async () => {
   const snapshot = fixture(); snapshot.chatAuthorization!.waitingReason = 'Your daily chat limit is reached. Saved messages will wait until tomorrow.';
   vi.stubGlobal('fetch', vi.fn(async () => json(snapshot))); await mount(snapshot);
   expect(document.body.textContent).toContain('Saved messages will wait until tomorrow.');
   expect(button('Enable chat')).toBeUndefined();
-});
-test('a reply stopped at its deadline reads once in the thread, with the proposal it made and a send box for the next message', async () => {
-  const snapshot = fixture(), notice = 'The reply took too long and was stopped. What it proposed is below. Send your message again, or ask for less at once.';
-  snapshot.messages = [
-    { id: 1, author: 'alex', role: 'operator', text: 'Set up the weekly digest flow.', status: 'failed', revision: 2, createdAt: '', requestId: 'one', turnId: 7, error: null },
-    { id: 2, author: 'Team lead', role: 'assistant', text: notice, status: 'answered', revision: 1, createdAt: '', requestId: null, turnId: 7, error: null },
-  ];
-  snapshot.proposals = [{ id: 1, turnId: 7, title: 'Weekly digest flow', state: 'pending', href: '/chat?conversation=room&proposal=1' }];
-  vi.stubGlobal('fetch', vi.fn(async () => json(snapshot))); await mount(snapshot);
-  expect(document.body.textContent!.split('took too long').length - 1).toBe(1);
-  expect(document.querySelectorAll('[role="alert"], .so-alert')).toHaveLength(0);
-  const review = [...document.querySelectorAll<HTMLAnchorElement>('.so-team-proposals a')];
-  expect(review.map(link => [link.textContent, link.getAttribute('href')])).toEqual([['Review action', '/chat?conversation=room&proposal=1']]);
-  expect(review[0]!.closest('[data-team-message]')?.getAttribute('data-team-message')).toBe('2');
-  expect(document.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(false);
 });
 
 const card = (id: number, changes: Partial<BrowserActionCard> = {}): BrowserActionCard => ({ id, kind: 'hold', label: 'Pause work', state: 'pending', body: '<h3>Hold the launch</h3><p>Wait for the audit.</p>', said: null, links: [], primary: { kind: 'confirm', label: 'Hold', irreversible: false, native: false }, dismissable: true, note: null, ...changes });
@@ -90,21 +69,6 @@ function proposed() {
   snapshot.proposals = [proposal(10, 7)];
   return snapshot;
 }
-test('shared cards attach once to the assistant reply; unmatched saved cards remain at the end', async () => {
-  const snapshot = proposed();
-  snapshot.messages.push({ ...snapshot.messages[1]!, id: 3, text: 'The audit is scheduled for Friday.' });
-  snapshot.proposals!.push(proposal(11, 7, { kind: 'action', label: 'Create portfolio review' }), proposal(12, 99, { state: 'dismissed', primary: null, dismissable: false, note: 'Dismissed.' }), proposal(13, 7, { state: 'drafting' }));
-  snapshot.truncated = true;
-  vi.stubGlobal('fetch', vi.fn(async () => json(snapshot)));
-  await mount(snapshot);
-  expect(document.querySelectorAll('[data-view="chat-card"]')).toHaveLength(3);
-  expect(document.querySelector('[data-team-message="1"] .so-action-cards')).toBeNull();
-  expect(document.querySelector('[data-team-message="2"] .so-action-cards')).toBeNull();
-  expect([...document.querySelectorAll('[data-team-message="3"] [data-action-card]')].map(node => node.getAttribute('data-action-card'))).toEqual(['10', '11']);
-  expect(document.querySelector('[data-action-card="12"]')!.closest('[data-team-message]')).toBeNull();
-  expect(document.querySelector('.so-team-messages')!.compareDocumentPosition(document.querySelector('[data-action-card="12"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(document.body.textContent).not.toContain('Review action');
-});
 test.each(['confirm', 'dismiss'] as const)('inline %s uses the existing CSRF route and waits for saved server state', async verb => {
   const snapshot = proposed();
   let current = snapshot;

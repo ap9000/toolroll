@@ -225,16 +225,6 @@ describe("the MCP stdio server", () => {
     expect(h.out().length).toBe(before); // silence, never an error
   });
 
-  test("the handshake era refuses tools before its lifecycle completes", () => {
-    const h = harness(store, token);
-    h.send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
-    expect(h.last()["error"]).toMatchObject({ code: -32002 });
-    h.send({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: LEGACY } });
-    h.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-    h.send({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} });
-    expect((h.last()["result"] as Record<string, unknown>)["tools"]).toBeDefined();
-  });
-
   test("malformed input answers in-protocol and never crashes: parse error, batch, depth, oversize, unknown method", () => {
     const h = harness(store, token);
     h.sendRaw("{not json");

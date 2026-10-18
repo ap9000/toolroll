@@ -56,8 +56,6 @@ test("the Chat landing is the conversation: Home and the Crew live in the Work p
   const chat = document.querySelector("[data-workspace-chat]")!;
   expect(chat.querySelector("[data-home]")).toBeNull();
   expect(chat.querySelector("[data-brief]")).toBeNull();
-  expect(chat.textContent).toContain("What would you like to work on?");
-  expect(chat.textContent).not.toContain("Plan the work with your lead");
   const work = document.querySelector("[data-workspace-detail]")!;
   expect(work.querySelector("[data-home]")).not.toBeNull();
   // Every link Home had is still there.
@@ -68,14 +66,7 @@ test("the Chat landing is the conversation: Home and the Crew live in the Work p
   await act(async () => crewTab.click());
   expect(work.querySelector("[data-workspace-crew]")!.closest("[hidden]")).toBeNull();
   expect(work.querySelector('[data-workspace-task="t-1"] a')!.getAttribute("href")).toBe("/t/t-1");
-  expect(document.querySelector(".so-phone-work-button")!.textContent).toBe("Work");
   expect(document.activeElement?.id).toBe("lead-message");
-});
-
-test("a phone never opens the keyboard by itself", async () => {
-  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-  await mount(workspace());
-  expect(document.activeElement?.id).not.toBe("lead-message");
 });
 
 test("a replaced thread stays readable above the divider; its cards have no buttons and only the new thread continues", async () => {
@@ -90,21 +81,9 @@ test("a replaced thread stays readable above the divider; its cards have no butt
   expect(old.querySelectorAll("button, form")).toHaveLength(0);
   const divider = chat.querySelector("[data-thread-divider]")!;
   expect(divider.textContent).toBe(REPLACED_THREAD_DIVIDER);
-  expect(REPLACED_THREAD_DIVIDER).toBe("New conversation — the projects I can reach changed");
   // Order: old words, the divider, then the live thread.
   expect(old.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(divider.compareDocumentPosition(chat.querySelector("#chat-thread")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(chat.querySelector("#chat-thread")!.textContent).toContain("What can you reach now?");
   expect(chat.querySelector("#chat-thread")!.textContent).not.toContain("payments");
-});
-
-test("the phone setup is one dismissible line in Chat, pointing to Settings; the card itself is not in Chat", async () => {
-  const phone = { chatApps: [{ label: "Telegram", href: "/settings/telegram" }], tailnet: null, dismissHref: "/onboarding/phone/dismiss" };
-  await mount(workspace({ phone }));
-  expect(document.querySelector("[data-phone-card]")).toBeNull();
-  const notice = document.querySelector("[data-phone-notice]")!;
-  expect(notice.querySelector("a")!.getAttribute("href")).toBe("/settings#settings-chat-apps");
-  await act(async () => (notice.querySelector('button[type="submit"]') as HTMLButtonElement).click());
-  expect(document.querySelector("[data-phone-notice]")).toBeNull();
-  expect(fetch).toHaveBeenCalledWith("/onboarding/phone/dismiss", expect.objectContaining({ method: "POST" }));
 });

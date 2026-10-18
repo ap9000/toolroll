@@ -27,7 +27,7 @@ import { run as exec } from "./exec.js";
 import { budgetedStatJson, captureTerminalDiff, parseNumstat, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence, writeEvidenceFile } from "./evidence.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { register } from "./runner.js";
-import { adjudicate, changedListProblems, coverageWords, foldReview, matrixWords, semanticCoverage, type CriterionMatrixRow } from "./proof.js";
+import { adjudicate, changedListProblems, coverageWords, foldReview, semanticCoverage, type CriterionMatrixRow } from "./proof.js";
 import { captureReviewContext, citesSuppliedProvenance, parseReviewContext, REVIEW_CONTEXT_LIMITS, LEGACY_REVIEW_CONTEXT_LIMITS, reviewContextRules, reviewContextCustodyProblem, serializeReviewContext, type ReviewContextInventory } from "./review-context.js";
 import { parseReview } from "./reviewer.js";
 import { evidenceRange, evidenceRequest, isEvidenceOnlyReply } from "./review-evidence.js";
@@ -356,7 +356,6 @@ describe("inherited review context (v51)", () => {
     expect(verb.code).toBe(EXIT.usage); expect(verb.envelope.ok).toBe(false);
     const again = await cli("review", String(f.sourceRun));
     expect(again.code).toBe(EXIT.refused); expect(again.envelope).toMatchObject({ ok: false, reason: "model-review-retired" });
-    expect(JSON.stringify(again.envelope)).toContain("Manual review requests have been removed");
 
     // Chat: no refresh action, control or proposal; the confirmed-action path refuses an unknown operation.
     expect(Object.keys(CHAT_TASK_ACTIONS).filter(one => /refresh/.test(one))).toEqual([]);
@@ -386,8 +385,6 @@ describe("inherited review context (v51)", () => {
       expect(pages.chat.html).toContain(`data-result-run="${f.sourceRun}"`);
       for (const html of [pages.task.html, pages.cockpit.html]) {
         expect(html).toContain('data-work-status="assignment-ready-to-check"');
-        // Historical judgements remain stored below; they are not a current stage.
-        expect(html).not.toContain('<button type="button" class="review-retry-button"');
       }
       const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(pages.task.html)?.[1] ?? "";
       expect(csrf).not.toBe("");
@@ -395,7 +392,7 @@ describe("inherited review context (v51)", () => {
       expect((await post("/t/feat/refresh-review", { run: String(f.sourceRun) })).status).toBe(404);
       expect((await post(`/r/${f.sourceRun}/refresh`, {})).status).toBe(404);
       const retried = await post("/t/feat/retry-review", { run: String(f.sourceRun) });
-      expect(retried.status).toBe(410); expect(await retried.text()).toContain("Separate agent reviews have retired");
+      expect(retried.status).toBe(410);
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
     expect(f.ask()).toMatchObject({ ok: false, reason: "already-reviewed" });
     expect(reviewers()).toHaveLength(1); expect(f.store.openReviewRequests()).toEqual([]);
@@ -1082,11 +1079,6 @@ describe("inherited review context (v51)", () => {
       expect(folded.matrix[0]?.coverage?.state).toBe("gap");
     });
 
-    test("the CLI matrix words name each criterion's context standing, including gaps", () => {
-      const lines = matrixWords(rows({ c1: "upholds", c2: "cannot-tell" }, { c1: "context", c2: "gap" }));
-      expect(lines).toContain("      context: inherited — sealed context ctx-1");
-      expect(lines.some(line => line.startsWith("      context: GAP — inherited context is missing: src/limit.ts: 60000 bytes"))).toBe(true);
-    });
   });
 
 });

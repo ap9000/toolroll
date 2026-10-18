@@ -520,19 +520,4 @@ describe("c3: Slack and Discord upload in the result's thread; Teams links", () 
     expect(parts.find(one => one.text.includes("Checked every page."))).toMatchObject({ link: { label: "Result", path: "/t/flow-slack" }, also: [{ label: "Card", path: "/flows/1?card=1" }] });
     expect(parts.filter(one => one.image !== undefined).map(one => one.text)).toEqual(["Is the site current? · the home page on a phone · 3 screenshots"]);
   });
-
-  test("Teams: one message that links to the saved result", async () => {
-    const state = new ChatState(store, "teams");
-    const identity = { installation: "teams-installation", app: "teams-app", bot: "28:teams-app", workspace: "Synthetic tenant" };
-    state.lease(identity.installation, "test", now);
-    const code = state.pairing(identity.installation, "alex", store.accountOf("alex")!.generation, now);
-    expect(state.pair(identity, chatHash(code), "29:member-abcdefghij", "a:conversation-1", now)).not.toBeNull();
-    store.setNotificationPreference("alex", { screenshots: "all" }, "alex", now);
-    result("teams-1", THREE);
-    await planTeamsNotifications({ store, identity, api: async () => ({}), owner: "test", current: () => true, readProjects: async () => [ALPHA],
-      evidenceRoot: root, origin: () => "https://console.example", clock: () => now });
-    const shots = state.prepare("SELECT payload FROM chat_part WHERE provider=:provider").all().map(one => JSON.parse(String(one.payload)) as ChatContent).filter(one => one.image !== undefined);
-    expect(shots).toHaveLength(1);
-    expect(shots[0]!.text).toBe("Is the site current? · the home page on a phone · 3 screenshots");
-  });
 });

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { LEGACY_GATE_SOURCE, legacyGateViewSchema, readVerificationView } from "./verification-view.js";
@@ -37,13 +36,5 @@ describe("the gate view contract", () => {
     const view = readVerificationView(bytes);
     expect(view.ok && JSON.stringify(view.value)).toBe(bytes);
     expect(view.ok && (view.value as unknown as { version: number }).version).toBe(1);
-  });
-});
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks wave 4 item 20 done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 20 ✅ \| \*\*Evidence files\*\*/m);
-    expect(doc.slice(doc.indexOf("## Done"))).toContain("**20. Evidence files**");
   });
 });

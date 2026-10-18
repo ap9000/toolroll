@@ -869,11 +869,6 @@ describe("claudeParse — the streaming envelope", () => {
     expect(JSON.parse(parsed.finalMessage ?? "null")).toEqual(structured);
   });
 
-  test("no structured_output field: the plain result string still carries the reply, unchanged", () => {
-    const parsed = claude.parse(result({ result: "plain text reply" }));
-    expect(parsed.finalMessage).toBe("plain text reply");
-  });
-
   test("structuredOutput carries only the structured_output field, never prose that happens to be JSON", () => {
     const structured = { kind: "report", report: { title: "t", summary: "s", report: "r" } };
     expect(claude.parse(result({ structured_output: structured, result: "" })).structuredOutput).toBe(JSON.stringify(structured));

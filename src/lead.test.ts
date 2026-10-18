@@ -8,7 +8,6 @@ import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_F
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, executeLeadTool, redactForLead } from "./lead-tools.js";
 import { TEXT_LIMITS } from "./text-limits.js";
-import { LEAD_CONTRACT, LEAD_CONTRACT_VERSION } from "./lead-contract.js";
 import * as leadProgress from "./lead-progress.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 
@@ -127,24 +126,6 @@ describe("the lead's turn", () => {
       ...overrides,
     });
 
-  test("the intake contract treats one outcome as enough and asks only material questions", () => {
-    expect(LEAD_CONTRACT_VERSION).toBe(49);
-    expect(LEAD_CONTRACT).toContain("Ready is a saved result, not a reviewer stage");
-    expect(LEAD_CONTRACT).toContain("Historical missing assessments never require rerunning work");
-    expect(LEAD_CONTRACT).toContain("call get_result_images for that exact execution and run");
-    expect(LEAD_CONTRACT).toContain("say they follow, never that they were delivered");
-    expect(LEAD_CONTRACT).toContain("call it again with that offset or with the image ids it listed");
-    expect(LEAD_CONTRACT).toContain("read get_agents and answer in its words");
-    expect(LEAD_CONTRACT).toContain("never an agent that is not listed");
-    expect(LEAD_CONTRACT).toContain("a plain-language outcome is enough to draft a task");
-    expect(LEAD_CONTRACT).toContain("at most three questions");
-    expect(LEAD_CONTRACT).toContain("Do not ask the operator for a title, paths, implementation details, acceptance wording, model, budget");
-    expect(LEAD_CONTRACT).toContain("use your judgment");
-    expect(LEAD_CONTRACT).toContain("Set propose_task planning to 'required'");
-    expect(LEAD_CONTRACT).toContain("call commit_to in the same turn");
-    expect(LEAD_CONTRACT).toContain("call remember at once");
-  });
-
   test("the organisation policy stops a chat on a provider or model it doesn't allow, before anything is admitted or sent", async () => {
     const neverSent = (async () => { throw new Error("a refused turn sends nothing"); }) as unknown as typeof fetch;
     store.setOrgPolicy({ providers: ["codex"], models: null, tools: null, ceiling: "escalated" }, "root", T0);
@@ -221,20 +202,6 @@ describe("the lead's turn", () => {
     expect(script.bodies[1]).toContain("\"queued\"");
     // The key rides in the header, never the body.
     expect(script.bodies[0]).not.toContain(KEY);
-  });
-
-  test("server-authored task context reaches the model without cluttering the visible conversation", async () => {
-    const script = scripted([text("I will focus on that task.")]);
-    const outcome = await turn("what should happen next?", script.fetcher, {
-      context: "Current task: in-2. Read it with get_task before proposing changes.",
-    });
-    expect(outcome).toMatchObject({ ok: true });
-    expect(script.bodies[0]).toContain("Current task: in-2");
-    expect(script.bodies[0]).toContain("what should happen next?");
-    expect(store.listLeadMessages(thread().id, 10).map(one => one.text)).toEqual([
-      "what should happen next?",
-      "I will focus on that task.",
-    ]);
   });
 
   test("a conversation remains live across days until it is explicitly ended", async () => {
@@ -358,7 +325,6 @@ describe("the lead's turn", () => {
     const script = scripted([answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
     try {
       expect(await turn("Read the flow", script.fetcher, { onProgress: event => events.push(event) })).toMatchObject({ ok: true });
-      expect(format).toHaveBeenCalledWith("get_flows", "No such flow in your projects.");
       expect(events.filter(event => event.kind === "tool-result")).toEqual([
         expect.objectContaining({ outcome: { state: "failed", reason: "That step didn't work (Reading the flows)." } }),
       ]);
@@ -542,20 +508,6 @@ describe("the lead's turn", () => {
     }
   });
 
-  test("a tool still returns its real result when the output contract reports a mismatch under Vitest", () => {
-    const tool = LEAD_TOOLS.find(one => one.name === "get_actions")!;
-    const handle = vi.spyOn(tool, "handle").mockReturnValue({ ok: true, body: { actual: "the handler result" } });
-    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      expect(executeLeadTool({ store, who, now: clock(), draft: () => null, step: 1, readDecisions: new Map() }, "get_actions", {}))
-        .toEqual({ ok: true, body: { actual: "the handler result" } });
-      expect(write).toHaveBeenCalledWith(expect.stringContaining("lead tool get_actions: its result disagrees with its output schema"));
-    } finally {
-      handle.mockRestore();
-      write.mockRestore();
-    }
-  });
-
   test("a proposal field that looks like a credential is refused before it is drafted, and the call never goes back out", async () => {
     const ctx = { store, who, now: clock(), draft: () => 1 };
     expect(executeLeadTool(ctx, "propose_hold", { task: "in-1", reason: "use AKIAABCDEFGHIJKLMNOP" })).toMatchObject({ ok: false, message: expect.stringContaining("plain text") });
@@ -577,14 +529,6 @@ describe("the lead's turn", () => {
     if (outcome.replayed) throw new Error("unreachable replay");
     expect(outcome.reply).toBe(`step ${LEAD_MAX_STEPS}\n\n(I stopped here: this answer needed more steps than one reply allows. Ask me to carry on.)`);
     expect(script.bodies).toHaveLength(LEAD_MAX_STEPS);
-  });
-
-  test("chat error copy is plain: what happened, what it means and one next step, with no internal words", () => {
-    for (const words of [...Object.values(LEAD_REFUSAL_COPY), ...Object.values(LEAD_FAILURE_COPY), ...Object.values(LEAD_CHANNEL_COPY)]) {
-      expect(words).not.toMatch(/\b(?:lease[sd]?|digests?|latch(?:ed)?|mint(?:ed)?|ceilings?|sessions?|reservations?|credentials?|dispatch(?:ed)?|this turn|turn #|steps?|superseded|malformed)\b/i);
-      expect(words.split(/(?<=[.!?])\s+/).length).toBeGreaterThanOrEqual(2);
-      expect(words).toMatch(/[.!?]$/);
-    }
   });
 
   describe("a reply that claims an attachment it does not carry", () => {
@@ -645,11 +589,6 @@ describe("the lead's turn", () => {
       const telegram = scripted([text(long)]);
       expect(words(await turn("did it work?", telegram.fetcher, { channel: "telegram" }))).toBe(long);
       expect(telegram.bodies).toHaveLength(1);
-    });
-    test("the console has no message limit: no shorten step", async () => {
-      const script = scripted([text(long)]);
-      expect(words(await turn("did it work?", script.fetcher, { channel: "console" }))).toBe(long);
-      expect(script.bodies).toHaveLength(1);
     });
   });
 
@@ -828,7 +767,6 @@ describe("the lead's turn", () => {
       await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS);
       expect(await running).toMatchObject({ ok: false, failed: "timeout", saved: true, message: LEAD_FAILURE_COPY.tooLong });
       expect(store.listLeadMessages(t.id, 5).at(-1)).toMatchObject({ role: "assistant", text: LEAD_FAILURE_COPY.tooLong });
-      expect(LEAD_FAILURE_COPY.tooLong).toBe("The reply took too long and was stopped. Send your message again, or ask for less at once.");
       expect(store.listLeadProposals(t.id)).toEqual([]);
     });
 

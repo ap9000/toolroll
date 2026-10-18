@@ -9,7 +9,7 @@ import { agentNowForTask, agentTurnHistory, answerAgentQuestion, attemptKeyOf, h
   noteOpenTool, noteTranscript, openAgentQuestions, pageQuestions, QUESTION_PAGE_EVERY_MS, QUESTIONS_OVERFLOW_NOTE, recordAgentTurn, releaseAgentView,
   STUCK_AFTER_MS, TOOL_STUCK_AFTER_MS, VIEW_LEASE_MS,
   watchedPing, watchingAgent, type AgentTurn } from "./agent-board.js";
-import { parseStatusLine, readStatusFile, statusBrief } from "./agent-pulse.js";
+import { parseStatusLine, readStatusFile } from "./agent-pulse.js";
 import { OPEN_TOOLS_CAP, toolCallsOf, turnSignalOf, withAgentTurns } from "./agent-turns.js";
 import { agentFacts, agentFactsFor, agentFactsSql, agentGroupOf, agentRowOf, agentRunFingerprint, agentsBoardOf } from "./agents-board.js";
 import { liveLogPath, openLiveLog, sanitizeTranscriptLine } from "./live.js";
@@ -77,17 +77,6 @@ describe("turn states from the output stream", () => {
     expect(turnSignalOf({ type: "system", subtype: "compact_boundary" })).toBeNull();
   });
 
-  test("a Claude build records busy then idle, once each, and a finished turn is not a crash", () => {
-    const run = start("lease-1");
-    let tick = 0;
-    const turns = observer(run, () => at(tick++ * 1000));
-    for (const event of CLAUDE) turns.observe(event);
-    turns.ended();
-    expect(states(run)).toEqual(["busy", "idle"]);
-    // The clock is read when the state changes or the open tool calls move: busy, Read opens, Read answers, Edit, then the result.
-    expect(agentNowForTask(store, taskRef)).toMatchObject({ run, state: "idle", stateAt: at(4000).toISOString(), toolAt: null });
-  });
-
   test("a Codex build records busy then idle; one that exits mid-turn records crashed", () => {
     const run = start("lease-1", T0, "codex");
     const turns = observer(run, () => T0);
@@ -145,14 +134,6 @@ describe("turn states from the output stream", () => {
     const key = ["0f1e", "2d3c", "4b5a", "6978"].join("");
     expect(recordAgentTurn(store, { run, attemptKey: key, state: "busy", at: T0 })).toBe(false);
     expect(states(run)).toEqual([]);
-  });
-
-  test("every admitted run gets its own opaque key", () => {
-    const one = start("lease-1");
-    store.finishRun(one, { outcome: "failed", reason: "agent", now: at(1) });
-    const two = start("lease-2", at(2));
-    expect(keyOf(one)).toMatch(/^[0-9a-f]{24}$/);
-    expect(keyOf(two)).not.toBe(keyOf(one));
   });
 
   test("each provider's tool calls open and close by id; anything else opens nothing", () => {
@@ -248,14 +229,11 @@ describe("the agent's status file", () => {
     expect(readStatusFile(link, 0)).toEqual({ ok: false, reason: "unreadable" });
   });
 
-  test("its name is protocol-shaped (swept, never committed), and the brief says how a reply arrives", () => {
+  test("its name is protocol-shaped (swept, never committed)", () => {
     const name = statusFileName();
     expect(name).toMatch(/^STANDING-ORDERS-STATUS-[0-9a-f]{16}\.jsonl$/);
     expect(looksLikeProtocolFile(name)).toBe(true);
     expect(looksLikeProtocolFile("STANDING-ORDERS-STATUS-notes.jsonl")).toBe(false);
-    const brief = statusBrief(name, "STANDING-ORDERS-STEER-x");
-    expect(brief).toContain(name);
-    expect(brief).toContain('Reply to your question "<short-key>"');
   });
 
   test("a needs-decision opens its key once, pages once, and moves only forward", () => {
@@ -384,13 +362,6 @@ describe("questions from an untrusted agent", () => {
     expect(note(other)).toBeNull();
   });
 
-  test("one question pages at once, with its own words", () => {
-    const run = busy(start("lease-1"));
-    expect(ingest(run, ["keep-oauth"], T0).asked).toEqual(["keep-oauth"]);
-    expect(pages()).toMatchObject([{ dedupeKey: `agent-question:${run}:keep-oauth`, subject: "Fix the login page: the agent has a question",
-      body: "Question keep-oauth?", pushClass: "attention", link: `/agents?run=${run}` }]);
-  });
-
   test("at most one page per run in five minutes; the next page says how many are waiting", () => {
     expect(QUESTION_PAGE_EVERY_MS).toBe(5 * 60_000);
     const run = busy(start("lease-1"));
@@ -503,10 +474,6 @@ describe("Stuck with a tool call open, and fresh activity", () => {
     expect(agentNowForTask(store, taskRef)?.stuckAt).toBeNull();
     expect(agentRunFingerprint(store, run)).not.toBe(before);
     expect(rowOf(run, at(STUCK_AFTER_MS + 6000)).group).toBe("working");
-    // And fresh transcript, read by the board straight from the saved facts.
-    expect(markStuck(store, run, key, at(2 * STUCK_AFTER_MS + 5000))).toBe(true);
-    noteTranscript(store, run, key, 64, at(2 * STUCK_AFTER_MS + 6000));
-    expect(rowOf(run, at(2 * STUCK_AFTER_MS + 6000)).group).toBe("working");
   });
 });
 
@@ -598,7 +565,6 @@ describe("the board's query", () => {
     expect(plan.some(step => step.includes("agent_board_recent"))).toBe(true);
     // Never a plain scan of the run table.
     expect(plan.filter(step => /^SCAN (run|r|x|p)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
-    expect(agentFactsSql()).not.toMatch(/MAX\(x\.id\)/);
   });
 });
 

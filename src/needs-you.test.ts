@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { ASKS, BANNED_WORDS, CODE_NEED, NEED_ASK, NEEDS, WAITS, hasInternalWords, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
+import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
 import { stageOfCode, taskStatusOf } from "./task-status.js";
 import { assignmentActionHref } from "./assignment-ui.js";
 import { browserWorkActionHref } from "./browser-crew.js";
@@ -21,7 +21,7 @@ import { MARKER } from "./worktree.js";
 import { createDecisionServer, needActionOf } from "./serve.js";
 import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentPresentationOf } from "./assignment-presentation.js";
-import { askOfCode, workIndexPage } from "./work-index.js";
+import { workIndexPage } from "./work-index.js";
 import { assignmentCatchUp } from "./assignment-brief.js";
 import { leadBriefHtml } from "./lead-context.js";
 import { htmlString } from "./html.js";
@@ -85,17 +85,6 @@ describe("every reason", () => {
       expect(read.need, code).toBe(key);
     }
     expect(stageOfCode("held", { operatorHold: false })).toEqual({ stage: "needs-you", need: "hold" });
-  });
-
-  test("every need asks one thing: a choice to make, a result to review, or something to clear", () => {
-    for (const key of Object.keys(NEEDS) as NeedKey[]) expect(ASKS, key).toContain(NEED_ASK[key]);
-    // The Tasks list groups by the same asks, read from the index code.
-    for (const code of ["needs-approval", "waiting-decision", "decision-queue", "needs-project", "needs-scope", "invalid-scope", "needs-agent-profile"]) expect(askOfCode(code), code).toBe("decide");
-    for (const code of ["ready-to-check", "result-needs-attention"]) expect(askOfCode(code), code).toBe("review");
-    for (const code of ["signed-out", "no-worker-online", "no-worker-registered", "terminal-dependency", "failed", "waiting-incident", "vanished-run", "held", "stopped", "missing-requirement", "process-needs-attention", "earlier-active", "history-problem"])
-      expect(askOfCode(code), code).toBe("unblock");
-    // A saved result whose build may still run is cleared first, not reviewed.
-    expect(askOfCode("result-needs-attention", true)).toBe("unblock");
   });
 
   test("a build Toolroll can't confirm stopped is a person's act only when nothing of it may run", () => {

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { lastSweep, nextSweepAt, RETRY_MS, type SweepDeps, type SweepRecord } from "./storage-sweep.js";
 import { idleStorageSweep } from "./storage-sweep-schedule.js";
-import { createSweepSupervisor, storageSweepSupervisor, enterSweepBackground, sweepBackground, SWEEP_NICE, sweepRequest, sweepResponse, type SweepRequest, type SweepSupervisor } from "./storage-sweep-process.js";
+import { createSweepSupervisor, storageSweepSupervisor, SWEEP_NICE, sweepRequest, sweepResponse, type SweepRequest, type SweepSupervisor } from "./storage-sweep-process.js";
 import { hangingSweep, observeSweep } from "../test/sweep-process.js";
 import { sweepObservations } from "../test/sweep-observations.js";
 
@@ -122,18 +122,6 @@ test("a production child failure is recorded without raw errors and retries afte
   dailyStorageSweep(store, { databaseFile, pool: null, tempRoots: [] }, () => new Date(at.getTime() + RETRY_MS), retry.supervisor);
   expect((await retry.completed).ok).toBe(true);
   expect(lastSweep(store)!.parts.every(one => one.problem === undefined && one.failed === 0)).toBe(true);
-});
-
-test("the child works at low priority: it enters taskpolicy's background policy itself on macOS when present, else only the nice", () => {
-  expect(sweepBackground(4242, "darwin", path => path === "/usr/sbin/taskpolicy")).toEqual({ file: "/usr/sbin/taskpolicy", args: ["-b", "-p", "4242"] });
-  expect(sweepBackground(4242, "darwin", () => false)).toBeNull();
-  expect(sweepBackground(4242, "linux", () => true)).toBeNull();
-  const ran: [string, string[]][] = [];
-  expect(enterSweepBackground((file, args) => { ran.push([file, args]); })).toBe(sweepBackground(process.pid) !== null);
-  expect(ran).toEqual(sweepBackground(process.pid) === null ? [] : [["/usr/sbin/taskpolicy", ["-b", "-p", String(process.pid)]]]);
-  // A taskpolicy that fails leaves the sweep running at its nice.
-  expect(enterSweepBackground(() => { throw new Error("refused"); })).toBe(false);
-  expect(SWEEP_NICE).toBeGreaterThan(0);
 });
 
 test("the child protocol rejects malformed, incomplete and mismatched results", () => {

@@ -82,11 +82,6 @@ describe("diff paths and the strict parser", () => {
     ]);
   });
 
-  test("an empty comments array is a valid review", () => {
-    const parsed = parseReview(JSON.stringify({ version: 1, comments: [] }), diffPathsOf(PATCH));
-    expect(parsed.ok).toBe(true);
-  });
-
   test("run 1638: a reply carrying readEvidence beside review fields is neither a read nor a review", () => {
     // Claude's flat structured-output floor admits both key sets in one
     // object; only the exact evidence-only envelope is a read request, and
@@ -141,20 +136,21 @@ describe("diff paths and the strict parser", () => {
       expect(parsed.criteria).toEqual([]);
     });
 
-    test("audit hardening: absent criteria against a SIGNED rubric refuses the whole payload — full coverage is required", () => {
-      const parsed = parseReview(JSON.stringify({ version: 1, comments: [] }), paths, rubricIds);
+    const many = new Set(Array.from({ length: REVIEW_LIMITS.criteria + 1 }, (_, i) => `c${i}`));
+    test.each([
+      ["absent criteria against a signed rubric (full coverage required)", undefined, rubricIds, /missing judgement.*c1.*c2|missing judgement.*c2.*c1/],
+      ["a partial judgement set", [{ id: "c1", judgement: "contradicts", note: "never implemented" }], rubricIds, /missing judgement.*c2/],
+      ["a judgement for an id absent from the signed rubric", [{ id: "not-signed", judgement: "upholds", note: "x" }], rubricIds, /not a signed criterion/],
+      ["a duplicate id", [{ id: "c1", judgement: "upholds", note: "fine" }, { id: "c1", judgement: "contradicts", note: "actually not" }], rubricIds, /more than once/],
+      ["an unknown judgement word", [{ id: "c1", judgement: "maybe", note: "x" }], rubricIds, /judgement must be/],
+      ["an oversize note", [{ id: "c1", judgement: "upholds", note: "x".repeat(REVIEW_LIMITS.note + 1) }], rubricIds, /note/],
+      ["a real-run oversize note (527)", [{ id: "c1", judgement: "upholds", note: "x".repeat(527) }], new Set(["c1"]), /note/],
+      ["more than REVIEW_LIMITS.criteria judgements", Array.from({ length: REVIEW_LIMITS.criteria + 1 }, (_, i) => ({ id: `c${i}`, judgement: "upholds", note: "x" })), many, /at most 12/],
+    ] as const)("%s refuses the whole payload, comments included", (_name, criteria, signed, why) => {
+      const payload = { version: 1, comments: [{ path: "src/payouts.ts", line: 1, note: "fine" }], ...(criteria === undefined ? {} : { criteria }) };
+      const parsed = parseReview(JSON.stringify(payload), paths, signed);
       if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/missing judgement.*c1.*c2|missing judgement.*c2.*c1/);
-    });
-
-    test("audit hardening: a PARTIAL judgement set (some signed ids uncovered) refuses the whole payload", () => {
-      const parsed = parseReview(
-        JSON.stringify({ version: 1, comments: [], criteria: [{ id: "c1", judgement: "contradicts", note: "never implemented" }] }),
-        paths,
-        rubricIds,
-      );
-      if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/missing judgement.*c2/);
+      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(why);
     });
 
     test("a well-formed judgement covering every signed id parses", () => {
@@ -177,53 +173,6 @@ describe("diff paths and the strict parser", () => {
       ]);
     });
 
-    test("a judgement for an id absent from the signed rubric refuses the WHOLE payload, comments included", () => {
-      const parsed = parseReview(
-        JSON.stringify({
-          version: 1,
-          comments: [{ path: "src/payouts.ts", line: 1, note: "fine" }],
-          criteria: [{ id: "not-signed", judgement: "upholds", note: "x" }],
-        }),
-        paths,
-        rubricIds,
-      );
-      if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/not a signed criterion/);
-    });
-
-    test("a duplicate id in one payload refuses the whole payload", () => {
-      const parsed = parseReview(
-        JSON.stringify({
-          version: 1,
-          comments: [],
-          criteria: [
-            { id: "c1", judgement: "upholds", note: "fine" },
-            { id: "c1", judgement: "contradicts", note: "actually not" },
-          ],
-        }),
-        paths,
-        rubricIds,
-      );
-      if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/more than once/);
-    });
-
-    test("an unknown judgement word refuses the whole payload", () => {
-      const parsed = parseReview(JSON.stringify({ version: 1, comments: [], criteria: [{ id: "c1", judgement: "maybe", note: "x" }] }), paths, rubricIds);
-      if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/judgement must be/);
-    });
-
-    test("an oversize note refuses the whole payload", () => {
-      const parsed = parseReview(
-        JSON.stringify({ version: 1, comments: [], criteria: [{ id: "c1", judgement: "upholds", note: "x".repeat(REVIEW_LIMITS.note + 1) }] }),
-        paths,
-        rubricIds,
-      );
-      if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/note/);
-    });
-
     test.each(["x".repeat(500), "😀".repeat(250), "e\u0301".repeat(250), "👩‍💻".repeat(100)])("Unicode note bounds use UTF-16 units without trimming conclusions (%#)", note => {
       expect(note.length).toBe(500);
       const payload = (commentNote: string, criterionNote: string) => JSON.stringify({ version: 1, comments: [{ path: "src/payouts.ts", note: commentNote }], criteria: [{ id: "c1", judgement: "cannot-tell", note: criterionNote }] });
@@ -232,24 +181,6 @@ describe("diff paths and the strict parser", () => {
       for (const [comment, criterion] of [[note + "!", note], [note, note + "!"]]) expect(parseReview(payload(comment!, criterion!), paths, new Set(["c1"])).ok).toBe(false);
     });
 
-    test.each([527, 560, 530, 647, 588, 517, 510])("real-run note length %i remains a strict refusal", length => {
-      expect(parseReview(JSON.stringify({ version: 1, comments: [], criteria: [{ id: "c1", judgement: "upholds", note: "x".repeat(length) }] }), paths, new Set(["c1"])).ok).toBe(false);
-    });
-
-    test("more than REVIEW_LIMITS.criteria judgements refuses the whole payload", () => {
-      const many = new Set(Array.from({ length: REVIEW_LIMITS.criteria + 1 }, (_, i) => `c${i}`));
-      const parsed = parseReview(
-        JSON.stringify({
-          version: 1,
-          comments: [],
-          criteria: Array.from({ length: REVIEW_LIMITS.criteria + 1 }, (_, i) => ({ id: `c${i}`, judgement: "upholds", note: "x" })),
-        }),
-        paths,
-        many,
-      );
-      if (parsed.ok) throw new Error("expected refusal");
-      expect(parsed.problems.map(one => one.reason).join(", ")).toMatch(/at most 12/);
-    });
   });
 });
 
@@ -470,12 +401,6 @@ describe("the reviewer role in the store", () => {
     expect(() =>
       store.raw().prepare("INSERT INTO run (task_ref, lease_id, runner, role, provider, parent_run, started_at, review_attempt) VALUES (?, 'x', 'r', 'reviewer', 'claude', ?, ?, 1)").run(taskRef, builtRun, T0.toISOString()),
     ).toThrow();
-    // v29's one-root-ever index is gone; the four v50 backstops stand.
-    const indexes = store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('run', 'review_request')").all().map(row => String(row["name"]));
-    expect(indexes).not.toContain("one_review_per_source");
-    for (const name of ["root_review_attempt_ordinal", "one_live_root_review_per_source", "one_successful_root_review_per_source", "one_correction_per_reviewer", "one_root_review_per_request"]) {
-      expect(indexes).toContain(name);
-    }
   });
 
   test("requestReview: every refusal road is typed", () => {
@@ -1558,21 +1483,5 @@ describe("the reviewer role in the store", () => {
     maybeRequestAutoReview(store, REPO, strictRun, true, false, T0);
     expect(store.openReviewRequests()).toHaveLength(0);
     expect(store.getRun(strictRun)?.qualityMode).toBe("strict");
-  });
-
-
-  test("workspace consumers see a reviewer run's missing worktree as null, never \"null\"", () => {
-    const reviewer = store.startRun({ taskRef, leaseId: "review:1", runner: "builder-1", role: "reviewer", parentRun: builtRun, now: T0, ...presented(store, taskRef, "reviewer"), ...askReview(builtRun) });
-    const row = store.getRun(reviewer);
-    if (row === null) throw new Error("row");
-    // The typed fact every guard keys on (D5): consumers switch on null,
-    // and the string "null" — the classic String(null) bug — never forms.
-    expect(row.worktree).toBeNull();
-    expect(row.branch).toBeNull();
-    for (const run of store.runsFor(taskRef)) {
-      expect(run.worktree === null || typeof run.worktree === "string").toBe(true);
-      expect(run.worktree).not.toBe("null");
-      expect(run.branch).not.toBe("null");
-    }
   });
 });

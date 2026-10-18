@@ -93,12 +93,6 @@ describe('quiet learning', () => {
       expect.objectContaining({run:invalid.reviewer,after:'invalid'}),
     ]));
     for(const c of [none,proposed,absent,invalid])expect(store.getRun(c.reviewer)?.outcome).toBe('no-change');
-    const html=withFormToken('csrf',()=>htmlString(learningHtml(view(),'csrf',true)));
-    for(const title of ['No lesson needed','Learning suggested','Learning not assessed','Learning assessment invalid'])expect(html).toContain(title);
-    // Each history line's time is a stamp the viewer's page rewords in their own zone, never bare UTC words.
-    const stamps=[...html.matchAll(/<time\b[^>]*>/g)].map(m=>m[0]);
-    expect(stamps.length).toBeGreaterThan(0);
-    for(const stamp of stamps)expect(stamp).toMatch(/^<time data-when datetime=/);
     const secret=capture(4,[],{decision:'none',reason:'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'});
     expect(view().events.find(e=>e.action==='assessment'&&e.run===secret.reviewer)).toMatchObject({after:'invalid'});
     expect(JSON.stringify(view().events)).not.toContain('sk-ant-api03');

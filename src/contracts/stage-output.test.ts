@@ -179,11 +179,3 @@ describe("template references, checked when a flow is saved", () => {
     }
   });
 });
-
-describe("the plan", () => {
-  it("marks item 8 done, with its note", () => {
-    const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toMatch(/^\| 8 ✅ \| \*\*Flow stage outputs and card state\*\*/m);
-    expect(plan.slice(plan.indexOf("## Done"))).toMatch(/^- \*\*8\. Flow stage outputs and card state\*\* \(\d{4}-\d{2}-\d{2}\)/m);
-  });
-});

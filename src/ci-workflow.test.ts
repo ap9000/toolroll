@@ -84,7 +84,9 @@ describe("the CI workflows", () => {
         expect(step["continue-on-error"] ?? false).toBe(false);
       }
     }
-    expect(macos.steps?.filter(step => step.run).map(step => step.run)).toEqual(["npm ci", "npm run typecheck", "npm run build", "npm test"]);
+    expect(macos.steps?.filter(step => step.run).map(step => step.run)).toEqual(["npm ci", "npm run typecheck", "npm run build", "npm run test:all"]);
+    // Every workflow runs both unit tiers (docs/TESTING.md); bare `npm test` skips the slow one.
+    expect(workflows.flatMap(one => Object.values(one.jobs).flatMap(job => job.steps ?? [])).filter(step => step.run === "npm test")).toEqual([]);
     const publishers = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.steps?.some(step => /\bnpm publish\b/.test(step.run ?? ""))).map(([id]) => `${one.file}:${id}`));
     expect(publishers).toEqual(["publish.yml:publish"]);
     expect(publisher.steps?.some(step => step.run === "npm publish --access public")).toBe(true);

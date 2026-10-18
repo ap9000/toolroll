@@ -16,7 +16,7 @@ import { moveCardInFlow } from "./flow-engine.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
 import { grantTool, setToolRules } from "./subagent-tools.js";
-import { requestUndo, runRequestedUndos, sendSubagentWeeklies, undoCall, undoFor, weekOf, weekWords } from "./subagent-week.js";
+import { requestUndo, runRequestedUndos, sendSubagentWeeklies, undoCall, undoFor, weekOf } from "./subagent-week.js";
 import { claudeTurnRunner, SUBAGENT_TEMPLATES, type TurnRequest, type TurnRunner } from "./subagents.js";
 
 const T0 = new Date("2026-09-23T10:00:00.000Z"); // a Wednesday
@@ -93,14 +93,6 @@ test("the week counts what it did, what it cost and what people overrode, and re
     "alex turned down desk → add_label · ticket T-1 · label urgent: “Not urgent, it's a toy printer.”",
   ]);
   expect(store.getFlowCard(second)?.stage).toBe("done");
-  expect(weekWords(mate, week)).toBe([
-    "Maya decided 0, handled 2, handed 0 to people and asked 0 questions.",
-    "Tool calls: 0 made, 1 turned down.",
-    "3 turns, about 2 minutes of thinking, $0.04 at API prices.",
-    "You overrode it 2 times:",
-    "• alex moved “Printer on fire” after Maya did",
-    "• alex turned down desk → add_label · ticket T-1 · label urgent: “Not urgent, it's a toy printer.”",
-  ].join("\n"));
   // Mid-week nothing goes out; Monday from 9:00 (this computer's time), once.
   const monday = new Date(2026, 8, 28, 9, 30);
   expect(sendSubagentWeeklies(store, repo, at(6))).toBe(0);

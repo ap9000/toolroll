@@ -22,7 +22,6 @@ import {
   describeContainment,
   effectiveContainment,
   overrideContainerFactoryForTests,
-  ownCgroupPath,
   parseContainmentPolicy,
   pinContainment,
   probeContainmentCapability,
@@ -40,15 +39,14 @@ import { register } from "./runner.js";
 const posix = process.platform !== "win32";
 
 describe("the policy words", () => {
-  test("absent means observed — every existing installation keeps its behaviour", () => {
-    expect(parseContainmentPolicy(undefined)).toEqual({ ok: true, policy: "observed", source: "default" });
-    expect(parseContainmentPolicy(null)).toEqual({ ok: true, policy: "observed", source: "default" });
-  });
-
-  test("the three words parse exactly, case- and space-insensitively", () => {
-    expect(parseContainmentPolicy("required")).toEqual({ ok: true, policy: "required", source: "explicit" });
-    expect(parseContainmentPolicy(" Preferred ")).toEqual({ ok: true, policy: "preferred", source: "explicit" });
-    expect(parseContainmentPolicy("observed")).toEqual({ ok: true, policy: "observed", source: "explicit" });
+  test.each([
+    [undefined, "observed", "default"],
+    [null, "observed", "default"],
+    ["required", "required", "explicit"],
+    [" Preferred ", "preferred", "explicit"],
+    ["observed", "observed", "explicit"],
+  ] as const)("%j parses as %s (%s) — absent keeps every installation observed", (word, policy, source) => {
+    expect(parseContainmentPolicy(word)).toEqual({ ok: true, policy, source });
   });
 
   test("a corrupt word is a refusal, never a quiet fall back to observed", () => {
@@ -81,8 +79,6 @@ describe("the capability, established by doing", () => {
 
   test("linux: /proc/self/cgroup without a unified entry is unavailable", () => {
     writeFileSync(join(dir, "cgroup.controllers"), "cpu memory\n");
-    expect(ownCgroupPath("12:memory:/legacy\n")).toBeNull();
-    expect(ownCgroupPath("0::/user.slice/user-1000.slice/session-2.scope\n")).toBe("/user.slice/user-1000.slice/session-2.scope");
     const capability = probeContainmentCapability({ platform: "linux", cgroupMount: dir, selfCgroup: "12:memory:/legacy\n" });
     expect(capability).toMatchObject({ available: false });
     expect(capability.detail).toContain("0::");

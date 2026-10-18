@@ -248,17 +248,6 @@ describe("a draft step writes to a known limit", () => {
   };
   const long = "Thanks for asking. ".repeat(700).trim();
 
-  test("its prompt states the limit; a draft over it is asked once to shorten, and the shortened one is kept", async () => {
-    const { card } = drafting();
-    const claude = writer([long, "Your order ships today."]);
-    await runFlowSteps(store, repo, T0, io({ draft: claude.draft }));
-    expect(claude.prompts).toHaveLength(2);
-    expect(claude.prompts[0]).toContain("The draft: at most 12,000 characters.");
-    expect(claude.prompts[1]).toContain(`draft is ${long.length.toLocaleString("en-US")} characters; the limit is 12,000.`);
-    expect(claude.prompts[1]).toContain(long);
-    expect(store.getFlowCard(card)!.outputs["reply"]).toBe("Your order ships today.");
-  });
-
   test("a draft still over the limit after the one ask is attached whole to the card, and the steps after read a link to it", async () => {
     const { flow, card } = drafting();
     const claude = writer([long, `${long} And more.`, "never asked"]);

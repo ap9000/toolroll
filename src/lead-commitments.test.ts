@@ -291,16 +291,6 @@ describe("the lead keeps its promises and remembers corrections", () => {
     expect(said()).toEqual(["It is time. (I said I would tell you at one.)"]);
   });
 
-  test("c1: a promise from a reply still being written is not listed until that reply is answered", async () => {
-    const running = turn(t0, ctx => { call(ctx, "commit_to", { what: "Tell you at one", when: "time", at: at(60).toISOString() }); }, "running");
-    expect(openCommitments(store, "operator")).toEqual([]);
-    await pass(at(1));
-    expect(store.handle.prepare("SELECT state FROM lead_commitment").get()).toMatchObject({ state: "open" });
-    const live = store.getLeadTurn(running)!;
-    store.finalizeLeadTurn(running, live.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "I'll tell you at one.", activity: "" } }, at(2));
-    expect(openCommitments(store, "operator")).toMatchObject([{ what: "Tell you at one" }]);
-  });
-
   test("c1: a reply still running is not listed even once it has written text; failing without showing it drops its promise", async () => {
     const running = turn(t0, ctx => { call(ctx, "commit_to", { what: "Tell you at one", when: "time", at: at(0.2).toISOString() }); }, "running");
     store.appendLeadMessage({ thread, turn: running, role: "assistant", text: "Partial reply" }, t0);

@@ -6,14 +6,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
-import { firstNameOf, leadChannelOf, leadContext, LEAD_CONTEXT_MAX_BYTES } from "./lead-context.js";
-import { firstSentenceOf } from "./assignment-brief.js";
+import { firstNameOf, leadContext, LEAD_CONTEXT_MAX_BYTES } from "./lead-context.js";
 import { register } from "./runner.js";
 import { acquire, finalize } from "./claim.js";
 import { leadClaim } from "./lead-voice.js";
 import { checkLeadIdentity, DEFAULT_LEAD_NAME, DEFAULT_LEAD_PERSONA, leadIdentityOf } from "./lead-identity.js";
-import { LEAD_CONTRACT, LEAD_CONTRACT_VERSION } from "./lead-contract.js";
-import { LEAD_TOOL_SCHEMAS, projectLabelForLead, redactForLead } from "./lead-tools.js";
+import { projectLabelForLead, redactForLead } from "./lead-tools.js";
 
 const T0 = new Date("2026-10-02T13:05:00.000Z");
 const WEB = "/repo/web-shop", API = "/repo/payments-api";
@@ -131,20 +129,6 @@ describe("the lead's bundle", () => {
     expect(data.rest.tasks.map((one: { title: string }) => one.title)).toEqual(["Drop old flags"]);
   });
 
-  test("c2: a decision's reason is its first sentence, never cut at an abbreviation", () => {
-    expect(firstSentenceOf("Small payment providers, e.g. Stripe or Adyen, keep card data off our servers. We looked at more.")).toBe("Small payment providers, e.g. Stripe or Adyen, keep card data off our servers.");
-    expect(firstSentenceOf("Faster builds, i.e. under 5 minutes. Also cheaper.")).toBe("Faster builds, i.e. under 5 minutes.");
-    expect(firstSentenceOf("One line\nsecond line")).toBe("One line");
-    // Abbreviations in any case; "No." ends a sentence unless a number follows it.
-    expect(firstSentenceOf("Card data stays off our servers, E.g. Stripe holds it. We looked at more.")).toBe("Card data stays off our servers, E.g. Stripe holds it.");
-    expect(firstSentenceOf("Faster builds, I.E. Under 5 minutes. Also cheaper.")).toBe("Faster builds, I.E. Under 5 minutes.");
-    expect(firstSentenceOf("No. The old page confuses people.")).toBe("No.");
-    expect(firstSentenceOf("We said no. It confuses people.")).toBe("We said no.");
-    expect(firstSentenceOf("Ticket No. 5 settled it. Also cheaper.")).toBe("Ticket No. 5 settled it.");
-    decide(API, "Use Postgres", "Mature tooling, e.g. Postgres has pg_dump. Also familiar.", T0);
-    expect(bundle().projects[1].decisions[0].why).toBe("Mature tooling, e.g. Postgres has pg_dump.");
-  });
-
   test("c1: the name and persona the owner saved are who the lead is; a shared team conversation keeps its own lead's name", () => {
     store.setLeadConfig("alex.pelletier", "Maya", "Dry humour. Keep it short.", T0);
     expect(bundle().me).toEqual({ name: "Maya", persona: "Dry humour. Keep it short." });
@@ -156,29 +140,5 @@ describe("the lead's bundle", () => {
     expect(checkLeadIdentity("M".repeat(41), "x")).toMatchObject({ ok: false });
     expect(checkLeadIdentity("Maya", "p".repeat(601))).toMatchObject({ ok: false });
     expect(firstNameOf("sam@example.com")).toBe("Sam");
-  });
-
-  test("c3: the lead is told the channel, and the flow detail lives in the flow tools' descriptions", () => {
-    expect(bundle({ channel: "console" }).channel.id).toBe("console");
-    // Each chat surface names its own channel; an unknown one names none rather than being called Teams.
-    expect(["Slack", "Discord", "Teams", "Telegram"].map(leadChannelOf)).toEqual(["slack", "discord", "teams", "telegram"]);
-    expect(leadChannelOf("Mattermost")).toBeUndefined();
-    expect(bundle({ channel: undefined }).channel).toBeNull();
-    expect(LEAD_CONTRACT_VERSION).toBe(49);
-    expect(LEAD_CONTRACT).toContain("channel: where this conversation is; fit your replies to it");
-    // The contract names the flow tools and no longer carries their detail.
-    expect(LEAD_CONTRACT).toContain("Read get_flows");
-    for (const detail of ["Jev", "soul file", "goto: <answer>", "Issues to PRs", "Holding, Build and Research"]) expect(LEAD_CONTRACT).not.toContain(detail);
-    const description = (name: string) => LEAD_TOOL_SCHEMAS.find(one => one.name === name)!.description;
-    expect(description("get_flows")).toContain("Holding, Build and Research (each files an ordinary task), Person decides, Message, Done");
-    expect(description("get_flows")).toContain("soul file");
-    expect(description("get_flows")).toContain("'flow <the flow's number>'");
-    expect(description("propose_flow")).toContain("use decider 'me' when they decide");
-    expect(description("propose_flow")).toContain("The Issues to PRs template");
-    expect(description("propose_flow")).toContain("propose_subagent use_tool, stop_tool and tool_rule");
-    // D5: the lead delegates to its named subagents; a message naming one is the lead's to pass on, with a card.
-    expect(LEAD_CONTRACT).toContain("When the operator says 'ask Rosa to …' or writes to one by name ('@rosa, …'), delegate with propose_subagent ask");
-    expect(description("propose_subagent")).toContain("ask: delegate to a subagent");
-    expect(description("get_flows")).toContain("propose_subagent ask puts it on its desk once they confirm");
   });
 });

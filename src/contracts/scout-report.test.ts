@@ -114,11 +114,3 @@ describe("the scout report contract", () => {
     expect(parseReport("[]")).toMatchObject({ ok: false, problems: [{ reason: "not-an-object", message: "payload: must be one JSON object" }] });
   });
 });
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks wave 1 item 4 done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 4 ✅ \| \*\*Scout report\*\*/m);
-    expect(doc.slice(doc.indexOf("## Done"))).toContain("**4. Scout report**");
-  });
-});

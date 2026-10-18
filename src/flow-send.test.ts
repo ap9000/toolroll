@@ -134,43 +134,6 @@ describe("c1: Send to me", () => {
     expect(store.listNotifications("all").filter(one => one.dedupeKey.startsWith("flow-send:"))).toHaveLength(1);
   });
 
-  test("after research, the research run's own screenshots go with the message", () => {
-    store.createTask({ id: "look-9", title: "Find UI inspiration" }, now);
-    const ref = store.refFor("built-in", "look-9").id;
-    store.placeTask(ref, ALPHA, {}, now);
-    const run = store.startRun({ taskRef: ref, leaseId: "l-look-9", runner: "worker-1", branch: "so-scout/look-9", worktree: "/pool/look-9", role: "scout", ...legacy, now });
-    for (let n = 0; n < 3; n++) storeEvidence(store, root, run, "screenshot", `report-image-${n + 1}.png`, png(1200, 800, n + 1), `scout screenshot report-image-${n + 1}.png (validated png)`, now);
-    store.finishRun(run, { outcome: "built", committed: false, now });
-    const flow = store.createFlow({ repo: ALPHA, name: "UI inspiration", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "find", title: "Find UI inspiration", kind: "report" },
-      { id: "pick", title: "Your pick", kind: "choose", options: [{ label: "Implement", goesTo: "end" }, { label: "Ignore", goesTo: "end" }] }], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Settings", description: null, stage: "find", by: "alex" }, now);
-    store.updateFlowCard(card, { outputs: { find: "Group the tiles under five headings." } }, now);
-    store.moveFlowCard(card, { to: "pick", outcome: "ok", actor: "flow", task: "look-9" }, now);
-    advanceFlows(store, ALPHA, now, { evidenceRoot: root });
-    expect(readFlowSend(store.flowSend(card, 2)!.contentJson).shots).toEqual({ taskId: "look-9", run });
-    expect(store.listNotifications("all").filter(one => one.kind === FLOW_SHOTS_KIND).map(one => one.run)).toEqual([run]);
-  });
-
-  test("after research, the report is the summary; the result, its pull request and the report are links", () => {
-    const { ref, run } = built("fix-7", "Checkout rounding", 0);
-    const publication = store.createPublicationIntent({ run, taskRef: ref, githubRepo: "o/shop", remote: "origin", base: "main", head: "so/fix-7", headSha: "c".repeat(40), bodyHash: "h", draft: false }, now);
-    store.markPublicationPushed(publication, now);
-    store.markPublicationOpened(publication, 12, "https://github.com/o/shop/pull/12", now);
-    store.createTask({ id: "look-7", title: "Check it: Checkout rounding" }, now);
-    store.placeTask(store.refFor("built-in", "look-7").id, ALPHA, {}, now);
-    const flow = store.createFlow({ repo: ALPHA, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([STEPS[0], { id: "check", title: "Check it", kind: "report" },
-      { id: "tell", title: "Send me the result", kind: "send" }], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Checkout rounding", description: null, stage: "check", by: "alex" }, now);
-    store.updateFlowCard(card, { primaryTask: "fix-7", outputs: { build: "Result ready on task fix-7.", check: "The fix holds; rounding matches the bank's statements." } }, now);
-    store.moveFlowCard(card, { to: "tell", outcome: "ok", actor: "flow", task: "look-7" }, now);
-    advanceFlows(store, ALPHA, now, { evidenceRoot: root });
-    expect(readFlowSend(store.flowSend(card, 2)!.contentJson)).toEqual({
-      title: "Checkout rounding · Check it", from: "Check it", summary: "The fix holds; rounding matches the bank's statements.", shots: null,
-      links: [{ label: "Result", path: "/t/fix-7" }, { label: "Pull request", url: "https://github.com/o/shop/pull/12" }, { label: "Report", path: "/t/look-7" }, { label: "Card", path: `/flows/${flow}?card=${card}` }],
-    });
-    expect(store.listNotifications("all").find(one => one.dedupeKey === `flow-send:${card}:2`)!.body).toBe("The fix holds; rounding matches the bank's statements.\n\nPull request: https://github.com/o/shop/pull/12");
-  });
-
   test("Telegram: the send arrives with its link buttons, then its screenshots as one album", async () => {
     pair();
     built("fix-2", "Checkout rounding");

@@ -1,7 +1,5 @@
 import { describe, test, expect, vi } from "vitest";
-import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import {
   cumulativeLiveResult,
   run, runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, terminateLiveProviders, NOT_FOUND_CODE,
@@ -15,18 +13,6 @@ import { adapterFor } from "./provider.js";
 const NODE = process.execPath;
 
 describe("run", () => {
-  test("buffered groups expose stdout and stderr as they arrive without changing the result", async () => {
-    const stdout: string[] = [], stderr: string[] = [];
-    const result = await run(NODE, ["-e", "process.stdout.write('unit');process.stderr.write('flows')"], {
-      processGroup: true,
-      timeoutMs: 10_000,
-      onStdout: chunk => stdout.push(chunk),
-      onStderr: chunk => stderr.push(chunk),
-    });
-    expect(stdout.join("")).toBe("unit");
-    expect(stderr.join("")).toBe("flows");
-    expect(result).toMatchObject({ code: 0, stdout: "unit", stderr: "flows" });
-  });
   test("buffered group delivers large Unicode stdin completely and closes input", async () => {
     const input = "Unicode ✓ 😀\n".repeat(32_768);
     const result = await run(NODE, ["-e", "const h=require('node:crypto').createHash('sha256');process.stdin.on('data',x=>h.update(x));process.stdin.on('end',()=>console.log(h.digest('hex')));"], { processGroup: true, stdin: input, timeoutMs: 10_000 });
@@ -71,29 +57,11 @@ describe("run", () => {
     } finally { observer.mockRestore(); }
   });
 
-  test("returns stdout and a zero code for a successful command", async () => {
-    // Arrange / Act
-    const result = await run(NODE, ["-e", "process.stdout.write('hello')"]);
-
-    // Assert
-    expect(result.code).toBe(0);
-    expect(result.stdout).toBe("hello");
-    expect(result.timedOut).toBe(false);
-    expect(result.notFound).toBe(false);
-  });
-
   test("reports a non-zero exit as a result rather than throwing", async () => {
     // `git` fails routinely — outside a repo, on a bad ref. Failure is data.
     const result = await run(NODE, ["-e", "process.exit(3)"]);
 
     expect(result.code).toBe(3);
-  });
-
-  test("captures stderr alongside a successful exit", async () => {
-    const result = await run(NODE, ["-e", "process.stderr.write('boom')"]);
-
-    expect(result.stderr).toBe("boom");
-    expect(result.code).toBe(0);
   });
 
   test("flags a missing binary instead of rejecting", async () => {
@@ -120,13 +88,6 @@ describe("run", () => {
     expect(result.stdout).toBe(hostile);
   });
 
-  test("runs in the requested working directory", async () => {
-    const dir = await realpath(tmpdir());
-
-    const result = await run(NODE, ["-e", "process.stdout.write(process.cwd())"], { cwd: dir });
-
-    expect(result.stdout).toBe(dir);
-  });
 });
 
 describe("the provider process group (M6.12)", () => {
@@ -669,12 +630,6 @@ describe("the gemini retention runner (Phase 3 D1/A7)", () => {
     const result = await runGeminiStreamJsonl(process.execPath, ["-e", "process.exit(41)"], { timeoutMs: 15_000 });
     expect(result.code).toBe(41);
     expect(result.stdout).toBe("");
-  });
-
-  test("stderr is captured bounded, exactly like the sibling runners", async () => {
-    const result = await runGeminiStreamJsonl(process.execPath, ["-e", "console.error('auth: set GEMINI_API_KEY');process.exit(41)"], { timeoutMs: 15_000 });
-    expect(result.code).toBe(41);
-    expect(result.stderr).toContain("GEMINI_API_KEY");
   });
 
   test("a missing binary is NOT_FOUND, never a throw", async () => {

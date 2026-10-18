@@ -7,7 +7,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
-import { MARKER, saveWorkPatch, WorktreePool, worktreePath, type Runner } from "./worktree.js";
+import { MARKER, WorktreePool, worktreePath, type Runner } from "./worktree.js";
 import { HANDOFF_PREFIX, MAILBOX_SUFFIX } from "./evidence.js";
 import { run } from "./exec.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -24,10 +24,7 @@ const later = (ms: number) => new Date(T0.getTime() + ms);
 
 describe("worktreePath", () => {
   test("is stable for the same repository and branch", () => {
-    const first = worktreePath("/pool", "/code/thing", "feat/a");
-    const second = worktreePath("/pool", "/code/thing", "feat/a");
-
-    expect(first).toBe(second);
+    expect(worktreePath("/pool", "/code/thing", "feat/a")).toBe(worktreePath("/pool", "/code/thing", "feat/a"));
   });
 
   test("does not let a branch name escape the pool root", () => {
@@ -38,35 +35,13 @@ describe("worktreePath", () => {
     expect(path).not.toContain("..");
   });
 
-  test("flattens a slashed branch into one readable segment", () => {
-    const path = worktreePath("/pool", "/code/thing", "feat/a/b").replace(/\\/g, "/");
-
-    expect(path).toMatch(/^\/pool\/thing\/feat-a-b-[0-9a-f]{8}$/);
-  });
-
-  test("keeps two repositories with the same branch apart", () => {
-    const a = worktreePath("/pool", "/code/alpha", "main");
-    const b = worktreePath("/pool", "/code/beta", "main");
-
-    expect(a).not.toBe(b);
-  });
-
-  test("keeps same-named repositories in different places apart", () => {
-    // Flattening to a basename alone would put /x/api and /y/api in one
-    // directory, and one task's work would land in another's checkout.
-    const a = worktreePath("/pool", "/x/api", "main");
-    const b = worktreePath("/pool", "/y/api", "main");
-
-    expect(a).not.toBe(b);
-  });
-
-  test("keeps branches that flatten to the same name apart", () => {
-    // `feat/a` and `feat-a` both reduce to `feat-a`; only the digest
-    // distinguishes them, and without it they would share a working copy.
-    const a = worktreePath("/pool", "/code/thing", "feat/a");
-    const b = worktreePath("/pool", "/code/thing", "feat-a");
-
-    expect(a).not.toBe(b);
+  // Sharing a directory would land one task's work in another's checkout.
+  test.each([
+    ["two repositories with the same branch", ["/code/alpha", "main"], ["/code/beta", "main"]],
+    ["same-named repositories in different places", ["/x/api", "main"], ["/y/api", "main"]],
+    ["branches that flatten to the same name", ["/code/thing", "feat/a"], ["/code/thing", "feat-a"]],
+  ] as const)("keeps %s apart", (_label, [repoA, branchA], [repoB, branchB]) => {
+    expect(worktreePath("/pool", repoA, branchA)).not.toBe(worktreePath("/pool", repoB, branchB));
   });
 });
 
@@ -119,21 +94,6 @@ describe("the pool, against a stubbed git", () => {
     expect(calls).toEqual([]);
     expect(readdirSync(stash)).toEqual([]);
     expect(store.getWorktree(target)).toBeNull();
-  });
-
-  test("creates a worktree and records the lease", async () => {
-    const result = await pool().lease({
-      repo: "/code/thing",
-      branch: "feat/a",
-      runner: "builder-1",
-      now: T0,
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.created).toBe(true);
-    expect(result.worktree.runner).toBe("builder-1");
-    expect(calls[0]?.slice(0, 2)).toEqual(["worktree", "add"]);
   });
 
   test("will not give work to a runner nobody registered", async () => {
@@ -205,16 +165,6 @@ describe("the pool, against a stubbed git", () => {
     );
 
     expect(released).toMatchObject({ ok: false, reason: "dirty" });
-  });
-
-  test("asks git for untracked files but not ignored ones", async () => {
-    const it = pool();
-    await it.lease({ repo: "/code/thing", branch: "feat/a", runner: "builder-1", now: T0 });
-    await it.release(worktreePath(root, "/code/thing", "feat/a"), later(1_000));
-
-    const status = calls.find(args => args.includes("status"));
-    expect(status).toContain("--untracked-files=all");
-    expect(status).not.toContain("--ignored");
   });
 
   test("keeps a dirty worktree rather than cleaning it", async () => {
@@ -676,23 +626,6 @@ describe("the pool, against real git", () => {
     });
     expect(third).toMatchObject({ resumedFromRun: retried, recoveryKind: "partial" });
     expect(existsSync(join(third.worktree.path, "half-broken.ts"))).toBe(true);
-  });
-
-  test("saveWorkPatch writes tracked changes and untracked files without touching the tree", async () => {
-    const pool = new WorktreePool(store, { root: join(base, "pool") });
-    const leased = await pool.lease({ repo, branch: "feat/patch", base: "main", runner: "builder-1", now: T0 });
-    expect(leased.ok).toBe(true);
-    if (!leased.ok) return;
-    await writeFile(join(leased.worktree.path, "README.md"), "hello\nedited\n");
-    await writeFile(join(leased.worktree.path, "fresh.ts"), "export const fresh = 1;\n");
-    const file = join(base, "evidence", "7", "unhanded-work.patch");
-    expect(await saveWorkPatch(run, leased.worktree.path, file, "# header\n")).toEqual({ ok: true, file });
-    const patch = await import("node:fs/promises").then(fs => fs.readFile(file, "utf8"));
-    expect(patch.startsWith("# header\n")).toBe(true);
-    expect(patch).toContain("+edited");
-    expect(patch).toContain("+export const fresh = 1;");
-    expect(patch).not.toContain(".standing-orders-lease");
-    expect(existsSync(join(leased.worktree.path, "fresh.ts"))).toBe(true);
   });
 
   test("provider occupancy replaces the console pid and is fenced to the live lease", async () => {

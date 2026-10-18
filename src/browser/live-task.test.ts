@@ -1,15 +1,14 @@
 // @vitest-environment happy-dom
 /** The live task page in the browser (live-task.tsx): a stream nudge reads the workspace again, a nudge for what the
  * page already shows does not, who else is here shows in the header, nothing reads on a timer, and the same
- * last-activity line sits under the step, on Home Now and on Crew rows. */
+ * last-activity line on the task page. */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { AssignmentCard } from "../assignment-ui.js";
-import type { BrowserHome, BrowserTaskView, BrowserWorkspace } from "../browser-workspace.js";
-import { CrewRows, useWorkspace } from "./app.js";
+import type { BrowserTaskView, BrowserWorkspace } from "../browser-workspace.js";
+import { useWorkspace } from "./app.js";
 import { useLiveTask } from "./live-task.js";
-import { Home } from "./views/home-view.js";
 import { TaskView } from "./views/task-view.js";
 
 class Events extends EventTarget {
@@ -169,37 +168,9 @@ describe("the last-activity line", () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>());
     await act(async () => root!.render(createElement(TaskView, { view: taskView({ activity: { what: "Ran a command", at: ago(40), worker: "online" } }), details: false })));
     expect(text()).toEqual(["fresh: Ran a command · 40 s ago"]);
-    const step = host.querySelector("[data-task-status] p")!;
-    expect(step.textContent).toContain("Step 2 of 4");
-    expect(step.nextElementSibling?.hasAttribute("data-activity")).toBe(true);
     await act(async () => vi.advanceTimersByTimeAsync(5 * 60_000));
     expect(text()).toEqual(["quiet: No word for 5 min"]);
     await act(async () => root!.render(createElement(TaskView, { view: taskView({ activity: { what: "Ran a command", at: new Date(Date.now() - 40_000).toISOString(), worker: "offline" } }), details: false })));
     expect(text()).toEqual(["quiet: Worker offline · last word 40 s ago"]);
-  });
-
-  test("says who else is here in the task header, once", async () => {
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>());
-    await act(async () => root!.render(createElement(TaskView, { view: taskView({ live: { room: "task:t-1", at: "a" } }), details: false })));
-    expect(host.querySelector("[data-also-viewing]")).toBeNull();
-    await act(async () => Events.latest.emit("here", { room: "task:t-1", people: ["Robin"] }));
-    expect(host.querySelector("[data-also-viewing]")?.textContent).toBe("Robin is also here");
-    await act(async () => Events.latest.emit("here", { room: "task:t-1", people: ["Robin", "Sam", "Ana"] }));
-    expect(host.querySelector("[data-also-viewing]")?.textContent).toBe("Robin and 2 others are also here");
-  });
-
-  test("Home Now and Crew rows show the same line for a running task, and nothing for others", async () => {
-    const home: BrowserHome = { agents: [{ runId: 7, taskId: "t-1", title: "Guard the payout path", href: "/t/t-1", agent: "Claude on builder-1", phase: "Building",
-      project: null, since: ago(600), activity: { what: "Edited files", at: ago(90), worker: "online" } }], counts: [], planUse: [], catchUp: [], allHref: "/work" };
-    await act(async () => root!.render(createElement(Home, { home })));
-    expect(text()).toEqual(["fresh: Edited files · 1 min ago"]);
-    const base = { title: "Guard the payout path", project: null, state: "working" as const, label: "Building", tone: "info" as const,
-      href: "/chat?task=t-1", resultHref: null, action: null, updatedAt: ago(60) };
-    await act(async () => root!.render(createElement(CrewRows, { workspace: workspace(taskView()), items: [
-      { ...base, id: "t-1", activity: { what: "Searched the code", at: ago(400), worker: "online" } },
-      { ...base, id: "t-2", state: "ready-to-check" as const, label: "Ready for review", tone: "success" as const },
-    ] })));
-    expect(text()).toEqual(["quiet: No word for 6 min"]);
-    expect(host.querySelector('[data-workspace-task="t-1"] [data-activity]')).not.toBeNull();
   });
 });

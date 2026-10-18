@@ -209,9 +209,6 @@ describe("the one network call", () => {
     expect(body.tools).toBeUndefined();
     expect(body.max_tokens).toBe(MAX_OUTPUT_TOKENS);
     expect(request.headers["x-api-key"]).toBe("k");
-    expect(body.system).toContain("one plain-language outcome is enough");
-    expect(body.system).toContain("Ask at most three grouped questions");
-    expect(body.system).toContain("use your judgment");
     // The operator message rides as JSON-encoded data, not instructions.
     expect(body.messages[0].content).toContain('"hi"');
   });

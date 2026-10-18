@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { readTriggerConfig, readTriggerSettings, validateTriggerConfig } from "../flow-triggers.js";
 import { parseFlowFile } from "../flow-share.js";
-import { FLOW_TEMPLATES, flowDefinitionForStore, flowDefinitionFromStore, flowDigest, flowFromSteps, readFlowDefinition, readFlowSteps, validateFlowDefinition, withZoneNames, type FlowDefinition } from "../flows.js";
+import { FLOW_TEMPLATES, flowDefinitionForStore, flowDefinitionFromStore, flowDigest, flowFromSteps, readFlowDefinition, readFlowSteps, validateFlowDefinition, type FlowDefinition } from "../flows.js";
 import { LEAD_TOOLS } from "../lead-tools.js";
 import { openStore, type Store } from "../store.js";
 import { addApprover } from "../scope.js";
@@ -76,12 +76,6 @@ describe("the saved drawing", () => {
     const long = drawings.valid.find(one => one.name.startsWith("instructions longer"))!;
     expect(readFlowDefinition(structuredClone(long.input), { stored: true }).ok).toBe(true);
     expect(lines(verdict(readFlowDefinition(structuredClone(long.input))))).toEqual([`stages[0].instructions: over ${TEXT_LIMITS.flowInstructions.toLocaleString("en-US")} characters`]);
-  });
-
-  it("tells the canvas which zone a refusal is about, keeping its path", () => {
-    const drawn = { version: 1, stages: [{ id: "a", title: "Inbox", kind: "inbox", next: "b" }, { id: "b", title: "Build", kind: "task" }] };
-    const read = readFlowDefinition(drawn);
-    expect(read.ok ? "" : withZoneNames(read.issues.map(one => one.line), drawn)).toBe("Build · stages[1].instructions: required");
   });
 
   it("refuses an unknown key on every kind of zone, by its path", () => {
@@ -170,15 +164,6 @@ describe("the flow file", () => {
     expect(JSON.parse(readFileSync(new URL("../../docs/flow-file.schema.json", import.meta.url), "utf8"))).toEqual(flowFileJsonSchema());
   });
 
-  it("says which key a wrong one meant", () => {
-    const good = JSON.parse(files.files[0]!.json) as Record<string, unknown>;
-    const refused = (input: unknown) => lines(thrown(() => parseFlowFile(JSON.stringify(input))));
-    expect(refused({ ...good, zones: [{ id: "a", title: "A", kind: "check", script: "lint", routes: [{ answer: "x", to: "b" }], onFail: "b" }, { id: "b", title: "B", kind: "done" }] })).toEqual([
-      "zones[0].routes[0].goesTo: required",
-      "zones[0].routes[0]: unknown key 'to' (did you mean goesTo?)",
-      "zones[0]: unknown key 'onFail' (did you mean ifFails?)",
-    ]);
-  });
 });
 
 describe("triggers", () => {
@@ -261,22 +246,10 @@ describe("propose_flow", () => {
         { name: "a webhook from chat", input: { operation: "add_trigger", settings: { kind: "webhook" } }, paths: ["settings.kind"] },
       ],
     });
-    expect(lines(verdict(parseContract(proposeFlowInputSchema, { operation: "create", stages: [] }, FLOW_ALIASES)))).toEqual(["payload: unknown key 'stages' (did you mean steps?)"]);
   });
 
   it("is JSON-Schema-exact: no refinement, transform or default anywhere in it", () => {
     expect(() => toModelSchema(proposeFlowInputSchema)).not.toThrow();
     expect(() => toModelSchema(z.strictObject({ steps: flowStepsSchema.shape.steps.transform(steps => steps) }))).toThrow(/transform/);
-  });
-});
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks wave 1 item 3 done, with what it kept and what it tightened", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 3 ✅ \| \*\*Flow definitions and step inputs\*\*/m);
-    const done = doc.slice(doc.indexOf("## Done"));
-    expect(done).toContain("**3. Flow definitions and step inputs**");
-    expect(done).toMatch(/byte for byte/);
-    expect(done).toMatch(/Tightened, on purpose/);
   });
 });

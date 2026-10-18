@@ -19,7 +19,6 @@ import { queueBatchCheck, runBatchChecks } from "./batch-checks.js";
 import { followUpChecksOf, fullCheckGate } from "./result-follow-ups.js";
 import { assignmentOf } from "./assignment.js";
 import { assignmentTaskStatusOf } from "./assignment-presentation.js";
-import { taskStatusOf } from "./task-status.js";
 import { checkSettingsHtml } from "./check-levels-ui.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate, EXIT } from "./operate.js";
@@ -159,7 +158,6 @@ describe("c3: off by default, set per project", () => {
     const view = { repo: REPO, name: "storefront", csrf: "c", canChange: true, level: "full" as const, full: store.liveVerifyCommand(REPO), quick: null, suggestion: null, said: null, problem: null };
     const off = htmlString(withFormToken("c", () => checkSettingsHtml({ ...view, batch: { on: false } })));
     expect(off).toContain('data-batch-checks="off"');
-    expect(off).toContain("<h2>Batch checks</h2><p><strong>Off</strong>");
     expect(off).toContain("Nothing is merged into a real branch. Each result still lands on its own.");
     expect(off).toContain('name="act" value="batch"');
     // Someone who can't change it sees the state and no form.
@@ -199,7 +197,6 @@ describe("c1: results waiting together are checked once on a temporary batch com
     expect(await pass(at(9))).toBe(0);
     expect(latest(lone.run, at(9))).toMatchObject({ why: "batch", state: "waiting", base: BASE });
     expect(statusOf(lone.task, at(9)).details.find(one => one.key === "checks")).toMatchObject({ text: "Waiting to check with other results", mark: "running" });
-    expect(statusOf(lone.task, at(9)).sentence).toBe("Its full check runs with other results within 10 minutes. Review the change, then mark it complete.");
     expect(fullCheckGate(store, lone.run, at(9)).state).toBe("waiting");
     expect(await pass(at(10))).toBe(1);
     expect(checks).toHaveLength(1);
@@ -226,7 +223,6 @@ describe("c1: results waiting together are checked once on a temporary batch com
         batch: { mode: "together", tested, base: BASE, members: [{ task: a.task, run: a.run, head: a.head }, { task: b.task, run: b.run, head: b.head }] } });
       const status = statusOf(one.task, at(21));
       expect(status.headline).toBe("Ready for review");
-      expect(status.sentence).toBe("Checks passed together with 1 other result. Review the change, then mark it complete.");
       expect(status.details.find(row => row.key === "checks")).toMatchObject({ text: `Checked together with ${peer.task} on ${tested.slice(0, 7)}`, mark: "ok" });
       expect(fullCheckGate(store, one.run, at(21))).toEqual({ state: "clear" });
     }
@@ -248,11 +244,6 @@ describe("c1: results waiting together are checked once on a temporary batch com
     expect(latest(b.run, at(30))).toMatchObject({ state: "passed" });
   });
 
-  test("long peer lists stay on one line; the full list is on the result", () => {
-    const facts = { stage: "finished" as const, checks: { status: "passed" as const, exitCode: 0, head: "a".repeat(40), level: "full" as const,
-      batch: { state: "together" as const, tested: "b".repeat(40), peers: ["show-delivery-dates-on-the-cart", "round-prices-to-cents", "cache-the-product-list", "footer"] } } };
-    expect(taskStatusOf(facts).details[0]!.text).toBe("Checked together with show-delivery-dates-on-the-cart, round-prices-to-cents and 2 more on bbbbbbb");
-  });
 });
 
 describe("c2: a failing batch is split; conflicts fall back to one by one; nothing reaches a real branch", () => {

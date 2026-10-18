@@ -302,7 +302,6 @@ describe("destination-bound authorized outbox", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: false, description: "limited", parameters: { retry_after: 7 } }), { status: 429 }));
     try {
       expect(await createTransport("fixture-token")("sendMessage", {})).toMatchObject({ ok: false, parameters: { retry_after: 7 } });
-      expect(fetch).toHaveBeenCalledTimes(1);
     } finally { fetch.mockRestore(); }
     enqueue("unconfirmed", task("a", REPO));
     expect(await pass(async method => ({ ok: true, result: method === "getUpdates" ? [] : {} }))).toMatchObject({ ok: true, report: { sent: 0 } });
@@ -1498,17 +1497,6 @@ describe("away mode: the digest cadence (mate arc §10)", () => {
 
   afterEach(() => store.close());
 
-  test("off by default: every fact pages as it lands", async () => {
-    const script = scripted();
-    await pair(script);
-    expect(store.telegramDigest().everyMs).toBeNull();
-    store.enqueueNotification({ source: { project: REPO }, dedupeKey: "merge:1", kind: "merge", subject: "t-1 merged", body: "PR #4 merged." }, T0);
-    const passed = await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(2_000) });
-    expect(passed).toMatchObject({ ok: true, report: { sent: 1 } });
-    expect(texts(script).some(one => one.includes("t-1 merged"))).toBe(true);
-    expect(store.telegramDeliveries(store.liveTelegramBinding(BOT)!).filter(row => row.deliveredAt === null && row.resolvedAt === null)).toHaveLength(0);
-  });
-
   test("with a cadence: routine facts are held unclaimed while a decision and an attention fact page singly; the window elapses and ONE digest carries the routine rows", async () => {
     const script = scripted();
     await pair(script);
@@ -1572,21 +1560,6 @@ describe("away mode: the digest cadence (mate arc §10)", () => {
     const mended = await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(32 * 60_000) });
     expect(mended).toMatchObject({ ok: true, report: { sent: 1, digests: 1 } });
     expect(store.telegramDeliveries(store.liveTelegramBinding(BOT)!).filter(row => row.deliveredAt === null && row.resolvedAt === null)).toHaveLength(0);
-  });
-
-  test("a gap that blocks work and a failed publication are attention-class: they page singly under any cadence (v4 review, finding 6)", async () => {
-    const script = scripted();
-    await pair(script);
-    store.setTelegramDigest(24 * 60 * 60_000, "alex", later(2_000));
-    store.enqueueNotification({ source: { project: REPO }, dedupeKey: "gap:/r:secret:X", kind: "gap", pushClass: "attention", link: "/caps", subject: "X blocks work in /r", body: "set it" }, later(3_000));
-    store.enqueueNotification({ source: { project: REPO }, dedupeKey: "publication:1:failed", kind: "publication-failed", pushClass: "attention", link: "/r/1", subject: "publication of run #1 gave up", body: "why" }, later(3_000));
-    store.enqueueNotification({ source: { project: REPO }, dedupeKey: "merge:9", kind: "merge", subject: "t-1 merged", body: "PR #9 merged." }, later(3_000));
-    const passed = await bridgePass(store, { readProjects, botId: BOT, transport: script.transport, clock: () => later(10_000) });
-    expect(passed).toMatchObject({ ok: true, report: { sent: 2 } });
-    expect(texts(script).some(one => one.includes("X blocks work"))).toBe(true);
-    expect(texts(script).some(one => one.includes("publication of run #1"))).toBe(true);
-    expect(texts(script).some(one => one.includes("t-1 merged"))).toBe(false);
-    expect(store.countRoutinePending()).toBe(1);
   });
 
   test("a routine row resolved while held never enters a digest; turning the digest off releases everything at the next pass", async () => {

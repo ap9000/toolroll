@@ -407,11 +407,7 @@ describe("pull requests from Complete", () => {
     readyResult("other-task", "e".repeat(40));
     expect((await cli(["merge", "other-task", "--as", "alex", "--token", token], red.exec)).body).toMatchObject({ ok: false, reason: "no-pr" });
   });
-  test("the operating guide and the command contract carry both verbs", async () => {
-    const guide: string[] = [];
-    expect(await main(["skills", "get", "operating"], line => guide.push(line))).toBe(0);
-    expect(guide.join("\n")).toContain("task complete <id> --digest <receipt> --pull-request");
-    expect(guide.join("\n")).toContain("task merge <id>");
+  test("the command contract carries both verbs, and task merge is never an agent's", async () => {
     const lines: string[] = [];
     expect(await main(["contract", "--commands", "--json"], line => lines.push(line))).toBe(0);
     const commands = JSON.parse(lines.join("\n")).commands as { invocation: string; flags?: { name: string }[]; agentMayInvoke: boolean }[];

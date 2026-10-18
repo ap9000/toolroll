@@ -38,9 +38,9 @@ describe("the Quick check", () => {
     expect(serve).toContain("src/serve.flow-unattended.test.ts");
     expect(serve.every(one => /^src\/serve(\.[^/]+)?\.test\.ts$/.test(one))).toBe(true);
     expect(quickPlan(["docs/PROGRESS.md", "README.md"], list)).toEqual({ tests: [], attacks: null });
-    expect(quickPlan(["scripts/release-check.mjs"], list)).toEqual({ tests: ["src/release-check.test.ts"], attacks: null });
+    expect(quickPlan(["scripts/release-check.mjs"], list)).toEqual({ tests: ["src/release-check.slow.test.ts"], attacks: null });
     // A changed test runs itself; a deleted one, or a source with no tests, names nothing.
-    expect(quickPlan(["src/agent-fence.test.ts"], list)).toEqual({ tests: ["src/agent-fence.test.ts"], attacks: null });
+    expect(quickPlan(["src/agent-fence.slow.test.ts"], list)).toEqual({ tests: ["src/agent-fence.slow.test.ts"], attacks: null });
     expect(quickPlan(["src/gone.test.ts", "src/no-tests-here.ts"], list)).toEqual({ tests: [], attacks: null });
   });
 

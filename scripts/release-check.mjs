@@ -252,7 +252,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     return one;
   });
   const units = plan.checks && (!ci.passed || localUnits.length > 0)
-    ? [run("unit", "npm", ["test", "--", "--run", "--reporter=dot", ...localUnits], { TOOLROLL_RELEASE_BUILD: built })] : [];
+    ? [run("unit", "npm", ["run", "test:all", "--", "--run", "--reporter=dot", ...localUnits], { TOOLROLL_RELEASE_BUILD: built })] : [];
   // The journeys need the built console; they don't start when the build (or a typecheck already done) failed.
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });

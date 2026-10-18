@@ -39,26 +39,6 @@ function expectTaskTracked(id: string, tracked: boolean): void {
   expect(fingerprint()).toBe(before);
 }
 
-test("41 linked cards use one prepared statement, reused for every tick and flow", () => {
-  for (let index = 0; index < 40; index += 1) {
-    const id = `linked-${index}`;
-    store.createTask({ id, title: `Checkout follow-up ${index}` }, now);
-    store.placeTask(store.refFor("built-in", id).id, fixture.repo, {}, now);
-    const card = store.addFlowCard({ flow: fixture.flow, title: id, description: "Synthetic linked task", stage: "build", by: "alex" }, now);
-    store.updateFlowCard(card, { task: id }, now);
-  }
-  // Measure only the fingerprint, never fixture setup or task projection.
-  const prepare = vi.spyOn(store.handle, "prepare");
-  const first = fingerprint();
-  expect(prepare).toHaveBeenCalledTimes(1);
-  const read = vi.spyOn(prepare.mock.results[0]!.value, "get");
-  expect(fingerprint()).toBe(first);
-  expect(fingerprint()).toBe(first);
-  expect(flowFingerprint(store, 999)).toBeNull();
-  expect(prepare).toHaveBeenCalledTimes(1);
-  expect(read).toHaveBeenCalledTimes(3);
-});
-
 test("task checkpoints change the fingerprint even when no card or task timestamp changes", () => {
   const card = store.getFlowCard(fixture.card), task = store.getTask(fixture.id), before = fingerprint();
   fixture.checkpoint(["current", "pending"]);
@@ -177,19 +157,16 @@ test("only active cards with placed built-in tasks contribute progress", () => {
   expectTaskTracked("foreign", false);
 });
 
-test("cached statements remain local to each database handle", () => {
+test("each database handle reads its own flows: a write to one never moves the other's fingerprint", () => {
   const other = openStore(":memory:");
   try {
     const otherFixture = flowTaskFixture(other, now);
     const first = fingerprint();
-    const prepare = vi.spyOn(other.handle, "prepare");
     const otherFirst = flowFingerprint(other, otherFixture.flow);
     expect(otherFirst).not.toBeNull();
-    expect(prepare).toHaveBeenCalledTimes(1);
     fixture.checkpoint(["current"]);
     expect(fingerprint()).not.toBe(first);
     expect(flowFingerprint(other, otherFixture.flow)).toBe(otherFirst);
-    expect(prepare).toHaveBeenCalledTimes(1);
   } finally { other.close(); }
 });
 

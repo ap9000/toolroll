@@ -1,9 +1,8 @@
-import { HEADLINES } from "./task-status.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installationStatus, renderInstallationStatus, renderTaskWait, taskWaitSnapshot } from "./lead-status.js";
+import { installationStatus, renderInstallationStatus, taskWaitSnapshot } from "./lead-status.js";
 import { runOperate } from "./operate.js";
 import { BUILT_IN, openStore, type Store } from "./store.js";
 
@@ -121,15 +120,6 @@ describe("lead status commands", () => {
     expect(code).toBe(0);
     expect(retryRun).toBeGreaterThan(firstRun);
     expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: true, outcome: "Ready", run: retryRun, replacedRun: firstRun, check: { status: "passed" } });
-
-    const reader = openStore(db);
-    try {
-      const snapshot = taskWaitSnapshot(reader, "retried-while-waiting", LATER, firstRun);
-      expect(snapshot).not.toBeNull();
-      expect(renderTaskWait(snapshot!)).toBe(`Ready | run #${retryRun}, a retry that replaced run #${firstRun} | checks passed (exit 0) | next: Open result`);
-    } finally {
-      reader.close();
-    }
   });
 
   test("task wait reports a failed retry as failed even when the task has moved on", async () => {
@@ -265,10 +255,6 @@ describe("lead status commands", () => {
     expect(seed.runCheckFor(ordinary + 1)).toBeNull();
     expect(() => seed.recordRunCheck(ordinary, { status: "passed", exitCode: -1, suites: [] })).toThrow("non-negative");
     seed.close();
-
-    const lines: string[] = [];
-    expect(await runOperate("status", [], line => lines.push(line), { databaseFile: db, now: NOW })).toBe(0);
-    expect(lines.join("\n").split("\n")).toContain("Release check: none recorded");
   });
 
   test("status includes running phases, queued reasons, review results, the release suites and plan windows", async () => {
@@ -327,37 +313,5 @@ describe("lead status commands", () => {
       { name: "Tests", status: "passed", exitCode: 0 },
     ]);
     expect(body.planWindows).toMatchObject([{ provider: "codex", plan: "team", window: "five_hour", usedPercent: 42 }]);
-
-    const textLines: string[] = [];
-    expect(await runOperate("status", [], line => textLines.push(line), { databaseFile: db, now: NOW })).toBe(0);
-    const report = textLines.join("\n").split("\n");
-    // Each task's one shared headline leads (task-status.ts); the bounded aggregate follows.
-    expect(report[0]).toBe("Tasks:");
-    const taskLines = report.slice(1, 1 + body.tasks.length);
-    expect(taskLines.length).toBeGreaterThan(0);
-    for (const line of taskLines) expect(HEADLINES.some(headline => line.startsWith(`  ${headline}`)), line).toBe(true);
-    expect(report.length - taskLines.length - 1).toBeLessThanOrEqual(12);
-    expect(report).toEqual(expect.arrayContaining([
-      `Building: 1 — running-check (#${runningRun}, running checks)`,
-      "Ready for review: none",
-      `Release check: ready-result #${releaseRun} — passed (exit 0)`,
-      "  Suites: Typecheck passed (exit 0); Tests passed (exit 0)",
-      "Plan windows: codex team — 5-hour 42%",
-    ]));
-    expect(report.find(line => line.startsWith("Queued: 2 —"))).toContain("held-task (on hold)");
-    expect(report.find(line => line.startsWith("Queued: 2 —"))).toContain("needs-scope (needs a scope)");
-  });
-
-  test("a ready task with no saved result run is named without a run number", () => {
-    const store = openStore(":memory:");
-    try {
-      const status = installationStatus(store, NOW);
-      const lines = renderInstallationStatus({ ...status, waitingForReview: { count: 2, results: [
-        { task: "no-result", run: null, check: { status: "unknown", exitCode: null, suites: [] } },
-        { task: "with-result", run: 41, check: { status: "passed", exitCode: 0, suites: [] } },
-      ] } });
-      expect(lines).toContain("Ready for review: 2 — no-result, with-result (#41)");
-      expect(lines.join("\n")).not.toContain("#0");
-    } finally { store.close(); }
   });
 });

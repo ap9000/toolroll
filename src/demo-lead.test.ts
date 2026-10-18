@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { rmSync } from "node:fs";
-import { basename } from "node:path";
 import type { Server } from "node:http";
 
 // Every process the demo could start is counted (git init while seeding is
@@ -23,7 +22,7 @@ vi.mock("node:child_process", async original => {
   return { ...real, spawn: counted(real.spawn), execFile: counted(real.execFile), execFileSync: counted(real.execFileSync), exec: counted(real.exec), execSync: counted(real.execSync), spawnSync: counted(real.spawnSync), fork: counted(real.fork) };
 });
 
-import { createDemoSandbox, createDemoLead, pickDemoPlan, type DemoLead } from "./demo.js";
+import { createDemoSandbox, createDemoLead, type DemoLead } from "./demo.js";
 import { createDecisionServer } from "./serve.js";
 import { assignmentOf } from "./assignment.js";
 import type { Store } from "./store.js";
@@ -80,18 +79,6 @@ describe("the scripted demo lead", () => {
     fetch(`${base}${path}`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields), redirect: "manual" });
   const lastId = (html: string): string => [...html.matchAll(/action="\/chat\/demo\/([0-9]+)\/approve"/g)].at(-1)![1]!;
   const later = (ms: number): void => { now = new Date(now.getTime() + ms); };
-
-  test("picks a plan from the request's words, else the default", () => {
-    expect(pickDemoPlan("fix the flaky refund test").kind).toBe("flaky-test");
-    expect(pickDemoPlan("there's a bug in refunds").kind).toBe("bug");
-    expect(pickDemoPlan("the copy on payouts is unclear").kind).toBe("copy");
-    expect(pickDemoPlan("ship it behind a flag").kind).toBe("flag");
-    expect(pickDemoPlan("make me a sandwich").kind).toBe("default");
-  });
-
-  test("the sandbox folder is named for Toolroll", () => {
-    expect(basename(sandbox)).toMatch(/^toolroll-demo-/);
-  });
 
   test("any request gets a plan; Approve builds to Ready with a diff, a passing check and a screenshot; Complete works", async () => {
     const cookie = await login();

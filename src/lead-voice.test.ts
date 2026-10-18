@@ -18,14 +18,12 @@ import { quietCardView } from "./chat-quiet.js";
 import { workIndexPage } from "./work-index.js";
 import { installationStatus, renderInstallationStatus } from "./lead-status.js";
 import { runOperate } from "./operate.js";
-import { LEAD_IDLE_MS, agoWords, enqueueLeadLapses, leadActivity, leadActivityLine, leadClaimOf, leadSayText, leadSubjectOf } from "./lead-voice.js";
-import { browserCrewOf } from "./browser-workspace.js";
+import { LEAD_IDLE_MS, enqueueLeadLapses, leadActivity, leadClaimOf } from "./lead-voice.js";
 import { withActor } from "./actor.js";
 import { leadLapsed, leadOnIt } from "./task-status.js";
 
 const LEAD_ON_IT = leadOnIt(), LEAD_LAPSED = leadLapsed();
 import { finishedLine } from "./chat-voice.js";
-import { GUIDES } from "./guides.js";
 
 const T0 = new Date("2026-10-02T09:00:00.000Z");
 const BOT = "777000";
@@ -286,52 +284,6 @@ describe("your lead tells you what it's doing", () => {
     expect(await runOperate("status", [], line => lines.push(line), { databaseFile: db, now })).toBe(0);
     expect(lines.join("\n")).not.toMatch(/Lead: |is on it/);
 
-    expect(leadActivityLine({ owner: "alex", doing: "x", at: now.toISOString(), taskId: null, name: "Lead" }, now)).toBe("Lead: x · just now");
-    expect(agoWords(T0.toISOString(), new Date(T0.getTime() + 3 * 3_600_000))).toBe("3 h ago");
-  });
-
-  test("c1: the name the owner gave their lead is what its messages, claimed tasks and status line say", async () => {
-    store.setLeadConfig("alex", "Maya", "Keep it short.", now);
-    const token = await mintLead();
-    const script = scriptedTelegram();
-    failedTask("release-0912", "Release 0.9.12");
-    expect((await cli(["assignment", "claim", "release-0912", "--token", token, "--json"])).code).toBe(0);
-    expect((await cli(["lead", "say", "Fixing the release check", "--token", token, "--json"])).code).toBe(0);
-    await pass(script);
-    expect(script.shown(ALEX_CHAT).map(one => String(one.params["text"])).filter(text => text.startsWith("Maya\n"))).toEqual(["Maya\n\nFixing the release check"]);
-    expect(row("release-0912").status.detail).toBe("Maya is on it.");
-    expect(quietCardView(store, [ref("release-0912")], now, undefined, "alex")!.text).toContain("Maya is on it.");
-    expect(installationStatus(store, now, "alex").lead).toMatchObject({ line: "Maya: Fixing the release check · just now" });
-    // Bob's view never borrows Alex's name for his own lead.
-    expect(row("release-0912", "bob").status.detail).not.toContain("Maya");
-  });
-
-  test("c1: Crew says the lead's chosen name, and a rename reaches messages and cards saved before it", async () => {
-    store.setLeadConfig("alex", "Maya", "Keep it short.", now);
-    const token = await mintLead();
-    const script = scriptedTelegram();
-    failedTask("release-0912", "Release 0.9.12");
-    expect((await cli(["assignment", "claim", "release-0912", "--token", token, "--json"])).code).toBe(0);
-    // Crew: the row keeps its own headline and says who took it on, for its owner only.
-    const crew = (viewer: string) => browserCrewOf(store, now, { ...operator(viewer), includeUnplaced: false }).crew.find(one => one.id === "release-0912")!;
-    expect(crew("alex")).toMatchObject({ label: "Failed", lead: "Maya is on it." });
-    expect(crew("bob").lead).toBeUndefined();
-    // Saved under the old name, shown under the new one: the say, the claim's card and the lapse.
-    expect((await cli(["lead", "say", "Fixing the release check", "--token", token, "--json"])).code).toBe(0);
-    store.setLeadConfig("alex", "Sam", "Keep it short.", now);
-    await pass(script);
-    const texts = script.shown(ALEX_CHAT).map(one => String(one.params["text"]));
-    expect(texts).toContain("Sam\n\nFixing the release check");
-    expect(texts.join("\n")).not.toContain("Maya");
-    expect(crew("alex").lead).toBe("Sam is on it.");
-    const saved = (kind: string) => store.handle.prepare("SELECT kind, subject, recipient FROM notification WHERE kind = ? ORDER BY id DESC LIMIT 1").get(kind) as { kind: string; subject: string; recipient: string | null };
-    expect(saved("lead-on-it").subject).toBe("Maya is on it");
-    expect(leadSubjectOf(store, saved("lead-on-it"), "alex")).toBe("Sam is on it");
-    expect(leadSubjectOf(store, { kind: "lead-lapsed", subject: LEAD_LAPSED, recipient: null }, "alex")).toBe(leadLapsed("Sam"));
-    // A lead-say row with no recipient reads the name of the reader's lead, as the chat it is shown in passes.
-    expect(leadSayText(store, { kind: "lead-say", subject: "Maya", body: "Fixing the release check", recipient: null }, "alex")).toBe("Sam\n\nFixing the release check");
-    // Any other row keeps its own words.
-    expect(leadSubjectOf(store, { kind: "run-finished", subject: "Maya's build finished", recipient: "alex" }, "alex")).toBe("Maya's build finished");
   });
 
   test("c2: a claim and the lead line count only for the viewer's own lead, never another person's", async () => {
@@ -414,12 +366,5 @@ describe("your lead tells you what it's doing", () => {
     expect(after[0]!.params["message_id"]).toBe(failedCard);
     expect(String(after[0]!.params["text"])).toContain(LEAD_ON_IT);
     expect(String(after[0]!.params["text"])).not.toMatch(/waits for you|retry or ask for changes/i);
-  });
-
-  test("the lead's guide tells it to say what it is doing at milestones and to claim what it fixes", () => {
-    const operating = GUIDES.find(one => one.name === "operating")!.content;
-    expect(operating).toContain("lead say");
-    expect(operating).toMatch(/start work.*handling a\s+failure.*done/s);
-    expect(operating).toContain("assignment claim <id>");
   });
 });

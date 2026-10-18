@@ -167,11 +167,3 @@ describe("a saved proposal's action", () => {
     }
   });
 });
-
-describe("the plan", () => {
-  it("marks item 11 done, with its Done entry", () => {
-    const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toContain("| 11 ✅ | **Chat actions and channel callbacks**");
-    expect(plan).toMatch(/^- \*\*11\. Chat actions and channel callbacks\*\* \(2026-10-06\)/m);
-  });
-});

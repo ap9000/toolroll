@@ -16,7 +16,6 @@ import { sharedActionNeedsReview, sharedActionPayload } from "./chat-actions.js"
 import { confirmLeadProposal } from "./lead-doors.js";
 import { executeLeadTool } from "./lead-tools.js";
 import { confirmedLink } from "./chat-channel.js";
-import { LEAD_CONTRACT } from "./lead-contract.js";
 
 describe("steps into a drawing", () => {
   const steps = [
@@ -24,7 +23,7 @@ describe("steps into a drawing", () => {
     { title: "Build", kind: "task" }, { title: "Review", kind: "approval" }, { title: "Tell the team", kind: "notify" },
   ];
 
-  test("each step leads to the next, Done is added, decisions send work back to the nearest step that did work, and new zones are laid out in rows", () => {
+  test("each step leads to the next, Done is added, decisions send work back to the nearest step that did work", () => {
     const flow = flowFromSteps(steps, null);
     expect(flow.start).toBe("requests");
     expect(flow.stages.map(one => [one.id, one.next, one.onFail])).toEqual([
@@ -35,7 +34,6 @@ describe("steps into a drawing", () => {
     // Left-out instructions carry the card, any send-back note and the earlier research.
     expect(flow.stages.find(one => one.id === "build")!.instructions).toContain("Notes from Look into it:\n{{stage.look-into-it}}");
     expect(flow.stages.find(one => one.id === "tell-the-team")!.message).toBe("Finished: {{card.title}}");
-    expect(flow.stages.map(one => [one.zone.x, one.zone.y])).toEqual([[0, 0], [300, 0], [600, 0], [900, 0], [900, 380], [600, 380], [300, 380]]);
     // Steps may point anywhere by name; a name that isn't there is refused in words.
     expect(flowFromSteps([{ title: "Build", kind: "task", ifFails: "requests" }, { title: "Requests", kind: "inbox" }], null).stages[0]!.onFail).toBe("requests");
     expect(() => flowFromSteps([{ title: "Build", kind: "task", next: "Deploy" }], null)).toThrow("steps[0].next: there's no step called Deploy");
@@ -51,8 +49,6 @@ describe("steps into a drawing", () => {
     expect(terms[2]).toBe("3. Go ahead? — Person decides\nDecides: alex. Approve → Build. Send back → Look into it.");
     expect(terms[5]).toBe("6. Tell the team — Message\nPosts: Finished: [card title]\nThen → Done.");
     expect(flowTerms(flowFromSteps([{ title: "Fix", kind: "task", instructions: "Fix {{card.title}} and add a test." }], null), null)[0]).toContain("The agent is asked: Fix [card title] and add a test.");
-    // A step name that ends a sentence isn't given another full stop.
-    expect(flowTerms(flow, null)[1]).toMatch(/Then → Go ahead\?$/);
   });
 
   test("an edit keeps zones by id with what they leave out, places a new step beside the one before it, and the card names only what changed", () => {
@@ -135,20 +131,6 @@ describe("the lead builds and runs a flow", () => {
     expect(changed.terms.join("\n")).not.toMatch(/[\\/]/);
     expect(sharedActionNeedsReview(changed)).toBe(false);
     expect(confirm(edited)).toMatchObject({ ok: true });
-  });
-
-  test("a requested reply-and-approve flow is drafted with no chat app or email set up, and the lead is told to draft it anyway", () => {
-    // This fresh store has nothing connected: no Telegram, Slack, Discord, Teams or mail.
-    const created = proposalOf(lead("propose_flow", { operation: "create", repo: "r1", name: "Customer replies", steps: [
-      { title: "New questions", kind: "inbox" }, { title: "Draft a reply", kind: "draft" }, { title: "Approve or edit", kind: "approval", decider: "me" }, { title: "Post to the team", kind: "notify" },
-    ] }));
-    const drafted = sharedActionPayload(store.getLeadProposal(created)!.payload)!;
-    expect(drafted.title).toBe("Create the Customer replies flow in shop");
-    expect(drafted.terms.join("\n")).toContain("Claude writes:");
-    expect(confirm(created)).toMatchObject({ ok: true });
-    expect(store.listFlows([repo]).map(one => one.name)).toEqual(["Customer replies"]);
-    expect(LEAD_CONTRACT).toContain("call propose_flow and draft it even if an integration it uses (a chat app, email) isn't set up yet");
-    expect(LEAD_CONTRACT).toContain("Say a draft or any tool call failed only when a tool result this turn said so");
   });
 
   test("a flow term containing an actual filesystem path still needs secure review", () => {

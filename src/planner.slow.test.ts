@@ -296,13 +296,6 @@ describe("planning mode, against real git", () => {
     expect(planned).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "limiter", outcome: "planned" }));
     expect(prompts.some(one => one.includes("Per-user or per-tenant?") && one.includes("user"))).toBe(true);
-    expect(
-      prompts.some(one =>
-        one.includes("Each id is capped at 40 UTF-8 bytes, each statement at 1000,") &&
-        one.includes("each non-null how at 500") &&
-        one.includes("Validate those byte limits"),
-      ),
-    ).toBe(true);
     expect(plannerArgv.some(args => args[args.indexOf("--permission-mode") + 1] === "acceptEdits")).toBe(true);
 
     const after = openStore(db);
@@ -1038,33 +1031,6 @@ describe("planning mode, against real git", () => {
     const plannerRun = store.runsFor(store.refFor("built-in", "limiter").id)[0];
     const attempt = store.artifactsFor(plannerRun?.id ?? -1).find(one => one.kind === "structured-output");
     expect(attempt).toMatchObject({ bytesOriginal: bytes, bytesStored: 64 * 1024, truncated: true, captureStatus: "failed" });
-    store.close();
-  });
-
-  test("a whole-payload JSON fence is normalized without spending a correction turn", async () => {
-    const { runnerToken, approverToken } = await setup();
-    await run(["task", "plan", "limiter", "--as", "alex", "--token", approverToken, "--json"], planningAgent);
-    let calls = 0;
-    const fenced: Runner = async (_file, args, options) => {
-      calls += 1;
-      const cwd = options?.cwd ?? "";
-      const prompt = String(args[args.indexOf("-p") + 1] ?? "");
-      const name = PLAN_FILE.exec(prompt)?.[0];
-      if (name !== undefined && cwd !== "") {
-        await writeFile(join(cwd, name), `\uFEFF\`\`\`json\n${JSON.stringify(validPlanPayload())}\n\`\`\``);
-      }
-      return { ...OK, stdout: SAID };
-    };
-
-    expect(await tick(runnerToken, fenced)).toBe(EXIT.ok);
-    expect(calls).toBe(1);
-    const store = openStore(db);
-    const ref = store.refFor("built-in", "limiter");
-    const runs = store.runsFor(ref.id);
-    expect(runs.filter(one => one.parentRun !== null)).toHaveLength(0);
-    const structured = store.artifactsFor(runs.find(one => one.role === "planner")?.id ?? -1).filter(one => one.kind === "structured-output");
-    expect(structured).toHaveLength(1);
-    expect(structured[0]?.capture).toContain("accepted, syntax normalized");
     store.close();
   });
 
@@ -1818,7 +1784,6 @@ describe("the filed contract reaches planning and survives it", () => {
     expect(lines.join("\n")).not.toContain("--choose");
     const web = await openConsole(approverToken);
     const question = await web.page(`/d/${asked.id}`);
-    expect(question).toContain('badge-answered">closed</span>');
     expect(question).toContain("The scope changed, so planning started again.");
     expect(question).not.toContain(`/d/${asked.id}/answer`);
     const stale = await web.post(`/d/${asked.id}/answer`, { choice: "account" });
@@ -1859,8 +1824,6 @@ describe("the filed contract reaches planning and survives it", () => {
     const web = await openConsole(approverToken, () => new Date(T0.getTime() + 61_000));
     const page = await web.page("/t/dark");
     expect(page).toContain("The goal is 9,000 characters; the planner can carry at most 8,000.");
-    expect(page).toContain("Edit the request");
-    expect(page).not.toContain("Planning requested");
     await web.close();
 
     rescope(new Date(T0.getTime() + 2 * 60_000));

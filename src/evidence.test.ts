@@ -3,26 +3,14 @@
  * bytes actually come from, and nothing unverified ever leaves the function.
  */
 
-import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import * as crypto from "node:crypto";
+import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { looksLikeProtocolFile, parseNumstat, quarantineMailboxes, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, steerFolderName, writeEvidenceFile, sniffImageKind, validateScreenshotBytes, verifyArtifact, SCREENSHOT_BYTE_CAP } from "./evidence.js";
+import { looksLikeProtocolFile, parseNumstat, quarantineMailboxes, readMailbox, readVerifiedArtifact, redactSecretLines, scanForSecrets, scanPatchForSecrets, secretAlert, steerFolderName, writeEvidenceFile, validateScreenshotBytes, verifyArtifact, SCREENSHOT_BYTE_CAP } from "./evidence.js";
 import type { Artifact } from "./store.js";
-
-// Pass-through spies: the reader behaves as normal, and a test can count its reads and hashes.
-vi.mock("node:fs", async importOriginal => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, readSync: vi.fn(actual.readSync) };
-});
-vi.mock("node:crypto", async importOriginal => {
-  const actual = await importOriginal<typeof import("node:crypto")>();
-  return { ...actual, createHash: vi.fn(actual.createHash) };
-});
 
 describe("reading evidence back, believing nothing", () => {
   let root: string;
@@ -89,25 +77,6 @@ describe("reading evidence back, believing nothing", () => {
     expect(verifyArtifact(root, diff)).toEqual({ ok: true });
     rmSync(join(root, key));
     expect(verifyArtifact(root, diff)).toMatchObject({ ok: false, problem: expect.stringMatching(/gone/) });
-  });
-
-  test("an unchanged proved file costs a stat on the next check, not a re-read and SHA-256", () => {
-    const content = Buffer.from("diff --git a/x b/x\n");
-    const key = writeEvidenceFile(root, 1, "diff.patch", content);
-    const diff = record(key, content, { id: 7 });
-    const readSync = vi.mocked(fs.readSync), hash = vi.mocked(crypto.createHash);
-    readSync.mockClear(); hash.mockClear();
-    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
-    expect(readSync).toHaveBeenCalled();
-    expect(hash).toHaveBeenCalledWith("sha256");
-    readSync.mockClear(); hash.mockClear();
-    expect(verifyArtifact(root, diff)).toEqual({ ok: true });
-    expect(readSync).not.toHaveBeenCalled();
-    expect(hash).not.toHaveBeenCalled();
-    // A reader that needs the bytes still reads and hashes them.
-    expect(readVerifiedArtifact(root, diff)).toEqual({ ok: true, content });
-    expect(readSync).toHaveBeenCalled();
-    expect(hash).toHaveBeenCalledWith("sha256");
   });
 
   test("a traversal key never reaches the filesystem", () => {
@@ -280,11 +249,6 @@ describe("the secret scan (audit IV-7) — high confidence only", () => {
     // The innocent lines survive untouched.
     expect(redacted).toContain("process.env.PASSWORD");
   });
-
-  test("clean text produces no hits and no changes", () => {
-    const clean = "diff --git a/x b/x\n+export const guarded = true;\n";
-    expect(scanForSecrets(clean)).toEqual([]);
-  });
 });
 
 describe("the diff secret scan: only real secrets on added lines", () => {
@@ -369,38 +333,20 @@ describe("screenshot evidence: signature, not extension (Priority 2)", () => {
   const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest of a png")]);
   const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("rest of a jpeg")]);
 
-  test("sniffs PNG and JPEG by their magic bytes", () => {
-    expect(sniffImageKind(PNG)).toBe("png");
-    expect(sniffImageKind(JPEG)).toBe("jpeg");
-  });
-
-  test("a claimed .png that is not one is refused — the extension is not the check", () => {
-    expect(sniffImageKind(Buffer.from("not an image at all"))).toBeNull();
-  });
-
-  test("validateScreenshotBytes accepts a sound PNG or JPEG", () => {
-    expect(validateScreenshotBytes(PNG)).toEqual({ ok: true, kind: "png" });
-    expect(validateScreenshotBytes(JPEG)).toEqual({ ok: true, kind: "jpeg" });
-  });
-
-  test("refuses an empty file", () => {
-    const result = validateScreenshotBytes(Buffer.alloc(0));
-    expect(result).toMatchObject({ ok: false });
-  });
-
-  test("refuses a file over the byte cap even with a good signature", () => {
-    const oversized = Buffer.concat([PNG, Buffer.alloc(SCREENSHOT_BYTE_CAP)]);
-    const result = validateScreenshotBytes(oversized);
-    expect(result).toMatchObject({ ok: false });
-    if (result.ok) return;
-    expect(result.problem).toContain("bytes");
-  });
-
-  test("refuses bytes that are neither PNG nor JPEG", () => {
-    const result = validateScreenshotBytes(Buffer.from("<svg></svg>"));
-    expect(result).toMatchObject({ ok: false });
-    if (result.ok) return;
-    expect(result.problem).toMatch(/PNG or JPEG/);
+  test.each<[string, Buffer, { ok: true; kind: string } | { ok: false; problem?: RegExp }]>([
+    ["a sound PNG", PNG, { ok: true, kind: "png" }],
+    ["a sound JPEG", JPEG, { ok: true, kind: "jpeg" }],
+    ["an empty file", Buffer.alloc(0), { ok: false }],
+    ["a file over the byte cap, even with a good signature", Buffer.concat([PNG, Buffer.alloc(SCREENSHOT_BYTE_CAP)]), { ok: false, problem: /bytes/ }],
+    ["a claimed .png that is not one: the extension is not the check", Buffer.from("not an image at all"), { ok: false, problem: /PNG or JPEG/ }],
+    ["bytes that are neither PNG nor JPEG", Buffer.from("<svg></svg>"), { ok: false, problem: /PNG or JPEG/ }],
+  ])("validateScreenshotBytes: %s", (_label, bytes, expected) => {
+    const result = validateScreenshotBytes(bytes);
+    if (expected.ok) expect(result).toEqual(expected);
+    else {
+      expect(result).toMatchObject({ ok: false });
+      if (!result.ok && expected.problem) expect(result.problem).toMatch(expected.problem);
+    }
   });
 });
 

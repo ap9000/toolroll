@@ -253,7 +253,6 @@ describe("shared dependencies through the builder", () => {
     expect(setups).toEqual([first]);
     expect(linkedKey(second, deps)).toBe(key);
     expect(seen).toEqual([true, true]);
-    expect(prompt).toContain("node_modules here links a shared, read-only install");
     // The link is no work of anybody's: Git doesn't see it, so no commit can take it.
     expect(gitIn(second, "status", "--porcelain", "--untracked-files=all")).toBe("");
     expect(store.getWorktree(second)?.setupDigest).toBe(store.liveWorktreeSetup(REPO)!.digest);

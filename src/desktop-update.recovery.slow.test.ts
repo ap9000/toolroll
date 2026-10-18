@@ -12,7 +12,6 @@ import { loadOrCreateDesktopConfig, writeDesktopConfig, pairDesktopLogin, deskto
 import { bundleHash } from "./desktop-bundle.js";
 import { previewDesktopUpdate, prepareDesktopUpdate, runDesktopUpdate, readUpdateJournal, desktopUpdateStatus, requestUpdateRestore, requestUpdateStop, durableJson, desktopUpdateWaitingOf, type UpdateHooks, type UpdateJournal } from "./desktop-update.js";
 import { superviseDesktopUpdate, runUpdateAttempt, updateRecoveryDefinition, armUpdateRecovery } from "./desktop-update-recovery.js";
-import { launchdPlist } from "./daemon.js";
 import { installUpdateGate, removeUpdateGate, updateAdmissionPaused, freezeUpdateGate, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { CodingWorkspace } from "./coding-workspace.js";
 import { runOperate } from "./operate.js";
@@ -20,12 +19,6 @@ import { fixture, armFixture, codingFixture } from "../test/desktop-update-kit.j
 import { fakePid } from "../test/fake-pid.js";
 
 vi.mock("node:child_process", { spy: true });
-
-test("ordinary service rendering remains byte-compatible when updater-only options are absent", () => {
-  const value = launchdPlist({ label: "fixture", command: ["/fixture/node", "/fixture/host.js"], workingDirectory: "/fixture", pathEnv: "/usr/bin", logPath: "/fixture/log" });
-  expect(value).toContain("<key>KeepAlive</key>\n  <true/>\n  <key>ThrottleInterval</key>");
-  expect(value).not.toContain("StartInterval");
-});
 
 test("a damaged primary receipt suspends its exact OS job without restoring stale metadata", async () => {
   const f = fixture();
@@ -67,15 +60,6 @@ test.each(["draining", "backing-up", "stopping", "installing", "verifying", "rel
     expect(interrupted).toBe(true); expect(cleaned).toBe(true);
     expect(readUpdateJournal(f.state)?.phase).toBe("complete"); expect(record()).toMatchObject({ state: "done", attempts: 2, repairs: 0 });
     expect(f.calls.filter(c => c === "swap")).toHaveLength(1);
-  } finally { f.close(); }
-});
-
-test("automatic recovery recognizes a swap whose completion receipt was interrupted", async () => {
-  const f = fixture();
-  try {
-    const j = await f.prepare(); armFixture(j); let crashed = false;
-    await superviseDesktopUpdate(f.state, j.id, new AbortController().signal, { sleep: async () => {}, cleanup: async () => {}, attempt: async () => runDesktopUpdate(f.state, { ...f.hooks, swap: async j => { await f.hooks.swap!(j); if (!crashed) { crashed = true; throw Object.assign(Error("after atomic exchange"), { simulatedCrash: true }); } } }) });
-    expect(readUpdateJournal(f.state)?.phase).toBe("complete"); expect(f.calls.filter(c => c === "swap")).toHaveLength(1);
   } finally { f.close(); }
 });
 

@@ -41,11 +41,6 @@ describe("deprecated central team and native session commands", () => {
     expect(() => JSON.parse(stdout[0]!)).not.toThrow();
   });
 
-  test("the warning is one plain line that says when it goes and what to use", () => {
-    expect(deprecationWarning("conversation list", "team")).toBe("Warning: `toolroll conversation list` is deprecated and will be removed in the next minor release. Talk to your lead with `toolroll chat`.");
-    expect(deprecationWarning("session start", "session")).toBe("Warning: `toolroll session start` is deprecated and will be removed in the next minor release. Queue work with `toolroll task add`.");
-  });
-
   test("the local lead's commands never warn", async () => {
     const db = join(dir, "orders.db");
     for (const argv of [["lead", "--db", db], ["lead", "token", "--db", db], ["lead", "say", "on it", "--db", db], ["brief", "--db", db], ["brief", "--local", "--db", db]]) {

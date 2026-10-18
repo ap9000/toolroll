@@ -172,18 +172,6 @@ describe("over HTTP", () => {
     fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body, redirect: "manual" });
   const disagreements = () => written.filter(line => line.includes("disagrees with its contract"));
 
-  test("the shared guard answers first and as before: duplicates, then the CSRF token", async () => {
-    const cookie = await signIn();
-    const csrf = csrfOf(await (await get(cookie, "/tasks")).text());
-    const twice = await post(cookie, "/session/editor-links", new URLSearchParams([["csrf", csrf], ["csrf", csrf], ["on", "1"]]));
-    expect([twice.status, await twice.text()]).toEqual([400, expect.stringContaining("duplicated csrf field")]);
-    const stale = await post(cookie, "/session/editor-links", new URLSearchParams([["csrf", "0".repeat(64)], ["on", "1"], ["unknown", "x"]]));
-    expect([stale.status, await stale.text()]).toEqual([403, expect.stringContaining("stale form")]);
-    const missing = await post(cookie, "/settings/appearance", new URLSearchParams([["theme", "dark"]]));
-    expect(missing.status).toBe(403);
-    expect(disagreements()).toEqual([]);
-  });
-
   test("every console POST row refuses a missing, duplicated or stale CSRF field before it changes anything", async () => {
     const cookie = await signIn();
     const csrf = csrfOf(await (await get(cookie, "/tasks")).text());

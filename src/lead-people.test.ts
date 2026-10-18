@@ -16,7 +16,6 @@ import { executeLeadTool, LEAD_TOOL_SCHEMAS, type LeadToolContext } from "./lead
 import { leadContext, LEAD_CONTEXT_MAX_BYTES } from "./lead-context.js";
 import { ABOUT_YOU_MAX_LINES, checkAboutYou, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { DEFAULT_LEAD_NAME, DEFAULT_LEAD_PERSONA, leadIdentityOf } from "./lead-identity.js";
-import { LEAD_CONTRACT } from "./lead-contract.js";
 import { TeamLeads } from "./team-leads.js";
 import { personEntry } from "./lead-people.js";
 import { withActor } from "./actor.js";
@@ -235,7 +234,7 @@ describe("the lead knows you and the people you work with", () => {
     expect(decisionsWent).toBe(true);
   });
 
-  test("c3: get_person returns one entry with its open tasks, by id or name; the contract says to read it first", () => {
+  test("c3: get_person returns one entry with its open tasks, by id or name", () => {
     store.saveApprover("sam.k", "h".repeat(64), t0);
     for (const [id, title] of [["login-page", "Fix the login page"], ["old-thing", "An old thing"]] as const) {
       const filed = withActor({ account: "sam.k", lead: false }, () => fileTaskProposal(store, { id, title, repo: web, filedVia: "cli" }, t0));
@@ -260,6 +259,5 @@ describe("the lead knows you and the people you work with", () => {
       expect(executeLeadTool(ctx, "get_person", {})).toMatchObject({ ok: false });
     });
     expect(LEAD_TOOL_SCHEMAS.map(one => one.name)).toContain("get_person");
-    expect(LEAD_CONTRACT).toContain("Before answering a question about a person, a subagent or a team chat, read get_person for them first");
   });
 });

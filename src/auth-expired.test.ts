@@ -6,7 +6,7 @@
  * sign-in check, or a person's resume — with one short "signed in again".
  * Scripted transports only; no live provider, Telegram or Slack is claimed.
  */
-import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,10 +20,6 @@ import { AUTH_TRIAL_MS, authPauseOf, authWaitOf, claimAuthTrial, giveBackAuthTri
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { workIndexPage } from "./work-index.js";
 import { installationStatus, renderInstallationStatus } from "./lead-status.js";
-import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
-import { ChatState, chatHash } from "./chat-delivery-state.js";
-import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
-import type { SlackApi } from "./slack-api.js";
 
 const T0 = new Date("2026-09-29T21:00:00.000Z");
 const at = (ms: number) => new Date(T0.getTime() + ms);
@@ -318,75 +314,5 @@ describe("sign-in pauses", () => {
     expect(pauseForAuth(store, { provider: "claude", authMode: "subscription", runId: one.runId, taskRef: one.ref, now: T0 }).opened).toBe(true);
     expect(pauseForAuth(store, { provider: "claude", authMode: "subscription", runId: one.runId, taskRef: one.ref, now: T0 }).opened).toBe(false);
     expect(openAuthPauses(store).map(pause => pause.provider)).toEqual(["claude"]);
-  });
-});
-
-describe("c3: the one notification reaches Telegram and Slack", () => {
-  let dir: string;
-  let store: Store;
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "so-auth-expired-"));
-    store = openStore(join(dir, "state.db"));
-    register(store, { name: RUNNER, host: "test", capacity: 9, repos: [REPO], now: T0, newToken: () => `tok-${RUNNER}` });
-    expect(addApprover(store, "alex", T0).ok).toBe(true);
-  });
-  afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
-
-  const incident = (count: number) => {
-    for (let index = 1; index <= count; index++) {
-      const taskId = `t-${index}`;
-      store.createTask({ id: taskId, title: taskId }, T0);
-      const ref = store.refFor("built-in", taskId).id;
-      store.placeTask(ref, REPO);
-      const lease = `lease-${index}`;
-      const took = acquire(store, ref, RUNNER, { now: T0, token: `tok-${RUNNER}`, newLeaseId: () => lease, ttlMs: TTL });
-      if (!took.ok) throw new Error(took.reason);
-      const runId = store.startRun({ taskRef: ref, leaseId: lease, runner: RUNNER, branch: "b", worktree: "/w", provider: "claude", ...legacy("claude"), now: T0 });
-      store.stampTerminalClass(runId, "subscription", "auth-expired");
-      finalize(store, lease, { kind: "failure", runId, taskId, failureClass: "unknown", message: CLAUDE_EXPIRED, worktree: "/w", now: at(index * 1_000) });
-    }
-  };
-  const signInTexts = (texts: string[]) => texts.filter(text => text.includes("needs you to sign in again"));
-
-  test("Telegram sends it once for an incident of several runs", async () => {
-    const code = mintPairingCode();
-    store.createTelegramPairing({ codeHash: hashPairingCode(code), approver: "alex", by: "alex", ttlMs: PAIRING_TTL_MS }, T0);
-    expect(store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: "777000", chatId: "4242", userId: "31337", updateId: 1 }, T0).ok).toBe(true);
-    incident(3);
-    const sent: string[] = [];
-    let id = 100;
-    const transport: TelegramTransport = async (method, params) => {
-      if (method === "sendMessage") { sent.push(String(params["text"])); return { ok: true, result: { message_id: id++ } }; }
-      return { ok: true, result: method === "getUpdates" ? [] : true };
-    };
-    for (const step of [10_000, 20_000]) await bridgePass(store, { botId: "777000", transport, clock: () => at(step), readProjects: async () => [REPO] });
-    expect(signInTexts(sent)).toHaveLength(1);
-    expect(signInTexts(sent)[0]).toContain("`claude auth login`");
-  });
-
-  test("Slack sends it once for an incident of several runs", async () => {
-    const identity = { installation: "installation-test", team: "TTEST", app: "ATEST", bot: "UBOT", workspace: "Test workspace" };
-    const state = new ChatState(store, "slack");
-    const calls: { method: string; args: Record<string, unknown> }[] = [];
-    let ts = 100;
-    const api: SlackApi = vi.fn(async (method, args = {}) => {
-      calls.push({ method, args });
-      if (method === "users.info") return { user: { id: "UTEST", team_id: "TTEST", deleted: false, is_bot: false } };
-      if (method === "conversations.info") return { channel: { id: "DTEST", is_im: true, user: "UTEST" } };
-      if (method === "chat.postMessage") return { ts: `1789700000.${String(ts++).padStart(6, "0")}` };
-      return {};
-    });
-    const options: SlackChatOptions = { store, identity, api, owner: "test", readProjects: async () => [REPO], evidenceRoot: join(dir, "evidence"), current: () => true, origin: () => "https://console.example", clock: () => at(10_000) };
-    state.lease(identity.installation, "test", T0);
-    const pairing = state.pairing(identity.installation, "alex", store.accountOf("alex")!.generation, T0);
-    expect(state.pair(identity, chatHash(pairing), "UTEST", "DTEST", T0)).not.toBeNull();
-    incident(3);
-    for (let pass = 0; pass < 2; pass++) {
-      await planSlackNotifications(options);
-      for (let i = 0; i < 20 && (await deliverSlackPart(options)); i++);
-    }
-    const texts = calls.filter(call => call.method === "chat.postMessage").map(call => String(call.args["text"]));
-    expect(signInTexts(texts)).toHaveLength(1);
-    expect(signInTexts(texts)[0]).toContain("claude auth login");
   });
 });

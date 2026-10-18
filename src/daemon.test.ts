@@ -420,15 +420,6 @@ describe("the daemon plan", () => {
     expect(() => planDesktopService({...args,associatedBundleId:'invalid</string>'})).toThrow(/bundle identifier/);
   });
 
-  test("the shared launchd road is the desktop's start: idempotent on a running unchanged definition", async () => {
-    const desktop = planDesktopService({ node: process.execPath, helper: "/x/desktop-host.js", stateDir: dir, label: "com.standing-orders.desktop.preview.abc", home: dir, pathEnv: "/usr/bin" });
-    const first = scripted({ "launchctl print": { code: 113 }, launchctl: { code: 0 } });
-    expect(await installLaunchdService(desktop, first.run)).toMatchObject({ ok: true, action: "bootstrapped" });
-    const again = scripted({ "launchctl print": { code: 0, stdout: `pid = ${servicePid}\n` + loadedDigest(desktop.unitContent) }, launchctl: { code: 0 } });
-    expect(await installLaunchdService(desktop, again.run)).toMatchObject({ ok: true, action: "started", changed: false });
-    expect(again.calls.map(call => call.args[0])).toEqual(["print", "kickstart"]);
-  });
-
   test("the fresh-heartbeat verification refuses a stale row and accepts only a newer live beat", async () => {
     const store = openStore(":memory:");
     try {

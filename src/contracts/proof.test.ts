@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseProof, serializeProof } from "../proof.js";
 import { TEXT_LIMITS } from "../text-limits.js";
@@ -106,13 +105,5 @@ describe("the replayed evidence samples", () => {
       compared += Object.keys(results).length;
     }
     expect(compared).toBe(evidenceSamples.length * 5);
-  });
-});
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks wave 1 item 6 done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 6 ✅ \| \*\*Builder handoff and proof\*\*/m);
-    expect(doc.slice(doc.indexOf("## Done"))).toContain("**6. Builder handoff and proof**");
   });
 });

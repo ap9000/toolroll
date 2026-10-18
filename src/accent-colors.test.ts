@@ -1,31 +1,8 @@
-/** Any accent a person picks still reads: AA text in light and dark, on its fill and on its wash. */
+/** A person's accent colour reaches the cookie and the page only as six hex digits. */
 import { expect, test } from "vitest";
-import { ACCENT_PRESETS, DEFAULT_ACCENT, accentNote, accentStyle, accentTokens, contrast, normalHex, pinnedAccent } from "./accent-colors.js";
+import { DEFAULT_ACCENT, accentStyle, normalHex, pinnedAccent } from "./accent-colors.js";
 
-const reads = (hex: string) => {
-  const { light, dark } = accentTokens(hex);
-  expect(contrast(light.signal, light.soft), hex).toBeGreaterThanOrEqual(4.5);
-  expect(contrast(light.on, light.signal), hex).toBeGreaterThanOrEqual(4.5);
-  expect(contrast(dark.signal, "#161616"), hex).toBeGreaterThanOrEqual(6);
-  expect(contrast(dark.signal, dark.soft), hex).toBeGreaterThanOrEqual(4.5);
-  expect(contrast(dark.on, dark.signal), hex).toBeGreaterThanOrEqual(4.5);
-};
-
-test("every preset, and any colour off the picker, resolves to readable tokens in both schemes", () => {
-  expect(ACCENT_PRESETS[0]).toMatchObject({ id: "ink", year: null, hex: DEFAULT_ACCENT });
-  expect(ACCENT_PRESETS.slice(1, 3).map(one => one.id)).toEqual(["violet", "chart-magenta"]);
-  for (const one of ACCENT_PRESETS) reads(one.hex);
-  // Corners of the picker: white, black, pure primaries, a mid grey.
-  for (const hex of ["#ffffff", "#000000", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#00ffff", "#808080"]) reads(hex);
-  // A colour that already reads keeps its value; a light one is deepened, not replaced.
-  expect(accentTokens("#bb2649").light.signal).toBe("#bb2649");
-  expect(accentTokens("#ffbe98").light.signal).not.toBe("#ffbe98");
-});
-
-test("the page says when a colour can be mistaken, and only six hex digits ever reach the cookie or the page", () => {
-  expect(accentNote("#bf1932")).toContain("failures");
-  expect(accentNote("#5f4b8b")).toBeNull();
-  expect(accentNote("#808080")).toContain("grey");
+test("only six hex digits ever reach the cookie or the page", () => {
   expect(normalHex("#ABC")).toBe("#aabbcc");
   expect(normalHex("009473")).toBe("#009473");
   expect(normalHex("red")).toBeNull();

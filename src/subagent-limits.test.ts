@@ -57,8 +57,6 @@ test("the prompt states each limit; a reply over one is asked once to shorten, a
     { action: "route", answer: "Replied", text: "Hi Priya, your lamp arrives tomorrow.", reason: "Tracking shows it in transit." });
   await runFlowSteps(store, repo, T0, io(maya));
   expect(maya.prompts).toHaveLength(2);
-  expect(maya.prompts[0]).toContain('Limits, in characters: "answer" 60, "text" 12,000, "note" 4,000');
-  expect(maya.prompts[1]).toContain("YOUR LAST ANSWER, WHICH IS OVER A LIMIT");
   expect(maya.prompts[1]).toContain(`text is ${reply.length.toLocaleString("en-US")} characters; the limit is 12,000.`);
   expect(store.getFlowCard(card)).toMatchObject({ stage: "done", outputs: { maya: "Hi Priya, your lamp arrives tomorrow." } });
 });

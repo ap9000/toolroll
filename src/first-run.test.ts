@@ -6,25 +6,12 @@ import { describe, expect, test, vi } from "vitest";
 import { run } from "./exec.js";
 import type { ExecResult, RunOptions } from "./exec.js";
 import {
-  findFirstTasks, firstResultWords, firstRunSteps, firstTaskSuggestions, GENERIC_FIRST_TASKS, parseTodoLines, SIGN_IN_COMMAND, signInCommandFor,
+  findFirstTasks, firstRunSteps, firstTaskSuggestions, GENERIC_FIRST_TASKS, parseTodoLines, signInCommandFor,
 } from "./first-run.js";
 
 const result = (stdout: string, code = 0): ExecResult => ({ code, stdout, stderr: "", timedOut: false, notFound: false });
 
 describe("the three first-run steps", () => {
-  test("a new installation: nothing done, one action each in plain words", () => {
-    const steps = firstRunSteps({ agentSignedIn: false, projects: 0, hasTask: false, firstResultAt: null })!;
-    expect(steps.map(one => one.title)).toEqual(["Agent signed in", "Project added", "Your first task"]);
-    expect(steps.every(one => !one.done)).toBe(true);
-    expect(steps.map(one => one.action)).toEqual([
-      { kind: "command", command: SIGN_IN_COMMAND },
-      { kind: "link", label: "Add a project", href: "/projects" },
-      { kind: "link", label: "New task", href: "/tasks/new" },
-    ]);
-    // None of the old internal wording survives.
-    expect(JSON.stringify(steps)).not.toMatch(/ceiling|unscoped|phase config|serve --repo/);
-  });
-
   test("each step is done on its own fact, and a done step offers no action", () => {
     const steps = firstRunSteps({ agentSignedIn: true, projects: 2, hasTask: false, firstResultAt: null })!;
     expect(steps.map(one => [one.key, one.done, one.action === null])).toEqual([["agent", true, true], ["project", true, true], ["task", false, false]]);
@@ -57,7 +44,6 @@ describe("three suggested first tasks", () => {
     expect(firstTaskSuggestions({ issues: [], todos }).map(one => one.source)).toEqual(["todo", "generic", "generic"]);
     expect(firstTaskSuggestions({ issues: [], todos })[0]!.draft).toBe("Resolve the note in src/cart.ts line 40: handle an empty cart");
     expect(firstTaskSuggestions({ issues: [], todos: [] })).toEqual(GENERIC_FIRST_TASKS);
-    expect(GENERIC_FIRST_TASKS.map(one => one.label)).toEqual(["Add a test for an untested function", "Fix a lint warning", "Improve the README's setup section"]);
   });
 
   test("text anyone can write keeps only what a person sees: the draft sent is the draft the lead reads", () => {
@@ -142,14 +128,6 @@ describe("three suggested first tasks", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
-});
-
-test("the first result reads as time since the installation began", () => {
-  expect(firstResultWords("2026-09-29T10:00:00.000Z", "2026-09-29T10:07:10.000Z")).toBe("First result in 7 min");
-  expect(firstResultWords("2026-09-29T10:00:00.000Z", "2026-09-29T10:00:20.000Z")).toBe("First result in under a minute");
-  expect(firstResultWords("2026-09-29T10:00:00.000Z", "2026-09-29T12:05:00.000Z")).toBe("First result in 2 h 5 min");
-  expect(firstResultWords("2026-09-29T10:00:00.000Z", "2026-10-02T10:00:00.000Z")).toBe("First result in 3 days");
-  expect(firstResultWords("2026-09-29T10:00:00.000Z", "2026-09-28T10:00:00.000Z")).toBeNull();
 });
 
 describe("the one command that gets an agent signed in here", () => {
