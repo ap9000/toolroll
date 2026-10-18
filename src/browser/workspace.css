@@ -102,6 +102,8 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-focus-label { font-size: 12px; color: var(--so-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; margin-left: 3px; }
 .so-workspace-notices { padding: var(--so-space-md) var(--so-space-3xl) 0; display: grid; gap: var(--so-space-sm); flex-shrink: 0; }
 .so-demo-notice-short { display: none; }
+/* The demo notice is a quiet one-line label, not a slab above the work. */
+.ui-alert.so-demo-notice { justify-self: start; width: fit-content; max-width: 100%; padding: 4px 10px; border-radius: var(--so-radius-full); background: var(--so-soft); color: var(--so-muted); font-size: 12px; line-height: 1.45; }
 .so-page-content > .so-demo-notice { margin-bottom: var(--so-space-lg); }
 .so-sign-in { background: var(--so-warning-soft); color: var(--so-ink); display: grid; grid-template-columns: 1fr auto; column-gap: var(--so-space-md); align-items: center; }
 .so-sign-in p { margin: 0; grid-column: 1; }
