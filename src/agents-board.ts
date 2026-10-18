@@ -9,7 +9,7 @@
  */
 import { quietSince, stuckSince, type AgentTurn, type ToolKind } from "./agent-board.js";
 import { activityLine } from "./activity-line.js";
-import type { AgentGroupKey, BrowserAgentRow } from "./browser-workspace.js";
+import type { AgentGroupKey, AgentLaneWindow, BrowserAgentLane, BrowserAgentLanes, BrowserAgentRow, BrowserLaneSegment } from "./browser-workspace.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { failedAttemptSentence } from "./needs-you.js";
 import { projectName } from "./project.js";
@@ -231,4 +231,78 @@ export function agentRunFingerprint(store: Store, run: number): string | null {
       (SELECT count(*) || ':' || coalesce(max(id), 0) FROM task_steer WHERE task_ref = r.task_ref) AS steer
     FROM run r LEFT JOIN agent_now n ON n.run = r.id AND n.attempt_key = r.attempt_key WHERE r.id = ?`).get(run);
   return row === undefined ? null : Object.values(row).map(value => String(value)).join("|");
+}
+
+
+/** The timeline's windows; two hours by default (a plan, a build and a review usually fit). */
+export const LANE_WINDOWS: readonly { key: AgentLaneWindow; label: string }[] = [{ key: "30m", label: "30m" }, { key: "2h", label: "2h" }, { key: "today", label: "Today" }];
+/** Rows the timeline shows: twenty running tasks read as twelve rows and a count, not a wall. */
+export const LANE_ROWS = 12;
+const LANE_ORDER: readonly (AgentGroupKey | "planning")[] = ["needs-you", "stuck", "working", "planning", "done", "idle"];
+/** A run that began this long before the window and ended inside it still shows; longer ones are left out. */
+const LANE_LOOKBACK_MS = 6 * 60 * 60_000;
+
+export function laneWindowOf(value: string | null): AgentLaneWindow {
+  return value === "30m" || value === "today" ? value : "2h";
+}
+
+export function laneSinceOf(window: AgentLaneWindow, now: Date): Date {
+  if (window === "30m") return new Date(now.getTime() - 30 * 60_000);
+  if (window === "2h") return new Date(now.getTime() - 2 * 60 * 60_000);
+  const day = new Date(now); day.setHours(0, 0, 0, 0); return day;
+}
+
+/** The timeline's runs, through bounded index ranges (run_started, work_unfinished): those that started in the window
+ * or a little before it and ended inside it, and those still running, in the admitted projects. */
+export function agentLanesSql(): string {
+  return `WITH candidate AS (
+      SELECT DISTINCT id FROM (
+        SELECT id FROM run INDEXED BY run_started WHERE started_at >= $lookback
+        UNION ALL SELECT id FROM run INDEXED BY work_unfinished WHERE outcome IS NULL
+      )
+    )
+    SELECT r.id, r.role, r.provider, r.outcome, r.started_at, r.finished_at, tr.external_id AS task_id, tr.repo, t.title
+    FROM candidate c JOIN run r ON r.id = c.id
+    JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
+    JOIN task t ON t.id = tr.external_id
+    WHERE r.role IN ('planner', 'builder', 'repair', 'reviewer', 'scout')
+      AND (r.outcome IS NULL OR r.finished_at >= $since)
+      AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))
+    ORDER BY r.started_at, r.id LIMIT 600`;
+}
+
+/** The timeline: one row per task that ran in the window, ordered as the board is (needs you first), capped at
+ * LANE_ROWS. A task's place comes from its board row; a task with only a planner run so far is planning. */
+export function agentLanesOf(store: Store, now: Date, access: { repos: readonly string[] | null }, board: readonly { rows: readonly BrowserAgentRow[] }[], window: AgentLaneWindow, path = "/agents"): BrowserAgentLanes | null {
+  const since = laneSinceOf(window, now);
+  const rows = store.handle.prepare(agentLanesSql()).all({
+    $lookback: new Date(since.getTime() - LANE_LOOKBACK_MS).toISOString(), $since: since.toISOString(),
+    $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []),
+  });
+  const placed = new Map<string, AgentGroupKey>();
+  for (const group of board) for (const row of group.rows) if (!placed.has(row.taskId)) placed.set(row.taskId, row.group);
+  const lanes = new Map<string, BrowserAgentLane>();
+  for (const row of rows) {
+    const taskId = String(row["task_id"]);
+    const role = String(row["role"]);
+    const segment: BrowserLaneSegment = {
+      runId: Number(row["id"]), role: role === "repair" ? "builder" : role as BrowserLaneSegment["role"], agent: providerName(String(row["provider"] ?? "claude")),
+      startedAt: String(row["started_at"]), endedAt: str(row, "finished_at"), outcome: str(row, "outcome"),
+      href: role === "builder" ? `/agents?run=${Number(row["id"])}` : `/r/${Number(row["id"])}`,
+    };
+    const lane = lanes.get(taskId) ?? { taskId, title: String(row["title"]), project: str(row, "repo") === null ? null : projectName(str(row, "repo")!),
+      href: `/t/${encodeURIComponent(taskId)}`, group: placed.get(taskId) ?? "idle", segments: [] };
+    lane.segments.push(segment);
+    lanes.set(taskId, lane);
+  }
+  // No build on the board yet: planning while a planner runs, otherwise idle (waiting on a person or done with planning).
+  for (const lane of lanes.values()) if (!placed.has(lane.taskId) && lane.segments.some(one => one.role === "planner" && one.endedAt === null)) lane.group = "planning";
+  if (lanes.size === 0) return null;
+  const latest = (lane: BrowserAgentLane) => lane.segments.reduce((at, one) => (one.endedAt ?? now.toISOString()) > at ? (one.endedAt ?? now.toISOString()) : at, "");
+  const ordered = [...lanes.values()].sort((a, b) => LANE_ORDER.indexOf(a.group) - LANE_ORDER.indexOf(b.group) || latest(b).localeCompare(latest(a)));
+  return {
+    since: since.toISOString(), now: now.toISOString(),
+    windows: LANE_WINDOWS.map(one => ({ ...one, href: `${path}?window=${one.key}`, active: one.key === window })),
+    lanes: ordered.slice(0, LANE_ROWS), more: Math.max(0, ordered.length - LANE_ROWS),
+  };
 }

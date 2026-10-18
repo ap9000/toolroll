@@ -7,7 +7,8 @@
  * so it updates in place; forms keep what is being typed. */
 import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView } from "../../browser-workspace.js";
+import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentLane, BrowserAgentLanes, BrowserAgentRow, BrowserAgentsView, BrowserLaneSegment } from "../../browser-workspace.js";
+import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger, Textarea, cn } from "../components/ui/index.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { useLiveRoom } from "../live.js";
@@ -229,6 +230,76 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
   </section>;
 }
 
+
+/** Each task's place on the timeline as the glyph the rest of the console wears for it. */
+const LANE_GLYPH: Record<BrowserAgentLane["group"], GlyphKind> = { "needs-you": "decide", stuck: "unblock", working: "building", planning: "building", done: "done", idle: "idle" };
+const ROLE_WORD: Record<BrowserLaneSegment["role"], string> = { planner: "Plan", builder: "Build", reviewer: "Review", scout: "Scout" };
+const FAILED = new Set(["failed", "refused"]);
+/** A run's look: the role sets the fill (plan quiet, build solid, review outlined), the outcome only tints a failure. */
+function segmentClass(one: BrowserLaneSegment): string {
+  if (one.outcome !== null && FAILED.has(one.outcome)) return "border-destructive/40 bg-destructive-soft text-destructive";
+  if (one.outcome === "parked") return "border-attention/50 bg-attention-soft text-attention";
+  if (one.role === "builder") return "border-foreground/25 bg-foreground/10 text-foreground";
+  if (one.role === "reviewer") return "border-dashed border-foreground/35 bg-transparent text-foreground";
+  return "border-border bg-neutral-soft text-muted-foreground";
+}
+/** "-1 h 30 min" for an axis tick. */
+function tickWords(ms: number): string {
+  // Round to a step that reads at a glance: whole hours past three hours, quarter hours past one, else minutes.
+  const raw = ms / 60_000;
+  const minutes = raw >= 180 ? Math.round(raw / 60) * 60 : raw >= 60 ? Math.round(raw / 15) * 15 : Math.round(raw);
+  return minutes < 60 ? `-${minutes} min` : `-${Math.floor(minutes / 60)} h${minutes % 60 === 0 ? "" : ` ${minutes % 60} min`}`;
+}
+
+/** The agent timeline (after the "Agent lanes" pattern): one row per task over the window, its plan, build and review
+ * runs as segments from start to end, a running one reaching the now edge. Twelve rows at most, needs-you first; the
+ * rest are a count. Only the now edge moves: no pulsing segments, however many run. */
+export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
+  const start = Date.parse(lanes.since), end = Date.parse(lanes.now), span = Math.max(1, end - start);
+  const at = (iso: string) => Math.min(100, Math.max(0, ((Date.parse(iso) - start) / span) * 100));
+  const running = lanes.lanes.filter(lane => lane.segments.some(one => one.endedAt === null)).length;
+  const waiting = lanes.lanes.filter(lane => lane.group === "needs-you").length;
+  const ticks = [0.2, 0.4, 0.6, 0.8].map(f => ({ left: f * 100, words: tickWords((1 - f) * span) }));
+  return <section aria-labelledby="agent-lanes-title" className="rounded-card border border-border bg-card px-4 pb-3 pt-3 phone:hidden" data-agent-lanes>
+    <div className="flex items-center gap-3">
+      <h2 id="agent-lanes-title" className="text-[14px] font-semibold">Timeline</h2>
+      <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running{waiting > 0 && <> · <span className="text-foreground">{waiting} need you</span></>}</span>
+      <nav aria-label="Timeline window" className="ml-auto flex rounded-md bg-raised p-0.5 text-[12px]">
+        {lanes.windows.map(one => <a key={one.key} href={one.href} aria-current={one.active ? "true" : undefined}
+          className={cn("rounded px-2 py-0.5 text-muted-foreground hover:text-foreground", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
+      </nav>
+    </div>
+    <div className="mt-2 grid grid-cols-[minmax(0,210px)_minmax(0,1fr)] gap-x-3">
+      <span />
+      <div className="relative h-5 text-[11px] text-muted-foreground tabular-nums" aria-hidden="true">
+        {ticks.map(tick => <span key={tick.left} className="absolute -translate-x-1/2" style={{ left: `${tick.left}%` }}>{tick.words}</span>)}
+        <span className="absolute right-0 rounded bg-raised px-1 text-foreground">now</span>
+      </div>
+      {lanes.lanes.map(lane => <div key={lane.taskId} className="contents" data-lane={lane.taskId} data-lane-group={lane.group}>
+        <a href={lane.href} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px] hover:underline hover:underline-offset-4">
+          <StatusGlyph kind={LANE_GLYPH[lane.group]} />
+          <span className="truncate font-medium" title={lane.project ? `${lane.title} · ${lane.project}` : lane.title}>{lane.title}</span>
+        </a>
+        <div className="relative my-1 h-6 border-b border-border/60">
+          {lane.segments.map((one, index) => {
+            const left = at(one.startedAt), right = at(one.endedAt ?? lanes.now), width = Math.max(0.6, right - left);
+            const next = lane.segments[index + 1];
+            const gapTo = next === undefined || one.endedAt === null ? null : at(next.startedAt);
+            const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
+            return <span key={one.runId} className="contents">
+              <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
+                className={cn("absolute top-0.5 flex h-5 items-center overflow-hidden whitespace-nowrap rounded-[5px] border px-1.5 text-[11px] font-medium", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
+                style={{ left: `${left}%`, width: `${width}%` }}>{width >= 7 ? ROLE_WORD[one.role] : ""}</a>
+              {gapTo !== null && gapTo > right && <span aria-hidden="true" className="absolute top-1/2 border-t border-dotted border-foreground/30" style={{ left: `${right}%`, width: `${gapTo - right}%` }} />}
+            </span>;
+          })}
+        </div>
+      </div>)}
+    </div>
+    {lanes.more > 0 && <a href="/work?view=running" className="mt-1 inline-block text-[12.5px] text-muted-foreground hover:text-foreground">+{lanes.more} more in this window</a>}
+  </section>;
+}
+
 export function AgentsView({ view }: { view: BrowserAgentsView }) {
   const selected = view.selected;
   // The opened agent's own room: a change reads the page again in place; while open, this person is watching it.
@@ -236,6 +307,7 @@ export function AgentsView({ view }: { view: BrowserAgentsView }) {
   return <div className={cn("w-full", selected === null ? "max-w-[860px]" : "desk:grid desk:grid-cols-[minmax(300px,400px)_minmax(0,1fr)] desk:items-start desk:gap-6")} data-agents-board>
     <div className={cn("flex min-w-0 flex-col gap-4", selected !== null && "phone:hidden")}>
       <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1>
+      {selected === null && view.lanes && <AgentLanes lanes={view.lanes} />}
       <Board view={view} selected={selected?.runId ?? null} />
     </div>
     {selected !== null && <AgentDetail key={selected.runId} detail={selected} />}
