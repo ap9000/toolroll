@@ -179,6 +179,13 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-crew-empty { margin-top: 42px; }
 .so-crew-quiet { color: var(--so-muted); font-size: 13px; margin: 0 0 var(--so-space-sm); }
 .so-crew-finished { margin-top: 18px; }
+.so-crew-group + .so-crew-group { margin-top: var(--so-space-lg); }
+.so-crew-group-title { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0 0 var(--so-space-xs); font-size: 12px; font-weight: 600; color: var(--so-muted); }
+.so-crew-group-title > span { font: 12px/1 var(--so-mono); font-variant-numeric: tabular-nums; }
+.so-crew-more > summary { min-height: 36px; display: flex; align-items: center; font-size: 12px; color: var(--so-muted); }
+.so-fleet { display: grid; gap: 2px; margin: auto 0 var(--so-space-sm); padding: var(--so-space-sm) 10px; border-top: 1px solid var(--so-line); }
+.so-fleet > a, .so-fleet > p { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 26px; margin: 0; font-size: 12px; color: var(--so-muted); text-decoration: none; font-variant-numeric: tabular-nums; }
+@media (hover: hover) and (pointer: fine) { .so-fleet > a:hover { color: var(--so-ink); } }
 .so-crew-finished > summary { min-height: 40px; display: flex; align-items: center; font-size: 13px; }
 .so-crew-empty p { color: var(--so-muted); font-size: 12px; line-height: 1.6; margin: 0 0 var(--so-space-sm); }
 .so-crew-empty p:first-child { color: var(--so-ink); font-size: 13px; font-weight: 550; }
@@ -191,20 +198,25 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-work-link::after { content: ""; position: absolute; inset: 0; }
 @media (hover: hover) and (pointer: fine) { .so-work-link:hover .so-work-title { color: var(--so-accent); text-decoration: underline; text-underline-offset: 3px; } }
 .so-work-row:has([aria-current="page"]) { background: var(--so-soft); padding-left: var(--so-space-sm); padding-right: var(--so-space-sm); }
-.so-work-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px var(--so-space-md); align-items: baseline; justify-items: start; }
-.so-work-title { font-size: 13px; line-height: 1.45; font-weight: 500; overflow-wrap: anywhere; }
-.so-work-badge { grid-row: 2; grid-column: 1 / -1; }
-.so-work-age { grid-row: 1; grid-column: -2; justify-self: end; min-width: 3ch; text-align: right; color: var(--so-muted); font: 12px/1 var(--so-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.so-work-project { color: var(--so-muted); font-size: 12px; display: block; margin-top: 5px; overflow-wrap: anywhere; }
-.so-work-reason { position: relative; z-index: 1; color: var(--so-muted); font-size: 12px; margin-top: var(--so-space-xs); }
-.so-work-reason > summary { display: flex; align-items: center; gap: 6px; min-height: 32px; cursor: pointer; list-style: none; }
+.so-work-heading { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: var(--so-space-sm); align-items: center; }
+.so-work-title { font-size: 13px; line-height: 1.45; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-work-meta { display: flex; gap: 0; margin: 1px 0 0 22px; min-width: 0; color: var(--so-muted); font-size: 12px; line-height: 1.45; white-space: nowrap; overflow: hidden; }
+.so-work-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.so-work-state { flex-shrink: 0; }
+.so-work-age { justify-self: end; min-width: 3ch; text-align: right; color: var(--so-muted); font: 12px/1 var(--so-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.so-work-project { color: var(--so-muted); font-size: 12px; }
+.so-work-meta > .so-work-project::before { content: "·"; margin: 0 5px; }
+.so-work-row { padding: var(--so-space-sm) 0; }
+.so-work-reason, .so-work-activity { margin-left: 22px; }
+.so-work-reason { position: relative; z-index: 1; color: var(--so-muted); font-size: 12px; margin-top: 0; border: 0; padding: 0; background: none; }
+.so-work-reason > summary { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 0; border: 0; background: none; cursor: pointer; list-style: none; }
 .so-work-reason > summary::-webkit-details-marker { display: none; }
 .so-work-reason > summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .so-work-reason > summary > svg { flex-shrink: 0; margin-left: auto; }
 /* Reveal the same sentence in place, without repeating it below the disclosure. */
 .so-work-reason[open] > summary > span { white-space: normal; overflow-wrap: anywhere; }
 .so-work-reason[open] > summary > svg { transform: rotate(180deg); }
-.so-work-action { display: inline-block; font-size: 12px; margin-bottom: 13px; }
+.so-work-action { position: relative; z-index: 1; display: inline-block; font-size: 12px; margin: 2px 0 0 22px; }
 .so-all-work { display: inline-block; font-size: 12px; margin-top: 18px; }
 .so-work-action, .so-all-work { transition: transform 160ms var(--so-ease-out); }
 @media (hover: hover) and (pointer: fine) { .so-work-action:hover, .so-all-work:hover, .so-project-knowledge:hover, .so-team-room-list a:hover { color: var(--so-accent-text); } }
@@ -350,11 +362,9 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
   .so-work-detail-content, .so-page-content { padding: var(--so-space-xl) var(--so-space-lg); }
   .so-supporting-panel--detail { background: var(--so-paper); }
   .so-crew { padding: var(--so-space-2xl) var(--so-space-xl); }
-  .so-work-heading { grid-template-columns: minmax(0, 1fr) auto auto; column-gap: var(--so-space-md); }
-  .so-work-badge { grid-row: 1; grid-column: 2; }
   .so-work-title { font-size: 14px; }
   .so-work-project, .so-work-action, .so-section-heading > a { font-size: 12px; }
-  .so-work-row { padding: 19px 0; }
+  .so-work-row { padding: 10px 0; }
   .so-native-region :where(button, .button-link, input:not([type="hidden"]), select) { min-height: 44px; }
   .so-native-region :where(input, textarea, select) { font-size: 16px; }
   .so-native-region .result-tabs :where(a, button) { min-height: 44px; }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { BrowserCrewItem, BrowserMessage, BrowserWorkspace } from "../browser-workspace.js";
@@ -21,7 +22,7 @@ import { FirstRequest, FirstRun, withSuggestion } from "./first-run.js";
 import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
 import { threadWhen, whenTitle } from "./views/task-view.js";
 import { Home } from "./views/home-view.js";
-import { HeadlineBadge } from "./views/status-summary.js";
+import { HeadlineBadge, headlineGlyph } from "./views/status-summary.js";
 import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
@@ -280,20 +281,49 @@ function CrewAge({ at }: { at: string }) {
 }
 
 export function CrewRows({ workspace, items }: { workspace: BrowserWorkspace; items: BrowserWorkspace["crew"] }) {
+  // Two lines a task: its glyph, title and age; then the state word, who is on it and the project. A reason is one
+  // more quiet line that opens in place; the one act that resolves it sits on that line.
   return <ul className="so-work-list">{items.map(item => <li key={item.id} data-workspace-task={item.id} data-work-status={item.state}>
     <div className="so-work-row">
       <a className="so-work-link" href={item.resultHref ?? item.href} aria-current={workspace.focus?.id === item.id ? "page" : undefined}>
-      <div className="so-work-heading"><span className="so-work-title">{item.title}</span><HeadlineBadge label={item.label} tone={item.tone} className="so-work-badge" /><CrewAge at={item.updatedAt} /></div>
-      {item.activity !== undefined && <ActivityLine activity={item.activity} className="so-work-activity text-caption" />}
+        <div className="so-work-heading"><StatusGlyph kind={headlineGlyph(item.tone)} className="so-work-glyph" /><span className="so-work-title" title={item.title}>{item.title}</span><CrewAge at={item.updatedAt} /></div>
+        <p className="so-work-meta"><span className="so-work-state" data-headline={item.label}>{item.label}</span>
+          {item.lead && !item.detail?.includes(item.lead) && <span className="so-work-project" data-crew-lead>{item.lead}</span>}
+          {item.project && <span className="so-work-project">{workspace.projects.find(project => project.path === item.project)?.name ?? item.project.split(/[\\/]/).filter(Boolean).pop()}</span>}
+        </p>
+        {item.activity !== undefined && <ActivityLine activity={item.activity} className="so-work-activity text-caption" />}
       </a>
       {item.detail && <details className="so-work-reason" key={item.detail}>
         <summary title={item.detail}><span>{item.detail}</span><svg aria-hidden="true" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg></summary>
       </details>}
-      {item.lead && !item.detail?.includes(item.lead) && <span className="so-work-project" data-crew-lead>{item.lead}</span>}
-      {item.project && <span className="so-work-project">{workspace.projects.find(project => project.path === item.project)?.name ?? item.project.split(/[\\/]/).filter(Boolean).pop()}</span>}
+      {item.action && item.action.href !== (item.resultHref ?? item.href) && <a className="so-work-action" href={item.action.href}>{item.action.label}</a>}
     </div>
-    {item.action && item.action.href !== (item.resultHref ?? item.href) && <a className="so-work-action" href={item.action.href}>{item.action.label}</a>}
   </li>)}</ul>;
+}
+
+/** The fleet at a glance, in the sidebar foot on every page (after Guided's "Support line is open" card): how many
+ * tasks need a person, how many are running, how many wait, and whether the worker is online. Counts come from the
+ * Crew the page already has; a trimmed Crew says "+" rather than undercount. */
+export function FleetStatus({ workspace }: { workspace: BrowserWorkspace }) {
+  const active = workspace.crew.filter(item => item.tone !== "done" && item.state !== "cancelled");
+  if (active.length === 0) return null;
+  const count = (group: CrewGroup) => active.filter(item => crewGroupOf(item) === group).length;
+  const more = workspace.crewTruncated ? "+" : "";
+  const running = active.filter(item => crewGroupOf(item) === "running");
+  const worker = running.length === 0 ? null : running.some(item => item.activity?.worker === "offline") ? "offline" : running.some(item => item.activity?.worker === "online") ? "online" : null;
+  type Row = { key: string; glyph: GlyphKind; text: string; href: string | null };
+  const rows: Row[] = ([
+    { key: "needs", glyph: "decide", text: `${count("needs")}${more} need you`, href: "/work?view=needs-you" },
+    { key: "running", glyph: "building", text: `${count("running")}${more} running`, href: "/work?view=running" },
+    { key: "waiting", glyph: "idle", text: `${count("waiting")}${more} waiting`, href: "/work" },
+  ] as Row[]).filter(row => !row.text.startsWith("0"));
+  if (worker !== null) rows.push({ key: "worker", glyph: worker === "online" ? "done" : "failed", text: worker === "online" ? "Worker online" : "Worker offline", href: worker === "online" ? null : "/settings" });
+  return <section className="so-fleet" aria-label="Your tasks now" data-fleet-status>
+    {rows.map(row => {
+      const body = <><StatusGlyph kind={row.glyph} />{row.text}</>;
+      return row.href === null ? <p key={row.key} data-fleet={row.key}>{body}</p> : <a key={row.key} href={row.href} data-fleet={row.key}>{body}</a>;
+    })}
+  </section>;
 }
 
 /** The Chat landing's Work panel (the phone's Work sheet): Home first, the Crew one tab away. */
@@ -311,6 +341,17 @@ function WorkPanel({ workspace, home }: { workspace: BrowserWorkspace; home: Non
 }
 
 /** Active work leads; finished work waits behind one disclosure. */
+/** Which Crew group a task sits in: a person is needed (Needs you, Failed, Ready for review), an agent is on it, or it waits. */
+type CrewGroup = "needs" | "running" | "waiting";
+export function crewGroupOf(item: BrowserCrewItem): CrewGroup {
+  const glyph = headlineGlyph(item.tone);
+  return glyph === "decide" || glyph === "failed" || glyph === "review" ? "needs" : glyph === "building" ? "running" : "waiting";
+}
+/** Running rows shown before the fold: twenty builds read as five and a count, not twenty cards. */
+export const CREW_RUNNING_SHOWN = 5;
+const CREW_GROUPS: { key: CrewGroup; label: string; glyph: GlyphKind }[] = [
+  { key: "needs", label: "Needs you", glyph: "decide" }, { key: "running", label: "Running", glyph: "building" }, { key: "waiting", label: "Waiting", glyph: "idle" }];
+
 function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   const isFinished = (item: BrowserWorkspace["crew"][number]) => item.tone === "done" || item.state === "cancelled";
   const active = workspace.crew.filter(item => !isFinished(item));
@@ -318,8 +359,19 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   return <section className="so-crew" aria-labelledby="crew-title" data-workspace-crew>
     <div className="so-section-heading"><h2 id="crew-title">Crew</h2><a href="/work">All tasks</a></div>
     {workspace.crew.length === 0 ? <div className="so-crew-empty"><p>No tasks yet.</p><p>Work you start with the lead appears here.</p></div> : <>
-      {active.length > 0 ? <CrewRows workspace={workspace} items={active} /> : <p className="so-crew-quiet">Nothing is running or waiting on you.</p>}
-      {finished.length > 0 && <Disclosure summary={`Finished (${finished.length}${workspace.crewTruncated ? "+" : ""})`} className="so-crew-finished"><CrewRows workspace={workspace} items={finished.slice(0, 8)} /></Disclosure>}
+      {active.length === 0 && <p className="so-crew-quiet">Nothing is running or waiting on you.</p>}
+      {CREW_GROUPS.map(group => {
+        const rows = active.filter(item => crewGroupOf(item) === group.key);
+        if (rows.length === 0) return null;
+        const shown = group.key === "running" ? rows.slice(0, CREW_RUNNING_SHOWN) : rows;
+        const folded = rows.slice(shown.length);
+        return <div key={group.key} className="so-crew-group" data-crew-group={group.key}>
+          <h3 className="so-crew-group-title"><StatusGlyph kind={group.glyph} />{group.label}<span>{rows.length}</span></h3>
+          <CrewRows workspace={workspace} items={shown} />
+          {folded.length > 0 && <Disclosure summary={`${folded.length} more running`} className="so-crew-more"><CrewRows workspace={workspace} items={folded} /></Disclosure>}
+        </div>;
+      })}
+      {finished.length > 0 && <Disclosure summary={`Finished (${finished.length}${workspace.crewTruncated ? "+" : ""})`} className="so-crew-finished"><CrewRows workspace={workspace} items={finished} /></Disclosure>}
     </>}
     {workspace.crewTruncated && <a className="so-all-work" href="/work">View more tasks</a>}
   </section>;
@@ -355,6 +407,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
         <span className="so-recent-chat-kind" aria-hidden="true">{chat.kind === "task" ? "Task" : "Project"}</span><span className="so-recent-chat-title">{chat.title}</span>
       </a>)}
     </nav>}
+    <FleetStatus workspace={workspace} />
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
       <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[901px]:h-11 max-[901px]:min-h-11">Sign out</ViewButton></PostForm></div>
     </div>
