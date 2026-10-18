@@ -91,7 +91,7 @@ export function headlineToneOf(tone: string): HeadlineTone {
 
 /** A headline in a list (Tasks, Crew): neutral words with a coloured dot, the
  * ink accent only for Needs you, red only for Failed; state is the glyph's shape (components/ui/status-glyph). */
-const HEADLINE_GLYPH: Record<HeadlineTone, GlyphKind> = { attention: "decide", danger: "failed", live: "building", ready: "review", success: "done", neutral: "idle" };
+export const HEADLINE_GLYPH: Record<HeadlineTone, GlyphKind> = { attention: "decide", danger: "failed", live: "building", ready: "review", success: "done", neutral: "idle" };
 
 export function HeadlineBadge({ label, tone, className, ...rest }: { label: string; tone: string; className?: string } & Record<`data-${string}`, string>) {
   const headline = headlineToneOf(tone);

@@ -48,8 +48,8 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 
 /* Button comes from components/ui/button; .ui-button is only a hook for sizing in context and the press. */
 .ui-button { transition: background-color 120ms var(--so-ease-out), color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out), transform 160ms var(--so-ease-out); }
-.ui-input { width: 100%; min-width: 0; border: 1px solid var(--so-input-line); border-radius: var(--so-radius-md); padding: 7px 10px; background: var(--so-paper); color: var(--so-ink); font: inherit; }
-.ui-input::placeholder { color: var(--so-muted); opacity: 1; }
+.ui-input, .ui-textarea { width: 100%; min-width: 0; border: 1px solid var(--so-input-line); border-radius: var(--so-radius-md); padding: 7px 10px; background: var(--so-paper); color: var(--so-ink); font: inherit; }
+.ui-input::placeholder, .ui-textarea::placeholder { color: var(--so-muted); opacity: 1; }
 .ui-label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; }
 .ui-alert { background: var(--so-raised); color: var(--so-ink); padding: 9px var(--so-space-md); border-radius: var(--so-radius-md); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .ui-alert--error { background: var(--so-danger-soft); color: var(--so-danger); }

@@ -4,6 +4,7 @@
  * in a Details panel beside it (a Details sheet on a phone). Forms,
  * ceremonies and ledgers stay the server's own HTML (same ids, same page
  * scripts); this page only frames them. */
+import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
@@ -13,7 +14,7 @@ import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskSection, Brows
 import { GuardedHtml } from "../guarded-html.js";
 import { Journey } from "../first-run.js";
 import { Badge, Button, Card, Textarea, cn } from "../components/ui/index.js";
-import { ConfirmStoppedForm, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
+import { ConfirmStoppedForm, HEADLINE_GLYPH, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
 import { pausedWords } from "../../steer-status.js";
@@ -296,16 +297,12 @@ function FactRows({ facts }: { facts: BrowserTaskFact[] }) {
   </dl>;
 }
 
-/** An attempt's glyph from the status word its label ends with ("Correction 1 · Needs you"). */
+/** An attempt's glyph: its label ends with the task's headline ("Correction 1 · Needs you"), and a headline's glyph
+ * is the one HeadlineBadge wears for it (the headline's tone), so the timeline and every list agree. */
 export function attemptGlyph(label: string): GlyphKind {
-  const word = (label.split(" · ").at(-1) ?? "").toLowerCase();
-  if (word.includes("needs you")) return "decide";
-  if (word.includes("fail") || word.includes("cancel") || word.includes("stopped")) return "failed";
-  if (word.includes("review") || word.includes("ready")) return "review";
-  if (word.includes("queued")) return "idle";
-  if (word.includes("running") || (word.includes("build") && !word.includes("built"))) return "building";
-  if (word.includes("built") || word.includes("done") || word.includes("accepted") || word.includes("merged")) return "done";
-  return "idle";
+  const word = label.split(" · ").at(-1) ?? "";
+  const headline = HEADLINES.find(one => one === word);
+  return headline === undefined ? "idle" : HEADLINE_GLYPH[HEADLINE_TONE[headline]];
 }
 
 /** The Details panel (desk) and sheet (phone): the task's metadata grouped

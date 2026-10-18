@@ -356,7 +356,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       </a>)}
     </nav>}
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
-      <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5">Sign out</ViewButton></PostForm></div>
+      <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[900px]:h-11 max-[900px]:min-h-11">Sign out</ViewButton></PostForm></div>
     </div>
   </div>;
 }
@@ -397,9 +397,9 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
   if (workspace.sensitive) return null;
   const entries = workspaceCommands(workspace, query);
   return <Dialog open={open} onOpenChange={changeOpen}>
-    <DialogTrigger asChild><ViewButton variant="ghost" size="sm" className="so-command-trigger">Search<span className="so-command-hint" aria-hidden="true">{"⌘\u00a0/\u00a0Ctrl\u00a0K"}</span></ViewButton></DialogTrigger>
+    <DialogTrigger asChild><ViewButton variant="ghost" size="sm" className="so-command-trigger max-[900px]:h-11 max-[900px]:min-h-11">Search<span className="so-command-hint" aria-hidden="true">{"⌘\u00a0/\u00a0Ctrl\u00a0K"}</span></ViewButton></DialogTrigger>
     <DialogContent className="so-command-dialog" data-workspace-command onOpenAutoFocus={event => { event.preventDefault(); searchInput.current?.focus(); }}>
-      <div className="so-command-heading"><DialogTitle>Go to</DialogTitle><DialogClose asChild><ViewButton variant="ghost" size="icon" aria-label="Close search"><Icon name="close" /></ViewButton></DialogClose></div>
+      <div className="so-command-heading"><DialogTitle>Go to</DialogTitle><DialogClose asChild><ViewButton className="max-[900px]:size-11 max-[900px]:min-h-11" variant="ghost" size="icon" aria-label="Close search"><Icon name="close" /></ViewButton></DialogClose></div>
       <DialogDescription className="so-sr-only">Search pages, projects, and tasks. Use Tab or the arrow keys to choose a link.</DialogDescription>
       <Label htmlFor={searchId} className="so-sr-only">Search workspace</Label>
       <Input ref={searchInput} id={searchId} type="search" placeholder="Search workspace…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
@@ -418,9 +418,9 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
 }
 
 function PhoneNavigation({ workspace }: { workspace: BrowserWorkspace }) {
-  return <Dialog><DialogTrigger asChild><ViewButton variant="ghost" size="icon" className="so-mobile-menu min-[901px]:hidden" aria-label="Open navigation"><Icon name="menu" /></ViewButton></DialogTrigger>
+  return <Dialog><DialogTrigger asChild><ViewButton variant="ghost" size="icon" className="so-mobile-menu min-[901px]:hidden max-[900px]:size-11 max-[900px]:min-h-11" aria-label="Open navigation"><Icon name="menu" /></ViewButton></DialogTrigger>
     <DialogContent className="so-navigation-dialog"><DialogTitle className="so-sr-only">Workspace navigation</DialogTitle><DialogDescription className="so-sr-only">Choose a project or a workspace page.</DialogDescription>
-      <DialogClose asChild><ViewButton variant="ghost" size="icon" className="so-navigation-close" aria-label="Close navigation"><Icon name="close" /></ViewButton></DialogClose><Navigation workspace={workspace} />
+      <DialogClose asChild><ViewButton variant="ghost" size="icon" className="so-navigation-close max-[900px]:size-11 max-[900px]:min-h-11" aria-label="Close navigation"><Icon name="close" /></ViewButton></DialogClose><Navigation workspace={workspace} />
     </DialogContent></Dialog>;
 }
 
@@ -497,17 +497,17 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
       </>}
       {chat.messages.length === 0 && previous.length === 0 && (!dock && workspace.firstRun ? null : dock
         ? <div className="so-docked-empty"><p className="so-docked-empty-title">{dock.title}</p><p className="so-docked-empty-hint">{dock.hint}</p>
-            <div className="so-suggestions">{dock.suggestions.map(one => <ViewButton key={one} variant="outline" size="sm" className="so-suggestion" onClick={() => { controller.edit(one); box.current?.focus(); }}>{one.trim().replace(/:$/, "…")}</ViewButton>)}</div></div>
+            <div className="so-suggestion h-auto min-h-[30px] whitespace-normal py-1.5 text-left max-[900px]:min-h-11">{dock.suggestions.map(one => <ViewButton key={one} variant="outline" size="sm" className="so-suggestion h-auto min-h-[30px] whitespace-normal py-1.5 text-left max-[900px]:min-h-11" onClick={() => { controller.edit(one); box.current?.focus(); }}>{one.trim().replace(/:$/, "…")}</ViewButton>)}</div></div>
         : <><ConversationEmptyState title="What would you like to work on?" />
             {/* v99: or a working setup in one click — a subagent and the flow it works. */}
-            <nav className="so-kit-links" aria-label="Starter kits" data-kit-links><span>Or start from a kit:</span>{KIT_LINKS.map(([id, label]) => <ViewButton key={id} variant="outline" size="sm" className="so-suggestion" asChild><a href={`/kits/${id}`}>{label}</a></ViewButton>)}</nav></>)}
+            <nav className="so-kit-links" aria-label="Starter kits" data-kit-links><span>Or start from a kit:</span>{KIT_LINKS.map(([id, label]) => <ViewButton key={id} variant="outline" size="sm" className="so-suggestion h-auto min-h-[30px] whitespace-normal py-1.5 text-left max-[900px]:min-h-11" asChild><a href={`/kits/${id}`}>{label}</a></ViewButton>)}</nav></>)}
       <div id="chat-thread" data-chat-region="thread">{chat.messages.map(message => <ThreadMessage key={message.id} message={message} workspace={workspace} onChanged={() => { void controller.check(); }} />)}</div>
       {(busy || live !== null) && <LiveReplyBubble live={live} leadName={workspace.leadName ?? "Lead"} />}
     </ConversationContent><ConversationScrollButton /></Conversation>
     <div className="so-composer-area">
       {!dock && workspace.firstRun && chat.messages.length === 0 && !busy && <FirstRequest firstRun={workspace.firstRun} onDraft={text => { controller.edit(withSuggestion(draft.text, text)); box.current?.focus(); }} />}
       {delivery && <div className="so-connection" role={stale ? "alert" : "status"}><span>{delivery}</span>
-        {stale ? <ViewButton variant="outline" size="sm" onClick={controller.reconnect}>Reconnect</ViewButton> : !sending && !offline && <ViewButton variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</ViewButton>}
+        {stale ? <ViewButton className="max-[900px]:h-11 max-[900px]:min-h-11" variant="outline" size="sm" onClick={controller.reconnect}>Reconnect</ViewButton> : !sending && !offline && <ViewButton className="max-[900px]:h-11 max-[900px]:min-h-11" variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</ViewButton>}
       </div>}
       <PostForm onSubmit={controller.send} action="/chat" data-workspace-composer aria-busy={sending}>
         <Label htmlFor="lead-message" className="so-sr-only">Message your lead</Label>
@@ -691,16 +691,16 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}
         {workspace.focus && isChat && <span className="so-focus-label" title={workspace.focus.title}>{workspace.focus.title}</span>}
         <CommandMenu workspace={workspace} />
-        {isChat && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden" onClick={() => setPhoneView("work")}>{hasWork ? "Open work" : home !== null ? "Work" : "Crew"}</ViewButton>}
-        {docked && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden" onClick={() => { setPanelTab("chat"); setPhoneView("work"); }}><Icon name="chat" />Ask</ViewButton>}
-        {taskView !== null && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden" data-open-details onClick={() => setPhoneView("work")}>Task details</ViewButton>}
+        {isChat && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[900px]:h-11 max-[900px]:min-h-11" onClick={() => setPhoneView("work")}>{hasWork ? "Open work" : home !== null ? "Work" : "Crew"}</ViewButton>}
+        {docked && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[900px]:h-11 max-[900px]:min-h-11" onClick={() => { setPanelTab("chat"); setPhoneView("work"); }}><Icon name="chat" />Ask</ViewButton>}
+        {taskView !== null && <ViewButton variant="outline" size="sm" className="so-phone-work-button min-[901px]:hidden max-[900px]:h-11 max-[900px]:min-h-11" data-open-details onClick={() => setPhoneView("work")}>Task details</ViewButton>}
       </header>
       {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">
         {!pageScrolls && <DemoNotice demo={demo} />}
         {workspace.signIn?.map(item => <Alert key={item.provider} className="so-sign-in" data-sign-in={item.provider}>
           <p className="so-sign-in-title">{item.title}</p>
           <p className="so-sign-in-detail">Run <code>{item.command}</code> on this computer, then resume.{item.detail === "" ? "" : ` ${item.detail}`}</p>
-          <PostForm action={item.resumeHref}><ViewButton size="sm" type="submit">{item.resumeLabel}</ViewButton></PostForm>
+          <PostForm action={item.resumeHref}><ViewButton className="max-[900px]:h-11 max-[900px]:min-h-11" size="sm" type="submit">{item.resumeLabel}</ViewButton></PostForm>
         </Alert>)}
         {workspace.notices.map((notice, index) => <Alert key={index}>{notice}</Alert>)}
         {update !== null && <Alert className="so-update" data-update={update.version}>
@@ -712,7 +712,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
             void fetch(update.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, version: update.version, quiet: "1" }) }).catch(() => {});
           }}>
             <input type="hidden" name="version" value={update.version} />
-            <ViewButton variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></ViewButton>
+            <ViewButton className="max-[900px]:size-11 max-[900px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label={`Dismiss the notice about ${update.version}`}><Icon name="close" /></ViewButton>
           </PostForm>
         </Alert>}
         {phone !== null && <Alert className="so-update so-phone-notice" data-phone-notice>
@@ -723,7 +723,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
             setPhoneDismissed(true);
             void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf: workspace.csrf, quiet: "1" }) }).catch(() => {});
           }}>
-            <ViewButton variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></ViewButton>
+            <ViewButton className="max-[900px]:size-11 max-[900px]:min-h-11" variant="ghost" size="icon" type="submit" aria-label="Dismiss the phone notice"><Icon name="close" /></ViewButton>
           </PostForm>
         </Alert>}
       </div>}
@@ -733,7 +733,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     </div>
     {docked && <aside className="so-supporting-panel so-ask-panel" data-workspace-detail aria-label="Ask">
       <div className="so-ask-header">
-        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
+        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[900px]:h-11 max-[900px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <div role="tablist" aria-label="Panel" className="so-ask-tabs">
           <button type="button" role="tab" aria-selected={panelTab === "chat"} onClick={() => setPanelTab("chat")}>Chat</button>
           <button type="button" role="tab" aria-selected={panelTab === "crew"} onClick={() => setPanelTab("crew")}>Crew</button>
@@ -744,13 +744,13 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     </aside>}
     {taskView !== null && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
       <div className="so-details-header">
-        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
+        <ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[900px]:h-11 max-[900px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <h2>Task details</h2>
       </div>
       <div data-view="task-details" className="w-full"><TaskDetails view={taskView} /></div>
     </aside>}
     {!hidePanel && !docked && taskView === null && <aside className={`so-supporting-panel${hasWork ? " so-supporting-panel--detail" : ""}`} data-workspace-detail>
-      <div className="so-work-panel-header"><ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden" onClick={() => setPhoneView("chat")}><Icon name="arrow" />{isChat ? "Back to chat" : "Back"}</ViewButton>
+      <div className="so-work-panel-header"><ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[900px]:h-11 max-[900px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />{isChat ? "Back to chat" : "Back"}</ViewButton>
         {hasWork && <><h2>{workspace.result ? "Result" : "Task"}</h2>{workspace.result && selectedTask && <HeadlineBadge label={selectedTask.label} tone={selectedTask.tone} className="so-current-task-state" data-workspace-current-task-state="" />}<a href={teamSnapshot?.selected ? "/chat?conversation=" + encodeURIComponent(teamSnapshot.selected.id) : "/chat"} className="so-close-work" aria-label="Close work and return to the main chat"><Icon name="close" /></a></>}
       </div>
       {hasWork ? <div className="so-work-detail-content">

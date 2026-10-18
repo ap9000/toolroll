@@ -42,9 +42,9 @@ describe("the Tasks list", () => {
 
   test("a waiting row shows its status glyph and names the specific ask in ink (never its group's word) with a heavier title; other rows stay quiet", () => {
     const page = html(view());
-    for (const [id, word, headline] of [["plan", "Plan", "Needs you"], ["result", "Result", "Ready for review"], ["offline", "Builder offline", "Needs you"]]) {
+    for (const [id, word, headline, glyph] of [["plan", "Plan", "Needs you", "decide"], ["result", "Result", "Ready for review", "review"], ["offline", "Builder offline", "Needs you", "unblock"]]) {
       const one = page.match(new RegExp(`<li data-task="${id}"[^]*?</li>`))![0];
-      expect(one).toMatch(new RegExp(`data-ask="[a-z]+"[^>]*data-headline="${headline}"[^>]*class="[^"]*text-foreground[^"]*"><svg[^>]*data-glyph="[a-z]+"[^]*?</svg><span class="sr-only">${headline}: </span>${word}</span>`));
+      expect(one).toMatch(new RegExp(`data-ask="[a-z]+"[^>]*data-headline="${headline}"[^>]*class="[^"]*text-foreground[^"]*"><svg[^>]*data-glyph="${glyph}"[^]*?</svg><span class="sr-only">${headline}: </span>${word}</span>`));
       // State is a glyph, not a filled chip.
       expect(one).not.toContain("bg-primary");
       expect(one).toMatch(/<a href="\/t\/[a-z]+" class="[^"]*font-semibold/);
@@ -52,12 +52,12 @@ describe("the Tasks list", () => {
       // Ink, not the signal colour an accent preset can turn magenta.
       expect(one).not.toContain("bg-attention");
     }
-    for (const id of ["live", "old"]) {
+    for (const [id, glyph] of [["live", "building"], ["old", "idle"]]) {
       const one = page.match(new RegExp(`<li data-task="${id}"[^]*?</li>`))![0];
       expect(one).not.toContain("data-ask");
       expect(one).not.toContain("bg-attention");
       expect(one).not.toContain("bg-primary");
-      expect(one).toMatch(/data-glyph="(?:building|done|idle|review|failed)"/);
+      expect(one).toContain(`data-glyph="${glyph}"`);
       expect(one).toMatch(/<a href="\/t\/[a-z]+" class="[^"]*font-medium/);
     }
     // No specific ask: no chip under its heading, the headline only for a screen reader.

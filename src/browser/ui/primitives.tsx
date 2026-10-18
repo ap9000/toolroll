@@ -1,11 +1,10 @@
 /**
- * Dialog adapts shadcn/ui's Radix composition (MIT); Badge and Textarea are the shared
- * components/ui ones under this layer's names; Button is components/ui/button itself.
+ * Dialog adapts shadcn/ui's Radix composition (MIT); Badge is the shared components/ui one under this
+ * layer's name; Button is components/ui/button itself.
  * See THIRD_PARTY_NOTICES.md for the pinned upstream source and modifications.
  */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Badge as KeptBadge } from "../components/ui/badge.js";
-import { Textarea as KeptTextarea } from "../components/ui/form-controls.js";
 import type { ComponentProps, ReactNode } from "react";
 
 export function cn(...values: Array<string | false | null | undefined>): string {
@@ -22,9 +21,10 @@ export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
 export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn("ui-input", className)} {...props} />;
 }
-/** The console's one Textarea (components/ui/form-controls); `ui-textarea` stays as a hook. */
+/** The composer's and team chat's textarea: borderless inside the composer (workspace.css), so it stays its own
+ * element rather than components/ui's bordered Textarea. */
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
-  return <KeptTextarea className={cn("ui-textarea", className)} {...props} />;
+  return <textarea className={cn("ui-textarea", className)} {...props} />;
 }
 export function Label({ className, ...props }: ComponentProps<"label">) {
   return <label className={cn("ui-label", className)} {...props} />;

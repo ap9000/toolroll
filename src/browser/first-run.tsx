@@ -14,7 +14,7 @@ function Command({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => { void navigator.clipboard?.writeText(command).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }, () => {}); };
   return <span className="so-first-run-command"><code>{command}</code>
-    <Button variant="ghost" size="sm" onClick={copy} aria-label={`Copy ${command}`}>{copied ? "Copied" : "Copy"}</Button></span>;
+    <Button className="max-[900px]:h-11 max-[900px]:min-h-11" variant="ghost" size="sm" onClick={copy} aria-label={`Copy ${command}`}>{copied ? "Copied" : "Copy"}</Button></span>;
 }
 
 /** What the composer holds after a first task is tapped: the task, added after anything the person already typed, never
@@ -61,7 +61,7 @@ export function FirstRun({ firstRun }: { firstRun: BrowserFirstRun }) {
         <span className="so-first-run-title">{step.title}<span className="so-sr-only">{step.done ? ": done" : step.checking ? ": checking" : ": not yet"}</span></span>
         {step.checking && <span className="so-first-run-checking" aria-hidden="true">Checking…</span>}
         {step.action !== null && (step.key === "agent" && firstRun.sandbox !== null ? null
-          : step.action.kind === "link" ? <Button asChild variant="outline" size="sm"><a href={step.action.href}>{step.action.label}</a></Button>
+          : step.action.kind === "link" ? <Button className="max-[900px]:h-11 max-[900px]:min-h-11" asChild variant="outline" size="sm"><a href={step.action.href}>{step.action.label}</a></Button>
           : <Command command={step.action.command} />)}
         {step.key === "agent" && !step.done && firstRun.sandbox !== null && step.action?.kind === "command" && <div className="so-first-run-choices" data-first-run-choices>
           <div data-sign-in-command><p className="so-first-run-choice-title">Sign in an agent</p><p className="so-first-run-choice-hint">Run this on this computer. Chat turns on by itself once you’re signed in.</p><Command command={step.action.command} /></div>
@@ -77,8 +77,8 @@ export function FirstRun({ firstRun }: { firstRun: BrowserFirstRun }) {
 export function FirstRequest({ firstRun, onDraft }: { firstRun: BrowserFirstRun; onDraft: (text: string) => void }) {
   return <div className="so-first-request" data-first-request>
     {firstRun.intro && <p className="so-first-request-intro" data-how-it-works>{firstRun.intro}</p>}
-    {firstRun.suggestions.length > 0 && <div className="so-suggestions so-first-request-suggestions" aria-label="First tasks to try" data-first-tasks>
-      {firstRun.suggestions.map(one => <Button key={one.draft} variant="outline" size="sm" className="so-suggestion" data-source={one.source} onClick={() => onDraft(one.draft)}>{one.label}</Button>)}
+    {firstRun.suggestions.length > 0 && <div className="so-suggestion h-auto min-h-[30px] whitespace-normal py-1.5 text-left max-[900px]:min-h-11" aria-label="First tasks to try" data-first-tasks>
+      {firstRun.suggestions.map(one => <Button key={one.draft} variant="outline" size="sm" className="so-suggestion h-auto min-h-[30px] whitespace-normal py-1.5 text-left max-[900px]:min-h-11" data-source={one.source} onClick={() => onDraft(one.draft)}>{one.label}</Button>)}
     </div>}
     {firstRun.lead && <p className="so-first-request-lead" data-lead-line>{firstRun.lead.words} · <a href={firstRun.lead.href}>Change</a></p>}
   </div>;
@@ -95,7 +95,7 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
       <div>
         <p className="so-first-run-choice-title">A chat app</p>
         <p className="so-first-run-choice-hint">Get results and approve plans in {first?.label ?? "Telegram"}: add the bot, then pair your phone.</p>
-        {first && <Button asChild variant="outline" size="sm"><a href={first.href}>Pair {first.label}</a></Button>}
+        {first && <Button className="max-[900px]:h-11 max-[900px]:min-h-11" asChild variant="outline" size="sm"><a href={first.href}>Pair {first.label}</a></Button>}
         {others.length > 0 && <p className="so-phone-others">Or {others.map((one, index) => <span key={one.href}>{index > 0 && (index === others.length - 1 ? " or " : ", ")}<a href={one.href}>{one.label}</a></span>)}</p>}
       </div>
       <div data-phone-tailnet>
@@ -111,7 +111,7 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
       event.preventDefault();
       setHidden(true);
       void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
-    }}><Button variant="ghost" size="sm" type="submit">Not now</Button></PostForm>}
+    }}><Button className="max-[900px]:h-11 max-[900px]:min-h-11" variant="ghost" size="sm" type="submit">Not now</Button></PostForm>}
   </Card>;
 }
 
