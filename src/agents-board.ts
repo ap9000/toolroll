@@ -285,16 +285,20 @@ export function laneLiveRunsSql(): string {
   return `SELECT id, role, provider, outcome, started_at, finished_at FROM run INDEXED BY work_unfinished
     WHERE task_ref = $ref AND outcome IS NULL AND role IN ${LANE_ROLES}`;
 }
+/** Rows one task's lookups read at most, newest first: a task with thousands of runs costs the same as one with a few. */
+export const LANE_TASK_READ = 2000;
 /** One chosen task's runs that finished in the window: a seek on its own runs from its first finished run in the
- * window (lead_status_task_run), so older history is never read; the newest LANE_SEGMENTS. */
+ * window (lead_status_task_run), reading at most LANE_TASK_READ of its newest runs; the newest LANE_SEGMENTS. */
 export function laneRunsSql(): string {
-  return `SELECT id, role, provider, outcome, started_at, finished_at FROM run
-    WHERE task_ref = $ref AND id >= $from AND outcome IS NOT NULL AND finished_at >= $since AND role IN ${LANE_ROLES}
+  return `SELECT id, role, provider, outcome, started_at, finished_at FROM (
+      SELECT id, role, provider, outcome, started_at, finished_at FROM run WHERE task_ref = $ref AND id >= $from ORDER BY id DESC LIMIT ${LANE_TASK_READ}
+    ) WHERE outcome IS NOT NULL AND finished_at >= $since AND role IN ${LANE_ROLES}
     ORDER BY id DESC LIMIT ${LANE_SEGMENTS}`;
 }
-/** A task's newest build, whenever it ran: the row's state comes from it even when it finished before the window. */
+/** A task's newest build, whenever it ran, among its newest 500 runs: the row's state comes from it even when it
+ * finished before the window. A task with more runs than that since its last build reads as planning or idle. */
 export function laneNewestBuildSql(): string {
-  return `SELECT id FROM run WHERE task_ref = $ref AND role = 'builder' ORDER BY id DESC LIMIT 1`;
+  return `SELECT id FROM (SELECT id, role FROM run WHERE task_ref = $ref ORDER BY id DESC LIMIT 500) WHERE role = 'builder' LIMIT 1`;
 }
 
 /** The timeline: one row per task that ran in the window, running ones first, then the most recently active, the
