@@ -4,6 +4,7 @@
  * in a Details panel beside it (a Details sheet on a phone). Forms,
  * ceremonies and ledgers stay the server's own HTML (same ids, same page
  * scripts); this page only frames them. */
+import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
@@ -295,6 +296,18 @@ function FactRows({ facts }: { facts: BrowserTaskFact[] }) {
   </dl>;
 }
 
+/** An attempt's glyph from the status word its label ends with ("Correction 1 · Needs you"). */
+export function attemptGlyph(label: string): GlyphKind {
+  const word = (label.split(" · ").at(-1) ?? "").toLowerCase();
+  if (word.includes("needs you")) return "decide";
+  if (word.includes("fail") || word.includes("cancel") || word.includes("stopped")) return "failed";
+  if (word.includes("review") || word.includes("ready")) return "review";
+  if (word.includes("queued")) return "idle";
+  if (word.includes("running") || (word.includes("build") && !word.includes("built"))) return "building";
+  if (word.includes("built") || word.includes("done") || word.includes("accepted") || word.includes("merged")) return "done";
+  return "idle";
+}
+
 /** The Details panel (desk) and sheet (phone): the task's metadata grouped
  * Work, Links, Review and About; its attempts; then the folds that carry the
  * scope, the ledgers and the task's own controls, unchanged. */
@@ -309,11 +322,17 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
     </section>)}
     {attempts !== null && <section aria-labelledby="details-attempts" className="flex flex-col gap-2 border-t border-border pt-4 text-body">
       <h2 id="details-attempts" className="flex items-center gap-1.5 text-caption text-muted-foreground">Attempts <Badge>{attempts.attempts.length}</Badge></h2>
-      <ol className="flex flex-col gap-2">
-        {attempts.attempts.map(attempt => <li key={attempt.taskId} data-attempt-task={attempt.taskId}>
-          <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
-          {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
-          {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
+      {/* A timeline (after Linear's activity log): one status glyph per attempt on a hairline, oldest first. */}
+      <ol className="flex flex-col" data-attempt-timeline>
+        {attempts.attempts.map((attempt, index) => <li key={attempt.taskId} data-attempt-task={attempt.taskId}
+          className="relative grid grid-cols-[14px_minmax(0,1fr)] gap-x-2.5 pb-3 last:pb-0">
+          {index < attempts.attempts.length - 1 && <span aria-hidden="true" className="absolute bottom-0 left-[6.5px] top-[19px] w-px bg-border" />}
+          <StatusGlyph kind={attemptGlyph(attempt.label)} className="mt-[3px]" />
+          <div className="min-w-0">
+            <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
+            {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
+            {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
+          </div>
         </li>)}
       </ol>
       {attempts.lead !== null && <p className="text-muted-foreground">Lead: {attempts.lead.label}{attempts.lead.active ? "" : " · access ended"}</p>}

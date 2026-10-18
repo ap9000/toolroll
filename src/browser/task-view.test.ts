@@ -25,3 +25,15 @@ describe("the task thread", () => {
     expect(page).toContain(">Asked for a repair</span>");
   });
 });
+
+describe("the attempts timeline", () => {
+  test("each attempt's glyph comes from the status word its label ends with", async () => {
+    const { attemptGlyph } = await import("./views/task-view.js");
+    expect(attemptGlyph("Original · Needs you")).toBe("decide");
+    expect(attemptGlyph("Correction 1 · Failed")).toBe("failed");
+    expect(attemptGlyph("Correction 2 · Ready for review")).toBe("review");
+    expect(attemptGlyph("Correction 3 · Building")).toBe("building");
+    expect(attemptGlyph("Correction 4 · Built")).toBe("done");
+    expect(attemptGlyph("Correction 5 · Queued")).toBe("idle");
+  });
+});
