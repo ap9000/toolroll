@@ -266,7 +266,7 @@ export function agentLanesSql(): string {
       )
     ), active AS (
       SELECT r.task_ref, tr.external_id AS task_id, tr.repo, t.title,
-        MAX(r.outcome IS NULL) AS live, MAX(coalesce(r.finished_at, $now)) AS last_at, MAX(r.id) AS last_run, MIN(r.id) AS first_run
+        MAX(r.outcome IS NULL) AS live, MAX(coalesce(r.finished_at, $now)) AS last_at, MAX(r.id) AS last_run, MIN(CASE WHEN r.outcome IS NOT NULL THEN r.id END) AS first_done
       FROM candidate c CROSS JOIN run r ON r.id = c.id
       CROSS JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
       CROSS JOIN task t ON t.id = tr.external_id
@@ -280,12 +280,21 @@ export function agentLanesSql(): string {
 
 /** Segments one row keeps: its newest runs, so a task retried all day stays one readable row. */
 export const LANE_SEGMENTS = 40;
-/** One chosen task's runs in the window: a seek on the task's own runs (lead_status_task_run) from its first run in
- * the window, never its older history; the newest LANE_SEGMENTS. */
+/** One chosen task's live runs: all of them, through work_unfinished, so no cap can hide one. */
+export function laneLiveRunsSql(): string {
+  return `SELECT id, role, provider, outcome, started_at, finished_at FROM run INDEXED BY work_unfinished
+    WHERE task_ref = $ref AND outcome IS NULL AND role IN ${LANE_ROLES}`;
+}
+/** One chosen task's runs that finished in the window: a seek on its own runs from its first finished run in the
+ * window (lead_status_task_run), so older history is never read; the newest LANE_SEGMENTS. */
 export function laneRunsSql(): string {
   return `SELECT id, role, provider, outcome, started_at, finished_at FROM run
-    WHERE task_ref = $ref AND id >= $from AND role IN ${LANE_ROLES} AND (outcome IS NULL OR finished_at >= $since)
+    WHERE task_ref = $ref AND id >= $from AND outcome IS NOT NULL AND finished_at >= $since AND role IN ${LANE_ROLES}
     ORDER BY id DESC LIMIT ${LANE_SEGMENTS}`;
+}
+/** A task's newest build, whenever it ran: the row's state comes from it even when it finished before the window. */
+export function laneNewestBuildSql(): string {
+  return `SELECT id FROM run WHERE task_ref = $ref AND role = 'builder' ORDER BY id DESC LIMIT 1`;
 }
 
 /** The timeline: one row per task that ran in the window, running ones first, then the most recently active, the
@@ -300,11 +309,12 @@ export function agentLanesOf(store: Store, now: Date, access: { repos: readonly 
   const since = laneSinceOf(window, now);
   const tasks = read(since, LANE_ROWS);
   if (tasks.length === 0 && (window === "24h" || read(laneSinceOf("24h", now), 1).length === 0)) return null;
-  const runsOf = store.handle.prepare(laneRunsSql());
+  const doneOf = store.handle.prepare(laneRunsSql()), liveOf = store.handle.prepare(laneLiveRunsSql()), newestBuildOf = store.handle.prepare(laneNewestBuildSql());
   const lanes: BrowserAgentLane[] = tasks.map(row => {
     const ref = Number(row["task_ref"]);
     const taskId = String(row["task_id"]);
-    const runs = runsOf.all({ $ref: ref, $from: Number(row["first_run"]), $since: since.toISOString() }).reverse();
+    const done = row["first_done"] == null ? [] : doneOf.all({ $ref: ref, $from: Number(row["first_done"]), $since: since.toISOString() });
+    const runs = [...liveOf.all({ $ref: ref }), ...done].sort((a, b) => Number(a["id"]) - Number(b["id"]));
     const segments: BrowserLaneSegment[] = runs.map(run => {
       const role = String(run["role"]);
       return {
@@ -313,9 +323,10 @@ export function agentLanesOf(store: Store, now: Date, access: { repos: readonly 
         href: role === "builder" ? `/agents?run=${Number(run["id"])}` : `/r/${Number(run["id"])}`,
       };
     });
-    // The row's state from its own newest build, as the board would place it (never the board's capped list).
-    const build = [...segments].reverse().find(one => one.role === "builder");
-    const facts = build === undefined ? null : agentFactsFor(store, build.runId, access, account);
+    // The row's state from the task's own newest build, as the board would place it (never the board's capped list),
+    // even when that build finished before the window.
+    const build = newestBuildOf.get({ $ref: ref });
+    const facts = build === undefined ? null : agentFactsFor(store, Number(build["id"]), access, account);
     const group: BrowserAgentLane["group"] = facts !== null ? agentGroupOf(facts, facts.outcome === null ? runActivityOf(store, { id: facts.runId, runner: facts.runner, startedAt: facts.startedAt }, now).at : null, now).group
       : segments.some(one => one.role === "planner" && one.endedAt === null) ? "planning" : "idle";
     return { taskId, title: String(row["title"]), project: str(row, "repo") === null ? null : projectName(str(row, "repo")!), href: `/t/${encodeURIComponent(taskId)}`, group, segments };

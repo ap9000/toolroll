@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { agentLanesOf, agentLanesSql, LANE_ROWS, LANE_SEGMENTS, laneRunsSql, laneSinceOf } from "./agents-board.js";
+import { agentLanesOf, agentLanesSql, LANE_ROWS, LANE_SEGMENTS, laneLiveRunsSql, laneRunsSql, laneSinceOf } from "./agents-board.js";
 import { BUILT_IN, openStore, type Store } from "./store.js";
 
 const T0 = new Date("2026-10-11T12:00:00.000Z");
@@ -21,8 +21,8 @@ const task = (id: string, repo = "/projects/shop") => {
   store.placeTask(ref, repo);
   return ref;
 };
-const build = (ref: number, startedAt: Date, finishedAt: Date | null, outcome = "built") => {
-  const run = store.startRun({ taskRef: ref, leaseId: `l-${ref}-${startedAt.getTime()}`, runner: "builder-1", branch: `b-${ref}`, worktree: dir, provider: "claude", now: startedAt, ...route });
+const build = (ref: number, startedAt: Date, finishedAt: Date | null, outcome = "built", role: "builder" | "scout" = "builder") => {
+  const run = store.startRun({ taskRef: ref, leaseId: `l-${ref}-${role}-${startedAt.getTime()}`, runner: "builder-1", branch: `b-${ref}`, worktree: dir, provider: "claude", now: startedAt, ...route, ...(role === "scout" ? { role } : {}) });
   if (finishedAt !== null) store.finishRun(run, { outcome, reason: "agent", now: finishedAt });
   return run;
 };
@@ -71,6 +71,21 @@ test("a long build that finished inside the window shows, however long it ran; o
   expect(lanes.lanes.find(lane => lane.taskId === "busy")!.segments).toHaveLength(LANE_SEGMENTS);
 });
 
+test("a row never loses its live run to the segment cap, and takes its state from its newest build even before the window", () => {
+  const busy = task("busy");
+  build(busy, at(-100 * MIN), null);
+  for (let n = 0; n < LANE_SEGMENTS; n++) build(busy, at(-60 * MIN + n * 10_000), at(-60 * MIN + n * 10_000 + 5_000), "built", "scout");
+  const row = lanesAt(null)!.lanes.find(lane => lane.taskId === "busy")!;
+  expect(row.segments.filter(one => one.endedAt === null)).toHaveLength(1);
+  expect(["working", "stuck"]).toContain(row.group);
+  expect(lanesAt(null)!.running).toBe(1);
+
+  const asked = task("asked");
+  build(asked, at(-4 * 60 * MIN), at(-3 * 60 * MIN), "failed");
+  build(asked, at(-30 * MIN), at(-20 * MIN), "built", "scout");
+  expect(lanesAt(null)!.lanes.find(lane => lane.taskId === "asked")!.group).toBe("needs-you");
+});
+
 test("a quiet window keeps the timeline (and its window choice) when something ran today; nothing in a day is no timeline", () => {
   build(task("earlier"), at(-5 * 60 * MIN), at(-5 * 60 * MIN + 10 * MIN));
   expect(lanesAt(null)).toMatchObject({ lanes: [], running: 0, more: 0 });
@@ -84,9 +99,11 @@ test("the timeline reads index ranges and each chosen task's own runs, never eve
   for (const index of ["run_started", "work_unfinished", "agent_board_recent"]) expect(lanes.some(step => step.includes(index)), index).toBe(true);
   expect(lanes.some(step => /SEARCH r USING INTEGER PRIMARY KEY/.test(step))).toBe(true);
   const runs = plan(laneRunsSql(), { $ref: busy, $from: 1, $since: at(-2 * 60 * MIN).toISOString() });
+  const live = plan(laneLiveRunsSql(), { $ref: busy });
+  expect(live.some(step => step.includes("work_unfinished") && step.includes("task_ref=?")), live.join(" | ")).toBe(true);
   // The chosen task's runs are a seek from its first run in the window, not its whole history.
   expect(runs.some(step => /SEARCH run USING .*INDEX .*\(task_ref=\? AND id>\?\)/.test(step)), runs.join(" | ")).toBe(true);
-  for (const steps of [lanes, runs]) expect(steps.filter(step => /^SCAN (run|r)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
+  for (const steps of [lanes, runs, live]) expect(steps.filter(step => /^SCAN (run|r)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
 });
 
 test("the indexes the timeline names exist (a missing one would be an SQL error, not a slow page)", () => {
