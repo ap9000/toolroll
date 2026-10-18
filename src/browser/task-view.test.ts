@@ -25,3 +25,13 @@ describe("the task thread", () => {
     expect(page).toContain(">Asked for a repair</span>");
   });
 });
+
+describe("the attempts timeline", () => {
+  test("each attempt's glyph is its headline's glyph, the same as every list's", async () => {
+    const { attemptGlyph } = await import("./views/task-view.js");
+    const cases: [string, string][] = [["Original · Queued", "idle"], ["Correction 1 · Planning", "building"], ["Correction 2 · Needs you", "decide"],
+      ["Correction 3 · Waiting", "idle"], ["Correction 4 · Building", "building"], ["Correction 5 · Ready for review", "review"],
+      ["Correction 6 · Complete", "done"], ["Correction 7 · Failed", "failed"], ["Correction 8 · Stopped", "idle"], ["Original · something new", "idle"]];
+    for (const [label, glyph] of cases) expect(attemptGlyph(label), label).toBe(glyph);
+  });
+});

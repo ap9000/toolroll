@@ -4,7 +4,8 @@
  */
 import type { ComponentProps, ReactNode } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
-import { Button, cn } from "./primitives.js";
+import { Button } from "../components/ui/button.js";
+import { cn } from "./primitives.js";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 export function Conversation({ className, ...props }: ConversationProps) {
@@ -19,8 +20,8 @@ export function ConversationScrollButton({ className, children, onClick, ...prop
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
   if (isAtBottom) return null;
   return <Button
-    className={cn("ui-conversation-scroll", className)}
-    variant="secondary"
+    className={cn("ui-conversation-scroll max-[901px]:h-11 max-[901px]:min-h-11", className)}
+    variant="outline"
     size="sm"
     onClick={(event) => {
       onClick?.(event);

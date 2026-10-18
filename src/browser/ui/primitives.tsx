@@ -1,42 +1,28 @@
 /**
- * Button and Dialog adapt shadcn/ui's Radix composition (MIT).
+ * Dialog adapts shadcn/ui's Radix composition (MIT); Badge is the shared components/ui one under this
+ * layer's name; Button is components/ui/button itself.
  * See THIRD_PARTY_NOTICES.md for the pinned upstream source and modifications.
  */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Slot } from "@radix-ui/react-slot";
+import { Badge as KeptBadge } from "../components/ui/badge.js";
 import type { ComponentProps, ReactNode } from "react";
 
 export function cn(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
-export type ButtonProps = ComponentProps<"button"> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "default" | "sm" | "icon";
-  asChild?: boolean;
-};
-
-export function Button({ className, variant = "primary", size = "default", asChild = false, type, ...props }: ButtonProps) {
-  const Component = asChild ? Slot : "button";
-  return <Component
-    data-slot="button"
-    data-variant={variant}
-    data-size={size}
-    className={cn("ui-button", `ui-button--${variant}`, `ui-button--${size}`, className)}
-    {...(!asChild ? { type: type ?? "button" } : {})}
-    {...props}
-  />;
-}
-
 export type BadgeProps = ComponentProps<"span"> & {
   tone?: "neutral" | "success" | "warning" | "attention" | "danger" | "info";
 };
+/** The console's one Badge (components/ui/badge); `ui-badge` stays as a hook. */
 export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
-  return <span data-slot="badge" data-tone={tone} className={cn("ui-badge", `ui-badge--${tone}`, className)} {...props} />;
+  return <KeptBadge data-tone={tone} tone={tone} className={cn("ui-badge", className)} {...props} />;
 }
 export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn("ui-input", className)} {...props} />;
 }
+/** The composer's and team chat's textarea: borderless inside the composer (workspace.css), so it stays its own
+ * element rather than components/ui's bordered Textarea. */
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return <textarea className={cn("ui-textarea", className)} {...props} />;
 }

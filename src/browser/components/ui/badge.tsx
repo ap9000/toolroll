@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import type { ComponentProps } from "react";
 import { cn } from "./utils.js";
 
-export const badgeVariants = cva("inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-[5px] px-1.5 py-px text-[11.5px] font-medium leading-[18px] [&_svg]:size-3", {
+export const badgeVariants = cva("inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-badge px-1.5 py-px text-[11.5px] font-medium leading-[18px] [&_svg]:size-3", {
   variants: {
     tone: {
       neutral: "bg-neutral-soft text-neutral-ink",
