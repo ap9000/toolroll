@@ -535,8 +535,8 @@ export type BrowserAgentLanes = {
   lanes: BrowserAgentLane[];
   /** Tasks in the window past the rows shown. */
   more: number;
-  /** Running: every task in the window with a live run, not just the rows shown. Needs you: the board's count. */
-  running: number; needsYou: number;
+  /** Every task in the window with a live run, not just the rows shown. */
+  running: number;
 };
 export type AgentLaneWindow = '30m' | '2h' | '24h';
 

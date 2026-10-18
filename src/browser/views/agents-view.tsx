@@ -259,13 +259,13 @@ function tickWords(ms: number): string {
 export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
   const start = Date.parse(lanes.since), end = Date.parse(lanes.now), span = Math.max(1, end - start);
   const at = (iso: string) => Math.min(100, Math.max(0, ((Date.parse(iso) - start) / span) * 100));
-  const { running, needsYou: waiting } = lanes;
+  const { running } = lanes;
   const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const ticks = [0.2, 0.4, 0.6, 0.8].map(f => ({ left: f * 100, words: tickWords((1 - f) * span) }));
   return <section aria-labelledby="agent-lanes-title" className="rounded-card border border-border bg-card px-4 pb-3 pt-3 phone:px-3" data-agent-lanes>
     <div className="flex items-center gap-3">
       <h2 id="agent-lanes-title" className="text-[14px] font-semibold">Timeline</h2>
-      <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running{waiting > 0 && <> · <span className="text-foreground">{waiting} need you</span></>}</span>
+      <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running</span>
       <nav aria-label="Timeline window" className="ml-auto flex rounded-md bg-raised p-0.5 text-[12px]">
         {lanes.windows.map(one => <a key={one.key} href={one.href} aria-current={one.active ? "true" : undefined}
           className={cn("inline-flex items-center rounded px-2 py-0.5 text-muted-foreground hover:text-foreground phone:min-h-11 phone:px-3", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
@@ -292,7 +292,7 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
             const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))} from ${clock(one.startedAt)}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
             return <span key={one.runId} className="contents">
               <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
-                className={cn("absolute top-0.5 box-border flex h-5 phone:pointer-events-none min-w-0 items-center overflow-hidden whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
+                className={cn("absolute top-0.5 box-border flex h-5 min-w-0 phone:after:absolute phone:after:-inset-y-3 phone:after:-inset-x-1 phone:after:content-[''] items-center overflow-hidden whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
                 style={{ left: `${left}%`, width: `${width}%` }}>{width >= 7 ? ROLE_WORD[one.role] : ""}</a>
               {gapTo !== null && gapTo > right && <span aria-hidden="true" className="absolute top-1/2 border-t border-dotted border-foreground/30" style={{ left: `${right}%`, width: `${gapTo - right}%` }} />}
             </span>;
