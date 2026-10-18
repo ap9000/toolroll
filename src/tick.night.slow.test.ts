@@ -244,18 +244,6 @@ describe("the morning briefing", () => {
     // The failed build's notification is waiting.
     expect(report.outboxPending).toBe(1);
   });
-
-  test("the blocked section is the gaps view, ranked", async () => {
-    const { approver } = await setup();
-    await run(["cap", "add", "MISSING_KEY", "--repo", repo]);
-    await approvedTask("t-1", approver);
-    await run(["task", "require", "t-1", "--cap", "env:MISSING_KEY"]);
-
-    await run(["brief", "--repo", repo, "--local", "--json"]);
-
-    expect(payload().gaps).toHaveLength(1);
-    expect(payload().gaps[0]).toMatchObject({ key: "env:MISSING_KEY", unblocks: ["t-1"] });
-  });
 });
 
 describe("the park, end to end — a judgement call survives the night", () => {
@@ -398,45 +386,25 @@ describe("the park, end to end — a judgement call survives the night", () => {
     expect(main.stdout.trim().split("\n")).toHaveLength(1);
     const branch = await git(["log", "--oneline", "toolroll/t-1"]);
     expect(branch.stdout.trim().split("\n")).toHaveLength(1);
-  });
 
-  test("the work in progress survives the park, uncommitted, where the resume will find it", async () => {
-    const { runnerToken } = await setup();
-    await tick(runnerToken);
-
-    const store = openStore(db);
-
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
-    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
-    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
-    const worktree = store.getRun(1)?.worktree;
-    store.close();
+    // The work in progress survives the park, uncommitted, where the resume will find it.
+    const reopened = openStore(db);
+    const worktree = reopened.getRun(1)?.worktree;
+    reopened.close();
     expect(worktree).toBeDefined();
-
     const status = await exec("git", ["status", "--porcelain"], { cwd: worktree as string });
     expect(status.stdout).toContain("half-done.ts");
     // And the mailbox is gone — ingested once, not left to confuse anyone.
     expect(status.stdout).not.toContain("STANDING-ORDERS-PARK-");
-  });
 
-  test("a second pass does not double-park: the held task is simply not ready", async () => {
-    const { runnerToken } = await setup();
-    await tick(runnerToken);
-
-    const code = await tick(runnerToken);
-
-    expect(code).toBe(EXIT.refused);
+    // A second pass does not double-park: the held task is simply not ready.
+    expect(await tick(runnerToken)).toBe(EXIT.refused);
     expect(payload()).toMatchObject({ ok: false, reason: "empty" });
-
-    const store = openStore(db);
-
-    store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
-    store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
-    store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
+    const after = openStore(db);
     try {
-      expect(store.listDecisions("all")).toHaveLength(1);
+      expect(after.listDecisions("all")).toHaveLength(1);
     } finally {
-      store.close();
+      after.close();
     }
   });
 

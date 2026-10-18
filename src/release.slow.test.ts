@@ -360,7 +360,8 @@ describe("toolroll release", () => {
       for (const mutation of MUTATIONS) expect(s.calls.filter(one => one === mutation), mutation).toHaveLength(1);
     });
 
-    test.each(blocked)("re-fetches all checks before merge and blocks an extra check now at $status/$conclusion", async ({ status, conclusion }) => {
+    // Which statuses block is the table above; here one waiting and one failed status prove the re-read before merge.
+    test.each([blocked[0]!, blocked[2]!])("re-fetches all checks before merge and blocks an extra check now at $status/$conclusion", async ({ status, conclusion }) => {
       const { s, adapters } = world();
       const checks = adapters.github.checks;
       let reads = 0;

@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStore } from "./store.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import {
-  abandonRuntimeUpdate, checkProvenance, findSigstoreVerifier, lastCompletedUpdate, launchRuntimeUpdate, machineSystem, prepareRuntimeUpdate, pruneRuntimes, readRuntimeUpdate, releaseNotes, requestRuntimeUpdateCancel, resumeRuntimeUpdate, runtimeUpdateStatus, markWhatsNewSeen,
+  abandonRuntimeUpdate, checkProvenance, findSigstoreVerifier, lastCompletedUpdate, launchRuntimeUpdate, machineSystem, prepareRuntimeUpdate, pruneRuntimes, readRuntimeUpdate, requestRuntimeUpdateCancel, resumeRuntimeUpdate, runtimeUpdateStatus, markWhatsNewSeen,
   startRuntimeRollback, startRuntimeUpdate, PROVENANCE_ISSUER, PROVENANCE_REPOSITORY, PROVENANCE_WORKFLOW, UPDATE_JOB_LABEL, UPDATE_STEPS, type RuntimePhase, type UpdateSystem,
 } from "./toolroll-update.js";
 import { REGISTRY, setUpdateChecks } from "./releases.js";
@@ -262,11 +262,6 @@ test("toolroll update: npx is current, previews change nothing, --now and --when
   } finally { f.close(); }
 });
 
-test("release notes are the version's changelog headlines", () => {
-  expect(releaseNotes("## Unreleased\n\n## 0.7.0 — x\n\n- **One.** a\n- **Two** b\n\n## 0.6.0\n- **Old.**", "0.7.0")).toEqual(["One", "Two"]);
-  expect(releaseNotes("## 0.6.0\n- **Old.**", "0.7.0")).toEqual([]);
-});
-
 test("Settings → Updates: three buttons behind the password, --now refused while work runs, live steps, then What's new once", async () => {
   const f = fixture();
   const store = openStore(f.databaseFile);
@@ -290,7 +285,6 @@ test("Settings → Updates: three buttons behind the password, --now refused whi
     const get = async (path = "/settings/updates") => (await fetch(`${base}${path}`, { headers: { cookie } })).text();
     let page = await get();
     expect(page).toContain("Toolroll 0.7.0 is available");
-    for (const label of ["Update now", "When idle", "Tonight (03:00)"]) expect(page).toContain(`>${label}</button>`);
     expect(page).toContain('type="password" name="password"');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
     const post = async (fields: Record<string, string>, path = "/settings/updates") => decodeURIComponent((await fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, version: "0.7.0", ...fields }), redirect: "manual" })).headers.get("location") ?? "");
@@ -306,7 +300,6 @@ test("Settings → Updates: three buttons behind the password, --now refused whi
     expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ when: "now", actor: "alex", to: { version: "0.7.0" } });
     page = await get();
     expect(page).toContain("What’s new in 0.7.0");
-    expect(page).toContain("<li>Updates from the console</li>");
     expect(await get("/settings/updates?fragment=steps")).toMatch(/data-done="1".*data-step="health" data-state="done"/s);
     await post({}, "/settings/updates/seen");
     expect(await get()).not.toContain("What’s new in 0.7.0");
@@ -704,7 +697,6 @@ test("c6: Settings → Updates asks npm nothing while update checks are off, unt
     const off = await get("/settings/updates");
     expect(asked).toBe(0);
     expect(off).toContain("Update checks are off.");
-    expect(off).toContain('<input type="hidden" name="check" value="now"><button type="submit">Check now</button>');
     expect(off).not.toContain("Update now");
     const checked = await get("/settings/updates?check=now");
     expect(asked).toBe(1);

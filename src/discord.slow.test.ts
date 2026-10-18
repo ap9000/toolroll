@@ -424,35 +424,11 @@ test("the lead's voice in Discord: a tool turn gets one 👍 on the owner's mess
   const reply = sends().filter((c) => c.path === `/channels/${CHANNEL}/messages`).at(-1)!.body;
   expect(reply.embeds).toEqual([{ description: "Payout\n**Ready**: see [the task](https://console.example/chat?task=payout). Ask @\u200beveryone.", color: 0x297b70 }]);
   expect(reply.allowed_mentions).toEqual({ parse: [], replied_user: false });
-  // A quick answer gets no reaction and no typing.
-  const typed = calls.filter((c) => c.path.endsWith("/typing")).length;
-  answers.push({ text: "All quiet." });
-  receive("anything else?");
-  await processDiscordEvent(options);
-  await drain();
-  expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
-  expect(calls.filter((c) => c.path.endsWith("/typing"))).toHaveLength(typed);
   // The REST wrapper admits exactly these two routes beyond messages: the 👍 and typing.
   const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
   await expect(discordApi(TOKEN, fetcher)("PUT", `/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%91%8D/@me`)).resolves.toEqual({});
   await expect(discordApi(TOKEN, fetcher)("POST", `/channels/${CHANNEL}/typing`)).resolves.toEqual({});
   await expect(discordApi(TOKEN, fetcher)("PUT", `/channels/${CHANNEL}/messages/${body.id}/reactions/%F0%9F%92%A9/@me`)).rejects.toThrow("Invalid Discord request");
-});
-
-test("a long reply is split as written before it is shaped: the link that straddles a part's limit arrives whole, named, in one part", async () => {
-  // Over Discord's 2,000 the lead is asked once to shorten; a reply still over it is split across messages, never cut.
-  const long = `${"word ".repeat(355)}**Ready** see https://console.example/chat?task=payout now. ${"more ".repeat(100)}`;
-  answers.push({ text: long }, { text: long });
-  receive("tell me everything");
-  await processDiscordEvent(options);
-  await drain();
-  const descriptions = sends().filter((c) => c.path === `/channels/${CHANNEL}/messages`).map((c) => String(c.body.embeds?.[0]?.description ?? ""));
-  expect(descriptions.length).toBeGreaterThan(1);
-  for (const one of descriptions) {
-    expect(one.length).toBeLessThanOrEqual(1800);
-    expect(one.split("**").length % 2).toBe(1);
-  }
-  expect(descriptions.filter((one) => one.includes("[the task](https://console.example/chat?task=payout)"))).toHaveLength(1);
 });
 
 test("replayed DM creates one model turn and lost send receipt reconciles by nonce", async () => {

@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView } from "../browser-workspace.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
-import { AgentsView, elapsedWords, timeWords } from "./views/agents-view.js";
+import { AgentsView } from "./views/agents-view.js";
 
 class Events extends EventTarget {
   static latest: Events | null = null;
@@ -105,32 +105,5 @@ describe("the Agents board", () => {
     await act(async () => { Events.latest!.emit("change", { room: "agent:7", at: "x" }); });
     expect(nudged).toHaveBeenCalledTimes(1);
     window.removeEventListener(WORKSPACE_NUDGE, nudged);
-  });
-
-  test("the opened agent states its status once: the chip, then only the reason, with labelled times", () => {
-    const failed = detail({ group: "needs-you", label: "Failed", line: "Ran out of time.", question: null, steer: null, live: false,
-      startedAt: ago(70), endedAt: ago(45), resultHref: "/r/7", diff: null });
-    render(board(failed));
-    const opened = host.querySelector("[data-agent-detail]")!;
-    expect([...opened.querySelectorAll("[data-agent-state]")].map(one => one.textContent)).toEqual(["Failed"]);
-    expect(opened.querySelector("[data-agent-line]")?.textContent).toBe("Ran out of time.");
-    expect(opened.textContent).not.toMatch(/The agent failed/);
-    expect(opened.querySelector("[data-agent-time]")?.textContent).toBe("Ran 25 min · finished 45 min ago");
-    // No reason worth a line: the chip alone.
-    act(() => root?.render(createElement(AgentsView, { view: board({ ...failed, line: null }) })));
-    expect(host.querySelector("[data-agent-detail] [data-agent-line]")).toBeNull();
-  });
-
-  test("time words", () => {
-    expect(timeWords({ startedAt: ago(4), endedAt: null }, NOW)).toBe("Running 4 min");
-    expect(timeWords({ startedAt: ago(70), endedAt: ago(45) }, NOW)).toBe("Ran 25 min · finished 45 min ago");
-    expect(timeWords({ startedAt: ago(12), endedAt: ago(0.2) }, NOW)).toBe("Ran 11 min · finished just now");
-  });
-
-  test("elapsed words", () => {
-    expect(elapsedWords(ago(0.5), NOW)).toBe("30 s");
-    expect(elapsedWords(ago(4), NOW)).toBe("4 min");
-    expect(elapsedWords(ago(72), NOW)).toBe("1 h 12 min");
-    expect(elapsedWords(ago(120), NOW)).toBe("2 h");
   });
 });

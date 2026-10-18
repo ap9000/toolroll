@@ -415,7 +415,7 @@ do not loosen when you leave the room:
 | guess at a judgement call | it parks a typed decision — recap, options with reversibility, recommendation, evidence — and the other eleven tasks keep going |
 
 The whole claim is executable: one test,
-[`src/unattended.test.ts`](src/unattended.test.ts), queues twelve tasks,
+[`src/unattended.slow.test.ts`](src/unattended.slow.test.ts), queues twelve tasks,
 walks away, and comes back to pull requests.
 
 The name comes from a captain's night orders — the written standing instructions left for the officer of the watch: *proceed on this course without me, and wake me under exactly these conditions.* That is the product, and it is not about the hour: it is for **long-running work that outlasts your attention** — an afternoon of errands, a weekend, or yes, a night.
@@ -1129,7 +1129,7 @@ doubling backoff, three-strike stalls a person exits with `task requeue` —
 and every provider spawn is stamped before it spends, so cost is measured,
 never asserted. CI on published PRs is watched as episodes that never call
 silence green. The whole unattended stretch is one test,
-[`src/unattended.test.ts`](src/unattended.test.ts): queue twelve, walk
+[`src/unattended.slow.test.ts`](src/unattended.slow.test.ts): queue twelve, walk
 away, come back to PRs. Architecture: [`docs/DESIGN.md`](docs/DESIGN.md);
 the item-by-item ledger: [`docs/PROGRESS.md`](docs/PROGRESS.md).
 

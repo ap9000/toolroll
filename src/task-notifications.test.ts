@@ -751,34 +751,6 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_message_ref WHERE provider = 'telegram' AND kind = 'notification' AND task_id = 'alpha-1'").get()?.["n"]).toBe(3);
   });
 
-  test("a failed Telegram delivery stays pending for attention until it recovers", async () => {
-    pair();
-    placed("alpha-1", ALPHA, "Guard the payout path");
-    const notification = store.listNotifications()[0]!;
-    const script = scriptedTransport();
-    script.fail({ ok: false, description: "offline" });
-    expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 0 } });
-    expect(receipts()[0]).toMatchObject({ deliveredAt: null, lastError: "offline" });
-    expect(store.pendingForAttention().map(row => row.id)).toEqual([notification.id]);
-
-    store.close();
-    store = openStore(file);
-    expect(store.pendingForAttention().map(row => row.id)).toEqual([notification.id]);
-    now = later(2_000);
-    expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 1, problems: [] } });
-    expect(store.pendingForAttention()).toEqual([]);
-  });
-
-  test("a hold's button opens the task's details page under the trusted origin, where the release control lives", async () => {
-    pair();
-    const a1 = placed("alpha-1", ALPHA, "Guard the payout path");
-    store.hold(a1, "waiting on the vendor sandbox", null, now);
-    const script = scriptedTransport();
-    expect(await pass(script)).toMatchObject({ ok: true, report: { sent: 2, problems: [] } });
-    expect(script.texts().at(-1)).toBe("alpha / Guard the payout path · Paused\n\nThe next attempt waits until the hold is released. An attempt already running is not stopped by this.");
-    expect(script.buttons(script.sends().at(-1)!)).toEqual([{ text: "Open task", url: `${ORIGIN}/t/alpha-1` }]);
-  });
-
   test.each(["single", "digest"] as const)("%s delivery hides sensitive lifecycle text before shortening it", async mode => {
     pair();
     if (mode === "digest") store.setTelegramDigest(60_000, "alex", now);

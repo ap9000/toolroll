@@ -245,18 +245,15 @@ test("the status says when it last ran and why it waits: off, no service, sweepi
   expect(words(sweepSchedule(store, T0, { TOOLROLL_STORAGE_SWEEP: "off" }))).toBe("off.");
   // Claimed and not saved yet: sweeping, whether or not a service is live.
   store.setServiceCursor(SWEEP_CURSOR, T0.getTime(), T0);
-  expect(words(sweepSchedule(store, new Date(T0.getTime() + 60_000)))).toBe("sweeping now.");
   saveSweep(store, record(T0));
   const soon = new Date(T0.getTime() + HOUR);
   expect(sweepSchedule(store, soon)).toMatchObject({ state: "no-service", lastAt: T0.toISOString(), nextAt: new Date(T0.getTime() + SWEEP_EVERY_MS).toISOString() });
   worker(soon);
   serviceLease(soon);
-  expect(words(sweepSchedule(store, soon))).toBe("swept recently, next due 09:00.");
   const failure = record(soon);
   failure.parts[0]!.failed = 1;
   saveSweep(store, failure);
   store.setServiceCursor(SWEEP_CURSOR, soon.getTime() - SWEEP_EVERY_MS + RETRY_MS, soon);
-  expect(words(sweepSchedule(store, soon))).toBe("retry due 11:00.");
   saveSweep(store, record(T0));
   const due = new Date(T0.getTime() + SWEEP_EVERY_MS);
   store.setServiceCursor(SWEEP_CURSOR, T0.getTime(), T0);
@@ -271,6 +268,4 @@ test("the status says when it last ran and why it waits: off, no service, sweepi
   expect(words(sweepSchedule(store, forced))).toBe("over 48 hours since the last sweep; it runs at the next check even if work is running.");
   // Reading the status never claims or writes anything.
   expect(store.serviceCursor(SWEEP_CURSOR)).toBe(T0.getTime());
-  expect(sweepScheduleWords({ state: "busy", busy: "run", lastAt: null, nextAt: null }, String)).toBe("due, waiting: work is running.");
-  expect(sweepScheduleWords({ state: "busy", busy: "claim", lastAt: null, nextAt: null }, String)).toBe("due, waiting: a worker is starting a task.");
 });

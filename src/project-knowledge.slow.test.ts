@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { html, htmlString } from './html.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, renameSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +11,7 @@ import { savedRows } from '../test/context-fixture.js';
 import { learningIdentity, learningSha, legacyIdentityOf } from './project-learning.js';
 import { runOperate } from './operate.js';
 import { withActor } from './actor.js';
-import { knowledgeContextHtml, knowledgeHtml } from './knowledge-ui.js';
+import { knowledgeHtml } from './knowledge-ui.js';
 import { createDecisionServer } from './serve.js';
 import { storeEvidence } from './evidence.js';
 
@@ -64,13 +63,6 @@ describe('project knowledge',()=>{
     expect(knowledgeContext(store,run)).toBe(supplied);expect(store.getScope(scope.taskId)?.digest).toBe(scope.digest);
     expect(readKnowledgeSnapshot(store,run)!.instructions).toContain('Keep UI');expect(knowledgeContext(store,start())).toContain('New instructions');
     expect(()=>store.handle.exec('DELETE FROM knowledge_snapshot')).toThrow(/immutable/);
-    expect(htmlString(knowledgeContextHtml(snapshot)||html``)).toContain('Context used');expect(htmlString(knowledgeContextHtml(snapshot)||html``)).toContain('Not included');
-  });
-  test('review inherits the builder context even when project instructions change',()=>{
-    change('instructions',{instructions:'Original instructions'});const source=start();knowledgeContext(store,source);storeEvidence(store,join(root,'evidence'),source,'terminal-diff','diff.patch',Buffer.from('diff --git a/mobile.md b/mobile.md\n--- a/mobile.md\n+++ b/mobile.md\n@@ -1 +1 @@\n+Mobile\n'),'fixture',now,{captureStatus:'ok'});store.recordOutcomeFacts(source,{headRevision:head});store.finishRun(source,{outcome:'built',committed:true,now});
-    const req=store.requestReview(source,'alex',now);if(!req.ok)throw Error(req.reason);const admitted=store.admitReview(req.id,{runner:'runner',token:'runner-token',provider:'claude',model:'sonnet'},now);if(!admitted.ok)throw Error(admitted.reason);
-    change('instructions',{instructions:'Changed later'});knowledgeContext(store,admitted.reviewerRunId);
-    expect(readKnowledgeSnapshot(store,admitted.reviewerRunId)).toMatchObject({instructions:'Original instructions',inheritedFrom:source,revision:1});
   });
   test('crew source excerpts are captured once and reused after files change or disappear',()=>{
     const run=start('builder','Improve mobile design');

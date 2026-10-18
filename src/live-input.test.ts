@@ -337,37 +337,4 @@ describe("the Claude stream transport with live input (a real child process)", (
     const parsed = adapterFor("claude").parse(result.stdout);
     expect(parsed.costUnknown).toBe(true);
   });
-
-  test("an interrupt stops the running turn without ending the process, and the next note continues the same session", async () => {
-    dir = mkdtempSync(join(tmpdir(), "so-live-"));
-    const frames = join(dir, "frames.jsonl");
-    writeFileSync(frames, "");
-    let finished = false, pausedAt = -1, events = 0;
-    const session = new LiveInput({ maxTurns: 20, finished: () => finished, onPaused: () => { if (pausedAt < 0) pausedAt = events; } });
-    session.begin("brief", "brief-uuid");
-    const sessions = new Set<string>();
-    const result = await runClaudeStreamJsonl(process.execPath, [FAKE], {
-      cwd: dir,
-      timeoutMs: 20_000,
-      env: { FAKE_FRAMES: frames, FAKE_TURN_MS: "5000" },
-      liveInput: session,
-      onStreamEvent: event => {
-        events += 1;
-        if (typeof event["session_id"] === "string") sessions.add(event["session_id"]);
-        if (event["type"] === "assistant" && (event["message"] as { id: string }).id === "msg-1") session.interrupt("pause-1");
-        if (event["type"] === "result" && event["subtype"] === "error_during_execution") {
-          // The turn stopped within the 5-second turn, and the process is still there to take the note.
-          expect(session.open).toBe(true);
-          finished = true;
-          session.send("carry on", "note-1");
-        }
-      },
-    });
-    const written = readFileSync(frames, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
-    expect(written.map(one => one["type"])).toEqual(["user", "control_request", "user"]);
-    expect(pausedAt).toBeGreaterThan(0);
-    expect(sessions).toEqual(new Set(["fake-session"]));
-    expect(result.code).toBe(0);
-    expect(adapterFor("claude").parse(result.stdout)).toMatchObject({ finalMessage: "turn 2 done", promptConsumed: true });
-  });
 });

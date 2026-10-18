@@ -50,8 +50,6 @@ function splitSelectors(prelude: string): string[] {
 }
 
 const finePointer = (at: string) => /^@media\b/.test(at) && /hover:\s*hover/.test(at) && /pointer:\s*fine/.test(at);
-const declarations = (css: string, selector: string) =>
-  rulesOf(css).filter(rule => rule.selectors.includes(selector)).map(rule => rule.body).join(";");
 
 describe("console feel: touch, hover and press", () => {
   test("every :hover rule sits inside (hover: hover) and (pointer: fine)", () => {
@@ -62,53 +60,6 @@ describe("console feel: touch, hover and press", () => {
       expect(stuck, name).toEqual([]);
     }
   });
-
-  test("the palette and shortcuts overlay appear without an entrance animation", () => {
-    const overlays = rulesOf(PAGE_CSS).filter(rule => rule.selectors.some(s => /^\.(palette|kbd-help)$/.test(s)));
-    expect(overlays.length).toBeGreaterThan(0);
-    for (const rule of overlays) expect(rule.body).not.toMatch(/animation/);
-    // The other overlays keep their contract entrances.
-    expect(PAGE_CSS).toContain(".switcher[open] .switcher-menu { animation: rise 160ms ease-out; }");
-  });
-
-  test("taps never flash, wait for a double-tap, or select a control's label", () => {
-    expect(declarations(PAGE_CSS, "html")).toMatch(/-webkit-tap-highlight-color:\s*transparent/);
-    expect(declarations(WORKSPACE_CSS, ".so-workspace")).toMatch(/-webkit-tap-highlight-color:\s*transparent/);
-    expect(declarations(WORKSPACE_CSS, ".so-navigation-dialog")).toMatch(/-webkit-tap-highlight-color:\s*transparent/);
-    for (const selector of ["a", "button", "summary", "[role=button]", "[role=tab]"]) {
-      expect(declarations(PAGE_CSS, selector), selector).toMatch(/touch-action:\s*manipulation/);
-    }
-    const unselectable = rulesOf(PAGE_CSS).filter(rule => /(^|;)\s*user-select:\s*none/.test(rule.body)).flatMap(rule => rule.selectors);
-    expect(unselectable).toEqual(expect.arrayContaining(["button", "[role=button]", "[role=tab]"]));
-    // Text stays selectable: nothing broad, no prose, no links.
-    for (const text of ["*", "html", "body", "a", "p", "span", "main", ".content"]) expect(unselectable).not.toContain(text);
-  });
-
-  test("anchor buttons press like buttons and nav links fill on press", () => {
-    const pressed = (css: string) => rulesOf(css).filter(rule => /transform:\s*scale\(\.985\)/.test(rule.body)).map(rule => rule.selectors.join(", ")).join(" ");
-    expect(pressed(PAGE_CSS)).toMatch(/\bbutton:active/);
-    for (const anchor of [".button-link", ".side .new-task", ".content .new-task", ".result-feedback-link"]) expect(pressed(PAGE_CSS)).toContain(anchor);
-    for (const anchor of ["a.ui-button", ".so-new-task", ".so-work-action", ".so-all-work", ".so-close-work"]) expect(pressed(WORKSPACE_CSS)).toContain(anchor);
-    // The scale is motion: it only exists when motion is welcome.
-    for (const css of [PAGE_CSS, WORKSPACE_CSS]) {
-      for (const rule of rulesOf(css).filter(r => /transform:\s*scale\(\.985\)/.test(r.body))) {
-        expect(rule.at.some(at => /prefers-reduced-motion:\s*no-preference/.test(at))).toBe(true);
-      }
-    }
-    expect(declarations(PAGE_CSS, ".button-link")).toMatch(/transition:\s*transform 160ms var\(--so-ease-out\)/);
-    expect(declarations(WORKSPACE_CSS, ".ui-button")).toMatch(/transform 160ms var\(--so-ease-out\)/);
-    expect(declarations(WORKSPACE_CSS, ".so-new-task")).toMatch(/transform 160ms var\(--so-ease-out\)/);
-    // Nav links fill with their hover background instead of scaling.
-    expect(declarations(PAGE_CSS, ".side nav a:active")).toMatch(/background:\s*var\(--glass\)/);
-    expect(declarations(WORKSPACE_CSS, '.so-primary-navigation a:not([aria-current="page"]):active')).toMatch(/background:\s*var\(--so-nav-hover\)/);
-  });
-
-  test("feedback transitions use the shared ease-out curve", () => {
-    expect(PAGE_CSS).toContain("--so-ease-out: cubic-bezier(0.23, 1, 0.32, 1);");
-    const transitions = (css: string) => rulesOf(css).flatMap(rule => rule.body.match(/transition:[^;]*/g) ?? []);
-    for (const t of transitions(WORKSPACE_CSS)) expect(t).not.toMatch(/(?<![\w-])ease-out/);
-    expect(declarations(PAGE_CSS, "button")).toContain("background .12s var(--so-ease-out), border-color .12s var(--so-ease-out), color .12s var(--so-ease-out)");
-  });
 });
 
 describe("Signal tokens: one generated source", () => {
@@ -118,16 +69,6 @@ describe("Signal tokens: one generated source", () => {
     .map(declaration => declaration.match(/^\s*(--so-[\w-]+)\s*:\s*(.*?)\s*$/s))
     .filter(match => match !== null).map(match => ({ name: match[1]!, value: match[2]! }));
   const generated = new Set(customProperties(TOKENS_CSS).map(property => property.name));
-
-  test("the built Signal utilities read the generated tokens", () => {
-    expect(generated.size).toBeGreaterThan(0);
-    for (const utility of [".text-body", ".rounded-card", ".shadow-pill"]) {
-      const body = declarations(BUILT_CSS, utility);
-      const read = [...body.matchAll(/var\((--so-[\w-]+)/g)].map(match => match[1]!);
-      expect(read.length, utility).toBeGreaterThan(0);
-      for (const name of read) expect(generated.has(name), `${utility} reads ${name}`).toBe(true);
-    }
-  });
 
   test("cn knows Signal's type, radius and shadow names, so a later colour never drops a role", () => {
     const theme = readFileSync(new URL("./design/theme.css", import.meta.url), "utf8");

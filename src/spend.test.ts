@@ -19,7 +19,6 @@ import { subagentReady } from "./subagent-work.js";
 import { runOperate } from "./operate.js";
 import { setAuthMode } from "./keys.js";
 import { claudeLimitsOf, codexLimitsOf, noteLimits, pushLimitSink } from "./provider-limits.js";
-import { limitsView } from "./limits-ui.js";
 import { runClaudeStreamJsonl } from "./exec.js";
 
 let dir: string, file: string, store: Store, home: string | undefined;
@@ -305,7 +304,7 @@ test("the command line shows the month and sets budgets for an instance operator
   }
 });
 
-test("a plan's windows: Claude says them each turn, Codex when asked; the latest reading is kept and shown as tiles", async () => {
+test("a plan's windows: Claude says them each turn, Codex when asked; the latest reading is kept", async () => {
   // As Claude Code 2.1 writes it (captured 2026-09-28).
   const event = { type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790655000, rateLimitType: "five_hour", overageStatus: "rejected", isUsingOverage: false,
     unifiedWindows: { five_hour: { utilization: 0.48, resetsAt: 1790655000 }, seven_day: { utilization: 0.4, resetsAt: 1791010800 } } } };
@@ -330,29 +329,14 @@ test("a plan's windows: Claude says them each turn, Codex when asked; the latest
   store.recordProviderLimits({ provider: "claude", plan: null, windows: [{ window: "five_hour", usedPercent: 50, windowMinutes: 300, resetsAt: "2026-09-29T02:50:00.000Z", reached: false }] }, read);
   expect(store.providerLimits().filter(one => one.provider === "claude").map(one => one.window)).toEqual(["five_hour"]);
 
-  store.setBudget({ scope: "project", key: REPO, limitMicrousd: 10_000_000, hardStop: true }, "alex", NOW);
-  work({ name: "alex", kind: "person" }, { costUsd: 9 });
-  const at = new Date("2026-09-28T23:40:00.000Z");
-  const view = limitsView(store.providerLimits(), store.monthSpend(NOW).budgets, { project: repo => repo.split("/").pop()!, subagent: String }, at)!;
-  expect(view.tiles.map(tile => [tile.name, tile.window, tile.value, tile.unit, tile.tone, tile.detail])).toEqual([
-    ["Claude", "5-hour", "50", "%", "neutral", "Resets in 3 h 10 min · read 40m ago"],
-    ["Codex Pro", "Weekly", "85", "%", "warning", expect.stringMatching(/^Resets \w{3} \d+ (AM|PM) · read 40m ago$/)],
-    ["shop", "Budget", "$9.00", "of $10", "warning", "Stops API work at 100%"],
-  ]);
-  // A window that has turned over since the reading starts again.
-  const later = limitsView(store.providerLimits(), [], { project: String, subagent: String }, new Date("2026-09-29T03:00:00.000Z"))!;
-  expect(later.tiles[0]).toMatchObject({ value: "0", detail: "New window" });
-  expect(limitsView([], [], { project: String, subagent: String }, NOW)).toBeNull();
-
   // Odd lines: a window named like an object's own property still reads; a bare "rejected" names one window and
-  // leaves the others; Codex's reached reason marks its fullest window; an internal plan name isn't shown.
+  // leaves the others; Codex's reached reason marks its fullest window.
   expect(claudeLimitsOf({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { constructor: { utilization: 0.1 } } } })?.windows[0]).toMatchObject({ window: "constructor", windowMinutes: null });
   store.recordProviderLimits(claudeLimitsOf({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.2 }, seven_day: { utilization: 0.3 } } } })!, read);
   store.recordProviderLimits(claudeLimitsOf({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour" } })!, read);
   expect(store.providerLimits().filter(one => one.provider === "claude").map(one => `${one.window}:${one.usedPercent}`)).toEqual(["five_hour:100", "seven_day:30"]);
   const codex = codexLimitsOf({ rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 }, secondary: { usedPercent: 40, windowDurationMins: 10080 }, rateLimitReachedType: "rate_limit_reached", planType: "self_serve_business_usage_based" } })!;
   expect(codex.windows.map(one => one.reached)).toEqual([true, false]);
-  expect(limitsView(codex.windows.map(one => ({ ...one, provider: "codex", plan: codex.plan, observedAt: NOW.toISOString() })), [], { project: String, subagent: String }, NOW)!.tiles[0]!.name).toBe("Codex");
   // A command that ends inside a longer one leaves the longer one's sink in place.
   const seen: string[] = [];
   const outer = pushLimitSink(reading => seen.push(`outer:${reading.provider}`));

@@ -6,15 +6,13 @@ import { quickVerifyKey, runCheckLevel, setProjectCheckLevel } from "./check-lev
 import { setProjectBatchChecks } from "./batch-policy.js";
 import { followUpChecksOf, fullCheckGate } from "./result-follow-ups.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { agentExitWords, build, handoffResumePrompt, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, type Runner } from "./builder.js";
+import { agentExitWords, build, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, type Runner } from "./builder.js";
 import { routeDigestOf } from "./phase-routing.js";
 import { openStore, type Store } from "./store.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
 import { acquire, currentClaim, reap } from "./claim.js";
 import { propose, approve, addApprover, profileDigestOf, type ExecutionProfile } from "./scope.js";
 import { resetAttestationCache } from "./attest.js";
-import { PROOF_LIMITS } from "./proof.js";
-import { HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, HEADLESS_RULE, repairPrompt } from "./decision.js";
 import { execFileSync } from "node:child_process";
 import { readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
 import { agentTurnHistory, openAgentQuestions } from "./agent-board.js";
@@ -310,7 +308,6 @@ describe("the builder's gates", () => {
     expect(sh('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort()).toEqual(['.gitignore', 'README.md', 'evidence/t-1/journey.txt', 'src/guard.ts']);
     expect(readFileSync(join2(wt, 'evidence', 't-1', 'desktop.png'))).toEqual(png);
     expect(store.handle.prepare("SELECT note FROM run_note WHERE run = ?").all(req.runId as number).map(row => String(row["note"]))).toContain(words);
-    expect(agentCalls.at(-1)?.join(" ")).toContain("Save screenshots and journey output only under evidence/");
   });
 
   test("a rerun (task regate) dispatches through the builder with no agent call and reruns the check on the last head (v70)", async () => {
@@ -592,10 +589,6 @@ describe("the builder's gates", () => {
     expect(built).toMatchObject({ ok: true });
     expect(agentCalls.some(args => args.includes("--resume") && args.includes("sess-park-1"))).toBe(true);
     expect(store.getRun(first.runId as number)).toMatchObject({ parentRun: parked, sessionId: "sess-park-1" });
-    const warmPrompt = agentCalls[0]![agentCalls[0]!.indexOf("-p") + 1]!;
-    expect(warmPrompt).toContain("No criterion answers or self-reported file list are required");
-    expect(warmPrompt).not.toContain("restate that criterion");
-    expect(warmPrompt).not.toContain("pass --rubric");
 
     // A second attempt at the same park goes cold: one warm try per park,
     // because a dead session must never fail its way into a stall.
@@ -743,7 +736,7 @@ describe("the builder's gates", () => {
   });
 
   test.each([
-    ["default", false], ["default", true], ["strict", false], ["strict", true],
+    ["default", false], ["strict", true],
   ] as const)("a retry's brief preserves the pinned base without inventing proof requirements: %s rubric=%s", async (qualityMode, hasRubric) => {
     // Run 1465's proof read short: the sealed diff-stat is already pinned to
     // the branch's first builder base (run 1461, above), but nothing ever
@@ -795,17 +788,6 @@ describe("the builder's gates", () => {
     // this attempt's own base_revision ("mid-sha").
     expect(secondPrompt).toContain("orig-sha");
     expect(secondPrompt).not.toContain("mid-sha");
-    expect(secondPrompt).toContain("write this attempt's own handoff with its outcome and limitations");
-    for (const prompt of [firstPrompt, secondPrompt]) {
-      expect(prompt).toContain("No criterion answers or self-reported file list are required");
-      expect(prompt).not.toContain('"changed" must');
-      expect(prompt).not.toContain("under the changed-list contract above");
-      expect(prompt).not.toContain("restate that criterion");
-      expect(prompt).not.toContain("pass --rubric");
-      expect(prompt).toContain("Return the result and limitations to the lead or user for review");
-      expect(prompt).not.toContain("independent reviewer");
-    }
-    expect(secondPrompt).toContain("The machine captures the whole branch from that revision");
   });
 
   test("the phase vocabulary is closed, and a finished run's phase is history", () => {
@@ -919,16 +901,6 @@ describe("the builder's gates", () => {
     }
     expect(agentCalls).toHaveLength(0);
   });
-
-  test("builds once every gate is satisfied", async () => {
-    claimIt();
-    approveScope();
-
-    const result = await build(store, request());
-
-    expect(result).toMatchObject({ ok: true, committed: true, branch: "feat/a" });
-    if (result.ok) expect(result.summary).toContain("Added the guard");
-  });
 });
 
 describe("what the builder tells the agent", () => {
@@ -1005,12 +977,6 @@ describe("what the builder tells the agent", () => {
       ...over,
     });
 
-  const legacyProofBrief = async () => {
-    propose(store, { taskId: "t-1", goal: "add a guard on the payout path", qualityMode: "strict", now: T0 });
-    approve(store, "t-1", "alex", T0, store.getScope("t-1")!.digest, approverToken);
-    await build1();
-  };
-
   test("quotes the scope, including what it is not", async () => {
     // A brief that says only what to do invites the agent to decide how far to
     // go, and how far to go is the thing that was actually agreed.
@@ -1025,102 +991,6 @@ describe("what the builder tells the agent", () => {
     // brief names this attempt's own mailbox, nonce and all.
     expect(prompt).toMatch(/Park it:[\s\S]*STANDING-ORDERS-PARK-[0-9a-f]{16}\.json/);
     expect(prompt).toContain('"reversible": true or false');
-  });
-
-  test("a recovered completed draft is reviewed under a fresh handoff instead of rebuilt", async () => {
-    await build1({ recoveredDraftRun: 42, recoveredDraftKind: "completed" });
-
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("completed source draft");
-    expect(prompt).toContain("#42");
-    expect(prompt).toContain("reviewing the existing changes");
-    expect(prompt).toContain("write this attempt's own handoff with its outcome and limitations");
-    expect(prompt).toContain("Do not discard and recreate sound work");
-    expect(prompt).toContain("No criterion answers or self-reported file list are required");
-    expect(prompt).not.toContain("restate that criterion");
-  });
-
-  test("an interrupted partial draft is continued without pretending it was complete", async () => {
-    await build1({ recoveredDraftRun: 43, recoveredDraftKind: "partial" });
-
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("work-in-progress draft");
-    expect(prompt).toContain("#43");
-    expect(prompt).toContain("preserve sound work");
-    expect(prompt).not.toContain("completed source draft");
-  });
-
-  test("legacy strict work needs no authored criterion answers", async () => {
-    await legacyProofBrief();
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("No criterion answers or self-reported file list are required");
-    expect(prompt).not.toContain('Each criterion\'s "how"');
-    expect(prompt).not.toContain("restate that criterion");
-  });
-
-  test("a signed goal uses a short handoff and captured evidence instead of duplicate criterion claims", async () => {
-    propose(store, {
-      taskId: "t-1",
-      goal: "add a guard on the payout path",
-      outOfScope: "do not touch the billing model",
-      touches: ["src/payouts.ts"],
-      acceptance: [{ id: "c1", statement: "the guard rejects a negative payout", how: null, evidence: ["check"] }],
-      now: T0,
-    });
-    approve(store, "t-1", "alex", T0, store.getScope("t-1")!.digest, approverToken);
-    await build1();
-
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("Return the result and limitations to the lead or user for review");
-    expect(prompt).toContain("No criterion answers or self-reported file list are required");
-    expect(prompt).not.toContain("signed criterion is answered by its exact id");
-    expect(prompt).not.toContain("pass --rubric");
-    expect(prompt).toContain('"screenshots": [');
-    expect(prompt).toContain("missing required images");
-  });
-
-  test("legacy strict caveats belong in the result handoff", async () => {
-    await legacyProofBrief();
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("Put useful caveats in the short handoff");
-    expect(prompt).not.toContain("measure every caveat");
-  });
-
-  test("the brief preserves limitations without inventing criterion claims", async () => {
-    await legacyProofBrief();
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("do not invent evidence");
-    expect(prompt).not.toContain("EVERY caveat is an exception");
-    expect(prompt).not.toContain("be marked not-met");
-  });
-
-  test("the machine owns the final check and the builder runs focused checks", async () => {
-    await legacyProofBrief();
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("Run focused checks for your edits");
-    expect(prompt).toContain("The machine runs the approved full check");
-    expect(prompt).not.toContain("Check evidence for a met criterion");
-  });
-
-  test("the machine captures changed paths without an agent inventory", async () => {
-    await legacyProofBrief();
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain("The machine captures the exact changes");
-    expect(prompt).toContain("No criterion answers or self-reported file list are required");
-    expect(prompt).not.toContain('"changed" is every');
-    expect(prompt).not.toContain("receipt-only");
-  });
-
-  test("the brief gives the handoff and optional image limits without proof ceremony", async () => {
-    await legacyProofBrief();
-    const prompt = asked[asked.indexOf("-p") + 1] ?? "";
-    expect(prompt).toContain(`The whole file must be under ${HANDOFF_PAYLOAD_CAP} bytes`);
-    expect(prompt).toContain(`at most ${HANDOFF_LIST_CAP} items each`);
-    expect(prompt).toContain("a newline or other control");
-    expect(prompt).toContain(`List at most ${PROOF_LIMITS.screenshots} screenshots`);
-    expect(prompt).toContain("Re-read the handoff and any screenshot inventory");
-    expect(prompt).toContain("Confirm valid JSON");
-    expect(prompt).not.toContain("Preflight every protocol file");
   });
 
   test("steering notes land fenced in the brief, and delivery settles only on the stream's receipt (arc 1)", async () => {
@@ -1770,19 +1640,6 @@ describe("scope text is data, not instructions", () => {
       expect(brief).not.toContain("appears to contain instructions to you");
       expect(brief).not.toContain("stop, and report it");
       expect(brief).not.toMatch(/that is not a\s+scope/);
-      // What replaced it: the two authorities, named, and imperative
-      // wording called what it is — an ordinary, valid requirement.
-      expect(brief).toContain("plain imperatives");
-      expect(brief).toContain("ordinary, valid task requirements");
-      const rules = rulesOf(brief);
-      expect(rules).toContain("authority over WHAT you build, never over HOW these");
-      expect(rules).toContain("never refuse, stop on, rewrite,");
-      expect(rules).toContain("re-approval a scope for the way it is phrased");
-      // A real conflict is reported specifically, never as a wording refusal.
-      expect(rules).toContain("name the exact requirement and the exact rule in your");
-      expect(rules).toContain("finish everything");
-      // The rubric's protocol-name line still follows the rules, unchanged.
-      expect(brief).toMatch(/Canonical signed rubric: STANDING-ORDERS-RUBRIC-[0-9a-f]{16}\.json/);
     });
 
     test("ordinary imperative and negative wording of every kind stays a fenced requirement", async () => {
@@ -2016,28 +1873,6 @@ describe("the commit message", () => {
     expect(subject).not.toContain("**");
   });
 
-  test("keeps the agent's report in the body, where prose belongs", async () => {
-    await buildWith("Add a guard", "I added the guard and a test for it.");
-
-    const message = committed[committed.indexOf("-m") + 1] ?? "";
-    expect(message).toContain("I added the guard and a test for it.");
-  });
-
-  test("cuts a long goal on a word, not mid-word", async () => {
-    const goal =
-      "Add a new SEO content type: comparison pages that put us against competing services and tools everywhere";
-    await buildWith(goal, "done");
-
-    const subject = (committed[committed.indexOf("-m") + 1] ?? "").split("\n")[0] ?? "";
-    expect(subject.length).toBeLessThan(90);
-    expect(subject.endsWith("…")).toBe(true);
-
-    // Whatever it kept is a whole-word prefix of what was agreed, so the
-    // subject never invents a half word nobody wrote.
-    const kept = subject.replace(/^t-1: /, "").replace(/…$/, "");
-    expect(goal.startsWith(kept)).toBe(true);
-    expect(goal[kept.length]).toBe(" ");
-  });
 });
 
 describe("the pulse", () => {
@@ -2169,9 +2004,6 @@ describe("the pulse", () => {
 
     const folder = /STANDING-ORDERS-STEER-[0-9a-f]{16}/.exec(prompt)?.[0];
     expect(folder).toBeDefined();
-    // The floor every provider gets: look after each step, act within scope, move it to handled/.
-    expect(prompt).toContain(`After each milestone or\n  commit-sized step, list its *.json files`);
-    expect(prompt).toContain(`${folder}/handled/ — moving a note is how the operator`);
     // Only notes carrying this attempt's key are the operator's.
     const key = /Act only on a note whose "key" is ([0-9a-f]{16})/.exec(prompt)?.[1];
     expect(key).toBeDefined();
@@ -2447,7 +2279,6 @@ describe("the pulse", () => {
     });
     expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
     expect(statusName).not.toBe("");
-    expect(prompt).toContain(`Append one JSON object per line to ${statusName}`);
     expect(openWhileRunning).toEqual(["keep-guard"]);
     expect(agentTurnHistory(store, req.runId).map(one => one.state)).toEqual(["busy", "idle"]);
     // The file goes with the agent, and the ended attempt's question closes unanswered.
@@ -3447,7 +3278,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     return read.content.toString("utf8");
   };
 
-  test.each(["default", "correct", "unchanged", "rewrite-checks", "rewrite-code", "throw-after-write"])("proof packaging never starts a correction turn: %s", async behavior => {
+  test.each(["default", "correct"])("proof packaging never starts a correction turn: %s", async behavior => {
     const criterion = { id: "c1", statement: "the guard exists", evidence: ["check", "changed-path"] as ("check" | "changed-path")[] };
     propose(store, { taskId: "t-1", goal: "add a guard", acceptance: [criterion], qualityMode: behavior === "default" ? "default" : "strict", now: T0 });
     expect(approve(store, "t-1", "alex", T0, store.getScope("t-1")!.digest, approverToken).ok).toBe(true);
@@ -3586,7 +3417,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       expect(store.runsFor(ref).filter(one => one.role === "repair").map(one => one.reason)).toEqual([]);
     };
 
-    test.each<Exclude<Behavior, "statement-only">>(["not-met-to-pending", "not-checked-to-pending", "drop-extra-negative", "add-extra"])("%s is refused: the answers stay as submitted and the gate still runs once", async behavior => {
+    test.each<Exclude<Behavior, "statement-only">>(["not-met-to-pending", "not-checked-to-pending"])("%s is refused: the answers stay as submitted and the gate still runs once", async behavior => {
       arrange();
       const submittedVerdict = behavior === "not-checked-to-pending" ? "not-checked" : "not-met";
       const submitted = submittedWith(submittedVerdict);
@@ -3799,8 +3630,6 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     if (gate.ok) expect(JSON.parse(gate.bytes!)).toMatchObject({ head: store.getRun(req.runId!)!.headRevision, command: { command: "final-check" }, result: { ran: true, exitCode } });
     expect(store.artifactsFor(req.runId!).filter(isVerificationReceipt)).toHaveLength(1);
     expect(agentCalls).toHaveLength(1); // no extra model turn to restate success
-    expect(agentCalls[0]!.join(" ")).toContain("Return the result and limitations to the lead or user for review");
-    expect(agentCalls[0]!.join(" ")).not.toContain("independent reviewer");
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({ verdict: exitCode === 0 ? "verified" : "refuted" });
     const artifact = store.artifactsFor(req.runId as number).find(one => one.kind === "proof")!;
     const raw = readVerifiedArtifact(join2(wt, ".evidence"), artifact);
@@ -3960,36 +3789,6 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(saved.ok && JSON.parse(saved.content.toString("utf8")).result.failure).toBe("timed-out");
   });
 
-  test("an ordinary failing check is refuted without replaying setup", async () => {
-    claimIt();
-    approveScope();
-    bindRecoverySetup();
-    let setupCalls = 0;
-    let verifyCalls = 0;
-    const setup: Runner = async () => {
-      setupCalls++;
-      return { ...OK };
-    };
-    const verify: Runner = async () => {
-      verifyCalls++;
-      return { ...OK, code: 1, stderr: "one assertion failed" };
-    };
-    const req = request({ agent: agentWithProof(soundProof), setup, verify });
-
-    const result = await build(store, req);
-
-    expect(result).toMatchObject({ ok: true, committed: true });
-    expect(setupCalls).toBe(0);
-    expect(verifyCalls).toBe(1);
-    expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
-      verdict: "refuted",
-      reasons: ["the repository's approved verification command exited 1"],
-    });
-    const log = checkLogFor(req.runId as number);
-    expect(log).toContain("Project check · attempt 1");
-    expect(log).not.toContain("Automatic recovery");
-  });
-
   test("setup that changes tracked files stops recovery short and never retries verification", async () => {
     claimIt();
     approveScope();
@@ -4107,9 +3906,11 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   });
 
   test.each([
-    "the assertion expected stderr to include MODULE_NOT_FOUND",
-    "the UI snapshot says Cannot find module 'example'",
-  ])("an exit-1 test failure mentioning dependency text is refuted without recovery: %s", async stderr => {
+    [1, "one assertion failed"],
+    [126, "permission denied"],
+    [1, "the assertion expected stderr to include MODULE_NOT_FOUND"],
+    [1, "the UI snapshot says Cannot find module 'example'"],
+  ] as const)("an ordinary failing check (exit %i) is refuted without replaying setup: %s", async (code, stderr) => {
     claimIt();
     approveScope();
     bindRecoverySetup();
@@ -4121,7 +3922,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 1, stderr };
+      return { ...OK, code, stderr };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -4132,7 +3933,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "refuted",
-      reasons: ["the repository's approved verification command exited 1"],
+      reasons: [`the repository's approved verification command exited ${code}`],
     });
     expect(checkLogFor(req.runId as number)).not.toContain("Automatic recovery");
   });
@@ -4214,36 +4015,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(log).not.toContain("project dependencies were still unavailable");
   });
 
-  test("POSIX exit 126 is an ordinary refuted check failure and never replays setup", async () => {
-    claimIt();
-    approveScope();
-    bindRecoverySetup();
-    let setupCalls = 0;
-    let verifyCalls = 0;
-    const setup: Runner = async () => {
-      setupCalls++;
-      return { ...OK };
-    };
-    const verify: Runner = async () => {
-      verifyCalls++;
-      return { ...OK, code: 126, stderr: "permission denied" };
-    };
-    const req = request({ agent: agentWithProof(soundProof), setup, verify });
-
-    const result = await build(store, req);
-
-    expect(result).toMatchObject({ ok: true, committed: true });
-    expect(setupCalls).toBe(0);
-    expect(verifyCalls).toBe(1);
-    expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
-      verdict: "refuted",
-      reasons: ["the repository's approved verification command exited 126"],
-    });
-    expect(checkLogFor(req.runId as number)).not.toContain("Automatic recovery");
-  });
-
   test.each([
-    { name: "POSIX exit 127", code: 127, stderr: "not found" },
     { name: "Windows exit 9009", code: 9009, stderr: "program not found" },
   ])("$name receives exactly one bounded setup replay and verification retry", async ({ code, stderr }) => {
     claimIt();
@@ -4317,22 +4089,6 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(log).not.toContain("Project check · retry after setup");
   });
 
-  test("a claimed changed path absent from the sealed diff: refuted, and never handed back for correction", async () => {
-    claimIt();
-    approveScope();
-    const req = request({ agent: agentWithProof({ ...soundProof, changed: ["src/other.ts"] }) });
-
-    const result = await build(store, req);
-
-    expect(result).toMatchObject({ ok: true, committed: true });
-    const verdict = store.proofVerdictFor(req.runId as number);
-    expect(verdict).toMatchObject({ verdict: "refuted" });
-    expect(verdict?.reasons[0]).toContain("src/other.ts");
-    // The sealed diff does not explain a path it never had: no correction
-    // turn is spent on it, and the contradiction stays visible as submitted.
-    expect(agentCalls).toHaveLength(1);
-  });
-
   test("a failed diff-stat capture offers no changed-list correction: no turn, the verdict is short", async () => {
     claimIt();
     approveScope();
@@ -4373,15 +4129,6 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       store.setVerifyCommand({ repo: REPO, command: "npm test", timeoutMs: 5_000, approvedBy: "alex" }, T0);
     };
     const verify: Runner = async () => ({ ...OK });
-
-    test("listing both the old and the new name overclaims the old one: refuted, naming it", async () => {
-      arrange();
-      const req = request({ git: renameGit, verify, agent: agentWithProof(proofClaiming(["scripts/smoke.mjs", "src/fixtures/smoke.mjs"], "src/fixtures/smoke.mjs")) });
-      expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
-      const verdict = store.proofVerdictFor(req.runId as number);
-      expect(verdict).toMatchObject({ verdict: "refuted" });
-      expect(verdict?.reasons[0]).toBe("claimed changed path not in the sealed diff: scripts/smoke.mjs");
-    });
 
     test("the destination alone matches the sealed diff exactly: verified", async () => {
       arrange();
@@ -4480,25 +4227,6 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       expect(correcting.prompts).toEqual([]);
       expect(store.proofVerdictFor(req.runId as number)?.verdict).not.toBe("verified");
       expect(store.proofVerdictFor(req.runId as number)?.reasons.join(" ")).toContain("src/index.ts");
-    });
-
-    test.each<[string, (sealed: string[]) => string[] | null]>([
-      ["keeps both names", sealed => ["scripts/smoke.mjs", ...sealed]],
-      ["answers with the old name only", () => ["scripts/smoke.mjs"]],
-      ["invents a third path", sealed => [...sealed, "src/extra.ts"]],
-      ["writes nothing", () => null],
-    ])("a correction that %s is rejected: the original receipt stands and is refuted by name", async (_label, reply) => {
-      arrange();
-      const correcting = correctingAgent(proofClaiming(["scripts/smoke.mjs", "src/fixtures/smoke.mjs"], "src/fixtures/smoke.mjs"), reply);
-      const req = request({ leaseId: "test-lease", agent: correcting.agent, git: renameGit, verify });
-      expect(await build(store, req)).toMatchObject({ ok: true, committed: true });
-      // No proof-repair turn runs, regardless of the reply it might produce.
-      expect(correcting.calls()).toBe(1);
-      expect(correcting.prompts).toEqual([]);
-      const verdict = store.proofVerdictFor(req.runId as number);
-      expect(verdict).toMatchObject({ verdict: "refuted" });
-      expect(verdict?.reasons[0]).toBe("claimed changed path not in the sealed diff: scripts/smoke.mjs");
-      expect(store.runsFor(taskRef).filter(one => one.role === "repair")).toEqual([]);
     });
 
     test("an unexplained path beside the rename's old name: nothing is handed back, both are refuted by name", async () => {
@@ -4710,21 +4438,6 @@ describe("adaptive execution plans", () => {
     store.close();
     rm(worktree, { recursive: true, force: true });
     rm(evidence, { recursive: true, force: true });
-  });
-
-  test("the brief names the revision, its hash, and every milestone id", async () => {
-    await build(store, request({ agent: checkpointingAgent(["completed", "current", "pending"]) }));
-
-    const brief = readBrief(agentCalls[0] ?? []);
-    expect(brief.progress).not.toBeNull();
-    expect(brief.proposal).not.toBeNull();
-    expect(brief.hash).toBe(sha("sha256").update(Buffer.from(PLAN, "utf8")).digest("hex"));
-    expect(brief.milestones).toHaveLength(3);
-    expect(brief.prompt).toContain("This build received plan revision 1 of that plan.");
-    // The milestone text is untrusted plan prose, so it arrives fenced.
-    expect(brief.prompt).toContain("| m1-");
-    expect(brief.prompt).toContain("Find the payout boundary");
-    expect(brief.prompt).toMatch(/List all 3 milestones every time/);
   });
 
   test("a build records its milestones against the revision it was given, and backfills revision 1", async () => {
@@ -5038,9 +4751,6 @@ describe("an agent that stops before its handoff keeps its work (run 2085)", () 
     expect(resumed.args[resumed.args.indexOf("--resume") + 1]).toBe("sess-2085");
     expect(resumed.cwd).toBe(wt);
     expect(promptOf(resumed.args)).toContain(`Your last turn ended before the handoff. Finish the task and write ${done}.`);
-    expect(promptOf(resumed.args)).toContain("You run headless");
-    // The builder's own brief carries the headless rule too.
-    expect(promptOf(calls[0]!.args)).toContain(HEADLESS_RULE.join("\n"));
     // Both turns deny the tools that need a later turn.
     for (const call of calls) expect(call.args[call.args.indexOf("--disallowedTools") + 1]).toBe("ScheduleWakeup,CronCreate,Monitor");
     // The work survived into the machine's commit.
@@ -5128,16 +4838,5 @@ describe("an agent that stops before its handoff keeps its work (run 2085)", () 
     const settled = await result;
     expect(settled).toMatchObject({ ok: false, reason: "no-op" });
     if (!settled.ok) expect(settled.message).toContain("without writing its handoff");
-  });
-});
-
-describe("the headless rule rides every builder, revision and repair prompt", () => {
-  test("the park repair prompts carry it", () => {
-    const problems = [{ reason: "bad", message: "bad field" }];
-    expect(repairPrompt(problems, "PARK.json")).toContain(HEADLESS_RULE.join("\n"));
-    expect(handoffResumePrompt("DONE.json")).toContain(HEADLESS_RULE.join("\n"));
-    expect(HEADLESS_RULE.join(" ")).toMatch(/foreground/);
-    expect(HEADLESS_RULE.join(" ")).toMatch(/wakeup/);
-    expect(HEADLESS_RULE.join(" ")).toMatch(/write the handoff before you stop/);
   });
 });

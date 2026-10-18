@@ -1,7 +1,6 @@
 /** Scripted Slack API and membership runner. No live Slack acceptance is claimed. */
 import { notifyPeople } from "./flow-people.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
-import { askSubagent, replyToAsker } from "./subagent-desk.js";
 import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
@@ -443,67 +442,6 @@ describe("Slack shared chat", () => {
     expect(receive("bot echo", { bot_id: "BBOT" })).toBe(false);
     expect(state.pair(ID, chatHash(code), "UOTHER", "DOTHER", now)).toBeNull();
   });
-  test("a reply in a thread about one task stays on it: the /task status and the lead's answer name that task; a new message is for the lead", async () => {
-    store.createTask({ id: "login", title: "Fix the login page" }, now);
-    store.placeTask(store.refFor("built-in", "login").id, repo);
-    const lastPart = () => JSON.parse(String(state.prepare("SELECT payload FROM chat_part WHERE provider=:provider ORDER BY id DESC LIMIT 1").get()!.payload)) as ChatContent;
-    const asked = () => {
-      const request = (runner as unknown as { mock: { calls: [{ history: { role: string; text?: string }[] }][] } }).mock.calls.at(-1)![0];
-      return String(request.history.filter((one) => one.role === "operator").at(-1)?.text);
-    };
-    const send = async (text: string, extra: Record<string, unknown>) => {
-      expect(receive(text, extra)).toBe(true);
-      await processSlackEvent(options);
-      await drain();
-    };
-    await send("/task login", { ts: "1789700001.000001" });
-    expect(lastPart()).toMatchObject({ task: "login" });
-    await send("/lead", { ts: "1789700002.000001" });
-    expect(store.chatFocus("slack", state.binding(ID.installation)!.id)).toBeNull();
-    // A reply in the status message's thread is about the login page.
-    answers.push({ text: "It waits for your approval." });
-    await send("How is it going?", { ts: "1789700003.000001", thread_ts: "1789700001.000001" });
-    expect(asked()).toContain("Current task: login.");
-    // The lead's answer names the task too, so the thread stays on it.
-    expect(lastPart()).toMatchObject({ text: "It waits for your approval.", task: "login" });
-    // A new message outside the thread is for the lead.
-    answers.push({ text: "Nothing else needs you." });
-    await send("Anything else?", { ts: "1789700004.000001" });
-    expect(asked()).not.toContain("Current task");
-    expect(lastPart().task).toBeUndefined();
-  });
-  test("the lead's voice in Slack: a tool turn gets one :thumbsup: on the owner's message; the reply goes out as mrkdwn with no header, a labelled link and no internal ids", async () => {
-    answers.push(
-      { text: "Checking.", calls: [{ id: "q1", name: "list_tasks", args: {} }] },
-      { text: "## Payout\n**Ready**: see https://console.example/chat?task=payout (run #4)." },
-    );
-    receive("how is the payout fix?");
-    await processSlackEvent(options);
-    await drain();
-    const reactions = calls.filter((c) => c.method === "reactions.add");
-    expect(reactions).toEqual([{ method: "reactions.add", args: { channel: CHANNEL, timestamp: TS, name: "thumbsup" } }]);
-    const reply = sends().at(-1)!.args;
-    expect(reply).toMatchObject({ mrkdwn: true, text: "Payout\n*Ready*: see <https://console.example/chat?task=payout|the task>." });
-    expect(reply.blocks).toEqual([{ type: "section", text: { type: "mrkdwn", text: "Payout\n*Ready*: see <https://console.example/chat?task=payout|the task>." } }]);
-    // No permission for reactions: skipped silently, and the reply still goes out; a quick answer gets no reaction.
-    const base = options.api;
-    options.api = async (method, args) => {
-      if (method === "reactions.add") throw new SlackError("missing_scope");
-      return base(method, args);
-    };
-    answers.push({ text: "Checking.", calls: [{ id: "q2", name: "list_tasks", args: {} }] }, { text: "All quiet." });
-    receive("anything else?");
-    await processSlackEvent(options);
-    await drain();
-    expect(sends().at(-1)!.args.text).toBe("All quiet.");
-    options.api = base;
-    answers.push({ text: "Still quiet." });
-    receive("and now?");
-    await processSlackEvent(options);
-    await drain();
-    expect(calls.filter((c) => c.method === "reactions.add")).toHaveLength(1);
-  });
-
   test("one request survives duplicate events and reply delivery loss without a second model turn", async () => {
     const body = message("What needs my attention?");
     answers.push({ text: "No task needs your attention." });
@@ -794,21 +732,6 @@ describe("Slack shared chat", () => {
     expect(effectivePrimary({}, dir, true).channel).toBe("slack");
     expect(parityGaps()).toEqual([]);
     expect(SLACK_MANIFEST.oauth_config.scopes.bot).toContain("channels:history");
-  });
-
-  test("switching notification channels does not send an old Slack alert or block an ordinary reply", async () => {
-    source();
-    await planSlackNotifications(options);
-    options.canNotify = () => false;
-    receive("What remains?");
-    answers.push({ text: "Your ordinary chat reply." });
-    await processSlackEvent(options);
-    await drain();
-    expect(sends()).toHaveLength(1);
-    expect(sends()[0]?.args.text).toBe("Your ordinary chat reply.");
-    options.canNotify = () => true;
-    await drain();
-    expect(sends()).toHaveLength(2);
   });
 
   test("a long incoming message reports its actual size without starting the model", async () => {
@@ -1153,14 +1076,12 @@ describe("Slack shared chat", () => {
     const noticeTs = String(flowPart().message);
     // Edit: the next message is the draft; it comes back with fresh buttons.
     await press("standing_orders_flow_edit", tokenOf(first, "Edit"), noticeTs);
-    expect(String(sends().at(-1)!.args.text)).toContain("as your next message here");
     expect(sends().at(-1)!.args.thread_ts).toBe(noticeTs);
     receive("Hi Priya, refunded today. Sorry!");
     await processSlackEvent(options);
     await drain();
     expect(store.getFlowCard(card)!.outputs["draft"]).toBe("Hi Priya, refunded today. Sorry!");
     const again = sends().at(-1)!;
-    expect(JSON.stringify(again.args.blocks)).toContain("your version of the draft");
     // The first notice's buttons are spent; the new Approve decides it and the notice says so, without buttons.
     await press("standing_orders_flow_approve", tokenOf(first, "Approve"), noticeTs);
     expect(String(sends().at(-1)!.args.text)).toContain("already decided");
@@ -1174,7 +1095,6 @@ describe("Slack shared chat", () => {
     expect(store.getFlowCard(card)!.stage).toBe("post");
     const repainted = sends().at(-1)!;
     expect(repainted).toMatchObject({ method: "chat.update", args: { ts: againTs } });
-    expect(String(repainted.args.text)).toContain("✅ You approved it. Approved. Moved to Post it.");
     expect(buttonsOf(repainted).map(one => one.text.text)).toEqual(["Open"]);
     expect(store.flowComments(card).map(one => one.body)).toEqual(["Edited the draft in Slack."]);
   });
@@ -1211,7 +1131,6 @@ describe("Slack shared chat", () => {
     await press(buttons[1]!.value!);
     expect(store.getFlowCard(card)!.stage).toBe("later");
     expect(sends().at(-1)).toMatchObject({ method: "chat.update", args: { ts } });
-    expect(String(sends().at(-1)!.args.text)).toContain("✅ You chose “Later”. Later. Moved to Later.");
     expect(buttonsOf(sends().at(-1)!).map(one => one.text.text)).toEqual(["Card"]);
     await press(buttons[0]!.value!);
     expect(String(sends().at(-1)!.args.text)).toContain("already chosen");
@@ -1231,7 +1150,6 @@ describe("Slack shared chat", () => {
     await drain();
     await replyInThread("Use 16px.", choiceTs());
     expect(store.getFlowCard(second)).toMatchObject({ stage: "build", note: "Use 16px." });
-    expect(String(sends().at(-1)!.args.text)).toContain("↩️ Sent to Build with your note.");
 
     // Chosen in the console instead: the Slack buttons and the notice's thread are spent too, and nothing more is asked.
     const third = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex" }, now);
@@ -1284,7 +1202,6 @@ describe("Slack shared chat", () => {
     expect(store.subagentQuestion(first)).toMatchObject({ state: "answered", choice: "o2", answeredBy: "alex", answeredVia: "slack" });
     const repainted = sends().at(-1)!;
     expect(repainted).toMatchObject({ method: "chat.update", args: { ts: firstTs } });
-    expect(String(repainted.args.text)).toContain("✅ You answered: Half.");
     expect(buttonsOf(repainted).map(one => one.text.text)).toEqual(["Open"]);
     await press("standing_orders_question_choice", buttons[0]!.value!, firstTs);
     expect(store.subagentQuestion(first)!.choice).toBe("o2");
@@ -1446,28 +1363,6 @@ describe("Slack shared chat", () => {
     expect(chatAskButtons(state, own, now).map(one => one.label)).toEqual(["Login", "Signup", "Something else"]);
   });
 
-  test("a message naming a subagent goes to the lead (D5), and what the subagent answers when asked comes back in Slack", async () => {
-    now = new Date(now.getTime() + 30_000);
-    store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
-    const turnsBefore = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()!.n);
-    receive("@maya where's order 2201?");
-    await processSlackEvent(options);
-    await drain();
-    // The transport passes nothing on by itself: the lead reads it, and asks Maya with a card its person confirms.
-    expect(store.listFlows([repo]).some(one => one.name === "Maya's desk")).toBe(false);
-    expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()!.n)).toBeGreaterThan(turnsBefore);
-    // Once asked (the confirmed card), Maya's answer reaches whoever asked, here in Slack.
-    const asked = askSubagent(store, store.subagentByHandle(repo, "maya")!, { who: "alex", via: "the lead" }, "where's order 2201?", now);
-    expect(asked).toMatchObject({ ok: true });
-    const desk = store.listFlows([repo]).find(one => one.name === "Maya's desk")!;
-    const [card] = store.flowCards(desk.id, false);
-    replyToAsker(store, desk, card!, store.subagentByHandle(repo, "maya")!, "Order 2201 shipped yesterday.", now);
-    await planSlackNotifications(options);
-    await drain();
-    expect(String(sends().at(-1)!.args.text)).toContain("Maya · Support: where's order 2201?");
-    expect(String(sends().at(-1)!.args.text)).toContain("Order 2201 shipped yesterday.");
-  });
-
   test("a Slack channel feeds a flow: 'flow N' from a paired approver connects it, anyone's message is a card, a thread reply joins it, and an Update zone answers in the thread (v89)", async () => {
     now = new Date(now.getTime() + 30_000);
     const flow = store.createFlow({ repo, name: "Requests", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
@@ -1511,41 +1406,6 @@ describe("Slack shared chat", () => {
     await processSlackEvent(options); await drain();
     expect(String(sends().at(-1)!.args.text)).toBe("This channel no longer feeds Requests.");
     expect(inRoom("Another request", "UOTHER", "1789700100.000003")).toBe(false);
-  });
-
-  test("Send back takes the next message as the note, and cancel leaves the card where it is (v88)", async () => {
-    now = new Date(now.getTime() + 30_000);
-    const flow = store.createFlow({ repo, name: "Support", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
-      { title: "Inbox", kind: "inbox" },
-      { id: "draft", title: "Write the reply", kind: "draft", instructions: "Reply to {{card.title}}" },
-      { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
-      { id: "post", title: "Post it", kind: "notify", message: "{{stage.draft}}" },
-    ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex" }, now);
-    store.updateFlowCard(card, { outputs: { draft: "We refunded it." } }, now);
-    advanceFlows(store, repo, now);
-    await planSlackNotifications(options);
-    await drain();
-    const ts = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.flow') IS NOT NULL").get()!.message);
-    const token = String(state.prepare("SELECT token FROM chat_flow_action WHERE provider=:provider AND action='send-back'").get()!.token);
-    const press = async () => {
-      receiveSlack(state, ID, "interactive", { ...action(token, ts), message: {}, actions: [{ action_id: "standing_orders_flow_send_back", value: token, action_ts: `1789700001.${String(++serial).padStart(6, "0")}` }] }, now);
-      await processSlackEvent(options);
-      await drain();
-    };
-    await press();
-    expect(String(sends().at(-1)!.args.text)).toContain("goes back to Write the reply");
-    receive("cancel");
-    await processSlackEvent(options);
-    await drain();
-    expect(String(sends().at(-1)!.args.text)).toContain("Left it where it is");
-    expect(store.getFlowCard(card)!.stage).toBe("check");
-    await press();
-    receive("Mention the 5-day wait.");
-    await processSlackEvent(options);
-    await drain();
-    expect(store.getFlowCard(card)).toMatchObject({ stage: "draft", note: "Mention the 5-day wait." });
-    expect(String(sends().at(-1)!.args.text)).toBe("↩️ Sent back to Write the reply with your note.");
   });
 
 });

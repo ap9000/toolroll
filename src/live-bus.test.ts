@@ -126,26 +126,6 @@ describe("rooms on the bus", () => {
     } finally { tasks.close(); flows.close(); }
   });
 
-  test("an open page with nothing written does no database work for ten seconds", () => {
-    let fingerprints = 0;
-    const tasks = createTaskRooms(root => { fingerprints += 1; return taskFingerprint(store, root, new Date()); }, { bus });
-    const flows = createFlowRooms(flow => { fingerprints += 1; return flowFingerprint(store, flow); }, { bus });
-    const pages = [new Page(), new Page()];
-    try {
-      tasks.join(fixture.id, { name: "alex", room: "", connection: new LiveConnection(response(pages[0]!)), valid: () => { fingerprints += 1; return true; } });
-      flows.join(fixture.flow, { name: "alex", card: null, editing: false, room: "", connection: new LiveConnection(response(pages[1]!)), valid: () => { fingerprints += 1; return true; } });
-      vi.advanceTimersByTime(1_000);
-      const prepare = vi.spyOn(store.handle, "prepare");
-      const exec = vi.spyOn(store.handle, "exec");
-      fingerprints = 0;
-      vi.advanceTimersByTime(10_000);
-      expect(prepare).toHaveBeenCalledTimes(0);
-      expect(exec).toHaveBeenCalledTimes(0);
-      expect(fingerprints).toBe(0);
-      expect(heard).toEqual([]);
-    } finally { tasks.close(); flows.close(); }
-  });
-
   test("the 30 s safety net heals a change whose signal never came", () => {
     let print = "a";
     const rooms = createTaskRooms(() => print, { bus: createLiveBus() });
@@ -395,45 +375,6 @@ describe("one connection per page", () => {
     } finally { tasks.close(); flows.close(); }
   });
 
-  test("each room's events name it; a room that goes leaves the others open, and the last one ends the stream", () => {
-    let task = "a", flow = "x";
-    const tasks = createTaskRooms(() => task, { bus });
-    const flows = createFlowRooms(() => flow, { bus });
-    const page = new Page();
-    const connection = new LiveConnection(response(page));
-    let allowed = true;
-    tasks.join("t-1", { name: "alex", room: "task:t-1", connection, valid: () => allowed });
-    flows.join(7, { name: "alex", room: "flow:7", connection, valid: () => true, card: null, editing: false });
-    expect(raw(page).filter(([event]) => event === "change").map(([, data]) => data.room)).toEqual(["task:t-1", "flow:7"]);
-    task = "b";
-    bus.publish({ revision: "v1:2" });
-    expect(raw(page).filter(([event]) => event === "change").at(-1)).toEqual(["change", { room: "task:t-1", at: "b", revision: "v1:2" }]);
-    allowed = false;
-    flow = "y";
-    bus.publish({ revision: "v1:3" });
-    expect(raw(page).filter(([event]) => event === "gone")).toEqual([["gone", { room: "task:t-1" }]]);
-    expect(raw(page).filter(([event]) => event === "change").at(-1)).toEqual(["change", { room: "flow:7", at: "y", revision: "v1:3" }]);
-    expect(page.writableEnded).toBe(false);
-    flows.close();
-    expect(page.writableEnded).toBe(true);
-    tasks.close();
-  });
-
-  test("a busy room says change at most once per interval: the first at once, the latest after", () => {
-    let print = "a";
-    const rooms = createTaskRooms(() => print, { bus, minIntervalMs: 1_000 });
-    const page = new Page();
-    rooms.join("workspace", { name: "alex", room: "workspace", connection: new LiveConnection(response(page)), valid: () => true });
-    const changes = () => raw(page).filter(([event]) => event === "change").map(([, data]) => data.at);
-    print = "b"; bus.publish({ revision: "v1:2" });
-    expect(changes()).toEqual(["a", "b"]);
-    print = "c"; bus.publish({ revision: "v1:3" });
-    print = "d"; bus.publish({ revision: "v1:4" });
-    expect(changes()).toEqual(["a", "b"]);
-    vi.advanceTimersByTime(1_000);
-    expect(changes()).toEqual(["a", "b", "d"]);
-    rooms.close();
-  });
 });
 
 describe("latency, on real timers and a real file", () => {

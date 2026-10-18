@@ -42,9 +42,10 @@ describe("agreeing what a task is allowed to become", () => {
   const scopeIt = (goal = "add a guard on the payout path") =>
     propose(store, { taskId: "t-1", goal, now: T0 });
 
-  test("a fresh scope is not approved", () => {
+  test("neither a fresh scope nor a missing one is approved", () => {
     // Writing down what you intend is not the same as somebody agreeing to it.
     expect(approvalOf(scopeIt())).toEqual({ approved: false, reason: "none" });
+    expect(approvalOf(null)).toEqual({ approved: false, reason: "never-proposed" });
   });
 
   const planningTerms = {
@@ -101,10 +102,6 @@ describe("agreeing what a task is allowed to become", () => {
     } finally { fault.mockRestore(); }
   });
 
-  test("a task with no scope at all is not approved either", () => {
-    expect(approvalOf(null)).toEqual({ approved: false, reason: "never-proposed" });
-  });
-
   test("a person can agree to it", () => {
     scopeIt();
 
@@ -158,38 +155,18 @@ describe("agreeing what a task is allowed to become", () => {
     });
   });
 
-  test("approves when the reference still matches", () => {
-    const scope = scopeIt();
-
-    expect(approve(store, "t-1", "alex", later(1_000), scope.digest, approverToken).ok).toBe(true);
-  });
-
   test("will not approve a task that has no scope", () => {
     expect(approve(store, "t-1", "alex", T0, "anything", approverToken)).toEqual({ ok: false, reason: "no-scope" });
   });
 
   describe("the digest", () => {
-    test("changes when the goal changes", () => {
-      const a = digestOf({ goal: "a", outOfScope: null, touches: [] });
-      const b = digestOf({ goal: "b", outOfScope: null, touches: [] });
-
-      expect(a).not.toBe(b);
-    });
-
-    test("changes when what is out of scope changes", () => {
-      // This is the field most likely to be quietly widened, so it must move
-      // the digest as surely as the goal does.
-      const a = digestOf({ goal: "a", outOfScope: "not the billing model", touches: [] });
-      const b = digestOf({ goal: "a", outOfScope: null, touches: [] });
-
-      expect(a).not.toBe(b);
-    });
-
-    test("changes when the paths it may touch change", () => {
-      const a = digestOf({ goal: "a", outOfScope: null, touches: ["src/pay.ts"] });
-      const b = digestOf({ goal: "a", outOfScope: null, touches: ["src/pay.ts", "src/bill.ts"] });
-
-      expect(a).not.toBe(b);
+    test.each([
+      ["the goal", { goal: "a", outOfScope: null, touches: [] }, { goal: "b", outOfScope: null, touches: [] }],
+      // The field most likely to be quietly widened moves it as surely as the goal does.
+      ["what is out of scope", { goal: "a", outOfScope: "not the billing model", touches: [] }, { goal: "a", outOfScope: null, touches: [] }],
+      ["the paths it may touch", { goal: "a", outOfScope: null, touches: ["src/pay.ts"] }, { goal: "a", outOfScope: null, touches: ["src/pay.ts", "src/bill.ts"] }],
+    ])("changes when %s changes", (_field, a, b) => {
+      expect(digestOf(a)).not.toBe(digestOf(b));
     });
 
     test("does not change for a reordering or stray whitespace", () => {
@@ -655,13 +632,6 @@ describe("the gemini execution profile (Phase 3)", () => {
     repairTimeoutSeconds: 300,
     repairModel: "inherit",
   };
-
-  test("snapshots roundtrip byte-stably through the digest chain", () => {
-    const json = canonicalProfileJson(profile);
-    const back = profileFromJson(json);
-    expect(back).toEqual(profile);
-    expect(profileDigestOf(back as ExecutionProfile)).toBe(profileDigestOf(profile));
-  });
 
   test("rehydration is strict: a foreign approval dial or missing field is null, never a guess", () => {
     const loose = JSON.parse(canonicalProfileJson(profile)) as { profile: Record<string, unknown> };

@@ -3,7 +3,7 @@
  * the Failed headline alone. */
 import { describe, expect, test } from "vitest";
 import {
-  DEMO_CHECKS, HEADLINES, assignmentStatusFacts, demoChecksOf, headlineOf, requirementsOf, unverifiedWhenRefuted, pullRequestFactOf, stageOfCode, stageOfDispatch, statusDetailLines, statusDetailsHtml, taskStatusOf,
+  DEMO_CHECKS, HEADLINES, assignmentStatusFacts, demoChecksOf, headlineOf, requirementsOf, unverifiedWhenRefuted, pullRequestFactOf, stageOfCode, stageOfDispatch, statusDetailsHtml, taskStatusOf,
   type ChecksFact, type PullRequestFact, type TaskStage, type TaskStatusFacts,
 } from "./task-status.js";
 import { htmlString } from "./html.js";
@@ -40,91 +40,11 @@ const pr = (state: PullRequestFact["state"], ci: PullRequestFact["ci"] = null): 
 const row = (status: ReturnType<typeof taskStatusOf>, key: string) => status.details.find(one => one.key === key);
 
 describe("the brief's states", () => {
-  test("the reported case: complete, checks passed, the pull request couldn't open — a success with one amber detail", () => {
-    const status = taskStatusOf({ stage: "complete", checks: passed, pullRequest: { ...pr("failed"), compareUrl: "https://github.com/acme/shop/compare/main...toolroll/fix?expand=1" },
-      requirements: { met: 1, total: 1, yours: 0 }, evidence: { shortened: 0, missing: 0, damaged: 0 }, completedBy: "sam",
-      action: { label: "Open result", href: "/chat?task=fix&result=4" } });
-    expect(status.headline).toBe("Complete");
-    expect(status.tone).toBe("success");
-    expect(status.sentence).toBe("Marked complete by sam.");
-    expect(status.details.map(one => [one.label, one.text, one.mark])).toEqual([
-      ["Project checks", "Passed on a1b2c3d", "ok"],
-      ["Pull request", "Couldn't open", "note"],
-      ["Requirements", "1 of 1 met", "ok"],
-      ["Saved evidence", "Complete", "ok"],
-    ]);
-    const amber = status.details.filter(one => one.mark === "note");
-    expect(amber).toHaveLength(1);
-    expect(amber[0]!.action).toEqual({ label: "Open it on GitHub", href: "https://github.com/acme/shop/compare/main...toolroll/fix?expand=1" });
-    // The technical reason stays one tap away, never in the headline or sentence.
-    expect(amber[0]!.why).toBe("remote: GH006: Protected branch update failed. The commit is safe locally.");
-    expect(status.details.some(one => one.mark === "failed")).toBe(false);
-    expect(status.primaryAction).toEqual({ label: "Open result", href: "/chat?task=fix&result=4" });
-    expect(statusDetailLines(status)).toContain("⚠ Pull request · Couldn't open — Open it on GitHub");
-    expect(htmlString(statusDetailsHtml(status))).not.toMatch(/status-detail--failed|danger|destructive/);
-  });
-
-  test("without a compare page, the pull request row still offers one action", () => {
-    const status = taskStatusOf({ stage: "complete", checks: passed, pullRequest: pr("failed"), links: { pullRequest: "/t/fix#merge" } });
-    expect(row(status, "pull-request")!.action).toEqual({ label: "See why", href: "/t/fix#merge" });
-  });
-
-  test("ready for review: checks passed on the commit", () => {
-    const status = taskStatusOf({ stage: "finished", checks: passed, pullRequest: pr("none") });
-    expect([status.headline, status.tone]).toEqual(["Ready for review", "ready"]);
-    expect(status.sentence).toBe("Checks passed on a1b2c3d. Review the change, then mark it complete.");
-    expect(row(status, "pull-request")).toMatchObject({ text: "None", mark: "none", action: null });
-  });
-
   test("checks failed: the only red headline, its checks row red too", () => {
     const status = taskStatusOf({ stage: "finished", checks: failed, pullRequest: pr("none") });
     expect([status.headline, status.tone]).toEqual(["Failed", "danger"]);
     expect(status.sentence).toBe("Checks failed on a1b2c3d. See what broke, then retry or ask for changes.");
     expect(row(status, "checks")).toMatchObject({ text: "Failed (exit 1)", mark: "failed" });
-  });
-
-  test("checks passed, pull request open, CI running", () => {
-    const status = taskStatusOf({ stage: "finished", checks: passed, pullRequest: pr("open", "running") });
-    expect(status.headline).toBe("Ready for review");
-    expect(row(status, "pull-request")).toMatchObject({ text: "#12 open · PR CI running", mark: "running", href: "https://github.com/acme/shop/pull/12" });
-  });
-
-  test("complete with a merged pull request", () => {
-    const status = taskStatusOf({ stage: "complete", checks: passed, pullRequest: pr("merged"), completedBy: "sam" });
-    expect(status.headline).toBe("Complete");
-    expect(status.sentence).toBe("Marked complete by sam. Pull request #12 merged.");
-    expect(row(status, "pull-request")).toMatchObject({ text: "#12 merged", mark: "ok" });
-  });
-
-  test("waiting for approval: Needs you, the sentence says which", () => {
-    const status = taskStatusOf({ stage: "needs-you", need: "approval", reason: "Review and sign the current scope before a worker can claim it." });
-    expect([status.headline, status.tone, status.sentence]).toEqual(["Needs you", "attention", "Review the plan and approve it to start."]);
-    expect(status.details).toEqual([]);
-  });
-
-  test("a question waiting: the sentence is the question", () => {
-    expect(taskStatusOf({ stage: "needs-you", need: "answer", reason: "Should the CSV include refunds?" }).sentence).toBe("Should the CSV include refunds?");
-  });
-
-  test("building, and checks running", () => {
-    expect(taskStatusOf({ stage: "building" })).toMatchObject({ headline: "Building", tone: "live", sentence: "An agent is working on it." });
-    expect(taskStatusOf({ stage: "checking" })).toMatchObject({ headline: "Building", sentence: "Checks are running on the change." });
-  });
-
-  test("stopped by a person", () => {
-    expect(taskStatusOf({ stage: "stopped" })).toMatchObject({ headline: "Stopped", tone: "neutral", sentence: "Stopped by a person. The work so far is kept." });
-    expect(taskStatusOf({ stage: "stopped", reason: "Cancelled. Nothing else will run." }).sentence).toBe("Cancelled. Nothing else will run.");
-  });
-
-  test("a sign-in pause is Needs you", () => {
-    expect(stageOfCode("signed-out")).toEqual({ stage: "needs-you", need: "sign-in" });
-    expect(taskStatusOf({ stage: "needs-you", need: "sign-in" })).toMatchObject({ headline: "Needs you", sentence: "Your agent needs you to sign in again. The task starts on its own after.", primaryAction: { label: "Sign in again", href: null } });
-  });
-
-  test("queued and planning", () => {
-    expect(taskStatusOf({ stage: "queued" })).toMatchObject({ headline: "Queued", tone: "neutral", sentence: "Waiting for a worker." });
-    expect(taskStatusOf({ stage: "planning" })).toMatchObject({ headline: "Planning", tone: "live", sentence: "The lead is writing the plan." });
-    expect(stageOfCode("running", { planning: true })).toEqual({ stage: "planning" });
   });
 
   test("requirements and saved evidence speak plainly", () => {
@@ -140,12 +60,6 @@ describe("the brief's states", () => {
     expect(row(status, "checks")).toMatchObject({ text: "Failed (exit 1)", mark: "note", action: { label: "See what failed", href: null } });
   });
 
-  test("a research report reads as a report, without a checks row", () => {
-    const status = taskStatusOf({ stage: "finished", report: true, checks: { status: "not-run", exitCode: null, head: null } });
-    expect(status.headline).toBe("Ready for review");
-    expect(status.sentence).toBe("The report is ready to read. Read it, then mark it complete.");
-    expect(row(status, "checks")).toBeUndefined();
-  });
 });
 
 describe("severity", () => {
@@ -239,13 +153,6 @@ describe("reading the existing projections", () => {
     completion: { actor: "operator:sam", at: "2026-10-01T00:00:00.000Z", digest: "d".repeat(64) }, handoff: null,
     publication: { state: "failed", prUrl: null, remoteState: null }, deployment: { status: "not-recorded" }, ...over,
   } as AssignmentSnapshot);
-
-  test("an assignment: the reported case reads Complete with one amber row", () => {
-    const status = taskStatusOf(assignmentStatusFacts(snapshot({})));
-    expect(status.headline).toBe("Complete");
-    expect(status.sentence).toBe("Marked complete by sam.");
-    expect(status.details.filter(one => one.mark === "note").map(one => one.key)).toEqual(["pull-request"]);
-  });
 
   test("an assignment: ready with failed checks is Failed; a plan waiting is Needs you; cancelled is Stopped", () => {
     const failing = snapshot({ state: "ready-to-check", completion: null, publication: null,

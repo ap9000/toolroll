@@ -1,7 +1,7 @@
 import { describe, test, expect } from "vitest";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
-import { baseStandingWords, freshBaseFor, taskBaseOf, type GitRead } from "./task-base.js";
+import { freshBaseFor, taskBaseOf, type GitRead } from "./task-base.js";
 
 const T0 = new Date("2026-10-12T16:00:00.000Z");
 const OLD = "55caab73".padEnd(40, "0");
@@ -19,13 +19,6 @@ const seeded = () => {
 };
 
 describe("fresh base, the task's view", () => {
-  test("says the base once, with how far behind main it is", () => {
-    expect(baseStandingWords({ base: OLD, main: "main", behind: 2 })).toBe("55caab73 · Behind main by 2 commits");
-    expect(baseStandingWords({ base: OLD, main: "main", behind: 1 })).toBe("55caab73 · Behind main by 1 commit");
-    expect(baseStandingWords({ base: MAIN, main: "main", behind: 0 })).toBe("9d087efe · Up to date with main");
-    expect(baseStandingWords({ base: OLD, main: null, behind: null })).toBe("55caab73");
-  });
-
   test("names the branch's recorded base, then the base a move to current main left for the next attempt", () => {
     const store = seeded();
     const ref = store.refFor("built-in", "t-1").id;

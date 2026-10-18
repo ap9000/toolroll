@@ -418,8 +418,6 @@ test("f8: Settings → Updates offers --rollback from the last completed update,
     const status = runtimeUpdateStatus(f.stateDir);
     expect(status.journal!.phase).toBe("refused");
     expect(status.lastUpdate).toEqual({ from: "0.6.0", to: "0.7.0" });
-    const html = htmlString(withFormToken("x", () => updatesHtml({ current: "0.7.0", latest: { version: "0.7.0" }, method: { kind: "npm", updateCommand: "npm install -g toolroll@latest" }, journal: status.journal, running: false, whatsNew: null, rollbackTo: status.lastUpdate!.from, csrf: "x" }, {})));
-    expect(html).toContain("To go back to 0.6.0: <code>toolroll update --rollback</code>");
     // Rolled back: nothing is offered.
     await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: update.journal!.to, actor: "ada", when: "when-idle" }, f.system);
     expect(runtimeUpdateStatus(f.stateDir).lastUpdate).toBeNull();

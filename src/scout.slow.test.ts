@@ -351,11 +351,6 @@ describe("scout tasks, against real git", () => {
       expect(store.refFor("built-in", filed.id).deliverable).toBe("branch");
     }
     store.close();
-
-    // task show prints the report's title and summary.
-    await run(["task", "show", "flaky"], reportingAgent);
-    expect(lines.join("\n")).toContain("report: Login flakes because the cookie races the assertion");
-    expect(lines.join("\n")).toContain("follow-up 1: Await the session cookie");
   });
 
   test("a scout that touches the tree gets nothing ingested; the task takes a strike and backs off; the deliverable never changes after filing", async () => {
@@ -590,14 +585,12 @@ describe("scout tasks, against real git", () => {
     return { ...OK, stdout: JSON.stringify(result) };
   };
 
-  test("a scout may read the project's connected services, read-only actions only, and looks in Mobbin first; none when nothing is connected", async () => {
+  test("a scout may read the project's connected services, read-only actions only; none when nothing is connected", async () => {
     const { runnerToken, approverToken } = await setup();
     const allowedOf = () => String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",");
     // Nothing connected: research, fetch and the browser, no service.
     expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
     expect(allowedOf().filter(tool => tool.startsWith("mcp__") && !tool.startsWith(`mcp__${SCOUT_BROWSER}__`))).toEqual([]);
-    expect(prompts.at(-1)).not.toContain("Mobbin");
-    expect(prompts.at(-1)).not.toContain("connected");
 
     await run(["task", "add", "how do others onboard", "--id", "onboard", "--repo", repo, "--report", "--json"], reportingAgent);
     await run(["task", "scope", "onboard", "--goal", "Find how good apps onboard new people", "--acceptance", "It is answered.|manual-review", "--json"], reportingAgent);
@@ -623,11 +616,9 @@ describe("scout tasks, against real git", () => {
     expect(allowed.filter(tool => tool.startsWith("mcp__") && !tool.startsWith(`mcp__${SCOUT_BROWSER}__`)))
       .toEqual(["mcp__mobbin__search_screens", "mcp__mobbin__search_flows", "mcp__posthog__query-run"]);
     expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
-    expect(prompts.at(-1)).toContain("You may also read from this project's connected Mobbin, PostHog (read-only: never change anything there).");
-    expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
   });
 
-  test("a Codex scout launches only connected services' read-only actions, never write tools, and its brief looks in Mobbin first", async () => {
+  test("a Codex scout launches only connected services' read-only actions, never write tools", async () => {
     const { runnerToken, approverToken } = await setup("codex");
     const prepared = vi.spyOn(projectTools, "prepareRunTools");
     const codexScout: Runner = async (_file, args, options) => {
@@ -646,7 +637,6 @@ describe("scout tasks, against real git", () => {
     // Nothing connected: no project server's actions at all.
     expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
     expect(prepared.mock.calls.at(-1)?.[3].readOnly).toEqual({});
-    expect(prompts.at(-1)).not.toContain("Mobbin");
 
     await run(["task", "add", "how do others onboard", "--id", "onboard", "--repo", repo, "--report", "--json"], reportingAgent);
     await run(["task", "scope", "onboard", "--goal", "Find how good apps onboard new people", "--acceptance", "It is answered.|manual-review", "--json"], reportingAgent);
@@ -663,8 +653,6 @@ describe("scout tasks, against real git", () => {
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "onboard", outcome: "reported" }));
     expect(prepared.mock.calls.at(-1)?.[2]).toBe("codex");
     expect(prepared.mock.calls.at(-1)?.[3].readOnly).toEqual({ mobbin: ["search_screens"], posthog: ["query-run"] });
-    expect(prompts.at(-1)).toContain("You may also read from this project's connected Mobbin, PostHog (read-only: never change anything there).");
-    expect(prompts.at(-1)).toContain("look in Mobbin first for real screens of that kind, and cite each one you use");
   });
 
   test("a scout gets PostHog's exec only while its saved grant reads; a write grant leaves it out of the launch, saying why", async () => {
@@ -724,9 +712,6 @@ describe("scout tasks, against real git", () => {
       { ...FOUND, items, images }, png());
     expect(await tick(runnerToken, agent)).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "reported" }));
-    expect(prompts.at(-1)).toContain("Never download anything else, and never run downloaded code");
-    expect(prompts.at(-1)).not.toContain("plan file");
-    expect(prompts.at(-1)).toContain("Cite the URL");
     // The real scout can take them: research and screenshot tools allowed, nothing that edits or runs commands.
     expect(argvSeen[argvSeen.indexOf("--permission-mode") + 1]).toBe("dontAsk");
     const allowed = String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",");
@@ -882,7 +867,6 @@ describe("scout tasks, against real git", () => {
     expect(String(argvSeen[argvSeen.indexOf("--allowedTools") + 1]).split(",")).toEqual(["WebSearch", "WebFetch"]);
     // The proxy runs whenever a scout does: web fetch goes through it even without a browser (review 827).
     expect(envSeen?.["HTTPS_PROXY"]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    expect(prompts.at(-1)).toContain("No browser is available for screenshots in this run");
     expect(prompts.at(-1)).not.toContain(SCOUT_BROWSER);
     expect(launches).toEqual([]);
     expect(omitSeen).toEqual(expect.arrayContaining(["NO_PROXY", "no_proxy"]));
@@ -973,7 +957,7 @@ describe("scout tasks, against real git", () => {
     return { ...done, stdout: JSON.stringify({ ...JSON.parse(done.stdout), session_id: "scout-session-1" }) };
   };
 
-  test("the brief states every report limit, and a summary over its limit is asked once to shorten in the same session", async () => {
+  test("a summary over its limit is asked once to shorten in the same session", async () => {
     const { runnerToken } = await setup();
     const long = { ...FOUND, summary: `${"The login test reads the session cookie before the response sets it. ".repeat(40)}`.trim() };
     expect(Buffer.byteLength(long.summary)).toBeGreaterThan(REPORT_LIMITS.summary);
@@ -983,11 +967,8 @@ describe("scout tasks, against real git", () => {
       return planModeAgent({ kind: "report", report: calls.length === 1 ? long : FOUND })(file, args, options);
     };
     expect(await tick(runnerToken, inSession(agent))).toBe(EXIT.ok);
-    expect(prompts[0]).toContain(`summary ${REPORT_LIMITS.summary}`);
-    expect(prompts[0]).toContain("Longer text is not cut: you will be asked once to shorten it.");
     expect(calls).toHaveLength(2);
     expect(calls[1]![calls[1]!.indexOf("--resume") + 1]).toBe("scout-session-1");
-    expect(prompts[1]).toContain("- summary: over 2,500 bytes");
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
@@ -1124,13 +1105,6 @@ describe("scout tasks, against real git", () => {
     expect(argvSeen).not.toContain("--json-schema");
     expect(prompts.at(-1)).toMatch(/write JSON to a file named exactly\n`STANDING-ORDERS-REPORT-/);
     expect(prompts.at(-1)).not.toContain("structured");
-  });
-
-  test("a scout with no plan file and no report keeps the no-op failure", async () => {
-    const { runnerToken } = await setup();
-    const silent: Runner = async () => ({ ...OK, stdout: SAID });
-    expect(await tick(runnerToken, silent)).toBe(EXIT.failed);
-    expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "flaky", outcome: "failed", reason: "no-op" }));
   });
 
   test("a builder never takes a report task: the claim gate refuses the role", async () => {

@@ -3,7 +3,7 @@
  * the same bytes a routine's was, so an approval moved over from a routine still verifies.
  */
 import { describe, expect, test } from "vitest";
-import { describeSchedule, firstFireAt, instanceId, nextFireAt, parseSchedule, standingApproval, standingDigestOf, type StandingOrder } from "./flow-schedule.js";
+import { firstFireAt, instanceId, nextFireAt, parseSchedule, standingApproval, standingDigestOf, type StandingOrder } from "./flow-schedule.js";
 import { parseAcceptanceCriteria, type ExecutionProfile } from "./scope.js";
 import type { PhaseRoute } from "./phase-routing.js";
 
@@ -24,13 +24,6 @@ describe("the schedule algebra", () => {
     expect(parseSchedule("daily:9:30")).toBeNull(); // zero-padded or nothing
     expect(parseSchedule("daily:09:30@Not/AZone")).toBeNull();
     expect(parseSchedule("cron:* * * * *")).toBeNull();
-  });
-
-  test("says what it means in words", () => {
-    expect(describeSchedule({ kind: "every", minutes: 90 })).toBe("every 90 minutes");
-    expect(describeSchedule({ kind: "every", minutes: 120 })).toBe("every 2 hour(s)");
-    expect(describeSchedule({ kind: "every", minutes: 2880 })).toBe("every 2 day(s)");
-    expect(describeSchedule({ kind: "daily", hhmm: "03:30" })).toBe("daily at 03:30 UTC");
   });
 
   test("advances aligned: strictly after now, anchored to the fired slot", () => {

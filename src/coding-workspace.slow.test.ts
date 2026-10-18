@@ -864,14 +864,4 @@ describe('native coding workspace', () => {
     } finally { raw.close(); }
   });
 
-  test('a newer session record is refused plainly instead of being read as something else', async () => {
-    const session = await start();
-    const handle = (workspace as unknown as { db: DatabaseSync }).db;
-    expect(JSON.parse(String(handle.prepare('SELECT document FROM coding_session WHERE id=?').get(session.id)?.['document']))).toMatchObject({ version: 1, id: session.id });
-    expect(workspace.get(session.id, actor)).toEqual(session);
-    handle.prepare("UPDATE coding_session SET document=json_set(document,'$.version',2) WHERE id=?").run(session.id);
-    expect(() => workspace.get(session.id, actor)).toThrow('A saved coding session could not be read: version: made by a newer Toolroll (version 2; this one reads up to 1)');
-    handle.prepare("UPDATE coding_session SET document=json_set(document,'$.version',1) WHERE id=?").run(session.id);
-  });
-
 });

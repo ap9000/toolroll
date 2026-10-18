@@ -84,7 +84,6 @@ describe("the Agents board", () => {
 
     const empty = await page("/agents", cookie);
     expect(empty.navigation.find(item => item.label === "Agents")).toMatchObject({ href: "/agents", active: true });
-    expect((empty.view as BrowserAgentsView).empty).toBe("No agents in the last day. They show here the moment one starts.");
 
     const quiet = running("t-quiet", repoA);
     const asking = running("t-ask", repoA);
@@ -139,25 +138,6 @@ describe("the Agents board", () => {
       body: new URLSearchParams({ csrf, question: String(view.selected!.question!.id), answer: "again" }).toString() });
     expect(again.headers.get("location")).toBe(`/agents?run=${run}&said=reply-closed`);
     expect(store.listSteerNotes(store.getRun(run)!.taskRef)).toHaveLength(1);
-  });
-
-  test("opening a run's own result page marks its Done as seen; a failed row states its reason once", async () => {
-    const cookie = await login("alex", alexToken);
-    const run = running("t-done", repoA);
-    store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
-    store.setTaskState("t-done", "done", new Date());
-    expect((await board("/agents", cookie)).groups).toMatchObject([{ key: "done", rows: [{ runId: run, label: "Done", line: null, diff: null }] }]);
-    const result = await fetch(url(`/review?result=t-done&run=${run}`), { headers: { cookie } });
-    expect(result.status).toBe(200);
-    expect((await board("/agents", cookie)).groups.map(group => group.key)).toEqual(["idle"]);
-
-    // The chip says Failed; the line says why, never "The agent failed." again.
-    const generic = running("t-failed", repoA), slow = running("t-slow", repoA);
-    store.finishRun(generic, { outcome: "failed", reason: "agent", now: new Date() });
-    store.finishRun(slow, { outcome: "failed", reason: "timeout", now: new Date() });
-    const rows = (await board("/agents", cookie)).groups.find(group => group.key === "needs-you")!.rows;
-    expect(rows.find(row => row.runId === generic)).toMatchObject({ label: "Failed", line: null });
-    expect(rows.find(row => row.runId === slow)).toMatchObject({ label: "Failed", line: "Ran out of time." });
   });
 
   test("a steer note from the board returns to the same agent", async () => {

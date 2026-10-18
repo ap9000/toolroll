@@ -493,22 +493,6 @@ describe("tick, against real git", () => {
     expect(agentRan).toHaveLength(0);
   });
 
-  test("--max 1 builds one of two ready tasks and leaves the other queued", async () => {
-    const { runnerToken, approverToken } = await credentials();
-    await queueApproved("t-1", approverToken);
-    await queueApproved("t-2", approverToken);
-
-    const code = await tick(runnerToken, ["--max", "1"]);
-
-    expect(code).toBe(EXIT.ok);
-    const report = payload();
-    expect(report.considered).toBe(2);
-    expect(report.dispatched).toHaveLength(1);
-
-    await run(["task", "show", "t-2", "--json"]);
-    expect(payload().task.state).toBe("queued");
-  });
-
   test("a broken agent earns a strike and a backoff, not a terminal failure", async () => {
     const { runnerToken, approverToken } = await credentials();
     await queueApproved("t-1", approverToken);

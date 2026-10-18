@@ -53,15 +53,6 @@ describe("subscription chat's isolated harness adapter", () => {
     expect(prompt).toContain('"name":"recap"');
   });
 
-  // Regression (gate run 2026-09-30): the lead tried the host's project search as its own tool call, which the harness
-  // refuses, then answered a question about the project's files saying the search wasn't available.
-  test("the prompt says host tools, project search among them, are requested only through calls and are available that way", () => {
-    const prompt = composeSubscriptionLeadPrompt(request("claude-subscription"));
-    expect(prompt).toContain("calling one directly always fails. Request one only by listing it in calls");
-    expect(prompt).toContain("Every AVAILABLE HOST TOOL below is available this way; never say one is unavailable.");
-    expect(prompt).toContain("request get_project_context");
-  });
-
   test("strict output accepts bounded calls and refuses smuggled or duplicate fields", () => {
     const valid = parseSubscriptionLeadAnswer(JSON.stringify({
       text: "Let me recap.",

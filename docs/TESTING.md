@@ -184,16 +184,46 @@ its SQLite writer before recovery runs. Lock acquisition waits at most five
 seconds, then refuses without changing the pause. `toolroll skills get release`
 has the details.
 
-## Unit tests (`npm test`)
+## Unit tests
 
-Only three kinds are kept, and only these kinds are added:
+Unit tests guard what an end-to-end run can't. A test earns its place when deleting it would let a promise break
+unnoticed; the suite is not a log of every fix.
 
-- **Migrations** (`migration-*.test.ts`): an upgrade never loses or bends
-  what is already in someone's database.
-- **Security rules**: secrets never reaching a card, a log or a page; the
-  fence around agents and scripts; approvals, pairing and who may decide;
-  sign-in and webhook signatures; proof and evidence.
-- **A bug that was fixed**: the test that would have caught it.
+- `npm test` is the fast tier, run while working, with a target under two minutes.
+- `npm run test:slow` runs the `*.slow.test.ts` files: real git repositories, processes, SQLite writers and
+  updaters, each file taking more than about ten seconds.
+- `npm run test:all` runs both, and CI and the release check run it. `npm test` skips slow files even when named,
+  so run one with `npx vitest run src/foo.slow.test.ts` (the quick check does).
 
-A new feature gets an end-to-end check, not a unit test. A test that only
-pins wording or layout doesn't belong in either.
+Keep overrides cut, and each assertion is judged on its own: one test can hold a guarantee beside disposable
+presentation checks. Only these kinds are kept, and only these kinds are added:
+
+- **Migrations** (`migration-*.test.ts`): an upgrade never loses or bends what is already in someone's database.
+- **Security rules**: secrets never reaching a card, a log or a page; the fence around agents and scripts;
+  approvals, custody, claims and leases, sealed scopes and routes, spend and budgets, pairing and who may decide;
+  sign-in, sessions and webhook signatures; protected branches and never pushing; proof and evidence. Every guard
+  keeps a test that tries to get around it, and `test/attacks/` keeps every reproduced bypass.
+- **Data integrity**: store transactions, crash recovery, idempotency and races, where losing work is the failure.
+- **Contracts other code or people depend on**: CLI JSON envelopes and exit codes, HTTP status codes, refusal
+  reason codes, the argv sent to each provider, file formats, and the `data-*` hooks scripts and journeys use.
+- **What a person sees before deciding, and what must never show**: approval and scope terms on the page that
+  signs them, escaping of untrusted text, redaction, and honest failure, evidence and warning text.
+- **Boundaries and lifecycle**: a route acting as the signed-in identity, cancellation and liveness, and counts
+  that are the safety property (nothing runs after a refusal, exactly one run per admission).
+- **A bug that was fixed**, as one case in the table test of the rule it broke. It is not a new test per finding
+  or version ("(v69)", "review finding 4", "arc 2").
+
+These are cut and not added:
+
+- **Wording**: exact sentences, labels, help text and copy, unless a keep rule above covers them.
+- **Markup and CSS**: exact HTML, class lists, CSS declarations and utility names. Presentation keeps at most one
+  render check a page: it renders, its landmarks and the `data-*` hooks code relies on are present, and nothing
+  throws. Boundary, escaping and attack cases on the same page stay.
+- **Duplicates**: a behaviour proven at the store, route and page layers keeps the lowest layer that proves it,
+  plus each layer that can fail on its own: the route's identity and authorisation, and the page showing what is
+  signed. A deletion names the retained test that still proves it.
+- **Private helpers** that the caller's tests already prove, and **implementation checks** such as mock call
+  counts and internal ordering, unless the order is the safety property.
+
+Prefer `test.each` tables to near-identical tests, and assert outcomes, not steps. A new feature gets an
+end-to-end check, not a unit test. A wording, layout or styling change gets no test.

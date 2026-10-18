@@ -7,7 +7,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/browser-build.mjs && node scripts/postbuild.mjs",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/*.slow.test.ts'",
+    "test:slow": "vitest run .slow.test",
+    "test:all": "vitest run",
     "test:attacks": "vitest run --config test/attacks/vitest.config.ts",
     "check:quick": "node scripts/quick-check.mjs",
     "dev": "tsx src/cli.ts",

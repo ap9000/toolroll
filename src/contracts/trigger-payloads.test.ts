@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -228,10 +228,3 @@ describe("a focused observation request", () => {
   });
 });
 
-it("Item 15 is marked done in the Zod revamp plan, with its Done entry", () => {
-  const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-  expect(plan).toContain("| 15 ✅ | **Trigger payloads**: webhooks, GitHub, Linear, email, forms |");
-  const done = plan.slice(plan.indexOf("## Done"));
-  expect(done).toMatch(/^- \*\*15\. Trigger payloads\*\* \(2026-10-06\)/m);
-  for (const contract of ["trigger-payloads.ts", "observation-request.ts"]) expect(done).toContain(`\`src/contracts/${contract}\``);
-});

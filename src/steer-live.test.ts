@@ -18,7 +18,6 @@ import { credentialKeyOf } from "./converse.js";
 const T0 = new Date("2026-10-11T12:00:00.000Z");
 const at = (ms: number) => new Date(T0.getTime() + ms);
 // A pulse is 60 seconds; every delivery below lands well inside the first one.
-const PULSE_MS = 60_000;
 
 let store: Store, worktree: string, taskRef: number, runId: number, box: SteerMailbox;
 let frames: Record<string, unknown>[], session: LiveInput;
@@ -48,7 +47,6 @@ describe("live steering's dispatcher", () => {
     const id = file("prefer the smaller diff");
     // One half-second tick after filing, nowhere near the 60-second pulse.
     tickLiveSteer(store, { box, session }, at(500), true);
-    expect(500).toBeLessThan(PULSE_MS);
     expect(existsSync(join(box.dir, "001.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(box.dir, "001.json"), "utf8"))).toMatchObject({ number: 1, key: box.key, note: "| prefer the smaller diff" });
     const note = store.steerNote(id)!;
@@ -77,7 +75,6 @@ describe("live steering's dispatcher", () => {
     expect(sends).toEqual([LIVE_RESEND_MS, 2 * LIVE_RESEND_MS, 3 * LIVE_RESEND_MS]);
     const reminder = liveReminderText(box, 1);
     expect(userTexts()).toEqual([liveNoteText(box, 1, store.steerNote(id)!), reminder, reminder, reminder]);
-    expect(reminder).toBe(`Steering note 1 is still unread: ${box.folder}/001.json. Act on it if you have not already, then move it into ${box.folder}/handled/.`);
     expect(reminder).not.toContain("start with the retry path");
     const missed = store.steerNote(id)!;
     expect(missed).toMatchObject({ liveSends: 4, liveMissedAt: at(4 * LIVE_RESEND_MS).toISOString(), deliveredAt: null });

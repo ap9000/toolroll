@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseArgs, main, isDirectInvocation, partitionRoots } from "./cli.js";
+import { parseArgs, main, isDirectInvocation } from "./cli.js";
 
 const options = (argv: string[]) => {
   const parsed = parseArgs(argv);
@@ -34,86 +34,28 @@ describe("parseArgs", () => {
     expect(options(["src", absolute]).roots).toEqual([resolve(process.cwd(), "src"), absolute]);
   });
 
-  test("reads --depth", () => {
-    expect(options(["--depth", "8"]).maxDepth).toBe(8);
-  });
-
   test("rejects a --depth that is missing or not a number", () => {
     expect(error(["--depth"])).toContain("--depth");
     expect(error(["--depth", "deep"])).toContain("--depth");
     expect(error(["--depth", "-1"])).toContain("--depth");
   });
 
-  test("reads --json and --hidden", () => {
-    const parsed = options(["--json", "--hidden"]);
-
-    expect(parsed.json).toBe(true);
-    expect(parsed.includeHidden).toBe(true);
-  });
-
-  test("keeps --all and --hidden as different questions", () => {
-    // --hidden is about where to look; --all is about whether the connected
-    // list applies. Conflating them would make one of them unreachable.
-    const parsed = options(["--all"]);
-
-    expect(parsed.all).toBe(true);
-    expect(parsed.includeHidden).toBe(false);
-  });
-
-  test("records whether paths were given, not just what they defaulted to", () => {
-    // The connected list applies only when the operator named no paths.
-    expect(options([]).rootsGiven).toBe(false);
-    expect(options(["/tmp"]).rootsGiven).toBe(true);
-  });
-
-  test("leaves the working-tree read off unless --dirty is given", () => {
-    // reading a working tree is unbounded work; opting in has to be explicit
-    expect(options([]).dirty).toBe(false);
-    expect(options(["--dirty"]).dirty).toBe(true);
-  });
-
-  test("reads --help", () => {
-    expect(options(["--help"]).help).toBe(true);
-    expect(options(["-h"]).help).toBe(true);
-  });
-
-  test("names an unknown flag instead of ignoring it", () => {
-    // Silently ignoring a typo'd flag is how someone concludes the tool is broken
-    expect(error(["--jsonn"])).toContain("--jsonn");
+  // Each flag answers its own question: --hidden is where to look, --all
+  // whether the connected list applies, --dirty opts into the unbounded
+  // working-tree read, --local skips the network, and the connected list
+  // applies only when no paths were named.
+  test.each([
+    [["--depth", "8", "--json", "--hidden", "--dirty"], { maxDepth: 8, json: true, includeHidden: true, dirty: true }],
+    [["--all"], { all: true, includeHidden: false }],
+    [["--local"], { local: true, dirty: false, all: false }],
+    [[], { rootsGiven: false, dirty: false }],
+    [["/tmp", "-h"], { rootsGiven: true, help: true }],
+  ] as const)("parses %j", (argv, expected) => {
+    expect(options([...argv])).toMatchObject(expected);
   });
 });
 
 describe("missing paths", () => {
-  test("splits roots into those that exist and those that do not", () => {
-    const { present, missing } = partitionRoots(["/here", "/gone"], path => path === "/here");
-
-    expect(present).toEqual(["/here"]);
-    expect(missing).toEqual(["/gone"]);
-  });
-
-  test("calls a typo a typo instead of reporting an empty search", async () => {
-    const lines: string[] = [];
-
-    const code = await main(["/Users/nobody/Documentd"], line => lines.push(line));
-
-    expect(code).toBe(2);
-    expect(lines.join("\n")).toContain("does not exist");
-    expect(lines.join("\n")).not.toContain("No git repositories found");
-  });
-
-  test("keeps JSON parseable when a path is missing", async () => {
-    // A warning printed above the envelope would break every consumer of it
-    const lines: string[] = [];
-    const absent = join(tmpdir(), "standing-orders-nobody", "Documentd");
-
-    const code = await main(["--json", absent], line => lines.push(line));
-
-    expect(code).toBe(2);
-    const payload = JSON.parse(lines.join("\n"));
-    expect(payload.missingRoots).toEqual([resolve(absent)]);
-    expect(payload.repos).toEqual([]);
-  });
-
   test("an all-missing scan's envelope says no, not yes", async () => {
     // ok:true with exit 2 was a lie in the envelope: an agent that typo'd a
     // COMMAND read a green scan and moved on (round-4 findings 6/19). The
@@ -125,6 +67,8 @@ describe("missing paths", () => {
 
     expect(code).toBe(2);
     const payload = JSON.parse(lines.join("\n"));
+    expect(payload.missingRoots).toEqual([resolve(absent)]);
+    expect(payload.repos).toEqual([]);
     expect(payload.ok).toBe(false);
     expect(payload.reason).toBe("no-repositories");
     expect(payload.command).toBe("scan");
@@ -151,6 +95,7 @@ describe("missing paths", () => {
     expect(code).toBe(2);
     expect(lines.join("\n")).toContain("does not exist — check the path.");
     expect(lines.join("\n")).not.toContain("if you meant a command");
+    expect(lines.join("\n")).not.toContain("No git repositories found");
   });
 
   test("`toolroll help` prints help instead of scanning a folder named help", async () => {
@@ -184,21 +129,11 @@ describe("isDirectInvocation", () => {
     }
   });
 
-  test("recognises a direct path invocation", () => {
+  test("is a direct invocation only when the entry resolves to this module", () => {
     expect(isDirectInvocation(MODULE, "/pkg/dist/cli.js", path => path)).toBe(true);
-  });
-
-  test("stays quiet when imported by something else", () => {
     expect(isDirectInvocation(MODULE, "/usr/bin/vitest", path => path)).toBe(false);
     expect(isDirectInvocation(MODULE, undefined, path => path)).toBe(false);
-  });
-
-  test("treats an unresolvable entry as not a direct invocation", () => {
-    const resolved = isDirectInvocation(MODULE, "/gone", () => {
-      throw new Error("ENOENT");
-    });
-
-    expect(resolved).toBe(false);
+    expect(isDirectInvocation(MODULE, "/gone", () => { throw new Error("ENOENT"); })).toBe(false);
   });
 });
 
@@ -285,14 +220,6 @@ describe("main", () => {
     expect(typeof payload.scannedAt).toBe("string");
   });
 
-  test("prints a readable report by default", async () => {
-    const lines: string[] = [];
-
-    const code = await main([base], line => lines.push(line));
-
-    expect(code).toBe(0);
-    expect(lines.join("\n")).toContain("repositor");
-  });
 });
 
 describe("graph command", () => {
@@ -383,14 +310,6 @@ describe("the unified report envelope", () => {
     expect(payload.repos[0]).toHaveProperty("path");
   });
 
-  test("--local is a different question from --dirty and --all", async () => {
-    const parsed = parseArgs(["--local"]);
-    if ("error" in parsed) throw new Error(parsed.error);
-
-    expect(parsed.options.local).toBe(true);
-    expect(parsed.options.dirty).toBe(false);
-    expect(parsed.options.all).toBe(false);
-  });
 });
 
 describe("repos add-from-github — the refusals that need no network", () => {

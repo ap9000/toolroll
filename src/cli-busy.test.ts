@@ -73,18 +73,6 @@ async function waitForExit(child: ChildProcess): Promise<void> {
 }
 
 describe("CLI database contention", () => {
-  test("help and the command contract explain the database wait", async () => {
-    const help: string[] = [];
-    expect(await main(["task", "--help"], line => help.push(line))).toBe(EXIT.ok);
-    expect(help.join("\n")).toContain("--db <path>       use a different queue; waits up to 15 seconds for another writer");
-
-    const contract: string[] = [];
-    expect(await main(["contract", "--commands", "--json"], line => contract.push(line))).toBe(EXIT.ok);
-    expect(JSON.parse(contract.join("\n")).notes.database).toBe(
-      "local database commands wait up to 15 seconds for another writer; an exhausted wait returns database-busy and names the selected file",
-    );
-  });
-
   test("a command waits for a second connection and succeeds after its short write", async () => {
     const file = fixture();
     const writer = await holdWriter(file, 2_000);

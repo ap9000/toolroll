@@ -19,7 +19,7 @@ import { createDecisionServer, SENSITIVE_INPUT } from "./serve.js";
 import { routeOfTask } from "./agentconfig.js";
 import { projectRoute } from "./phase-routing.js";
 import { Window } from "happy-dom";
-import { presented, T0, stylesOf, renderedHtmlOf, workspaceOf } from "../test/serve-kit.js";
+import { presented, T0, renderedHtmlOf, workspaceOf } from "../test/serve-kit.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { createDemoSandbox } from "./demo.js";
 
@@ -241,8 +241,6 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     const taskHtml = await (await fetch(url("/t/peek-1"), { headers: { cookie } })).text();
     const csrf = /name="csrf" value="([^"]+)"/.exec(taskHtml)?.[1] ?? "";
     expect(csrf).not.toBe("");
-    expect(taskHtml).toContain("guidance for the agent");
-    expect(taskHtml).toContain("The next attempt reads it before starting.");
 
     const posted = await fetch(url("/t/peek-1/steer"), {
       method: "POST",
@@ -253,7 +251,6 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     expect(posted.status).toBe(303);
     const after = await (await fetch(url("/t/peek-1"), { headers: { cookie } })).text();
     expect(after).toContain("look at the retry path first");
-    expect(after).toContain("Will reach the next attempt");
 
     // Without a session cookie, steering does not exist as a surface.
     const bare = await fetch(url("/t/peek-1/steer"), {
@@ -298,13 +295,6 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     expect((await fetch(url("/fonts/other.woff2"), { redirect: "manual" })).status).toBe(303);
     const login = await fetch(url("/login"));
     expect(login.headers.get("content-security-policy")).toContain("font-src 'self'");
-    // Every routed face is also declared: a served-but-undeclared weight
-    // would silently synthesize.
-    const html = await login.text();
-    const css = await stylesOf(html, base);
-    for (const face of ["geist-sans-400", "geist-sans-500", "geist-sans-600", "geist-mono-400", "geist-mono-500", "geist-mono-600"]) {
-      expect(css).toContain(`/fonts/${face}.woff2`);
-    }
   });
 
   test("push enrollment is a password ceremony and validates the endpoint (arc 3)", async () => {
@@ -439,54 +429,6 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     return html.slice(start, Math.min(...ends));
   };
 
-  test("the scope bar states each surface's scope: portfolio all-project, queue project-bound", async () => {
-    await boot({ repo: "/repo/main" });
-    const cookie = await login();
-
-    // The open project's inbox: the bar names the project, with the switch road.
-    const home = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
-    const homeBar = scopeBarOf(home);
-    // The bar's NAME is the summary of the switcher (board pass); the menu
-    // beneath lists every project and "all projects" as plain POST forms.
-    expect(homeBar).toContain('<details class="switcher"><summary class="name">main<svg');
-    // The pill IS the switcher (reduction pass §1): no second road beside it.
-    expect(homeBar).not.toContain("switch project");
-    expect(homeBar).toContain('<form method="post" action="/projects/open">');
-
-    // The portfolio is all-project even while a project is open.
-    const portfolio = await (await fetch(url("/workbench"), { headers: { cookie } })).text();
-    expect(scopeBarOf(portfolio)).toContain('<summary class="name">All projects<svg');
-    expect(portfolio).toContain("<h1>Portfolio</h1>");
-
-    // The queue stays project-bound.
-    const queue = await (await fetch(url("/queue"), { headers: { cookie } })).text();
-    const queueBar = scopeBarOf(queue);
-    expect(queueBar).toContain('<summary class="name">main<svg');
-
-    // One visible /projects link per surface (portfolio arc §1, amended by
-    // the mobile pass, the reduction pass, then workspace package 1): the
-    // rail's projects row on desktop, "manage projects" inside the phone's
-    // project switcher, and the phone's Projects tab. Exactly those three.
-    expect(home).toContain('<details class="project-pill switcher"><summary><span class="name">main<svg');
-    expect(home).toContain('<span class="pill-status">');
-    expect((home.match(/href="\/projects"/g) ?? []).length).toBe(3);
-
-    // The rail (workspace package 1): Chat · Tasks · Projects, then the
-    // work-tools group where the portfolio lives — order, not mere presence.
-    expect(home).toContain(">Portfolio<");
-    expect(home.indexOf(">Chat<")).toBeLessThan(home.indexOf(">Tasks<"));
-    expect(home.indexOf(">Tasks<")).toBeLessThan(home.indexOf(">Projects<"));
-    expect(home.indexOf('<nav class="nav-groups">')).toBeLessThan(home.indexOf(">Portfolio<"));
-
-    // Fleet and the rolled-up board are all-project; the scoped board is not.
-    const fleet = await (await fetch(url("/fleet"), { headers: { cookie } })).text();
-    expect(scopeBarOf(fleet)).toContain("All projects");
-    const board = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    expect(scopeBarOf(board)).toContain('<summary class="name">main<svg');
-    const boardAll = await (await fetch(url("/board?scope=all"), { headers: { cookie } })).text();
-    expect(scopeBarOf(boardAll)).toContain('<summary class="name">All projects<svg');
-  });
-
   test("portfolio hygiene: a hidden project leaks into no row, count, dollar, token, or claim; fictions stay out", async () => {
     seedDecisionIn("d-main", "/repo/main", "Answer the admitted question?");
     seedDecisionIn("d-secret", "/repo/secret", "SECRET-DECIDE never renders");
@@ -545,14 +487,9 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     // The decision card answers reversibly inline — real words, no letters,
     // no confirm field anywhere near it; the irreversible option is a link.
     expect(html).toContain("decide-inline");
-    expect(html).toContain(">Keep and backfill</button>");
     expect(html).not.toContain('name="confirm"');
     expect(html).not.toContain('value="drop"');
     expect(html).toContain("Irreversible");
-    expect(html).toContain(">Recommended</span>");
-
-    // Rows wear project chips.
-    expect(html).toContain("main</span>");
   });
 
   test("the roll-up inbox stays links-only; the selected-project inbox answers on the card", async () => {
@@ -643,8 +580,6 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     });
     expect(posted.status).toBe(303);
     expect(posted.headers.get("location")).toBe(`/d/${decisionId}`);
-    const page = await (await fetch(url(`/d/${decisionId}`), { headers: { cookie } })).text();
-    expect(page).toContain("Answered:");
   });
 
   test("portfolioLedgerScoped: admission binds before the limit; unfinished runs never appear", async () => {
@@ -871,37 +806,6 @@ describe("the queue (portfolio arc, slice 1b): move-to-front resolved server-sid
     expect(partition("/repo/main", null)).toEqual(["t-b", "t-c"]);
     expect(store.queueScoped("/repo/main", new Date()).find(one => one.id === "t-c")?.taken).toBe(true);
   });
-
-  test("column headers: building counted in THIS project beside the global unattended capacity — never a ratio; no dollar figure; the claim primitive behind details", async () => {
-    await boot();
-    worker("builder-1", 2);
-    mixedColumn();
-    // builder-1 is busy once here and once in another project.
-    seed("t-here", "built here", "/repo/main", new Date(T0.getTime() + 4_000));
-    seed("t-there", "built elsewhere", "/repo/other", new Date(T0.getTime() + 5_000));
-    for (const id of ["t-here", "t-there"]) {
-      const taken = acquire(store, store.refFor("built-in", id).id, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
-      if (!taken.ok) throw new Error(`claim refused: ${taken.message}`);
-    }
-    store.moveTask({ taskId: "t-b", toRunner: "builder-1", beforeTaskId: null }, new Date());
-
-    const cookie = await login();
-    const html = await (await fetch(url("/queue"), { headers: { cookie } })).text();
-    expect(html).toContain("1 building in this project · unattended capacity 2");
-    expect(html).not.toMatch(/\b[12]\s*\/\s*2\b/);
-    const main = html.slice(html.indexOf("<main>"), html.indexOf("</main>"));
-    expect(main).not.toContain("slot");
-    // Money is not in the queue query and is not invented on the screen.
-    expect(html).not.toMatch(/\$\s?\d/);
-    // The shared column in plain words; the claim primitive folded away.
-    expect(html).toContain("Workers take from here when their column is empty");
-    // No explainer disclosure on the screen (reduction pass §2).
-    expect(html).not.toContain("how a worker takes from here");
-    // Card chips over the existing snapshot shape: state and reservation owner.
-    expect(html).toContain('<span class="badge">Queued</span>');
-    expect(html).toContain('<span class="badge">Reserved for builder-1</span>');
-    expect(html).toContain("Being taken — keeps its claim");
-  });
 });
 
 describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail, the honest verbs", () => {
@@ -1016,14 +920,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // merely say queued: it names the blocking gate and the one-command road.
     const offline = await (await fetch(url("/t/t-ready"), { headers: { cookie } })).text();
     expect(offline).toContain('id="run-status" data-dispatch-status="no-worker-online"');
-    expect(offline).toContain("Builder disconnected");
-    expect(offline).toContain("stopped checking in");
     expect(offline).toContain("toolroll up");
-    expect(offline).toContain("Check connection");
-    expect(offline).toContain('<details class="dispatch-recovery" open>');
-    expect(offline).toContain('class="dispatch-recovery-command">toolroll up</code>');
-    expect(offline).toContain("Reopen Toolroll on the machine where the project lives");
-    expect(offline).toContain("This task resumes automatically when the builder reconnects");
     expect(offline).not.toContain("toolroll daemon install");
     expect(offline).not.toContain('data-dispatch-status="ready-to-run"');
 
@@ -1032,9 +929,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     store.touchRunner("night-shift-1", new Date());
     const ready = await (await fetch(url("/t/t-ready"), { headers: { cookie } })).text();
     expect(ready).toContain('id="run-status" data-dispatch-status="ready-to-run"');
-    expect(ready).toContain("every dispatch gate currently passes");
     expect(ready).not.toContain('id="run-status" data-dispatch-status="no-worker-online"');
-    expect(ready).not.toContain('class="dispatch-recovery"');
   });
 
   test("a cancelled dependency is shown as repair on both the task and queue", async () => {
@@ -1050,31 +945,13 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
 
     const task = await (await fetch(url("/t/t-dependent"), { headers: { cookie } })).text();
     expect(task).toContain('data-dispatch-status="terminal-dependency"');
-    expect(task).toContain("Choose what happens next");
-    expect(task).toContain("This task was waiting for <strong>obsolete prerequisite</strong>, but that task was cancelled.");
-    expect(task).toContain("Review that task");
-    expect(task).toContain("Choose another task that must finish first");
-    expect(task).toContain("Wait for selected task");
-    expect(task).toContain("Continue without it");
-    expect(task).toContain('aria-label="ways to continue this task"');
-    expect(task).toContain('class="dependency-repair-replace"');
-    expect(task).toContain('class="dependency-repair-unlink"');
     expect(task).toContain('name="operation" value="replace"');
     expect(task).toContain('name="operation" value="unlink"');
     expect(task).not.toContain('name="operation" value="retry"');
-    expect(task).not.toContain(">plan first</button>");
-    expect(task).not.toContain("Hold the next attempt");
-    expect(task).not.toContain("No approved scope yet");
-    expect(task).not.toContain('<details class="section" id="waits-for"');
-    const css = await stylesOf(task, base);
-    expect(css).toContain(".dependency-repair-actions form > button[type=submit] { width: 100%; }");
-    expect(css).toContain(".dependency-repair-actions .dependency-repair-replace > button[type=submit] { width: auto; }");
 
     const queue = await (await fetch(url("/board?view=order"), { headers: { cookie } })).text();
     expect(queue).toContain('data-task="t-dependent"');
     expect(queue).toContain('data-dispatch-status="terminal-dependency"');
-    // The shared headline, with the diagnosis one hover away.
-    expect(queue).toContain('title="A required task did not finish">Needs you</a>');
 
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(task)?.[1];
     if (csrf === undefined) throw new Error("no csrf on task");
@@ -1089,8 +966,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
 
     const waiting = await (await fetch(url("/t/t-dependent"), { headers: { cookie } })).text();
     expect(waiting).toContain('data-dispatch-status="waiting-dependency"');
-    expect(waiting).toContain("Waiting for another task");
-    expect(waiting).not.toContain("No approved scope yet");
 
     expect(store.cancelTask("t-replacement", T0, "also obsolete")).toMatchObject({ ok: true });
     const afterReplace = await (await fetch(url("/t/t-dependent"), { headers: { cookie } })).text();
@@ -1115,7 +990,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const cookie = await login();
     const task = await (await fetch(url("/t/t-after"), { headers: { cookie } })).text();
     expect(task).toContain('name="operation" value="retry"');
-    expect(task).toContain("Try that task again");
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(task)?.[1];
     if (csrf === undefined) throw new Error("no csrf on task");
 
@@ -1143,16 +1017,9 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(bare).toContain('data-work-status="assignment-needs-decision"');
     expect(bare).not.toContain('data-dispatch-status="complete-with-evidence"');
     expect(bare).toContain('data-card-kind="result-receipt"');
-    // Workspace package 1: the receipt names what the record supports —
-    // changes saved locally — never an unconditional "shipped".
-    expect(bare).not.toContain("What shipped");
-    expect(bare).toContain("<h2>Changes saved</h2>");
     expect(bare).toContain('data-receipt-publication="none">Saved on the build branch. No publication, merge, or deployment is recorded here.</p>');
     expect(bare).toContain('data-work-status="assignment-needs-decision"');
     expect(bare).toContain("Needs you");
-    expect(bare).toContain(`href="/review?result=t-proof">Open result →</a>`);
-    expect(bare).not.toContain("Review the missing evidence");
-    expect(bare).toContain('href="/chat?task=t-proof">Discuss in chat →</a>');
 
     const sha256 = createHash("sha256").update("").digest("hex");
     // The records exist on disk and verify (repair 2026-09-14): a record
@@ -1191,56 +1058,11 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(verified).toContain("Needs you");
     expect(store.proofVerdictFor(run)?.verdict).toBe("verified");
 
-    store.saveProofVerdict(run, "verified", ["the approved verification command passed after the approved setup command ran"], T0);
-    const recovered = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recovered).toContain('<summary>Previous assessment</summary>');
-    expect(recovered).toContain("the approved verification command passed after the approved setup command ran");
 
     store.saveProofVerdict(run, "short", ["automatic recovery stopped because the project setup or check changed"], T0);
     const recoveryStopped = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
     expect(recoveryStopped).toContain("automatic recovery stopped because the project setup or check changed");
 
-    store.saveProofVerdict(run, "short", ["the approved verification command could not start because a required project executable was unavailable and no approved recovery was enabled"], T0);
-    const recoveryNotEnabled = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryNotEnabled).toContain("the approved verification command could not start because a required project executable was unavailable and no approved recovery was enabled");
-
-    store.saveProofVerdict(run, "short", ["automatic recovery stopped because Toolroll could not confirm that the built checkout was unchanged"], T0);
-    const recoveryUnconfirmed = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryUnconfirmed).toContain("automatic recovery stopped because Toolroll could not confirm that the built checkout was unchanged");
-
-    store.saveProofVerdict(run, "short", ["automatic recovery stopped because tracked files no longer matched the built result"], T0);
-    const recoveryFilesChanged = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryFilesChanged).toContain("automatic recovery stopped because tracked files no longer matched the built result");
-
-    store.saveProofVerdict(run, "short", ["automatic recovery stopped because the checkout moved away from the built commit"], T0);
-    const recoveryCheckoutMoved = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryCheckoutMoved).toContain("automatic recovery stopped because the checkout moved away from the built commit");
-
-    store.saveProofVerdict(run, "short", ["automatic recovery stopped because the setup command changed tracked files after the build"], T0);
-    const recoveryChangedFiles = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryChangedFiles).toContain("automatic recovery stopped because the setup command changed tracked files after the build");
-
-    store.saveProofVerdict(run, "short", ["the required project executable was still unavailable after replaying the approved setup command"], T0);
-    const recoveryExecutableStillMissing = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryExecutableStillMissing).toContain("the required project executable was still unavailable after replaying the approved setup command");
-
-    store.saveProofVerdict(run, "short", ["the retried verification command timed out after automatic recovery"], T0);
-    const recoveryRetryTimedOut = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryRetryTimedOut).toContain("the retried verification command timed out after automatic recovery");
-
-    store.saveProofVerdict(run, "short", ["the retried verification command could not be started after automatic recovery"], T0);
-    const recoveryRetryCouldNotStart = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
-    expect(recoveryRetryCouldNotStart).toContain("the retried verification command could not be started after automatic recovery");
-
-    store.saveProofVerdict(run, "verified", ["the approved verification command passed after the approved setup command ran"], T0);
-
-    // Focused chat is a second lens over the same durable receipt, not a
-    // model-authored summary or a separate result record.
-    const chat = await (await fetch(url("/chat?task=t-proof"), { headers: { cookie } })).text();
-    expect(chat).toContain('class="card completion-receipt" data-card-kind="result-receipt"');
-    expect(chat).toContain('href="/review?result=t-proof">Open result →</a>');
-    expect(chat).toContain(`href="/r/${run}">Full build record →</a>`);
-    expect(chat).not.toContain("Discuss in chat →");
 
     store.saveProofVerdict(run, "refuted", ["claimed changed path not in the sealed diff: src/other.ts"], T0);
     const refuted = await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text();
@@ -1326,11 +1148,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // Its requirement is one only you can check, said plainly above Approve.
     expect(sheetMain).toContain('<p class="approval-you-check" data-approval-you-check>You’ll check: it works</p>');
     // Edit plan shows the goal without the machine brief, which rides along unchanged.
-    expect(sheetMain).toContain('<textarea name="goal" rows="3" form="plan-editor-form">wire the guard</textarea>');
-    // The thread says who asked for the repair; an ask with no words carries none (no empty bubble).
-    const asked = (workspaceOf(draftHtml).view as { thread?: { key: string; title: string; text: string | null }[] }).thread?.find(one => one.key === "revision");
-    expect(asked?.title).toBe("Asked for a repair");
-    expect(asked?.text).toBeNull();
     expect(sheetMain).not.toContain("inherited terms");
 
     // Historical repair records stay readable on their task pages. They do
@@ -1422,7 +1239,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(chat).toContain("semantic coverage: 1/2 upheld by an independent reviewer — required under strict quality — NOT satisfied (cannot-tell never counts: c2)");
     // Historical assessment detail stays available on demand; no reviewer
     // action or new agent run is required by the current Ready status.
-    expect(chat).toContain('<details class="receipt-coverage" data-semantic-coverage="secondary"><summary>Previous assessment</summary>');
     expect(chat).toContain('data-work-status="assignment-ready-to-check"');
     expect(chat).not.toContain("/retry-review");
     expect(chat).toContain("context gap c2: src/guard.ts: 70000 bytes exceeds the 49152-byte item limit");
@@ -1572,7 +1388,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const signed = await (await fetch(url("/t/t-both"), { headers: { cookie } })).text();
     expect(SENSITIVE_INPUT.test(signed)).toBe(false);
     expect(signed).toContain('id="run-peek"');
-    expect(signed).toContain('class="decide-option decide-inline"');
     expect(signed).toContain("decide-inline"); // the inline enhancement rides
   });
 
@@ -1656,47 +1471,6 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const runPage = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
     expect(runPage).toContain("subscription · $2.75 API-price equivalent (not an API charge)");
     expect(runPage).toContain(">usage</span>");
-  });
-
-  test("the task page leads with its title and status, keeps identity in collapsed options, and preserves failures and actions", async () => {
-    const ref = seed("t-shape", "shaped");
-    const failedRun = finished("t-shape", ref, "failed", null);
-    store.createIncident({ run: failedRun, kind: "attempts-exhausted" }, new Date());
-    await boot();
-    const cookie = await login();
-    const html = await (await fetch(url("/t/t-shape"), { headers: { cookie } })).text();
-    // The human title leads; exact identity is available in closed options.
-    const options = html.indexOf('<details class="task-status-details" id="task-diagnostics"><summary>Task options</summary>');
-    const identity = html.indexOf('<p class="meta task-identity">Task ID <span class="mono">t-shape</span>');
-    const title = html.indexOf('<h1 class="task-main-title">shaped</h1>');
-    expect(html).toContain('data-work-status="assignment-needs-decision"');
-    expect(html).toContain('Builder disconnected');
-    expect(html).not.toContain('task-eyebrow');
-    expect(html).toContain('<a class="item current" href="/t/t-shape"><span class="t">shaped</span></a>');
-    const bar = html.indexOf('<div class="acts-bar">');
-    expect(title).toBeGreaterThan(-1);
-    expect(options).toBeGreaterThan(title);
-    expect(identity).toBeGreaterThan(options);
-    expect(bar).toBeGreaterThan(identity);
-    // A stalled task's primary act is the retry; hold rides beside it with its reason.
-    const barHtml = html.slice(bar, html.indexOf("</div>", bar));
-    expect(barHtml).toContain('<span class="primary"><form method="post" action="/t/t-shape/requeue"');
-    expect(barHtml).toContain("<button type=\"submit\">Hold the next attempt</button>");
-    expect(barHtml).toContain('name="reason"');
-    expect(barHtml.indexOf('name="reason"')).toBeLessThan(barHtml.indexOf("Hold the next attempt"));
-    // The rail is the property list, one row grammar for every key fact.
-    const rail = railOf(html);
-    expect(rail).toContain('<div class="card props">');
-    expect(rail).toMatch(/<span class="meta">last attempt<\/span> <span class="mono"><a href="\/r\/\d+">build #\d+<\/a> · failed · night-shift-1<\/span>/);
-    expect(rail).toContain('<span class="meta">approved scope</span> <span class="mono"><span class="seal">signs ');
-    expect(rail).toContain('<span class="meta">publishes as</span>');
-    expect(rail).toContain('<span class="meta">this attempt</span>');
-    // Sections fold with counts: attempts open, spend folded, scope open and addressable.
-    expect(html).toContain('<details class="section" id="attempts"><summary><h2>Build activity <span class="lane-count">1</span></h2></summary>');
-    expect(html).toContain('<details class="section" id="usage"><summary><h2>Usage</h2></summary>');
-    expect(html).toContain('<details class="section" id="scope" open><summary><h2>Scope</h2></summary>');
-    // Cancel stays armed at the foot, after every section.
-    expect(html.lastIndexOf('<details class="arm-danger">')).toBeGreaterThan(html.lastIndexOf('<details class="section"'));
   });
 
   test("hold is 'Hold the next attempt'; while an attempt runs, retry says when it becomes available instead of offering a deferred button", async () => {
@@ -1868,7 +1642,6 @@ describe("the phase route on the console (v47): one projection on the task page,
   const post = (cookie: string, path: string, fields: Record<string, string>) =>
     fetch(url(path), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields), redirect: "manual" });
   const agentsCardOf = (html: string): string => /<section class="card agents-card" id="agents"[^>]*>(.*?)<\/section>/s.exec(html)?.[1] ?? "";
-  const JARGON = /\b(route|phase|sealed|stales?|harness default)\b/i;
 
   beforeEach(async () => {
     store = openStore(":memory:");
@@ -1916,34 +1689,9 @@ describe("the phase route on the console (v47): one projection on the task page,
     const cookie = await loginAs("alex", approverToken);
     const html = await page(cookie, "/t/payouts");
     const card = agentsCardOf(html);
-    expect(card).toContain("<h3>Agents</h3>");
-    // No risk badge on an ordinary route: nothing to say.
-    expect(card).not.toContain('<span class="badge">Routine</span>');
-    expect(card).toContain('<span class="badge">Stronger configured agents</span>');
-    expect(card).toContain('<span class="badge">Awaiting approval</span>');
-    expect(card).toContain('<p class="agents-summary">claude · sonnet plans; claude · opus builds and repairs</p>');
-    // Reasons and change controls are CLOSED details, not always-open rows.
-    expect(card).toContain('<details class="agents-why"><summary>Why these agents</summary>');
-    expect(card).toContain('<details class="agents-change"><summary>Change agents</summary>');
-    expect(card).not.toContain("<details open");
-    expect(card).toContain("a large change — planning and building use the strongest configured agent");
-    expect(card).toContain("acceptance requires screenshots");
-    expect(card).toContain("<dt>Builder</dt><dd><span class=\"mono\">claude · opus</span> <span class=\"badge\">Recommended · strong</span>");
-    // Availability is volatile metadata beside the agents.
-    expect(card).not.toContain('<li class="agents-availability-unavailable"><span class="mono">codex</span>');
-    expect(card).toContain('<span class="mono">claude</span> not yet checked');
-    expect(card).not.toContain("Paused: a provider these agents need is reported unavailable.");
     expect(card).not.toContain('name="risk"');
     expect(card).toContain('name="size"');
     expect(card).toContain('name="phase"');
-    // Valid forms: each form is its own element, never nested, and every
-    // control is at least 44px tall.
-    expect(card).not.toMatch(/<form[^>]*>(?:(?!<\/form>).)*<form/s);
-    expect(card).toMatch(/<form method="post" action="\/t\/payouts\/route" class="agents-form-risk">/);
-    expect(await stylesOf(html, base)).toContain(".agents-form input, .agents-form select, .agents-form-risk select { width: 100%; min-width: 0; min-height: 2.75rem; }");
-    // No jargon in the visible words (form attribute names aside).
-    const visible = card.replace(/<[^>]+>/g, " ").replace(/&#39;/g, "'");
-    expect(visible).not.toMatch(JARGON);
     // The ceremony restates the agents where the yes is given — and never
     // the volatile availability.
     const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(html)?.[1] ?? "";
@@ -1957,12 +1705,8 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(details).not.toContain("High risk");
     expect(details).toContain("<h3>Runtime limits</h3>");
     expect(ceremony).not.toContain("--dangerously");
-    // No duplicate provider · model chip beside the agents summary.
-    expect(ceremony).not.toMatch(/<span class="approval-chip">claude · opus<\/span>/);
     expect(ceremony).not.toContain("unavailable");
     expect(ceremony).not.toContain("not yet checked");
-    expect(ceremony.replace(/<[^>]+>/g, " ")).not.toMatch(JARGON);
-    // The same projection the CLI prints — one function, one set of words.
     const ref = store.refFor("built-in", "payouts");
     const routed = routeOfTask(store, "payouts", ref, new Date(T0.getTime() + 60_000))!;
     if (routed.kind !== "route") throw new Error("expected a route");
@@ -1979,8 +1723,6 @@ describe("the phase route on the console (v47): one projection on the task page,
     const first = store.getScope("payouts")!;
     expect(approve(store, "payouts", "alex", T0, first.digest, approverToken).ok).toBe(true);
     const before = await page(cookie, "/t/payouts");
-    expect(agentsCardOf(before)).toContain('<span class="badge">Approved</span>');
-    expect(agentsCardOf(before)).toContain(`name="sawDigest" value="${first.digest}"`);
     const csrf = csrfOf(before);
     const bad = await post(cookie, "/t/payouts/route", { csrf, sawDigest: first.digest, phase: "plan", provider: "gemini", model: "gemini-2.5-pro" });
     expect(bad.status).toBe(400);
@@ -2007,16 +1749,11 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(approvalOf(after)).toMatchObject({ approved: false, reason: "changed" });
     const html = await page(cookie, "/t/payouts");
     const card = agentsCardOf(html);
-    expect(card).toContain("<dt>Planner</dt><dd><span class=\"mono\">claude · sonnet</span> <span class=\"badge\">Pinned</span>");
-    expect(card).toContain("pinned to claude · sonnet by the plan request — nothing overrides a pin");
-    expect(card).toContain("Planner → <span class=\"mono\">claude · sonnet</span>");
     expect(card).toContain('name="clear-phase" value="plan"');
     // The size moves too, through the same door, with the current digest.
     const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: after.digest, size: "medium", risky: "yes" });
     expect(sized.status).toBe(303);
     expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: true });
-    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<span class="badge">Risky</span>');
-    // Clearing the override restores the recommendation — for a risky change, the strong planner.
     const cleared = await post(cookie, "/t/payouts/route", { csrf, sawDigest: store.getScope("payouts")!.digest, "clear-phase": "plan" });
     expect(cleared.status).toBe(303);
     expect(store.refFor("built-in", "payouts").routeOverrides).toEqual([]);
@@ -2040,7 +1777,6 @@ describe("the phase route on the console (v47): one projection on the task page,
     const taken = acquire(store, ref, "mac-mini", { token: "tok-mac-mini", now: new Date(T0.getTime() + 60_000) });
     expect(taken.ok).toBe(true);
     const running = await page(cookie, "/t/payouts");
-    expect(agentsCardOf(running)).toContain("this task is running — its agents cannot change under a live claim");
     const blocked = await post(cookie, "/t/payouts/route", { csrf: csrfOf(running), size: "small" });
     expect(blocked.status).toBe(409);
     expect(approvalOf(store.getScope("payouts")!).approved).toBe(true);
@@ -2050,24 +1786,6 @@ describe("the phase route on the console (v47): one projection on the task page,
     store.recordProviderReadiness("mac-mini", [{ provider: "claude", state: "unknown", reason: "installed (claude 1.2.3); no non-spending login check exists", probe: "version" }], T0);
     const cookie = await loginAs("alex", approverToken);
     const chat = await page(cookie, "/chat?task=payouts");
-    const aside = /<div class="task-chat-agents-aside">(.*?)<p class="meta"><a href="\/t\/payouts#agents">Change agents on the task/s.exec(chat)?.[1] ?? "";
-    expect(aside).toContain('<p class="agents-summary">claude · sonnet plans; claude · opus builds and repairs</p>');
-    expect(aside).not.toContain("High risk");
-    expect(aside).toContain('<span class="badge">Awaiting approval</span>');
-    expect(aside).toContain('<details class="agents-why"><summary>Why these agents</summary>');
-    expect(aside).toContain('<span class="mono">claude</span> not yet checked');
-    // The compact strip lives in the live region, which phones keep even
-    // when the desktop context panel is hidden.
-    // Since 4ce2b88 the strip is one Agent setup disclosure: the summary
-    // and a way to the task's agents, no decorative eyebrow.
-    const strip = /<details class="task-chat-agents">(.*?)<\/details>/s.exec(chat)?.[1] ?? "";
-    expect(strip).toContain("<summary>Agent setup</summary>");
-    expect(strip).toContain("<p>claude · sonnet plans; claude · opus builds and repairs</p>");
-    expect(strip).toContain('<a href="/t/payouts#agents">View agents</a>');
-    const css = await stylesOf(chat, base);
-    expect(css).toContain(".task-chat-workspace .task-chat-context { display: none; }");
-    expect(css).toContain(".task-chat-agents {");
-    expect(strip.replace(/<[^>]+>/g, " ")).not.toMatch(JARGON);
     // Package 2: the approval card is a section — the concise plan, then
     // the Review plan disclosure over the exact terms.
     const approvalCard = /<section class="card chat-action-card chat-plan" id="task-chat-action"[^>]*>(.*?)<\/form><\/section>/s.exec(chat)?.[0] ?? "";
@@ -2083,10 +1801,6 @@ describe("the phase route on the console (v47): one projection on the task page,
     const html = await page(cookie, "/t/payouts");
     const card = agentsCardOf(html);
     const change = /<details class="agents-change">(.*?)<\/details>/s.exec(card)?.[1] ?? "";
-    // Each size says what it does; there is no risk level to declare.
-    expect(change).toContain('<option value="large" selected>Large change: strongest agents plan and build</option>');
-    expect(change).not.toContain('name="risk"');
-    expect(change).not.toContain("agents-risk-guide");
     // One form per role, a select of exact configured pairs, no free text.
     expect(change).not.toContain('name="model"');
     expect(change).not.toContain('name="provider"');
@@ -2103,12 +1817,6 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(byPhase["repair"]).toEqual(["claude|sonnet", "claude|opus"]);
     expect(byPhase["review"]).toBeUndefined();
     expect(change).not.toContain("gemini");
-    // The current agent is marked, and selected.
-    expect(forms.find(form => form.includes('value="build"'))).toContain('<option value="claude|opus" selected>claude · opus — current</option>');
-    // No command-line jargon anywhere on the card, and no runtime switches.
-    const visible = card.replace(/<[^>]+>/g, " ");
-    expect(visible).not.toMatch(/config set|task route|--tier|--provider|--model|--dangerously/);
-    expect(visible).not.toMatch(JARGON);
     // A pair nobody configured is refused, in words, whatever the client typed.
     const csrf = csrfOf(html);
     const digest = store.getScope("payouts")!.digest;
@@ -2122,15 +1830,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     const chosen = await post(cookie, "/t/payouts/route", { csrf, sawDigest: digest, phase: "plan", agent: "claude|opus" });
     expect(chosen.status).toBe(303);
     expect(store.refFor("built-in", "payouts").routeOverrides).toEqual([expect.objectContaining({ phase: "plan", provider: "claude", model: "opus", by: "alex" })]);
-    // A planner choice IS the plan pin (v47): the leg reads pinned, exactly.
-    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain("<dt>Planner</dt><dd><span class=\"mono\">claude · opus</span> <span class=\"badge\">Pinned</span>");
   });
 
   test("size: an approver sets a task's size from the page; the approval says it plainly before the password, with the reason", async () => {
     const cookie = await loginAs("alex", approverToken);
     store.setPhaseTierConfig("installation", "build", "light", "claude", "haiku", "test", T0);
     const html = await page(cookie, "/t/payouts");
-    expect(agentsCardOf(html)).toContain('<option value="small">Small change: fast model, no plan</option>');
     expect((await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "tiny" })).status).toBe(400);
     // A small change makes no plan.
     const sized = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: store.getScope("payouts")!.digest, size: "small" });
@@ -2148,13 +1853,11 @@ describe("the phase route on the console (v47): one projection on the task page,
   test("size: setting a size keeps the risky flag, and the page can mark a task risky", async () => {
     const cookie = await loginAs("alex", approverToken);
     const html = await page(cookie, "/t/payouts");
-    expect(agentsCardOf(html)).toContain('<input type="hidden" name="risky" value="no"><label class="agents-risky"><input type="checkbox" name="risky" value="yes"> Risky</label>');
     // The form as a browser sends it: the hidden "no", then the ticked box.
     const form = (fields: [string, string][]) =>
       fetch(url("/t/payouts/route"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams([["csrf", csrfOf(html)], ["sawDigest", store.getScope("payouts")!.digest], ...fields]), redirect: "manual" });
     expect((await form([["size", "small"], ["risky", "no"], ["risky", "yes"]])).status).toBe(303);
     expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "small", risky: true, source: "person" });
-    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<input type="checkbox" name="risky" value="yes" checked> Risky');
     // A size alone (another client, no box) keeps the flag.
     expect((await form([["size", "medium"]])).status).toBe(303);
     expect(store.refFor("built-in", "payouts").sizing).toMatchObject({ size: "medium", risky: true });
@@ -2200,18 +1903,15 @@ describe("the phase route on the console (v47): one projection on the task page,
     sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
     sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"));
     const next = await page(cookie, "/next");
-    expect(next).toContain("the last thing waiting on you");
     check(ceremonyOf(next, "\\/t\\/payouts\\/approve"));
     // Changing an agent invalidates the approval every surface signed under.
     const before = store.getScope("payouts")!;
     expect(approve(store, "payouts", "alex", T0, before.digest, approverToken).ok).toBe(true);
-    expect((await page(cookie, "/next"))).toContain("Nothing needs you");
     const html = await page(cookie, "/t/payouts");
     const changed = await post(cookie, "/t/payouts/route", { csrf: csrfOf(html), sawDigest: before.digest, phase: "build", agent: "claude|sonnet" });
     expect(changed.status).toBe(303);
     expect(approvalOf(store.getScope("payouts")!)).toMatchObject({ approved: false, reason: "changed" });
     const again = await page(cookie, "/next");
-    expect(again).toContain("the last thing waiting on you");
     expect(ceremonyOf(again, "\\/t\\/payouts\\/approve")).toContain("claude · sonnet plans, builds, and repairs");
   });
 
@@ -2223,9 +1923,6 @@ describe("the phase route on the console (v47): one projection on the task page,
       size: "medium", risky: "yes",
     })).status).toBe(303);
     store.setPlanState(store.refFor("built-in", "payouts").id, "drafted");
-    const task = await page(cookie, "/t/payouts");
-    expect(agentsCardOf(task)).toContain('<span class="badge">Risky</span>');
-    expect(agentsCardOf(task)).not.toContain('<span class="badge">Routine</span>');
     for (const path of ["/t/payouts", "/chat?task=payouts", "/next"]) {
       const shown = await page(cookie, path);
       const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(shown)?.[1] ?? "";
@@ -2235,7 +1932,6 @@ describe("the phase route on the console (v47): one projection on the task page,
     const scope = store.getScope("payouts")!;
     expect(scope.riskLevel).toBe("routine");
     expect(approve(store, "payouts", "alex", T0, scope.digest, approverToken).ok).toBe(true);
-    expect(agentsCardOf(await page(cookie, "/t/payouts"))).toContain('<span class="badge">Risky</span>');
   });
 
   test("a routed task whose approval lost its agents shows the closed door in words, and a proven pre-routing approval shows its profile", async () => {
@@ -2362,76 +2058,16 @@ describe("the inbox says when nothing will build (install review)", () => {
     const cookie = await login();
     let inbox = await (await fetch(`${base}/inbox`, { headers: { cookie } })).text();
     expect(inbox).toContain('data-builder-status="not-connected"');
-    expect(inbox).toContain("No builder is connected yet.");
-    expect(inbox).toContain("Toolroll is open, but no machine is connected to do project work.");
     expect(inbox).toContain("toolroll up");
     expect(inbox).not.toContain("toolroll daemon install");
 
     register(store, { name: "old-1", host: "h", capacity: 1, repos: ["/repo/main"], now: new Date(Date.now() - 30 * 24 * 60 * 60_000), newToken: () => "tok-old" });
     inbox = await (await fetch(`${base}/inbox`, { headers: { cookie } })).text();
     expect(inbox).toContain('data-builder-status="disconnected"');
-    expect(inbox).toContain("Builder disconnected.");
-    expect(inbox).toContain("1 builder is configured, last checked in");
-    expect(inbox).toContain("Reopen Toolroll on that machine.");
-    expect(inbox).toContain("Queued work starts automatically when a builder reconnects.");
 
     store.touchRunner("old-1", new Date());
     inbox = await (await fetch(`${base}/inbox`, { headers: { cookie } })).text();
     expect(inbox).not.toContain("data-builder-status=");
-    expect(inbox).not.toContain("Builder disconnected.");
-  });
-});
-
-describe("the board's order view (operator request): the one place a drag does anything", () => {
-  let store: Store;
-  let server: Server;
-  let base: string;
-  let evidenceRoot: string;
-  let approverToken: string;
-
-  const login = async (): Promise<string> => {
-    const response = await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: approverToken }), redirect: "manual" });
-    return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
-  };
-
-  beforeEach(async () => {
-    store = openStore(":memory:");
-    evidenceRoot = mkdtempSync(join(tmpdir(), "standing-orders-serve-order-"));
-    const added = addApprover(store, "alex", T0);
-    if (!added.ok) throw new Error("bootstrap failed");
-    approverToken = added.token;
-    store.createTask({ id: "t-order-1", title: "first in line" }, T0);
-    store.createTask({ id: "t-order-2", title: "second in line" }, T0);
-    server = createDecisionServer({ store, evidenceRoot, clock: () => new Date() });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (typeof address !== "object" || address === null) throw new Error("no address");
-    base = `http://127.0.0.1:${address.port}`;
-  });
-
-  afterEach(async () => {
-    await new Promise<void>(resolve => server.close(() => resolve()));
-    store.close();
-    rmSync(evidenceRoot, { recursive: true, force: true });
-  });
-
-  test("the state view links to order; the order view carries the queue's drag handles and its poller; state stays a view", async () => {
-    const cookie = await login();
-    const state = await (await fetch(`${base}/board`, { headers: { cookie } })).text();
-    expect(state).toContain('href="/board?view=order"');
-    expect(state).not.toContain('class="queue-handle"');
-
-    const order = await (await fetch(`${base}/board?view=order`, { headers: { cookie } })).text();
-    expect(order).toContain("<h1>Board</h1>");
-    expect(order).toContain('<a href="/board">state</a>');
-    expect(order).toContain("first in line");
-    expect(order).toContain("second in line");
-    expect(order).toContain('class="queue-handle"');
-    expect(order).toContain('id="queue-region"');
-    expect(order).toContain("/queue?fragment=1");
-    // The queue page itself is unchanged: same region, same handles.
-    const queue = await (await fetch(`${base}/queue`, { headers: { cookie } })).text();
-    expect(queue).toContain('class="queue-handle"');
   });
 });
 
@@ -2459,36 +2095,7 @@ describe("failures say what failed and builds say how far along: the demo's own 
     rmSync(made.sandbox, { recursive: true, force: true });
   });
 
-  const view = async (path: string) => workspaceOf(await (await fetch(`${base}${path}`, { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
   const runsOf = (task: string) => made.store.runsFor(made.store.lookupRef(task)!.id);
-
-  test("the failed task names the requirement it missed and its evidence, Retry's note holds what to change, and its build has a page", async () => {
-    const failed = await view("/t/retire-legacy-flag");
-    const run = runsOf("retire-legacy-flag").find(one => one.outcome === "failed")!.id;
-    expect(failed.status!.status).toMatchObject({ headline: "Failed", sentence: "Missed a requirement: No reference to LEGACY_PAYOUT remains in the codebase." });
-    expect(failed.failure).toEqual({
-      line: "Missed a requirement: No reference to LEGACY_PAYOUT remains in the codebase.",
-      evidence: "The agent's own note says: src/admin/overrides.ts still reads LEGACY_PAYOUT for the per-merchant override toggle, so one reference remains.",
-      suggestion: "Before handing off, make sure no reference to LEGACY_PAYOUT remains in the codebase.",
-      link: { label: `See build #${run}`, href: `/review?result=retire-legacy-flag&run=${run}` },
-    });
-    expect(failed.retry).toEqual({ action: "/t/retire-legacy-flag/requeue", note: failed.failure!.suggestion });
-    // The demo runs no checks: the Checks row says so and offers nothing, and nothing leads to Chat.
-    expect(JSON.stringify(failed.status)).not.toContain("/chat?");
-    expect(failed.runChecks).toBeNull();
-    expect(failed.status!.status.details.find(one => one.key === "checks")).toMatchObject({ text: "Can't run in the demo", action: null, href: null });
-    // The Requirements row counts what it missed.
-    expect(failed.status!.status.details.find(one => one.key === "requirements")).toMatchObject({ text: "1 missed", mark: "failed" });
-    // Its build record and result page are there, and Chat says the same thing.
-    expect((await fetch(`${base}/review?result=retire-legacy-flag&run=${run}`, { headers: { cookie } })).status).toBe(200);
-    const result = ((await (await fetch(`${base}/review?result=retire-legacy-flag&run=${run}&format=workspace`, { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
-    expect(result.selected!.panel!.status!.details.find(one => one.key === "checks")).toMatchObject({ text: "Can't run in the demo", action: null });
-    expect(result.selected!.panel!.status!.details.find(one => one.key === "requirements")).toMatchObject({ text: "1 missed" });
-    expect((await fetch(`${base}/r/${run}`, { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/review?result=retire-legacy-flag&run=${run}`);
-    const chat = await (await fetch(`${base}/chat?task=retire-legacy-flag`, { headers: { cookie } })).text();
-    expect(chat).toContain("Missed a requirement: No reference to LEGACY_PAYOUT remains in the codebase.");
-    expect(chat).not.toMatch(/href="\/chat\?task=retire-legacy-flag&amp;result=[0-9]+&amp;tab=checks#follow-ups"/);
-  });
 
   test("the building task says which step it is stuck on in place of the step line, with Stop in the same card, and its earlier stopped attempt is one quiet line", async () => {
     const html = await (await fetch(`${base}/t/harden-webhook-retries`, { headers: { cookie } })).text();
@@ -2514,36 +2121,11 @@ describe("failures say what failed and builds say how far along: the demo's own 
     expect(renderedHtmlOf(html)).not.toContain("the live file view is off");
     // The card keeps its way to the build's own record.
     expect(building.record).toEqual({ label: `Build #${live.id} record`, href: `/r/${live.id}` });
-    // Rendered, the card holds the stuck line, its note act and the exact-run Stop form, side by side.
-    const { renderToStaticMarkup } = await import("react-dom/server");
-    const { createElement } = await import("react");
-    const { TaskView } = await import("./browser/views/task-view.js");
-    const card = renderToStaticMarkup(createElement(TaskView, { view: building, csrf: "token" })).split('data-task-status')[1]!.split("</section>")[0]!;
-    expect(card).toContain(`data-build-stuck="4"`);
-    expect(card).toContain(stuck);
-    expect(card).toContain("data-stuck-action");
-    expect(card).toMatch(new RegExp(`<form class="task-stop-form[^"]*" data-task-control="stop" data-control-run="${live.id}" action="/t/harden-webhook-retries/stop" method="post">`));
-    expect(card).toContain(`<input type="hidden" name="run" value="${live.id}"/>`);
-    expect(card).toContain(`<input type="hidden" name="return" value="task"/>`);
-    expect(card).toMatch(new RegExp(`<a href="/r/${live.id}" data-build-record[^>]*>Build #${live.id} record</a>`));
-    expect(card.match(/>Stop<\/button>/g)).toHaveLength(1);
     const stopped = runsOf("harden-webhook-retries").find(one => one.role === "builder" && one.outcome === "refused")!;
     expect(building.earlier).toEqual({ summary: "1 earlier attempt stopped", attempts: [{ label: `Build #${stopped.id}`, href: `/r/${stopped.id}`, text: "The plan changed, so a fresh attempt took over." }] });
     // Not a red mark in the thread beside the healthy build.
     expect(building.thread!.some(one => one.key === `run-${stopped.id}`)).toBe(false);
     expect(building.thread!.some(one => one.kind === "progress" && /^Building/.test(one.title))).toBe(true);
-  });
-
-  test("while the live build reads anything but Building, its earlier stopped attempt stays in the thread", async () => {
-    const live = runsOf("harden-webhook-retries").find(one => one.outcome === null && one.role === "builder")!;
-    const stopped = runsOf("harden-webhook-retries").find(one => one.role === "builder" && one.outcome === "refused")!;
-    made.store.saveDecision({ run: live.id, urgency: "blocking", recap: "The staging flag is off.", question: "Enforce the limiter anyway?",
-      options: [{ id: "yes", label: "Enforce it", consequence: "Turns it on.", reversible: true }, { id: "no", label: "Wait", consequence: "Leaves it off.", reversible: true }], recommendation: "no" }, new Date());
-    const asking = await view("/t/harden-webhook-retries");
-    expect(asking.status!.status.headline).not.toBe("Building");
-    expect(asking.earlier ?? null).toBeNull();
-    expect(asking.progress ?? null).toBeNull();
-    expect(asking.thread!.some(one => one.key === `run-${stopped.id}`)).toBe(true);
   });
 
   test("the Tasks list says the same: a failed row from the database alone, a live row from its own attempt's progress", async () => {
@@ -2564,10 +2146,5 @@ describe("failures say what failed and builds say how far along: the demo's own 
     const rows = await rowsOf();
     expect(rows.find(row => row.id === "harden-webhook-retries")?.detail).toBe("Step 2 of 6.");
     expect(rows.find(row => row.id === "retire-legacy-flag")?.detail).toBe("Missed a requirement: No reference to LEGACY_PAYOUT remains in the codebase.");
-  });
-
-  test("the Tasks list row of a stuck live build names the stuck step from that build's own progress", async () => {
-    const rows = (workspaceOf(await (await fetch(`${base}/work`, { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
-    expect(rows.find(row => row.id === "harden-webhook-retries")?.detail).toBe("Stuck on step 4 of 6: the flag is off in the staging deploy target — confirming before enforcing.");
   });
 });

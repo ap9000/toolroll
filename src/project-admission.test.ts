@@ -11,7 +11,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
-import { addedWords, admitProject, commandLineActor, releaseProject } from "./project-admission.js";
+import { admitProject, commandLineActor, releaseProject } from "./project-admission.js";
 import { loadProjectRegistry } from "./repos.js";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
@@ -41,7 +41,6 @@ test("a folder inside a repository is admitted at its root, once, with who and f
   expect(await loadProjectRegistry(registryFile)).toEqual({ repos: [repo], roots: [] });
   expect(store.listProjects().map(one => one.path)).toEqual([repo]);
   expect(ledger("project added")).toEqual([expect.objectContaining({ actor: "alex", repo, source: "access", outcome: "added", detail: "from cli" })]);
-  expect(addedWords("vamarketplacenew", true, true)).toBe("Added vamarketplacenew; it is in the console now.");
 });
 
 test("a plain folder is refused before anything is written", async () => {

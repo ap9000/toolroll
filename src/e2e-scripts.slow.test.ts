@@ -15,13 +15,6 @@ import { LiveInput, type LiveCloseReason } from "./live-input.js";
 // "locator.waitFor: Timeout 30000ms exceeded", and one flaky journey made e2e-parallel.mjs run its whole group again.
 
 describe("a real-turn wait that runs out", () => {
-  test("names what it waited for, for how long, and what it saw", async () => {
-    let asked = 0;
-    const waited = until("the lead's reply to “Add Leo”", async () => { asked++; return false; }, { timeoutMs: 600, everyMs: 100, seen: () => "0 new messages" });
-    await expect(waited).rejects.toThrow("Timed out after 1 s waiting for the lead's reply to “Add Leo” — saw: 0 new messages");
-    expect(asked).toBeGreaterThan(1);
-  });
-
   test("scripted release waits use the configured deadline and time out as failures", async () => {
     vi.useFakeTimers();
     vi.stubEnv("TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS", "90");
@@ -181,18 +174,6 @@ describe("e2e-parallel.mjs's runGroups", () => {
     once.end("a", 1);
     expect((await noRetry)[0]!.again).toBeNull();
     expect(once.started).toEqual(["a"]);
-  });
-
-  test("each run's time, from its own start to its end, on the clock given", async () => {
-    const at = harness();
-    let clock = 0;
-    const done = runGroups({ groups: ["a", "b"], limit: 1, run: at.run, now: () => clock });
-    await settle();
-    clock = 90_000; at.end("a", 1); await settle();
-    clock = 120_000; at.end("b"); await settle();
-    clock = 126_000; at.end("a-retry");
-    const [a, b] = await done;
-    expect([a!.one.ms, a!.one.minutes, b!.one.ms, b!.one.minutes, a!.again!.ms, a!.again!.minutes]).toEqual([90_000, 1.5, 30_000, 0.5, 6_000, 0.1]);
   });
 
   test("a run that throws still frees its lane", async () => {

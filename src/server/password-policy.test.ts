@@ -28,7 +28,7 @@ test('cookie-only POST routes match the independent browser-only list exactly', 
 });
 
 /** Every address that asks for the operator's password, kept by hand and independently of the route table, so a row
- * quietly downgraded from step-up (and so open to bearers) fails here. serve.bearer-scope.test.ts proves over HTTP that
+ * quietly downgraded from step-up (and so open to bearers) fails here. serve.bearer-scope.slow.test.ts proves over HTTP that
  * every step-up row refuses password, API and OAuth bearers. */
 const PASSWORD_CEREMONIES = [
   '/code/start', `/code/${'a'.repeat(32)}/answer`,

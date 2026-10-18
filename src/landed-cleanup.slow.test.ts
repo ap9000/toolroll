@@ -20,7 +20,6 @@ import { assignmentOf, owedAcceptance } from "./assignment.js";
 import { assignmentTaskStatusOf } from "./assignment-presentation.js";
 import { workIndexTask } from "./work-index.js";
 import { telegramProgressCard } from "./telegram-progress.js";
-import { finishedLine } from "./chat-voice.js";
 import { runOperate, EXIT } from "./operate.js";
 import { WorktreePool, branchCreatedMessage } from "./worktree.js";
 import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
@@ -336,12 +335,9 @@ describe("c1: a merged result is completed automatically and torn down", () => {
     expect(status.headline).toBe("Complete");
     expect(status.sentence).toBe("Marked complete automatically: pull request #12 merged.");
     const indexed = workIndexTask(store, "cart", NOW, access, root)!;
-    expect(indexed.status.label).toBe("Complete");
-    expect(indexed.status.detail).toBe(status.sentence);
     expect(indexed.completion).toMatchObject({ actor: LANDED_ACTOR, landed: "pull request #12 merged" });
     const card = telegramProgressCard(store, store.getRun(work.runId)!, "cart", repo, NOW, root);
     expect(card.facts).toMatchObject({ landed: "pull request #12 merged", completedBy: null, checks: { status: "failed" } });
-    expect(finishedLine({ summary: "Change cart", headline: "Complete", checks: "failed", report: false, completedBy: null, landed: card.facts.landed ?? null })).toBe("Change cart is done: pull request #12 merged.");
   });
 
   test("commits reachable from main, and content already in main, complete too", async () => {

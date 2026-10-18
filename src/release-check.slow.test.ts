@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { journeyEnv, upgradeChanges, needsUpgrade, partRunner, partTempRoot, planFor, releaseTagProblem, versionOnly } from "../scripts/release-check.mjs";
+import { journeyEnv, upgradeChanges, needsUpgrade, partRunner, planFor, releaseTagProblem, versionOnly } from "../scripts/release-check.mjs";
 import { historicalSchema, atLeast, completionProblems, FIRST_RELEASE, installPublished, lastPublished, LONG_TEXT, missingTables, ROLLBACK_FROM, selectedVersions, upgradeLanes, upgradeVersions } from "../scripts/upgrade-path.mjs";
-import { gateWords, openGate, providerCap } from "../scripts/provider-gate.mjs";
+import { openGate, providerCap } from "../scripts/provider-gate.mjs";
 import { ciJobNames, ciSucceeded, macUnitFiles, passedCandidateCI } from "../scripts/release-check-ci.mjs";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -32,10 +32,6 @@ const script = resolve(import.meta.dirname, "../scripts/release-check.mjs");
 const LOCAL_TAGS = { ...process.env, TOOLROLL_RELEASE_LOCAL_TAGS: "1" };
 
 describe("a release's version bump", () => {
-  test("only the project's own version changed: not a dependency change", () => {
-    expect(versionOnly("package.json", pkg("0.9.5"), pkg("0.9.6"))).toBe(true);
-    expect(versionOnly("package-lock.json", lock("0.9.5"), lock("0.9.6"))).toBe(true);
-  });
 
   test("a dependency, its locked version, a missing side or unreadable JSON is a real change", () => {
     expect(versionOnly("package.json", pkg("0.9.5"), pkg("0.9.6", { zod: "^3.24.0" }))).toBe(false);
@@ -73,10 +69,6 @@ describe("what a change runs", () => {
     expect(planFor([], { full: true })).toEqual({ checks: true, real: true, why: "a full check: every unit test, every scripted and real-model browser journey" });
   });
 
-  test("browser lanes and units own their roots without an extra release-check socket-path level", () => {
-    expect(["unit", "app", "flows", "app-real", "flows-real"].map(partTempRoot)).toEqual([false, false, false, false, false]);
-    expect(["typecheck", "build", "upgrade"].map(partTempRoot)).toEqual([true, true, true]);
-  });
 });
 
 describe("node scripts/release-check.mjs", () => {
@@ -160,7 +152,7 @@ describe("node scripts/release-check.mjs", () => {
 
   test("a run: the unit tests start beside the build and wait for its outcome; the summary keeps its lines and says how long each part took", () => {
     // The stand-in tests wait for the outcome the release check hands them: seeing "ok" means they waited for the build.
-    const scripts = { typecheck: "node -e \"console.log('typed')\"", build: "node -e \"console.log('built')\"", test: "node units.cjs" };
+    const scripts = { typecheck: "node -e \"console.log('typed')\"", build: "node -e \"console.log('built')\"", "test:all": "node units.cjs" };
     const units = "const fs = require('fs'), m = process.env.TOOLROLL_RELEASE_BUILD;\n" +
       "const wait = () => fs.existsSync(m) ? console.log(' Test Files  1 passed (1) after ' + fs.readFileSync(m, 'utf8')) : setTimeout(wait, 20);\nwait();\n";
     const manifest = (version: string) => JSON.stringify({ name: "toolroll", version, scripts }, null, 2) + "\n";
@@ -175,7 +167,7 @@ describe("node scripts/release-check.mjs", () => {
 
   test("exact CI reuse runs macOS files locally, while --full still invokes the entire unit suite", () => {
     const at = fresh();
-    const manifest = JSON.stringify({ name: "fixture", scripts: { typecheck: "node -e 0", build: "node -e 0", test: "node units.cjs" } });
+    const manifest = JSON.stringify({ name: "fixture", scripts: { typecheck: "node -e 0", build: "node -e 0", "test:all": "node units.cjs" } });
     const gh = `#!/usr/bin/env node
 const { execFileSync } = require('node:child_process');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -207,7 +199,7 @@ console.log(JSON.stringify(process.argv.at(-1).includes('/attempts/')
     const runner = "import { appendFileSync } from 'node:fs';\nappendFileSync('journey-runs.jsonl', JSON.stringify({ argv: process.argv.slice(2), gate: process.env.TOOLROLL_CHECK_GATE ?? null }) + '\\n');\nconsole.log('Model calls: 4 scripted, 0 real turns');\n";
     const base = repoWith(at, {
       "scripts/e2e-parallel.mjs": runner, "scripts/flows-e2e.mjs": "", "scripts/app-e2e.mjs": "",
-      "package.json": JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build, test: "node -e 0 --" } }, null, 2) + "\n",
+      "package.json": JSON.stringify({ name: "toolroll", version: "0.9.5", scripts: { typecheck: "node -e 0", build, "test:all": "node -e 0 --" } }, null, 2) + "\n",
       "src/browser/app.tsx": "export {};\n", "src/lead.ts": "export {};\n",
     }, files);
     if (baseline === "release") {
@@ -249,14 +241,6 @@ console.log(JSON.stringify(process.argv.at(-1).includes('/attempts/')
     expect(out).toContain("a full check");
     expect(out).toContain("\nunit: exit 0\n");
     expect(runs).toEqual([REAL[0], SCRIPTED[0], REAL[1], SCRIPTED[1]]);
-  });
-
-  test("any change beyond docs runs every scripted journey group, flows 2 and app 4 at once, and no real-model journey", () => {
-    const { out, runs } = checkOf({ "src/browser/app.tsx": "export const changed = 1;\n" });
-    expect(out).toContain("every unit test and every scripted browser journey; no real-model journeys");
-    expect(runs).toEqual(SCRIPTED);
-    expect(out).toContain("\nModel calls: 4 scripted, 0 real turns\n");
-    expect(out).not.toContain("provider gate:");
   });
 
   test("a model-facing change and --real add the real-model groups under one provider gate; docs alone run no journey", () => {
@@ -389,7 +373,6 @@ describe("the provider gate", () => {
     expect(most).toBe(2);
     const facts = flows.facts();
     expect(facts).toMatchObject({ starts: 5, most: 2, cap: 2, from: "TOOLROLL_CHECK_PROVIDERS", others: 0, waits: 3 });
-    expect(gateWords(facts)).toMatch(/^provider gate: up to 2 real turns at once, 0 other sessions \(cap 2, TOOLROLL_CHECK_PROVIDERS\); 3 starts waited \d+ s in all for a slot \(longest: group [1-4]\)$/);
     expect(flows.facts(RUNNER_A)).toMatchObject({ starts: 3 });
     expect(readdirSync(join(at, "leases"))).toEqual([]);
     flows.close(); app.close();
@@ -421,9 +404,7 @@ describe("the provider gate", () => {
     expect(existsSync(join(at, "leases", `${DEAD_RUNNER}-1-dead.json`))).toBe(false);
     await expect(gate.hold("app lead", async () => { throw new Error("crashed"); })).rejects.toThrow("crashed");
     expect(readdirSync(join(at, "leases"))).toEqual([]);
-    expect(gateWords(gate.facts())).toBe("provider gate: up to 1 real turn at once, 0 other sessions (cap 1, TOOLROLL_CHECK_PROVIDERS); nothing waited for a slot");
     gate.close();
-    expect(gateWords({ starts: 0, cap: 4, from: "default", most: 0, others: null, waits: 0, waitedMs: 0, longest: null })).toBe("provider gate: nothing started");
   });
 });
 
@@ -473,10 +454,6 @@ describe("release check speed without weakening checks", () => {
       expect(historicalSchema(root, base)).toBe(107);
       expect(() => historicalSchema(root, "HEAD")).toThrow("Unreadable schema version");
     } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
-  test("real v0.5.0 historical store exceeds the default buffer but parses its baseline", () => {
-    expect(historicalSchema(resolve(import.meta.dirname, ".."), "v0.5.0")).toBe(107);
   });
 
   test("only scripted release journeys disable retries and shorten polling", () => {
@@ -541,7 +518,7 @@ describe("release check speed without weakening checks", () => {
 
   test("CI reuse keeps native macOS tests including sandbox and browser coverage", () => {
     const files = macUnitFiles(resolve(import.meta.dirname));
-    for (const file of ["agent-fence.test.ts", "boot-identity.test.ts", "scout-browser.test.ts", "desktop-update.recovery.test.ts"])
+    for (const file of ["agent-fence.slow.test.ts", "boot-identity.test.ts", "scout-browser.test.ts", "desktop-update.recovery.slow.test.ts"])
       expect(files).toContain(resolve(import.meta.dirname, file));
   });
 

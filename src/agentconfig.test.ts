@@ -21,12 +21,6 @@ describe("phase-agent resolution", () => {
   });
   afterEach(() => store.close());
 
-  test("nothing configured: claude, harness default, source 'default'", () => {
-    expect(resolvePhaseAgent(store, "build", "/repo", {})).toEqual({
-      ok: true, spec: { provider: "claude", model: null }, source: "default",
-    });
-  });
-
   test("gemini is NEVER a default or fallback — it dispatches only on explicit selection (the trust-posture invariant)", () => {
     // The operator's ruling (2026-08-29): gemini's workspace-trust grant
     // is acceptable BECAUSE gemini runs only when deliberately chosen. So

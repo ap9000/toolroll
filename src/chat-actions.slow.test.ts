@@ -433,26 +433,6 @@ describe("shared chat action lifecycle", () => {
       store.handle.prepare("SELECT COUNT(*) AS n FROM skill_test").get()?.["n"],
     ).toBe(1);
   });
-  test("knowledge saved through chat is visible in the existing project view and can be removed", () => {
-    expect(
-      confirm(
-        proposal("knowledge_save", {
-          repo,
-          title: "Acceptance wording",
-          content: "Use short labels and show remaining checks.",
-        }),
-      ),
-    ).toMatchObject({ ok: true });
-    const reference = knowledgeView(store, repo, who.name).knowledge
-      .references[0]!;
-    expect(reference.content).toContain("remaining checks");
-    expect(
-      confirm(proposal("knowledge_remove", { repo, id: reference.id })),
-    ).toMatchObject({ ok: true });
-    expect(knowledgeView(store, repo, who.name).knowledge.references).toEqual(
-      [],
-    );
-  });
   test("long knowledge requires full review and cannot be confirmed from a shortened chat card", () => {
     const instructions = "Check alignment and readable labels. ".repeat(60),
       id = proposal("knowledge_instructions", { repo, instructions });

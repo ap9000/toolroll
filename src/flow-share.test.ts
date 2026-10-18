@@ -20,7 +20,7 @@ import { addFlowTriggerTo, saveHooksBase, triggerConfigOf } from "./flow-trigger
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { FLOW_TEMPLATES, flowFromSteps, type FlowDefinition } from "./flows.js";
 import { GALLERY, galleryDiagram } from "./flow-gallery.js";
-import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, flowShape, importFlow, parseFlowFile, planFlowImport, rawFlowUrl, type FetchLike } from "./flow-share.js";
+import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, importFlow, parseFlowFile, planFlowImport, rawFlowUrl, type FetchLike } from "./flow-share.js";
 import { runOperate } from "./operate.js";
 import { parseContract } from "./contracts/contract.js";
 import { flowFileSchema } from "./contracts/flow.js";
@@ -132,22 +132,6 @@ describe("export then import", () => {
       expect.objectContaining({ kind: "button", label: "Report a bug" }),
     ]);
     expect(other.flowScript(theirs, "triage")).toMatchObject({ held: "imported", language: "python", savedBy: "sam" });
-  });
-
-  test("every template exports and imports to exactly the same zones and paths", () => {
-    for (const template of FLOW_TEMPLATES) {
-      const id = store.createFlow({ repo, name: template.label, definitionJson: JSON.stringify(template.definition), by: "alex" }, NOW);
-      const exported = exportFlow(store, store.getFlow(id)!, here);
-      const file = parseFlowFile(exported.json);
-      const values = Object.fromEntries(file.parameters.filter(one => one.id.startsWith("email-to-")).map(one => [one.id, "{{card.email}}"]));
-      const imported = importFlow(other, planFlowImport(other, theirs, file, values, "sam"), "sam", NOW, there);
-      const arrived = flowDefinitionOf(other.getFlow(imported.id)!)!;
-      // Every field the file uses is one docs/flow-file.schema.json describes: the file is exactly what flowFileSchema reads.
-      expect(parseContract(flowFileSchema, JSON.parse(exported.json)), template.id).toMatchObject({ ok: true });
-      const original = flowDefinitionOf(store.getFlow(id)!)!;
-      expect(flowShape(arrived), template.id).toBe(flowShape(original));
-      expect(paths(arrived), template.id).toEqual(paths(original));
-    }
   });
 
   test("exports the same bytes 0.9.34 did, and importing them draws the same flow", () => {

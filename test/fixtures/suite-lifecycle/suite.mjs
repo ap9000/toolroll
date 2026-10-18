@@ -1,4 +1,4 @@
-// A miniature suite for src/suite-lifecycle.test.ts: makes temp folders, starts a helper that ignores SIGTERM (as a
+// A miniature suite for src/suite-lifecycle.slow.test.ts: makes temp folders, starts a helper that ignores SIGTERM (as a
 // dev server or browser might), says where both are, then passes, fails or hangs as asked.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";

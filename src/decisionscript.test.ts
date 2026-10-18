@@ -8,7 +8,6 @@
  */
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { decisionAnswerScript } from "./serve.js";
-import { CodingWorkspace } from "./coding-workspace.js";
 
 const CARD = (id: number): string =>
   `<form class="card" id="capture"><input type="text" id="qc" name="title"></form>` +
@@ -24,12 +23,6 @@ const CARD = (id: number): string =>
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
-
-test("native session definitions remain importable by browser enhancements", () => {
-  // Importing a session definition must not eagerly load the native driver.
-  // The same real SQLite operations are exercised by the update fixtures.
-  expect(CodingWorkspace).toBeTypeOf("function");
-});
 
 describe("decisionAnswerScript, executed", () => {
   beforeEach(() => {
@@ -72,21 +65,6 @@ describe("decisionAnswerScript, executed", () => {
     expect(card?.textContent).toContain("Answered:");
     expect(card?.querySelector("form")).toBeNull();
     expect(document.getElementById("capture")).not.toBeNull();
-    expect((document.getElementById("qc") as HTMLInputElement).value).toBe("typed, not yet saved");
-  });
-
-  test("a response without a receipt removes just the card; the rest of the page stands", async () => {
-    vi.stubGlobal("fetch", () =>
-      Promise.resolve({
-        ok: true,
-        url: `${location.origin}/d/7`,
-        text: () => Promise.resolve(`<html><body><p>no receipt here</p></body></html>`),
-      }));
-
-    submit();
-    await flush();
-
-    expect(document.querySelector('[data-decision-id="7"]')).toBeNull();
     expect((document.getElementById("qc") as HTMLInputElement).value).toBe("typed, not yet saved");
   });
 

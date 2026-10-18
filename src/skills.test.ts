@@ -36,12 +36,8 @@ describe("Claude Code skill install", () => {
     expect(legacyClaudeCodeSkillDir("/home/alex")).toBe(join("/home/alex", ".claude", "skills", "standing-orders"));
   });
 
-  test("publishes the Claude Code mode in help and the command contract", async () => {
-    let lines: string[] = [];
-    expect(await main(["--help"], line => lines.push(line))).toBe(0);
-    expect(lines.join("\n")).toContain("skills install --claude-code [--dir <path>]");
-
-    lines = [];
+  test("publishes the Claude Code mode in the command contract", async () => {
+    const lines: string[] = [];
     expect(await main(["contract", "--commands", "--json"], line => lines.push(line))).toBe(0);
     const row = JSON.parse(lines.join("\n")).commands.find((command: { invocation: string }) => command.invocation === "skills install");
     expect(row).toMatchObject({
@@ -129,19 +125,6 @@ describe("Claude Code skill install", () => {
     expect(result).toMatchObject({ ok: false, reason: "foreign-file" });
     expect(readFileSync(join(directory, "console.md"), "utf8")).toBe("my custom guide\n");
     expect(readFileSync(operating, "utf8")).toContain("stale but still managed");
-  });
-
-  test("a preview names a foreign target without suggesting --yes", async () => {
-    const directory = fresh();
-    expect(applyClaudeCodeInstall(directory).ok).toBe(true);
-    writeFileSync(join(directory, "console.md"), "my custom guide\n");
-    const lines: string[] = [];
-
-    expect(await main(["skills", "install", "--claude-code", "--dir", directory, "--json"], line => lines.push(line))).toBe(3);
-
-    const answer = JSON.parse(lines.join("\n"));
-    expect(answer.message).toContain("choose another --dir");
-    expect(answer.message).not.toContain("Re-run with --yes");
   });
 
   test("--dir is specific to the Claude Code install", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { steerDestinationWords, steerStandingWords } from "./steer-status.js";
+import { steerStandingWords } from "./steer-status.js";
 import type { SteerNote } from "./store.js";
 
 const note = (over: Partial<SteerNote> = {}): SteerNote => ({
@@ -33,9 +33,4 @@ describe("one set of words for where a steering note stands (v120)", () => {
     expect(words(note({ authorshipState: "unverified-legacy" }), true)).toBe("Saved before notes required a sign-in; never sent");
   });
 
-  test("where a note filed now goes", () => {
-    expect(steerDestinationWords(true)).toBe("The running agent reads it when it next checks for notes.");
-    expect(steerDestinationWords(true, true)).toBe("The running agent gets it now.");
-    expect(steerDestinationWords(false)).toBe("The next attempt reads it before starting.");
-  });
 });

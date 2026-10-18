@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import {
@@ -161,17 +160,5 @@ describe("the native census contract", () => {
     expect(() => parseDarwinNativeSnapshot(census({ processes: [row, { ...row, pid: 2, uniqueId: "18446744073709551616" }] }))).toThrow("malformed-process-identity");
     expect(() => parseDarwinNativeSnapshot(census({ processes: [row, row] }))).toThrow("malformed-process-identity");
     expect(() => parseDarwinNativeSnapshot(census({ processes: [row, { ...row, pid: 2, traced: undefined }] }))).toThrow("malformed-process-identity");
-  });
-});
-
-describe("the zod revamp plan", () => {
-  it("marks item 19 done in the wave 4 table, with one Done entry", () => {
-    const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toMatch(/^\| 19 ✅ \| \*\*Journals and recovery state\*\*/m);
-    expect(plan.match(/^- \*\*19\. Journals and recovery state\*\*/gm)).toHaveLength(1);
-    const done = plan.split("- **19. Journals and recovery state**")[1]!.split(/^- \*\*/m)[0]!;
-    expect(done).toContain("Compatibility revision (comment 855)");
-    expect(done).toContain("null, missing and wrong-typed informational fields");
-    expect(done).not.toContain("wrong-typed or null field the old reader never looked at");
   });
 });

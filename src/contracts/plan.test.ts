@@ -69,20 +69,3 @@ describe("the plan contract", () => {
     expect(parsePlan("[]")).toMatchObject({ ok: false, problems: [{ reason: "not-an-object" }] });
   });
 });
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks wave 1 items 1 and 2 done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 1 ✅ \| \*\*Foundation\*\*/m);
-    expect(doc).toMatch(/^\| 2 ✅ \| \*\*Plan payload\*\*/m);
-    const done = doc.slice(doc.indexOf("## Done"));
-    expect(done).toContain("**1. Foundation**");
-    expect(done).toContain("**2. Plan payload**");
-  });
-
-  it("marks wave 1 item 7, the small structured answers, done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 7 ✅ \| \*\*Small structured answers\*\*/m);
-    expect(doc.slice(doc.indexOf("## Done"))).toContain("**7. Small structured answers**");
-  });
-});

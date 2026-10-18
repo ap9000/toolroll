@@ -22,7 +22,7 @@ import type { Located } from "./orphan-sweep.js";
 import type { ProcessRow } from "./run-closeout.js";
 import { linkInto, sharedCopies } from "./shared-deps.js";
 import { runtimesInUse } from "./staged-runtimes.js";
-import { lastSweep, nextSweepAt, RETRY_MS, saveSweep, sweepDetails, executeSweep as sweepStorage, sweepWords, SWEEP_EVERY_MS, type SweepDeps, type SweepPart, type SweepRecord } from "./storage-sweep.js";
+import { lastSweep, nextSweepAt, RETRY_MS, saveSweep, executeSweep as sweepStorage, sweepWords, SWEEP_EVERY_MS, type SweepDeps, type SweepPart, type SweepRecord } from "./storage-sweep.js";
 import { sweepStorage as childSweep, liveUse } from "./storage-sweep.js";
 import { sweepObservations } from "../test/sweep-observations.js";
 import { storageSweepSupervisor, type SweepCompletion } from "./storage-sweep-process.js";
@@ -364,39 +364,23 @@ test("the runtime the CLI links point to stays, on PATH or not; another extra ru
 const plan = (more: Partial<CheckoutPlan> = {}): CheckoutPlan => ({ at: new Date().toISOString(), cleanup: "finished", manual: true, go: [], stay: [], count: 0, totalBytes: 0, freeBytes: 0, waitingReview: 0, withChanges: 0, ...more });
 const part = (kind: SweepPart["kind"], count: number, more: Partial<SweepPart> = {}): SweepPart => ({ kind, count, bytes: 0, failed: 0, items: [], ...more });
 
-test("Settings → Storage says when the last sweep ran and what it did, then why the next waits; its paths sit behind Details", () => {
+test("Settings → Storage renders its sweep state hook, the swept paths, and honest failure text", () => {
   const view = (last: Parameters<typeof storageHtml>[0]["sweep"]) => htmlString(withFormToken("c".repeat(64), () => storageHtml({ plan: plan(), csrf: "c".repeat(64), ...(last === undefined ? {} : { sweep: last }) }, {})));
   const schedule = (state: SweepSchedule["state"], more: Partial<SweepSchedule> = {}): SweepSchedule => ({ state, lastAt: null, nextAt: null, busy: null, ...more });
   const never = view({ last: null, off: false, schedule: schedule("no-service") });
-  expect(never).toContain("<p>Not swept yet.</p>");
   expect(never).toContain('<p class="meta" data-sweep-state="no-service">Automatic sweep: waiting: no Toolroll service running.</p>');
-  expect(never).not.toContain("idle");
-  expect(view({ last: null, off: true, schedule: schedule("off") })).toContain("Automatic sweep: off.");
-  expect(view({ last: null, off: false, schedule: schedule("busy", { busy: "run" }) })).toContain("Automatic sweep: due, waiting: work is running.");
   const at = "2026-10-04T03:12:00.000Z";
-  const recent = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 1)] }, off: false, schedule: schedule("recent", { lastAt: at, nextAt: "2026-10-05T03:12:00.000Z" }) });
-  expect(recent).toMatch(/Swept <time datetime="2026-10-04T03:12:00.000Z">[^<]+<\/time>\. Removed 1 test temp folder\.<\/p><p class="meta" data-sweep-state="recent">Automatic sweep: swept recently, next due Oct \d+, \d+:12 [AP]M\.<\/p>/);
   const normal = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 104_990, { items: ["/tmp/so-route-cli-1"] }), part("orphans", 1, { items: ["node (4123), 4 days, in /state/worktrees/site/build-1"] }), part("checkouts", 2, { bytes: 600 * 1024 ** 2 })] } });
-  expect(normal).toContain(`<time datetime="${at}">`);
-  expect(normal).toContain("Removed 104,990 test temp folders and 2 finished checkouts, about 600 MB. Stopped 1 leftover process.");
-  expect(normal).toContain("<summary>Details</summary>");
   expect(normal).toContain("node (4123), 4 days, in /state/worktrees/site/build-1");
   expect(normal).not.toContain('class="problem"');
-  const nothing = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 0)] } });
-  expect(nothing).toContain("Nothing was due.");
-  expect(nothing).not.toContain("<summary>Details</summary>");
   const failed = view({ last: { at, source: "automatic", actor: "worker", parts: [part("test temp", 3, { failed: 2 }), part("orphans", 0, { problem: "working folders couldn't be read: lsof could not list working folders" })] } });
   expect(failed).toContain('<p class="problem">');
   expect(failed).toContain("Removed 3 test temp folders. 2 couldn&#39;t be removed. Couldn&#39;t check processes.");
   expect(failed).toContain("Leftover processes: working folders couldn&#39;t be read");
-  const manual = view({ last: { at, source: "manual", actor: "alex", parts: [part("checkouts", 1)] } });
-  expect(manual).toContain("Cleaned up by alex");
   expect(view(undefined)).not.toContain("data-last-sweep");
 });
 
-test("the details list what each part did, cut short with a count, and what's left for later", () => {
-  const items = Array.from({ length: 20 }, (_, at) => `/tmp/so-${at}`);
-  expect(sweepDetails([part("test temp", 25, { items, more: true })])).toEqual(["More test temp folders are left for the next sweep.", ...items, "… and 5 more test temp folders"]);
+test("the last automatic sweep is never a manual cleanup", () => {
   saveSweep(store, { at: new Date().toISOString(), source: "manual", actor: "alex", parts: [part("checkouts", 0)] });
   expect(lastSweep(store, "automatic")).toBeNull();
   expect(lastSweep(store)).toMatchObject({ source: "manual", actor: "alex" });

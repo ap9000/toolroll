@@ -45,7 +45,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
-      - run: npm test
+      - run: npm run test:all
         env:
           CI: "true"
 

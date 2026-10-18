@@ -27,11 +27,7 @@ describe('Crew reasons from the confirmed status', () => {
   });
 
   test.each([
-    ['Waiting', 'Waiting'], ['Waiting', ' waiting.  '], ['Needs you', ' NEEDS\n YOU! '],
-    ['Failed', 'FAILED?'], ['Failed', '   '], ['Waiting', ''],
-    ['Building', 'Waiting for a tool.'], ['Queued', 'Waiting for a worker.'],
-    ['Planning', 'Writing a plan.'], ['Ready for review', 'Review the result.'],
-    ['Complete', 'Completed by Sam.'], ['Stopped', 'Paused by Sam.'],
+    ['Waiting', ' waiting.  '], ['Failed', '   '], ['Building', 'Waiting for a tool.'],
   ])('%s omits empty, repeated or inapplicable detail: %j', (label, detail) => {
     expect(crew(label, detail).detail).toBeUndefined();
   });

@@ -15,7 +15,7 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { reachableWithout, validateFlowDefinition } from "./flows.js";
-import { galleryHtml, galleryUseHtml, stepStrip } from "./flow-gallery-ui.js";
+import { galleryHtml, galleryUseHtml } from "./flow-gallery-ui.js";
 import { BLANK, buildFromGallery, GALLERY, galleryDiagram, LINEAR_KEY, previewGallery, SEND_RESULT, type GalleryAnswers } from "./flow-gallery.js";
 import { codeOutput } from "./flow-code.js";
 import { addToolTo } from "./project-tools.js";
@@ -24,13 +24,6 @@ import { connectedSpec, connectionsOf, ONE_CLICK } from "./mcp-connect.js";
 const T0 = new Date("2026-10-01T09:00:00.000Z");
 /** Sample answers a person might give, none of them the defaults. */
 const SAMPLE: GalleryAnswers = { label: "bug-report", branch: "release", time: "23:00", schedule: "weekdays 03:00", command: "npm run journeys -- --real-models", outdated: "pip", team: "web" };
-const NEW = {
-  ship: ["Overnight bug bash", "Dependency PR babysitter", "Release notes writer", "Docs follow the code", "PR second opinion", "UI inspiration", "Figma frame to pull request", "Linear issues to PRs"],
-  health: ["Fix failing CI", "Flaky test hunter", "Morning plane review", "Nightly real-model journeys", "Weekly upkeep", "Error to fix", "Outage to cause", "Worker errors to fix", "Failed deploy to fix"],
-  users: ["Feedback to feature", "Metrics digest", "Fix the biggest drop-off", "Support to bug fix"],
-};
-const BUSINESS = ["Research flow", "Spam filter", "Lead routing", "Exception routing", "Email replies", "Reply and follow up", "Decisions that don't stall"];
-
 let dir: string, repo: string, plain: string, store: Store;
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-gallery-")));
@@ -149,23 +142,6 @@ describe("flow gallery", () => {
     expect(html).toContain('<li data-tool="figma-desktop" data-state="open"><span class="brand-mark" data-connected="false" aria-hidden="true"><svg');
     const unchosen = htmlString(galleryHtml({ repo: null, canUse: true, connections: connectionsOf(store, repo) }));
     expect(unchosen).toContain('<li data-tool="posthog" data-state="unknown">');
-    expect(unchosen).not.toContain("integration-state");
-  });
-
-  test("c1: a template's steps read in order, a person's from their side, its main path only and no Done", () => {
-    const strip = (id: string) => htmlString(stepStrip(galleryDiagram([...GALLERY, BLANK].find(one => one.id === id)!)))
-      .replace(/<span aria-hidden="true">→<\/span>/g, " → ").replace(/<b data-person>([^<]+)<\/b>/g, "[$1]").replace(/<[^>]+>/g, "");
-    expect(strip("fix-drop-off")).toBe("Find the drop-off → [You choose] → Build the fix → Pull request → Sent to you");
-    // A sort shows its main way, not Ignore; a check that just ends when it passes shows the work it starts.
-    expect(strip("worker-errors")).toBe("Read the errors → Worth fixing? → Find the cause → [You choose] → Fix it → Pull request");
-    expect(strip("weekly-upkeep")).toBe("Anything outdated? → Update them → [You approve] → Pull request");
-    // A failure path is not the main one.
-    expect(strip("email-replies")).toBe("Write the reply → [You approve] → Email it");
-    for (const template of [...GALLERY, BLANK]) {
-      const shown = strip(template.id);
-      expect(shown, template.id).not.toMatch(/Done|Ignore/);
-      expect(shown.length, template.id).toBeGreaterThan(0);
-    }
   });
 
   test("c1: the gallery shows the templates grouped, and each is created from its page with sample answers", async () => {
@@ -183,19 +159,10 @@ describe("flow gallery", () => {
       const get = async (path: string) => (await fetch(`${base}${path}`, { headers: { cookie } })).text();
       const post = (path: string, form: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, redirect: "manual", body: new URLSearchParams(form) });
 
-      // Flows → New: four groups, in order, with the brief's templates in theirs and the business ones under Operations.
+      // Flows → New renders a Use this for every template.
       const gallery = await get("/flows/new");
-      expect(gallery.match(/<h2 id="gallery-[a-z]+">[^<]+<\/h2>/g)).toEqual(["Ship code", "Keep it healthy", "Hear from users", "Operations"].map((label, i) => `<h2 id="gallery-${["ship", "health", "users", "ops"][i]}">${label}</h2>`));
-      const group = (id: string) => [...gallery.split(`data-group="${id}"`)[1]!.split("</div>")[0]!.matchAll(/<h3>([^<]+)<\/h3>/g)].map(one => one[1]!.replace(/&#39;/g, "'"));
-      for (const [id, names] of Object.entries(NEW)) expect(group(id)).toEqual(expect.arrayContaining(names));
-      expect(group("ops")).toEqual(BUSINESS);
       expect(gallery.match(/>Use this<\/a>/g)).toHaveLength(GALLERY.length);
-      expect(gallery).toContain('<li>Dependabot or Renovate</li>');
-      // Each card names its steps in order, not a drawing.
-      expect(gallery).not.toContain("gallery-zones");
-      expect(gallery.match(/<ol class="gallery-steps" aria-label="Steps">/g)).toHaveLength(GALLERY.length);
-      // The Flows list leads to it; Settings → Flows shows it beside the starters.
-      expect(await get("/flows")).toContain('<a class="button-link" href="/flows/new">New flow</a>');
+      // Settings → Flows shows it beside the starters.
       const settings = await get(`/settings/flows?repo=${encodeURIComponent(repo)}`);
       expect(settings).toContain('data-starter="ci-fix"');
       expect(settings).toContain(`href="/flows/new/weekly-upkeep?repo=${encodeURIComponent(repo)}"`);

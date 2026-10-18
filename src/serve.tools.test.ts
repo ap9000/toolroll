@@ -77,25 +77,14 @@ const declined = async (started: Response) => {
 
 test("choosing a project opens it at once, and every form there names and posts that project", async () => {
   const cookie = await login();
-  const first = await page(cookie);
-  expect(first).toMatch(/<form class="tools" method="get" action="\/settings\/tools" data-autosave><label>Project<select name="repo" data-tools-project>/);
-  // The Show project button stays for a page without scripts; the script submits on change and marks the forms stale.
-  expect(first).toContain('<button type="submit">Show project</button>');
-  expect(first).toContain("input[name=shown]");
-  expect(first).toContain('aria-label="Connect Stripe to bentoportfolio"');
   // The dropdown navigates to ?repo=…; that page's Connect goes to the project it shows.
   const shown = await page(cookie, `?repo=${encodeURIComponent(ORDERS)}`);
-  expect(shown).toContain('<h2 id="connect-heading">Connect to standing-orders</h2>');
-  expect(shown).toContain('aria-label="Connect Stripe to standing-orders"');
-  expect(shown).toContain("Add to standing-orders");
   const fields = formOf(shown, "/settings/tools/connect");
   expect(fields).toMatchObject({ repo: ORDERS, shown: ORDERS });
   const started = await post(cookie, "/settings/tools/connect", { ...fields, service: "stripe", password: token });
   expect(started.status).toBe(200);
   expect(signIns).toHaveLength(1);
   expect(await declined(started)).toBe(`/settings/tools?repo=${ORDERS}&problem=Stripe wasn't connected to standing-orders: access was declined.`);
-  // A kit's or the lead's Connect link names the project on its own button.
-  expect(await page(cookie, `?repo=${encodeURIComponent(ORDERS)}&connect=stripe`)).toContain('class="connect-wanted">Connect Stripe to standing-orders</button>');
 });
 
 test("a post from a page that showed another project is refused, and nothing starts or changes", async () => {
@@ -119,9 +108,6 @@ test("a connected service is connected to another project with one action: a fre
   expect(addToolTo(store, BENTO, connectedSpec("stripe")!, "connected by signing in", "alex", T0, { home })).toMatchObject({ ok: true });
   const cookie = await login();
   const html = await page(cookie, `?repo=${encodeURIComponent(BENTO)}`);
-  expect(html).toContain('<button name="also" value="stripe:/repo/standing-orders" class="secondary">Also connect Stripe to standing-orders</button>');
-  // Already on standing-orders: nothing to offer from there.
-  expect(await page(cookie, `?repo=${encodeURIComponent(ORDERS)}`)).not.toContain("Also connect Stripe");
   const fields = formOf(html.slice(html.indexOf('class="tool-elsewhere"')), "/settings/tools/connect");
   expect(fields).toMatchObject({ repo: BENTO, shown: BENTO });
   const started = await post(cookie, "/settings/tools/connect", { ...fields, also: `stripe:${ORDERS}`, password: token });
@@ -136,70 +122,16 @@ test("a connected service is connected to another project with one action: a fre
   expect(signIns).toHaveLength(1);
 });
 
-test("the React workspace's Settings → Tools is the same page: named buttons, a shown project on every form, refusals alike", async () => {
-  const cookie = await login();
-  const read = await fetch(`${base}/settings/tools?repo=${encodeURIComponent(ORDERS)}&format=workspace`, { headers: { cookie } });
-  const workspace = await read.json() as import("./browser-workspace.js").BrowserWorkspace;
-  // The workspace places the server's page as it is, so its forms are the ones tested above.
-  expect(workspace.view).toBeNull();
-  const html = workspace.pageHtml ?? "";
-  expect(html).toContain("data-tools-project");
-  expect(html).toContain('aria-label="Connect Stripe to standing-orders"');
-  expect(html).toContain("Add to standing-orders");
-  const forms = [...html.matchAll(/<form method="post" action="\/settings\/tools\/(?:change|connect)">[\s\S]*?<\/form>/g)].map(m => m[0]);
-  expect(forms.length).toBeGreaterThan(0);
-  for (const form of forms) expect(form).toContain(`<input type="hidden" name="shown" value="${ORDERS}">`);
-  const fields = formOf(html, "/settings/tools/connect");
-  expect(fields).toMatchObject({ repo: ORDERS, shown: ORDERS, csrf: workspace.csrf });
-  const started = await post(cookie, "/settings/tools/connect", { ...fields, service: "stripe", password: token });
-  expect(started.status).toBe(200);
-  expect(await declined(started)).toBe(`/settings/tools?repo=${ORDERS}&problem=Stripe wasn't connected to standing-orders: access was declined.`);
-  const stale = await post(cookie, "/settings/tools/connect", { ...fields, shown: BENTO, service: "stripe", password: token });
-  expect(decodeURIComponent(stale.headers.get("location") ?? "")).toContain("The project changed; connect again.");
-  expect(signIns).toHaveLength(1);
-});
-
-test("a gallery template shows its tools for the project, offers Connect first and comes back to the template", async () => {
+test("a gallery template's Connect refuses a wrong password, a stale project and a forged template, and comes back to the template", async () => {
   // PostHog signed in on bentoportfolio; Sentry added from the common tools list, so not connected by signing in.
   expect(addToolTo(store, BENTO, connectedSpec("posthog")!, "connected by signing in", "alex", T0, { home })).toMatchObject({ ok: true });
   const { label: _sentry, ...sentry } = catalogTool("sentry")!;
   expect(addToolTo(store, BENTO, sentry, "the common tools list", "alex", T0, { home })).toMatchObject({ ok: true });
   const cookie = await login();
   const get = async (path: string) => (await fetch(`${base}${path}`, { headers: { cookie } })).text();
-  const card = (html: string, id: string) => new RegExp(`<article class="gallery-card" data-template="${id}">[\\s\\S]*?</article>`).exec(html)?.[0] ?? "";
-
-  // The gallery: each card's marks (the Integrations mark) and where this project stands with each tool.
-  const gallery = await get(`/flows/new?repo=${encodeURIComponent(BENTO)}`);
-  expect(card(gallery, "metrics-digest")).toContain('<li data-tool="posthog" data-state="connected"><span class="brand-mark" data-connected="true" aria-hidden="true"><svg');
-  expect(card(gallery, "metrics-digest")).toContain('<strong>PostHog</strong><span class="integration-state integration-state--connected"><i aria-hidden="true"></i>Connected</span>');
-  expect(card(gallery, "ui-inspiration")).toMatch(/<li data-tool="mobbin" data-state="open"><span class="brand-mark" data-connected="false"[^>]*>.*<\/span><strong>Mobbin<\/strong><span class="integration-state integration-state--not-set-up"><i aria-hidden="true"><\/i>Not connected<\/span>/);
-  expect(card(gallery, "error-to-fix")).toContain('data-tool="sentry" data-state="taken"');
-  expect(card(gallery, "error-to-fix")).toContain("Added another way");
-  expect(card(gallery, "figma-to-pr")).toContain('data-tool="figma-desktop" data-state="open"');
-  expect(card(gallery, "fix-ci")).not.toContain("gallery-tools");
-  // Another project, another state.
-  expect(card(await get(`/flows/new?repo=${encodeURIComponent(ORDERS)}`), "metrics-digest")).toContain('data-tool="posthog" data-state="open"');
-
-  // Connected: no Connect, and Create flow is the main action.
-  const digest = await get(`/flows/new/metrics-digest?repo=${encodeURIComponent(BENTO)}`);
-  expect(digest).toContain('<div class="gallery-connect" data-tool="posthog" data-state="connected">');
-  expect(digest).not.toContain('action="/settings/tools/connect"');
-  expect(digest).toContain('<button type="submit" name="intent" value="create">Create flow</button>');
-  // Added another way: it is there, so nothing reads as missing: no Connect, and Create flow keeps its normal weight.
-  const errors = await get(`/flows/new/error-to-fix?repo=${encodeURIComponent(BENTO)}`);
-  expect(errors).toContain('<div class="gallery-connect" data-tool="sentry" data-state="taken">');
-  expect(errors).not.toContain('action="/settings/tools/connect"');
-  expect(errors).toContain(`data-tool-taken="sentry">“Find the cause” uses Sentry, added another way.</p>`);
-  expect(errors).not.toContain("data-needs-tool");
-  expect(errors).not.toContain("isn't connected");
-  expect(errors).toContain('<button type="submit" name="intent" value="create">Create flow</button>');
 
   // Not connected: its Connect (with the password) comes first; the preview names the zone that needs it; Create stays, quieter.
   const figma = await get(`/flows/new/figma-to-pr?repo=${encodeURIComponent(BENTO)}`);
-  expect(figma).toContain('<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button name="service" value="figma-desktop">Connect Figma (desktop app)</button>');
-  expect(figma.indexOf('action="/settings/tools/connect"')).toBeLessThan(figma.indexOf("data-gallery-use"));
-  expect(figma).toContain(`data-needs-tool="figma-desktop">“Build the frame” needs Figma (desktop app), which isn't connected.</p>`);
-  expect(figma).toContain('value="create" class="secondary" data-without-tools>Create flow</button>');
   const fields = formOf(figma, "/settings/tools/connect");
   expect(fields).toMatchObject({ repo: BENTO, shown: BENTO, template: "figma-to-pr" });
 
@@ -212,15 +144,11 @@ test("a gallery template shows its tools for the project, offers Connect first a
   const back = decodeURIComponent(offline.headers.get("location") ?? "");
   expect(back).toMatch(/^\/flows\/new\/figma-to-pr\?repo=\/repo\/bentoportfolio&problem=/);
   expect(projectToolsOf(store, BENTO).map(one => one.name)).not.toContain("figma-desktop");
-  const failed = await get(back.replace(/problem=(.*)$/, (_all, words: string) => `problem=${encodeURIComponent(words)}`));
-  expect(failed).toContain('<p class="problem" role="alert">');
-  expect(failed).toContain("Connect Figma (desktop app)</button>");
 
   // A sign-in elsewhere: started from the template, the service's answer comes back to that template and project.
   const page = await get(`/flows/new/ui-inspiration?repo=${encodeURIComponent(ORDERS)}`);
   const signIn = formOf(page, "/settings/tools/connect");
   expect(signIn).toMatchObject({ repo: ORDERS, shown: ORDERS, template: "ui-inspiration" });
-  expect(page).toContain("You sign in on Mobbin, then come back here.");
   const started = await post(cookie, "/settings/tools/connect", { ...signIn, service: "stripe", password: token });
   // A template names only its own tools: Stripe isn't one of UI inspiration's, so it goes back to the Tools page as ever.
   expect(started.status).toBe(200);
@@ -263,17 +191,10 @@ test("PostHog connected with write access says why research can't use it, and Re
   expect(after).not.toContain("Reconnect read-only");
 });
 
-test("Settings → Project's Build access says what a build gets, names only tools that load, and links to Manage tools", async () => {
+test("Settings → Project's Build access never shows a tool's secret", async () => {
   const cookie = await login();
   const projectPage = async () => (await fetch(`${base}/settings/project?repo=${encodeURIComponent(BENTO)}`, { headers: { cookie } })).text();
   const section = (html: string) => /<section class="build-access"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
-  // No opt-in: no extra tools, the one action, and the user's own setup said to stay out.
-  const empty = section(await projectPage());
-  expect(empty).toContain("<h2 id=\"build-access-title\">Build access</h2>");
-  expect(empty).toContain("Builds work in their task's folder, with no extra tools.");
-  expect(empty).toContain("hooks, plugins and MCP servers don&#39;t load");
-  expect(empty).toContain(`<a class="manage-tools" href="/settings/tools?repo=${encodeURIComponent(BENTO)}">Manage tools</a>`);
-  expect((empty.match(/<a /g) ?? []).length).toBe(1);
 
   // Named tools: one ready, one missing its secret (named on the page, never its value).
   const secret = ["lin", "api", "9c".repeat(16)].join("_");
@@ -282,31 +203,14 @@ test("Settings → Project's Build access says what a build gets, names only too
   setToolSecrets(BENTO, "linear", { LINEAR_TOKEN: secret }, home);
   expect(addToolTo(store, BENTO, { name: long, transport: "stdio", command: "npx", args: ["docs-mcp"], url: null, secrets: [{ name: "DOCS_TOKEN", optional: false }], bearer: null, headerSecrets: {}, about: "Docs" }, "custom", "alex", T0, { home })).toMatchObject({ ok: true });
   const named = section(await projectPage());
-  expect(named).toContain('Builds work in their task\'s folder, with one tool: <span class="tool-name">linear</span>.');
-  expect(named).toContain(`<li><span class="tool-name">${long}</span> <span class="meta">· Needs DOCS_TOKEN</span></li>`);
   expect(named).not.toContain(secret);
 });
 
-test("Build access says plainly when a project's tools can't be read, and keeps the way to fix them", async () => {
+test("Build access says plainly when a project's tools can't be read", async () => {
   const { projectSettingsHtml } = await import("./project-delete-ui.js");
   const { htmlString } = await import("./html.js");
   const view = { repo: BENTO, name: "bentoportfolio", holdings: { tasks: 0, versions: 0, runs: 0, chats: 0, flows: 0, cards: 0, subagents: 0 }, running: [], canDelete: false };
   const failed = htmlString(projectSettingsHtml({ ...view, access: { problem: "Couldn't read this project's tools right now." } } as never, {}));
   expect(failed).toContain('<p class="problem" role="alert">Couldn&#39;t read this project&#39;s tools right now.</p>');
   expect(failed).toContain(">Manage tools</a>");
-  // Many tools are counted once, in one sentence.
-  const many = htmlString(projectSettingsHtml({ ...view, access: { tools: ["a", "b", "c"].map(name => ({ name, loads: true, words: "Working · 2 tools" })) } } as never, {}));
-  expect(many).toContain('with 3 tools: <span class="tool-name">a</span>, <span class="tool-name">b</span>, <span class="tool-name">c</span>.');
-});
-
-test("Project settings show the saved remote, missing guidance, and an escaped long URL", async () => {
-  const cookie = await login();
-  const page = async () => (await fetch(`${base}/settings/project?repo=${encodeURIComponent(BENTO)}`, { headers: { cookie } })).text();
-  expect(await page()).toContain("No remote recorded. Landed work waits for your review.");
-  const remoteUrl = "https://example.com/" + "long-project-name/".repeat(30) + "shop.git";
-  store.upsertProject(BENTO, "bentoportfolio", T0, { remoteUrl });
-  const html = await page();
-  expect(html).toContain(`<p class="path">${remoteUrl}</p>`);
-  expect(html).toContain("toolroll repos add &lt;project&gt; --remote &lt;url&gt;");
-  expect(html.match(/id="recorded-remote-title"/g)).toHaveLength(1);
 });

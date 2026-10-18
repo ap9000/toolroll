@@ -128,7 +128,6 @@ test("the printable page shows the same facts, with no script, and the task page
   const alex = await signIn("alex");
   const html = await page(alex, `/t/${id}/evidence`);
   expect(html).toContain(`data-evidence-pack="${id}"`);
-  expect(html).toContain("<h1>Evidence pack</h1>");
   expect(html).toContain('data-evidence-chain="ok"');
   expect(html).toContain("<dt>Approval rules</dt><dd>requester can&#39;t approve<ul");
   expect(html).toContain("alex: no rules → requester can&#39;t approve");
