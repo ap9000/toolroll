@@ -73,6 +73,7 @@ function AgentRow({ row, selected }: { row: BrowserAgentRow; selected: boolean }
 }
 
 function Board({ view, selected }: { view: BrowserAgentsView; selected: number | null }) {
+  if (view.groups.length === 0 && view.empty === null) return null;
   if (view.groups.length === 0) return <p className="rounded-card border border-border bg-card px-4 py-10 text-body text-muted-foreground" data-agents-empty>{view.empty}</p>;
   return <div className="flex flex-col gap-5 phone:gap-4">
     {view.groups.map(group => <section key={group.key} data-agent-group-section={group.key} aria-labelledby={`agents-${group.key}`}>
@@ -267,7 +268,7 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
       <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running{waiting > 0 && <> · <span className="text-foreground">{waiting} need you</span></>}</span>
       <nav aria-label="Timeline window" className="ml-auto flex rounded-md bg-raised p-0.5 text-[12px]">
         {lanes.windows.map(one => <a key={one.key} href={one.href} aria-current={one.active ? "true" : undefined}
-          className={cn("rounded px-2 py-0.5 text-muted-foreground hover:text-foreground", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
+          className={cn("inline-flex items-center rounded px-2 py-0.5 text-muted-foreground hover:text-foreground phone:min-h-11 phone:px-3", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
       </nav>
     </div>
     <div className="mt-2 grid grid-cols-[minmax(0,210px)_minmax(0,1fr)] gap-x-3 phone:grid-cols-[minmax(0,110px)_minmax(0,1fr)] phone:gap-x-2">
@@ -277,11 +278,11 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
         <span className="absolute right-0 rounded bg-raised px-1 text-foreground">now</span>
       </div>
       {lanes.lanes.map(lane => <div key={lane.taskId} className="contents" data-lane={lane.taskId} data-lane-group={lane.group}>
-        <a href={lane.href} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px] hover:underline hover:underline-offset-4">
+        <a href={lane.href} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px] hover:underline hover:underline-offset-4 phone:min-h-11">
           <StatusGlyph kind={LANE_GLYPH[lane.group]} /><span className="sr-only">{LANE_STATE[lane.group]}: </span>
           <span className="truncate font-medium" title={lane.project ? `${lane.title} · ${lane.project}` : lane.title}>{lane.title}</span>
         </a>
-        <div className="relative my-1 h-6 border-b border-border/60">
+        <div className="relative my-1 h-6 self-center border-b border-border/60">
           {lane.segments.map((one, index) => {
             // At least a sliver wide, and never past the now edge: a just-started run sits against it.
             const width = Math.max(0.8, at(one.endedAt ?? lanes.now) - at(one.startedAt));
@@ -291,7 +292,7 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
             const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))} from ${clock(one.startedAt)}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
             return <span key={one.runId} className="contents">
               <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
-                className={cn("absolute top-0.5 box-border flex h-5 min-w-0 items-center overflow-hidden whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
+                className={cn("absolute top-0.5 box-border flex h-5 phone:pointer-events-none min-w-0 items-center overflow-hidden whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
                 style={{ left: `${left}%`, width: `${width}%` }}>{width >= 7 ? ROLE_WORD[one.role] : ""}</a>
               {gapTo !== null && gapTo > right && <span aria-hidden="true" className="absolute top-1/2 border-t border-dotted border-foreground/30" style={{ left: `${right}%`, width: `${gapTo - right}%` }} />}
             </span>;
@@ -299,9 +300,8 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
         </div>
       </div>)}
     </div>
-    {(lanes.more > 0 || lanes.truncated) && <p className="mt-1 text-[12.5px] text-muted-foreground">
-      {lanes.more > 0 && `${lanes.more} more ${lanes.more === 1 ? "task" : "tasks"} in this window, below the twelve shown.`}{lanes.truncated && " The oldest runs in this window are left out."}
-    </p>}
+    {lanes.lanes.length === 0 && <p className="py-3 text-[12.5px] text-muted-foreground">Nothing ran in the last {lanes.windows.find(one => one.active)?.label ?? "window"}.</p>}
+    {lanes.more > 0 && <p className="mt-1 text-[12.5px] text-muted-foreground">{lanes.more} more {lanes.more === 1 ? "task" : "tasks"} in this window, below the twelve most recent.</p>}
   </section>;
 }
 

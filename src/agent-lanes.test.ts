@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { agentLanesOf, agentLanesSql, LANE_ROWS, laneSinceOf } from "./agents-board.js";
+import { agentLanesOf, agentLanesSql, LANE_ROWS, laneRunsSql, laneSinceOf } from "./agents-board.js";
 import { BUILT_IN, openStore, type Store } from "./store.js";
 
 const T0 = new Date("2026-10-11T12:00:00.000Z");
@@ -37,42 +37,53 @@ test("another project's runs never reach the timeline, and nothing in the window
   expect(lanesAt(["/projects/none"])).toBeNull();
 });
 
-test("the window keeps running runs and runs that ended inside it, a long one included; rows follow the board, newest first; counts cover every task", () => {
-  const old = task("old"); build(old, at(-5 * 60 * MIN), at(-4 * 60 * MIN));
-  const long = task("long"); build(long, at(-9 * 60 * MIN), at(-1 * MIN));
-  const live = task("live"); build(live, at(-10 * MIN), null);
-  const asks = task("asks"); build(asks, at(-50 * MIN), at(-40 * MIN), "failed");
-  const board = [{ rows: [{ taskId: "asks", group: "needs-you" as const }, { taskId: "live", group: "working" as const }, { taskId: "long", group: "done" as const }] }];
+const plan = (sql: string, params: Record<string, unknown>) => store.handle.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(params).map(row => String(row["detail"]));
+
+test("running tasks come first, then the most recently active; counts cover every task; state comes from the board", () => {
+  build(task("old"), at(-5 * 60 * MIN), at(-4 * 60 * MIN));
+  build(task("asks"), at(-50 * MIN), at(-40 * MIN), "failed");
+  build(task("live"), at(-100 * MIN), null);
+  build(task("recent"), at(-20 * MIN), at(-5 * MIN));
+  const board = [{ rows: [{ taskId: "asks", group: "needs-you" as const }, { taskId: "live", group: "working" as const }] }];
   const lanes = lanesAt(null, board)!;
-  expect(lanes.lanes.map(lane => [lane.taskId, lane.group])).toEqual([["asks", "needs-you"], ["live", "working"], ["long", "done"]]);
-  expect(lanes.lanes.find(lane => lane.taskId === "live")!.segments[0]).toMatchObject({ role: "builder", endedAt: null });
+  expect(lanes.lanes.map(lane => [lane.taskId, lane.group])).toEqual([["live", "working"], ["recent", "idle"], ["asks", "needs-you"]]);
+  expect(lanes.lanes[0]!.segments[0]).toMatchObject({ role: "builder", endedAt: null });
+  expect([lanes.running, lanes.needsYou, lanes.more]).toEqual([1, 1, 0]);
   expect(lanes.since).toBe(laneSinceOf("2h", T0).toISOString());
 
-  // Twenty running tasks: twelve rows, the newest first, and counts over all of them.
+  // Twenty more running: twelve rows, every running count, the rest a number.
   for (let n = 0; n < 20; n++) build(task(`many-${n}`), at(-(n + 1) * MIN), null);
-  const working = [{ rows: [...board[0]!.rows, ...Array.from({ length: 20 }, (_, n) => ({ taskId: `many-${n}`, group: "working" as const }))] }];
-  const many = lanesAt(null, working)!;
+  const many = lanesAt(null, board)!;
   expect(many.lanes).toHaveLength(LANE_ROWS);
-  // Needs you first, then working with the newest start first ("live" began ten minutes ago, after many-8).
-  expect(many.lanes.slice(0, 3).map(lane => lane.taskId)).toEqual(["asks", "many-0", "many-1"]);
-  expect([many.running, many.needsYou, many.more]).toEqual([21, 1, 23 - LANE_ROWS]);
+  expect(many.lanes.every(lane => lane.segments.some(one => one.endedAt === null))).toBe(true);
+  expect([many.running, many.more]).toEqual([21, 23 - LANE_ROWS]);
 });
 
-test("a long history outside the window hides nothing current and is never walked", () => {
+test("a long build that finished inside the window shows, however long it ran; old runs never crowd out a live one", () => {
+  build(task("marathon"), at(-30 * 60 * MIN), at(-1 * MIN));
   const busy = task("busy");
-  for (let n = 0; n < 700; n++) build(busy, at(-3 * 24 * 60 * MIN - n * MIN), at(-3 * 24 * 60 * MIN - n * MIN + 30_000));
-  build(task("now"), at(-5 * MIN), null);
-  expect(lanesAt(null)!.lanes.map(lane => lane.taskId)).toEqual(["now"]);
-  const plan = store.handle.prepare(`EXPLAIN QUERY PLAN ${agentLanesSql()}`)
-    .all({ $lookback: at(-26 * 60 * MIN).toISOString(), $since: at(-2 * 60 * MIN).toISOString(), $all: 1, $repos: "[]" }).map(row => String(row["detail"]));
-  // The candidates come from the start range and the unfinished index, and drive the join; no plain scan of runs.
-  expect(plan.some(step => step.includes("run_started"))).toBe(true);
-  expect(plan.some(step => step.includes("work_unfinished"))).toBe(true);
-  expect(plan.filter(step => /^SCAN (run|r)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
-  expect(plan.some(step => /SEARCH r USING INTEGER PRIMARY KEY/.test(step))).toBe(true);
+  for (let n = 0; n < 300; n++) build(busy, at(-90 * MIN + n * 10_000), at(-90 * MIN + n * 10_000 + 5_000));
+  build(task("slow"), at(-100 * MIN), null);
+  expect(lanesAt(null)!.lanes.map(lane => lane.taskId)).toEqual(["slow", "marathon", "busy"]);
+});
+
+test("a quiet window keeps the timeline (and its window choice) when something ran today; nothing in a day is no timeline", () => {
+  build(task("earlier"), at(-5 * 60 * MIN), at(-5 * 60 * MIN + 10 * MIN));
+  expect(lanesAt(null)).toMatchObject({ lanes: [], running: 0, more: 0 });
+  expect(agentLanesOf(store, at(30 * 60 * MIN), { repos: null }, [], "2h")).toBeNull();
+});
+
+test("the timeline reads index ranges and each chosen task's own runs, never every run", () => {
+  const busy = task("busy");
+  for (let n = 0; n < 200; n++) build(busy, at(-3 * 24 * 60 * MIN - n * MIN), at(-3 * 24 * 60 * MIN - n * MIN + 30_000));
+  const lanes = plan(agentLanesSql(), { $lookback: at(-26 * 60 * MIN).toISOString(), $since: at(-2 * 60 * MIN).toISOString(), $now: T0.toISOString(), $all: 1, $repos: "[]", $rows: LANE_ROWS });
+  for (const index of ["run_started", "work_unfinished", "agent_board_recent"]) expect(lanes.some(step => step.includes(index)), index).toBe(true);
+  expect(lanes.some(step => /SEARCH r USING INTEGER PRIMARY KEY/.test(step))).toBe(true);
+  const runs = plan(laneRunsSql(), { $refs: "[1]", $since: at(-2 * 60 * MIN).toISOString() });
+  for (const steps of [lanes, runs]) expect(steps.filter(step => /^SCAN (run|r)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
 });
 
 test("the indexes the timeline names exist (a missing one would be an SQL error, not a slow page)", () => {
   const names = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'run'").all().map(row => String(row["name"]));
-  expect(names).toEqual(expect.arrayContaining(["run_started", "work_unfinished"]));
+  expect(names).toEqual(expect.arrayContaining(["run_started", "work_unfinished", "agent_board_recent"]));
 });

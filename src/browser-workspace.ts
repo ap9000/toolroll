@@ -535,17 +535,15 @@ export type BrowserAgentLanes = {
   lanes: BrowserAgentLane[];
   /** Tasks in the window past the rows shown. */
   more: number;
-  /** Over every task in the window, not just the rows shown. */
+  /** Running: every task in the window with a live run, not just the rows shown. Needs you: the board's count. */
   running: number; needsYou: number;
-  /** The window held more runs than one timeline reads; the oldest are left out. */
-  truncated: boolean;
 };
 export type AgentLaneWindow = '30m' | '2h' | '24h';
 
 export type BrowserAgentsView = {
   kind: 'agents';
   groups: { key: AgentGroupKey; label: string; rows: BrowserAgentRow[] }[];
-  /** The timeline above the board; null when nothing ran in the window. */
+  /** The timeline above the board; empty lanes when nothing ran in the window but something did today; null when nothing ran in a day. */
   lanes?: BrowserAgentLanes | null;
   selected: BrowserAgentDetail | null;
   /** Shown when nothing is on the board. */

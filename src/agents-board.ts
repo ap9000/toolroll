@@ -238,14 +238,12 @@ export function agentRunFingerprint(store: Store, run: number): string | null {
 export const LANE_WINDOWS: readonly { key: AgentLaneWindow; label: string }[] = [{ key: "30m", label: "30m" }, { key: "2h", label: "2h" }, { key: "24h", label: "24h" }];
 /** Rows the timeline shows: twenty running tasks read as twelve rows and a count, not a wall. */
 export const LANE_ROWS = 12;
-/** The board's own order (AGENT_GROUPS), with planning beside working. */
-const LANE_ORDER: readonly (AgentGroupKey | "planning")[] = ["needs-you", "working", "planning", "stuck", "done", "idle"];
-/** A run is found by its start: one that began up to a day before the window and ended inside it still shows. Every
- * window is at most a day, and no agent run is allowed to outlast that, so the start range covers the window. */
+/** Runs are found by their start back this far; a builder that finished in the window is also found by its finish
+ * (agent_board_recent), however long it ran. A planner, review or scout running past a day before ending in the
+ * window is the one case left out. */
 const LANE_LOOKBACK_MS = 24 * 60 * 60_000;
-/** Runs read for one timeline at most; past it the oldest are left out and the count says so. */
-const LANE_RUNS = 5000;
 const WINDOW_MS: Record<AgentLaneWindow, number> = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "24h": 24 * 60 * 60_000 };
+const LANE_ROLES = "('planner', 'builder', 'repair', 'reviewer', 'scout')";
 
 export function laneWindowOf(value: string | null): AgentLaneWindow {
   return value === "30m" || value === "24h" ? value : "2h";
@@ -255,67 +253,75 @@ export function laneSinceOf(window: AgentLaneWindow, now: Date): Date {
   return new Date(now.getTime() - WINDOW_MS[window]);
 }
 
-/** The timeline's runs. The candidates come from two bounded index ranges (run_started for runs begun since the
- * lookback; work_unfinished, named so SQLite never walks every run's index, for anything still running) and drive the join (CROSS JOIN keeps SQLite from starting at
- * the task and walking its whole history), in the admitted projects only. */
+/** The window's tasks, one row each with whether a run is live and when it was last active, newest activity first,
+ * and the total and running counts over all of them. The candidates come from bounded index ranges (run_started;
+ * work_unfinished and agent_board_recent, named so SQLite never walks every run) and drive the join (CROSS JOIN), so no
+ * task's history is walked; the admitted projects only. */
 export function agentLanesSql(): string {
   return `WITH candidate AS (
       SELECT DISTINCT id FROM (
         SELECT id FROM run WHERE started_at >= $lookback
         UNION ALL SELECT id FROM run INDEXED BY work_unfinished WHERE outcome IS NULL
+        UNION ALL SELECT id FROM run INDEXED BY agent_board_recent WHERE role = 'builder' AND outcome IS NOT NULL AND finished_at >= $since
       )
+    ), active AS (
+      SELECT r.task_ref, tr.external_id AS task_id, tr.repo, t.title,
+        MAX(r.outcome IS NULL) AS live, MAX(coalesce(r.finished_at, $now)) AS last_at, MAX(r.id) AS last_run
+      FROM candidate c CROSS JOIN run r ON r.id = c.id
+      CROSS JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
+      CROSS JOIN task t ON t.id = tr.external_id
+      WHERE r.role IN ${LANE_ROLES} AND (r.outcome IS NULL OR r.finished_at >= $since)
+        AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))
+      GROUP BY r.task_ref
     )
-    SELECT r.id, r.role, r.provider, r.outcome, r.started_at, r.finished_at, tr.external_id AS task_id, tr.repo, t.title
-    FROM candidate c CROSS JOIN run r ON r.id = c.id
-    CROSS JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
-    CROSS JOIN task t ON t.id = tr.external_id
-    WHERE r.role IN ('planner', 'builder', 'repair', 'reviewer', 'scout')
-      AND (r.outcome IS NULL OR r.finished_at >= $since)
-      AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))
-    ORDER BY r.started_at DESC, r.id DESC LIMIT ${LANE_RUNS}`;
+    SELECT a.*, (SELECT count(*) FROM active) AS total, (SELECT coalesce(sum(live), 0) FROM active) AS running
+    FROM active a ORDER BY a.live DESC, a.last_at DESC, a.last_run DESC LIMIT $rows`;
 }
 
-/** The timeline: one row per task that ran in the window, in the board's order (needs you first, then the newest), the
- * first LANE_ROWS of them; the counts cover every task in the window, not just the rows shown. A task's place comes
- * from its board row; one with only a planner running is planning, otherwise idle. */
+/** The chosen tasks' runs in the window, through each task's own runs (lead_status_task_run). */
+export function laneRunsSql(): string {
+  return `SELECT id, task_ref, role, provider, outcome, started_at, finished_at FROM run
+    WHERE task_ref IN (SELECT value FROM json_each($refs)) AND role IN ${LANE_ROLES} AND (outcome IS NULL OR finished_at >= $since)
+    ORDER BY started_at, id`;
+}
+
+/** The timeline: one row per task that ran in the window, running ones first, then the most recently active, the
+ * first LANE_ROWS of them; the counts cover every task in the window. A row's state comes from its board row
+ * (planning while only a planner runs, otherwise idle). With nothing in the window but something in the last day,
+ * the timeline stays (empty) so its window choice does too; with nothing in a day it is null. */
 export function agentLanesOf(store: Store, now: Date, access: { repos: readonly string[] | null }, board: readonly { rows: readonly BrowserAgentRow[] }[], window: AgentLaneWindow, path = "/agents"): BrowserAgentLanes | null {
-  const since = laneSinceOf(window, now);
-  const rows = store.handle.prepare(agentLanesSql()).all({
-    $lookback: new Date(since.getTime() - LANE_LOOKBACK_MS).toISOString(), $since: since.toISOString(),
-    $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []),
+  const read = (since: Date, rows: number) => store.handle.prepare(agentLanesSql()).all({
+    $lookback: new Date(since.getTime() - LANE_LOOKBACK_MS).toISOString(), $since: since.toISOString(), $now: now.toISOString(),
+    $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []), $rows: rows,
   });
+  const since = laneSinceOf(window, now);
+  const tasks = read(since, LANE_ROWS);
+  if (tasks.length === 0 && (window === "24h" || read(laneSinceOf("24h", now), 1).length === 0)) return null;
   const placed = new Map<string, AgentGroupKey>();
   for (const group of board) for (const row of group.rows) if (!placed.has(row.taskId)) placed.set(row.taskId, row.group);
-  const lanes = new Map<string, BrowserAgentLane>();
-  // Newest first from the query; each lane's segments go back into start order below.
-  for (const row of rows) {
+  const runs = tasks.length === 0 ? [] : store.handle.prepare(laneRunsSql()).all({ $refs: JSON.stringify(tasks.map(row => Number(row["task_ref"]))), $since: since.toISOString() });
+  const lanes: BrowserAgentLane[] = tasks.map(row => {
+    const ref = Number(row["task_ref"]);
     const taskId = String(row["task_id"]);
-    const role = String(row["role"]);
-    const segment: BrowserLaneSegment = {
-      runId: Number(row["id"]), role: role === "repair" ? "builder" : role as BrowserLaneSegment["role"], agent: providerName(String(row["provider"] ?? "claude")),
-      startedAt: String(row["started_at"]), endedAt: str(row, "finished_at"), outcome: str(row, "outcome"),
-      href: role === "builder" ? `/agents?run=${Number(row["id"])}` : `/r/${Number(row["id"])}`,
-    };
-    const lane = lanes.get(taskId) ?? { taskId, title: String(row["title"]), project: str(row, "repo") === null ? null : projectName(str(row, "repo")!),
-      href: `/t/${encodeURIComponent(taskId)}`, group: placed.get(taskId) ?? "idle", segments: [] };
-    lane.segments.push(segment);
-    lanes.set(taskId, lane);
-  }
-  if (lanes.size === 0) return null;
-  for (const lane of lanes.values()) {
-    lane.segments.sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.runId - b.runId);
-    if (!placed.has(lane.taskId) && lane.segments.some(one => one.role === "planner" && one.endedAt === null)) lane.group = "planning";
-  }
-  // Within a group, the task whose newest run started last comes first (the run id breaks a tie).
-  const newest = (lane: BrowserAgentLane) => lane.segments[lane.segments.length - 1]!;
-  const ordered = [...lanes.values()].sort((a, b) => LANE_ORDER.indexOf(a.group) - LANE_ORDER.indexOf(b.group)
-    || newest(b).startedAt.localeCompare(newest(a).startedAt) || newest(b).runId - newest(a).runId);
+    const segments: BrowserLaneSegment[] = runs.filter(run => Number(run["task_ref"]) === ref).map(run => {
+      const role = String(run["role"]);
+      return {
+        runId: Number(run["id"]), role: role === "repair" ? "builder" : role as BrowserLaneSegment["role"], agent: providerName(String(run["provider"] ?? "claude")),
+        startedAt: String(run["started_at"]), endedAt: str(run, "finished_at"), outcome: str(run, "outcome"),
+        href: role === "builder" ? `/agents?run=${Number(run["id"])}` : `/r/${Number(run["id"])}`,
+      };
+    });
+    const group: BrowserAgentLane["group"] = placed.get(taskId)
+      ?? (segments.some(one => one.role === "planner" && one.endedAt === null) ? "planning" : "idle");
+    return { taskId, title: String(row["title"]), project: str(row, "repo") === null ? null : projectName(str(row, "repo")!), href: `/t/${encodeURIComponent(taskId)}`, group, segments };
+  });
+  const total = tasks.length === 0 ? 0 : Number(tasks[0]!["total"]);
   return {
     since: since.toISOString(), now: now.toISOString(),
     windows: LANE_WINDOWS.map(one => ({ ...one, href: `${path}?window=${one.key}`, active: one.key === window })),
-    lanes: ordered.slice(0, LANE_ROWS), more: Math.max(0, ordered.length - LANE_ROWS),
-    running: ordered.filter(lane => lane.segments.some(one => one.endedAt === null)).length,
-    needsYou: ordered.filter(lane => lane.group === "needs-you").length,
-    truncated: rows.length >= LANE_RUNS,
+    lanes, more: Math.max(0, total - lanes.length),
+    running: tasks.length === 0 ? 0 : Number(tasks[0]!["running"]),
+    // The board's own count, so the timeline and the list below never disagree about who needs you.
+    needsYou: board.reduce((n, group) => n + group.rows.filter(row => row.group === "needs-you").length, 0),
   };
 }
