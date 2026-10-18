@@ -524,9 +524,27 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   room: string;
   said: { tone: 'info' | 'error'; text: string } | null;
 };
+/** One run on the timeline: its role, and when it started and ended (null: still running). */
+export type BrowserLaneSegment = { runId: number; role: 'planner' | 'builder' | 'reviewer' | 'scout'; agent: string; startedAt: string; endedAt: string | null; outcome: string | null; href: string };
+/** One task's row on the timeline: its runs in order, and the board's word for where it stands ('planning' before a build). */
+export type BrowserAgentLane = { taskId: string; title: string; project: string | null; href: string; group: AgentGroupKey | 'planning'; segments: BrowserLaneSegment[] };
+/** The agent timeline (after the "Agent lanes" pattern): one row per task over a window ending now. */
+export type BrowserAgentLanes = {
+  since: string; now: string;
+  windows: { key: AgentLaneWindow; label: string; href: string; active: boolean }[];
+  lanes: BrowserAgentLane[];
+  /** Tasks in the window past the rows shown. */
+  more: number;
+  /** Every task in the window with a live run, not just the rows shown. */
+  running: number;
+};
+export type AgentLaneWindow = '30m' | '2h' | '24h';
+
 export type BrowserAgentsView = {
   kind: 'agents';
   groups: { key: AgentGroupKey; label: string; rows: BrowserAgentRow[] }[];
+  /** The timeline above the board; empty lanes when nothing ran in the window but something did today; null when nothing ran in a day. */
+  lanes?: BrowserAgentLanes | null;
   selected: BrowserAgentDetail | null;
   /** Shown when nothing is on the board. */
   empty: string | null;

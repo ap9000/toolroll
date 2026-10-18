@@ -21,7 +21,7 @@ import { run as execRun } from "../exec.js";
 import { computeGaps } from "../gaps.js";
 import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
-import { agentRowOf,agentsBoardOf,agentFactsFor,sealedDiffOf } from "../agents-board.js";
+import { agentLanesOf, agentRowOf, agentsBoardOf, agentFactsFor, laneWindowOf, sealedDiffOf } from "../agents-board.js";
 import { markAgentSeen } from "../agent-board.js";
 import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
@@ -458,8 +458,10 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       }
     }
     const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
-    const view: BrowserAgentsView = { kind: "agents", groups, selected,
-      empty: groups.length === 0 ? "No agents in the last day. They show here the moment one starts." : null };
+    const lanes = selected === null ? agentLanesOf(store, now, access, who.name, laneWindowOf(url.searchParams.get("window"))) : null;
+    const view: BrowserAgentsView = { kind: "agents", groups, selected, lanes,
+      // Empty only when nothing ran at all: a planner or review on the timeline is activity too.
+      empty: groups.length === 0 && (lanes === null || lanes === undefined) ? "No agents in the last day. They show here the moment one starts." : null };
     const fallback = joinHtml([
       html`<h1>Agents</h1>`,
       groups.length === 0 ? html`<p class="meta">${view.empty ?? ""}</p>` : joinHtml(groups.map(group => joinHtml([
