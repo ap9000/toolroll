@@ -173,7 +173,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
  * cloud logins or another agent's sign-in, or rewrite their own Claude or
  * Codex setup for the next interactive session.
  */
-const HOME_CONFIGURATION = [".claude", ".claude.json", ".codex", ".gemini", ".ssh", ".aws", ".gnupg", ".netrc", ".git-credentials", ".kube", join(".config", "gh"), join(".docker", "config.json")];
+const HOME_CONFIGURATION = [
+  ".claude", ".claude.json", ".codex", ".gemini", ".ssh", ".aws", ".gnupg", ".netrc", ".git-credentials", ".kube", join(".config", "gh"), join(".docker", "config.json"),
+  // Every ACP agent's own configuration and sign-in (acp-agents.ts): fenced from every build but that agent's own.
+  ...ACP_PROVIDER_IDS.flatMap(id => ACP_AGENTS[id].home),
+];
 /** What a provider's own CLI reads to sign in and keep its sessions. The OS fence around Claude and Gemini holds
  * their whole process, so those stay reachable there; Codex fences only its agent's commands, so it keeps none. */
 const PROVIDER_HOME: Record<string, readonly string[]> = {

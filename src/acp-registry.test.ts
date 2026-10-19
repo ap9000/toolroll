@@ -3,12 +3,13 @@
  * nothing outside the one spawning gateway ever runs one, an agent with no check on this computer is refused, and its
  * only posture is full access inside the fence — so it builds and repairs, and never plans, reviews or researches.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProfile } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
+import { taskBoundary } from "./agent-fence.js";
 import { attestProvider } from "./attest.js";
 import { readAuthMode, readAuthModeStrict } from "./keys.js";
 import { levelOfProfile, OPEN_POLICY, underCeiling } from "./policy.js";
@@ -62,6 +63,26 @@ describe("nothing outside the gateway runs an ACP agent", () => {
     expect(seen).toMatchObject({ found: true, kind: "script", package: { name: "opencode-ai", version: "1.18.18" } });
     expect(existsSync(marker)).toBe(false);
     expect(inspectAcpAgent("cursor", { PATH: join(pkg, "bin") })).toEqual({ found: false, binary: "cursor-agent" });
+  });
+});
+
+describe("an ACP agent's sign-in is fenced from every other build", () => {
+  test("each agent's home is denied to every build but that agent's own", () => {
+    dir = mkdtempSync(join(tmpdir(), "so-acp-home-"));
+    const home = join(dir, "home");
+    for (const folder of [".local/share/opencode", ".config/opencode", ".cursor", ".claude"]) mkdirSync(join(home, folder), { recursive: true });
+    writeFileSync(join(home, ".local/share/opencode/auth.json"), "{}");
+    const worktree = join(dir, "work", "task");
+    mkdirSync(worktree, { recursive: true });
+    const shell = (provider: string) => taskBoundary({ worktree, provider, home }).shell;
+    const at = (folder: string) => realpathSync(join(home, folder));
+    for (const provider of ["claude", "codex", "gemini", "cursor"]) {
+      expect(shell(provider)).toEqual(expect.arrayContaining([at(".local/share/opencode"), at(".config/opencode")]));
+    }
+    expect(shell("claude")).toContain(at(".cursor"));
+    expect(shell("opencode")).not.toContain(at(".local/share/opencode"));
+    expect(shell("opencode")).not.toContain(at(".config/opencode"));
+    expect(shell("opencode")).toEqual(expect.arrayContaining([at(".cursor"), at(".claude")]));
   });
 });
 
