@@ -238,6 +238,16 @@ describe("what the plane answers the agent", () => {
     const callless = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/request_permission", params: { sessionId: sid, options: [{ optionId: "once", kind: "allow_once" }] } }));
     expect(sent(callless.send)[0]).toMatchObject({ id: 9, error: { code: -32602 } });
     expect(callless.live).toEqual([{ sessionUpdate: "permission", toolCallId: null, title: null, kind: null, granted: false }]);
+    // Nor is a request whose tool call is malformed further down.
+    for (const toolCall of [
+      { toolCallId: "t2", content: [{ type: "content", content: { type: "resource", resource: { uri: "file:///x" } } }] },
+      { toolCallId: "t3", locations: [{ path: "/a", line: "3" }] },
+      { toolCallId: "t4", kind: "teleport" },
+    ]) {
+      const malformed = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: `m-${toolCall.toolCallId}`, method: "session/request_permission", params: { sessionId: sid, toolCall, options: [{ optionId: "once", kind: "allow_once" }] } }));
+      expect(sent(malformed.send)[0]).toMatchObject({ error: { code: -32602 } });
+      expect(malformed.live[0]).toMatchObject({ granted: false });
+    }
     // Once the prompt is answered, nothing more is granted.
     conversation.receive(answer(4, { stopReason: "end_turn" }));
     const after = conversation.receive(ask(10, [{ optionId: "once", kind: "allow_once" }]));

@@ -89,6 +89,8 @@ export type AcpConversation = {
   receive(line: string): AcpReaction;
   /** Ask the agent to stop the prompt in flight (a notification; the prompt still answers, with `cancelled`). */
   cancel(): string[];
+  /** The transport saw something the conversation can't read (an oversized line): a protocol failure. */
+  refuse(text: string): void;
   /** The `session/close` request to send after the terminal, when the agent offers it; else nothing. */
   close(): string[];
   /** Whether a line sent by close() has been answered (or failed). */
@@ -392,7 +394,10 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
         if (method === "session/request_permission") {
           if (!isRecord(params) || sessionId === null || params["sessionId"] !== sessionId) return fail("protocol", "a permission request for another session");
           const call = params["toolCall"];
-          const answer = isRecord(call) && typeof call["toolCallId"] === "string" && call["toolCallId"] !== "" ? permissionAnswer(params) : null;
+          // The tool call it asks about must be as well formed as one sent in an update, or nothing is granted.
+          const answer = isRecord(call) && typeof call["toolCallId"] === "string" && call["toolCallId"] !== "" && call["toolCallId"].length <= 256 && wellFormedToolFields(call)
+            ? permissionAnswer(params)
+            : null;
           const step = {
             sessionUpdate: "permission",
             toolCallId: isRecord(call) && typeof call["toolCallId"] === "string" ? call["toolCallId"] : null,
@@ -434,6 +439,9 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (phase !== "prompt" || sessionId === null) return [];
       cancelled = true;
       return [line({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } })];
+    },
+    refuse(text) {
+      fail("protocol", text);
     },
     close() {
       if (!canClose || sessionId === null || closeId !== null) return [];
