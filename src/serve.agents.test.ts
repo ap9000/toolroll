@@ -145,9 +145,58 @@ describe("the Agents board", () => {
     const run = running("t-steer", repoA);
     const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
     const posted = await fetch(url("/t/t-steer/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, note: "Start with the retry path.", return: "agents", run: String(run) }).toString() });
-    expect(posted.headers.get("location")).toBe(`/agents?run=${run}&said=steered`);
+      body: new URLSearchParams({ csrf, note: "Start with the retry path.", return: "agents", run: String(run), key: "draft-board-1" }).toString() });
+    expect(posted.headers.get("location")).toBe(`/agents?run=${run}&said=steered&sent=draft-board-1`);
     expect(store.listSteerNotes(store.getRun(run)!.taskRef).map(one => one.note)).toEqual(["Start with the retry path."]);
+  });
+
+  test("a steer note is bound to the run on screen: filed once per draft, and never onto another attempt", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-bound", repoA);
+    const taskRef = store.getRun(run)!.taskRef;
+    const send = async (fields: Record<string, string>) => {
+      const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+      const posted = await fetch(url("/t/t-bound/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, return: "agents", run: String(run), ...fields }).toString() });
+      return posted.headers.get("location");
+    };
+    // A double submit of one draft files it once.
+    expect(await send({ note: "Check the retry path.", key: "draft-0001" })).toBe(`/agents?run=${run}&said=steered&sent=draft-0001`);
+    expect(await send({ note: "Check the retry path.", key: "draft-0001" })).toBe(`/agents?run=${run}&said=steered&sent=draft-0001`);
+    expect(store.listSteerNotes(taskRef).map(one => one.note)).toEqual(["Check the retry path."]);
+    // The same key with other words is refused, and files nothing.
+    expect(await send({ note: "Something else.", key: "draft-0001" })).toBe(`/agents?run=${run}&said=steer-stale`);
+    expect(store.listSteerNotes(taskRef)).toHaveLength(1);
+    // A form that asks for an agent but names none properly is refused, never filed unbound.
+    for (const bad of [{ run: "not-a-run", key: "draft-0003" }, { run: String(run), key: "" }, { run: String(run), key: "../x" }]) {
+      const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+      const posted = await fetch(url("/t/t-bound/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, return: "agents", note: "Unbound?", ...bad }).toString() });
+      expect(posted.status).toBe(400);
+    }
+    expect(store.listSteerNotes(taskRef)).toHaveLength(1);
+    // Once that attempt has ended, a note sent from its pane is refused rather than landing on the next one.
+    store.finishRun(run, { outcome: "failed", reason: "agent", now: new Date() });
+    expect(await send({ note: "Too late.", key: "draft-0002" })).toBe(`/agents?run=${run}&said=steer-ended`);
+    expect(store.listSteerNotes(taskRef).map(one => one.note)).toEqual(["Check the retry path."]);
+    // Sent on to the next attempt on purpose, it is filed for the task — once per draft — and comes back naming that draft.
+    const onward = async (fields: Record<string, string>) => {
+      const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+      const posted = await fetch(url("/t/t-bound/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, ...fields }).toString() });
+      return { status: posted.status, location: posted.headers.get("location") };
+    };
+    expect(await onward({ note: "Too late.", after: String(run), key: "draft-0002" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steered-next&sent=draft-0002` });
+    expect(await onward({ note: "Too late.", after: String(run), key: "draft-0002" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steered-next&sent=draft-0002` });
+    expect(store.listSteerNotes(taskRef).map(one => one.note)).toEqual(["Check the retry path.", "Too late."]);
+    expect((await onward({ note: "Mixed.", after: String(run), key: "draft-0004", run: String(run) })).status).toBe(400);
+    // One receipt for both ways of sending: a draft filed while the run lived (its answer lost) comes back as sent,
+    // not twice; and a key never vouches for other words.
+    expect(await onward({ note: "Check the retry path.", after: String(run), key: "draft-0001" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steered-next&sent=draft-0001` });
+    expect(await onward({ note: "Other words.", after: String(run), key: "draft-0002" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steer-stale` });
+    store.setTaskState("t-bound", "done", new Date());
+    expect(await onward({ note: "After done.", after: String(run), key: "draft-0005" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steer-next-finished` });
+    expect(store.listSteerNotes(taskRef)).toHaveLength(2);
   });
 
   test("an open agent's room is a watch: its viewer's Needs you pings wait until the page closes", async () => {
@@ -172,5 +221,51 @@ describe("the Agents board", () => {
     expect(watchingAgent(store, "alex", run, new Date())).toBe(false);
     // The question is still open, so the held ping now goes.
     expect(watchedPing(store, ping, "alex", new Date())).toBe("send");
+  });
+});
+
+describe("Settings → Project → Live view", () => {
+  /** The Project page's own form, as the person sees it: its csrf, and the single-use nonce Show commands carries. */
+  const form = async (cookie: string, repo: string) => {
+    const html = await (await fetch(url(`/settings/project?repo=${encodeURIComponent(repo)}`), { headers: { cookie } })).text();
+    return { csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "", nonce: /name="nonce" value="([0-9a-f]+)"/.exec(html)?.[1] ?? "" };
+  };
+  const post = async (cookie: string, fields: Record<string, string>) => {
+    const posted = await fetch(url("/settings/project/live-view"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields).toString() });
+    return { status: posted.status, location: decodeURIComponent(posted.headers.get("location") ?? "") };
+  };
+  const send = async (cookie: string, fields: Record<string, string>) => post(cookie, { ...(await form(cookie, fields["repo"]!)), ...fields });
+
+  test("showing commands takes the approver's password, hiding them is one step; each is a ledger line the next run reads", async () => {
+    const { liveCommandsShown, liveLogContext } = await import("./live-detail.js");
+    const cookie = await login("alex", alexToken);
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    expect((await send(cookie, { repo: repoA, act: "on", password: "wrong" })).location).toContain("problem=Enter your Toolroll password");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    expect((await send(cookie, { repo: repoA, act: "on", password: alexToken })).location).toContain("said=Commands now show");
+    expect(liveCommandsShown(store, repoA)).toBe(true);
+    // A run opened now carries the project's choice; another project is untouched.
+    const run = running("t-live", repoA);
+    expect(liveLogContext(store, store.getRun(run)!.taskRef, "/pool/wt")).toEqual({ base: "/pool/wt", commands: true });
+    expect(liveCommandsShown(store, repoB)).toBe(false);
+    expect((await send(cookie, { repo: repoA, act: "off" })).location).toContain("said=Commands are hidden");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    // Turning it on is consent to that one change: the same form replayed, or one without its nonce, changes nothing.
+    const once = await form(cookie, repoA);
+    expect((await post(cookie, { ...once, repo: repoA, act: "on", password: alexToken })).location).toContain("said=Commands now show");
+    await send(cookie, { repo: repoA, act: "off" });
+    expect((await post(cookie, { ...once, repo: repoA, act: "on", password: alexToken })).location).toContain("problem=That form was already used");
+    expect((await post(cookie, { csrf: once.csrf, repo: repoA, act: "on", password: alexToken })).location).toContain("problem=That form was already used");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    expect(store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'live view commands' ORDER BY id").all().map(row => [row["actor"], row["outcome"]]))
+      .toEqual([["alex", "on"], ["alex", "off"], ["alex", "on"], ["alex", "off"]]);
+  });
+
+  test("a project outside the person's access refuses, and changes nothing", async () => {
+    const cookie = await login("robin", robinToken);
+    expect((await send(cookie, { repo: repoA, act: "on", password: robinToken })).status).toBe(403);
+    const { liveCommandsShown } = await import("./live-detail.js");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
   });
 });

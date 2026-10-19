@@ -61,6 +61,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { invokeAgent, type AgentOutcome, type InvokeResult } from "./invoke.js";
 import { TELEGRAM_TOKEN_ENVS } from "./names.js";
 import { OPENROUTER_ENV_KEY, auditOf, ALL_CREDENTIAL_ENV } from "./provider.js";
+import { liveLogContext } from "./live-detail.js";
 import { openLiveLog } from "./live.js";
 import { fence } from "./brief-fence.js";
 import { closeSteerMailbox, openSteerMailbox, STEER_HANDLED, type SteerMailbox } from "./steer-mailbox.js";
@@ -1406,7 +1407,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // Every streaming transport emits events now (peek); a file that cannot
   // open is a null, and a null never costs a build.
   // What the agent did last rides the same stream into one row (live tasks).
-  const liveLog = withAgentTurns(withRunActivity(openLiveLog(root, request.runId), store, request.runId, clock),
+  const liveLog = withAgentTurns(withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree)), store, request.runId, clock),
     (state, at) => { if (attemptKey !== null) recordAgentTurn(store, { run: request.runId, attemptKey, state, at }); }, clock,
     (open, at) => { if (attemptKey !== null) noteOpenTool(store, request.runId, attemptKey, open, at); });
   // The retry base (steering fix for run 1465's proof): the SAME pinned

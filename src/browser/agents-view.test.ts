@@ -107,3 +107,169 @@ describe("the Agents board", () => {
     window.removeEventListener(WORKSPACE_NUDGE, nudged);
   });
 });
+
+describe("the opened agent's conversation", () => {
+  const at = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+  const answer = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
+
+  test("steps show their target and how they ended, a failed command opens to its output, and notes sit in time order with their standing", async () => {
+    const fetched: string[] = [];
+    const notes = [
+      { id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Read by the agent at", readAt: at(13) },
+      { id: 6, author: "robin", mine: false, at: at(30), text: "Ping me when done", standing: "Waiting for the agent to read it", readAt: null },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      fetched.push(input);
+      // Every answer carries the run's notes whole.
+      if (fetched.length > 1) return answer({ records: [], nextOffset: 400, gen: "records:1:2", final: false, notes, older: 0 });
+      return answer({ nextOffset: 400, gen: "records:1:2", final: false, older: 0, records: [
+        { k: "open", at: at(0), detail: "commands" },
+        { k: "say", at: at(1), t: ["Looking at <b>the form</b>"] },
+        { k: "step", at: at(2), id: "s1", kind: "read", target: "src/form.ts" },
+        { k: "done", at: at(3), id: "s1", ok: true },
+        { k: "step", at: at(10), id: "s2", kind: "command", target: "npm test" },
+        { k: "done", at: at(14), id: "s2", ok: false, out: ["FAIL src/form.test.ts", "1 failed"] },
+        { k: "step", at: at(20), id: "s3", kind: "command", target: "npm run lint" },
+      ], notes });
+    }));
+    render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const pane = host.querySelector("[data-agent-transcript]")!;
+    expect(fetched[0]).toBe("/r/7?fragment=transcript&shape=records&from=0");
+    // Text stays text.
+    expect(pane.querySelector("b")).toBeNull();
+    expect(pane.textContent).toContain("Looking at <b>the form</b>");
+    const steps = [...pane.querySelectorAll("[data-step]")];
+    expect(steps.map(one => [one.querySelector("[data-step-target]")?.textContent, one.querySelector("[data-step-status]")?.getAttribute("data-step-status")]))
+      .toEqual([["src/form.ts", "ok"], ["npm test", "failed"], ["npm run lint", "running"]]);
+    expect(steps[1]!.querySelector("[data-step-output]")?.textContent).toBe("FAIL src/form.test.ts\n1 failed");
+    // Notes merge by time: Alex's after the failing command started, Robin's last; "You" only for one's own.
+    const order = [...pane.querySelectorAll("[data-step], [data-conversation-note]")].map(one => one.getAttribute("data-conversation-note") ?? one.querySelector("[data-step-target]")?.textContent);
+    expect(order).toEqual(["src/form.ts", "npm test", "5", "npm run lint", "6"]);
+    expect(pane.querySelector('[data-conversation-note="5"]')?.textContent).toContain("You");
+    expect(pane.querySelector('[data-conversation-note="6"]')?.textContent).toContain("robin");
+    expect(pane.querySelector('[data-conversation-note="6"] [data-note-standing]')?.textContent).toBe("Waiting for the agent to read it");
+    expect(host.querySelector("[data-conversation-detail]")).toBeNull();
+    // The next read carries the offset and the file it belongs to.
+    expect(fetched[1]).toBe("/r/7?fragment=transcript&shape=records&from=400&gen=records%3A1%3A2");
+  });
+
+  test("a run that hid commands says so; another machine's run still shows its notes; an unknown end is never success", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer({ error: "off", older: 0, notes: [{ id: 1, author: "alex", mine: true, at: at(1), text: "Hello", standing: "Waiting for the agent to read it", readAt: null }] })));
+    render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(host.querySelector('[data-conversation-note="1"]')).not.toBeNull();
+    expect(host.querySelector('[data-conversation-state="off"]')).not.toBeNull();
+    await act(async () => root?.unmount());
+    root = null;
+
+    vi.stubGlobal("fetch", vi.fn(async () => answer({ nextOffset: 9, gen: "g", final: true, older: 0, notes: [], records: [
+      { k: "open", at: at(0), detail: "base" },
+      { k: "step", at: at(1), id: "s1", kind: "command" },
+      { k: "done", at: at(2), id: "s1", ok: null },
+      { k: "step", at: at(3), id: "s2", kind: "command" },
+    ] })));
+    render(board(detail({ question: null, live: false, steer: null, transcript: "/r/7?fragment=transcript&shape=records" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect([...host.querySelectorAll("[data-step-status]")].map(one => one.getAttribute("data-step-status"))).toEqual(["muted", "muted"]);
+    expect(host.querySelector("[data-agent-transcript]")?.textContent).not.toContain("Done");
+    expect(host.querySelector('[data-conversation-detail="base"]')).not.toBeNull();
+  });
+});
+
+describe("the conversation's failures and the steering draft", () => {
+  test("a read that fails after content keeps what was shown and says it is retrying", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return { ok: true, status: 200, json: async () => ({ nextOffset: 10, gen: "g", final: false, notes: [], older: 0, records: [{ k: "say", at: new Date(NOW).toISOString(), t: ["Working on it"] }] }) } as Response;
+      throw new TypeError("network down");
+    }));
+    render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(host.querySelector("[data-agent-transcript]")?.textContent).toContain("Working on it");
+    expect(host.querySelector('[data-conversation-state="error"]')).not.toBeNull();
+  });
+
+  test("a refused send keeps the draft and its key; only that draft's own successful send clears it", () => {
+    sessionStorage.clear();
+    const steer = () => host.querySelector<HTMLFormElement>('[data-agent-composer="steer"]')!;
+    render(board(detail({ question: null })));
+    const box = steer().querySelector("textarea")!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "Check the retry path"); box.dispatchEvent(new Event("input", { bubbles: true })); });
+    const key = steer().querySelector<HTMLInputElement>('input[name="key"]')!.value;
+    expect(key).not.toBe("");
+    // Back from a refusal: the same text under the same key, so sending again cannot file it twice.
+    act(() => root?.unmount());
+    render(board(detail({ question: null, said: { tone: "error", text: "That attempt ended" } })));
+    expect(steer().querySelector("textarea")!.value).toBe("Check the retry path");
+    expect(steer().querySelector<HTMLInputElement>('input[name="key"]')!.value).toBe(key);
+    // Back from another draft's success: this one stays.
+    act(() => root?.unmount());
+    history.replaceState(null, "", "/agents?run=7&said=steered&sent=someone-else-key");
+    render(board(detail({ question: null })));
+    expect(steer().querySelector("textarea")!.value).toBe("Check the retry path");
+    // Back from its own success: cleared, with a new key.
+    act(() => root?.unmount());
+    history.replaceState(null, "", `/agents?run=7&said=steered&sent=${key}`);
+    render(board(detail({ question: null })));
+    expect(steer().querySelector("textarea")!.value).toBe("");
+    expect(steer().querySelector<HTMLInputElement>('input[name="key"]')!.value).not.toBe(key);
+    history.replaceState(null, "", "/");
+  });
+});
+
+describe("after the attempt ends", () => {
+  test("an unsent note is shown with a way to send it to the next attempt; a notes-only failure still warns", async () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("toolroll:steer-draft:7", JSON.stringify({ text: "Use the retry path", key: "k-12345678", submitted: true }));
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("network down"); }));
+    render(board(detail({ question: null, steer: null, live: false, said: { tone: "error", text: "That attempt ended" }, transcript: "/r/7?fragment=transcript&shape=records" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const unsent = host.querySelector<HTMLFormElement>("[data-agent-unsent]")!;
+    expect(unsent.getAttribute("action")).toBe("/t/t-7/steer");
+    expect(unsent.querySelector("[data-agent-unsent-text]")?.textContent).toBe("Use the retry path");
+    // Sent to the task, not bound to the ended run: it names the run it came from and its draft key, never `run`.
+    expect([...unsent.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.name === "csrf" ? "" : one.value]).sort())
+      .toEqual([["after", "7"], ["csrf", ""], ["key", "k-12345678"], ["note", "Use the retry path"]]);
+    // Sending does not clear it: only the page that comes back naming this draft as sent does.
+    act(() => { unsent.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    expect(JSON.parse(sessionStorage.getItem("toolroll:steer-draft:7")!)).toMatchObject({ text: "Use the retry path", key: "k-12345678" });
+    expect(host.querySelector("[data-agent-composer]")).toBeNull();
+    act(() => root?.unmount());
+    root = null;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ records: [], nextOffset: 0, gen: "g", final: false, older: 0, notes: [{ id: 1, author: "alex", mine: true, at: new Date(NOW).toISOString(), text: "Hi", standing: "Waiting for the agent to read it", readAt: null }] }) } as Response)
+      .mockRejectedValue(new TypeError("network down")));
+    render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(host.querySelector('[data-conversation-note="1"]')).not.toBeNull();
+    expect(host.querySelector('[data-conversation-state="error"]')).not.toBeNull();
+  });
+});
+
+test("an answer that does not say whether a key block is open keeps the last answer's word", async () => {
+  const { applyWindow, emptyConversation } = await import("./views/agent-conversation.js");
+  const inside = applyWindow(emptyConversation("/r/7"), { records: [], nextOffset: 10, gen: "g", inKey: true, final: false, notes: [], older: 0 });
+  expect(applyWindow(inside, { error: "off", notes: [], older: 0 }).inKey).toBe(true);
+  expect(applyWindow(inside, { records: [], nextOffset: 10, gen: "g", final: false }).inKey).toBe(true);
+  expect(applyWindow(inside, { records: [], nextOffset: 20, gen: "g", inKey: false, final: false }).inKey).toBe(false);
+});
+
+test("a key tail is carried only in the shape this code produces", async () => {
+  const { applyWindow, emptyConversation } = await import("./views/agent-conversation.js");
+  const base = emptyConversation("/r/7");
+  expect(applyWindow(base, { records: [], nextOffset: 0, keyTail: "TOPSECRET" }).keyTail).toBe("");
+  expect(applyWindow(base, { records: [], nextOffset: 0, keyTail: "-----BE|--||C" }).keyTail).toBe("-----BE|--||C");
+});
+
+test("past the kept limit, every row keeps its own identity: no duplicates as older rows drop", async () => {
+  const { applyWindow, emptyConversation, KEEP_ITEMS } = await import("./views/agent-conversation.js");
+  const at = new Date(NOW).toISOString();
+  let conversation = emptyConversation("/r/7");
+  for (let window = 0; window < 4; window += 1) {
+    conversation = applyWindow(conversation, { nextOffset: window + 1, gen: "g", final: false, records: Array.from({ length: 600 }, () => ({ k: "say" as const, at, t: ["Review line"] })) });
+  }
+  expect(conversation.items).toHaveLength(KEEP_ITEMS);
+  expect(new Set(conversation.items.map(item => item.key)).size).toBe(KEEP_ITEMS);
+});

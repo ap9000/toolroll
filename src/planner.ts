@@ -41,6 +41,7 @@ import {
 } from "./evidence.js";
 import type { Runner } from "./builder.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
+import { liveLogContext } from "./live-detail.js";
 import { openLiveLog } from "./live.js";
 import { withRunActivity } from "./task-activity.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
@@ -778,7 +779,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = withRunActivity(openLiveLog(root, request.runId), store, request.runId, clock);
+  const liveLog = withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree)), store, request.runId, clock);
   // The durable run row, not a caller's duplicate options, is the route
   // every correction inherits.
   const provider = logicalRun.provider;

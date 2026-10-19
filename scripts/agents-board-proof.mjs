@@ -101,13 +101,28 @@ const RENAME_PATCH = `diff --git a/src/settings/nav.ts b/src/settings/nav.ts
 function seed() {
   // Needs you: a question, with a long transcript.
   const asking = startAgent('login-redesign', 'Redesign the login page so returning customers sign in with one tap', shop, 26);
-  const log = openLiveLog(evidenceRoot, asking.run);
+  // The live conversation: this project shows commands, so steps carry their file or command and a command's output.
+  const log = openLiveLog(evidenceRoot, asking.run, { base: asking.worktree, commands: true });
+  const call = (name, input, result, isError) => {
+    const id = `tu-${Math.random()}`;
+    log?.observe({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
+    log?.observe({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: result, ...(isError ? { is_error: true } : {}) }] } });
+  };
   log?.observe({ type: 'system', subtype: 'init' });
   say(log, 'Reading the current login form and its tests.');
+  call('Read', { file_path: join(asking.worktree, 'src/login/LoginForm.tsx') }, '…');
+  call('Grep', { pattern: 'SignInWithGoogle' }, 'src/marketing/pricing.tsx\nsrc/marketing/home.tsx');
   for (let step = 1; step <= 28; step++) {
-    tool(log, step % 3 === 0 ? 'Edit' : step % 3 === 1 ? 'Read' : 'Bash');
+    if (step % 3 === 0) call('Edit', { file_path: join(asking.worktree, `src/login/step-${step}.ts`) }, 'ok');
     say(log, `Step ${step}: ${['checked the session cookie flow', 'moved the remember-me option under the password field', 'updated the snapshot for the one-tap button', 'kept the error text next to the field it is about'][step % 4]}.`);
   }
+  call('Bash', { command: 'npm test -- src/login' }, ' FAIL  src/login/LoginForm.test.tsx\n  ● one-tap button › signs in a returning customer\n    expected "Welcome back" but got "Sign in"\n\nTests: 1 failed, 23 passed, 24 total', true);
+  say(log, 'One snapshot expected the old heading; updating it.');
+  call('Edit', { file_path: join(asking.worktree, 'src/login/LoginForm.test.tsx') }, 'ok');
+  call('Bash', { command: 'npm test -- src/login' }, 'Tests: 24 passed, 24 total');
+  // A note from the operator, read by this run, sits in the conversation at the time it was sent.
+  const steered = store.fileSteerNote(asking.id, 'alex', 'Keep the remember-me option checked by default.', ago(8));
+  if (steered.ok) { store.markSteerMailed(steered.id, asking.run, ago(8)); store.ackSteerNote(steered.id, asking.run, ago(7)); }
   say(log, 'The old “Sign in with Google” button is still linked from two marketing pages. Asking before I remove it.');
   log?.close();
   recordAgentTurn(store, { run: asking.run, attemptKey: asking.key, state: 'busy', at: ago(25) });
@@ -252,6 +267,23 @@ let seeded;
   await Promise.all([page.waitForNavigation(), page.click(`[data-agent-row="${seeded.asking.run}"] a`)]);
   await page.waitForSelector('[data-agent-detail]');
   await until(page, () => (document.querySelector('[data-agent-transcript]')?.textContent ?? '').includes('Asking before I remove it'));
+  check('desktop: the conversation shows steps with their file or command, a failed command with its output, and the note it read', await page.$('[data-step-status="failed"] ') !== null
+    && (await page.textContent('[data-agent-transcript]') ?? '').includes('npm test -- src/login') && (await page.textContent('[data-agent-transcript]') ?? '').includes('src/login/LoginForm.tsx')
+    && await page.$('[data-conversation-note]') !== null && (await page.textContent('[data-conversation-note] [data-note-standing]') ?? '').startsWith('Read by the agent at'));
+  {
+    // Open the failed command's output, then put the conversation back as it was.
+    const failed = await page.$('[data-step-status="failed"]');
+    const toggle = await failed?.evaluateHandle(node => node.closest('[data-step]')?.querySelector('[data-step-toggle]'));
+    await toggle?.asElement()?.click();
+    await page.waitForSelector('[data-step-output]:not([hidden])');
+    await page.evaluate(() => document.querySelector('[data-step-output]:not([hidden])')?.scrollIntoView({ block: 'center' }));
+    check('desktop: a failed command opens to its output', ((await page.textContent('[data-step-output]:not([hidden])')) ?? '').includes('1 failed, 23 passed'));
+    await shot(page, 'desktop-3b-conversation-output', 'Desktop 1440px: the conversation with a failed command opened to its output, and the note the agent read (synthetic)');
+    await toggle?.asElement()?.click();
+    await page.evaluate(() => { const pane = document.querySelector('[data-agent-transcript]'); if (pane) pane.scrollTop = 0; });
+    await shot(page, 'desktop-3c-conversation-note', 'Desktop 1440px: the start of the conversation — the note the operator sent, read by the agent, among its steps (synthetic)');
+    await page.evaluate(() => { const pane = document.querySelector('[data-agent-transcript]'); if (pane) pane.scrollTop = pane.scrollHeight; });
+  }
   check('desktop: the opened agent shows its question, transcript, changes and Reply', await page.$('[data-agent-question="google-button"]') !== null
     && (await page.textContent('[data-agent-transcript]') ?? '').includes('Step 28') && await page.$('[data-agent-changes]') !== null && await page.$('[data-agent-composer="reply"]') !== null);
   await page.evaluate(() => { window.__samePage = 'agent-view'; });
@@ -270,7 +302,8 @@ let seeded;
   await page.fill('#agent-composer', 'Keep it until the marketing pages link to the new button, then remove it.');
   await Promise.all([page.waitForNavigation(), page.click('[data-agent-composer="reply"] button[type="submit"]')]);
   await page.waitForSelector('[data-agent-said]');
-  const notes = store.listSteerNotes(seeded.asking.ref).map(one => one.note);
+  // The operator's earlier steering note is seeded too; the reply is the one new note.
+  const notes = store.listSteerNotes(seeded.asking.ref).map(one => one.note).filter(note => !note.startsWith('Keep the remember-me'));
   check('desktop: Reply files the answer for the running agent and closes the question', notes.length === 1 && notes[0].startsWith('Reply to your question "google-button"')
     && await page.$('[data-agent-question]') === null && await page.$('[data-agent-composer="steer"]') !== null, notes[0]);
   await shot(page, 'desktop-4-replied', 'Desktop 1440px: after Reply — sent, the question closed, the composer back to a steering note (synthetic)');

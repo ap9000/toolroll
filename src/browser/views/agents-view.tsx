@@ -11,6 +11,7 @@ import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentLane, BrowserAgentL
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger, Textarea, cn } from "../components/ui/index.js";
 import { GuardedHtml } from "../guarded-html.js";
+import { ConversationPane } from "./agent-conversation.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
 import { Alert, PostForm } from "../ui/index.js";
@@ -85,41 +86,6 @@ function Board({ view, selected }: { view: BrowserAgentsView; selected: number |
   </div>;
 }
 
-type Transcript = { lines: string[]; state: "loading" | "ready" | "off" | "unavailable" };
-const KEEP_LINES = 1500;
-
-/** The live transcript, read forward from its byte offset (the run page's own JSON window), every 2 s while it runs. */
-function useTranscript(url: string | null, live: boolean): Transcript {
-  const [read, setRead] = useState<Transcript>({ lines: [], state: url === null ? "unavailable" : "loading" });
-  useEffect(() => {
-    if (url === null) return;
-    let offset = 0, lines: string[] = [], stopped = false, timer = 0;
-    const once = async (): Promise<void> => {
-      try {
-        for (let page = 0; page < 40 && !stopped; page++) {
-          const answer = await fetch(`${url}&from=${offset}`, { cache: "no-store", credentials: "same-origin", redirect: "manual" });
-          if (answer.status === 409) { offset = 0; lines = []; continue; }
-          if (!answer.ok) { setRead({ lines, state: lines.length === 0 ? "unavailable" : "ready" }); break; }
-          const data = await answer.json() as { text?: string; nextOffset?: number; final?: boolean; error?: string };
-          if (data.error === "off") { stopped = true; setRead({ lines: [], state: "off" }); return; }
-          if (typeof data.text === "string" && data.text !== "") lines = lines.concat(data.text.split("\n").filter(one => one !== "")).slice(-KEEP_LINES);
-          const moved = typeof data.nextOffset === "number" && data.nextOffset !== offset;
-          if (typeof data.nextOffset === "number") offset = data.nextOffset;
-          if (data.final === true) stopped = true;
-          if (!moved || stopped) break;
-        }
-        setRead({ lines, state: "ready" });
-      } catch {
-        setRead({ lines, state: lines.length === 0 ? "unavailable" : "ready" });
-      }
-      if (!stopped && live) timer = window.setTimeout(() => void once(), 2_000);
-    };
-    void once();
-    return () => { stopped = true; window.clearTimeout(timer); };
-  }, [url, live]);
-  return read;
-}
-
 /** The changes so far while it runs: the run page's live look at its checkout, every 10 s while open. */
 function useLiveChanges(url: string | null, open: boolean): string | null {
   const [fragment, setFragment] = useState<string | null>(null);
@@ -137,27 +103,6 @@ function useLiveChanges(url: string | null, open: boolean): string | null {
     return () => { stopped = true; window.clearTimeout(timer); };
   }, [url, open]);
   return fragment;
-}
-
-function TranscriptPane({ detail }: { detail: BrowserAgentDetail }) {
-  const read = useTranscript(detail.transcript, detail.live);
-  const box = useRef<HTMLPreElement>(null);
-  const pinned = useRef(true);
-  useEffect(() => {
-    const node = box.current;
-    if (node !== null && pinned.current) node.scrollTop = node.scrollHeight;
-  }, [read.lines.length]);
-  const words = read.state === "off" || read.state === "unavailable" ? "The transcript can be read on the computer that runs the agent."
-    : read.state === "loading" ? "Reading the transcript…" : detail.live ? "Nothing yet. Lines show here as the agent works." : "This agent left no transcript.";
-  return <section aria-label="Transcript" className="flex min-h-0 flex-col">
-    <h3 className="mb-1.5 text-caption font-medium text-muted-foreground">Transcript</h3>
-    {read.lines.length === 0 ? <p className="rounded-md border border-dashed border-border px-3 py-6 text-body text-muted-foreground" data-transcript-empty>{words}</p>
-      : <pre ref={box} tabIndex={0} aria-label="Agent transcript" data-agent-transcript
-        onScroll={event => { const node = event.currentTarget; pinned.current = node.scrollTop + node.clientHeight >= node.scrollHeight - 24; }}
-        className="max-h-[52vh] min-h-40 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-3 py-2.5 font-mono text-mono leading-[1.55] whitespace-pre-wrap break-words outline-none focus-visible:ring-2 focus-visible:ring-ring phone:max-h-none phone:min-h-0 phone:flex-1">
-        {read.lines.join("\n")}
-      </pre>}
-  </section>;
 }
 
 function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
@@ -184,18 +129,63 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
   </Collapsible>;
 }
 
+type SteerDraft = { text: string; key: string; submitted: boolean };
+const draftStore = (run: number) => `toolroll:steer-draft:${run}`;
+function freshDraft(): SteerDraft {
+  const key = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  return { text: "", key, submitted: false };
+}
+/** This run's saved draft, unless the page says that very draft was just sent. */
+function loadDraft(run: number): SteerDraft {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(draftStore(run)) ?? "null") as Partial<SteerDraft> | null;
+    if (saved === null || typeof saved.text !== "string" || typeof saved.key !== "string") return freshDraft();
+    if (new URLSearchParams(location.search).get("sent") === saved.key) { sessionStorage.removeItem(draftStore(run)); return freshDraft(); }
+    return { text: saved.text, key: saved.key, submitted: saved.submitted === true };
+  } catch { return freshDraft(); }
+}
+function saveDraft(run: number, draft: SteerDraft): void {
+  try { draft.text === "" && !draft.submitted ? sessionStorage.removeItem(draftStore(run)) : sessionStorage.setItem(draftStore(run), JSON.stringify(draft)); } catch { /* a convenience only */ }
+}
+
 /** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
 function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const question = detail.question;
-  const [text, setText] = useState("");
-  if (!detail.canAct || (question === null && detail.steer === null)) return null;
+  // A steering note's draft survives a refused send (live-conversation.md §6): kept for this run in this tab with its
+  // own key, so a double submit files it once. Only that draft's own successful send clears it; editing after a send
+  // makes it a new draft with a new key.
+  const [draft, setDraft] = useState<SteerDraft>(() => question !== null ? freshDraft() : loadDraft(detail.runId));
+  const text = draft.text;
+  const setText = (value: string) => setDraft(previous => {
+    const next = previous.submitted ? { ...freshDraft(), text: value } : { ...previous, text: value };
+    saveDraft(detail.runId, next);
+    return next;
+  });
+  if (!detail.canAct) return null;
+  // The attempt ended with a note still unsent: it is shown, and can go to the task's next attempt instead.
+  if (question === null && detail.steer === null) {
+    if (text.trim() === "") return null;
+    const discard = () => { saveDraft(detail.runId, { ...freshDraft(), text: "" }); setDraft(freshDraft()); };
+    // Kept until the page comes back saying this very draft was sent (loadDraft): a refusal loses nothing.
+    return <PostForm action={`${detail.taskHref}/steer`} data-agent-unsent
+      className="flex flex-col gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+      <p className="text-caption font-medium text-muted-foreground">Your note wasn't sent: this attempt ended first.</p>
+      <p className="rounded-md border border-border bg-muted px-3 py-2 text-body whitespace-pre-wrap break-words" data-agent-unsent-text>{text}</p>
+      <input type="hidden" name="note" value={text} /><input type="hidden" name="after" value={String(detail.runId)} /><input type="hidden" name="key" value={draft.key} />
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className="h-11 w-auto">Send to the next attempt</Button>
+        <Button type="button" variant="ghost" className="h-11 w-auto" onClick={discard}>Discard</Button>
+      </div>
+    </PostForm>;
+  }
   const reply = question !== null;
   return <PostForm action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"}
+    onSubmit={() => { if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}
     className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:sticky desk:bottom-0 desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
-      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /></>}
+      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} /></>}
     <label className="sr-only" htmlFor="agent-composer">{reply ? `Reply to: ${question.text}` : "A note for the agent"}</label>
-    <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => setText(event.target.value)}
+    <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => { if (reply) setDraft(previous => ({ ...previous, text: event.target.value })); else setText(event.target.value); }}
       placeholder={reply ? "Your answer" : "Tell the agent something"} className="min-h-11 min-w-0 flex-1 resize-none phone:min-h-11"
       onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
     <Button type="submit" variant={reply ? "attention" : "default"} className="h-11 w-auto shrink-0" disabled={text.trim() === ""}>{reply ? "Reply" : "Send"}</Button>
@@ -218,13 +208,13 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
         {detail.diff && <><span aria-hidden="true">·</span><span className="tabular-nums">{detail.diff}</span></>}
       </p>
     </header>
-    <div className="flex min-w-0 flex-col gap-4 phone:min-h-0 phone:flex-1 phone:overflow-y-auto phone:overscroll-contain phone:px-4 phone:py-3">
+    <div data-agent-scroll className="flex min-w-0 flex-col gap-4 phone:min-h-0 phone:flex-1 phone:overflow-y-auto phone:overscroll-contain phone:px-4 phone:py-3">
       {detail.said && <Alert tone={detail.said.tone} data-agent-said>{detail.said.text}</Alert>}
       {detail.question !== null ? <div className="rounded-card border border-border bg-attention-soft px-3.5 py-3" data-agent-question={detail.question.key}>
         <p className="text-caption font-medium text-attention">The agent asks</p>
         <p className="mt-1 text-body-reading break-words text-foreground">{detail.question.text}</p>
       </div> : detail.line !== null && <p className={cn("text-body break-words", detail.group === "stuck" ? "text-warning" : "text-muted-foreground")} data-agent-line>{detail.line}</p>}
-      <TranscriptPane detail={detail} />
+      <ConversationPane url={detail.transcript} live={detail.live} />
       <ChangesPane detail={detail} />
     </div>
     <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />

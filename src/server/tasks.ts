@@ -21,7 +21,9 @@ import { evidencePack,evidencePackHtml } from "../evidence-pack.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
 import { limitsView } from "../limits-ui.js";
-import { readLiveWindow } from "../live.js";
+import { liveWindowLines, liveWindowRecords, readLiveWindow } from "../live.js";
+import { validKeyTail } from "../live-records.js";
+import { runNotes } from "../live-notes.js";
 import { latestFinishedAttempt,retryNoteOf } from '../needs-you.js';
 import { REMOTE_MESSAGES } from "../operate-remote.js";
 import { aggregateNewNames,observeWorktree,parseBaseTreeSnapshot,PEEK_LIMITS } from "../peek.js";
@@ -705,22 +707,27 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return respond(response, peeked.status, "text/html; charset=utf-8", peeked.body);
     }
     if (url.searchParams.get("fragment") === "transcript") {
-      // The live transcript window (arc 1): raw sanitized TEXT as JSON —
-      // the sink is textContent, never innerHTML. Guards, enumerated:
-      // cookie session; run visible (proved above); this machine's
-      // runner asserted; byte offsets validated; the file read through
-      // its own descriptor with the exact numeric-id name. Display
-      // state, not evidence — and never cached.
+      // The live conversation's window (arc 1; live-conversation.md §3–4):
+      // JSON over sanitized text or records — the sinks are textContent and
+      // React text, never innerHTML. Guards, enumerated: cookie session; run
+      // visible (proved above); this machine's runner asserted AND owning
+      // the run; byte offsets validated; the file read through its own
+      // descriptor with the exact numeric-id name, and its generation
+      // matched. Display state, not evidence — and never cached.
       response.setHeader("cache-control", "no-store");
       if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
-      if (options.localRunner === undefined) {
-        return respond(response, 200, "application/json", JSON.stringify({ error: "off" }));
+      const records = url.searchParams.get("shape") === "records";
+      // Notes come from the store, not the file: they show even where the transcript cannot be read.
+      const notesOf = () => (records ? runNotes(store, found, who.name, now) : {});
+      if (options.localRunner === undefined || found.runner !== options.localRunner) {
+        return respond(response, 200, "application/json", JSON.stringify({ error: "off", ...notesOf() }));
       }
       const fromRaw = url.searchParams.get("from") ?? "0";
       const from = /^[0-9]{1,15}$/.test(fromRaw) ? Number(fromRaw) : Number.NaN;
       if (!Number.isSafeInteger(from) || from < 0) {
         return respond(response, 400, "application/json", JSON.stringify({ error: "offset" }));
       }
+      const sawGen = url.searchParams.get("gen");
       const live = runIsLive(found);
       // The final drain: a finished run's tail — including a torn last
       // line — may be read until the sweep removes the file.
@@ -731,19 +738,39 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         }
         // Missing or unreadable: nothing to show. Final only when the
         // run can never write again.
-        return respond(response, 200, "application/json", JSON.stringify({ text: "", nextOffset: from, final: !live }));
+        // Nothing was read, so the key state the cursor carried is handed straight back.
+        const inKey = url.searchParams.get("inkey") === "1";
+        const keyTail = validKeyTail(url.searchParams.get("ktail") ?? "") ? url.searchParams.get("ktail") ?? "" : "";
+        const empty = records ? { records: [], nextOffset: from, gen: sawGen, inKey, keyTail, final: !live } : { text: "", nextOffset: from, inKey, keyTail, final: !live };
+        return respond(response, 200, "application/json", JSON.stringify({ ...empty, ...notesOf() }));
+      }
+      // An offset belongs to the file it was read from: another file starts over, visibly.
+      if (sawGen !== null && sawGen !== "" && sawGen !== window.gen) {
+        return respond(response, 409, "application/json", JSON.stringify({ error: "replaced" }));
       }
       // Re-proof after the read (peek discipline): the run row still says
-      // what admission said, or nothing is shown.
+      // what admission said — visible, and still this machine's — or nothing is shown.
       const again = store.getRun(found.id);
-      if (again === null || !runVisible(again)) {
-        return respond(response, 200, "application/json", JSON.stringify({ text: "", nextOffset: from, final: true }));
+      if (again === null || !runVisible(again) || again.runner !== options.localRunner) {
+        const inKey = url.searchParams.get("inkey") === "1";
+        const keyTail = validKeyTail(url.searchParams.get("ktail") ?? "") ? url.searchParams.get("ktail") ?? "" : "";
+        return respond(response, 200, "application/json", JSON.stringify(records ? { records: [], nextOffset: from, gen: window.gen, inKey, keyTail, final: true } : { text: "", nextOffset: from, inKey, keyTail, final: true }));
       }
+      const final = !live && window.eof;
+      // A key block split across reads stays hidden: the cursor carries whether the last read ended inside one.
+      const tailRaw = url.searchParams.get("ktail") ?? "";
+      const keys = { inKey: url.searchParams.get("inkey") === "1", tail: validKeyTail(tailRaw) ? tailRaw : "" };
+      if (records) {
+        const shown = liveWindowRecords(window, keys);
+        return respond(response, 200, "application/json", JSON.stringify({ records: shown, nextOffset: window.nextOffset, gen: window.gen, inKey: keys.inKey, keyTail: keys.tail ?? "", final, ...notesOf() }));
+      }
+      // The plain words, whatever the file's format; the offset moves by the bytes read even when nothing shows.
+      const lines = liveWindowLines(window, keys);
       return respond(
         response,
         200,
         "application/json",
-        JSON.stringify({ text: window.text, nextOffset: window.nextOffset, final: !live && window.eof }),
+        JSON.stringify({ text: lines.length === 0 ? "" : `${lines.join("\n")}\n`, nextOffset: window.nextOffset, gen: window.gen, inKey: keys.inKey, keyTail: keys.tail ?? "", final }),
       );
     }
     // One result page (2026-10-02): a builder's finished result opens on
@@ -1706,6 +1733,38 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (who.via !== "cookie") {
           return refuse(response, who, 403, "steering is a browser session's act");
         }
+        // From the Agents view, the note is for the exact run on screen (live-conversation.md §6): filed only while that
+        // run is still the task's live build, once per draft key. Nothing is filed on a refusal; the view keeps the draft.
+        // An unsent note from an attempt that ended, sent on to the task's next attempt from that agent's page: filed
+        // task-level, back to the same agent with its draft key so only a confirmed send clears the draft.
+        if (body.has("after")) {
+          const afterRaw = body.get("after") ?? "";
+          const keyRaw = body.get("key") ?? "";
+          const ended = /^[1-9][0-9]{0,14}$/.test(afterRaw) ? store.getRun(Number(afterRaw)) : null;
+          if (ended === null || ended.taskRef !== ref.id || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw) || body.has("run") || body.has("return")) {
+            return taskScreen(response, who, taskId, "that note did not say which agent it came from, so nothing was sent", 400);
+          }
+          // The same receipt as a send to that run: a draft already filed while it ran comes back as sent, not twice.
+          const filed = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true });
+          if (filed.ok) return redirect(response, `/agents?run=${ended.id}&said=steered-next&sent=${keyRaw}`);
+          return redirect(response, `/agents?run=${ended.id}&said=${filed.reason === "task-finished" ? "steer-next-finished" : filed.reason === "key-reused" ? "steer-stale" : "steer-invalid"}`);
+        }
+        // A form that asks for a run but names none properly is refused — never quietly filed unbound.
+        if (body.get("return") === "agents" || body.has("run") || body.has("key")) {
+          const runRaw = body.get("run") ?? "";
+          const keyRaw = body.get("key") ?? "";
+          if (body.get("return") !== "agents" || !/^[1-9][0-9]{0,14}$/.test(runRaw) || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw)) {
+            return taskScreen(response, who, taskId, "that note did not say which agent it is for, so nothing was sent", 400);
+          }
+          const shown = store.getRun(Number(runRaw));
+          if (shown === null || shown.taskRef !== ref.id) return taskScreen(response, who, taskId, "that run is not part of this task", 404);
+          const bound = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw });
+          // The draft's own key comes back: only that draft is cleared from the box.
+          if (bound.ok) return redirect(response, `/agents?run=${shown.id}&said=steered&sent=${keyRaw}`);
+          if (bound.reason === "attempt-ended" || bound.reason === "task-finished") return redirect(response, `/agents?run=${shown.id}&said=steer-ended`);
+          if (bound.reason === "invalid-note") return redirect(response, `/agents?run=${shown.id}&said=steer-invalid`);
+          return redirect(response, `/agents?run=${shown.id}&said=steer-stale`);
+        }
         // The session IS the verified principal here — cookie + CSRF proved it.
         const filed = store.fileSteerNote(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now);
         if (!filed.ok) {
@@ -1717,9 +1776,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
                 : "no such task";
           return taskScreen(response, who, taskId, said, 400);
         }
-        // From the Agents board, back to the same agent (allow-listed: a run of this task, never a URL from the form).
-        const run = Number(body.get("run") ?? "");
-        if (body.get("return") === "agents" && Number.isSafeInteger(run) && store.getRun(run)?.taskRef === ref.id) return redirect(response, `/agents?run=${run}&said=steered`);
         return redirect(response, taskHref(taskId));
       }
       case "reply": {

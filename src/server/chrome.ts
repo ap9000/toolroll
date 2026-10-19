@@ -300,24 +300,25 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
  * protocol, not an HTML fragment — the response is raw sanitized text and
  * the ONLY sink is textContent, so nothing here can become markup. One
  * request in flight, visibility-paused, stops on `final`, and a `replaced`
- * answer restarts from zero with a visible line — never a silent re-read.
+ * answer — or another file's generation — restarts from zero with a visible
+ * line, never a silent re-read.
  */
 export function transcriptScript(path?: string, elementId = "live-transcript"): string {
   const base = path === undefined ? "location.pathname" : JSON.stringify(path);
   return (
     `(function(){var out=document.getElementById(${JSON.stringify(elementId)});if(!out)return;` +
-    `var from=0,busy=false,stopped=false;` +
+    `var from=0,gen="",inkey=false,ktail="",busy=false,stopped=false;` +
     `function near(){return out.scrollHeight-out.scrollTop-out.clientHeight<40;}` +
     `function go(){if(stopped)return;if(busy||document.hidden){later();return;}busy=true;` +
-    `fetch(${base}+"?fragment=transcript&from="+from,{redirect:"manual",cache:"no-store"})` +
+    `fetch(${base}+"?fragment=transcript&from="+from+(gen?"&gen="+encodeURIComponent(gen):"")+(inkey?"&inkey=1":"")+(ktail?"&ktail="+encodeURIComponent(ktail):""),{redirect:"manual",cache:"no-store"})` +
     `.then(function(r){if(r.type==="opaqueredirect"||r.status===401||r.status===403){stopped=true;return null;}` +
     `if(r.status===409)return{error:"replaced"};return r.ok?r.json():null;})` +
     `.then(function(d){busy=false;if(d===null){later();return;}if(stopped)return;` +
-    `if(d.error==="replaced"){from=0;out.textContent="[the view restarted]\\n";later();return;}` +
+    `if(d.error==="replaced"){from=0;gen="";inkey=false;ktail="";out.textContent="[the view restarted]\\n";later();return;}` +
     `if(d.error){stopped=true;return;}` +
     `var stick=near();` +
     `if(typeof d.text==="string"&&d.text!==""){out.appendChild(document.createTextNode(d.text));if(stick)out.scrollTop=out.scrollHeight;}` +
-    `if(typeof d.nextOffset==="number"&&d.nextOffset>=from){from=d.nextOffset;}` +
+    `if(typeof d.nextOffset==="number"&&d.nextOffset>=from){from=d.nextOffset;}if(typeof d.gen==="string")gen=d.gen;if(typeof d.inKey==="boolean")inkey=d.inKey;if(typeof d.keyTail==="string")ktail=d.keyTail;` +
     `if(d.final===true){stopped=true;var m=document.getElementById(${JSON.stringify(`${elementId}-state`)});` +
     `if(m)m.textContent="the agent finished — the record on this page is the story";return;}` +
     `later();})` +

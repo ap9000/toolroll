@@ -211,6 +211,11 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     expect(empty.status).toBe(200);
     expect(empty.headers.get("cache-control")).toBe("no-store");
     expect(await empty.json()).toMatchObject({ text: "", nextOffset: 0, final: false });
+    // Nothing read, nothing forgotten: the key state the cursor carried comes straight back.
+    expect(await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0&inkey=1`), { headers: { cookie } })).json()).toMatchObject({ records: [], inKey: true });
+    // The cursor's tail is only ever marker characters this code produced: anything else sent in is never echoed.
+    expect(await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0&ktail=TOPSECRET`), { headers: { cookie } })).json()).toMatchObject({ keyTail: "" });
+    expect(await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0&ktail=${encodeURIComponent("-----BE|--|-|C")}`), { headers: { cookie } })).json()).toMatchObject({ keyTail: "-----BE|--|-|C" });
 
     const log = openLiveLog(evidenceRoot, runId);
     log?.observe({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "hello operator" }] } });
@@ -234,6 +239,15 @@ describe("A2 — the live peek over real HTTP: guards, fence, and the names-only
     const drained = await (await fetch(url(`/r/${runId}?fragment=transcript&from=0`), { headers: { cookie } })).json() as { final: boolean; text: string };
     expect(drained.text).toBe("hello operator\n");
     expect(drained.final).toBe(true);
+
+    // The records shape names its file: an offset sent with another file's generation starts over.
+    const records = await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0`), { headers: { cookie } })).json() as { gen: string; records: unknown[]; notes: unknown[] };
+    expect(records.records).toEqual(expect.arrayContaining([expect.objectContaining({ k: "say", t: ["hello operator"] })]));
+    expect((await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0&gen=records:1:1`), { headers: { cookie } })).status).toBe(409);
+    // Another machine's run is never read from this one's disk, in either shape; its notes still answer.
+    store.handle.prepare("UPDATE run SET runner = 'other-machine' WHERE id = ?").run(runId);
+    expect(await (await fetch(url(`/r/${runId}?fragment=transcript&from=0`), { headers: { cookie } })).json()).toEqual({ error: "off" });
+    expect(await (await fetch(url(`/r/${runId}?fragment=transcript&shape=records&from=0`), { headers: { cookie } })).json()).toEqual({ error: "off", notes: [], older: 0 });
   });
 
   test("steering: a browser session files a note; the task page shows its state (arc 1)", async () => {
@@ -2007,11 +2021,16 @@ describe("/peek: every live agent in the console, now the Agents board", () => {
     expect(view.groups.flatMap(group => group.rows.map(row => [row.title, row.agent]))).toEqual([["Harden webhook retries", "Codex"]]);
     // The opened agent reads its transcript through the run page's own window: our words, never the command.
     // No pool configured here: the live look at its checkout says where it can be read rather than a server error.
-    expect(view.selected).toMatchObject({ runId: run, transcript: `/r/${run}?fragment=transcript`, peek: null });
-    const transcript = await (await fetch(`${base}${view.selected!.transcript}&from=0`, { headers: { cookie } })).json() as { text: string };
-    expect(transcript.text).toContain("Reading the retry loop now.");
-    expect(transcript.text).toContain("→ running a command");
-    expect(transcript.text).not.toContain("cat secrets");
+    expect(view.selected).toMatchObject({ runId: run, transcript: `/r/${run}?fragment=transcript&shape=records`, peek: null });
+    const transcript = await (await fetch(`${base}${view.selected!.transcript}&from=0`, { headers: { cookie } })).json() as { records: unknown[]; notes: unknown[] };
+    // Commands are hidden unless the project shows them: the step, never the command.
+    expect(transcript.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ k: "open", detail: "base" }),
+      expect.objectContaining({ k: "say", t: ["Reading the retry loop now."] }),
+      expect.objectContaining({ k: "step", kind: "command" }),
+    ]));
+    expect(JSON.stringify(transcript)).not.toContain("cat secrets");
+    expect(transcript.notes).toEqual([]);
 
     // The run page of a non-claude run carries the transcript poller too.
     const runPage = await (await fetch(`${base}/r/${run}`, { headers: { cookie } })).text();

@@ -38,6 +38,7 @@ import {
 } from "./evidence.js";
 import type { Runner } from "./builder.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
+import { liveLogContext } from "./live-detail.js";
 import { openLiveLog } from "./live.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
@@ -380,7 +381,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = openLiveLog(root, request.runId);
+  const liveLog = openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree));
   // Claude's report rides the terminal result event (run 2334's fix): plan
   // mode only lets the session write its own plan file. Codex has no
   // structured output and keeps the mailbox file.

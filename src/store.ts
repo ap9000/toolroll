@@ -467,6 +467,26 @@ CREATE TABLE IF NOT EXISTS run_resume (
 CREATE INDEX IF NOT EXISTS run_resume_by_run ON run_resume (run, id);
 `;
 
+/** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
+export const LIVE_DETAIL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS live_detail_setting (
+  repo       TEXT PRIMARY KEY,
+  commands   INTEGER NOT NULL CHECK (commands IN (0,1)),
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- Every run a steering note reached, kept as it happens (live-notes.ts): a
+-- note's own attached/mailed fields move to the next attempt, this does not.
+CREATE TABLE IF NOT EXISTS steer_note_run (
+  note INTEGER NOT NULL REFERENCES task_steer(id) ON DELETE CASCADE,
+  run  INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  how  TEXT NOT NULL CHECK (how IN ('attached','mailed','read')),
+  at   TEXT NOT NULL,
+  PRIMARY KEY (note, run, how)
+);
+CREATE INDEX IF NOT EXISTS steer_note_run_by_run ON steer_note_run (run, note);
+`;
+
 export const CHAT_APPROVAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_approval_setting (
   approver             TEXT NOT NULL,
@@ -722,7 +742,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v123 adds, and changes no saved row: flows that run on their own (flow_script_provenance, flow_unattended_grant,
 // flow_unattended_run, plan_authorization.basis, flow_trigger_event.on_time and ran_script) and the tool-secret
 // sealing key's record (tool_secret_key, tool_secret_legacy).
-export const SCHEMA_VERSION = 123;
+// v124 adds, and changes no saved row: the live conversation's project setting (live_detail_setting: "Show commands in
+// the live view", absent means off) and the runs each steering note reached (steer_note_run; older notes have none).
+export const SCHEMA_VERSION = 124;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -855,9 +877,9 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * new tables and the columns in V121_ADDED_COLUMNS (null, or no sends), checked the same way. v122 only adds a new
  * table (branch_base_move) and the nullable column in V122_ADDED_COLUMNS (a project's recorded remote), checked the
  * same way. v123 only adds new tables (unattended flows, tool secrets) and the columns in V123_ADDED_COLUMNS ('mode',
- * 0 or null), checked the same way.
+ * 0 or null), checked the same way. v124 only adds new tables (the live conversation's setting and note history).
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -4699,6 +4721,9 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CHAT_DECIDE_SCHEMA);
   // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
   db.exec(CHAT_APPROVAL_SCHEMA);
+  // v124: the live conversation: a project's "Show commands in the live view" (absent means off) and every run a
+  // steering note reached (older notes simply have no rows). New tables only.
+  db.exec(LIVE_DETAIL_SCHEMA);
   // What a running agent did last (no version bump: additive only; absent means no word yet).
   db.exec(RUN_ACTIVITY_SCHEMA);
   // v122: a task branch moved to current main before an attempt (fresh base): a new table, nothing carried over.
@@ -15870,6 +15895,62 @@ export class Store {
     );
   }
 
+  /**
+   * File a note for the exact run a person is watching (live-conversation.md
+   * §6): in ONE transaction, the run must still be the task's live attempt
+   * (or, `onward`, any attempt of this task: the note goes to the next one),
+   * and a repeated `key` from the same author hands back the same note — only
+   * for the same task, run and text, whichever of the two ways it was sent;
+   * any other reuse is refused. Nothing is filed on a refusal.
+   */
+  fileSteerNoteForRun(
+    taskId: string,
+    author: VerifiedAuthor,
+    note: string,
+    now: Date,
+    expect: { run: number; key: string | null; onward?: boolean },
+  ): { ok: true; id: number; replayed: boolean } | { ok: false; reason: "unknown-task" | "task-finished" | "invalid-note" | "attempt-ended" | "key-reused"; problem?: string } {
+    return this.transact(() => {
+      const valid = validateNote(note);
+      if (!valid.ok) return { ok: false as const, reason: "invalid-note" as const, problem: valid.problem };
+      const task = this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId);
+      const ref = this.db.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
+      if (task === undefined || ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
+      const taskRef = Number(ref["id"]);
+      const key = expect.key === null ? null : `steer-note:${author as unknown as string}:${expect.key}`;
+      const digest = createHash("sha256").update(JSON.stringify([taskId, expect.run, valid.note])).digest("hex");
+      if (key !== null) {
+        const seen = this.db.prepare("SELECT operation, result FROM mutation WHERE idempotency_key = ?").get(key);
+        if (seen !== undefined) {
+          const saved = parseStoreColumn("mutation.result", seen["result"]) as { id?: unknown; digest?: unknown } | null;
+          if (seen["operation"] === "fileSteerNoteForRun" && saved !== null && saved.digest === digest && typeof saved.id === "number") {
+            return { ok: true as const, id: saved.id, replayed: true };
+          }
+          return { ok: false as const, reason: "key-reused" as const };
+        }
+      }
+      const state = String(task["state"]);
+      if (state === "done" || state === "cancelled") return { ok: false as const, reason: "task-finished" as const };
+      const shown = this.db.prepare("SELECT task_ref, outcome, lease_id FROM run WHERE id = ?").get(expect.run);
+      if (shown === undefined || Number(shown["task_ref"]) !== taskRef) return { ok: false as const, reason: "attempt-ended" as const };
+      // Sent on from an attempt that ended (`onward`), the note is for the task's next attempt. Otherwise the run on
+      // screen must still be the task's live attempt: unfinished, under the current lease. How the note reaches it —
+      // its brief, its steering folder, or stdin — is steering's own business, as for any note.
+      if (expect.onward !== true) {
+        const lease = this.currentLiveLease(taskRef, now);
+        if (shown["outcome"] !== null || lease === null || shown["lease_id"] !== lease) return { ok: false as const, reason: "attempt-ended" as const };
+      }
+      const id = this.insertSteerNote(taskRef, author, valid.note, now);
+      if (key !== null) {
+        this.db
+          .prepare("INSERT INTO mutation (idempotency_key, operation, result, actor, created_at) VALUES (?, ?, ?, ?, ?)")
+          .run(key, "fileSteerNoteForRun", JSON.stringify({ id, digest }), author as unknown as string, now.toISOString());
+      }
+      this.bumpWake();
+      return { ok: true as const, id, replayed: false };
+    });
+  }
+
   /** One verified note, with the identity a running build's stdin copy is sent under: filing it is also what queues
    * its live delivery, in the same transaction (the builder's dispatcher sends whatever is filed and unsent). */
   private insertSteerNote(taskRef: number, author: VerifiedAuthor, note: string, now: Date): number {
@@ -15937,6 +16018,7 @@ export class Store {
         this.db
           .prepare("UPDATE task_steer SET attached_run = ?, attached_at = ?, live_sends = 0, live_sent_at = NULL, live_missed_at = NULL WHERE id = ?")
           .run(runId, stamp, Number(row["id"]));
+        this.noteSteerReached(Number(row["id"]), runId, "attached", stamp);
       }
       return rows.map(row => readSteerNote({ ...row, attached_run: runId, attached_at: stamp, live_sends: 0, live_sent_at: null, live_missed_at: null }));
     });
@@ -15949,9 +16031,12 @@ export class Store {
    * first receipt wins, and a replay changes nothing.
    */
   settleSteerDelivered(runId: number, now: Date): number {
+    const stamp = now.toISOString();
+    const settled = this.db.prepare("SELECT id FROM task_steer WHERE attached_run = ? AND delivered_at IS NULL").all(runId);
     const { changes } = this.db
       .prepare("UPDATE task_steer SET delivered_at = ? WHERE attached_run = ? AND delivered_at IS NULL")
-      .run(now.toISOString(), runId);
+      .run(stamp, runId);
+    for (const row of settled) this.noteSteerReached(Number(row["id"]), runId, "read", stamp);
     return Number(changes);
   }
 
@@ -16015,7 +16100,23 @@ export class Store {
           WHERE id = ? AND delivered_at IS NULL AND superseded_at IS NULL`,
       )
       .run(runId, now.toISOString(), runId, runId, runId, noteId);
+    if (Number(changes) > 0) this.noteSteerReached(noteId, runId, "mailed", now.toISOString());
     return Number(changes) > 0;
+  }
+
+  /** One run a note reached, kept for its live conversation (live-notes.ts); display state, so a failure never blocks steering. */
+  private noteSteerReached(noteId: number, runId: number, how: "attached" | "mailed" | "read", at: string): void {
+    try {
+      this.db.prepare("INSERT OR IGNORE INTO steer_note_run (note, run, how, at) VALUES (?, ?, ?, ?)").run(noteId, runId, how, at);
+    } catch { /* display state */ }
+  }
+
+  /** The notes this run reached, filing order — attached to its brief, mailed into its folder, or read by it. */
+  steerNotesReaching(runId: number): SteerNote[] {
+    return this.db
+      .prepare("SELECT * FROM task_steer WHERE id IN (SELECT note FROM steer_note_run WHERE run = ?) ORDER BY id")
+      .all(runId)
+      .map(readSteerNote);
   }
 
   /**
@@ -16032,6 +16133,7 @@ export class Store {
           WHERE id = ? AND mailed_run = ? AND acked_at IS NULL AND delivered_at IS NULL AND superseded_at IS NULL`,
       )
       .run(stamp, stamp, runId, stamp, noteId, runId);
+    if (Number(changes) > 0) this.noteSteerReached(noteId, runId, "read", stamp);
     if (Number(changes) > 0) this.bumpWake();
     return Number(changes) > 0;
   }

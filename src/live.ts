@@ -14,13 +14,14 @@
  * break, slow, or reclassify a build.
  */
 
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { scanForSecrets } from "./evidence.js";
+import { createLiveRecorder, LIVE_CAP_WORDS, parseLiveRecords, redactLiveLines, projectLiveText, serializeLiveRecord, type KeyState, type LiveActivityKind, type LiveRecord, type LiveRecorderOptions } from "./live-records.js";
 
 export const LIVE_LINE_CAP = 2 * 1024;
-export const LIVE_FILE_CAP = 2 * 1024 * 1024;
-export const LIVE_CAP_MARKER = "[the live view stopped at its size cap — the run record continues]";
+export const LIVE_FILE_CAP = 4 * 1024 * 1024;
+export const LIVE_CAP_MARKER = LIVE_CAP_WORDS;
 export const LIVE_REDACTED_LINE = "[a credential-shaped line was redacted]";
 /** Finalized runs keep their live file this long for the final drain. */
 export const LIVE_RETAIN_MS = 24 * 60 * 60 * 1000;
@@ -32,19 +33,20 @@ export function liveDir(root: string): string {
 }
 
 /** The exact filename, from the numeric id and nothing else — no user
- * input is ever parsed into this path. */
+ * input is ever parsed into this path. Records (`.jsonl`) are what every
+ * run writes now; the name is the format. */
 export function liveLogPath(root: string, runId: number): string {
+  return join(liveDir(root), `${Math.trunc(runId)}.jsonl`);
+}
+
+/** The plain-text file runs wrote before the live conversation; read until it ages out. */
+export function legacyLiveLogPath(root: string, runId: number): string {
   return join(liveDir(root), `${Math.trunc(runId)}.log`);
 }
 
-/**
- * The fixed tool vocabulary. Known harness tools map to OUR kinds and
- * phrases; anything unrecognized gets the generic one. The tool's own
- * name, arguments, and metadata never reach the file: a tool named after
- * a secret stays unspoken.
- */
-export type LiveActivityKind = "session" | "message" | "edit" | "command" | "read" | "search" | "lookup" | "plan" | "delegate" | "tool";
-export const LIVE_ACTIVITY_KINDS: readonly LiveActivityKind[] = ["session", "message", "edit", "command", "read", "search", "lookup", "plan", "delegate", "tool"];
+export { LIVE_ACTIVITY_KINDS, type LiveActivityKind } from "./live-records.js";
+
+/** The activity line's kinds for known Claude tools (task-activity.ts). */
 const TOOL_KINDS: ReadonlyMap<string, LiveActivityKind> = new Map([
   ["Edit", "edit"],
   ["Write", "edit"],
@@ -60,18 +62,6 @@ const TOOL_KINDS: ReadonlyMap<string, LiveActivityKind> = new Map([
   ["TodoWrite", "plan"],
   ["Task", "delegate"],
 ]);
-const KIND_HEADLINES: Readonly<Record<LiveActivityKind, string>> = {
-  session: "the agent session started",
-  message: "",
-  edit: "→ editing files",
-  command: "→ running a command",
-  read: "→ reading the code",
-  search: "→ searching the code",
-  lookup: "→ looking something up",
-  plan: "→ organizing its plan",
-  delegate: "→ delegating to a helper",
-  tool: "→ using a tool",
-};
 const toolKind = (name: unknown): LiveActivityKind => TOOL_KINDS.get(typeof name === "string" ? name : "") ?? "tool";
 
 /**
@@ -124,67 +114,6 @@ function capBytes(text: string, cap: number): string {
   return decoded.endsWith("�") ? decoded.slice(0, -1) : decoded;
 }
 
-/**
- * One stream event → zero or more display lines, in the fixed vocabulary.
- * Assistant TEXT is the agent's own words (sanitized below); tool use is a
- * headline; everything else — tool results, deltas, results, subagent
- * chatter — renders nothing in v1.
- */
-export function renderTranscriptLines(event: Record<string, unknown>): string[] {
-  const type = String(event["type"] ?? "");
-  if (type === "system" && String(event["subtype"] ?? "") === "init") {
-    return ["the agent session started"];
-  }
-  // Codex-shaped streams (peek): a thread starts, items complete.
-  if (type === "thread.started") return ["the agent session started"];
-  if (type === "item.completed") {
-    const item = event["item"] as Record<string, unknown> | undefined;
-    const kind = item === undefined ? "" : String(item["type"] ?? "");
-    if (kind === "agent_message") {
-      const text = item?.["text"];
-      return typeof text === "string" ? text.split("\n").filter(one => one.trim() !== "") : [];
-    }
-    if (kind === "command_execution") return ["→ running a command"];
-    if (kind === "file_change") return ["→ editing files"];
-    if (kind === "web_search") return ["→ looking something up"];
-    return [];
-  }
-  // Gemini-shaped streams (peek): whole assistant messages, never deltas.
-  if (type === "init") return ["the agent session started"];
-  if (type === "message" && String(event["role"] ?? "") === "assistant" && event["delta"] !== true) {
-    const content = event["content"];
-    return typeof content === "string" ? content.split("\n").filter(one => one.trim() !== "") : [];
-  }
-  if (type === "tool_call" || type === "tool_use") {
-    const name = event["name"] ?? (event["tool"] as Record<string, unknown> | undefined)?.["name"];
-    return [KIND_HEADLINES[toolKind(name)]];
-  }
-  if (type !== "assistant") return [];
-  // Top-level only: a subagent's words are not this run's transcript.
-  const parent = event["parent_tool_use_id"];
-  if (parent !== undefined && parent !== null) return [];
-  const message = event["message"] as Record<string, unknown> | undefined;
-  const content = message?.["content"];
-  if (!Array.isArray(content)) return [];
-  const lines: string[] = [];
-  for (const block of content as Record<string, unknown>[]) {
-    if (block === null || typeof block !== "object") continue;
-    const kind = String(block["type"] ?? "");
-    if (kind === "text") {
-      const text = block["text"];
-      if (typeof text === "string" && text.trim() !== "") {
-        for (const one of text.split("\n")) {
-          if (one.trim() !== "") lines.push(one);
-        }
-      }
-    } else if (kind === "tool_use") {
-      const name = block["name"];
-      lines.push(KIND_HEADLINES[toolKind(name)]);
-    }
-  }
-  return lines;
-}
-
 /** Bidirectional overrides and isolates (U+202A–U+202E, U+2066–U+2069): they can make shown text read differently from what was written. */
 const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g;
 
@@ -201,13 +130,15 @@ export type LiveLog = {
 };
 
 /**
- * Open the run's live file for appending. The directory is 0700, the file
- * 0600 and CREATED HERE (O_EXCL: a name that already exists — whatever put
- * it there — is refused, not appended to), opened O_NOFOLLOW with the
- * descriptor retained for the run's whole duration. Returns null on any
- * failure: no live view is ever worth a build.
+ * Open the run's live file for appending records. The directory is 0700,
+ * the file 0600 and CREATED HERE (O_EXCL: a name that already exists —
+ * whatever put it there — is refused, not appended to), opened O_NOFOLLOW
+ * with the descriptor retained for the run's whole duration. `options` is
+ * the run's trusted context: its checkout, and whether its project shows
+ * commands (read once, here). Returns null on any failure: no live view is
+ * ever worth a build.
  */
-export function openLiveLog(root: string, runId: number): LiveLog | null {
+export function openLiveLog(root: string, runId: number, options: Partial<LiveRecorderOptions> = {}): LiveLog | null {
   let fd: number;
   try {
     mkdirSync(liveDir(root), { recursive: true, mode: 0o700 });
@@ -219,19 +150,20 @@ export function openLiveLog(root: string, runId: number): LiveLog | null {
   } catch {
     return null;
   }
+  const recorder = createLiveRecorder({ base: options.base ?? null, commands: options.commands === true, ...(options.clock === undefined ? {} : { clock: options.clock }) });
   let written = 0;
   let capped = false;
   let closed = false;
 
-  const append = (line: string): void => {
+  const append = (record: LiveRecord): void => {
     if (closed || capped) return;
-    const payload = Buffer.from(`${line}\n`, "utf8");
-    // The marker is RESERVED inside the cap: whatever remains must still fit it.
-    const markerBytes = Buffer.byteLength(`${LIVE_CAP_MARKER}\n`, "utf8");
-    if (written + payload.length + markerBytes > LIVE_FILE_CAP) {
+    const payload = Buffer.from(`${serializeLiveRecord(record)}\n`, "utf8");
+    // The cap record is RESERVED inside the cap: whatever remains must still fit it.
+    const capLine = `${serializeLiveRecord({ k: "cap", at: record.at })}\n`;
+    if (written + payload.length + Buffer.byteLength(capLine, "utf8") > LIVE_FILE_CAP) {
       capped = true;
       try {
-        writeSync(fd, `${LIVE_CAP_MARKER}\n`);
+        writeSync(fd, capLine);
       } catch {
         // Nothing to do: the file simply ends early.
       }
@@ -250,18 +182,22 @@ export function openLiveLog(root: string, runId: number): LiveLog | null {
     }
   };
 
+  append({ k: "open", at: (options.clock ?? (() => new Date()))().toISOString(), detail: options.commands === true ? "commands" : "base" });
   return {
     observe(event: Record<string, unknown>): void {
       try {
-        for (const line of renderTranscriptLines(event)) {
-          append(sanitizeTranscriptLine(line));
-        }
+        for (const record of recorder.observe(event)) append(record);
       } catch {
-        // Rendering is observational; a malformed event renders nothing.
+        // Recording is observational; a malformed event records nothing.
       }
     },
     close(): void {
       if (closed) return;
+      try {
+        for (const record of recorder.end()) append(record);
+      } catch {
+        // the steps simply stay open in the file
+      }
       closed = true;
       try {
         closeSync(fd);
@@ -272,32 +208,78 @@ export function openLiveLog(root: string, runId: number): LiveLog | null {
   };
 }
 
+export type LiveFormat = "records" | "text";
+
 export type LiveWindowRead =
-  | { ok: true; text: string; nextOffset: number; eof: boolean }
+  | {
+      ok: true;
+      /** Complete lines read from `from`: records (JSON lines) or legacy text. */
+      text: string;
+      nextOffset: number;
+      eof: boolean;
+      format: LiveFormat;
+      /** Which file this offset belongs to: a client holding another resets. */
+      gen: string;
+    }
   | { ok: false; reason: "missing" | "replaced" | "unreadable" };
 
 const READ_WINDOW = 64 * 1024;
 const READ_LOOKAHEAD = 2 * 1024;
+/** How far past an over-long line one read looks for its end; past it, the line is skipped up to there. */
+const SKIP_SCAN = 64 * 1024 * 1024;
+
+/** The live directory itself: a real directory, never a link to one. */
+function liveDirIsReal(root: string): boolean {
+  try {
+    const stat = lstatSync(liveDir(root));
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function openForRead(path: string): { fd: number } | { missing: true } | { unreadable: true } {
+  try {
+    return { fd: openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK) };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { missing: true } : { unreadable: true };
+  }
+}
+
+/** The line that stands in for one too long to read, in the file's own format. */
+function cutLine(format: LiveFormat): string {
+  return format === "records" ? `${serializeLiveRecord({ k: "cut", at: "" })}\n` : "[a line was too long to show]\n";
+}
 
 /**
  * Read the live file from a byte offset, returning only COMPLETE lines
- * (through the last LF in the window). The descriptor is the authority:
- * opened O_NOFOLLOW, proved a regular file, measured and read through
- * itself. A file smaller than the offset was replaced — the caller resets,
- * visibly, never silently duplicating (arc 1 §4). `allowTail` (the final
- * drain) returns the unterminated tail after finalization.
+ * (through the last LF in the window). The records file is read when it
+ * exists, else the legacy text file. The descriptor is the authority:
+ * opened O_NOFOLLOW | O_NONBLOCK inside a real live directory, proved a
+ * regular file, measured and read through itself. A file smaller than the
+ * offset was replaced — the caller resets, visibly, and `gen` names the file
+ * so an offset is never reused against another one. A line longer than the
+ * whole window is skipped through its end, so a reader never stalls.
+ * `allowTail` (the final drain) returns the unterminated tail after
+ * finalization. Legacy text is cleaned again on the way out.
  */
 export function readLiveWindow(root: string, runId: number, from: number, allowTail = false): LiveWindowRead {
   if (!Number.isSafeInteger(from) || from < 0) return { ok: false, reason: "unreadable" };
-  let fd: number;
-  try {
-    fd = openSync(liveLogPath(root, runId), constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch (error) {
-    return { ok: false, reason: (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable" };
+  if (!liveDirIsReal(root)) return { ok: false, reason: "missing" };
+  let format: LiveFormat = "records";
+  let opened = openForRead(liveLogPath(root, runId));
+  if ("missing" in opened) {
+    format = "text";
+    opened = openForRead(legacyLiveLogPath(root, runId));
   }
+  if ("missing" in opened) return { ok: false, reason: "missing" };
+  if ("unreadable" in opened) return { ok: false, reason: "unreadable" };
+  const fd = opened.fd;
   try {
-    const stat = fstatSync(fd);
+    const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile()) return { ok: false, reason: "unreadable" };
+    // Linux hands a removed file's inode straight to the next one made, so the birth time (ns) tells them apart too.
+    const gen = `${format}:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
     const size = Number(stat.size);
     if (size < from) return { ok: false, reason: "replaced" };
     const want = Math.min(size - from, READ_WINDOW + READ_LOOKAHEAD);
@@ -311,22 +293,65 @@ export function readLiveWindow(root: string, runId: number, from: number, allowT
     const chunk = buffer.subarray(0, offset);
     const lastLf = chunk.lastIndexOf(0x0a);
     const eofReached = from + offset >= size;
+    const out = (text: string, next: number, eof: boolean): LiveWindowRead => ({
+      ok: true,
+      // Raw: every reader cleans and redacts through liveWindowLines / liveWindowRecords, carrying the key state.
+      text,
+      nextOffset: next,
+      eof,
+      format,
+      gen,
+    });
     if (lastLf === -1) {
-      if (allowTail && eofReached && offset > 0) {
-        return { ok: true, text: chunk.toString("utf8"), nextOffset: from + offset, eof: true };
+      if (allowTail && eofReached && offset > 0) return out(chunk.toString("utf8"), from + offset, true);
+      // A whole window without an end of line: skip through its end (bounded), never stall on it.
+      if (offset === READ_WINDOW + READ_LOOKAHEAD) {
+        const scan = Buffer.alloc(64 * 1024);
+        const limit = Math.min(size, from + SKIP_SCAN);
+        let at = from + offset;
+        while (at < limit) {
+          const read = readSync(fd, scan, 0, Math.min(scan.length, limit - at), at);
+          if (read <= 0) break;
+          const lf = scan.subarray(0, read).indexOf(0x0a);
+          if (lf !== -1) return { ok: true, text: cutLine(format), nextOffset: at + lf + 1, eof: at + lf + 1 >= size, format, gen };
+          at += read;
+        }
+        // No end within reach. A finished run's drain, or a line longer than any read looks, is cut where the
+        // look stopped, so reading always moves on; a live run's line may still be being written, so it waits.
+        if (allowTail || at >= from + SKIP_SCAN) return { ok: true, text: cutLine(format), nextOffset: at, eof: at >= size, format, gen };
+        return { ok: true, text: "", nextOffset: from, eof: false, format, gen };
       }
-      return { ok: true, text: "", nextOffset: from, eof: eofReached && offset === 0 };
+      return out("", from, eofReached && offset === 0);
     }
-    if (allowTail && eofReached && lastLf + 1 < offset) {
-      return { ok: true, text: chunk.toString("utf8"), nextOffset: from + offset, eof: true };
-    }
+    if (allowTail && eofReached && lastLf + 1 < offset) return out(chunk.toString("utf8"), from + offset, true);
     const complete = chunk.subarray(0, lastLf + 1);
-    return { ok: true, text: complete.toString("utf8"), nextOffset: from + lastLf + 1, eof: from + lastLf + 1 >= size };
+    return out(complete.toString("utf8"), from + lastLf + 1, from + lastLf + 1 >= size);
   } catch {
     return { ok: false, reason: "unreadable" };
   } finally {
     closeSync(fd);
   }
+}
+
+/** A window's complete lines as the plain words the run page and `toolroll peek` show, whatever its format. */
+export function liveWindowLines(read: { text: string; format: LiveFormat }, keys: KeyState = { inKey: false }): string[] {
+  if (read.format === "records") return projectLiveText(parseLiveRecords(read.text, keys));
+  return cleanLegacy(read.text, keys).split("\n").filter(one => one !== "");
+}
+
+/** A window as records, whatever its format: an older plain file's lines become the agent's words. */
+export function liveWindowRecords(read: { text: string; format: LiveFormat }, keys: KeyState = { inKey: false }): LiveRecord[] {
+  if (read.format === "records") return parseLiveRecords(read.text, keys);
+  return cleanLegacy(read.text, keys).split("\n").filter(one => one !== "").map(line => ({ k: "say" as const, at: "", t: [line] }));
+}
+
+/** Legacy text lines, cleaned again on read: the file may have been altered after it was written. */
+function cleanLegacy(text: string, keys: KeyState): string {
+  const lines = text.split("\n");
+  const ended = lines.length > 0 && lines[lines.length - 1] === "";
+  if (ended) lines.pop();
+  const shown = redactLiveLines(lines, keys);
+  return ended ? `${shown.join("\n")}\n` : shown.join("\n");
 }
 
 export type LiveSweepVerdict = {
@@ -357,7 +382,7 @@ export function listLiveFiles(root: string): LiveSweepVerdict[] {
     } catch {
       continue;
     }
-    const match = /^(\d{1,15})\.log$/.exec(name);
+    const match = /^(\d{1,15})\.(?:jsonl|log)$/.exec(name);
     out.push({ runId: match === null ? null : Number(match[1]), fileName: name, mtimeMs });
   }
   return out;

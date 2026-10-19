@@ -1,3 +1,4 @@
+import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
 import { galleryTemplateOf } from "../flow-gallery.js";
 import { finishGoogleConsent,GOOGLE_CALLBACK } from "../google-mail.js";
@@ -735,6 +736,23 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     store.recordProjectConcurrency(who.name, repo, changed.before, changed.after, now);
     store.bumpWake();
     return back("said", changed.before === changed.after ? "Nothing changed." : `Saved. Up to ${n} at once.`);
+  }
+  // Settings → Project → Live view (live-detail.ts): an approver for the project shows commands with their password,
+  // or hides them in one step; the ledger keeps each change. It applies from the next run.
+  async function projectLiveView(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectLiveView);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes the live view.", "/settings/project");
+    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const act = body.get("act");
+    if (act === "off") return back("said", setLiveCommands(store, { repo, commands: false, by: who.name, via: "the console" }, now).said);
+    if (act !== "on") return back("problem", "That change isn't available.");
+    // Single use, for this person and exactly this change: a replayed or copied form changes nothing.
+    if (!consumeApprovalNonce(body.get("nonce") ?? "", who.name, LIVE_VIEW_CONSENT, liveViewConsentDigest(repo))) return back("problem", "That form was already used or is out of date. Try again from this page.");
+    if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to show commands.");
+    return back("said", setLiveCommands(store, { repo, commands: true, by: who.name, via: "the console" }, now).said);
   }
   // Delete a project, in two steps: its name, then what goes and the password. An instance operator; the ledger keeps who and what.
   async function projectDelete(ctx: HandlerContext): Promise<void> {
@@ -2062,6 +2080,7 @@ ${modeWords(terms)
     "settings.skills-change": skillsAct("change"),
     "spend.budget": spendBudget,
     "settings.project-concurrency": projectConcurrency,
+    "settings.project-live-view": projectLiveView,
     "settings.project-delete": projectDelete,
     "settings.policy-send": policySave,
     "settings.approval-send": approvalSave,

@@ -125,6 +125,7 @@ export const CONSOLE_FORMS = {
   flows: formContract("POST /flows/new, /flows/example, /flows/import, /flows/<id>/<act>, /flows/<id>/cards/<card>/<act>, /flows/<id>/triggers/<trigger>/<act>", ["repo", "document", "url", "confirm", "previewed", "template", "name", "answers", "password", "secret", "trigger", "approve", "remove", "about", "body", "timeoutMinutes", "language", "file", "address", "key", "definition", "owner", "revision", "value", "title", "description", "stage", "decision", "note", "draft", "choice", "entry", "label", "watching", "days", "budget", "runs", "include", "schedules"], { prefixes: ["param."] }),
   spendBudget: formContract("POST /spend/budget", ["password", "target", "action", "usd", "stop"]),
   projectConcurrency: formContract("POST /settings/project/concurrency", ["repo", "concurrency"]),
+  projectLiveView: formContract("POST /settings/project/live-view", ["repo", "act", "password", "nonce"]),
   projectDelete: formContract("POST /settings/project/delete", ["repo", "name", "step", "password"]),
   policy: formContract("POST /settings/policy", ["password", "provider", "models", "tools", "ceiling"]),
   approval: formContract("POST /settings/approval", ["repo", "password", "protect", "paths", "not_requester"]),
@@ -208,7 +209,7 @@ export const CONSOLE_FORMS = {
   resolveIncident: formContract("POST /i/<id>/resolve", ["return"]),
 
   // A task's verbs (/t/<task>/<verb>), one body each.
-  taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run"]),
+  taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after"]),
   taskReply: formContract("POST /t/<task>/reply", ["question", "answer"]),
   taskHold: formContract("POST /t/<task>/hold", ["reason"]),
   taskBlock: formContract("POST /t/<task>/block|unblock", ["on"]),
