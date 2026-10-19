@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { launchOf } from "./acp-attest.js";
+import type { AcpControl } from "./exec.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { acquire } from "./claim.js";
 import { invokeAgent, type InvokeResult } from "./invoke.js";
@@ -72,7 +73,7 @@ function check(): void {
   store.recordAcpAttestation({ provider: "opencode", runner: RUNNER, launch, agent: { name: "FakeCode", version: "1.0.0" }, cliVersion: "1.0.0", models: ["fake/model"], checks: ["test"], recordedBy: "test" }, T0);
 }
 
-function run(mode: string, extra: { idleTimeoutMs?: number; timeoutMs?: number; onControl?: (control: { cancel: () => void }) => void; handshakeMs?: number } = {}): Promise<InvokeResult> {
+function run(mode: string, extra: { idleTimeoutMs?: number; timeoutMs?: number; onControl?: (control: AcpControl) => void; handshakeMs?: number } = {}): Promise<InvokeResult> {
   const env = { FAKE_ACP: mode, FAKE_ACP_LOG: join(dir, "agent.log"), FAKE_ACP_RAN: join(dir, "ran") };
   return invokeAgent(store, runId, SPEC, ASK, {
     keyHome: home, env, idleTimeoutMs: extra.idleTimeoutMs ?? 20_000, timeoutMs: extra.timeoutMs ?? 60_000,
@@ -230,11 +231,22 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     expect(result.kind === "refused" || result.outcome.code !== 0).toBe(true);
   });
 
-  test("a cancel mid-prompt is answered cancelled, and is not a success", async () => {
+  test("a cancel mid-prompt is answered cancelled, is not a success, and what was alive at the cancel is gone after", async () => {
     check();
-    const result = await run("slow", { onControl: control => setTimeout(() => control.cancel(), 500) });
+    let witnessed: number[] = [];
+    const result = await run("slow", { onControl: control => {
+      // Cancel only once a live descendant is seen, from the plane's own reading of the agent's tree.
+      const poll = setInterval(() => {
+        const live = control.liveDescendants();
+        if (live !== null && live.length > 0) { witnessed = live; clearInterval(poll); control.cancel(); }
+      }, 100);
+      setTimeout(() => clearInterval(poll), 20_000).unref();
+    } });
+    expect(witnessed.length).toBeGreaterThan(0);
+    expect(witnessed).toContain(Number(readFileSync(join(worktree, "slow.pid"), "utf8")));
     expect(result.kind === "ran" ? result.outcome.code : -1).not.toBe(0);
     expect(agentLog()).toContain("session/cancel");
+    for (const pid of witnessed) expect(() => process.kill(pid, 0)).toThrow();
   });
 });
 

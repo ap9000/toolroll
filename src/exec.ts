@@ -9,8 +9,9 @@
 
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
 import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
-import { execFile, spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
 import { jsonlDiscriminants } from "./jsonl-discriminants.js";
 import { createContainer, currentContainment, type AttachOutcome, type Container, type ContainmentBackendId } from "./containment.js";
@@ -1559,10 +1560,49 @@ export type AcpRun = {
   /** The agent's name and version as its attestation recorded them; the handshake must say the same. */
   expect: { name: string; version: string } | null;
   /** Handed the conversation's controls once it starts (the conformance probe cancels with it). */
-  onControl?: (control: { cancel: () => void }) => void;
+  onControl?: (control: AcpControl) => void;
   /** Each handshake step's deadline (ACP_HANDSHAKE_MS unless a test shortens it). */
   handshakeMs?: number;
 };
+
+/** What a caller (the conformance check) may do with a running ACP conversation. */
+export type AcpControl = {
+  /** Ask the agent to stop the prompt in flight. */
+  cancel: () => void;
+  /** A fresh, plane-side reading, now, of the agent's live descendants: from a process listing of its tree, or the
+   * native container's own member list. Null when it can't be read here (a job object has no member list). */
+  liveDescendants: () => number[] | null;
+};
+
+/** The live descendants of `root`, from one process listing (identifiers only). */
+function liveTreeOf(root: number): number[] | null {
+  try {
+    const rows = execFileSync("/bin/ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 2_000, maxBuffer: 4 * 1024 * 1024 })
+      .trim().split("\n").map(line => line.trim().split(/\s+/).map(Number));
+    const children = new Map<number, number[]>();
+    for (const [pid, parent] of rows) if (Number.isSafeInteger(pid) && Number.isSafeInteger(parent)) children.set(parent!, [...(children.get(parent!) ?? []), pid!]);
+    const found: number[] = [];
+    const pending = [...(children.get(root) ?? [])];
+    while (pending.length > 0) {
+      const pid = pending.pop()!;
+      found.push(pid);
+      pending.push(...(children.get(pid) ?? []));
+    }
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+/** A Linux cgroup's members (other than `root`), from its own cgroup.procs; null where there is no such list. */
+function containerMembers(container: Container, root: number | undefined): number[] | null {
+  if (container.backend === "job-object") return null;
+  try {
+    return readFileSync(join(container.id, "cgroup.procs"), "utf8").trim().split("\n").map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0 && pid !== root);
+  } catch {
+    return null;
+  }
+}
 
 /** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */
 export const ACP_SHUTDOWN_MS = { close: 2_000, eof: 5_000, term: 5_000 } as const;
@@ -1730,7 +1770,12 @@ export function runAcpSession(
 
     write(conversation.start());
     armHandshake();
-    try { acp.onControl?.({ cancel: () => write(conversation.cancel()) }); } catch { /* the caller's own failure */ }
+    try {
+      acp.onControl?.({
+        cancel: () => write(conversation.cancel()),
+        liveDescendants: () => exited() || child.pid === undefined ? [] : container !== null ? containerMembers(container, child.pid) : liveTreeOf(child.pid),
+      });
+    } catch { /* the caller's own failure */ }
 
     // The moment the agent itself exits, what it left in its own group ends with it — not at "close", which a
     // descendant holding the agent's pipes can postpone forever; and if those pipes are still open shortly after, they

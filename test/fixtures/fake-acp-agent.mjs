@@ -40,7 +40,13 @@ process.stdin.on("data", chunk => {
       log(`prompt:${message.params.prompt[0].text}`);
       if (mode === "stall") continue;
       if (mode === "quiet-exit") { update({ sessionUpdate: "available_commands_update", availableCommands: [] }); setTimeout(() => process.exit(0), 50); continue; }
-      if (mode === "slow") { update({ sessionUpdate: "tool_call", toolCallId: "t-slow", title: "sleep", kind: "execute", status: "in_progress" }); continue; }
+      if (mode === "slow") {
+        // A real child, as an agent's shell tool would start: what a check must see alive before it cancels.
+        const child = spawn("sleep", ["120"], { stdio: "ignore" });
+        writeFileSync(join(cwd, "slow.pid"), String(child.pid));
+        update({ sessionUpdate: "tool_call", toolCallId: "t-slow", title: "sleep", kind: "execute", status: "in_progress" });
+        continue;
+      }
       if (mode === "pipe-holder" || mode === "escaped-pipe-holder") {
         const stray = spawn("sleep", ["300"], { stdio: ["ignore", "inherit", "inherit"], detached: mode === "escaped-pipe-holder" });
         writeFileSync(join(cwd, "stray.pid"), String(stray.pid));
