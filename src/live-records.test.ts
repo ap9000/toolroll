@@ -414,6 +414,8 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
       [say("Checking credentials\x1b]0;ti"), step, say("tle"), say(`\x07\x1b[32m${token}\x1b[0m\n`)],
       [say("Checking credentials", "first"), acp({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Inspecting" } }), say(`${token}\n`, "second")],
       [say("Checking credentials", "first"), say(`${token}\n`, "second")],
+      [say("Checking credentials", "first"), say("", "second"), say(`${token}\n`, "second")],
+      [say("Checking credentials", "first"), step, say("", "second"), say(`${token}\n`, "second")],
     ];
     for (const commands of [false, true]) for (const events of cases) {
       const r = recorder(commands);

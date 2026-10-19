@@ -601,6 +601,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   let acpSeparated = false;
   /** The message the held words belong to, when the agent names it: a new id is a new message, and a word break. */
   let acpMessageId: string | null = null;
+  /** A new message began (its id changed) and its break isn't written yet: owed until it is, whatever chunks come. */
+  let acpNewMessage = false;
   /** Past the hard cap, the rest of that one line is not shown; each piece is still read for the key-block state, in
    * order — the state itself carries a split BEGIN across pieces, and an END split across two simply keeps the block
    * hidden (never the other way). Nothing is read twice. */
@@ -668,19 +670,23 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       // A step between two messages is a word break, always written: whatever the next chunk starts with (a CR, a BOM,
       // an escape) may be cleaned away, and the break with it.
       const messageId = typeof update["messageId"] === "string" ? update["messageId"] : null;
-      // The agent's own word on what is one message wins: a new id is a break, the same id is no break, whatever came
-      // between (a tool's update arriving mid-sentence doesn't split `api_` from `key=`). With no id, a step is a break.
-      if (messageId !== null && acpMessageId !== null) acpSeparated = messageId !== acpMessageId;
+      // The agent's own word on what is one message wins: a new id is a break, owed until written; the same id
+      // cancels only the break a step implied (a tool's update arriving mid-sentence doesn't split `api_` from `key=`).
+      // With no id, a step is a break.
+      if (messageId !== null && acpMessageId !== null) {
+        if (messageId !== acpMessageId) acpNewMessage = true;
+        else acpSeparated = false;
+      }
       if (messageId !== null) acpMessageId = messageId;
-      if (acpSeparated && text !== "") {
-        if (acpWords === "" || acpWords.endsWith("\n")) acpSeparated = false;
+      if ((acpSeparated || acpNewMessage) && text !== "") {
+        if (acpWords === "" || acpWords.endsWith("\n")) acpSeparated = acpNewMessage = false;
         else {
           // The break goes where cleaning can't take it: after any escape the held words left open, once it is over
           // (written inside it, it would be cleaned away with it). Still open, the break waits for the next chunk.
           const at = escapeEnd(text, heldEscape(acpWords));
           if (at !== null) {
             text = `${text.slice(0, at)} ${text.slice(at)}`;
-            acpSeparated = false;
+            acpSeparated = acpNewMessage = false;
           }
         }
       }

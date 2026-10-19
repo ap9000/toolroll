@@ -101,12 +101,13 @@ async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> 
       if (!quiet()) continue;
       const lease = store.currentLiveLease(ref, clock());
       if (lease !== null && lease !== request.leaseId) continue; // someone else holds the task now: not ours to touch
-      if (lease === null) {
-        const fresh = `agent-check-${request.id}-settle-${randomBytes(4).toString("hex")}`;
-        const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: SETTLE_HOLD_MS, incarnation: job.watch.owner });
-        if (!took.ok || !store.setAcpCheckLease(request.id, fresh)) { if (took.ok) release(store, fresh, clock()); continue; }
-        held = fresh;
-      } else held = lease;
+      // Teardown runs under a fresh claim of this watch's own — never the check's earlier one, which carries the
+      // incarnation of a watch whose recovery may release it mid-way. Someone taking the task in between wins.
+      if (lease !== null) release(store, lease, clock());
+      const fresh = `agent-check-${request.id}-settle-${randomBytes(4).toString("hex")}`;
+      const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: SETTLE_HOLD_MS, incarnation: job.watch.owner });
+      if (!took.ok || !store.setAcpCheckLease(request.id, fresh)) { if (took.ok) release(store, fresh, clock()); continue; }
+      held = fresh;
       const claim = held;
       // Still this attempt's, the claim still live and the task still quiet — then both are renewed in full, so
       // neither lapses during the step about to run.
