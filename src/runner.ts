@@ -20,7 +20,9 @@
  * it was holding — claims and worktrees alike — needs recovering together.
  */
 
-import { isAcpProvider } from "./acp-agents.js";
+import { isAcpProvider, type AcpProviderId } from "./acp-agents.js";
+import { verifyLaunch } from "./acp-attest.js";
+import type { AcpAttestation } from "./store.js";
 import { inspectAcpAgent, inspectionWords } from "./acp-inspect.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { resolve } from "node:path";
@@ -507,12 +509,22 @@ export async function observeProviderReadiness(
   probe: ReadinessProbe,
   env: Record<string, string | undefined> = process.env,
   providers: readonly ProviderId[] = PROVIDER_IDS,
+  /** An ACP agent's live check on this runner (store.acpAttestationFor), when the caller can read one. */
+  acpChecked?: (provider: AcpProviderId) => AcpAttestation | null,
 ): Promise<Omit<ReadinessObservation, "runner" | "observedAt">[]> {
   return Promise.all(
     providers.map(async provider => {
       // An ACP agent is looked at, never run, outside the gateway (acp-inspect.ts). It is ready only once its
       // conformance check passed on this computer; until then it says so.
       if (isAcpProvider(provider)) {
+        const checked = acpChecked?.(provider) ?? null;
+        if (checked !== null) {
+          // Ready only while every file its check bound is still the one that passed.
+          const verified = verifyLaunch(checked.launch);
+          return verified.ok
+            ? { provider, state: "ready" as const, reason: `${checked.agent.name} ${checked.agent.version}, checked ${checked.recordedAt.slice(0, 10)}`, probe: "version" }
+            : { provider, state: "unavailable" as const, reason: `${verified.problem}`, probe: "version" };
+        }
         const seen = inspectAcpAgent(provider, env);
         return seen.found
           ? { provider, state: "unavailable" as const, reason: `${inspectionWords(seen)}; not checked on this computer — run \`toolroll agents check ${provider}\``, probe: "version" }

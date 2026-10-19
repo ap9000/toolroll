@@ -7,6 +7,7 @@
  * walks repos it has never seen, and one broken repo must not end the scan.
  */
 
+import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
 import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
 import { execFile, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -53,6 +54,8 @@ export type RunOptions = ProcessTreeObserver & {
   fenceGrants?: FenceGrants;
   /** UTF-8 input for JSONL or buffered process-group transports; closed after delivery. */
   stdin?: string;
+  /** One ACP conversation (runAcpSession only): the brief, the sealed model, and the agent the attestation names. */
+  acp?: AcpRun;
   /**
    * Absolute wall-clock ceiling. Keep this for bounded commands and repair
    * turns. Long-running provider sessions use idleTimeoutMs instead: useful
@@ -1546,6 +1549,189 @@ export function runGeminiStreamJsonl(
       finish(null);
     });
     child.on("close", code => finish(code));
+  });
+}
+
+/** What runAcpSession needs beyond a process: the conversation's terms (acp-client.ts). */
+export type AcpRun = {
+  prompt: string;
+  model: string;
+  /** The agent's name and version as its attestation recorded them; the handshake must say the same. */
+  expect: { name: string; version: string } | null;
+  /** Handed the conversation's controls once it starts (the conformance probe cancels with it). */
+  onControl?: (control: { cancel: () => void }) => void;
+};
+
+/** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */
+export const ACP_SHUTDOWN_MS = { close: 2_000, eof: 5_000, term: 5_000 } as const;
+
+/** SIGTERM the child's process group (POSIX) or the child alone; a container's own stop is the forced one, later. */
+function termGroup(child: import("node:child_process").ChildProcess): void {
+  const pid = child.pid;
+  try {
+    if (pid !== undefined && process.platform !== "win32") process.kill(-pid, "SIGTERM");
+    else child.kill("SIGTERM");
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * One ACP build conversation over the agent's stdio (docs/plans/acp-adapter.md § Gateway, runner, custody). The
+ * conversation itself is acp-client.ts; this owns the process: the same contained spawn, ownership, descendant
+ * observation, container settlement and watchdog every other runner uses, with both clocks at once.
+ *
+ * After the prompt is answered it shuts the agent down in bounded steps — session/close (when offered), stdin EOF,
+ * SIGTERM to the group, then the forced kill — and returns only when the process has settled, so the gateway's
+ * witness records the real exit. A protocol failure kills at once. A stop, from the gateway's stop watch, kills at
+ * any step. The result's stdout is the conversation's retained record, never the agent's stream; its code is 0 only
+ * when the prompt was answered end_turn and the agent then exited cleanly or on our own signal.
+ */
+export function runAcpSession(
+  file: string,
+  args: readonly string[],
+  options: RunOptions = {},
+): Promise<ExecResult> {
+  const acp = options.acp;
+  if (acp === undefined) return Promise.resolve({ code: CONTAINMENT_REFUSED_CODE, stdout: "", stderr: "an ACP run needs its conversation terms", timedOut: false, notFound: false });
+  const childEnv = resolveChildEnv(options);
+
+  return new Promise(resolve => {
+    let child!: ReturnType<typeof spawn>;
+    let container: Container | null = null;
+    let attachFailure: string | null = null;
+    try {
+      const spawned = spawnStream(file, args, options, ["pipe", "pipe", "pipe"], childEnv);
+      child = spawned.child;
+      container = spawned.container;
+      void spawned.attached.then(outcome => { if (!outcome.ok) attachFailure = outcome.detail; });
+    } catch (error) {
+      void reapRejectedSpawn(rejectedChild(error, child), options.processGroup === true).then(() => resolve(refusedResult(error)));
+      return;
+    }
+    if (options.processGroup === true) liveProviders.add(child);
+    registerOwned(options.owner, child);
+    if (options.processGroup === true && container === null) observeProcessTree(child, options);
+
+    const conversation = createAcpConversation({ cwd: options.cwd ?? process.cwd(), prompt: acp.prompt, model: acp.model, expect: acp.expect });
+    let stderr = "";
+    let timedOut = false;
+    let notFound = false;
+    let settled = false;
+    let shuttingDown = false;
+    /** Set when the plane itself signalled the agent after its terminal: an exit by that signal is clean. */
+    let signalledAfterTerminal = false;
+    let announced: string | null = null;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const later = (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); timer.unref?.(); timers.push(timer); };
+
+    const write = (lines: readonly string[]): void => {
+      for (const one of lines) {
+        if (child.stdin === null || child.stdin.destroyed || child.stdin.writableEnded) return;
+        try { child.stdin.write(`${one}\n`); } catch { /* the agent closed its stdin: its exit decides */ }
+      }
+    };
+    const forceKill = (): void => {
+      if (options.processGroup === true) killGroup(child);
+      else child.kill("SIGKILL");
+    };
+    const exited = (): boolean => child.exitCode !== null || child.signalCode !== null;
+    const shutdown = (): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      if (conversation.phase() === "failed") { forceKill(); return; }
+      const endInput = () => {
+        if (exited()) return;
+        try { child.stdin?.end(); } catch { /* gone */ }
+        later(ACP_SHUTDOWN_MS.eof, () => {
+          if (exited()) return;
+          signalledAfterTerminal = conversation.phase() === "ended";
+          termGroup(child);
+          later(ACP_SHUTDOWN_MS.term, () => { if (!exited()) forceKill(); });
+        });
+      };
+      const close = conversation.close();
+      if (close.length === 0) { endInput(); return; }
+      write(close);
+      const started = Date.now();
+      const waitClose = () => {
+        if (conversation.closeAnswered() || Date.now() - started >= ACP_SHUTDOWN_MS.close || exited()) endInput();
+        else later(50, waitClose);
+      };
+      waitClose();
+    };
+
+    const onLine = (framed: BoundedJsonlLine): void => {
+      if (settled) return;
+      const reaction = framed.overflowed
+        ? (conversation.refuse("the agent wrote a line too long to read"), { send: [], live: [] })
+        : conversation.receive(framed.prefix.toString("utf8"));
+      write(reaction.send);
+      const id = conversation.sessionId();
+      if (id !== null && announced === null) {
+        announced = id;
+        try { options.onSessionId?.(id); } catch { /* a registry that cannot be written must not kill the turn */ }
+      }
+      for (const update of reaction.live) {
+        try { options.onStreamEvent?.({ acp: update }); } catch { /* observational only */ }
+      }
+      const phase = conversation.phase();
+      if (phase === "failed" || phase === "ended") shutdown();
+    };
+    const framing = boundedJsonlFramer(ACP_LINE_CAP, onLine);
+
+    const watchdog = streamWatchdog(options, () => {
+      timedOut = true;
+      forceKill();
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      watchdog.touch();
+      framing.push(chunk);
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      watchdog.touch();
+      if (stderr.length < JSONL_STDERR_CAP) stderr += chunk.slice(0, JSONL_STDERR_CAP - stderr.length);
+    });
+    child.stdin?.on("error", () => { /* EPIPE: the agent's exit decides */ });
+
+    write(conversation.start());
+    try { acp.onControl?.({ cancel: () => write(conversation.cancel()) }); } catch { /* the caller's own failure */ }
+
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (settled) return;
+      settled = true;
+      for (const timer of timers) clearTimeout(timer);
+      watchdog.stop();
+      liveProviders.delete(child);
+      framing.finish();
+      // Whatever the agent started in its own group and left running ends with it (a group id can't be reused while any
+      // member lives, so this reaches only what it left). Escaped groups are the custody observer's, as for every runner.
+      if (options.processGroup === true && container === null && child.pid !== undefined && process.platform !== "win32") {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* none left */ }
+      }
+      const terminal = conversation.terminal();
+      const answered = terminal !== null && "stopReason" in terminal && terminal.stopReason === "end_turn" && conversation.failure() === null;
+      // A clean exit after the answer, or the plane's own post-answer signal, is success; anything else is its code.
+      const exitCode = answered && (code === 0 || (signalledAfterTerminal && (signal === "SIGTERM" || code === 143))) ? 0 : (code ?? 1);
+      const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);
+      void settlement.then(empty => resolve({
+        code: notFound ? NOT_FOUND_CODE : timedOut ? TIMEOUT_CODE : attachFailure !== null || empty === false ? CONTAINMENT_REFUSED_CODE : exitCode,
+        stdout: conversation.retained(),
+        stderr: empty === false ? `${stderr}\nNative process containment could not prove all descendants exited.`.trim() : attachFailure !== null && stderr === "" ? attachFailure : stderr,
+        timedOut,
+        notFound,
+        ...containmentOf(container, empty, attachFailure),
+      }));
+    };
+
+    child.on("error", error => {
+      notFound = (error as NodeJS.ErrnoException).code === "ENOENT";
+      if (stderr === "") stderr = String(error);
+      finish(null, null);
+    });
+    child.on("close", (code, signal) => finish(code, signal));
   });
 }
 

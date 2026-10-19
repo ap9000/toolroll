@@ -1,4 +1,5 @@
 import { isAcpProfile } from "./acp-agents.js";
+import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -4768,6 +4769,7 @@ function initializeStore(db: Database, file: string): Store {
   // (V125_ADDED_COLUMNS: never priced, saved runs read none).
   widenForAcp(db);
   db.exec(PROVIDER_AUTH_SCHEMA);
+  db.exec(ACP_ATTESTATION_SCHEMA);
   for (const [table, columns] of Object.entries(V125_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
@@ -5903,6 +5905,46 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
   PRIMARY KEY (scope, phase, tier, provider)
 );
 `;
+
+/**
+ * v125: an ACP agent's passed conformance checks (acp-attest.ts): per provider and runner, how to launch the exact
+ * binary that passed and every file that launch depends on, what the agent said it is, the models it offered and the
+ * checks it passed. At most one live row per agent and runner; revoking keeps the row as history.
+ */
+export const ACP_ATTESTATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS acp_attestation (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  runner              TEXT NOT NULL,
+  conformance_version INTEGER NOT NULL,
+  launch_json         TEXT NOT NULL,
+  agent_name          TEXT NOT NULL,
+  agent_version       TEXT NOT NULL,
+  cli_version         TEXT NOT NULL,
+  models_json         TEXT NOT NULL,
+  checks_json         TEXT NOT NULL,
+  recorded_at         TEXT NOT NULL,
+  recorded_by         TEXT NOT NULL,
+  revoked_at          TEXT,
+  revoked_by          TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS acp_attestation_live ON acp_attestation (provider, runner) WHERE revoked_at IS NULL;
+`;
+
+/** An ACP agent's live attestation, as the gateway reads it. */
+export type AcpAttestation = {
+  id: number;
+  provider: string;
+  runner: string;
+  conformanceVersion: number;
+  launch: AcpLaunch;
+  agent: { name: string; version: string };
+  cliVersion: string;
+  models: string[];
+  checks: string[];
+  recordedAt: string;
+  recordedBy: string;
+};
 
 /** The provider CHECK before ACP agents joined (acp-agents.ts), and after: the same list, five ids longer. */
 const PROVIDERS_BEFORE_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini'))";
@@ -14875,6 +14917,52 @@ export class Store {
    * structural signal is gone. `auth-expired` pauses its provider; every
    * other class is observational.
    */
+  /**
+   * Record an ACP agent's passed conformance check on a runner (acp-attest.ts), replacing the live one — one
+   * transaction, so there is never a moment with two or with a gap that reads as the old one.
+   */
+  recordAcpAttestation(input: Omit<AcpAttestation, "id" | "recordedAt" | "conformanceVersion"> & { conformanceVersion?: number }, now: Date): number {
+    return this.transact(() => {
+      this.db.prepare("UPDATE acp_attestation SET revoked_at = ?, revoked_by = ? WHERE provider = ? AND runner = ? AND revoked_at IS NULL")
+        .run(now.toISOString(), `${input.recordedBy} (checked again)`, input.provider, input.runner);
+      const inserted = this.db.prepare(`INSERT INTO acp_attestation (provider, runner, conformance_version, launch_json, agent_name, agent_version, cli_version, models_json, checks_json, recorded_at, recorded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        input.provider, input.runner, input.conformanceVersion ?? ACP_CONFORMANCE_VERSION, JSON.stringify(input.launch), input.agent.name, input.agent.version,
+        input.cliVersion, JSON.stringify(input.models), JSON.stringify(input.checks), now.toISOString(), input.recordedBy,
+      );
+      return Number(inserted.lastInsertRowid);
+    });
+  }
+
+  /** An ACP agent's live attestation on a runner, under this build's conformance version; null when there is none. */
+  acpAttestationFor(provider: string, runner: string): AcpAttestation | null {
+    const row = this.db.prepare("SELECT * FROM acp_attestation WHERE provider = ? AND runner = ? AND revoked_at IS NULL").get(provider, runner);
+    if (row === undefined || Number(row["conformance_version"]) !== ACP_CONFORMANCE_VERSION) return null;
+    const launch = launchFromJson(String(row["launch_json"]));
+    const list = (json: unknown): string[] | null => {
+      try { const value: unknown = JSON.parse(String(json)); return Array.isArray(value) && value.every(one => typeof one === "string") ? value as string[] : null; } catch { return null; }
+    };
+    const models = list(row["models_json"]);
+    const checks = list(row["checks_json"]);
+    if (launch === null || models === null || checks === null) return null;
+    return {
+      id: Number(row["id"]), provider: String(row["provider"]), runner: String(row["runner"]), conformanceVersion: Number(row["conformance_version"]),
+      launch, agent: { name: String(row["agent_name"]), version: String(row["agent_version"]) }, cliVersion: String(row["cli_version"]),
+      models, checks, recordedAt: String(row["recorded_at"]), recordedBy: String(row["recorded_by"]),
+    };
+  }
+
+  /** Revoke an ACP agent's live attestation on a runner; whether there was one. */
+  revokeAcpAttestation(provider: string, runner: string, by: string, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE acp_attestation SET revoked_at = ?, revoked_by = ? WHERE provider = ? AND runner = ? AND revoked_at IS NULL").run(now.toISOString(), by, provider, runner).changes) > 0;
+  }
+
+  /** What a run's ACP agent itself reported it used (never priced; acp-client.ts). */
+  stampAgentReportedUsage(id: number, usage: string | null): void {
+    if (usage === null) return;
+    this.db.prepare("UPDATE run SET agent_reported_usage_json = ? WHERE id = ?").run(usage.slice(0, 8192), id);
+  }
+
   stampTerminalClass(id: number, authMode: "subscription" | "api-key" | "agent-login", terminalClass: TerminalClass): void {
     // FIRST-WRITE only (Codex E2/E3 review, finding 8): the gateway stamps
     // the disposal class exactly once, before disposition; nothing may

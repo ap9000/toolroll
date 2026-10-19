@@ -22,13 +22,12 @@
 import { claudeFenceSettings, codexFenceArgv, type FenceGrants } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
-import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, CLAUDE_COST_UNKNOWN } from "./exec.js";
+import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, runAcpSession, CLAUDE_COST_UNKNOWN } from "./exec.js";
 import { scanForSecrets } from "./evidence.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
 import { ACP_AGENTS, isAcpProvider, withAcp, type AcpProviderId, type KeyedProviderId } from "./acp-agents.js";
 import { acpParse } from "./acp-client.js";
-import { CONTAINMENT_REFUSED_CODE } from "./exec.js";
 import { agentSpecSchema, MODEL_ID, modelIdSchema, PROVIDER_ID_VALUES, providerIdSchema, type AgentSpec, type ProviderId } from "./contracts/provider.js";
 
 export type { AgentSpec, ProviderId } from "./contracts/provider.js";
@@ -192,6 +191,8 @@ export type ParsedEnvelope = {
    * failure terminal seen.
    */
   structuralTerminal: import("./exhaustion.js").StructuralTerminal | null;
+  /** What an ACP agent itself reported it used — kept on the run, never priced. Absent for every other dialect. */
+  agentReportedUsage?: string | null;
 };
 
 type Adapter = {
@@ -1019,18 +1020,16 @@ function acpEnvelope(stdout: string): ParsedEnvelope {
     promptConsumed: read.promptConsumed,
     diagnostic: read.diagnostic === null ? null : safeDiagnostic(read.diagnostic),
     structuralTerminal: read.terminal === null ? null : { failed: true, text: read.terminal.text === null ? null : safeDiagnostic(read.terminal.text), code: read.terminal.code.slice(0, 128) },
+    agentReportedUsage: read.reportedUsage,
   };
 }
-
-/** Until the ACP runner lands (layer C), an ACP agent never runs: the gateway's attestation refuses first, and this refuses again. */
-const refuseAcpRunner: ProviderRunner = async () => ({ code: CONTAINMENT_REFUSED_CODE, stdout: "", stderr: "ACP agents can't run yet", timedOut: false, notFound: false });
 
 function acpAdapter(provider: AcpProviderId): Adapter {
   return {
     binary: ACP_AGENTS[provider].binary,
     argv: () => [...ACP_AGENTS[provider].argv],
     parse: acpEnvelope,
-    defaultRunner: refuseAcpRunner,
+    defaultRunner: runAcpSession,
     extraOmitEnv: foreignCredentialEnv(provider),
     clampTimeout: (_phase, requested) => requested,
   };

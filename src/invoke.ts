@@ -19,7 +19,8 @@
 
 import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
-import { isKeyedProvider } from "./acp-agents.js";
+import { ACP_AGENTS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
+import { verifyLaunch } from "./acp-attest.js";
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
@@ -261,7 +262,8 @@ export async function invokeAgent(
   // Tier-2 attestation (A2/B3): the authoritative check, immediately
   // before the spawn it authorizes. Tier-1 providers return null here and
   // keep their road byte-identical.
-  const attested = await attestProvider(spec.provider, adapter.binary, options.versionProbe);
+  // An ACP agent is admitted by its own record (acp-attest.ts), read below; the version ranges are for the others.
+  const attested = isAcpProvider(spec.provider) ? null : await attestProvider(spec.provider, adapter.binary, options.versionProbe);
   if (attested !== null && !attested.ok) {
     if (attested.version !== null) store.stampProviderVersion(runId, attested.version);
     return {
@@ -270,6 +272,19 @@ export async function invokeAgent(
       providerVersion: attested.version,
       diagnostic: attested.problem,
     };
+  }
+
+  // AN ACP AGENT'S ADMISSION (docs/plans/acp-adapter.md § Admission): a passed conformance check of the exact binary
+  // on this runner, or nothing runs — absence is denial. It builds and repairs only, on a model it offered when it was
+  // checked, and no dollar cap rides it (it can't hold one; the scheduler refuses capped work first, this is the belt).
+  const acpAttestation = isAcpProvider(spec.provider) ? store.acpAttestationFor(spec.provider, run.runner) : null;
+  if (isAcpProvider(spec.provider)) {
+    const name = ACP_AGENTS[spec.provider].name;
+    const refuse = (diagnostic: string): InvokeResult => ({ kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation?.agent.version ?? null, diagnostic });
+    if (acpAttestation === null) return refuse(`${name} isn't checked on ${run.runner} — run \`toolroll agents check ${spec.provider}\` there`);
+    if (invocation.phase !== "build" && invocation.phase !== "repair") return refuse(`${name} builds and repairs only`);
+    if (spec.model === null || !acpAttestation.models.includes(spec.model)) return refuse(`${name} didn't offer ${spec.model ?? "a model"} when it was checked — check it again, or choose one it offered`);
+    if (invocation.maxBudgetUsd !== undefined) return refuse(`${name} can't hold a dollar cap, so it doesn't run capped work (budget-unenforceable)`);
   }
 
   // Auth mode decides how the credential reaches the process (the operator
@@ -395,6 +410,13 @@ export async function invokeAgent(
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
+  // An ACP agent runs only inside the OS fence: nothing else holds it (it may run commands without asking).
+  if (isAcpProvider(spec.provider) && fenced.method !== "macos-sandbox" && fenced.method !== "linux-bubblewrap") {
+    tools?.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: acpAttestation?.agent.version ?? null, diagnostic: `${ACP_AGENTS[spec.provider].name} runs only inside the OS fence (the macOS sandbox or bubblewrap), and this launch has neither (fence-unavailable)` };
+  }
   // The tools were chosen for the fence decided above: a launch that got any other starts nothing.
   // Only a prepared project-tool broker depends on the earlier decision. Empty Claude configs also have a privateDir.
   if (tools?.serverPids !== undefined && fenced.method !== containment.fence) {
@@ -466,6 +488,8 @@ export async function invokeAgent(
     },
     ...(stdin === undefined ? {} : { stdin }),
     ...(liveInput === null ? {} : { liveInput }),
+    // One ACP conversation: the brief, the sealed model, and who the check says the agent is.
+    ...(acpAttestation === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation.agent, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }) } }),
     ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
     ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
     ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
@@ -576,7 +600,15 @@ export async function invokeAgent(
       };
     }
 
+    // The ACP launch re-proved HERE, after every await: each bound file is still the one that passed its check.
+    if (acpAttestation !== null) {
+      const verified = verifyLaunch(acpAttestation.launch);
+      if (!verified.ok) {
+        return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: verified.problem };
+      }
+    }
     if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
+    else if (acpAttestation !== null) store.stampProviderStart(runId, clock(), acpAttestation.agent.version);
     else store.stampProviderStart(runId, clock());
     // The brief is queued only once the checkout has passed the fence check.
     liveInput?.begin(invocation.brief);
@@ -585,7 +617,10 @@ export async function invokeAgent(
     // provider runs, and a stop kills THIS run's process group through the
     // handle registered under its owner tag — the exact-attempt road,
     // never the global sweep. Settlement then reads the same row.
-    result = await underStopWatch(store, runId, () => spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions));
+    // An ACP agent starts through its attested launch (the pinned interpreter for a script), never a PATH lookup.
+    result = await underStopWatch(store, runId, () => acpAttestation !== null
+      ? spawn(acpAttestation.launch.file, [...acpAttestation.launch.prefix, ...launchArgv], launchOptions)
+      : spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions));
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
@@ -605,6 +640,7 @@ export async function invokeAgent(
   store.fixRunBilling(runId, authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle), new Date());
 
   const envelope = adapter.parse(result.stdout);
+  store.stampAgentReportedUsage(runId, envelope.agentReportedUsage ?? null);
   // An installed CLI too old for a build's own setup refuses its flags
   // before it starts: nothing ran, and the run says what to update.
   const unsupported = result.code !== 0 && envelope.initObserved !== true && invocation.phase !== "review" ? isolationUnsupported(spec.provider, result.stderr) : null;

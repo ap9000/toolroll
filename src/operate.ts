@@ -1,5 +1,6 @@
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
+import { verifyLaunch } from "./acp-attest.js";
 import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
@@ -3010,8 +3011,15 @@ async function tickCommand(
       : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
     let unattestedLane: string | null = null;
     for (const candidate of new Set(skipProviders)) {
-      // An ACP agent is always attested (absence is denial); every other tier-1 provider has no range.
-      if (attestationOf(candidate) === null && !isAcpProvider(candidate)) continue;
+      // An ACP agent is admitted by its own check on this runner (absence is denial), read here the way the gateway reads it.
+      if (isAcpProvider(candidate)) {
+        const checked = store.acpAttestationFor(candidate, runner);
+        const verified = checked === null ? null : verifyLaunch(checked.launch);
+        if (checked === null) { unattestedLane = `${ACP_AGENTS[candidate].name} isn't checked on ${runner} — run \`toolroll agents check ${candidate}\` there`; break; }
+        if (verified !== null && !verified.ok) { unattestedLane = verified.problem; break; }
+        continue;
+      }
+      if (attestationOf(candidate) === null) continue;
       let verdict = attestedThisPass.get(candidate);
       if (verdict === undefined) {
         verdict = await attestProvider(candidate, inspectionOf(candidate).binary);
@@ -4957,7 +4965,7 @@ async function providersCommand(
     if (runnerName === undefined || runnerToken === undefined) {
       return fail(write, json, "providers", "usage", "`toolroll providers --report --runner <name> --token <t>` records readiness under that runner", EXIT.usage);
     }
-    const observed = await observeProviderReadiness((file, args, options) => probe(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }));
+    const observed = await observeProviderReadiness((file, args, options) => probe(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName));
     const reported = reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, context.clock());
     if (!reported.ok) {
       return fail(write, json, "providers", reported.reason, describeAuth(reported.reason, runnerName), EXIT.refused);
@@ -8300,7 +8308,7 @@ async function upCommand(
   // would be a fiction.
   const observeReadiness = (): void => {
     if (context.agentRunner !== undefined) return;
-    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }))
+    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
       .then(observed => {
         if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
       })
