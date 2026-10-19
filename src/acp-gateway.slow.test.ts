@@ -178,7 +178,7 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     const result = await run("descendant");
     if (result.kind !== "ran") throw new Error(JSON.stringify(result));
     // The runner says something of the group was still alive at the reap — and the reap ended it.
-    expect(result.outcome.acp?.exit).toEqual({ how: "eof", leftover: true });
+    expect(result.outcome.acp?.exit).toEqual({ how: "eof", leftover: true, timedOut: false });
     const pid = Number(readFileSync(join(worktree, "descendant.pid"), "utf8"));
     let alive = true;
     for (let i = 0; i < 20 && alive; i += 1) {
