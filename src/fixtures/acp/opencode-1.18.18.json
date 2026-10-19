@@ -1,0 +1,215 @@
+{
+ "updates": [
+  {
+   "sessionUpdate": "available_commands_update",
+   "availableCommands": [
+    {
+     "name": "animate",
+     "description": "Build an animation from scratch, making the decisions in the order that determines whether it feels right \u2014 should it animate at all, what purpose, which tool, which properties, which curve and duration, how it interrupts, how it exits. Writes the implementation. Use when asked to animate something, add motion, make a component feel alive, or build a transition. For critiquing existing motion use review-animations; for auditing a whole codebase use improve-animations."
+    },
+    {
+     "name": "animate-expo",
+     "description": "Build animations in React Native and Expo, making the decisions in the order that determines whether they feel right \u2014 should it animate, which thread it runs on, which properties, spring or timing, how the gesture hands off, how it degrades. Writes the implementation with Reanimated, Gesture Handler, Expo Router and expo-haptics. Use when animating anything in an Expo app, adding gestures, sheets, screen transitions, press feedback or haptics, or fixing motion that stutters on device. For web animation use `animate`."
+    }
+   ]
+  },
+  {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "dc5e5b8b-fe76-430e-bca5-90b7d4f1dde8",
+   "title": "bash",
+   "kind": "execute",
+   "status": "pending",
+   "locations": [
+    {
+     "path": "<work>"
+    }
+   ],
+   "rawInput": {
+    "cwd": "<work>"
+   }
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "dc5e5b8b-fe76-430e-bca5-90b7d4f1dde8",
+   "status": "in_progress",
+   "kind": "execute",
+   "title": "ls -la",
+   "locations": [
+    {
+     "path": "<work>"
+    }
+   ],
+   "rawInput": {
+    "command": "ls -la",
+    "cwd": "<work>"
+   }
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "dc5e5b8b-fe76-430e-bca5-90b7d4f1dde8",
+   "status": "in_progress",
+   "kind": "execute",
+   "title": "ls -la",
+   "locations": [
+    {
+     "path": "<work>"
+    }
+   ],
+   "rawInput": {
+    "command": "ls -la",
+    "cwd": "<work>"
+   }
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "dc5e5b8b-fe76-430e-bca5-90b7d4f1dde8",
+   "status": "in_progress",
+   "kind": "execute",
+   "title": "ls -la",
+   "locations": [
+    {
+     "path": "<work>"
+    }
+   ],
+   "rawInput": {
+    "command": "ls -la",
+    "cwd": "<work>"
+   },
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "total 8\ndrwxr-xr-x@ 4 operator  staff  128 Oct 19 08:46 .\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 ..\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 .git\n-rw-r--r--@ 1 operator  staff    6 Oct 19 08:46 notes.txt\n"
+     }
+    }
+   ]
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "dc5e5b8b-fe76-430e-bca5-90b7d4f1dde8",
+   "status": "completed",
+   "title": "ls -la",
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "total 8\ndrwxr-xr-x@ 4 operator  staff  128 Oct 19 08:46 .\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 ..\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 .git\n-rw-r--r--@ 1 operator  staff    6 Oct 19 08:46 notes.txt\n"
+     }
+    }
+   ],
+   "rawOutput": {
+    "output": "total 8\ndrwxr-xr-x@ 4 operator  staff  128 Oct 19 08:46 .\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 ..\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 .git\n-rw-r--r--@ 1 operator  staff    6 Oct 19 08:46 notes.txt\n",
+    "metadata": {
+     "output": "total 8\ndrwxr-xr-x@ 4 operator  staff  128 Oct 19 08:46 .\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 ..\ndrwxr-xr-x@ 9 operator  staff  288 Oct 19 08:46 .git\n-rw-r--r--@ 1 operator  staff    6 Oct 19 08:46 notes.txt\n",
+     "exit": 0,
+     "truncated": false
+    }
+   }
+  }
+ ],
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": true,
+   "mcpCapabilities": {
+    "http": true,
+    "sse": true
+   },
+   "promptCapabilities": {
+    "embeddedContext": true,
+    "image": true
+   },
+   "sessionCapabilities": {
+    "close": {},
+    "fork": {},
+    "list": {},
+    "resume": {}
+   }
+  },
+  "authMethods": [
+   {
+    "description": "Run `opencode auth login` in the terminal",
+    "name": "Login with opencode",
+    "id": "opencode-login"
+   }
+  ],
+  "agentInfo": {
+   "name": "OpenCode",
+   "version": "1.18.18"
+  }
+ },
+ "session/new": {
+  "sessionId": "ses_eab27c424ffetcwIyphPwTjs6j",
+  "configOptions": [
+   {
+    "id": "model",
+    "name": "Model",
+    "category": "model",
+    "type": "select",
+    "currentValue": "opencode/big-pickle",
+    "options": [
+     {
+      "value": "google/gemini-2.5-flash",
+      "name": "Google/Gemini 2.5 Flash"
+     },
+     {
+      "value": "opencode/big-pickle",
+      "name": "OpenCode/Big Pickle"
+     }
+    ]
+   },
+   {
+    "id": "mode",
+    "name": "Session Mode",
+    "category": "mode",
+    "type": "select",
+    "currentValue": "build",
+    "options": [
+     {
+      "value": "build",
+      "name": "build",
+      "description": "The default agent. Executes tools based on configured permissions."
+     },
+     {
+      "value": "plan",
+      "name": "plan",
+      "description": "Plan mode. Disallows all edit tools."
+     }
+    ]
+   }
+  ]
+ },
+ "sessionId": "ses_eab27c424ffetcwIyphPwTjs6j",
+ "set_config_option": {
+  "configOptions": [
+   {
+    "id": "model",
+    "name": "Model",
+    "category": "model",
+    "type": "select",
+    "currentValue": "google/gemini-2.5-flash",
+    "options": [
+     {
+      "value": "google/gemini-2.5-flash",
+      "name": "Google/Gemini 2.5 Flash"
+     },
+     {
+      "value": "opencode/big-pickle",
+      "name": "Big Pickle"
+     }
+    ]
+   }
+  ]
+ },
+ "set_config_option_unknown": {
+  "code": -32602,
+  "message": "Invalid params: model not found: nope/not-a-model",
+  "data": {
+   "providerId": "nope",
+   "modelId": "nope/not-a-model"
+  }
+ },
+ "note": "Recorded 2026-10-19 against opencode 1.18.18 (ACP). Paths sanitised to <work>; model and command lists trimmed. The live prompt stalled after the command (no prompt response) - success terminals are proven against the fake agent and the conformance probe, not this file. set_config_option results recorded in a separate probe of the same binary."
+}

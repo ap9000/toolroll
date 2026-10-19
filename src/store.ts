@@ -1,3 +1,5 @@
+import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
+import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -744,7 +746,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // sealing key's record (tool_secret_key, tool_secret_legacy).
 // v124 adds, and changes no saved row: the live conversation's project setting (live_detail_setting: "Show commands in
 // the live view", absent means off) and the runs each steering note reached (steer_note_run; older notes have none).
-export const SCHEMA_VERSION = 124;
+// v125 changes no saved row: ACP agents become providers (the provider CHECKs of phase_config, phase_tier_config,
+// phase_tier_alternate and provider_readiness widen, and provider_auth_pause's auth mode admits 'agent-login'; each
+// table is rebuilt with every row and id carried over) and a run keeps what its agent itself reported it used
+// (run.agent_reported_usage_json, never priced; saved runs read none).
+export const SCHEMA_VERSION = 125;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -878,8 +884,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * table (branch_base_move) and the nullable column in V122_ADDED_COLUMNS (a project's recorded remote), checked the
  * same way. v123 only adds new tables (unattended flows, tool secrets) and the columns in V123_ADDED_COLUMNS ('mode',
  * 0 or null), checked the same way. v124 only adds new tables (the live conversation's setting and note history).
+ * v125 rebuilds five tables with wider CHECKs, every row and id carried over (the rehearsal's history rules find them
+ * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -944,6 +952,16 @@ export const V123_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
   flow_trigger_event: {
     on_time: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
     ran_script: { definition: "TEXT", saved: "NULL" },
+  },
+});
+
+/** v125: the column it adds, with the value every row saved before it reads: what a run's ACP agent itself reported it
+ * used (acp-client.ts; never priced). Runs saved before it read none. */
+export const V125_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: {
+    agent_reported_usage_json: { definition: "TEXT", saved: "NULL" },
+    // An ACP run's billing, stamped when it is admitted (AcpBillingStamp); every other run, and every saved one, none.
+    acp_billing_json: { definition: "TEXT", saved: "NULL" },
   },
 });
 
@@ -1829,7 +1847,7 @@ export type Run = {
    * How this attempt authenticated (v30) — 'subscription' or 'api-key' —
    * stamped by the gateway. Decides which exhaustion class a match yields.
    */
-  authMode?: "subscription" | "api-key" | null;
+  authMode?: "subscription" | "api-key" | "agent-login" | null;
   /**
    * The gateway's honest classification of how this attempt ENDED (v30),
    * computed where the structural terminal still exists (exhaustion.ts).
@@ -2469,7 +2487,7 @@ CREATE TABLE IF NOT EXISTS mcp_idempotency (
 CREATE TABLE IF NOT EXISTS phase_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -2485,7 +2503,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -2501,7 +2519,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
 -- substitutes for it.
 CREATE TABLE IF NOT EXISTS provider_readiness (
   runner      TEXT NOT NULL REFERENCES runner(name) ON DELETE CASCADE,
-  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   state       TEXT NOT NULL CHECK (state IN ('ready','unavailable','unknown')),
   reason      TEXT NOT NULL,
   probe       TEXT NOT NULL,
@@ -3791,7 +3809,7 @@ CREATE TABLE IF NOT EXISTS quota (
   -- key. auth_mode + a stable NON-SECRET
   -- credential fingerprint join the key. Defaults keep every pre-v30 row
   -- identical (mode 'subscription', empty fp) since that is what they were.
-  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription','api-key')),
+  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription','api-key','agent-login')),
   credential_fp TEXT NOT NULL DEFAULT '',
   state       TEXT NOT NULL CHECK (state IN ('exhausted','half-open')),
   reason      TEXT NOT NULL,
@@ -4750,6 +4768,17 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "task_ref", "route_tier", "TEXT");
   widenPhaseTierSchema(db);
   db.exec(PHASE_TIER_ALTERNATE_SCHEMA);
+  // v125: ACP agents as providers, their own sign-in as an auth mode (rows carry over, CHECKs widen; the auth schema
+  // runs again to put back the open-pause index the rebuild dropped), and what an agent itself reported it used
+  // (V125_ADDED_COLUMNS: never priced, saved runs read none).
+  widenForAcp(db);
+  db.exec(PROVIDER_AUTH_SCHEMA);
+  db.exec(ACP_ATTESTATION_SCHEMA);
+  db.exec(ACP_BILLING_SCHEMA);
+  db.exec(ACP_CHECK_SCHEMA);
+  for (const [table, columns] of Object.entries(V125_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   db.exec(REVIEW_SCHEMA);
   db.exec(RETENTION_SCHEMA);
   // 1-day evidence: an older file's retention_setting only allowed 7 days or more (no version bump: its rows carry over).
@@ -5875,13 +5904,152 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','routine','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
   PRIMARY KEY (scope, phase, tier, provider)
 );
 `;
+
+/**
+ * v125: an ACP agent's passed conformance checks (acp-attest.ts): per provider and runner, how to launch the exact
+ * binary that passed and every file that launch depends on, what the agent said it is, the models it offered and the
+ * checks it passed. At most one live row per agent and runner; revoking keeps the row as history.
+ */
+export const ACP_ATTESTATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS acp_attestation (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  runner              TEXT NOT NULL,
+  conformance_version INTEGER NOT NULL,
+  launch_json         TEXT NOT NULL,
+  agent_name          TEXT NOT NULL,
+  agent_version       TEXT NOT NULL,
+  cli_version         TEXT NOT NULL,
+  models_json         TEXT NOT NULL,
+  checks_json         TEXT NOT NULL,
+  recorded_at         TEXT NOT NULL,
+  recorded_by         TEXT NOT NULL,
+  revoked_at          TEXT,
+  revoked_by          TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS acp_attestation_live ON acp_attestation (provider, runner) WHERE revoked_at IS NULL;
+`;
+
+/**
+ * v125: how an ACP agent's work on one model is billed, per runner (docs/plans/acp-adapter.md § Billing): metered
+ * (the default, and what no row means — cost unknown, charged as unknown cost is) or the agent's own plan ($0,
+ * counted as unmeasured). Each change is a new row; the newest is the declaration, its id the revision a run stamps.
+ */
+/**
+ * v125: a requested ACP agent check (docs/plans/acp-adapter.md § Layer E): asked for with a password, claimed and run
+ * by one watch of the named runner — one running check per runner, which the partial unique index holds — through two
+ * bounded steps, each bound to its run and graded on plane evidence; the attestation is recorded only in the same
+ * transaction that marks the request passed.
+ */
+export const ACP_CHECK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS acp_check_request (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  runner              TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  conformance_version INTEGER NOT NULL,
+  requested_by        TEXT NOT NULL,
+  requested_at        TEXT NOT NULL,
+  expires_at          TEXT NOT NULL,
+  state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','running','passed','failed','expired')),
+  watch_repo          TEXT,
+  watch_owner         TEXT,
+  task_ref            INTEGER REFERENCES task_ref(id),
+  launch_json         TEXT,
+  lease_id            TEXT,
+  steps_used          INTEGER NOT NULL DEFAULT 0 CHECK (steps_used BETWEEN 0 AND 2),
+  step1_run           INTEGER REFERENCES run(id),
+  step2_run           INTEGER REFERENCES run(id),
+  step1_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step1_passed IN (0,1)),
+  step2_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step2_passed IN (0,1)),
+  result              TEXT,
+  finished_at         TEXT,
+  settled_at          TEXT,
+  settle_by           TEXT,
+  settle_until        TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS acp_check_running ON acp_check_request (runner) WHERE state = 'running';
+`;
+
+/** A check request as the job and the screens read it. */
+export type AcpCheckRequest = {
+  id: number; provider: string; runner: string; model: string; conformanceVersion: number;
+  requestedBy: string; requestedAt: string; expiresAt: string;
+  state: "pending" | "running" | "passed" | "failed" | "expired";
+  watch: { repo: string; owner: string } | null; taskRef: number | null; launchJson: string | null;
+  /** The claim the check took on its task: the only one its cleanup may release. */
+  leaseId: string | null;
+  stepsUsed: number; step1Run: number | null; step2Run: number | null; step1Passed: boolean; step2Passed: boolean;
+  result: string | null; finishedAt: string | null;
+  /** When everything the finished check held (claim, checkout, task) was let go. */
+  settledAt: string | null;
+};
+
+export const ACP_BILLING_SCHEMA = `
+CREATE TABLE IF NOT EXISTS acp_billing (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider  TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  runner    TEXT NOT NULL,
+  model     TEXT NOT NULL,
+  kind      TEXT NOT NULL CHECK (kind IN ('metered','plan')),
+  set_at    TEXT NOT NULL,
+  set_by    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS acp_billing_by ON acp_billing (provider, runner, model, id);
+`;
+
+/** An ACP run's billing as stamped when the run was admitted: never re-read from the live declaration. */
+export type AcpBillingStamp = { kind: "metered" | "plan"; revision: number; model: string };
+
+/** An ACP agent's live attestation, as the gateway reads it. */
+export type AcpAttestation = {
+  id: number;
+  provider: string;
+  runner: string;
+  conformanceVersion: number;
+  launch: AcpLaunch;
+  agent: { name: string; version: string };
+  cliVersion: string;
+  models: string[];
+  checks: string[];
+  recordedAt: string;
+  recordedBy: string;
+};
+
+/** The provider CHECK before ACP agents joined (acp-agents.ts), and after: the same list, five ids longer. */
+const PROVIDERS_BEFORE_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini'))";
+const PROVIDERS_WITH_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose'))";
+/** The sign-in pause's auth mode before an ACP agent's own sign-in ('agent-login'), and after. */
+const AUTH_MODES_BEFORE_ACP = "CHECK (auth_mode IN ('subscription', 'api-key'))";
+const AUTH_MODES_WITH_ACP = "CHECK (auth_mode IN ('subscription', 'api-key', 'agent-login'))";
+
+/**
+ * v125: ACP agents as providers (docs/plans/acp-adapter.md): every row carries over whole, the CHECKs only widen. Each table whose stored DDL still has the old list is rebuilt with the wider one, through rebuildExact — the
+ * stored DDL must be exactly a known shape with the old clause appearing once, or the open refuses. Indexes the rebuild
+ * drops are put back by their own schema's IF NOT EXISTS, which the caller runs again after.
+ */
+function widenForAcp(db: Database): void {
+  const widen = (table: string, before: string, after: string) => {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+    if (row === undefined) return;
+    const stored = String(row["sql"]);
+    if (stored.includes(after)) return;
+    if (stored.split(before).length !== 2) throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to widen it`);
+    const named = (sql: string) => (name: string) => sql.replace(new RegExp(`^CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`), `CREATE TABLE ${name}`);
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"]));
+    rebuildExact(db, table, named(stored), named(stored.replace(before, after)), columns);
+  };
+  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) widen(table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP);
+  widen("provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
+  widen("quota", "CHECK (auth_mode IN ('subscription','api-key'))", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))");
+}
 
 /** A file from before the light tier keeps `tier IN ('strong')` in phase_tier_config's CHECK: rebuild the table with
  * the wider one, keeping every row, in one transaction. A file already widened is untouched. */
@@ -5894,7 +6062,7 @@ function widenPhaseTierSchema(db: Database): void {
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -7649,6 +7817,7 @@ export class Store {
             ? { ...profile, permissionArgv: "bypassPermissions" }
             : profile.provider === "gemini"
               ? { ...profile, approvalArgv: "yolo" }
+              : isAcpProfile(profile) ? profile
               : { ...profile, sandboxMode: "danger-full-access" };
       }
       // Anything still above the ceiling files at the highest level beneath it its provider has; a provider with none
@@ -14342,6 +14511,11 @@ export class Store {
         reviewAttempt,
       );
     const id = Number(inserted.lastInsertRowid);
+    // An ACP run's billing is the declaration standing for its runner and model NOW, stamped with the row it bills:
+    // settlement reads this stamp, never the live declaration (docs/plans/acp-adapter.md § Billing).
+    if (provider !== undefined && provider !== null && isAcpProvider(provider) && model !== null) {
+      this.db.prepare("UPDATE run SET acp_billing_json = ? WHERE id = ?").run(JSON.stringify(this.acpBillingFor(provider, run.runner, model)), id);
+    }
     // The attempt key (Agents board): opaque, minted with the row, and the only key its stream state is recorded under.
     this.db.prepare("UPDATE run SET attempt_key = ? WHERE id = ?").run(mintAttemptKey(), id);
     // The provenance row lands in the same transaction as the run row —
@@ -14826,7 +15000,233 @@ export class Store {
    * structural signal is gone. `auth-expired` pauses its provider; every
    * other class is observational.
    */
-  stampTerminalClass(id: number, authMode: "subscription" | "api-key", terminalClass: TerminalClass): void {
+  /**
+   * Record an ACP agent's passed conformance check on a runner (acp-attest.ts), replacing the live one — one
+   * transaction, so there is never a moment with two or with a gap that reads as the old one.
+   */
+  recordAcpAttestation(input: Omit<AcpAttestation, "id" | "recordedAt" | "conformanceVersion"> & { conformanceVersion?: number }, now: Date): number {
+    return this.transact(() => {
+      this.db.prepare("UPDATE acp_attestation SET revoked_at = ?, revoked_by = ? WHERE provider = ? AND runner = ? AND revoked_at IS NULL")
+        .run(now.toISOString(), `${input.recordedBy} (checked again)`, input.provider, input.runner);
+      const inserted = this.db.prepare(`INSERT INTO acp_attestation (provider, runner, conformance_version, launch_json, agent_name, agent_version, cli_version, models_json, checks_json, recorded_at, recorded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        input.provider, input.runner, input.conformanceVersion ?? ACP_CONFORMANCE_VERSION, JSON.stringify(input.launch), input.agent.name, input.agent.version,
+        input.cliVersion, JSON.stringify(input.models), JSON.stringify(input.checks), now.toISOString(), input.recordedBy,
+      );
+      return Number(inserted.lastInsertRowid);
+    });
+  }
+
+  /** An ACP agent's live attestation on a runner, under this build's conformance version; null when there is none. */
+  acpAttestationFor(provider: string, runner: string): AcpAttestation | null {
+    const row = this.db.prepare("SELECT * FROM acp_attestation WHERE provider = ? AND runner = ? AND revoked_at IS NULL").get(provider, runner);
+    if (row === undefined || Number(row["conformance_version"]) !== ACP_CONFORMANCE_VERSION) return null;
+    const launch = launchFromJson(String(row["launch_json"]));
+    const list = (json: unknown): string[] | null => {
+      try { const value: unknown = JSON.parse(String(json)); return Array.isArray(value) && value.every(one => typeof one === "string") ? value as string[] : null; } catch { return null; }
+    };
+    const models = list(row["models_json"]);
+    const checks = list(row["checks_json"]);
+    if (launch === null || models === null || checks === null) return null;
+    return {
+      id: Number(row["id"]), provider: String(row["provider"]), runner: String(row["runner"]), conformanceVersion: Number(row["conformance_version"]),
+      launch, agent: { name: String(row["agent_name"]), version: String(row["agent_version"]) }, cliVersion: String(row["cli_version"]),
+      models, checks, recordedAt: String(row["recorded_at"]), recordedBy: String(row["recorded_by"]),
+    };
+  }
+
+  /** Declare how an ACP agent's work on one model is billed on a runner; the new revision. */
+  declareAcpBilling(input: { provider: string; runner: string; model: string; kind: "metered" | "plan"; by: string }, now: Date): number {
+    return Number(this.db.prepare("INSERT INTO acp_billing (provider, runner, model, kind, set_at, set_by) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(input.provider, input.runner, input.model, input.kind, now.toISOString(), input.by).lastInsertRowid);
+  }
+
+  /** The billing declaration standing for an ACP agent's model on a runner: metered, revision 0, when none was made. */
+  acpBillingFor(provider: string, runner: string, model: string): AcpBillingStamp {
+    const row = this.db.prepare("SELECT id, kind FROM acp_billing WHERE provider = ? AND runner = ? AND model = ? ORDER BY id DESC LIMIT 1").get(provider, runner, model);
+    return row === undefined ? { kind: "metered", revision: 0, model } : { kind: row["kind"] === "plan" ? "plan" : "metered", revision: Number(row["id"]), model };
+  }
+
+  /** The billing an ACP run was admitted under, or null (not an ACP run, or unreadable — then it is metered). */
+  acpBillingOfRun(runId: number): AcpBillingStamp | null {
+    const raw = this.db.prepare("SELECT acp_billing_json FROM run WHERE id = ?").get(runId)?.["acp_billing_json"];
+    if (typeof raw !== "string") return null;
+    try {
+      const value = JSON.parse(raw) as Record<string, unknown>;
+      if ((value["kind"] === "metered" || value["kind"] === "plan") && typeof value["revision"] === "number" && typeof value["model"] === "string") {
+        return { kind: value["kind"], revision: value["revision"], model: value["model"] };
+      }
+    } catch { /* unreadable: metered */ }
+    return null;
+  }
+
+  /** Ask for an ACP agent check on a runner (the caller proved the password); the request's id. Valid 30 minutes. */
+  requestAcpCheck(input: { provider: string; runner: string; model: string; by: string }, now: Date): number {
+    return Number(this.db.prepare(`INSERT INTO acp_check_request (provider, runner, model, conformance_version, requested_by, requested_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(input.provider, input.runner, input.model, ACP_CONFORMANCE_VERSION, input.by, now.toISOString(),
+      new Date(now.getTime() + 30 * 60_000).toISOString()).lastInsertRowid);
+  }
+
+  acpCheck(id: number): AcpCheckRequest | null {
+    const row = this.db.prepare("SELECT * FROM acp_check_request WHERE id = ?").get(id);
+    return row === undefined ? null : readAcpCheck(row);
+  }
+
+  /** The checks asked for an agent, newest first (for the providers screen). */
+  acpChecksFor(provider: string, limit = 10): AcpCheckRequest[] {
+    return this.db.prepare("SELECT * FROM acp_check_request WHERE provider = ? ORDER BY id DESC LIMIT ?").all(provider, limit).map(readAcpCheck);
+  }
+
+  /** The SQL that proves a watch still holds its lease (runner, repo, owner) at `?` — appended with its bindings. */
+  private static readonly WATCH_LIVE = "EXISTS (SELECT 1 FROM watch_lease w WHERE w.runner = acp_check_request.runner AND w.repo = acp_check_request.watch_repo AND w.owner = acp_check_request.watch_owner AND w.expires_at > ?)";
+
+  /**
+   * Claim the oldest pending, unexpired check for this runner, for the watch that will run it — one statement; the
+   * partial unique index refuses a second running check on the runner. Null when there is none (or another runs).
+   */
+  claimAcpCheck(runner: string, watch: { repo: string; owner: string }, now: Date): AcpCheckRequest | null {
+    const at = now.toISOString();
+    try {
+      const claimed = this.db.prepare(`UPDATE acp_check_request SET state = 'running', watch_repo = ?, watch_owner = ?
+        WHERE id = (SELECT id FROM acp_check_request WHERE runner = ? AND state = 'pending' AND expires_at > ? ORDER BY id LIMIT 1)
+          AND EXISTS (SELECT 1 FROM watch_lease w WHERE w.runner = ? AND w.repo = ? AND w.owner = ? AND w.expires_at > ?)
+        RETURNING id`).get(watch.repo, watch.owner, runner, at, runner, watch.repo, watch.owner, at);
+      return claimed === undefined ? null : this.acpCheck(Number(claimed["id"]));
+    } catch (error) {
+      if (/UNIQUE constraint failed/.test(String(error))) return null;
+      throw error;
+    }
+  }
+
+  /** Bind a running check, still owned and unexpired, to its task and the launch it inspected. */
+  bindAcpCheck(id: number, binding: { taskRef: number; launchJson: string; leaseId: string }, now: Date): boolean {
+    const at = now.toISOString();
+    return Number(this.db.prepare(`UPDATE acp_check_request SET task_ref = ?, launch_json = ?, lease_id = ?
+      WHERE id = ? AND state = 'running' AND expires_at > ? AND task_ref IS NULL AND ${Store.WATCH_LIVE}`).run(binding.taskRef, binding.launchJson, binding.leaseId, id, at, at).changes) === 1;
+  }
+
+  /** Consume step 1 or 2 for its run: in order, once, owned, unexpired. */
+  consumeAcpCheckStep(id: number, step: 1 | 2, runId: number, now: Date): boolean {
+    const at = now.toISOString();
+    const column = step === 1 ? "step1_run" : "step2_run";
+    return Number(this.db.prepare(`UPDATE acp_check_request SET steps_used = ?, ${column} = ?
+      WHERE id = ? AND state = 'running' AND steps_used = ? AND ${column} IS NULL AND expires_at > ? AND ${Store.WATCH_LIVE}
+        ${step === 2 ? "AND step1_passed = 1" : ""}`).run(step, runId, id, step - 1, at, at).changes) === 1;
+  }
+
+  /** Record a step as passed, once its grading did: owned, unexpired, and only for the run the step was bound to. */
+  passAcpCheckStep(id: number, step: 1 | 2, runId: number, now: Date): boolean {
+    const at = now.toISOString();
+    const run = step === 1 ? "step1_run" : "step2_run";
+    const passed = step === 1 ? "step1_passed" : "step2_passed";
+    return Number(this.db.prepare(`UPDATE acp_check_request SET ${passed} = 1
+      WHERE id = ? AND state = 'running' AND ${run} = ? AND ${passed} = 0 AND expires_at > ? AND ${Store.WATCH_LIVE}`).run(id, runId, at, at).changes) === 1;
+  }
+
+  /**
+   * Publish a passed check: in one transaction, the request moves to passed — only if it is still running, unexpired,
+   * owned by its live watch, with both steps used, bound and passed, and both their runs finished as agent-check
+   * refusals — and the attestation is recorded. Anything else publishes nothing.
+   */
+  publishAcpCheck(id: number, attestation: Omit<AcpAttestation, "id" | "recordedAt" | "conformanceVersion">, now: Date): boolean {
+    const at = now.toISOString();
+    return this.transact(() => {
+      // The attestation must be for this request's agent and runner, and offer the model it was checked on.
+      const request = this.acpCheck(id);
+      if (request === null || request.provider !== attestation.provider || request.runner !== attestation.runner || !attestation.models.includes(request.model)) return false;
+      const moved = Number(this.db.prepare(`UPDATE acp_check_request SET state = 'passed', finished_at = ?, result = 'passed'
+        WHERE id = ? AND state = 'running' AND expires_at > ? AND ${Store.WATCH_LIVE}
+          AND steps_used = 2 AND step1_passed = 1 AND step2_passed = 1 AND conformance_version = ?
+          AND (SELECT COUNT(*) FROM run r WHERE r.id IN (step1_run, step2_run) AND r.task_ref = acp_check_request.task_ref
+               AND r.outcome = 'refused' AND r.reason = 'agent-check' AND r.finished_at IS NOT NULL) = 2`)
+        .run(at, id, at, at, ACP_CONFORMANCE_VERSION).changes);
+      if (moved !== 1) return false;
+      this.recordAcpAttestation(attestation, now);
+      return true;
+    });
+  }
+
+  /** The check request, when it still admits this run as its current step: running, unexpired, its watch's lease
+   * live, and the step bound to exactly this run. Null otherwise. */
+  acpCheckAdmitting(id: number, step: 1 | 2, runId: number, now: Date): AcpCheckRequest | null {
+    const at = now.toISOString();
+    const row = this.db.prepare(`SELECT * FROM acp_check_request WHERE id = ? AND state = 'running' AND expires_at > ? AND ${Store.WATCH_LIVE}
+      AND steps_used = ? AND ${step === 1 ? "step1_run" : "step2_run"} = ?`).get(id, at, at, step, runId);
+    return row === undefined ? null : readAcpCheck(row);
+  }
+
+  /** Fail a check that hasn't finished, with its words. */
+  failAcpCheck(id: number, words: string, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET state = 'failed', result = ?, finished_at = ? WHERE id = ? AND state IN ('pending','running')")
+      .run(words.slice(0, 2000), now.toISOString(), id).changes) === 1;
+  }
+
+  /** Running checks on this runner no live watch holds any more, or past their time: the ones recovery may close. */
+  abandonedAcpChecks(runner: string, now: Date): AcpCheckRequest[] {
+    const at = now.toISOString();
+    return this.db.prepare(`SELECT * FROM acp_check_request WHERE runner = ? AND state = 'running' AND (expires_at <= ? OR NOT ${Store.WATCH_LIVE})`)
+      .all(runner, at, at).map(readAcpCheck);
+  }
+
+  /** Finished checks on this runner whose claim, checkout and task are not yet let go: cleanup's to-do, retried each pass. */
+  unsettledAcpChecks(runner: string): AcpCheckRequest[] {
+    return this.db.prepare("SELECT * FROM acp_check_request WHERE runner = ? AND state IN ('passed','failed') AND settled_at IS NULL ORDER BY id").all(runner).map(readAcpCheck);
+  }
+
+  /** The claim a finished check's cleanup now holds on its task (its first one expired): the only one it may release. */
+  setAcpCheckLease(id: number, leaseId: string): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET lease_id = ? WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL").run(leaseId, id).changes) === 1;
+  }
+
+  /** A finished check holds something again (a checkout that landed after recovery settled it): cleanup reopens. */
+  unsettleAcpCheck(id: number): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET settled_at = NULL WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NOT NULL").run(id).changes) === 1;
+  }
+
+  /** Take — or renew — the one cleanup attempt a finished check may have at a time: free, lapsed, or already this one. */
+  holdAcpSettle(id: number, attempt: string, now: Date, ttlMs: number): boolean {
+    const at = now.toISOString();
+    return Number(this.db.prepare(`UPDATE acp_check_request SET settle_by = ?, settle_until = ?
+      WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL AND (settle_by IS NULL OR settle_by = ? OR settle_until <= ?)`)
+      .run(attempt, new Date(now.getTime() + ttlMs).toISOString(), id, attempt, at).changes) === 1;
+  }
+
+  /** Whether this cleanup attempt still holds the check. */
+  holdsAcpSettle(id: number, attempt: string, now: Date): boolean {
+    return this.db.prepare("SELECT 1 FROM acp_check_request WHERE id = ? AND settle_by = ? AND settle_until > ?").get(id, attempt, now.toISOString()) !== undefined;
+  }
+
+  /** Let go of a cleanup attempt (only this one). */
+  endAcpSettle(id: number, attempt: string): void {
+    this.db.prepare("UPDATE acp_check_request SET settle_by = NULL, settle_until = NULL WHERE id = ? AND settle_by = ?").run(id, attempt);
+  }
+
+  /** Mark a finished check's holdings let go — by the attempt holding it, and only if no checkout of its branch is
+   * left (one that landed late keeps it open, whatever the attempt last saw). */
+  settleAcpCheck(id: number, attempt: string, branch: string, now: Date): boolean {
+    return Number(this.db.prepare(`UPDATE acp_check_request SET settled_at = ?, settle_by = NULL, settle_until = NULL
+      WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL AND settle_by = ? AND settle_until > ?
+        AND NOT EXISTS (SELECT 1 FROM worktree w WHERE w.task_ref = acp_check_request.task_ref AND w.branch = ?)`)
+      .run(now.toISOString(), id, attempt, now.toISOString(), branch).changes) === 1;
+  }
+
+  /** Pending checks past their time are expired, untouched. */
+  expireAcpChecks(now: Date): number {
+    return Number(this.db.prepare("UPDATE acp_check_request SET state = 'expired', finished_at = ? WHERE state = 'pending' AND expires_at <= ?").run(now.toISOString(), now.toISOString()).changes);
+  }
+
+  /** Revoke an ACP agent's live attestation on a runner; whether there was one. */
+  revokeAcpAttestation(provider: string, runner: string, by: string, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE acp_attestation SET revoked_at = ?, revoked_by = ? WHERE provider = ? AND runner = ? AND revoked_at IS NULL").run(now.toISOString(), by, provider, runner).changes) > 0;
+  }
+
+  /** What a run's ACP agent itself reported it used (never priced; acp-client.ts). */
+  stampAgentReportedUsage(id: number, usage: string | null): void {
+    if (usage === null) return;
+    this.db.prepare("UPDATE run SET agent_reported_usage_json = ? WHERE id = ?").run(usage.slice(0, 8192), id);
+  }
+
+  stampTerminalClass(id: number, authMode: "subscription" | "api-key" | "agent-login", terminalClass: TerminalClass): void {
     // FIRST-WRITE only (Codex E2/E3 review, finding 8): the gateway stamps
     // the disposal class exactly once, before disposition; nothing may
     // overwrite it into a class/auth pairing the recognizer never produced.
@@ -14878,7 +15278,10 @@ export class Store {
     const row = this.db.prepare("SELECT run.provider, run.model, run.cost_usd, run.tokens_in, run.tokens_out, run.auth_mode, s.billing FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?").get(id);
     if (row === undefined) return;
     // How the run is billed is fixed the first time it's settled (its chain entry's, or the provider's login or key).
+    // An ACP run is billed as its stamp says: its agent's own plan reads as a plan ($0), anything else as metered.
+    const acpStamp = isAcpProvider(String(row["provider"])) ? this.acpBillingOfRun(id) : null;
     const billing: Billing = row["billing"] === "subscription" || row["billing"] === "api-key" ? row["billing"]
+      : isAcpProvider(String(row["provider"])) ? (acpStamp?.kind === "plan" ? "subscription" : "api-key")
       : row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" ? row["auth_mode"] : billingOf(String(row["provider"]), this.db);
     const priced = priceWork(this.db, { provider: String(row["provider"]), model: row["model"] == null ? null : String(row["model"]), billing,
       costUsd: row["cost_usd"] == null ? null : Number(row["cost_usd"]), tokensIn: row["tokens_in"] == null ? null : Number(row["tokens_in"]), tokensOut: row["tokens_out"] == null ? null : Number(row["tokens_out"]) });
@@ -15161,6 +15564,16 @@ export class Store {
       if (blind !== undefined) return { over: mine[0]!, why: "unpriced", unpricedProvider: blind.provider, remainingMicrousd: remaining };
       return { ...none, remainingMicrousd: remaining };
     };
+  }
+
+  /** How one agent would bill new work now: an ACP agent by its declaration for that exact model on that runner
+   * (plan reads as a plan, anything else as metered), every other provider as agentsFor says. */
+  agentFor(provider: string, model: string | null, runner: string | null): BudgetAgent {
+    if (isAcpProvider(provider)) {
+      const declared = model === null || runner === null ? null : this.acpBillingFor(provider, runner, model);
+      return { provider, billing: declared?.kind === "plan" ? "subscription" : "api-key" };
+    }
+    return this.agentsFor([provider])[0]!;
   }
 
   /** How each provider would bill new work now (see spend.billingOf). */
@@ -19243,7 +19656,7 @@ export class Store {
     handoff: string | null;
     costUsd: number | null;
     provider: string | null;
-    authMode: "subscription" | "api-key" | null;
+    authMode: "subscription" | "api-key" | "agent-login" | null;
     ranMinutes: number | null;
     prNumber: number | null;
     prUrl: string | null;
@@ -19296,7 +19709,7 @@ export class Store {
         costUsd: row["cost_usd"] === null ? null : Number(row["cost_usd"]),
         provider: row["provider"] === null || row["provider"] === undefined ? null : String(row["provider"]),
         authMode:
-          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key"
+          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" || row["auth_mode"] === "agent-login"
             ? row["auth_mode"]
             : null,
         ranMinutes:
@@ -19342,7 +19755,7 @@ export class Store {
     startedAt: string;
     ranMinutes: number | null;
     costUsd: number | null;
-    authMode: "subscription" | "api-key" | null;
+    authMode: "subscription" | "api-key" | "agent-login" | null;
     prNumber: number | null;
     prUrl: string | null;
   }[] {
@@ -19381,7 +19794,7 @@ export class Store {
             : Math.max(1, Math.round((new Date(String(row["finished_at"])).getTime() - new Date(String(row["started_at"])).getTime()) / 60_000)),
         costUsd: row["cost_usd"] === null ? null : Number(row["cost_usd"]),
         authMode:
-          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key"
+          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" || row["auth_mode"] === "agent-login"
             ? row["auth_mode"]
             : null,
         prNumber: row["pr_number"] === null || row["pr_number"] === undefined ? null : Number(row["pr_number"]),
@@ -20319,6 +20732,12 @@ export class Store {
       .run(runId, hostname(), group ? 1 : 0, now.toISOString(), currentBootId()).lastInsertRowid);
   }
 
+  /** The run's process witnesses not yet proved exited — after first saving whatever exit evidence is available. */
+  openRunProcessCount(runId: number, now: Date): number {
+    this.recordRunProcessExits(runId, now);
+    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM run_process WHERE run = ? AND exited_at IS NULL").get(runId) as { n: number }).n);
+  }
+
   /** Save positive OS exit evidence while it is available, before a numeric
    * PID can be reused. Completion, missing ancestry and age prove nothing.
    * Existing rows stay intact; only a previously unknown exit is recorded.
@@ -20646,7 +21065,7 @@ export class Store {
 
   /** Record that a credential ran dry — from a structured signal or an operator, never prose. */
   stampQuota(
-    quota: { runner: string; provider: string; scope?: string; reason: string; resetAt?: Date; authMode?: "subscription" | "api-key"; credentialFp?: string },
+    quota: { runner: string; provider: string; scope?: string; reason: string; resetAt?: Date; authMode?: "subscription" | "api-key" | "agent-login"; credentialFp?: string },
     now: Date,
   ): void {
     this.db
@@ -20678,7 +21097,7 @@ export class Store {
     provider: string,
     scope: string,
     now: Date,
-    authMode: "subscription" | "api-key" = "subscription",
+    authMode: "subscription" | "api-key" | "agent-login" = "subscription",
     credentialFp = "",
   ): { state: "exhausted" | "half-open"; reason: string; resetAt: string | null } | null {
     const stamp = now.toISOString();
@@ -20708,7 +21127,7 @@ export class Store {
     provider: string,
     scope: string,
     now: Date,
-    authMode: "subscription" | "api-key" = "subscription",
+    authMode: "subscription" | "api-key" | "agent-login" = "subscription",
     credentialFp = "",
   ): { state: "exhausted" | "half-open"; reason: string; resetAt: string | null } | null {
     const row = this.db
@@ -20731,7 +21150,7 @@ export class Store {
    * while the probe flies. The probe's success clears the row; the same
    * structured signal that stamped it re-stamps on failure.
    */
-  consumeHalfOpen(runner: string, provider: string, scope: string, now: Date, authMode: "subscription" | "api-key" = "subscription", credentialFp = ""): boolean {
+  consumeHalfOpen(runner: string, provider: string, scope: string, now: Date, authMode: "subscription" | "api-key" | "agent-login" = "subscription", credentialFp = ""): boolean {
     const { changes } = this.db
       .prepare(
         `UPDATE quota SET state = 'exhausted', reset_at = ?
@@ -20742,7 +21161,7 @@ export class Store {
   }
 
   /** A structured all-clear (or an operator's), by name. */
-  clearQuota(runner: string, provider: string, scope: string, authMode: "subscription" | "api-key" = "subscription", credentialFp = ""): boolean {
+  clearQuota(runner: string, provider: string, scope: string, authMode: "subscription" | "api-key" | "agent-login" = "subscription", credentialFp = ""): boolean {
     const { changes } = this.db
       .prepare("DELETE FROM quota WHERE runner = ? AND provider = ? AND scope = ? AND auth_mode = ? AND credential_fp = ?")
       .run(runner, provider, scope, authMode, credentialFp);
@@ -21766,7 +22185,7 @@ function readRun(row: Record<string, unknown>): Run {
           ? (String(row["phase"]) as RunPhase)
           : null,
     // An auth mode is exactly one of the two words — anything else reads as unknown.
-    authMode: row["auth_mode"] === "api-key" ? "api-key" : row["auth_mode"] === "subscription" ? "subscription" : null,
+    authMode: row["auth_mode"] === "api-key" ? "api-key" : row["auth_mode"] === "subscription" ? "subscription" : row["auth_mode"] === "agent-login" ? "agent-login" : null,
     terminalClass:
       row["terminal_class"] === null || row["terminal_class"] === undefined
         ? null
@@ -22604,6 +23023,7 @@ export function permissionModeOfProfile(profile: ExecutionProfile | null): Unatt
   if (profile === null) return null;
   if (profile.provider === "claude") return profile.permissionArgv === "bypassPermissions" ? "bypassPermissions" : "auto";
   if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? "bypassPermissions" : "auto";
+  if (isAcpProfile(profile)) return "bypassPermissions";
   return profile.sandboxMode === "danger-full-access" ? "bypassPermissions" : "auto";
 }
 
@@ -22971,4 +23391,21 @@ function readGrant(row: Record<string, unknown>): BackendGrant {
 export type VerifiedAuthor = string & { readonly __verifiedAuthor: unique symbol };
 export function verifiedAuthor(name: string): VerifiedAuthor {
   return name as VerifiedAuthor;
+}
+
+
+function readAcpCheck(row: Record<string, unknown>): AcpCheckRequest {
+  const text = (key: string) => row[key] == null ? null : String(row[key]);
+  const num = (key: string) => row[key] == null ? null : Number(row[key]);
+  const state = String(row["state"]);
+  return {
+    id: Number(row["id"]), provider: String(row["provider"]), runner: String(row["runner"]), model: String(row["model"]),
+    conformanceVersion: Number(row["conformance_version"]), requestedBy: String(row["requested_by"]), requestedAt: String(row["requested_at"]),
+    expiresAt: String(row["expires_at"]),
+    state: state === "running" || state === "passed" || state === "failed" || state === "expired" ? state : "pending",
+    watch: row["watch_repo"] == null || row["watch_owner"] == null ? null : { repo: String(row["watch_repo"]), owner: String(row["watch_owner"]) },
+    taskRef: num("task_ref"), launchJson: text("launch_json"), leaseId: text("lease_id"), stepsUsed: Number(row["steps_used"]), step1Run: num("step1_run"), step2Run: num("step2_run"),
+    step1Passed: Number(row["step1_passed"]) === 1, step2Passed: Number(row["step2_passed"]) === 1, result: text("result"), finishedAt: text("finished_at"),
+    settledAt: text("settled_at"),
+  };
 }

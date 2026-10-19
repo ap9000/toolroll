@@ -1,3 +1,7 @@
+import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
+import { inspectAcpAgent } from "./acp-inspect.js";
+import { runAcpChecks } from "./acp-check.js";
+import { verifyLaunch } from "./acp-attest.js";
 import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
@@ -1493,6 +1497,8 @@ async function dispatch(
       });
     case "keys":
       return keysCommand(positional, flags, context);
+    case "agents":
+      return agentsCommand(positional, flags, context);
     case "setup":
       return setupCommand(positional, flags, context);
     case "verify":
@@ -2691,6 +2697,17 @@ async function tickCommand(
     ...(context.gitRunner === undefined ? {} : { runner: context.gitRunner }),
   });
 
+  // ACP agent checks (acp-check.ts) run in a watch's own pass, under its lease, before anything is dispatched — one
+  // at a time per runner. Only a watch's full pass runs them (never a build lane, never a bare tick).
+  const watchOwner = text(flags, "incarnation");
+  if (watchOwner !== undefined && !buildsOnly) {
+    await runAcpChecks({
+      store, runner, token, pool: worktrees, clock,
+      watch: { repo: canonicalProject(repo) ?? resolve(repo), owner: watchOwner },
+      progress: line => { if (!json) write(line); },
+    });
+  }
+
   // Where a first attempt's branch grows from, resolved once per pass. A
   // detached HEAD refuses the pass rather than guessing: an unattended commit
   // onto "wherever the operator happened to be" is not a default.
@@ -3008,6 +3025,14 @@ async function tickCommand(
       : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
     let unattestedLane: string | null = null;
     for (const candidate of new Set(skipProviders)) {
+      // An ACP agent is admitted by its own check on this runner (absence is denial), read here the way the gateway reads it.
+      if (isAcpProvider(candidate)) {
+        const checked = store.acpAttestationFor(candidate, runner);
+        const verified = checked === null ? null : verifyLaunch(checked.launch);
+        if (checked === null) { unattestedLane = `${ACP_AGENTS[candidate].name} isn't checked on ${runner} — run \`toolroll agents check ${candidate}\` there`; break; }
+        if (verified !== null && !verified.ok) { unattestedLane = verified.problem; break; }
+        continue;
+      }
       if (attestationOf(candidate) === null) continue;
       let verdict = attestedThisPass.get(candidate);
       if (verdict === undefined) {
@@ -3039,7 +3064,10 @@ async function tickCommand(
     // budget is raised (the 100% alert went out; the task page and the spend page say why).
     // Budgets are dollars: work that runs only on subscriptions passes (see Store.budgetGate).
     // Each provider as it bills now.
-    const budgeted = budgetHold(ref.id, store.agentsFor([spec.provider, ...skipProviders]));
+    // An ACP agent bills as its declaration for the exact model it would run on this runner.
+    const sealedModel = store.getScope(id)?.approvedProfile?.model ?? null;
+    const budgeted = budgetHold(ref.id, [...new Set([spec.provider, ...skipProviders])].map(provider =>
+      isAcpProvider(provider) ? store.agentFor(provider, provider === spec.provider ? spec.model ?? sealedModel : sealedModel, runner) : store.agentsFor([provider])[0]!));
     if (budgeted.over !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "budget", detail: budgetWords(budgeted) });
       continue;
@@ -4888,6 +4916,13 @@ async function providersCommand(
   const probed = await Promise.all(
     PROVIDER_IDS.map(async id => {
       const facts = inspectionOf(id);
+      // An ACP agent is looked at, never run (acp-inspect.ts): its version is its package's, read; whether it may
+      // run is its conformance check.
+      if (isAcpProvider(id)) {
+        const seen = inspectAcpAgent(id);
+        const version = { code: seen.found ? 0 : 127, stdout: seen.found ? (seen.package?.version ?? "") : "", stderr: "", notFound: !seen.found, timedOut: false };
+        return { id, facts, version, installed: seen.found, identity: seen.found ? `not checked on this computer — run \`toolroll agents check ${id}\`` : null };
+      }
       // A version probe carries no key (Codex gemini verify, finding 2).
       const version = await probe(facts.binary, ["--version"], { timeoutMs: 5_000, omitEnv: ALL_CREDENTIAL_ENV });
       const installed = version.code === 0 && !version.notFound;
@@ -4947,7 +4982,7 @@ async function providersCommand(
     if (runnerName === undefined || runnerToken === undefined) {
       return fail(write, json, "providers", "usage", "`toolroll providers --report --runner <name> --token <t>` records readiness under that runner", EXIT.usage);
     }
-    const observed = await observeProviderReadiness((file, args, options) => probe(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }));
+    const observed = await observeProviderReadiness((file, args, options) => probe(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName));
     const reported = reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, context.clock());
     if (!reported.ok) {
       return fail(write, json, "providers", reported.reason, describeAuth(reported.reason, runnerName), EXIT.refused);
@@ -5025,6 +5060,71 @@ async function providersCommand(
  * own — these are 0600 files under the operator's home, and whoever can
  * write them already owns the machine's spend.
  */
+/**
+ * `toolroll agents …` — the coding agents Toolroll runs over ACP (acp-agents.ts): what is installed here, which are
+ * checked on which runner, and how each checked model is billed. An agent runs only once its conformance check passed
+ * on that runner (acp-check.ts); asking for one, or declaring a model billed by the agent's own plan, takes a password.
+ *
+ *   agents                                        each agent: installed, checked, billing
+ *   agents check <agent> --model <m> [--runner r] ask the runner's watch to check it (password)
+ *   agents revoke <agent> [--runner r]            the agent stops running there
+ *   agents billing <agent> <model> plan|metered [--runner r]
+ */
+async function agentsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const [action = "list", provider, ...rest] = positional;
+  const runners = store.listRunners().filter(one => one.retiredAt === null).map(one => one.name);
+  const runnerGiven = text(flags, "runner");
+  const runner = runnerGiven ?? (runners.length === 1 ? runners[0]! : undefined);
+  if (action === "list") {
+    const rows = ACP_PROVIDER_IDS.map(id => {
+      const seen = inspectAcpAgent(id);
+      const checked = runners.flatMap(name => { const one = store.acpAttestationFor(id, name); return one === null ? [] : [{ runner: name, agent: one.agent, models: one.models, at: one.recordedAt }]; });
+      const latest = store.acpChecksFor(id, 1)[0] ?? null;
+      return { provider: id, name: ACP_AGENTS[id].name, installed: seen.found ? seen.realpath : null, checked, latestCheck: latest === null ? null : { id: latest.id, state: latest.state, model: latest.model, result: latest.result } };
+    });
+    if (json) { write(envelopeJson({ ok: true, command: "agents", agents: rows })); return EXIT.ok; }
+    for (const row of rows) {
+      write(`  ${row.name.padEnd(10)} ${row.installed === null ? "not installed" : row.installed}`);
+      for (const one of row.checked) write(`             checked on ${one.runner}: ${one.agent.name} ${one.agent.version}, ${one.models.length} models (${one.at.slice(0, 10)})`);
+      if (row.latestCheck !== null && row.latestCheck.state !== "passed") write(`             check #${row.latestCheck.id} (${row.latestCheck.model}): ${row.latestCheck.state}${row.latestCheck.result === null ? "" : ` — ${row.latestCheck.result}`}`);
+    }
+    write("  → `agents check <agent> --model <id>` asks this runner's watch to check one; it runs on the watch's next pass");
+    return EXIT.ok;
+  }
+  if (!["check", "revoke", "billing"].includes(action)) return fail(write, json, "agents", "usage", "`toolroll agents [check|revoke|billing]`", EXIT.usage);
+  if (provider === undefined || !isAcpProvider(provider)) return fail(write, json, `agents ${action}`, "usage", `which agent? ${ACP_PROVIDER_IDS.join(", ")}`, EXIT.usage);
+  if (runner === undefined || !runners.includes(runner)) return fail(write, json, `agents ${action}`, "usage", `which runner? --runner ${runners.join(" | ") || "<name>"}`, EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, `agents ${action}`, "usage", "this takes your name and password — `--as <you>` and the hidden prompt", EXIT.usage);
+  const verified = verifyApproverByPassword(store, acting.name, acting.token, store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)));
+  if (!verified.ok) return fail(write, json, `agents ${action}`, "unauthenticated", "that is not an approver, or the password does not match", EXIT.refused);
+  // Which agents a runner admits, and how they bill, hold for every project the runner serves: an operator's call.
+  if (!store.isInstanceOperator(verified.who.name)) return fail(write, json, `agents ${action}`, "forbidden", "only an installation operator can check, revoke or set billing for a runner's agents", EXIT.refused);
+  const name = ACP_AGENTS[provider].name;
+  const now = clock();
+  if (action === "revoke") {
+    const revoked = store.revokeAcpAttestation(provider, runner, verified.who.name, now);
+    return succeed(write, json, "agents revoke", { provider, runner, revoked }, () => [revoked ? `${name} no longer runs on ${runner}; check it again to bring it back.` : `${name} wasn't checked on ${runner}.`]);
+  }
+  if (action === "billing") {
+    const [model, kind] = rest;
+    if (model === undefined || !validModelId(model) || (kind !== "plan" && kind !== "metered")) return fail(write, json, "agents billing", "usage", "`agents billing <agent> <model> plan|metered`", EXIT.usage);
+    const revision = store.declareAcpBilling({ provider, runner, model, kind, by: verified.who.name }, now);
+    return succeed(write, json, "agents billing", { provider, runner, model, kind, revision }, () => [kind === "plan"
+      ? `${name} on ${model} (${runner}) is billed by ${name}'s own plan: its runs count as $0, unmeasured, and monthly budgets don't hold them. Runs already started keep the terms they started with.`
+      : `${name} on ${model} (${runner}) is metered: its cost is unknown, so capped work and hard budgets hold it.`]);
+  }
+  // check
+  const model = text(flags, "model");
+  if (model === undefined || !validModelId(model)) return fail(write, json, "agents check", "usage", "`agents check <agent> --model <id>` — a model the agent offers (its own list shows after the check)", EXIT.usage);
+  const id = store.requestAcpCheck({ provider, runner, model, by: verified.who.name }, now);
+  return succeed(write, json, "agents check", { provider, runner, model, request: id }, () => [
+    `Check #${id} asked for: ${name} on ${model}, on ${runner}. Its watch runs it on its next pass (two short runs, in the fence; the model's own spend).`,
+    "→ `toolroll agents` shows how it went.",
+  ]);
+}
+
 async function keysCommand(
   positional: readonly string[],
   flags: Map<string, string | true>,
@@ -5036,7 +5136,8 @@ async function keysCommand(
     return fail(write, json, "keys", "usage", `unknown \`keys ${action ?? ""}\` — try ${KEYS_ACTIONS.join(", ")}`, EXIT.usage);
   }
   if (action === "status") {
-    const rows = PROVIDER_IDS.map(one => ({
+    // ACP agents sign in their own way: Toolroll keeps no key for them, so they aren't listed here.
+    const rows = PROVIDER_IDS.filter(isKeyedProvider).map(one => ({
       provider: one,
       envName: PROVIDER_KEY_ENV[one],
       ...keyStatus(one),
@@ -5060,7 +5161,10 @@ async function keysCommand(
     return EXIT.ok;
   }
   if (provider === undefined || !isProviderId(provider)) {
-    return fail(write, json, `keys ${action}`, "usage", `which provider? ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
+    return fail(write, json, `keys ${action}`, "usage", `which provider? ${PROVIDER_IDS.filter(isKeyedProvider).join(", ")}`, EXIT.usage);
+  }
+  if (!isKeyedProvider(provider)) {
+    return fail(write, json, `keys ${action}`, "refused", `${ACP_AGENTS[provider].name} signs in its own way (\`${ACP_AGENTS[provider].signIn}\`) — Toolroll keeps no key for it`, EXIT.refused);
   }
   if (action === "clear") {
     const cleared = clearProviderKey(provider);
@@ -5086,7 +5190,7 @@ async function keysCommand(
     if (wanted !== "subscription" && wanted !== "api-key") {
       return fail(write, json, "keys auth", "usage", `\`toolroll keys auth ${provider} subscription|api-key\``, EXIT.usage);
     }
-    const set = setAuthMode(provider, wanted as AuthMode);
+    const set = setAuthMode(provider, wanted);
     if (!set.ok) {
       return fail(write, json, "keys auth", "refused", `${provider} has no subscription login — it is api-key only`, EXIT.refused);
     }
@@ -8286,7 +8390,7 @@ async function upCommand(
   // would be a fiction.
   const observeReadiness = (): void => {
     if (context.agentRunner !== undefined) return;
-    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }))
+    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
       .then(observed => {
         if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
       })

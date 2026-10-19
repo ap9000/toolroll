@@ -22,7 +22,8 @@
 
 import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId } from "./provider.js";
 import type { Store, TaskRef } from "./store.js";
-import { CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
+import { ACP_LIMITS, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { exactModelId, legOf, PHASES, recommendRoute, routeFromJson, routeProblems, sameSpec, type CandidateTier, type ExactSpec, type PhaseRoute, type RouteCandidate, type RouteCandidates, type RouteEvidenceKind } from "./phase-routing.js";
 import type { AcceptanceCriterion } from "./scope.js";
 
@@ -43,6 +44,10 @@ export type Resolution =
  * resolved: pinned, flagged, or configured.
  */
 function reviewEligible(phase: Phase, spec: AgentSpec): string | null {
+  // An ACP agent works with full access inside the fence: it builds and repairs, and never reviews or plans.
+  if ((phase === "review" || phase === "plan") && isAcpProvider(spec.provider)) {
+    return `${ACP_AGENTS[spec.provider].name} builds and repairs only — pin ${phase === "review" ? "review" : "planning"} to claude or codex`;
+  }
   return phase === "review" && spec.provider === "gemini"
     ? "gemini has no isolation posture for the review phase yet (its own config can load hooks and MCP servers) — pin review to claude or codex"
     : null;
@@ -202,6 +207,20 @@ export function resolveScopeProfile(
             repairTimeoutSeconds: GEMINI_LIMITS.repairTimeoutSeconds,
             repairModel,
           }
+        : isAcpProvider(provider)
+          ? {
+              provider,
+              model,
+              // Full access inside the OS fence is the only posture an ACP agent has (scope.ts AcpProfile).
+              permission: "full",
+              maxTurns: "unsupported",
+              repairMaxTurns: "unsupported",
+              timeoutSeconds: ACP_LIMITS.timeoutSeconds,
+              idleTimeoutSeconds: ACP_LIMITS.idleTimeoutSeconds,
+              repairTimeoutSeconds: ACP_LIMITS.repairTimeoutSeconds,
+              repairIdleTimeoutSeconds: ACP_LIMITS.repairIdleTimeoutSeconds,
+              repairModel,
+            }
         : {
             provider,
             model,

@@ -126,6 +126,51 @@ function escapeLeftOpen(line: string): EscapeCarry {
 }
 
 /**
+ * Where, in `text`, the escape `carry` left open at the end of what came before is over — read exactly as
+ * cleanLiveText reads escapes — or null while it is still open. Words written after it are words; words written
+ * inside it are cleaned away with it.
+ */
+function escapeEnd(text: string, carry: EscapeCarry | "I"): number | null {
+  if (carry === "C") {
+    const done = /^[0-?]*[ -/]*[@-~]/.exec(text);
+    if (done !== null) return done[0].length;
+    return /^[0-?]*[ -/]*$/.test(text) ? null : 0;
+  }
+  if (carry === "O") {
+    const stop = text.search(/[\x07\x1b\u009c]/);
+    if (stop < 0) return null;
+    if (text[stop] !== "\x1b") return stop + 1;
+    if (stop + 1 === text.length) return null;
+    return text[stop + 1] === "\\" ? stop + 2 : stop;
+  }
+  if (carry === "I") {
+    // ESC and intermediate bytes so far: the rest is more of them, then one final byte.
+    const done = /^[ -/]*[0-~]/.exec(text);
+    if (done !== null) return done[0].length;
+    return /^[ -/]*$/.test(text) ? null : 0;
+  }
+  if (carry === "E") {
+    if (text === "") return null;
+    if (text[0] === "[" || text[0] === "]") {
+      const rest = escapeEnd(text.slice(1), text[0] === "[" ? "C" : "O");
+      return rest === null ? null : rest + 1;
+    }
+    const done = /^[ -/]*[0-~]/.exec(text);
+    if (done !== null) return done[0].length;
+    return /^[ -/]*$/.test(text) ? null : 0;
+  }
+  return 0;
+}
+
+/** The escape `text` ends inside, read as cleanLiveText reads escapes: escapeLeftOpen's, or ESC with intermediate
+ * bytes ("I") that a final byte still has to finish. */
+function heldEscape(text: string): EscapeCarry | "I" {
+  const open = escapeLeftOpen(text);
+  if (open !== "") return open;
+  return /\x1b[ -/]+$/.test(text) ? "I" : "";
+}
+
+/**
  * The ways one line can be read when judging where a key block begins or
  * ends: exactly as it will be shown (cleaned, with the escape the previous
  * line left open finished first), with only colour sequences removed, and
@@ -396,7 +441,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   const clock = options.clock ?? (() => new Date());
   let sequence = 0;
   /** A key block the agent began in one message stays hidden through the next, until it ends or a new session starts. */
-  const keyState = { inKey: false };
+  const keyState: KeyState = { inKey: false };
   /** Provider call id → our step, while it is open. */
   const open = new Map<string, { id: string; kind: LiveActivityKind }>();
 
@@ -534,10 +579,200 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     return null;
   };
 
+  /**
+   * ACP (acp-client.ts; the runner hands each session update over as `{acp: update}`). The record format is the one
+   * every dialect writes: a tool call is held — bounded — until it has a target, starts running or ends, and is then
+   * shown once (OpenCode names its command only in a later update); the words of a message, which arrive in chunks,
+   * are shown when the message ends (a tool call, or the end of the run).
+   */
+  const ACP_KINDS: Readonly<Record<string, LiveActivityKind>> = { read: "read", edit: "edit", delete: "edit", move: "edit", search: "search", execute: "command", fetch: "lookup", think: "plan" };
+  const ACP_HELD_CAP = 64;
+  /** A message's words are shown in one piece when it ends — or, past this many characters, in pieces as they come:
+   * every word passes the shared redaction in the order the agent wrote it, none is dropped unseen. */
+  const ACP_WORDS_CAP = 16 * 1024;
+  /** A line with no end in sight is flushed whole past this (it is cut to a line's length on the way out anyway). */
+  const ACP_LINE_HARD_CAP = 256 * 1024;
+  const held = new Map<string, { kind: LiveActivityKind; target: string | null }>();
+  /** The latest output an open command showed, already redacted when it arrived (a later update may carry none). */
+  const outputs = new Map<string, string[]>();
+  let acpWords = "";
+  /** A step came between the held unfinished line and the words after it: they are joined with one space, so a token
+   * keeps the word boundary a scanner needs ("credentials ghp_…") and `key= value` still reads as one. */
+  let acpSeparated = false;
+  /** The message the held words belong to, when the agent names it: a new id is a new message, and a word break. */
+  let acpMessageId: string | null = null;
+  /** A new message began (its id changed) and its break isn't written yet: owed until it is, whatever chunks come. */
+  let acpNewMessage = false;
+  /** Past the hard cap, the rest of that one line is not shown; each piece is still read for the key-block state, in
+   * order — the state itself carries a split BEGIN across pieces, and an END split across two simply keeps the block
+   * hidden (never the other way). Nothing is read twice. */
+  let acpSkipping = false;
+  const skipRead = (text: string): void => { redactLiveLines([text], keyState); };
+  /** Before anything else is written, the message's complete lines are; a partial last line waits for its own end (a
+   * `key=` and its value are never split by an update arriving between them), or for the end of the run. */
+  /** A message's complete lines, said in order; its unfinished last line waits for its own end (or the run's): a line
+   * is only ever judged — for secrets, for key blocks — whole, as the agent wrote it. */
+  const flushLines = (at: string): LiveRecord[] => {
+    const cut = acpWords.lastIndexOf("\n");
+    if (cut < 0) return [];
+    const whole = acpWords.slice(0, cut + 1);
+    acpWords = acpWords.slice(cut + 1);
+    return whole.trim() === "" ? [] : say(at, whole);
+  };
+  /** Everything left, at the end of the run. */
+  const flushWords = (at: string): LiveRecord[] => {
+    const words = acpWords;
+    acpWords = "";
+    return words.trim() === "" ? [] : say(at, words);
+  };
+  /** Whether the message's unfinished line opens a key block it hasn't finished saying: until that line is judged,
+   * what comes between (a step's target) is hidden — never shown on the strength of a state not yet read. */
+  const heldKeyOpen = (): boolean => {
+    if (/BEGIN/i.test(cleanLiveText(acpWords).replace(/[^A-Za-z]/g, ""))) return true;
+    // Read as redaction will read it — every reading, from the state carried so far — on a copy of that state: a block
+    // it would open, or an opener it has begun and not finished, hides the target.
+    const probe: KeyState = { inKey: keyState.inKey, ...(keyState.tail === undefined ? {} : { tail: keyState.tail }) };
+    redactLiveLines(acpWords === "" ? [] : acpWords.split(/\r?\n/), probe);
+    return probe.inKey || (probe.tail ?? "").split("|").slice(0, 3).some(prefix => prefix !== "");
+  };
+  const acpTarget = (kind: LiveActivityKind, update: Record<string, unknown>, before: string | null): string | null => {
+    if (kind === "command") {
+      const command = object(update["rawInput"])?.["command"];
+      return typeof command === "string" ? (options.commands ? liveCommand(command) : null) : before;
+    }
+    const first = Array.isArray(update["locations"]) ? object(update["locations"][0]) : null;
+    return first !== null && typeof first["path"] === "string" ? livePath(options.base, first["path"]) : before;
+  };
+  /** An update's command output, redacted now — in stream order, through the shared key state — or null when it has none. */
+  const acpOutput = (update: Record<string, unknown>): string[] | null => {
+    if (!options.commands || !Array.isArray(update["content"])) return null;
+    const text = update["content"].map(object).filter(one => one !== null && one["type"] === "content")
+      .map(one => object(one!["content"])).filter(block => block !== null && block["type"] === "text" && typeof block["text"] === "string")
+      .map(block => block!["text"] as string).join("\n");
+    // ACP sends a call's whole output again with each update — a snapshot, not a stream: each is judged on its own,
+    // from a fresh key state, and never moves the message's (key bodies are hidden by their shape either way).
+    return text === "" ? null : liveOutput(text, { inKey: false });
+  };
+  const acp = (update: Record<string, unknown>, at: string): LiveRecord[] => {
+    const kind = update["sessionUpdate"];
+    if (kind === "agent_message_chunk") {
+      const content = object(update["content"]);
+      if (content === null || content["type"] !== "text" || typeof content["text"] !== "string") return [];
+      let text = content["text"];
+      if (acpSkipping) {
+        // The rest of a line too long to show: read for the key state, never written, until it ends.
+        const end = text.indexOf("\n");
+        skipRead(end < 0 ? text : text.slice(0, end));
+        if (end < 0) return [];
+        acpSkipping = false;
+        text = text.slice(end + 1);
+      }
+      // A step between two messages is a word break, always written: whatever the next chunk starts with (a CR, a BOM,
+      // an escape) may be cleaned away, and the break with it.
+      const messageId = typeof update["messageId"] === "string" ? update["messageId"] : null;
+      // The agent's own word on what is one message wins: a new id is a break, owed until written; the same id
+      // cancels only the break a step implied (a tool's update arriving mid-sentence doesn't split `api_` from `key=`).
+      // With no id, a step is a break.
+      if (messageId !== null && acpMessageId !== null) {
+        if (messageId !== acpMessageId) acpNewMessage = true;
+        else acpSeparated = false;
+      }
+      if (messageId !== null) acpMessageId = messageId;
+      if ((acpSeparated || acpNewMessage) && text !== "") {
+        if (acpWords === "" || acpWords.endsWith("\n")) acpSeparated = acpNewMessage = false;
+        else {
+          // The break goes where cleaning can't take it: after any escape the held words left open, once it is over
+          // (written inside it, it would be cleaned away with it). Still open, the break waits for the next chunk.
+          const at = escapeEnd(text, heldEscape(acpWords));
+          if (at !== null) {
+            text = `${text.slice(0, at)} ${text.slice(at)}`;
+            acpSeparated = acpNewMessage = false;
+          }
+        }
+      }
+      acpWords += text;
+      if (acpWords.length <= ACP_WORDS_CAP) return [];
+      // Flushed only at a line's end, so nothing the redaction reads (a key block's BEGIN, a `key=` and its value) is
+      // ever split across two pieces; the partial last line waits for the rest of itself.
+      const cut = acpWords.lastIndexOf("\n");
+      if (cut >= 0) {
+        const whole = acpWords.slice(0, cut + 1);
+        acpWords = acpWords.slice(cut + 1);
+        return whole.trim() === "" ? [] : say(at, whole);
+      }
+      if (acpWords.length <= ACP_LINE_HARD_CAP) return [];
+      // One line with no end in sight: it is not shown — said once — and its rest is only read.
+      acpSkipping = true;
+      skipRead(acpWords);
+      acpWords = "";
+      return [{ k: "cut", at }];
+    }
+    // A tool call or a permission answer is where the agent's message ends: its words go first, whole. Any other
+    // update (usage, a plan, a mode) is not: only the message's complete lines go before it, so a line in progress —
+    // a `key=` and the value still to come — is never split by one.
+    // Anything else comes after the message's complete lines; an unfinished line waits for its end, whatever arrives.
+    const records: LiveRecord[] = flushLines(at);
+    if (kind === "tool_call" || kind === "tool_call_update" || kind === "permission") acpSeparated = true;
+    if (kind === "permission") {
+      // A request's title is free text (a command, a path anywhere): only the answer is shown.
+      return [...records, ...openStep(at, null, "tool", update["granted"] === true ? "allowed once" : "refused")];
+    }
+    if (kind !== "tool_call" && kind !== "tool_call_update") return records;
+    const call = providerId(update["toolCallId"]);
+    if (call === null) return records;
+    const status = update["status"];
+    const ended = status === "completed" || status === "failed";
+    const shown = open.get(call);
+    const before = held.get(call);
+    const stepKind = typeof update["kind"] === "string" ? ACP_KINDS[update["kind"]] ?? "tool" : shown?.kind ?? before?.kind ?? "tool";
+    // Output is read (and so redacted, in order) whatever the call, but kept only for a call shown or held — bounded
+    // by them — so an untracked or overflowing call leaves nothing behind.
+    const output = stepKind === "command" ? acpOutput(update) : null;
+    if (output !== null && (shown !== undefined || before !== undefined || kind === "tool_call")) outputs.set(call, output);
+    const done = (step: { id: string }): LiveRecord => {
+      const out = outputs.get(call) ?? [];
+      outputs.delete(call);
+      return { k: "done", at, id: step.id, ok: status === "completed", ...(out.length > 0 ? { out } : {}) };
+    };
+    if (shown !== undefined) {
+      if (!ended) return records;
+      open.delete(call);
+      return [...records, done(shown)];
+    }
+    if (before === undefined && kind === "tool_call_update") { outputs.delete(call); return records; }
+    const named = acpTarget(stepKind, update, before?.target ?? null);
+    const target = named !== null && heldKeyOpen() ? HIDDEN_TARGET : named;
+    if (target === null && status !== "in_progress" && !ended) {
+      if (before !== undefined || held.size < ACP_HELD_CAP) held.set(call, { kind: stepKind, target });
+      else { outputs.delete(call); records.push(...openStep(at, null, stepKind, null)); }
+      return records;
+    }
+    held.delete(call);
+    const opened = openStep(at, call, stepKind, target);
+    // A step shown "once" (past the open-step cap) is never closed by id: nothing of it is kept.
+    if (!open.has(call)) outputs.delete(call);
+    if (!ended) return [...records, ...opened];
+    // Shown and ended at once: a step and its result.
+    const step = open.get(call);
+    if (step === undefined) { outputs.delete(call); return [...records, ...opened]; }
+    open.delete(call);
+    return [...records, ...opened, done(step)];
+  };
+  const acpEnd = (at: string): LiveRecord[] => {
+    const records = flushWords(at);
+    for (const [, one] of held) records.push(...openStep(at, null, one.kind, one.target));
+    held.clear();
+    outputs.clear();
+    acpSkipping = false;
+    return records;
+  };
+
   return {
     observe(event) {
       try {
         const at = stamp();
+        const acpUpdate = object(event["acp"]);
+        if (acpUpdate !== null) return acp(acpUpdate, at);
         const type = event["type"];
         if (type === "system" || type === "assistant" || type === "user" || type === "result") return claude(event, at);
         if (typeof type === "string" && (type.startsWith("thread.") || type.startsWith("turn.") || type.startsWith("item."))) return codex(event, at);
@@ -548,7 +783,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     },
     end() {
       try {
-        return closeAll(stamp());
+        const at = stamp();
+        return [...acpEnd(at), ...closeAll(at)];
       } catch {
         return [];
       }

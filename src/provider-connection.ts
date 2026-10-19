@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { run, type ExecResult } from "./exec.js";
 import { ALL_CREDENTIAL_ENV, inspectionOf, type ProviderId } from "./provider.js";
+import { isAcpProvider, type KeyedProviderId } from "./acp-agents.js";
 import { keyStatus, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, verifyProviderKey, type AuthMode, type KeyVerdict } from "./keys.js";
 
 export type ProviderConnection = {
@@ -42,14 +43,17 @@ export function signInFacts(provider: ProviderId, result: ExecResult, now = new 
   return { ...base, state: "unverified" };
 }
 
-export function createConnectionChecker(options: { probe?: typeof run; home?: string; clock?: () => Date; env?: NodeJS.ProcessEnv; verify?: (provider: ProviderId, key: string) => Promise<KeyVerdict> } = {}): ConnectionChecker {
+export function createConnectionChecker(options: { probe?: typeof run; home?: string; clock?: () => Date; env?: NodeJS.ProcessEnv; verify?: (provider: KeyedProviderId, key: string) => Promise<KeyVerdict> } = {}): ConnectionChecker {
   const probe = options.probe ?? run;
-  const verify = options.verify ?? ((provider: ProviderId, key: string) => verifyProviderKey(provider, key));
+  const verify = options.verify ?? ((provider: KeyedProviderId, key: string) => verifyProviderKey(provider, key));
   const home = options.home ?? homedir();
   const clock = options.clock ?? (() => new Date());
   const cache = new Map<ProviderId, { key: string; until: number; value: ProviderConnection }>();
   const pending = new Map<string, Promise<ProviderConnection>>();
   return async (provider, fresh = false) => {
+    // An ACP agent is never run to ask how it is signed in (nothing executes it outside the gateway): what is known
+    // of it is its conformance check, read elsewhere. Here it is simply unverified.
+    if (isAcpProvider(provider)) return { state: "unverified", mode: "agent-login", checkedAt: clock().toISOString() };
     const mode = readAuthMode(provider, home);
     const keyFacts = keyStatus(provider, home);
     const ambient = !!(options.env ?? process.env)[PROVIDER_KEY_ENV[provider]];

@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -417,7 +417,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v121: live steering's columns and a run's attempt key read none, and no sends, the same way.
   // v122: a project's recorded remote reads none the same way.
   // v123: a plan authorization's basis reads the operating mode, and a trigger firing reads not on time and no script ran.
-  ...addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS),
+  ...addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));

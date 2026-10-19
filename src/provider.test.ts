@@ -6,6 +6,7 @@
  * API key excluded from every shell the model itself launches.
  */
 
+import { isAcpProvider } from "./acp-agents.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { describe, test, expect } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -679,7 +680,8 @@ describe("the provider audit", () => {
     for (const id of PROVIDER_IDS) {
       const audit = auditOf(id);
       expect(audit.configSurface.length).toBeGreaterThan(0);
-      expect(audit.isolation.enforced).toBe(id !== "gemini");
+      // An ACP agent's isolation is whatever flag its row passes on every launch (OpenCode's --pure); the rest have none.
+      expect(audit.isolation.enforced).toBe(id === "gemini" ? false : isAcpProvider(id) ? audit.isolation.flag !== null : true);
     }
   });
 

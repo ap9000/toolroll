@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 
-export const PROVIDER_ID_VALUES = ["claude", "codex", "openrouter", "gemini"] as const;
+export const PROVIDER_ID_VALUES = ["claude", "codex", "openrouter", "gemini", "opencode", "cursor", "cline", "qwen", "goose"] as const;
 export const providerIdSchema = z.enum(PROVIDER_ID_VALUES);
 
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;

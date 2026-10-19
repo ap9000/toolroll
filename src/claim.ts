@@ -344,6 +344,20 @@ export { DEFAULT_MAX_OPEN_DECISIONS, missingCapability } from "./dispatch.js";
  * it, which is a race being won; not-ready means nobody should have it, and
  * says why.
  */
+/**
+ * A conformance check's claim (acp-check.ts): its task has no scope to approve, so readiness is not asked — but a
+ * check runs real agents, so the runner's capacity is counted where the claim lands, as for dispatch.
+ */
+export function acquireForCheck(store: Store, taskRef: number, runner: string, options: AcquireOptions): AcquireResult | NotReady {
+  return inTransaction(store, () => {
+    const registered = store.getRunner(runner);
+    if (registered !== null && store.liveClaimCount(runner, options.now) >= registered.runner.capacity) {
+      return { ok: false as const, reason: "capacity" as const, message: `${runner} has no free slot for a check` };
+    }
+    return acquireLocked(store, taskRef, runner, options);
+  });
+}
+
 export function acquireIfReady(
   store: Store,
   taskRef: number,

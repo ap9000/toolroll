@@ -19,13 +19,16 @@
  * shell the model itself launches (Codex provider review, Q5).
  */
 
+import { INTERPRETER_INJECTION_ENV } from "./acp-attest.js";
 import { claudeFenceSettings, codexFenceArgv, type FenceGrants } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
-import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, CLAUDE_COST_UNKNOWN } from "./exec.js";
+import { runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, runAcpSession, CLAUDE_COST_UNKNOWN } from "./exec.js";
 import { scanForSecrets } from "./evidence.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
+import { ACP_AGENTS, isAcpProvider, withAcp, type AcpProviderId, type KeyedProviderId } from "./acp-agents.js";
+import { acpParse } from "./acp-client.js";
 import { agentSpecSchema, MODEL_ID, modelIdSchema, PROVIDER_ID_VALUES, providerIdSchema, type AgentSpec, type ProviderId } from "./contracts/provider.js";
 
 export type { AgentSpec, ProviderId } from "./contracts/provider.js";
@@ -189,6 +192,14 @@ export type ParsedEnvelope = {
    * failure terminal seen.
    */
   structuralTerminal: import("./exhaustion.js").StructuralTerminal | null;
+  /** What an ACP agent itself reported it used — kept on the run, never priced. Absent for every other dialect. */
+  agentReportedUsage?: string | null;
+  /** An ACP conversation's facts the conformance check reads (acp-client.ts AcpEnvelope): nothing else does. */
+  acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean; timedOut: boolean } | null; agent: { name: string; version: string } | null; stop: string | null;
+    /** The conversation broke the protocol (acpParse's protocolError), or null. */
+    protocolError: string | null;
+    /** The plane's isolation probes for a check's first step (invoke.ts), when it ran them. */
+    isolation?: { fileDenied: boolean; envClear: boolean } };
 };
 
 type Adapter = {
@@ -981,12 +992,13 @@ export function safeDiagnostic(text: string): string | null {
  * provider gets its OWN keys and nobody else's: S4 (live spike) confirmed
  * what inheritance makes true by construction — an agent's shell reads its
  * process env, so a foreign key in that env is a foreign key disclosed. */
-const CREDENTIAL_ENV: Record<ProviderId, readonly string[]> = {
+const CREDENTIAL_ENV: Record<ProviderId, readonly string[]> = withAcp<KeyedProviderId, readonly string[]>({
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
   codex: ["OPENAI_API_KEY", "CODEX_API_KEY"],
   openrouter: [OPENROUTER_ENV_KEY],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-};
+  // An ACP agent signs in its own way; Toolroll holds no key for it, so it sheds every key above.
+}, () => []);
 const foreignCredentialEnv = (own: ProviderId): string[] =>
   (Object.entries(CREDENTIAL_ENV) as [ProviderId, readonly string[]][])
     .filter(([provider]) => provider !== own)
@@ -997,7 +1009,42 @@ const foreignCredentialEnv = (own: ProviderId): string[] =>
  * finding 2). Agent spawns keep their own; probes keep none. */
 export const ALL_CREDENTIAL_ENV: readonly string[] = Object.values(CREDENTIAL_ENV).flat();
 
-const ADAPTERS: Record<ProviderId, Adapter> = {
+/**
+ * An ACP agent's retained record (acp-client.ts) read into the gateway's
+ * envelope. Its own usage report is never priced: tokens and cost stay null.
+ */
+function acpEnvelope(stdout: string): ParsedEnvelope {
+  const read = acpParse(stdout);
+  return {
+    sessionId: read.sessionId,
+    protocolError: read.protocolError,
+    finalMessage: read.finalMessage,
+    tokensIn: null,
+    tokensOut: null,
+    costUsd: null,
+    usageRaw: null,
+    initObserved: read.initObserved,
+    promptConsumed: read.promptConsumed,
+    diagnostic: read.diagnostic === null ? null : safeDiagnostic(read.diagnostic),
+    structuralTerminal: read.terminal === null ? null : { failed: true, text: read.terminal.text === null ? null : safeDiagnostic(read.terminal.text), code: read.terminal.code.slice(0, 128) },
+    agentReportedUsage: read.reportedUsage,
+    acp: { offered: read.offered, exit: read.exit, agent: read.agent, stop: read.stop, protocolError: read.protocolError },
+  };
+}
+
+function acpAdapter(provider: AcpProviderId): Adapter {
+  return {
+    binary: ACP_AGENTS[provider].binary,
+    argv: () => [...ACP_AGENTS[provider].argv],
+    parse: acpEnvelope,
+    defaultRunner: runAcpSession,
+    // Every key Toolroll knows, and whatever would make the pinned interpreter load code beside the checked script.
+    extraOmitEnv: [...foreignCredentialEnv(provider), ...INTERPRETER_INJECTION_ENV],
+    clampTimeout: (_phase, requested) => requested,
+  };
+}
+
+const ADAPTERS: Record<ProviderId, Adapter> = withAcp<KeyedProviderId, Adapter>({
   claude: {
     binary: "claude",
     argv: claudeArgv,
@@ -1049,7 +1096,7 @@ const ADAPTERS: Record<ProviderId, Adapter> = {
     extraOmitEnv: foreignCredentialEnv("gemini"),
     clampTimeout: (phase, requested) => Math.min(requested, GEMINI_TIMEOUT_CAP_MS[phase]),
   },
-};
+}, (_agent, provider) => acpAdapter(provider));
 
 /**
  * The spawning surface. Imported by invoke.ts and NOWHERE else — the
@@ -1069,13 +1116,13 @@ export function adapterFor(provider: ProviderId): Adapter {
  */
 export type ProviderAudit = {
   /** How output reaches us — and therefore which signals can exist at all. */
-  transport: "buffered-json" | "streaming-jsonl";
+  transport: "buffered-json" | "streaming-jsonl" | "acp-jsonrpc";
   /** Whether a later invocation can resume this provider's session. */
   resume: "native" | "none";
   /** The event whose absence on a failed run means "never initialized".
    * CAPABILITY metadata, not a per-run observation (arc 1 finding 16):
    * whether a given run actually saw it lives in ParsedEnvelope.initObserved. */
-  initSignal: "thread.started" | "system-init" | "init-event" | "none";
+  initSignal: "thread.started" | "system-init" | "init-event" | "acp-session" | "none";
   /** How session identity is established: "announced" = read back from the
    * harness's own stream; "minted" = the PLANE chooses the id pre-spawn
    * (gemini --session-id) and the envelope must echo it (Phase 3 A5). */
@@ -1101,7 +1148,7 @@ export type ProviderAudit = {
   configSurface: readonly string[];
 };
 
-const AUDITS: Record<ProviderId, ProviderAudit> = {
+const AUDITS: Record<ProviderId, ProviderAudit> = withAcp<KeyedProviderId, ProviderAudit>({
   claude: {
     transport: "streaming-jsonl",
     resume: "native",
@@ -1163,7 +1210,16 @@ const AUDITS: Record<ProviderId, ProviderAudit> = {
       "trusted-folder store (S2, live at 0.57.0: headless REFUSES untrusted directories; the plane grants --skip-trust per-invocation to its own leased worktrees)",
     ],
   },
-};
+}, agent => ({
+  // One ACP conversation per build: the prompt's answer is the only success (acp-client.ts), so exit 0 alone is never believed.
+  transport: "acp-jsonrpc",
+  resume: "none",
+  initSignal: "acp-session",
+  sessionIdentity: "announced",
+  terminalContract: "required",
+  isolation: { flag: agent.argv.filter(one => one.startsWith("--") && one !== "--acp").join(" ") || null, resumeSafe: null, enforced: agent.argv.some(one => one.startsWith("--") && one !== "--acp") },
+  configSurface: [...agent.configSurface],
+}));
 
 /** Read-only facts about a provider — safe anywhere, spawns nothing. */
 
@@ -1181,7 +1237,7 @@ export type ProviderMoneyCapabilities = {
   usageSemantics: "per-invocation" | "cumulative-session";
 };
 
-export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> = {
+export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> = withAcp<KeyedProviderId, ProviderMoneyCapabilities>({
   claude: {
     incrementalUsage: true,
     nativeDollarCapFlag: "--max-budget-usd",
@@ -1204,7 +1260,12 @@ export const MONEY_CAPABILITIES: Record<ProviderId, ProviderMoneyCapabilities> =
     // numbers cover that invocation only (conformance fixture j).
     usageSemantics: "per-invocation",
   },
-};
+}, () => ({
+  // ACP carries no dollars Toolroll trusts: an agent's own usage report is kept apart, unpriced.
+  incrementalUsage: false,
+  nativeDollarCapFlag: null,
+  usageSemantics: "per-invocation",
+}));
 
 /**
  * The fail-closed budget-flag probe (finding 24's amendment): resolve
@@ -1255,6 +1316,9 @@ export function validateSpec(spec: AgentSpec): { ok: true } | { ok: false; probl
   }
   if (spec.provider === "gemini" && spec.model === null) {
     return { ok: false, problem: "model: gemini needs an explicit model — the harness default drifts with its releases" };
+  }
+  if (isAcpProvider(spec.provider) && spec.model === null) {
+    return { ok: false, problem: `model: ${ACP_AGENTS[spec.provider].name} needs an explicit model — one it offered when it was checked` };
   }
   return { ok: true };
 }

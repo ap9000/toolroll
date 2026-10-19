@@ -1,3 +1,5 @@
+import type { ProviderId } from "./contracts/provider.js";
+import { isAcpProvider } from "./acp-agents.js";
 import { OBSERVATION_MAILBOX, observationBrief, parseObservationCases, collectObservations } from "./observations.js";
 import { checkCommandFor, effectiveCheckLevel, recordRunCheckLevel } from "./check-levels.js";
 import { queueBatchCheck } from "./batch-checks.js";
@@ -49,7 +51,7 @@ import { witnessedRunner } from "./process-custody.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
-import { approvalOf, digestOf, profileDigestOf, routeParityProblem, type ExecutionProfile, type Scope } from "./scope.js";
+import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
 import { currentClaim, heartbeat, SYNC_MAX_AGE_MS, finalize } from "./claim.js";
@@ -231,7 +233,7 @@ export type BuildRequest = {
   skipPermissions?: boolean;
   /** The harness this build runs on. Repair ALWAYS inherits it — a session
    * resumed across providers is not a session (Codex provider review, Q3). */
-  provider?: "claude" | "codex" | "openrouter" | "gemini";
+  provider?: ProviderId;
   model?: string;
   /**
    * The model repair turns run on. Repair is a few-k, one-job resumption —
@@ -433,7 +435,9 @@ function profileWantsSkip(profile: ExecutionProfile): boolean {
   return (
     (profile.provider === "claude" && profile.permissionArgv === "bypassPermissions") ||
     ((profile.provider === "codex" || profile.provider === "openrouter") && profile.sandboxMode === "danger-full-access") ||
-    (profile.provider === "gemini" && profile.approvalArgv === "yolo")
+    (profile.provider === "gemini" && profile.approvalArgv === "yolo") ||
+    // An ACP agent's only posture is full access inside the fence.
+    isAcpProfile(profile)
   );
 }
 
@@ -441,6 +445,8 @@ const PROVIDER_VERSIONS = new Map<string, string | null>();
 /** Provenance only (finding 20): a best-effort `--version` probe, cached
  * per process, null on any failure — never authority, never a refusal. */
 function providerVersionOf(provider: string): string | null {
+  // An ACP agent is never run outside the gateway, not even for --version: its version is what its check recorded.
+  if (isAcpProvider(provider)) return null;
   if (PROVIDER_VERSIONS.has(provider)) return PROVIDER_VERSIONS.get(provider) ?? null;
   let version: string | null = null;
   try {
@@ -543,7 +549,7 @@ export function proveApprovedProfile(
   if (given.timeoutMs !== undefined && given.timeoutMs !== snapshot.timeoutSeconds * 1000) {
     return {
       ok: false,
-      message: `approved with a ${snapshot.timeoutSeconds}s ${snapshot.timeoutKind === "idle" ? "no-progress window" : "clock"}, asked for ${Math.round(given.timeoutMs / 1000)}s — re-approve to change it (stale-approval)`,
+      message: `approved with a ${snapshot.timeoutSeconds}s ${idleClock(snapshot) ? "no-progress window" : "clock"}, asked for ${Math.round(given.timeoutMs / 1000)}s — re-approve to change it (stale-approval)`,
     };
   }
   return {
@@ -1379,7 +1385,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         maxTurns: effective.maxTurns ?? maxTurns,
         finished: () => handoffFiles.some(name => existsSync(join(worktree, name))),
         // A paused build can wait as long as the idle limit allows (live-input.ts idleLimit); a wall-clock profile has none.
-        onOpen: () => store.markLiveInputOpened(request.runId, clock(), effective.profile.timeoutKind === "idle" ? effective.timeoutMs : null),
+        onOpen: () => store.markLiveInputOpened(request.runId, clock(), idleClock(effective.profile) ? effective.timeoutMs : null),
         onClose: () => store.markLiveInputClosed(request.runId, clock()),
         onPaused: () => store.markRunPaused(request.runId, clock()),
       });
@@ -1545,9 +1551,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         ...(liveSession === null ? {} : { liveInput: liveSession }),
         // New approvals bind a no-progress watchdog, not a deadline. Legacy
         // snapshots carry no timeoutKind and retain their wall-clock terms.
-        ...(effective.profile.timeoutKind === "idle"
-          ? { idleTimeoutMs: effective.timeoutMs }
-          : { timeoutMs: effective.timeoutMs }),
+        ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
@@ -1809,7 +1813,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       ok: false,
       reason: "timeout",
       message:
-        effective.profile.timeoutKind === "idle"
+        idleClock(effective.profile)
           ? `the builder made no observable progress for ${Math.round(timeoutMs / 60_000)} minutes and was stopped — whatever it wrote is still in ${worktree}`
           : `the builder ran past ${Math.round(timeoutMs / 60_000)} minutes and was stopped — whatever it wrote is still in ${worktree}`,
     };
@@ -2955,7 +2959,8 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
     if (request.leaseId !== undefined && !heartbeat(store, request.leaseId, clock()).ok) {
       return { ok: false, reason: "fenced", message: `${taskId}'s lease did not survive the resumed turn — the work is still in ${worktree}` };
     }
-    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [{ provider, billing: store.runBilling(request.runId) ?? store.agentsFor([provider])[0]!.billing }] }).over !== null) break;
+    // An ACP agent's turn bills as its own model's declaration on this runner, never as the attempt it continues.
+    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [isAcpProvider(provider) ? store.agentFor(provider, model ?? null, request.runner) : { provider, billing: store.runBilling(request.runId) ?? store.agentsFor([provider])[0]!.billing }] }).over !== null) break;
     if (store.agentPolicyRefusal(provider, model ?? null) !== null) break;
     const admitted = admitProtocolRepair(store, request, effective.profile, sessionId, clock);
     if (!admitted.ok) break;
@@ -2978,7 +2983,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
       },
       {
         cwd: worktree,
-        ...(effective.profile.timeoutKind === "idle" ? { idleTimeoutMs: effective.timeoutMs } : { timeoutMs: effective.timeoutMs }),
+        ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
@@ -3178,7 +3183,8 @@ async function ingestPark(args: {
 
     // v105: a repair turn spends too — a budget used up since the build began stops further turns (billed to a key).
     // It bills as the attempt it mends did.
-    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [{ provider: repairProvider, billing: store.runBilling(request.runId) ?? store.agentsFor([repairProvider])[0]!.billing }] }).over !== null) break;
+    // An ACP repair bills as its own model's declaration on this runner, never as the attempt it mends.
+    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [isAcpProvider(repairProvider) ? store.agentFor(repairProvider, repairModel ?? null, request.runner) : { provider: repairProvider, billing: store.runBilling(request.runId) ?? store.agentsFor([repairProvider])[0]!.billing }] }).over !== null) break;
     // Sprint 8: nor does a repair run on a provider or model the organisation policy doesn't allow.
     if (store.agentPolicyRefusal(repairProvider, repairModel ?? null) !== null) break;
     const admitted = admitProtocolRepair(store, request, args.profile, sessionId, clock);
@@ -3218,7 +3224,9 @@ async function ingestPark(args: {
       },
       {
         cwd: worktree,
-        timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS,
+        ...(args.profile !== undefined && isAcpProfile(args.profile)
+          ? watchdogsOf(args.profile, args.profile.repairTimeoutSeconds * 1000, true)
+          : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),

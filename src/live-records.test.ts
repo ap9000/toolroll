@@ -5,6 +5,7 @@
  * the run's own checkout; steps closed only by their own result, an unknown
  * end never shown as success; and a reader that trusts nothing it reads back.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
   createLiveRecorder, HIDDEN_KEY_BLOCK, HIDDEN_LINE, HIDDEN_TARGET, OUTSIDE_PROJECT, parseLiveRecord, parseLiveRecords,
@@ -237,5 +238,283 @@ describe("reading the file back", () => {
     expect(projectLiveText(parseLiveRecords(onDisk(records)))).toEqual([
       "the agent session started", "Looking at the form", "→ reading `src/form.ts`", "→ running `npm test`", "  ✗ failed", "→ organizing its plan",
     ]);
+  });
+});
+
+describe("an ACP agent's conversation (acp-client.ts hands each update over as {acp: update})", () => {
+  const opencode = JSON.parse(readFileSync(new URL("./fixtures/acp/opencode-1.18.18.json", import.meta.url), "utf8")) as { updates: Record<string, unknown>[] };
+  const acp = (update: Record<string, unknown>) => ({ acp: update });
+
+  test("OpenCode's real turn: the command it names only in a later update is shown once, with its output under the opt-in", () => {
+    const on = recorder(true, "<work>");
+    const records = [...all(on, opencode.updates.map(acp)), ...on.end()];
+    const steps = records.filter(one => one.k === "step");
+    expect(steps).toEqual([{ k: "step", at: T.toISOString(), id: "s1", kind: "command", target: "ls -la" }]);
+    const done = records.find(one => one.k === "done");
+    expect(done).toMatchObject({ k: "done", id: "s1", ok: true, out: expect.arrayContaining([expect.stringContaining("notes.txt")]) });
+    // Without the project's opt-in: the step shows, its command and output don't.
+    const off = recorder(false, "<work>");
+    const quiet = [...all(off, opencode.updates.map(acp)), ...off.end()];
+    expect(quiet.filter(one => one.k === "step")).toEqual([{ k: "step", at: T.toISOString(), id: "s1", kind: "command" }]);
+    expect(onDisk(quiet)).not.toContain("ls -la");
+    expect(onDisk(quiet)).not.toContain("notes.txt");
+  });
+
+  test("words arrive in chunks and are shown whole — a line is never split, even by a step; a path outside the checkout is never named", () => {
+    const r = recorder(true, "/pool/wt");
+    const records = [
+      ...all(r, [
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading " } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "the file." } }),
+        acp({ sessionUpdate: "tool_call", toolCallId: "r1", title: "read", kind: "read", status: "pending", locations: [{ path: "/pool/wt/src/a.ts" }] }),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "r1", status: "completed" }),
+        acp({ sessionUpdate: "tool_call", toolCallId: "r2", title: "read", kind: "read", status: "completed", locations: [{ path: "/Users/someone/.ssh/id_rsa" }] }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } }),
+      ]),
+      ...r.end(),
+    ];
+    // An unfinished line waits for its end, whatever arrives between: judged whole, as the agent wrote it.
+    expect(records.filter(one => one.k === "say").map(one => (one as { t: string[] }).t)).toEqual([["Reading the file. Done."]]);
+    expect(records.filter(one => one.k === "step").map(one => (one as { target?: string }).target)).toEqual(["src/a.ts", OUTSIDE_PROJECT]);
+    expect(onDisk(records)).not.toContain(".ssh");
+  });
+
+  test("the file keeps the agent's order, and every word and line passes the redaction — however long, however it arrives", () => {
+    const r = recorder(true);
+    const records = [
+      ...all(r, [
+        acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "bash", kind: "execute", status: "pending", rawInput: { command: "cat key.pem" } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here it is:\n-----BEGIN PRIVATE KEY-----\n" } }),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "in_progress", content: [{ type: "content", content: { type: "text", text: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" } }] }),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(20_000)}\n-----BEGIN RSA PRIVATE KEY-----\n` } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "c2VjcmV0IGJvZHkgb2YgdGhlIGtleSBpcyBoZXJl\n" } }),
+      ]),
+      ...r.end(),
+    ];
+    const text = onDisk(records);
+    expect(text).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
+    expect(text).not.toContain("c2VjcmV0IGJvZHkgb2YgdGhlIGtleSBpcyBoZXJl");
+    // The command's output is judged on its own (a snapshot, from a fresh key state): key material in it is hidden by
+    // its shape; and its result still closes the step.
+    expect(records.find(one => one.k === "done")).toMatchObject({ ok: true });
+  });
+
+  test("output a command showed while running is kept for its result when the completion carries none", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "tool_call", toolCallId: "c2", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "npm test" } }),
+      acp({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "in_progress", content: [{ type: "content", content: { type: "text", text: "1 failing" } }] }),
+      acp({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "failed" }),
+    ]), ...r.end()];
+    expect(records.find(one => one.k === "done")).toMatchObject({ ok: false, out: ["1 failing"] });
+  });
+
+  test("a long message flushed in pieces never splits a key block's opening line between them", () => {
+    const r = recorder(true);
+    const opener = "-----BEGIN PRIVATE KEY-----";
+    // Not shaped like key material: only the block itself (its BEGIN read whole) hides it.
+    const body = "plain words that sit inside the block";
+    // The first chunk ends partway through the opener, past the size a message is flushed at.
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"y".repeat(17_000)}\n${opener.slice(0, 12)}` } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${opener.slice(12)}\n${body}\n` } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain(body);
+  });
+
+  test("command output is kept only for calls the recorder is following: thousands of stray calls leave nothing behind", () => {
+    const r = recorder(true);
+    const out = (id: string) => [{ type: "content", content: { type: "text", text: `out ${id}` } }];
+    for (let i = 0; i < 2_000; i += 1) {
+      r.observe(acp({ sessionUpdate: "tool_call", toolCallId: `c${i}`, title: "bash", kind: "execute", status: "pending" }));
+      r.observe(acp({ sessionUpdate: "tool_call_update", toolCallId: `x${i}`, status: "completed", content: out(`x${i}`) }));
+    }
+    r.end();
+    // (The retained map is bounded by the shown and held calls; the source says how.) A followed call's output is kept and shown.
+    const fresh = recorder(true);
+    const records = [...all(fresh, [
+      acp({ sessionUpdate: "tool_call", toolCallId: "z", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "ls" }, content: out("z") }),
+      acp({ sessionUpdate: "tool_call_update", toolCallId: "z", status: "completed" }),
+    ]), ...fresh.end()];
+    expect(records.find(one => one.k === "done")).toMatchObject({ out: ["out z"] });
+  });
+
+  test("one line past the hard cap is not shown, and what follows it on that line is never written", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(262_145)} api_key=` } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "sensitive-test-value\nnext line\n" } }),
+    ]), ...r.end()];
+    const text = onDisk(records);
+    expect(text).not.toContain("sensitive-test-value");
+    expect(records.some(one => one.k === "cut")).toBe(true);
+    expect(records.filter(one => one.k === "say").flatMap(one => (one as { t: string[] }).t)).toContain("next line");
+  });
+
+  test("an update that isn't a message boundary, arriving mid-line, never splits a key from its value", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "api_key=" } }),
+      acp({ sessionUpdate: "usage_update", used: 1, size: 10 }),
+      acp({ sessionUpdate: "plan", entries: [] }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "sensitive-test-value\n" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("sensitive-test-value");
+  });
+
+  test("a key before a tool call and its value after are judged as the one line they are (the line waits for its end)", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Login with password=" } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "c10", title: "x", kind: "read", status: "pending" }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "correct-horse-battery-staple\nnext\n" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("correct-horse-battery-staple");
+    expect(onDisk(records)).toContain("next");
+  });
+
+  test("a token after a step keeps its word boundary, so the scanner still sees it", () => {
+    const r = recorder(false);
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Checking credentials" } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "g1", title: "x", kind: "read", status: "pending" }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${token}\n` } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain(token);
+  });
+
+  test("a chunk starting with something cleaning removes, or a later update to a step, still keeps the boundary", () => {
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const pending = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "pending" });
+    const cases = [
+      ...["\r", "\v", "\f", "\uFEFF"].map(lead => [say("Checking credentials"), pending, say(lead), say(`\x1b[32m${token}\x1b[0m\n`)]),
+      [pending, say("Checking credentials"), acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "in_progress" }), say(`${token}\n`)],
+      [pending, say("Checking credentials"), acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" }), say(`${token}\n`)],
+    ];
+    for (const commands of [false, true]) for (const events of cases) {
+      const r = recorder(commands);
+      const records = [...all(r, events), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
+  test("the break after a step survives an escape left open across it, and a new message id is a new message", () => {
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const say = (text: string, messageId?: string) => acp({ sessionUpdate: "agent_message_chunk", ...(messageId === undefined ? {} : { messageId }), content: { type: "text", text } });
+    const step = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "pending" });
+    const permission = acp({ sessionUpdate: "permission", toolCallId: "c1", title: "x", kind: "read", granted: true });
+    const cases = [
+      [say("Checking credentials\x1b]0;title"), step, say(`\x07\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\x1b]0;title"), permission, say(`\x07\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\u009d0;title"), step, say(`\u009c\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\x1b"), step, say(`\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\x1b]0;ti"), step, say("tle"), say(`\x07\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials", "first"), acp({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Inspecting" } }), say(`${token}\n`, "second")],
+      [say("Checking credentials", "first"), say(`${token}\n`, "second")],
+      [say("Checking credentials", "first"), say("", "second"), say(`${token}\n`, "second")],
+      [say("Checking credentials", "first"), step, say("", "second"), say(`${token}\n`, "second")],
+    ];
+    for (const commands of [false, true]) for (const events of cases) {
+      const r = recorder(commands);
+      const records = [...all(r, events), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
+  test("one message stays one across a tool's update: a credential split by it is still read whole", () => {
+    const say = (text: string, messageId: string) => acp({ sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text } });
+    for (const commands of [false, true]) {
+      const r = recorder(commands);
+      const records = [...all(r, [
+        acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "in_progress" }),
+        say("Using api_", "same"),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" }),
+        say("key=sensitive-test-value\n", "same"),
+      ]), ...r.end()];
+      expect(onDisk(records)).not.toContain("sensitive-test-value");
+    }
+  });
+
+  test("an escape left open with intermediate bytes still gets its break after it", () => {
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    for (const commands of [false, true]) {
+      const r = recorder(commands);
+      const records = [...all(r, [say("Checking credentials\x1b("), acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "pending" }), say(`B\x1b[32m${token}\x1b[0m\n`)]), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
+  test("a key opener begun before a step — split, disguised, inside an escape — hides the step's target", () => {
+    const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const reading = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "in_progress", locations: [{ path: "/pool/wt/sensitive-key-fragment" }] });
+    for (const opener of ["-----BE\nGIN PRIVATE KEY-----", "-----ＢＥＧＩＮ PRIVATE KEY-----", "\x1b]0;-----BEGIN PRIVATE KEY-----"]) {
+      for (const commands of [false, true]) {
+        const r = recorder(commands);
+        const records = [...all(r, [say(opener), reading, say("\nplain key material\n-----END PRIVATE KEY-----\n")]), ...r.end()];
+        expect(onDisk(records), opener).not.toContain("sensitive-key-fragment");
+      }
+    }
+  });
+
+  test("an empty chunk between a step and a token doesn't spend the word boundary", () => {
+    for (const commands of [false, true]) {
+      const r = recorder(commands);
+      const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+      const records = [...all(r, [
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Checking credentials" } }),
+        acp({ sessionUpdate: "tool_call", toolCallId: "g1", title: "x", kind: "read", status: "pending" }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "" } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${token}\n` } }),
+      ]), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
+  test("a key block opened in the unshown rest of a line past the hard cap still hides what follows", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(262_145)}` } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "-----BEGIN PRIVATE KEY-----\nplain words inside the block\n" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("plain words inside the block");
+  });
+
+  test("a step's target is hidden while the message's unfinished line has opened a key block", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "-----BEGIN PRIVATE KEY-----" } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "t1", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "echo MIIEsecretcommandtext" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("MIIEsecretcommandtext");
+  });
+
+  test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
+    const r = recorder(true);
+    const records = [...all(r, [acp({ sessionUpdate: "permission", toolCallId: "p", title: "Read /Users/someone/.ssh/id_rsa", kind: "read", granted: true })]), ...r.end()];
+    expect(onDisk(records)).not.toContain(".ssh");
+  });
+
+  test("a call that never gets a target or starts is still shown when the run ends; permission answers are steps", () => {
+    const r = recorder(true);
+    const records = [
+      ...all(r, [
+        acp({ sessionUpdate: "tool_call", toolCallId: "h1", title: "think", kind: "think", status: "pending" }),
+        acp({ sessionUpdate: "permission", toolCallId: "x", title: "rm -rf build", kind: "execute", granted: true }),
+      ]),
+      ...r.end(),
+    ];
+    expect(records.filter(one => one.k === "step")).toEqual([
+      expect.objectContaining({ kind: "tool", target: "allowed once", once: true }),
+      expect.objectContaining({ kind: "plan", once: true }),
+    ]);
+    // Without the opt-in, the answer shows and the command it was about doesn't.
+    const quiet = recorder(false);
+    const hidden = [...all(quiet, [acp({ sessionUpdate: "permission", toolCallId: "x", title: "rm -rf build", kind: "execute", granted: false })]), ...quiet.end()];
+    expect(hidden.filter(one => one.k === "step")).toEqual([expect.objectContaining({ kind: "tool", target: "refused", once: true })]);
+    expect(onDisk(hidden)).not.toContain("rm -rf");
   });
 });

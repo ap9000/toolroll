@@ -1,3 +1,5 @@
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
+import type { ProviderId } from "./contracts/provider.js";
 import { TASK_TEXT_LIMITS } from "./task-text.js";
 import { skillsContext } from "./project-skills.js";
 /**
@@ -116,7 +118,7 @@ export type ScoutRequest = {
   now: Date;
   clock?: () => Date;
   model?: string;
-  provider?: "claude" | "codex" | "openrouter" | "gemini";
+  provider?: ProviderId;
   maxTurns?: number;
   timeoutMs?: number;
   pulseMs?: number;
@@ -288,6 +290,10 @@ function connectedResearch(store: Store, taskRef: number, runId: number): Resear
 }
 
 export async function scout(store: Store, request: ScoutRequest): Promise<ScoutOutcome> {
+  // Research is read-only work; an ACP agent has only full access, so it doesn't do it.
+  if (request.provider !== undefined && isAcpProvider(request.provider)) {
+    return { ok: false, kind: "failure", reason: "provider-unsupported", message: `${ACP_AGENTS[request.provider].name} builds and repairs only — research needs claude, codex or gemini` };
+  }
   const made = request.outputDir === undefined ? mkdtempSync(join(tmpdir(), "toolroll-scout-")) : null;
   try {
     return await scoutWith(store, request, made ?? request.outputDir!);

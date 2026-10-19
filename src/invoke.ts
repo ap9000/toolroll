@@ -18,7 +18,9 @@
  */
 
 import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
-import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV } from "./keys.js";
+import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
+import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
+import { launchFromJson, verifyLaunch } from "./acp-attest.js";
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
@@ -135,6 +137,8 @@ export type AgentOutcome = {
    * strikes of bad agent work).
    */
   initFailed: boolean;
+  /** An ACP conversation's facts (provider.ts ParsedEnvelope.acp): read by the conformance check only. */
+  acp?: NonNullable<import("./provider.js").ParsedEnvelope["acp"]>;
 };
 
 /**
@@ -160,6 +164,8 @@ export type InvokeResult =
       /** Bounded agent reply when a spawned turn later failed a protocol
        * gate. Pre-spawn refusals omit it because no reply can exist. */
       finalMessage?: string | null;
+      /** An ACP conversation's facts, when the refusal came after a spawn (the conformance check grades a cancel). */
+      acp?: NonNullable<import("./provider.js").ParsedEnvelope["acp"]>;
     };
 
 /**
@@ -260,7 +266,8 @@ export async function invokeAgent(
   // Tier-2 attestation (A2/B3): the authoritative check, immediately
   // before the spawn it authorizes. Tier-1 providers return null here and
   // keep their road byte-identical.
-  const attested = await attestProvider(spec.provider, adapter.binary, options.versionProbe);
+  // An ACP agent is admitted by its own record (acp-attest.ts), read below; the version ranges are for the others.
+  const attested = isAcpProvider(spec.provider) ? null : await attestProvider(spec.provider, adapter.binary, options.versionProbe);
   if (attested !== null && !attested.ok) {
     if (attested.version !== null) store.stampProviderVersion(runId, attested.version);
     return {
@@ -269,6 +276,45 @@ export async function invokeAgent(
       providerVersion: attested.version,
       diagnostic: attested.problem,
     };
+  }
+
+  // AN ACP AGENT'S ADMISSION (docs/plans/acp-adapter.md § Admission): a passed conformance check of the exact binary
+  // on this runner, or nothing runs — absence is denial. It builds and repairs only, on a model it offered when it was
+  // checked, and no dollar cap rides it (it can't hold one; the scheduler refuses capped work first, this is the belt).
+  // An ACP spawn is admitted by its agent's attestation on this runner — or, for the conformance check alone, by the
+  // check request that will create it (acpCheck: set only by the check job). The two never stand in for each other.
+  const acpCheckAsk = options.acpCheck ?? null;
+  const acpAttestation = isAcpProvider(spec.provider) && acpCheckAsk === null ? store.acpAttestationFor(spec.provider, run.runner) : null;
+  const acpCheckRequest = isAcpProvider(spec.provider) && acpCheckAsk !== null ? store.acpCheckAdmitting(acpCheckAsk.requestId, acpCheckAsk.step, runId, clock()) : null;
+  const acpCheckLaunch = acpCheckRequest?.launchJson == null ? null : launchFromJson(acpCheckRequest.launchJson);
+  /** The plane's own isolation reading for a check's first step (below, before spawn); null when none was asked. */
+  let acpIsolation: { fileDenied: boolean; envClear: boolean } | null = null;
+  /** What starts the agent, and who the handshake must say it is (unknown, for a check: the check learns it). */
+  const acpLaunch = acpAttestation !== null ? acpAttestation.launch : acpCheckLaunch;
+  if (!isAcpProvider(spec.provider) && acpCheckAsk !== null) throw new Error("only an ACP agent is checked");
+  if (isAcpProvider(spec.provider)) {
+    const name = ACP_AGENTS[spec.provider].name;
+    const refuse = (diagnostic: string): InvokeResult => ({ kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation?.agent.version ?? null, diagnostic });
+    if (acpCheckAsk !== null) {
+      if (acpCheckRequest === null || acpCheckLaunch === null) return refuse(`this check isn't running, has expired, lost its watch, or isn't this step's run`);
+      if (acpCheckRequest.provider !== spec.provider || acpCheckRequest.runner !== run.runner || acpCheckRequest.model !== spec.model || acpCheckRequest.taskRef !== run.taskRef) {
+        return refuse("this run isn't the check's: another agent, runner, model or task");
+      }
+      if (invocation.phase !== "build") return refuse(`${name}'s check runs as a build`);
+    } else {
+      if (acpAttestation === null) return refuse(`${name} isn't checked on ${run.runner} — run \`toolroll agents check ${spec.provider}\` there`);
+      if (invocation.phase !== "build" && invocation.phase !== "repair") return refuse(`${name} builds and repairs only`);
+      if (spec.model === null || !acpAttestation.models.includes(spec.model)) return refuse(`${name} didn't offer ${spec.model ?? "a model"} when it was checked — check it again, or choose one it offered`);
+    }
+    if (invocation.maxBudgetUsd !== undefined) return refuse(`${name} can't hold a dollar cap, so it doesn't run capped work (budget-unenforceable)`);
+    // The billing the run was admitted under must be for the model about to be chosen.
+    const stamp = store.acpBillingOfRun(runId);
+    if (stamp !== null && stamp.model !== spec.model) return refuse(`this run was admitted to bill ${stamp.model}, not ${spec.model}`);
+    // And the money moment holds it to the hard monthly budgets as stamped — immutable since admission, so a
+    // declaration changed between a gate and this spawn changes nothing: metered work a budget holds never starts.
+    const billed = stamp?.kind === "plan" ? "subscription" as const : "api-key" as const;
+    const held = store.budgetGate(clock())({ ...store.budgetSubject(run.taskRef), agents: [{ provider: spec.provider, billing: billed }] });
+    if (held.over !== null) return refuse(`a monthly budget holds metered work, and ${name} on ${spec.model ?? "this model"} is metered here (budget)`);
   }
 
   // Auth mode decides how the credential reaches the process (the operator
@@ -287,6 +333,7 @@ export async function invokeAgent(
     stdin: _callerStdin,
     accumulateUsage: _accumulateUsage,
     liveInput: _liveInput,
+    acpCheck: _acpCheck,
     ...runOptions
   } = options;
   // The live setting is read STRICTLY (atomic authority closure): a
@@ -303,15 +350,18 @@ export async function invokeAgent(
       diagnostic: strict.problem,
     };
   }
-  const authMode: "subscription" | "api-key" = strict.mode;
+  const authMode: AuthMode = strict.mode;
   if (spec.provider === "claude" && invocation.phase !== "review") {
     const problem = claudeSettingsAuthProblem(options.env?.["CLAUDE_CONFIG_DIR"] ?? process.env["CLAUDE_CONFIG_DIR"] ?? join(keyHome ?? homedir(), ".claude"));
     if (problem !== null) return { kind: "refused", reason: "auth-mode", providerVersion: attested?.version ?? null, diagnostic: problem };
   }
-  const ownKeyEnv = OWN_KEY_ENV[spec.provider];
+  // An ACP agent has no key Toolroll holds or injects: its own and everyone else's are shed (adapter.extraOmitEnv).
+  const keyed = isKeyedProvider(spec.provider) ? spec.provider : null;
+  const ownKeyEnv = keyed === null ? [] : OWN_KEY_ENV[keyed];
+  const keyEnvName = keyed === null ? null : PROVIDER_KEY_ENV[keyed];
   const managedKey =
-    authMode === "api-key"
-      ? readProviderKey(spec.provider, keyHome) ?? (process.env[PROVIDER_KEY_ENV[spec.provider]] || null)
+    authMode === "api-key" && keyed !== null && keyEnvName !== null
+      ? readProviderKey(keyed, keyHome) ?? (process.env[keyEnvName] || null)
       : null;
   // Resume XOR mint, enforced at the GATEWAY (Codex gemini verify round 2,
   // finding 3): a resume and a minted start id are mutually exclusive —
@@ -391,6 +441,13 @@ export async function invokeAgent(
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
+  // An ACP agent runs only inside the OS fence: nothing else holds it (it may run commands without asking).
+  if (isAcpProvider(spec.provider) && fenced.method !== "macos-sandbox" && fenced.method !== "linux-bubblewrap") {
+    tools?.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: acpAttestation?.agent.version ?? null, diagnostic: `${ACP_AGENTS[spec.provider].name} runs only inside the OS fence (the macOS sandbox or bubblewrap), and this launch has neither (fence-unavailable)` };
+  }
   // The tools were chosen for the fence decided above: a launch that got any other starts nothing.
   // Only a prepared project-tool broker depends on the earlier decision. Empty Claude configs also have a privateDir.
   if (tools?.serverPids !== undefined && fenced.method !== containment.fence) {
@@ -419,7 +476,7 @@ export async function invokeAgent(
     // A fenced build's git never expires a reflog, so gc never rewrites another task's (agent-fence.ts).
     ...(fence.length > 0 ? fencedGitEnv({ ...process.env, ...(runOptions.env ?? {}) }) : {}),
     ...(codexHome === null ? {} : { CODEX_HOME: codexHome.dir }),
-    ...(managedKey === null ? {} : { [PROVIDER_KEY_ENV[spec.provider]]: managedKey }),
+    ...(managedKey === null || keyEnvName === null ? {} : { [keyEnvName]: managedKey }),
     // This key is deliberately last: no caller may point an agent back at
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),
@@ -436,7 +493,7 @@ export async function invokeAgent(
     // must not override the ONE canonical key this mode injected.
     ...(authMode === "subscription"
       ? ownKeyEnv
-      : ownKeyEnv.filter(name => name !== PROVIDER_KEY_ENV[spec.provider])),
+      : ownKeyEnv.filter(name => name !== keyEnvName)),
   ];
   const launchOptions: RunOptions = {
     ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants }),
@@ -462,6 +519,8 @@ export async function invokeAgent(
     },
     ...(stdin === undefined ? {} : { stdin }),
     ...(liveInput === null ? {} : { liveInput }),
+    // One ACP conversation: the brief, the sealed model, and who the check says the agent is.
+    ...(acpLaunch === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation?.agent ?? null, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }), ...(runOptions.acp?.handshakeMs === undefined ? {} : { handshakeMs: runOptions.acp.handshakeMs }) } }),
     ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
     ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
     ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
@@ -508,6 +567,19 @@ export async function invokeAgent(
             diagnostic: "The build fence blocks this checkout's own Git data.\n\nDetails:\n" + check.stderr.slice(0, 2000) + "\nDenied paths:\n" + fence.join("\n").slice(0, 12000) };
         }
       }
+    }
+    // THE CHECK'S ISOLATION, PROVEN BY THE PLANE (docs/plans/acp-adapter.md § Layer E): inside the exact fence and
+    // child environment the agent is about to get, a canary file in the fenced state must be unreadable and a canary
+    // key in the launching environment must be absent. No agent takes part, so no agent can fake it.
+    if (acpCheckAsk?.isolation !== undefined && launchOptions.fence !== undefined && workspace !== null) {
+      // processGroup: run() applies the fence only on the process-group road (a plain execFile carries none).
+      const probe = { cwd: workspace, env: childEnv, omitEnv: childOmitEnv, fence: launchOptions.fence, ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }), timeoutMs: 15_000, processGroup: true };
+      const read = await runCommand("/bin/cat", [acpCheckAsk.isolation.file], probe);
+      const env = await runCommand("/usr/bin/env", [], probe);
+      acpIsolation = {
+        fileDenied: read.code !== 0 && !read.stdout.includes(acpCheckAsk.isolation.fileCanary),
+        envClear: env.code === 0 && !env.stdout.includes(acpCheckAsk.isolation.envValue),
+      };
     }
     // The stamp precedes the spawn, so a crash between the two leaves a run
     // that claims spend which never happened — the honest direction. A spawn
@@ -572,7 +644,29 @@ export async function invokeAgent(
       };
     }
 
+    // The ACP launch re-proved HERE, after every await: each bound file is still the one that passed its check.
+    if (acpCheckAsk !== null && acpCheckRequest !== null && acpCheckLaunch !== null) {
+      // The check request is read again here, after every await: still running, unexpired, owned, this step's run.
+      const still = store.acpCheckAdmitting(acpCheckAsk.requestId, acpCheckAsk.step, runId, clock());
+      if (still === null || still.launchJson !== acpCheckRequest.launchJson) {
+        return { kind: "refused", reason: "provider-unattested", providerVersion: null, diagnostic: "the check stopped admitting this run while it was being set up — nothing was started" };
+      }
+      const verified = verifyLaunch(acpCheckLaunch);
+      if (!verified.ok) return { kind: "refused", reason: "provider-unattested", providerVersion: null, diagnostic: verified.problem };
+    }
+    if (acpAttestation !== null) {
+      // The record is read again here, after every await: a check revoked or replaced during setup starts nothing.
+      const live = store.acpAttestationFor(spec.provider, run.runner);
+      if (live === null || live.id !== acpAttestation.id) {
+        return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: `${ACP_AGENTS[spec.provider as AcpProviderId].name}'s check was revoked or replaced while this run was being set up — nothing was started` };
+      }
+      const verified = verifyLaunch(live.launch);
+      if (!verified.ok) {
+        return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: verified.problem };
+      }
+    }
     if (attested !== null) store.stampProviderStart(runId, clock(), attested.version);
+    else if (acpAttestation !== null) store.stampProviderStart(runId, clock(), acpAttestation.agent.version);
     else store.stampProviderStart(runId, clock());
     // The brief is queued only once the checkout has passed the fence check.
     liveInput?.begin(invocation.brief);
@@ -581,7 +675,10 @@ export async function invokeAgent(
     // provider runs, and a stop kills THIS run's process group through the
     // handle registered under its owner tag — the exact-attempt road,
     // never the global sweep. Settlement then reads the same row.
-    result = await underStopWatch(store, runId, () => spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions));
+    // An ACP agent starts through its attested launch (the pinned interpreter for a script), never a PATH lookup.
+    result = await underStopWatch(store, runId, () => acpLaunch !== null
+      ? spawn(acpLaunch.file, [...acpLaunch.prefix, ...launchArgv], launchOptions)
+      : spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions));
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
@@ -598,9 +695,12 @@ export async function invokeAgent(
   if (spec.provider === "claude" && managedKey === null && authMode === "subscription" && billingSeen.answered && evidence !== null) {
     store.recordProviderBilling("claude", evidence, new Date());
   }
-  store.fixRunBilling(runId, authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle), new Date());
+  // An ACP run bills as its admission stamp says (store.acpBillingOfRun): its agent's own plan, or metered.
+  const acpBilling = isAcpProvider(spec.provider) ? (store.acpBillingOfRun(runId)?.kind === "plan" ? "subscription" as const : "api-key" as const) : null;
+  store.fixRunBilling(runId, acpBilling ?? (authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle)), new Date());
 
   const envelope = adapter.parse(result.stdout);
+  store.stampAgentReportedUsage(runId, envelope.agentReportedUsage ?? null);
   // An installed CLI too old for a build's own setup refuses its flags
   // before it starts: nothing ran, and the run says what to update.
   const unsupported = result.code !== 0 && envelope.initObserved !== true && invocation.phase !== "review" ? isolationUnsupported(spec.provider, result.stderr) : null;
@@ -676,6 +776,7 @@ export async function invokeAgent(
       providerVersion: attested === null ? null : attested.version,
       diagnostic: envelope.protocolError,
       finalMessage: envelope.finalMessage,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
     };
   }
 
@@ -697,6 +798,7 @@ export async function invokeAgent(
           ? "the harness initialized without announcing its session id"
           : "the harness announced a session id different from the one it was started under",
       finalMessage: envelope.finalMessage,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
     };
   }
 
@@ -711,6 +813,7 @@ export async function invokeAgent(
       providerVersion: attested === null ? null : attested.version,
       diagnostic: sessionIdentityProblem,
       finalMessage: envelope.finalMessage,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
     };
   }
 
@@ -724,6 +827,7 @@ export async function invokeAgent(
       providerVersion: attested === null ? null : attested.version,
       diagnostic: "the provider reported a failed terminal despite exiting with code 0",
       finalMessage: envelope.finalMessage,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
     };
   }
 
@@ -747,6 +851,7 @@ export async function invokeAgent(
           ? "the harness exited 0 without its success terminal — the stream ended mid-protocol"
           : "the harness exited 0 without ever initializing"),
       finalMessage: envelope.finalMessage,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
     };
   }
 
@@ -765,7 +870,9 @@ export async function invokeAgent(
       notFound: result.notFound,
       sessionId: envelope.sessionId,
       finalMessage: envelope.finalMessage,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
       structuredOutput: envelope.structuredOutput ?? null,
+      ...(envelope.acp === undefined ? {} : { acp: { ...envelope.acp, ...(acpIsolation === null ? {} : { isolation: acpIsolation }) } }),
       ending: envelope.ending ?? null,
       usage: {
         tokensIn: envelope.tokensIn,

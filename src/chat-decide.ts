@@ -12,6 +12,7 @@
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
+import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
 import type { ContractResult } from "./contracts/contract.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -102,13 +103,14 @@ export function permissionPlainWords(profile: Scope["profile"] | null | undefine
       : "file edits only; commands are refused";
   }
   if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? full : "file edits only; other tools are refused";
+  if (isAcpProfile(profile)) return "full access inside the OS fence, nothing asks first";
   return profile.sandboxMode === "danger-full-access" ? full : "file edits and commands inside the project only";
 }
 
 function fullAccess(profile: Scope["profile"] | null | undefined): boolean {
   if (profile === null || profile === undefined) return false;
   return profile.provider === "claude" ? profile.permissionArgv === "bypassPermissions"
-    : profile.provider === "gemini" ? profile.approvalArgv === "yolo" : profile.sandboxMode === "danger-full-access";
+    : profile.provider === "gemini" ? profile.approvalArgv === "yolo" : isAcpProfile(profile) ? true : profile.sandboxMode === "danger-full-access";
 }
 
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;

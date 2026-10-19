@@ -1,3 +1,4 @@
+import { ACP_AGENTS, isAcpProvider } from "../acp-agents.js";
 import { handlersOf } from './handler-registry.js';
 import { closedQuestionWords } from "../decision.js";
 import { DEPRECATED_PAGE } from "../deprecations.js";
@@ -38,7 +39,7 @@ projectName,
 rowVisible
 } from "../project.js";
 import { fileTaskProposal } from "../proposal.js";
-import { isProviderId,validateSpec,type ProviderId } from "../provider.js";
+import { isProviderId,PROVIDER_IDS,validateSpec,type ProviderId } from "../provider.js";
 import { completeAndOpenPullRequest,mergeAsPerson } from '../pull-request-flow.js';
 import { isQualityMode,type QualityMode } from "../quality.js";
 import { createResultRevision,requestResultChanges } from "../result-actions.js";
@@ -2129,11 +2130,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         };
         if (phase === null && sizeEdit === undefined) return taskScreen(response, who, taskId, "nothing to change about the agents", 400);
         if (phaseGiven !== null) {
-          if (providerGiven === null || !isProviderId(providerGiven)) return taskScreen(response, who, taskId, "provider is claude, codex, openrouter, or gemini", 400);
+          if (providerGiven === null || !isProviderId(providerGiven)) return taskScreen(response, who, taskId, `provider is one of ${PROVIDER_IDS.join(", ")}`, 400);
           if (modelGiven === "") return taskScreen(response, who, taskId, "name the exact model id — approvals bind exact agents", 400);
           const valid = validateSpec({ provider: providerGiven, model: modelGiven });
           if (!valid.ok) return taskScreen(response, who, taskId, `agents not changed: ${valid.problem}`, 400);
           if (phaseGiven === "review" && providerGiven === "gemini") return taskScreen(response, who, taskId, "gemini cannot review yet — choose claude or codex", 400);
+          if ((phaseGiven === "plan" || phaseGiven === "review") && isAcpProvider(providerGiven)) return taskScreen(response, who, taskId, `${ACP_AGENTS[providerGiven].name} builds and repairs only — choose another agent to ${phaseGiven}`, 400);
         }
         // The configured-choice proof lives INSIDE the edit transaction
         // (`configured`): the pair is held to the role's choices under the
@@ -2634,7 +2636,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       handoff: run?.handoff ?? null,
       costUsd: run?.costUsd ?? null,
       provider: run?.provider ?? null,
-      authMode: run?.authMode === "subscription" || run?.authMode === "api-key" ? run.authMode : null,
+      authMode: run?.authMode === "subscription" || run?.authMode === "api-key" || run?.authMode === "agent-login" ? run.authMode : null,
       ranMinutes:
         run === null || run.finishedAt === null
           ? null

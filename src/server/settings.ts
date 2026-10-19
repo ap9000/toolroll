@@ -1,3 +1,4 @@
+import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
 import { galleryTemplateOf } from "../flow-gallery.js";
@@ -581,13 +582,14 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     };
     const providerKeys = who.role !== "approver"
       ? null
-      : await Promise.all(PROVIDER_IDS.map(async provider => ({
+      // ACP agents sign in their own way; Toolroll keeps no key for them, so the key card lists only the others.
+      : await Promise.all(PROVIDER_IDS.filter(isKeyedProvider).map(async provider => ({
           provider,
-          envName: PROVIDER_KEY_ENV[provider as "claude"],
+          envName: PROVIDER_KEY_ENV[provider],
           ...keyStatus(provider, providerHome),
           connection: await connectionCheck(provider, url.searchParams.get("check-connection") === provider),
-          ambient: (process.env[PROVIDER_KEY_ENV[provider as "claude"]] ?? "") !== "",
-          mode: readAuthMode(provider, providerHome),
+          ambient: (process.env[PROVIDER_KEY_ENV[provider]] ?? "") !== "",
+          mode: readAuthMode(provider, providerHome) === "api-key" ? "api-key" as const : "subscription" as const,
           subscriptionCapable: SUBSCRIPTION_CAPABLE[provider],
         })));
     const telegramConfigured = loadBotToken(process.env, options.telegramTokenFile) !== null;
@@ -1709,6 +1711,7 @@ ${postForm("/settings/chat-approval/save", html`\
     // write-only from here — status pages say set/not-set, never bytes.
     const provider = body.get("provider") ?? "";
     if (!isProviderId(provider)) return refuse(response, who, 400, "unknown provider", "/settings");
+    if (!isKeyedProvider(provider)) return refuse(response, who, 400, `${ACP_AGENTS[provider].name} signs in its own way — Toolroll keeps no key for it`, "/settings");
     if (op === "clear") {
       const cleared = clearProviderKey(provider, providerHome);
       const clearedMode = readAuthMode(provider, providerHome);
@@ -1742,7 +1745,7 @@ ${postForm("/settings/chat-approval/save", html`\
     }
     // Apply the mode only when it actually differs.
     const modeChanged = modeSelected && wantedMode !== currentMode;
-    if (modeChanged) setAuthMode(provider, wantedMode as AuthMode, providerHome);
+    if (modeChanged) setAuthMode(provider, wantedMode, providerHome);
     const modeNote = modeChanged ? ` \u00b7 ${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : "";
     if (value === "") {
       return redirect(response, `/settings?said=${encodeURIComponent(modeChanged ? `${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : `no change — ${provider} already uses ${currentMode === "api-key" ? "the API key" : "its own subscription / login"}`)}`);

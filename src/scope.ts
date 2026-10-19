@@ -8,6 +8,8 @@ import { projectAuthority } from "./project-access.js";
 import { activeRemote } from "./remote-run.js";
 import { claimActor, currentActor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
+import { isAcpProfile, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
+export { isAcpProfile };
 /**
  * What a task is allowed to become, agreed before anything builds it.
  *
@@ -126,6 +128,13 @@ export const GEMINI_LIMITS = {
   timeoutSeconds: 1200,
   repairTimeoutSeconds: 300,
 } as const;
+/** An ACP agent runs under two clocks at once: the whole attempt, and silence (no line from the agent). */
+export const ACP_LIMITS = {
+  timeoutSeconds: 3600,
+  idleTimeoutSeconds: 900,
+  repairTimeoutSeconds: 900,
+  repairIdleTimeoutSeconds: 300,
+} as const;
 
 export type ClaudeProfile = {
   provider: "claude";
@@ -184,7 +193,42 @@ export type GeminiProfile = {
   repairModel: string;
 };
 
-export type ExecutionProfile = ClaudeProfile | CodexShapedProfile | GeminiProfile;
+/**
+ * An agent over the Agent Client Protocol (acp-agents.ts, docs/plans/acp-adapter.md).
+ * Full access inside the OS fence is the only posture: nothing else could be
+ * made true (an agent may run commands without asking). There is no turn
+ * limit; both clocks bound every attempt, and a repair has its own pair.
+ */
+export type AcpProfile = {
+  provider: AcpProviderId;
+  /** Exact, and one the agent offered when it was checked. */
+  model: string;
+  permission: "full";
+  maxTurns: "unsupported";
+  repairMaxTurns: "unsupported";
+  timeoutSeconds: number;
+  idleTimeoutSeconds: number;
+  repairTimeoutSeconds: number;
+  repairIdleTimeoutSeconds: number;
+  repairModel: string;
+};
+
+export type ExecutionProfile = ClaudeProfile | CodexShapedProfile | GeminiProfile | AcpProfile;
+
+/** Whether a profile's clock is a no-progress window (an ACP profile has both clocks; its overall one is a deadline). */
+export function idleClock(profile: ExecutionProfile): boolean {
+  return !isAcpProfile(profile) && profile.timeoutKind === "idle";
+}
+
+/**
+ * The watchdogs an attempt runs under, from its sealed profile and the overall bound the caller resolved: an ACP
+ * profile gets both clocks at once (the deadline and its silence window — a repair its own pair); the others one,
+ * a no-progress window when the profile says idle, else a deadline.
+ */
+export function watchdogsOf(profile: ExecutionProfile, timeoutMs: number, repair = false): { timeoutMs?: number; idleTimeoutMs?: number } {
+  if (isAcpProfile(profile)) return { timeoutMs, idleTimeoutMs: (repair ? profile.repairIdleTimeoutSeconds : profile.idleTimeoutSeconds) * 1000 };
+  return profile.timeoutKind === "idle" ? { idleTimeoutMs: timeoutMs } : { timeoutMs };
+}
 
 /** The durable unattended permission choices exposed by the console. The
  * provider-specific argv is still what gets sealed into an approval; this
@@ -471,6 +515,30 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
         timeoutSeconds: p["timeoutSeconds"],
         ...(p["timeoutKind"] === "idle" ? { timeoutKind: "idle" as const } : {}),
         repairTimeoutSeconds: p["repairTimeoutSeconds"],
+        repairModel: p["repairModel"],
+      };
+    }
+    return null;
+  }
+  if (typeof p["provider"] === "string" && isAcpProvider(p["provider"])) {
+    if (
+      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], []) &&
+      str(p["model"]) &&
+      p["permission"] === "full" &&
+      p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
+      clock(p["timeoutSeconds"]) && clock(p["idleTimeoutSeconds"]) && clock(p["repairTimeoutSeconds"]) && clock(p["repairIdleTimeoutSeconds"]) &&
+      repairRef(p["repairModel"])
+    ) {
+      return {
+        provider: p["provider"],
+        model: p["model"],
+        permission: "full",
+        maxTurns: "unsupported",
+        repairMaxTurns: "unsupported",
+        timeoutSeconds: p["timeoutSeconds"],
+        idleTimeoutSeconds: p["idleTimeoutSeconds"],
+        repairTimeoutSeconds: p["repairTimeoutSeconds"],
+        repairIdleTimeoutSeconds: p["repairIdleTimeoutSeconds"],
         repairModel: p["repairModel"],
       };
     }

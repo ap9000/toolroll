@@ -31,6 +31,8 @@ import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
 import { startToolBroker, type BrokerOptions, type ToolBroker } from "./tool-broker.js";
 import type { FenceMethod } from "./agent-fence.js";
+import type { ProviderId } from "./contracts/provider.js";
+import { isAcpProvider } from "./acp-agents.js";
 import { SecretStoreError, destroyOwnFile, prepareSecretFolder, registerSecretFolder, pathIn, readOwnFile, readSealed, removeValue, secretBackend, secretFolder, secretStorage, serviceOf, withSecretLock, withSecretLockAsync, writeOwnFile, writeSealed, type SecretBackend, type SecretFolder, type SecretItem, type SecretStoreKind } from "./tool-secret-store.js";
 import { ACCESS, GRANTED, REFRESH, mintRunToken, mintsRunTokens, oneAtATime, runScope, scopeList, signedIn } from "./oauth-run-token.js";
 import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
@@ -791,7 +793,7 @@ export type ToolContainment = { platform: NodeJS.Platform; fence: FenceMethod };
  * read (OpenRouter uses the same harness); Claude's own file rules and Linux's bubblewrap don't stop it, and on Linux
  * hidepid hides nothing from the same user, so Linux never starts one.
  */
-export function secretToolRefusal(provider: "claude" | "codex" | "openrouter" | "gemini", containment: ToolContainment): string | null {
+export function secretToolRefusal(provider: ProviderId, containment: ToolContainment): string | null {
   if (provider === "codex" || provider === "openrouter") return "This tool needs a Claude build to protect its sign-in details.";
   if (containment.platform === "linux") return "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool.";
   if (containment.platform !== "darwin" || containment.fence !== "macos-sandbox") return "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it.";
@@ -806,13 +808,14 @@ export function secretToolRefusal(provider: "claude" | "codex" | "openrouter" | 
 export async function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
-  provider: "claude" | "codex" | "openrouter" | "gemini",
+  provider: ProviderId,
   options: { home?: string; now: Date; containment: ToolContainment; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions; fetcher?: typeof fetch },
 ): Promise<ToolLaunchArgs> {
   const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
   // A local server with secrets starts only where the build can't read its environment; the rest are left out,
-  // saying why, before the broker exists. Gemini starts none (below).
-  const refusal = provider === "gemini" ? null : secretToolRefusal(provider, options.containment);
+  // saying why, before the broker exists. Gemini and ACP agents start none (below).
+  const toolless = provider === "gemini" || isAcpProvider(provider);
+  const refusal = toolless ? null : secretToolRefusal(provider, options.containment);
   if (refusal !== null) {
     launch.tools = launch.tools.filter(one => {
       if (one.spec.transport === "http" || Object.keys(one.values).length === 0) return true;
@@ -820,14 +823,15 @@ export async function prepareRunTools(
       return false;
     });
   }
-  const revokes = provider === "gemini" ? [] : await signInRun(launch, { readOnly: options.readOnly !== undefined, now: options.now, ...(options.home === undefined ? {} : { home: options.home }), ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }) });
+  const revokes = toolless ? [] : await signInRun(launch, { readOnly: options.readOnly !== undefined, now: options.now, ...(options.home === undefined ? {} : { home: options.home }), ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }) });
   const revoke = () => Promise.all(revokes.splice(0).map(one => one())).then(() => undefined);
   const offered: ToolLaunchOptions = { ...(options.readOnly === undefined ? {} : { enabledTools: options.readOnly }), ...(options.broker === undefined ? {} : { broker: options.broker }) };
   let launched: ToolLaunchArgs;
   try {
     launched = provider === "claude" ? await claudeToolArgs(launch, offered)
       : provider === "codex" || provider === "openrouter" ? await codexToolArgs(launch, offered)
-          : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
+          : provider === "gemini" ? { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined }
+            : { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
   } catch (error) {
     // Tokens were made for a run that won't start: each is revoked, and the run with them.
     if (revokes.length === 0) throw error;
@@ -836,13 +840,13 @@ export async function prepareRunTools(
   }
   // The run's own sign-ins end with it: the broker closes first, so nothing uses a token as it is revoked.
   const prepared: ToolLaunchArgs = revokes.length === 0 ? launched : { ...launched, cleanup: () => { launched.cleanup(); void revoke(); } };
-  const skipped = provider === "gemini"
-    ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: "Gemini builds can't use project tools yet" }))]
+  const skipped = toolless
+    ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: provider === "gemini" ? "Gemini builds can't use project tools yet" : "ACP agents can't use project tools yet" }))]
     : launch.skipped;
   try {
     store.recordRunTools(runId, JSON.stringify({
       provider,
-      tools: provider === "gemini" ? [] : launch.tools.map(one => ({ name: one.spec.name, digest: one.digest })),
+      tools: toolless ? [] : launch.tools.map(one => ({ name: one.spec.name, digest: one.digest })),
       skipped,
     }), options.now);
   } catch (error) {
@@ -909,7 +913,7 @@ function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonl
 }
 
 /** When a launch's tools cannot be prepared, it still gets none of anything else's: the same isolation with an empty list. */
-export function noToolsArgs(provider: "claude" | "codex" | "openrouter" | "gemini"): ToolLaunchArgs {
+export function noToolsArgs(provider: ProviderId): ToolLaunchArgs {
   if (provider === "claude") return { argv: ["--mcp-config", '{"mcpServers":{}}'], env: {}, omitEnv: [], cleanup: () => undefined };
   if (provider === "gemini") return { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
   return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
