@@ -65,7 +65,7 @@ function turns(...answers: Record<string, unknown>[]): TurnRunner {
 }
 const io = (subagent: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, subagent });
 const made = () => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown> }) : [];
-const cardFor = (title: string) => store.addFlowCard({ flow, title, description: null, stage: "maya", by: "alex" }, T0);
+const cardFor = (title: string) => store.addFlowCard({ flow, title, description: null, stage: "maya", by: "alex", byKind: "person" }, T0);
 
 test("the CLI's cost and tokens are kept for each turn (cache reads count as input)", async () => {
   const cli = async (): Promise<ExecResult> => ({ code: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.0123,

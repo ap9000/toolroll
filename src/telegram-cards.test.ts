@@ -437,7 +437,7 @@ describe("flow cards", () => {
       { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
       { id: "post", title: "Post it", kind: "inbox" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex", byKind: "person" }, now);
     store.updateFlowCard(card, { outputs: { draft: "Hi Sam, we refunded order 42 today. It reaches your card in 3–5 working days." } }, now);
     advanceFlows(store, REPO, now, { evidenceRoot: dir });
     await pass();
@@ -480,7 +480,7 @@ describe("flow cards", () => {
       { id: "draft", title: "Write the reply", kind: "draft", instructions: "Reply" },
       { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "A long reply", description: null, stage: "check", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "A long reply", description: null, stage: "check", by: "alex", byKind: "person" }, now);
     store.updateFlowCard(card, { outputs: { draft: "word ".repeat(2_400).trim() } }, now);
     advanceFlows(store, REPO, now, { evidenceRoot: dir });
     await pass();
@@ -508,7 +508,7 @@ describe("flow cards", () => {
       { id: "ship", title: "Ship", kind: "inbox" },
       { id: "parked", title: "Parked", kind: "inbox" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "build", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "build", by: "alex", byKind: "person" }, now);
     store.updateFlowCard(card, { primaryTask: "fix-3", outputs: { build: "Result ready on task fix-3." } }, now);
     expect(store.moveFlowCard(card, { to: "choose", outcome: "ok", actor: "flow", task: "fix-3" }, now)).toBe(true);
     advanceFlows(store, REPO, now, { evidenceRoot: dir });
@@ -540,7 +540,7 @@ describe("approving anywhere the owner has authority", () => {
       { id: "post", title: "Published", kind: "inbox" },
     ], null)) }, now);
     return { flow, card: (title: string) => {
-      const card = store.addFlowCard({ flow, title, description: null, stage: "check", by: "alex" }, now);
+      const card = store.addFlowCard({ flow, title, description: null, stage: "check", by: "alex", byKind: "person" }, now);
       store.updateFlowCard(card, { outputs: { draft: `Notes for ${title}.` } }, now);
       return card;
     } };

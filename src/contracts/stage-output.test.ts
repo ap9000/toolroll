@@ -60,7 +60,7 @@ describe("what a card keeps of what its zones handed on", () => {
     try {
       const now = new Date("2026-10-05T09:00:00.000Z");
       const flow = store.createFlow({ repo: "/projects/alpha", name: "Recorded", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [] }), by: "alex" }, now);
-      const card = store.addFlowCard({ flow, title: "Recorded", description: null, stage: "inbox", by: "alex" }, now);
+      const card = store.addFlowCard({ flow, title: "Recorded", description: null, stage: "inbox", by: "alex", byKind: "person" }, now);
       const saved = () => String(raw.prepare("SELECT outputs_json FROM flow_card WHERE id = ?").get(card)!["outputs_json"]);
       const put = (value: string) => raw.prepare("UPDATE flow_card SET outputs_json = ? WHERE id = ?").run(value, card);
       for (const one of recorded) {

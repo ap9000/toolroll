@@ -91,7 +91,7 @@ describe("the builder moves flow cards while it builds", () => {
       { id: "work", title: kind === "report" ? "Research" : "Build", kind, instructions: "Find three references.", next: "choose" },
       { id: "choose", title: "Choose", kind: "inbox" },
     ] })) }, new Date());
-    const card = store.addFlowCard({ flow, title: "Landing page ideas", description: null, stage: "work", by: "alex" }, new Date());
+    const card = store.addFlowCard({ flow, title: "Landing page ideas", description: null, stage: "work", by: "alex", byKind: "person" }, new Date());
     store.updateFlowCard(card, { task }, new Date());
     return card;
   });
@@ -180,7 +180,7 @@ describe("overlapping flow passes", () => {
     const flow = store.createFlow({ repo, name: "Check it", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
       { title: "Journeys", kind: "check", script: "journeys" }, { title: "Research", kind: "report", instructions: "Explain the result." },
     ], null)) }, new Date());
-    const card = store.addFlowCard({ flow, title: "Nightly journeys", description: null, stage: "journeys", by: "alex" }, new Date());
+    const card = store.addFlowCard({ flow, title: "Nightly journeys", description: null, stage: "journeys", by: "alex", byKind: "person" }, new Date());
     let scripts = 0;
     // The script takes a moment, so every other pass starts while it runs.
     const shell: Runner = async (file, args, options) => { scripts++; await sleep(200); return exec(file, args, options); };

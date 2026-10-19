@@ -95,7 +95,7 @@ describe("the Pull request zone", () => {
   /** A card whose build is done, waiting at the flow's decision; then a person approves it into the Pull request zone. */
   const approvedCard = (definition: FlowDefinition, taskId: string) => {
     const flow = store.createFlow({ repo: REPO, name: "Issues to PRs", definitionJson: JSON.stringify(definition), by: "alex" }, T0);
-    const card = store.addFlowCard({ flow, title: "Checkout total is wrong", description: "Tax is missing.", stage: "build", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Checkout total is wrong", description: "Tax is missing.", stage: "build", by: "alex", byKind: "person" }, T0);
     store.setFlowCardOwner(card, "alex", "alex", T0);
     const runId = readyResult(taskId);
     store.updateFlowCard(card, { task: taskId, primaryTask: taskId }, T0);
@@ -258,7 +258,7 @@ describe("the Pull request zone", () => {
   test("c1: no built result takes the failure path saying what to do", async () => {
     const definition = issuesToPrs(false);
     const flow = store.createFlow({ repo: REPO, name: "Issues to PRs", definitionJson: JSON.stringify(definition), by: "alex" }, T0);
-    const card = store.addFlowCard({ flow, title: "Nothing built", description: null, stage: "pull-request", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Nothing built", description: null, stage: "pull-request", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, REPO, at(1), io(scripted([]).exec));
     expect(store.getFlowCard(card)).toMatchObject({ stage: "build", note: "There's no built result on this card to open a pull request for." });
     expect(store.pendingPublications()).toEqual([]);
@@ -287,7 +287,7 @@ describe("the Pull request zone", () => {
   test("c2: a card moved into a merging zone by hand, with no approval since its build, is never merged", async () => {
     const definition = issuesToPrs(true);
     const flow = store.createFlow({ repo: REPO, name: "Issues to PRs", definitionJson: JSON.stringify(definition), by: "alex" }, T0);
-    const card = store.addFlowCard({ flow, title: "Skip the review", description: null, stage: "build", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Skip the review", description: null, stage: "build", by: "alex", byKind: "person" }, T0);
     readyResult("skip-review");
     store.updateFlowCard(card, { task: "skip-review", primaryTask: "skip-review" }, T0);
     store.moveFlowCard(card, { to: "pull-request", outcome: "moved", actor: "alex" }, at(1));

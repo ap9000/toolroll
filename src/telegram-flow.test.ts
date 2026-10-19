@@ -28,7 +28,7 @@ afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); 
 
 const binding = { id: 1, approver: "alex" } as TelegramBinding;
 const waiting = () => {
-  const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex", byKind: "person" }, T0);
   store.updateFlowCard(card, { outputs: { draft: "We refunded it." } }, T0);
   return card;
 };

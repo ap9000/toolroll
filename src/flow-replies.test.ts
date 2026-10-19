@@ -21,7 +21,7 @@ beforeEach(() => {
   const flow = store.createFlow({ repo: "/r", name: "Follow-ups", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "wait", stages: [
     stage("wait", "wait", { wait: { for: "reply", minutes: 60 }, next: "answered", onFail: "silent" }), stage("answered", "inbox"), stage("silent", "inbox"),
   ] }) }, T0);
-  card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "wait", by: "alex" }, T0);
+  card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "wait", by: "alex", byKind: "person" }, T0);
   recordSent(store, store.getFlowCard(card)!, { id: "<sent-1@shop.example>", to: ["Priya@Example.com"] }, T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });

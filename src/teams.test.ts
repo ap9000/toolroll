@@ -332,7 +332,7 @@ describe("Teams shared chat", () => {
       { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
       { id: "post", title: "Post it", kind: "notify", message: "{{stage.draft}}" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex", byKind: "person" }, now);
     store.updateFlowCard(card, { outputs: { draft: "We refunded it." } }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options);
@@ -382,7 +382,7 @@ describe("Teams shared chat", () => {
       { id: "ship", title: "Ship", kind: "inbox" },
     ], null)) }, now);
     const choiceCard = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
-    const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
+    const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options); await drain();
     expect(lastText()).toContain("Totals are off by a cent");
@@ -394,7 +394,7 @@ describe("Teams shared chat", () => {
     expect(store.getFlowCard(first)).toMatchObject({ stage: "ship" });
     expect(sends().some(call => call.method === "PUT" && JSON.stringify(call.body).includes("You chose “Ship it”. Ship it. Moved to Ship."))).toBe(true);
 
-    const second = store.addFlowCard({ flow, title: "Header spacing", description: "The header is cramped on phones", stage: "choose", by: "alex" }, now);
+    const second = store.addFlowCard({ flow, title: "Header spacing", description: "The header is cramped on phones", stage: "choose", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options); await drain();
     // Teams has no thread to reply in: a message here is asked about first, and only Yes makes it the note.

@@ -39,7 +39,7 @@ function seed(file: string): Seeded {
     s.recordLeadAsk({ turn: Number(turn), thread: thread.id, question: "Which order?", options: ["2201", "2202"] }, NOW);
 
     const flow = s.createFlow({ repo: "/r", name: "Support", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: "alex" }, NOW);
-    const card = s.addFlowCard({ flow, title: "Refund for order 2201", description: null, stage: "inbox", by: "alex" }, NOW);
+    const card = s.addFlowCard({ flow, title: "Refund for order 2201", description: null, stage: "inbox", by: "alex", byKind: "person" }, NOW);
     const subagent = s.createSubagent({ repo: "/r", handle: "rosa", soul: SOUL, model: null, manager: "alex", by: "alex" }, NOW);
     s.saveSubagentSoul(subagent, SOUL_V2, "alex", NOW);
     s.addSubagentEvent({ subagent, card, entry: 1, kind: "handled", said: "Rosa drafted the reply.", by: "Rosa (AI)" }, NOW);

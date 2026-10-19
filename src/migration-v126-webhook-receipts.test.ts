@@ -20,7 +20,7 @@ test.each([125, -125])("v%s: signed-webhook receipts and task sources are added;
   const first = openStore(file);
   const flow = first.createFlow({ repo: "/projects/shop", name: "Errors", by: "alex", definitionJson: INBOX }, now);
   const trigger = first.addFlowTrigger({ flow, kind: "github", configJson: "{}", hookHash: "h", cursor: null, nextAt: null, by: "alex" }, now);
-  const card = first.addFlowCard({ flow, title: "An issue", description: null, stage: "inbox", by: "GitHub" }, now);
+  const card = first.addFlowCard({ flow, title: "An issue", description: null, stage: "inbox", by: "GitHub", byKind: "automation" }, now);
   expect(first.recordFlowTriggerEvent(trigger, "issue:1", card, null, now)).toBe(true);
   expect(first.recordFlowTriggerEvent(trigger, "issue:2", null, "it looked like it held a key or password", now)).toBe(true);
   first.close();

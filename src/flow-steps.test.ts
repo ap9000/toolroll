@@ -65,7 +65,7 @@ describe("project scripts", () => {
     const flow = flowOf([
       { title: "Inbox", kind: "inbox" }, { title: "Readme", kind: "check", script: "has-readme" }, { title: "Lint", kind: "check", script: "lint", ifFails: "Inbox" },
     ]);
-    const card = store.addFlowCard({ flow, title: "Tidy the docs", description: null, stage: "readme", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Tidy the docs", description: null, stage: "readme", by: "alex", byKind: "person" }, T0);
     store.setFlowCardOwner(card, "alex", "alex", T0);
     expect(await runFlowSteps(store, repo, at(1), io())).toEqual({ ran: 1, problems: [] });
     // What the script printed is the step's result (v90); the run says what happened.
@@ -104,7 +104,7 @@ describe("project scripts", () => {
       "exit 1",
     ].join("\n") }, "alex", T0);
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { title: "Noisy", kind: "check", script: "noisy" }]);
-    const card = store.addFlowCard({ flow, title: "Loud", description: null, stage: "noisy", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Loud", description: null, stage: "noisy", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, repo, at(1), io());
     const log = store.flowStepRun(card, 1)!.log!;
     expect(log.length).toBeGreaterThan(60_000);
@@ -119,14 +119,14 @@ describe("project scripts", () => {
 
   test("a work zone whose words only point at the card still gives the agent the card", () => {
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { title: "Build", kind: "task", instructions: "Build a fix for the bug described on the card." }]);
-    const card = store.addFlowCard({ flow, title: "Add a greet function", description: "Add src/greet.js exporting greet(name).", stage: "build", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Add a greet function", description: "Add src/greet.js exporting greet(name).", stage: "build", by: "alex", byKind: "person" }, T0);
     advanceFlows(store, repo, T0, { evidenceRoot: dir });
     expect(store.getScope(store.getFlowCard(card)!.task!)!.goal).toBe("Build a fix for the bug described on the card.\n\nThe card: Add a greet function\n\nAdd src/greet.js exporting greet(name).");
   });
 
   test("a build whose project checks failed takes its failure path instead of moving on", () => {
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { title: "Build", kind: "task", ifFails: "Inbox" }, { title: "Review", kind: "approval" }]);
-    const card = store.addFlowCard({ flow, title: "Fix totals", description: null, stage: "build", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Fix totals", description: null, stage: "build", by: "alex", byKind: "person" }, T0);
     advanceFlows(store, repo, T0, { evidenceRoot: dir });
     const id = store.getFlowCard(card)!.task!;
     expect(approve(store, id, "alex", T0, store.getScope(id)!.digest, token).ok).toBe(true);
@@ -149,7 +149,7 @@ describe("project scripts", () => {
 test("the console serves a flow's insights and a run's log, from All projects", async () => {
   saveScript(store, repo, { name: "lint", about: "Lints", body: "echo 'two problems' >&2\nexit 3" }, "alex", T0);
   const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { title: "Lint", kind: "check", script: "lint", ifFails: "Inbox" }]);
-  const card = store.addFlowCard({ flow, title: "Tidy", description: null, stage: "lint", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Tidy", description: null, stage: "lint", by: "alex", byKind: "person" }, T0);
   await runFlowSteps(store, repo, at(1), io());
   const { createDecisionServer } = await import("./serve.js");
   const server = createDecisionServer({ store, evidenceRoot: dir, repos: [repo], configDir: dir, clock: () => at(60) }); // the seeded runs are at T0: a real clock lets them age out of the 7-day window
@@ -172,7 +172,7 @@ test("the console serves a flow's insights and a run's log, from All projects", 
 describe("updating the issue a card came from", () => {
   test("GitHub: a comment, then closing it; Linear: a comment, then its team's done state; other cards pass through; trouble is retried", async () => {
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { title: "Close it", kind: "update", message: "Fixed: {{card.title}}" }]);
-    const fromGitHub = store.addFlowCard({ flow, title: "Crash on save", description: null, stage: "close-it", by: "GitHub", source: { kind: "github", label: "GitHub issue #12", url: "https://github.com/acme/shop/issues/12" } }, T0);
+    const fromGitHub = store.addFlowCard({ flow, title: "Crash on save", description: null, stage: "close-it", by: "GitHub", byKind: "automation", source: { kind: "github", label: "GitHub issue #12", url: "https://github.com/acme/shop/issues/12" } }, T0);
     const gh = vi.fn<Runner>(async () => ok());
     await runFlowSteps(store, repo, at(1), io({ gh }));
     expect(gh.mock.calls.map(call => call[1])).toEqual([
@@ -181,7 +181,7 @@ describe("updating the issue a card came from", () => {
     ]);
     expect(store.getFlowCard(fromGitHub)).toMatchObject({ stage: "done", outputs: { "close-it": "Commented on and closed GitHub issue #12." } });
 
-    const fromLinear = store.addFlowCard({ flow, title: "Refunds", description: null, stage: "close-it", by: "Linear", source: { kind: "linear", label: "Linear ENG-9", url: "https://linear.app/acme/issue/ENG-9" } }, at(2));
+    const fromLinear = store.addFlowCard({ flow, title: "Refunds", description: null, stage: "close-it", by: "Linear", byKind: "person", source: { kind: "linear", label: "Linear ENG-9", url: "https://linear.app/acme/issue/ENG-9" } }, at(2));
     writeFileSync(join(dir, "linear-key"), `${["lin", "api", "k".repeat(40)].join("_")}\n`, { mode: 0o600 });
     const asked: string[] = [];
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
@@ -194,12 +194,12 @@ describe("updating the issue a card came from", () => {
     expect(asked).toEqual(["query FlowIssue", "mutation FlowComment", "mutation FlowDone"]);
     expect(store.getFlowCard(fromLinear)).toMatchObject({ stage: "done", outputs: { "close-it": "Commented on ENG-9 and moved it to Done." } });
 
-    const plain = store.addFlowCard({ flow, title: "Typed by hand", description: null, stage: "close-it", by: "alex" }, at(4));
+    const plain = store.addFlowCard({ flow, title: "Typed by hand", description: null, stage: "close-it", by: "alex", byKind: "person" }, at(4));
     await runFlowSteps(store, repo, at(5), io());
     expect(store.getFlowCard(plain)).toMatchObject({ stage: "done", outputs: { "close-it": "Nothing to update: this card didn't come from a GitHub or Linear issue or a chat channel." } });
 
     // GitHub down: retried 5 and 15 minutes later, then the card says so.
-    const flaky = store.addFlowCard({ flow, title: "Flaky", description: null, stage: "close-it", by: "GitHub", source: { kind: "github", label: "GitHub issue #13", url: "https://github.com/acme/shop/issues/13" } }, at(6));
+    const flaky = store.addFlowCard({ flow, title: "Flaky", description: null, stage: "close-it", by: "GitHub", byKind: "automation", source: { kind: "github", label: "GitHub issue #13", url: "https://github.com/acme/shop/issues/13" } }, at(6));
     const down = vi.fn<Runner>(async () => ({ code: 1, stdout: "", stderr: "HTTP 502: Bad Gateway", timedOut: false, notFound: false }));
     await runFlowSteps(store, repo, at(7), io({ gh: down }));
     expect(store.getFlowCard(flaky)!.waiting).toBe("GitHub didn't take the comment: HTTP 502: Bad Gateway. Trying again in 5 minutes.");
@@ -239,7 +239,7 @@ describe("a button shared as a form", () => {
 describe("a draft step writes to a known limit", () => {
   const drafting = () => {
     const flow = flowOf([{ title: "New questions", kind: "inbox" }, { id: "reply", title: "Draft reply", kind: "draft", instructions: "Answer {{card.title}}" }, { title: "Done", kind: "done" }]);
-    const card = store.addFlowCard({ flow, title: "Where is my order?", description: null, stage: "reply", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Where is my order?", description: null, stage: "reply", by: "alex", byKind: "person" }, T0);
     return { flow, card };
   };
   const writer = (answers: string[]) => {

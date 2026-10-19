@@ -223,7 +223,7 @@ function approvalCard(): { flow: number; card: number } {
       { id: "ok", title: "Publish to toolroll.dev?", kind: "approval", decider: "owner", ifFails: "Write it" },
       { id: "done", title: "Published", kind: "done" },
     ], null)) }, NOW);
-    return { flow, card: store.addFlowCard({ flow, title: "Release notes", description: null, stage: "ok", by: "alex" }, NOW) };
+    return { flow, card: store.addFlowCard({ flow, title: "Release notes", description: null, stage: "ok", by: "alex", byKind: "person" }, NOW) };
   });
 }
 const events = (card: number) => look(store => store.handle.prepare("SELECT from_stage, to_stage, outcome, actor, note FROM flow_event WHERE card=? AND outcome<>'created' ORDER BY id").all(card));
@@ -269,7 +269,7 @@ test("at a Person chooses step, card approve takes --option, through the console
       { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] },
       { id: "ship", title: "Ship", kind: "inbox" },
     ], null)) }, NOW);
-    return { flow, card: store.addFlowCard({ flow, title: "Checkout rounding", description: null, stage: "choose", by: "alex" }, NOW) };
+    return { flow, card: store.addFlowCard({ flow, title: "Checkout rounding", description: null, stage: "choose", by: "alex", byKind: "person" }, NOW) };
   });
   const missing = await flows(["card", "approve", String(flow), String(card), ...as()]);
   expect(missing).toMatchObject({ code: 2, body: { ok: false, reason: "choose-option" } });

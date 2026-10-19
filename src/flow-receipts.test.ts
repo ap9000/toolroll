@@ -68,10 +68,30 @@ describe("typed receipts", () => {
     for (const { key } of store.heldFlowReceipts(trigger, 30)) store.acceptHeldReceipt(trigger, key, card(key, at(120)), at(120));
     expect(store.flowCardsAcceptedSince(trigger, at(60))).toBe(30);
     expect(store.heldFlowReceiptCount(trigger)).toBe(10);
-    // The oldest are drained first.
-    expect(store.heldFlowReceipts(trigger, 1)[0]?.key).toMatch(/^v3:standard:wid:\d+$/);
+    // The ten left are the last ten to arrive (all at once here: arrival order breaks the tie).
+    expect(store.heldFlowReceipts(trigger, 10).map(one => one.key)).toEqual(Array.from({ length: 10 }, (_, i) => `v3:standard:wid:${30 + i}`));
     // An hour after that, the window is clear again.
     expect(store.flowCardsAcceptedSince(trigger, at(121))).toBe(0);
+  });
+
+  test("held deliveries drain oldest first, exactly", () => {
+    const trigger = hookTrigger();
+    for (const [key, minute] of [["c", 3], ["a", 1], ["b", 2]] as const) store.recordFlowReceipt(trigger, key, "held", null, "{}", at(minute));
+    expect(store.heldFlowReceipts(trigger, 3).map(one => one.key)).toEqual(["a", "b", "c"]);
+  });
+
+  test("saved receipts and new ones count together, each once: a saved card at its arrival, a new one when it was made", () => {
+    const trigger = hookTrigger();
+    const legacy = (key: string, minute: number, made: boolean) => store.handle.prepare("INSERT INTO flow_trigger_event (trigger, key, card, note, at) VALUES (?, ?, ?, NULL, ?)")
+      .run(trigger, key, made ? card(key, at(minute)) : null, at(minute).toISOString());
+    legacy("old-in", 30, true);    // saved, in the window
+    legacy("old-out", -30, true);  // saved, before it
+    legacy("old-skip", 30, false); // saved, no card
+    store.recordFlowTriggerEvent(trigger, "new-in", card("n1", at(40)), null, at(40));
+    store.recordFlowReceipt(trigger, "held-late", "held", null, "{}", at(-90));
+    store.acceptHeldReceipt(trigger, "held-late", card("h", at(50)), at(50)); // arrived before the window, made in it
+    store.recordFlowReceipt(trigger, "held-still", "held", null, "{}", at(45)); // in the window, no card yet
+    expect(store.flowCardsAcceptedSince(trigger, at(0))).toBe(3);
   });
 
   test("the hourly note is claimed at most once an hour, and turned-away deliveries are counted until cleared", () => {

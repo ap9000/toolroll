@@ -52,7 +52,7 @@ test("an answer is read whole, never sliced, and its fields over their limits ar
 });
 
 test("the prompt states each limit; a reply over one is asked once to shorten, and the shortened reply goes on", async () => {
-  const card = store.addFlowCard({ flow, title: "Where is my lamp?", description: null, stage: "maya", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Where is my lamp?", description: null, stage: "maya", by: "alex", byKind: "person" }, T0);
   const maya = turns({ action: "route", answer: "Replied", text: reply, reason: "Tracking shows it in transit." },
     { action: "route", answer: "Replied", text: "Hi Priya, your lamp arrives tomorrow.", reason: "Tracking shows it in transit." });
   await runFlowSteps(store, repo, T0, io(maya));
@@ -62,7 +62,7 @@ test("the prompt states each limit; a reply over one is asked once to shorten, a
 });
 
 test("a reply still over its limit after the one ask is attached whole to the card, and the next zones read a link to it", async () => {
-  const card = store.addFlowCard({ flow, title: "Where is my lamp?", description: null, stage: "maya", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Where is my lamp?", description: null, stage: "maya", by: "alex", byKind: "person" }, T0);
   const maya = turns({ action: "route", answer: "Replied", text: reply, reason: "In transit." }, { action: "route", answer: "Replied", text: reply, reason: "In transit." });
   await runFlowSteps(store, repo, T0, io(maya));
   expect(maya.prompts).toHaveLength(2);
@@ -79,7 +79,7 @@ test("a send-back note still over 4,000 after the one ask is kept whole on the c
   const refunds = store.createFlow({ repo, name: "Refunds", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya-decides", stages: [
     stage("maya-decides", "approval", { title: "Maya decides", subagent: "maya", toOwner: true, next: "done", onFail: "rework" }), stage("rework", "inbox"), stage("done", "done"),
   ] }) }, T0);
-  const card = store.addFlowCard({ flow: refunds, title: "Refund $30 for order 51", description: null, stage: "maya-decides", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow: refunds, title: "Refund $30 for order 51", description: null, stage: "maya-decides", by: "alex", byKind: "person" }, T0);
   const note = "The order shows two lamps, but the refund covers one; check which was returned. ".repeat(60).trim();
   expect(note.length).toBeGreaterThan(4_000);
   const maya = turns({ action: "send_back", note, reason: "Amounts differ." }, { action: "send_back", note, reason: "Amounts differ." });

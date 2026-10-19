@@ -6,7 +6,6 @@
  * waits for people. See flows.ts for what each zone does.
  */
 import { assignmentOf } from "./assignment.js";
-import { filerFor } from "./approval-policy.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { passOn, TEXT_LIMITS } from "./text-limits.js";
 import { deciderOf, durationWords, fillFlowText, flowGoal, flowValueLabel, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
@@ -251,7 +250,7 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
         filedVia: `flow:${flow.id}`,
         // Who made the card asked for the work (an owner can be reassigned by anyone). v126: an automation's card (a
         // delivery, a poll, a schedule, a form) files as automation, by the kind kept on the card, never by its name.
-        filedBy: card.createdKind === "automation" ? { name: card.createdBy, kind: "automation" } : filerFor(card.createdBy),
+        filedBy: { name: card.createdBy, kind: card.createdKind },
         deliverable: report ? "report" : "branch",
         planning: report ? "skip" : stage.planning ?? "auto",
         acceptance: grant === null ? ACCEPTANCE[kind] : grant.terms.acceptance[kind],
@@ -379,7 +378,7 @@ export function addCardToFlow(store: Store, flow: FlowRow, input: { title: unkno
   const text = flowCardText(input.title, input.description);
   if ("problem" in text) return { ok: false, message: text.problem };
   const stage = definition.stages.find(one => one.id === input.stage) ?? definition.stages.find(one => one.id === definition.start)!;
-  const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: stage.id, by: actor }, now);
+  const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: stage.id, by: actor, byKind: "person" }, now);
   // Whoever adds a card follows it; owning it is a separate, deliberate step.
   store.setFlowCardWatcher(card, actor, true, now);
   return { ok: true, said: `Card added to ${zoneWords(stage.title)}`, card };

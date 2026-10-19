@@ -160,7 +160,7 @@ describe("export then import", () => {
     const plan = planFlowImport(other, theirs, parseFlowFile(exported.json), { "email-to-ping": "{{card.email}}" }, "sam");
     const { id } = importFlow(other, plan, "sam", NOW, there);
     setFlowSecret(there, theirs, "CRM_KEY", "crm-value-123456");
-    const card = other.addFlowCard({ flow: id, title: "Checkout breaks", description: null, stage: "triage", by: "sam" }, NOW);
+    const card = other.addFlowCard({ flow: id, title: "Checkout breaks", description: null, stage: "triage", by: "sam", byKind: "person" }, NOW);
     const io: StepIo = { gh: vi.fn<Runner>(async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false })), git: exec, shell: exec, fetch: vi.fn() as unknown as typeof fetch, dir: there, scratch: join(there, "scratch"), base: "main", evidenceRoot: there };
     expect(await runFlowSteps(other, theirs, NOW, io)).toEqual({ ran: 0, problems: [] });
     expect(other.getFlowCard(card)?.waiting).toBe("The triage script came with an imported flow. Approve it on the Scripts panel to run it.");
@@ -182,7 +182,7 @@ describe("what never leaves", () => {
     const hookHash = store.getFlowTrigger(hook.id)!.hookHash!;
     // A channel someone connected from Slack, and a card with its history.
     store.addFlowTrigger({ flow, kind: "chat", configJson: JSON.stringify({ kind: "chat", app: "slack", installation: "T0PLANTED", chat: "C0PLANTED", binding: 4242, zone: null }), hookHash: null, cursor: null, nextAt: null, by: "priya" }, NOW);
-    store.addFlowCard({ flow, title: "Planted card about Northwind", description: "Planted card history", stage: "inbox", by: "priya" }, NOW);
+    store.addFlowCard({ flow, title: "Planted card about Northwind", description: "Planted card history", stage: "inbox", by: "priya", byKind: "person" }, NOW);
 
     const exported = exportFlow(store, row, here);
     const text = exported.json;

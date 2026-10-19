@@ -78,7 +78,7 @@ export function askSubagent(store: Store, given: SubagentRow, from: { who: strin
   if (zone === undefined) return { ok: false, said: `${name}'s desk can't take cards right now.` };
   const firstLine = said.split("\n")[0]!.trim();
   const title = firstLine.length <= 100 ? firstLine : `${firstLine.slice(0, 99)}…`;
-  const card = store.addFlowCard({ flow: desk.id, title, description: said === title ? null : said, stage: zone.id, by: from.who, source: { kind: "message", label: `Asked through ${from.via}`, url: null } }, now);
+  const card = store.addFlowCard({ flow: desk.id, title, description: said === title ? null : said, stage: zone.id, by: from.who, byKind: "person", source: { kind: "message", label: `Asked through ${from.via}`, url: null } }, now);
   store.setFlowCardWatcher(card, from.who, true, now);
   return { ok: true, said: `${name} has it. The answer comes to you when it's done.`, card, link: { label: "Open the card", path: flowCardHref(desk.id, card) } };
 }

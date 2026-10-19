@@ -102,7 +102,7 @@ describe("starter flows", () => {
     definition.stages[0]!.wait = { ...definition.stages[0]!.wait!, timeZone: "UTC" };
     store.saveFlow(flow.id, { name: flow.name, definitionJson: JSON.stringify(validateFlowDefinition(definition)), sawRevision: flow.revision, by: "alex" }, T0);
     expect(store.flowTriggers(flow.id).map(one => JSON.parse(one.configJson))).toEqual([expect.objectContaining({ kind: "button", label: "Queue for tonight", zone: "tonight" })]);
-    const card = store.addFlowCard({ flow: flow.id, title: "Tidy the README", description: null, stage: "tonight", by: "alex" }, new Date("2026-09-30T14:00:00Z"));
+    const card = store.addFlowCard({ flow: flow.id, title: "Tidy the README", description: null, stage: "tonight", by: "alex", byKind: "person" }, new Date("2026-09-30T14:00:00Z"));
     advanceFlows(store, repo, new Date("2026-09-30T14:00:00Z"));
     expect(store.getFlowCard(card)).toMatchObject({ stage: "tonight", waiting: "Waiting until 22:00." });
     advanceFlows(store, repo, new Date("2026-09-30T21:59:00Z"));

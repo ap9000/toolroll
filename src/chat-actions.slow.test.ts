@@ -234,7 +234,7 @@ describe("shared chat action lifecycle", () => {
     // A null catalog was not a valid selection in 0.9.36 either; its owning reader still gives that reason.
     expect(() => prepare("tool_add", { ...localTool, catalog: null })).toThrow("Choose a tool from get_project_tools' common list.");
     const flow = store.createFlow({ repo, name: "Support", by: who.name, definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "inbox", by: who.name }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "inbox", by: who.name, byKind: "person" }, now);
     const watching = prepare("flow_card_watch", { card });
     for (const value of [null, "false", 0, {}, [], true]) expect(prepare("flow_card_watch", { card, watching: value })).toEqual(watching);
     expect(watching.request).toEqual({ card, watching: true });
@@ -247,7 +247,7 @@ describe("shared chat action lifecycle", () => {
       { id: "draft", title: "Write the reply", kind: "draft", instructions: "Reply to {{card.title}}" },
       { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: who.name }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: who.name, byKind: "person" }, now);
     const note = "Mention the 5-day wait. ".repeat(200).slice(0, 4_000);
     expect(prepareSharedAction(store, who, "flow_card_send_back", { card, note }, root, now).request).toMatchObject({ note: note.trim() });
     expect(() => prepareSharedAction(store, who, "flow_card_send_back", { card, note: `${note}!` }, root, now)).toThrow("The note is 4,001 characters; the limit is 4,000. Shorten it and propose again.");
@@ -305,7 +305,7 @@ describe("shared chat action lifecycle", () => {
   test("the lead asks to undo a subagent's call only where its action has an undo; the worker makes it (v97)", () => {
     const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
     const flow = store.createFlow({ repo, name: "Support", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: who.name }, now);
-    const card = store.addFlowCard({ flow, title: "Label it", description: null, stage: "inbox", by: who.name }, now);
+    const card = store.addFlowCard({ flow, title: "Label it", description: null, stage: "inbox", by: who.name, byKind: "person" }, now);
     const call = store.addSubagentCall({ subagent: mate, card, entry: 1, tool: "desk", action: "add_label", input: { ticket: "T-1", label: "urgent" }, rule: "free", why: "Urgent.", state: "done", result: "added" }, now);
     expect(() => prepareSharedAction(store, who, "subagent_undo", { subagent: mate, call }, root, now)).toThrow("its action has no undo set");
     store.saveSubagentGrant({ subagent: mate, tool: "desk", actions: [{ name: "add_label", about: "", input: null, readOnly: false }, { name: "remove_label", about: "", input: null, readOnly: false }],

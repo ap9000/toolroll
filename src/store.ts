@@ -18128,12 +18128,13 @@ export class Store {
   }
 
   /** A new card. `byKind` (v126) is decided where the card is made, never read from `by`: a delivery, a poll, a schedule
-   * or a public form is automation whatever its label says; a person's own card (the default) is a person's. */
-  addFlowCard(card: { flow: number; title: string; description: string | null; stage: string; by: string; byKind?: "person" | "automation"; source?: FlowCardSource }, now: Date): number {
+   * a public form or a chat channel's message is automation whatever its label says; a signed-in person's own card is a
+   * person's. Every caller says which: filing passes it on exactly, and never reads it from `by`. */
+  addFlowCard(card: { flow: number; title: string; description: string | null; stage: string; by: string; byKind: "person" | "automation"; source?: FlowCardSource }, now: Date): number {
     return this.transact(() => {
       const stamp = now.toISOString();
       const id = Number(this.db.prepare("INSERT INTO flow_card (flow, title, description, stage, state, created_by, created_at, updated_at, source_json, created_kind) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)")
-        .run(card.flow, card.title, card.description, card.stage, card.by, stamp, stamp, card.source === undefined ? null : JSON.stringify(card.source), card.byKind ?? "person").lastInsertRowid);
+        .run(card.flow, card.title, card.description, card.stage, card.by, stamp, stamp, card.source === undefined ? null : JSON.stringify(card.source), card.byKind).lastInsertRowid);
       this.db.prepare("INSERT INTO flow_event (card, from_stage, to_stage, outcome, actor, note, at) VALUES (?, NULL, ?, 'created', ?, NULL, ?)").run(id, card.stage, card.by, stamp);
       return id;
     });

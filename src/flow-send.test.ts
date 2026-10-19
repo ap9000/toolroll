@@ -74,7 +74,7 @@ const STEPS = [
 /** A flow of these steps, and a card whose build just finished and handed its task on to `at`. */
 function cardAt(steps: unknown[], at: string, task: string | null): { flow: number; card: number } {
   const flow = store.createFlow({ repo: ALPHA, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps(steps, null)) }, now);
-  const card = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "build", by: "alex" }, now);
+  const card = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "build", by: "alex", byKind: "person" }, now);
   if (task !== null) store.updateFlowCard(card, { primaryTask: task, outputs: { build: `Result ready on task ${task}.` } }, now);
   expect(store.moveFlowCard(card, { to: at, outcome: "ok", actor: "flow", task }, now)).toBe(true);
   return { flow, card };
@@ -204,7 +204,7 @@ describe("c2: Person chooses", () => {
     await tap(script, script.buttons(notice)[0]!.callback_data!, notice.messageId!);
     expect(store.getFlowCard(card)!.stage).toBe("build");
 
-    const other = store.addFlowCard({ flow, title: "Header spacing", description: null, stage: "build", by: "alex" }, now);
+    const other = store.addFlowCard({ flow, title: "Header spacing", description: null, stage: "build", by: "alex", byKind: "person" }, now);
     store.moveFlowCard(other, { to: "choose", outcome: "ok", actor: "flow" }, now);
     advanceFlows(store, ALPHA, now, { evidenceRoot: root });
     await pass(script);
@@ -295,12 +295,12 @@ describe("c3: another project, and Send me the result", () => {
     expect(crossProjectProblem(store, definition, { repo: ALPHA, owner: "alex" })).toBeNull();
 
     const theirs = store.createFlow({ repo: ALPHA, name: "Docs", by: "sam", definitionJson: JSON.stringify(definition) }, now);
-    const stuck = store.addFlowCard({ flow: theirs, title: "Document the API", description: null, stage: "build", by: "sam" }, now);
+    const stuck = store.addFlowCard({ flow: theirs, title: "Document the API", description: null, stage: "build", by: "sam", byKind: "person" }, now);
     expect(advanceFlows(store, ALPHA, now).filed).toEqual([]);
     expect(store.getFlowCard(stuck)!.waiting).toBe("Couldn't file the work: sam, who owns this flow, can't file work in /projects/beta. Choose another project for Build the docs, or give them access. It tries again on the next pass.");
 
     const ours = store.createFlow({ repo: ALPHA, name: "Docs", by: "alex", definitionJson: JSON.stringify(definition) }, now);
-    const card = store.addFlowCard({ flow: ours, title: "Document the API", description: null, stage: "build", by: "alex" }, now);
+    const card = store.addFlowCard({ flow: ours, title: "Document the API", description: null, stage: "build", by: "alex", byKind: "person" }, now);
     const filed = advanceFlows(store, ALPHA, now).filed;
     expect(filed).toHaveLength(1);
     expect(store.lookupRef(filed[0]!)?.repo).toBe(BETA);

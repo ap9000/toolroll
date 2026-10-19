@@ -31,7 +31,7 @@ afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); 
 const io = (extra: Partial<StepIo> = {}): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, ...extra });
 const flowOf = (steps: Parameters<typeof flowFromSteps>[0]) => store.createFlow({ repo, name: "Outreach", definitionJson: JSON.stringify(flowFromSteps(steps, null)), by: "alex" }, T0);
 const cardIn = (flow: number, stage: string, description = "Please get back to me at priya@example.com. Order 42.") =>
-  store.addFlowCard({ flow, title: "Refund for order 42?", description, stage, by: "alex" }, T0);
+  store.addFlowCard({ flow, title: "Refund for order 42?", description, stage, by: "alex", byKind: "person" }, T0);
 
 describe("the drawing", () => {
   test("a request's host is written out; an email says who, what and about what; a tool's arguments are a JSON object", () => {

@@ -527,7 +527,8 @@ function outcomeWords(results: { made: Made; note: string | null }[], more: bool
 export function addTriggerCard(store: Store, trigger: FlowTriggerRow, item: Incoming, by: string, now: Date): { made: Made; note: string | null; card: number | null } {
   const config = triggerConfigOf(trigger);
   if (config === null || trigger.state !== "active") return { made: "skipped", note: "the trigger isn't active", card: null };
-  return makeCard(store, trigger, config, item, by, now, "person");
+  // A channel's message is the app's word for who sent it, not a signed-in account: automation (v126).
+  return makeCard(store, trigger, config, item, by, now, "automation");
 }
 
 /** Press a button trigger: the first answer is the card's title, the rest its details. */

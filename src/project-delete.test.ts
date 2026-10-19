@@ -74,7 +74,7 @@ function populate(where: string) {
   const first = task(where);
   const second = task(where, first.id);
   const flow = store.createFlow({ repo: where, name: "Support", definitionJson: JSON.stringify({ stages: [{ id: "inbox", name: "Inbox" }] }), by: "alex" }, NOW);
-  const card = store.addFlowCard({ flow, title: "Refund", description: null, stage: "inbox", by: "alex" }, NOW);
+  const card = store.addFlowCard({ flow, title: "Refund", description: null, stage: "inbox", by: "alex", byKind: "person" }, NOW);
   store.addFlowComment({ card, author: "alex", body: "Looking", mentions: [] }, NOW);
   const mate = store.createSubagent({ repo: where, handle: `maya${serial}`, soul: "---\nname: Maya\n---\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
   store.addSubagentTurn({ subagent: mate, card, model: "sonnet", ok: true, ms: 5, costUsd: 0.1 }, NOW);

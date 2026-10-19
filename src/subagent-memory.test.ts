@@ -45,7 +45,7 @@ function turns(...answers: Record<string, unknown>[]): TurnRunner & { prompts: s
   return runner;
 }
 const io = (subagent: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, subagent });
-const cardFor = (title: string, description: string | null = null) => store.addFlowCard({ flow, title, description, stage: "maya", by: "alex" }, T0);
+const cardFor = (title: string, description: string | null = null) => store.addFlowCard({ flow, title, description, stage: "maya", by: "alex", byKind: "person" }, T0);
 
 test("a turn keeps a fact it learned, and a later card about the same thing reads it back beside what its people told it", async () => {
   expect(tellSubagent(store, mate, "This week, offer free shipping instead of a refund when you can.", "alex", T0)).toMatchObject({ ok: true });
