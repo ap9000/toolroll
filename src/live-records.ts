@@ -542,7 +542,12 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
    */
   const ACP_KINDS: Readonly<Record<string, LiveActivityKind>> = { read: "read", edit: "edit", delete: "edit", move: "edit", search: "search", execute: "command", fetch: "lookup", think: "plan" };
   const ACP_HELD_CAP = 64;
+  /** A message's words are shown in one piece when it ends — or, past this many characters, in pieces as they come:
+   * every word passes the shared redaction in the order the agent wrote it, none is dropped unseen. */
+  const ACP_WORDS_CAP = 16 * 1024;
   const held = new Map<string, { kind: LiveActivityKind; target: string | null }>();
+  /** The latest output an open command showed, already redacted when it arrived (a later update may carry none). */
+  const outputs = new Map<string, string[]>();
   let acpWords = "";
   const flushWords = (at: string): LiveRecord[] => {
     const words = acpWords;
@@ -557,41 +562,49 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     const first = Array.isArray(update["locations"]) ? object(update["locations"][0]) : null;
     return first !== null && typeof first["path"] === "string" ? livePath(options.base, first["path"]) : before;
   };
-  const acpOutput = (update: Record<string, unknown>): string[] => {
-    if (!options.commands || !Array.isArray(update["content"])) return [];
+  /** An update's command output, redacted now — in stream order, through the shared key state — or null when it has none. */
+  const acpOutput = (update: Record<string, unknown>): string[] | null => {
+    if (!options.commands || !Array.isArray(update["content"])) return null;
     const text = update["content"].map(object).filter(one => one !== null && one["type"] === "content")
       .map(one => object(one!["content"])).filter(block => block !== null && block["type"] === "text" && typeof block["text"] === "string")
       .map(block => block!["text"] as string).join("\n");
-    return text === "" ? [] : liveOutput(text, keyState);
+    return text === "" ? null : liveOutput(text, keyState);
   };
   const acp = (update: Record<string, unknown>, at: string): LiveRecord[] => {
     const kind = update["sessionUpdate"];
     if (kind === "agent_message_chunk") {
       const content = object(update["content"]);
-      if (content !== null && content["type"] === "text" && typeof content["text"] === "string" && acpWords.length < 64 * 1024) acpWords += content["text"];
-      return [];
+      if (content === null || content["type"] !== "text" || typeof content["text"] !== "string") return [];
+      acpWords += content["text"];
+      return acpWords.length > ACP_WORDS_CAP ? flushWords(at) : [];
     }
+    // Anything else ends the words before it: the file keeps the agent's order.
+    const records: LiveRecord[] = flushWords(at);
     if (kind === "permission") {
-      // A request's title is often the command itself: it is shown only where the project shows commands.
-      const title = options.commands && typeof update["title"] === "string" ? short(update["title"]) : null;
-      return [...flushWords(at), ...openStep(at, null, "tool", `${update["granted"] === true ? "allowed once" : "refused"}${title === null ? "" : `: ${title}`}`)];
+      // A request's title is free text (a command, a path anywhere): only the answer is shown.
+      return [...records, ...openStep(at, null, "tool", update["granted"] === true ? "allowed once" : "refused")];
     }
-    if (kind !== "tool_call" && kind !== "tool_call_update") return [];
+    if (kind !== "tool_call" && kind !== "tool_call_update") return records;
     const call = providerId(update["toolCallId"]);
-    if (call === null) return [];
+    if (call === null) return records;
     const status = update["status"];
     const ended = status === "completed" || status === "failed";
-    const records: LiveRecord[] = kind === "tool_call" ? flushWords(at) : [];
     const shown = open.get(call);
+    const before = held.get(call);
+    const stepKind = typeof update["kind"] === "string" ? ACP_KINDS[update["kind"]] ?? "tool" : shown?.kind ?? before?.kind ?? "tool";
+    const output = stepKind === "command" ? acpOutput(update) : null;
+    if (output !== null) outputs.set(call, output);
+    const done = (step: { id: string }): LiveRecord => {
+      const out = outputs.get(call) ?? [];
+      outputs.delete(call);
+      return { k: "done", at, id: step.id, ok: status === "completed", ...(out.length > 0 ? { out } : {}) };
+    };
     if (shown !== undefined) {
       if (!ended) return records;
       open.delete(call);
-      const out = shown.kind === "command" ? acpOutput(update) : [];
-      return [...records, { k: "done", at, id: shown.id, ok: status === "completed", ...(out.length > 0 ? { out } : {}) }];
+      return [...records, done(shown)];
     }
-    const before = held.get(call);
     if (before === undefined && kind === "tool_call_update") return records;
-    const stepKind = typeof update["kind"] === "string" ? ACP_KINDS[update["kind"]] ?? "tool" : before?.kind ?? "tool";
     const target = acpTarget(stepKind, update, before?.target ?? null);
     if (target === null && status !== "in_progress" && !ended) {
       if (before !== undefined || held.size < ACP_HELD_CAP) held.set(call, { kind: stepKind, target });
@@ -599,19 +612,19 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       return records;
     }
     held.delete(call);
-    if (!ended) return [...records, ...openStep(at, call, stepKind, target)];
-    // Shown and ended at once: a step and its result.
     const opened = openStep(at, call, stepKind, target);
+    if (!ended) return [...records, ...opened];
+    // Shown and ended at once: a step and its result.
     const step = open.get(call);
-    if (step === undefined) return [...records, ...opened];
+    if (step === undefined) { outputs.delete(call); return [...records, ...opened]; }
     open.delete(call);
-    const out = stepKind === "command" ? acpOutput(update) : [];
-    return [...records, ...opened, { k: "done", at, id: step.id, ok: status === "completed", ...(out.length > 0 ? { out } : {}) }];
+    return [...records, ...opened, done(step)];
   };
   const acpEnd = (at: string): LiveRecord[] => {
     const records = flushWords(at);
     for (const [, one] of held) records.push(...openStep(at, null, one.kind, one.target));
     held.clear();
+    outputs.clear();
     return records;
   };
 

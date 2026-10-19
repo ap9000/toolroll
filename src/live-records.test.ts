@@ -278,6 +278,45 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).not.toContain(".ssh");
   });
 
+  test("the file keeps the agent's order, and every word and line passes the redaction — however long, however it arrives", () => {
+    const r = recorder(true);
+    const records = [
+      ...all(r, [
+        acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "bash", kind: "execute", status: "pending", rawInput: { command: "cat key.pem" } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here it is:\n-----BEGIN PRIVATE KEY-----\n" } }),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "in_progress", content: [{ type: "content", content: { type: "text", text: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" } }] }),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(20_000)}\n-----BEGIN RSA PRIVATE KEY-----\n` } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "c2VjcmV0IGJvZHkgb2YgdGhlIGtleSBpcyBoZXJl\n" } }),
+      ]),
+      ...r.end(),
+    ];
+    const text = onDisk(records);
+    expect(text).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
+    expect(text).not.toContain("c2VjcmV0IGJvZHkgb2YgdGhlIGtleSBpcyBoZXJl");
+    // The output a command showed while running was read in order — inside the key block the message opened, so
+    // nothing of it is shown — and its result still closes the step.
+    const done = records.find(one => one.k === "done");
+    expect(done).toMatchObject({ ok: true });
+    expect(done).not.toHaveProperty("out");
+  });
+
+  test("output a command showed while running is kept for its result when the completion carries none", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "tool_call", toolCallId: "c2", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "npm test" } }),
+      acp({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "in_progress", content: [{ type: "content", content: { type: "text", text: "1 failing" } }] }),
+      acp({ sessionUpdate: "tool_call_update", toolCallId: "c2", status: "failed" }),
+    ]), ...r.end()];
+    expect(records.find(one => one.k === "done")).toMatchObject({ ok: false, out: ["1 failing"] });
+  });
+
+  test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
+    const r = recorder(true);
+    const records = [...all(r, [acp({ sessionUpdate: "permission", toolCallId: "p", title: "Read /Users/someone/.ssh/id_rsa", kind: "read", granted: true })]), ...r.end()];
+    expect(onDisk(records)).not.toContain(".ssh");
+  });
+
   test("a call that never gets a target or starts is still shown when the run ends; permission answers are steps", () => {
     const r = recorder(true);
     const records = [
@@ -288,7 +327,7 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
       ...r.end(),
     ];
     expect(records.filter(one => one.k === "step")).toEqual([
-      expect.objectContaining({ kind: "tool", target: "allowed once: rm -rf build", once: true }),
+      expect.objectContaining({ kind: "tool", target: "allowed once", once: true }),
       expect.objectContaining({ kind: "plan", once: true }),
     ]);
     // Without the opt-in, the answer shows and the command it was about doesn't.
