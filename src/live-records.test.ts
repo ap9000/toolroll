@@ -341,6 +341,18 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(records.find(one => one.k === "done")).toMatchObject({ out: ["out z"] });
   });
 
+  test("one line past the hard cap is not shown, and what follows it on that line is never written", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(262_145)} api_key=` } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "sensitive-test-value\nnext line\n" } }),
+    ]), ...r.end()];
+    const text = onDisk(records);
+    expect(text).not.toContain("sensitive-test-value");
+    expect(records.some(one => one.k === "cut")).toBe(true);
+    expect(records.filter(one => one.k === "say").flatMap(one => (one as { t: string[] }).t)).toContain("next line");
+  });
+
   test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
     const r = recorder(true);
     const records = [...all(r, [acp({ sessionUpdate: "permission", toolCallId: "p", title: "Read /Users/someone/.ssh/id_rsa", kind: "read", granted: true })]), ...r.end()];

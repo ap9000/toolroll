@@ -551,6 +551,15 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   /** The latest output an open command showed, already redacted when it arrived (a later update may carry none). */
   const outputs = new Map<string, string[]>();
   let acpWords = "";
+  /** Past the hard cap, the rest of that one line is not shown; it is still read for the key-block state, a short
+   * overlap carried between pieces so a marker split across two is read whole. */
+  let acpSkipping = false;
+  let acpOverlap = "";
+  const KEY_MARKER_OVERLAP = 128;
+  const skipRead = (text: string): void => {
+    redactLiveLines([acpOverlap + text], keyState);
+    acpOverlap = (acpOverlap + text).slice(-KEY_MARKER_OVERLAP);
+  };
   const flushWords = (at: string): LiveRecord[] => {
     const words = acpWords;
     acpWords = "";
@@ -577,15 +586,33 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     if (kind === "agent_message_chunk") {
       const content = object(update["content"]);
       if (content === null || content["type"] !== "text" || typeof content["text"] !== "string") return [];
-      acpWords += content["text"];
+      let text = content["text"];
+      if (acpSkipping) {
+        // The rest of a line too long to show: read for the key state, never written, until it ends.
+        const end = text.indexOf("\n");
+        skipRead(end < 0 ? text : text.slice(0, end));
+        if (end < 0) return [];
+        acpSkipping = false;
+        acpOverlap = "";
+        text = text.slice(end + 1);
+      }
+      acpWords += text;
       if (acpWords.length <= ACP_WORDS_CAP) return [];
-      // Flushed only at a line's end, so a marker the redaction reads (a key block's BEGIN) is never split across two
-      // pieces; the partial last line waits for the rest of itself.
+      // Flushed only at a line's end, so nothing the redaction reads (a key block's BEGIN, a `key=` and its value) is
+      // ever split across two pieces; the partial last line waits for the rest of itself.
       const cut = acpWords.lastIndexOf("\n");
-      if (cut < 0) return acpWords.length > ACP_LINE_HARD_CAP ? flushWords(at) : [];
-      const whole = acpWords.slice(0, cut + 1);
-      acpWords = acpWords.slice(cut + 1);
-      return whole.trim() === "" ? [] : say(at, whole);
+      if (cut >= 0) {
+        const whole = acpWords.slice(0, cut + 1);
+        acpWords = acpWords.slice(cut + 1);
+        return whole.trim() === "" ? [] : say(at, whole);
+      }
+      if (acpWords.length <= ACP_LINE_HARD_CAP) return [];
+      // One line with no end in sight: it is not shown — said once — and its rest is only read.
+      acpSkipping = true;
+      acpOverlap = "";
+      skipRead(acpWords);
+      acpWords = "";
+      return [{ k: "cut", at }];
     }
     // Anything else ends the words before it: the file keeps the agent's order.
     const records: LiveRecord[] = flushWords(at);
@@ -638,6 +665,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     for (const [, one] of held) records.push(...openStep(at, null, one.kind, one.target));
     held.clear();
     outputs.clear();
+    acpSkipping = false;
+    acpOverlap = "";
     return records;
   };
 
