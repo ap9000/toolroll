@@ -742,7 +742,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v123 adds, and changes no saved row: flows that run on their own (flow_script_provenance, flow_unattended_grant,
 // flow_unattended_run, plan_authorization.basis, flow_trigger_event.on_time and ran_script) and the tool-secret
 // sealing key's record (tool_secret_key, tool_secret_legacy).
-export const SCHEMA_VERSION = 123;
+// v124 adds, and changes no saved row: the live conversation's project setting (live_detail_setting: "Show commands in
+// the live view", absent means off) and the runs each steering note reached (steer_note_run; older notes have none).
+export const SCHEMA_VERSION = 124;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -875,9 +877,9 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * new tables and the columns in V121_ADDED_COLUMNS (null, or no sends), checked the same way. v122 only adds a new
  * table (branch_base_move) and the nullable column in V122_ADDED_COLUMNS (a project's recorded remote), checked the
  * same way. v123 only adds new tables (unattended flows, tool secrets) and the columns in V123_ADDED_COLUMNS ('mode',
- * 0 or null), checked the same way.
+ * 0 or null), checked the same way. v124 only adds new tables (the live conversation's setting and note history).
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -4719,8 +4721,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CHAT_DECIDE_SCHEMA);
   // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
   db.exec(CHAT_APPROVAL_SCHEMA);
-  // The live conversation (no version bump: additive only): a project's "Show commands in the live view" (absent means
-  // off) and every run a steering note reached (older notes simply have no rows).
+  // v124: the live conversation: a project's "Show commands in the live view" (absent means off) and every run a
+  // steering note reached (older notes simply have no rows). New tables only.
   db.exec(LIVE_DETAIL_SCHEMA);
   // What a running agent did last (no version bump: additive only; absent means no word yet).
   db.exec(RUN_ACTIVITY_SCHEMA);
