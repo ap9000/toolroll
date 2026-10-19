@@ -7,6 +7,8 @@
  * what. The console asks for the name, then the password; so does the CLI's
  * --yes.
  */
+import { setLiveCommands } from "./live-detail.js";
+import { verifiedAuthor } from "./store.js";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -83,6 +85,10 @@ function populate(where: string) {
   store.setBudget({ scope: "project", key: where, limitMicrousd: 5_000_000, hardStop: true }, "alex", NOW);
   store.setBudget({ scope: "subagent", key: String(mate), limitMicrousd: 1_000_000, hardStop: true }, "alex", NOW);
   store.setApprovalRules(where, { notRequester: true, protectProject: false, protectedPaths: [] }, "alex", NOW);
+  // The live view's "Show commands", and a steering note that reached a run (its history rows go with the run).
+  setLiveCommands(store, { repo: where, commands: true, by: "alex", via: "test" }, NOW);
+  const steered = store.fileSteerNote(first.id, verifiedAuthor("alex"), "look at the retry path", NOW);
+  if (steered.ok) store.markSteerMailed(steered.id, first.run, NOW);
   // Knowledge history refuses deletes by design; a project's own goes with it.
   store.handle.prepare("INSERT INTO knowledge_change (repo, identity, revision, actor, at, payload, sha) VALUES (?, 'k', 1, 'alex', ?, '{}', 'x')").run(where, NOW.toISOString());
   store.upsertProject(where, where.split("/").pop()!, NOW);

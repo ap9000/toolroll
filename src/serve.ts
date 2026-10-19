@@ -1,3 +1,4 @@
+import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./live-detail.js";
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
@@ -409,6 +410,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     canDelete: who.via === "cookie" && store.isInstanceOperator(who.name),
     builds: projectBuildsOf(repo, who),
     access: projectAccessOf(repo),
+    liveView: (() => {
+      const commands = liveCommandsShown(store, repo);
+      const canChange = who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo);
+      // Showing commands is consent to one exact change: a single-use nonce for this person, project and terms.
+      return { commands, canChange, ...(canChange && !commands ? { nonce: mintApprovalNonce(who.name, LIVE_VIEW_CONSENT, liveViewConsentDigest(repo)) } : {}) };
+    })(),
   });
   /** Settings → Project → Build access: the project's named tools and whether each loads for its builds. */
   const projectAccessOf = (repo: string): NonNullable<ProjectSettingsView["access"]> => {
@@ -840,7 +847,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const ref = run === null ? null : store.refForId(run.taskRef);
       return { repo: ref?.repo ?? null, taskId: ref?.externalId ?? null, runId, action: `${resource[1] === "d" ? "decision" : resource[1] === "i" ? "incident" : "run"} ${resource[3] ?? "view"}` };
     }
-    const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off"]);
+    const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off", "/settings/project/live-view"]);
     const placed = url.pathname === "/tasks/add" ? body?.get("repo")?.trim() : null;
     return { repo: url.pathname.startsWith("/people/") ? null : placed ? canonicalProject(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };

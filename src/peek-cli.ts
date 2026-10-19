@@ -3,9 +3,9 @@
  *
  * One pane per open run: its task, worker, role, stage word, elapsed
  * clock, and the tail of its live transcript (the same per-run file the
- * console's run page follows: text the agent said and the kind of tool it
- * reached for — never file contents, never a command line, credential
- * shapes redacted at write). Digits focus one pane, `a` shows all, `q`
+ * console's run page follows: what the agent said and each step it took —
+ * a command's text only where its project shows commands, never file
+ * contents, credential shapes redacted at write and again at read). Digits focus one pane, `a` shows all, `q`
  * leaves. No dependency: the screen is the alternate buffer and a
  * handful of escape sequences. `--tmux` opens a real tmux session with one
  * window per run for people who live there. Outside a TTY (or with
@@ -16,7 +16,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { readLiveWindow } from "./live.js";
+import { liveWindowLines, readLiveWindow } from "./live.js";
+import { validKeyTail } from "./live-records.js";
 import type { Store } from "./store.js";
 
 export const PEEK_TAIL_LINES = 400;
@@ -39,19 +40,27 @@ export type PeekPane = {
   transcript: "live" | "not-yet" | "replaced" | "unreadable";
 };
 
-type Tail = { offset: number; lines: string[]; state: PeekPane["transcript"] };
+type Tail = { offset: number; lines: string[]; state: PeekPane["transcript"]; gen?: string; inKey?: boolean; keyTail?: string };
 
-/** Advance one run's tail from its offset; `replaced` resets visibly. */
+const REPLACED: Tail = { offset: 0, lines: ["[the live view was replaced — starting over]"], state: "replaced" };
+
+/**
+ * Advance one run's tail from its offset; `replaced` resets visibly. The
+ * offset always moves by the bytes read, even when nothing in them shows
+ * (a finished step, a skipped line), and an offset is only ever used
+ * against the file it came from.
+ */
 export function advanceTail(root: string, runId: number, tail: Tail): Tail {
   const read = readLiveWindow(root, runId, tail.offset);
   if (!read.ok) {
-    if (read.reason === "replaced") return { offset: 0, lines: ["[the live view was replaced — starting over]"], state: "replaced" };
-    return { ...tail, state: read.reason === "missing" ? (tail.lines.length === 0 ? "not-yet" : tail.state) : "unreadable" };
+    if (read.reason === "replaced") return REPLACED;
+    return { ...tail, keyTail: validKeyTail(tail.keyTail ?? "") ? tail.keyTail ?? "" : "", state: read.reason === "missing" ? (tail.lines.length === 0 ? "not-yet" : tail.state) : "unreadable" };
   }
-  if (read.text === "") return { ...tail, state: tail.lines.length === 0 ? "not-yet" : "live" };
-  const fresh = read.text.split("\n").filter(one => one !== "");
+  if (tail.gen !== undefined && tail.gen !== read.gen) return { ...REPLACED, gen: read.gen };
+  const keys = { inKey: tail.inKey === true, tail: validKeyTail(tail.keyTail ?? "") ? tail.keyTail ?? "" : "" };
+  const fresh = liveWindowLines(read, keys);
   const lines = [...tail.lines, ...fresh].slice(-PEEK_TAIL_LINES);
-  return { offset: read.nextOffset, lines, state: "live" };
+  return { offset: read.nextOffset, lines, state: lines.length === 0 ? "not-yet" : "live", gen: read.gen, inKey: keys.inKey, keyTail: keys.tail };
 }
 
 /** The stage word for a pane: the machine's own phase, or what precedes it. */

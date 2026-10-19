@@ -18,7 +18,7 @@ import { closeSync, constants, fstatSync, openSync, readSync, statSync, unlinkSy
 import { join } from "node:path";
 import { ingestStatus, markStuck, noteDiff, noteTranscript, NOTE_MAX, pageQuestions, QUESTION_KEY, QUESTION_MAX, QUESTIONS_OPEN_MAX, QUESTIONS_PER_ATTEMPT, type StatusIngest, type StatusLine } from "./agent-board.js";
 import { readVerifiedArtifact } from "./evidence.js";
-import { liveLogPath, sanitizeTranscriptLine } from "./live.js";
+import { legacyLiveLogPath, liveLogPath, sanitizeTranscriptLine } from "./live.js";
 import { observeWorktree, parseBaseTreeSnapshot, PEEK_LIMITS, type BaseTreeEntry } from "./peek.js";
 import type { Store } from "./store.js";
 
@@ -164,7 +164,9 @@ export type AgentPulseState = {
  */
 export function pulseAgentBoard(store: Store, state: AgentPulseState, now: Date): void {
   try {
-    const bytes = statSync(liveLogPath(state.root, state.run)).size;
+    // The records file every run writes now, else a legacy text file.
+    let bytes: number;
+    try { bytes = statSync(liveLogPath(state.root, state.run)).size; } catch { bytes = statSync(legacyLiveLogPath(state.root, state.run)).size; }
     noteTranscript(store, state.run, state.attemptKey, bytes, now);
   } catch { /* no live log: the activity row still counts */ }
   if (state.status !== null) {
