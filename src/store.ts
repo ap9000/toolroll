@@ -20682,6 +20682,12 @@ export class Store {
       .run(runId, hostname(), group ? 1 : 0, now.toISOString(), currentBootId()).lastInsertRowid);
   }
 
+  /** The run's process witnesses not yet proved exited — after first saving whatever exit evidence is available. */
+  openRunProcessCount(runId: number, now: Date): number {
+    this.recordRunProcessExits(runId, now);
+    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM run_process WHERE run = ? AND exited_at IS NULL").get(runId) as { n: number }).n);
+  }
+
   /** Save positive OS exit evidence while it is available, before a numeric
    * PID can be reused. Completion, missing ancestry and age prove nothing.
    * Existing rows stay intact; only a previously unknown exit is recorded.

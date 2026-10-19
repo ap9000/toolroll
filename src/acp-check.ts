@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchOf } from "./acp-attest.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
-import { acquire, release } from "./claim.js";
+import { acquireForCheck, release } from "./claim.js";
 import type { AcpControl, RunOptions } from "./exec.js";
 import { invokeAgent, type InvokeResult } from "./invoke.js";
 import type { ProviderRunner } from "./provider.js";
@@ -35,6 +35,8 @@ export const CHECK_PROMPTS = {
 
 /** How long the stop step waits for the agent to start its command, and for the cancel to be answered. */
 const STOP_WAIT_MS = 60_000;
+/** How long the agent has to answer the cancel. */
+const CANCEL_ANSWER_MS = 15_000;
 
 export type AcpCheckJob = {
   store: Store;
@@ -57,9 +59,22 @@ export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
   const clock = job.clock ?? (() => new Date());
   job.store.expireAcpChecks(clock());
   for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) {
-    // Only a check whose runs are all finished is closed here; one still running is a person's (its worktree stays).
-    const open = [abandoned.step1Run, abandoned.step2Run].filter((one): one is number => one !== null).some(run => job.store.getRun(run)?.outcome === null);
-    job.store.failAcpCheck(abandoned.id, open ? "interrupted while a step was running — its checkout was left for a person" : "interrupted", clock());
+    // A check whose runs are all finished — and whose processes are all accounted for — is closed whole: the request
+    // fails, its task fails, its claim is released and its checkout discarded. One whose step may still be running is
+    // left for a person: the request fails in words, and nothing it holds is touched.
+    const runs = [abandoned.step1Run, abandoned.step2Run].filter((one): one is number => one !== null);
+    const open = runs.some(run => job.store.getRun(run)?.outcome === null || job.store.openRunProcessCount(run, clock()) > 0);
+    if (open) { job.store.failAcpCheck(abandoned.id, "interrupted while a step may still be running — its checkout and claim were left for a person", clock()); continue; }
+    job.store.failAcpCheck(abandoned.id, "interrupted", clock());
+    if (abandoned.taskRef === null) continue;
+    const taskId = job.store.refForId(abandoned.taskRef)?.externalId;
+    const lease = job.store.currentLiveLease(abandoned.taskRef, clock());
+    if (lease !== null && lease.startsWith(`agent-check-${abandoned.id}-`)) release(job.store, lease, clock());
+    for (const row of job.store.listWorktrees().filter(one => one.taskRef === abandoned.taskRef)) {
+      if (row.releasedAt === null) await job.pool.release(row.path, clock());
+      await job.pool.discard(row.path, clock());
+    }
+    if (taskId !== undefined) job.store.setTaskState(taskId, "failed", clock());
   }
   if (process.platform === "win32") return;
   const request = job.store.claimAcpCheck(job.runner, job.watch, clock());
@@ -93,10 +108,11 @@ async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Da
   const ref = store.refFor(BUILT_IN, taskId).id;
   store.placeTask(ref, job.watch.repo);
   const leaseId = `agent-check-${request.id}-${randomBytes(4).toString("hex")}`;
-  const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => leaseId, ttlMs: 30 * 60_000 });
-  if (!took.ok) return fail(`the check couldn't claim its task (${took.reason})`);
+  const took = acquireForCheck(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => leaseId, ttlMs: 30 * 60_000, incarnation: job.watch.owner });
+  if (!took.ok) { store.setTaskState(taskId, "failed", clock()); return fail(`the check couldn't claim its task (${took.reason})`); }
   if (!store.bindAcpCheck(request.id, { taskRef: ref, launchJson: JSON.stringify(launch) }, clock())) {
     release(store, leaseId, clock());
+    store.setTaskState(taskId, "failed", clock());
     return fail("the check lost its watch before it began");
   }
   const leased = await job.pool.lease({ repo: job.watch.repo, branch: `toolroll/${taskId}`, base: "HEAD", runner: job.runner, taskRef: ref, now: clock() });
@@ -153,18 +169,26 @@ async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext
   const fileCanary = randomBytes(18).toString("hex");
   const envValue = `sk-ant-canary-${randomBytes(18).toString("hex")}`;
   writeFileSync(at.canaryFile, fileCanary, { mode: 0o600 });
-  let toolDone = false;
+  // The checkout carries the project's HEAD: anything already named done.txt goes first, so only the agent's own
+  // write can make it say ok.
+  rmSync(join(at.worktree, "done.txt"), { force: true, recursive: true });
+  /** The tool calls the runner saw, by id: their kind, and whether they completed. */
+  const calls = new Map<string, { kind: string | null; done: boolean }>();
   const first = await invokeAgent(store, run1, spec, ask(CHECK_PROMPTS.ok), options({
     env: { ANTHROPIC_API_KEY: envValue },
     acpCheck: { requestId: request.id, step: 1, isolation: { file: at.canaryFile, fileCanary, envValue } },
     onStreamEvent: event => {
       const update = event["acp"] as Record<string, unknown> | undefined;
-      if (update?.["sessionUpdate"] === "tool_call_update" && update["status"] === "completed") toolDone = true;
-      if (update?.["sessionUpdate"] === "tool_call" && update["status"] === "completed") toolDone = true;
+      const id = update?.["toolCallId"];
+      if (typeof id !== "string" || (update?.["sessionUpdate"] !== "tool_call" && update?.["sessionUpdate"] !== "tool_call_update")) return;
+      const before = calls.get(id) ?? { kind: null, done: false };
+      calls.set(id, { kind: typeof update["kind"] === "string" ? update["kind"] : before.kind, done: before.done || update["status"] === "completed" });
     },
   }));
   finish(run1);
-  const one = gradeOk(first, at.worktree, toolDone);
+  // An edit (or a command) the runner saw complete: a read can't make done.txt.
+  const wrote = [...calls.values()].some(one => one.done && (one.kind === "edit" || one.kind === "execute"));
+  const one = gradeOk(first, at.worktree, wrote);
   if (one.verdict !== null) return `session-ok: ${one.verdict}`;
   if (!store.passAcpCheckStep(request.id, 1, run1, clock())) return "the check stopped admitting its first step's result";
 
@@ -185,10 +209,10 @@ async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext
       // The agent's word only times the cancel: what the plane itself sees alive is what is graded.
       const until = Date.now() + STOP_WAIT_MS;
       const poll = setInterval(() => {
-        if (Date.now() > until) { clearInterval(poll); control.cancel(); return; }
+        if (Date.now() > until) { clearInterval(poll); control.cancel(CANCEL_ANSWER_MS); return; }
         if (!started) return;
         const live = control.liveDescendants();
-        if (live !== null && live.length > 0) { witnessed = live; clearInterval(poll); control.cancel(); }
+        if (live !== null && live.length > 0) { witnessed = live; clearInterval(poll); control.cancel(CANCEL_ANSWER_MS); }
       }, 200);
       poll.unref?.();
     } },
@@ -220,7 +244,7 @@ function gradeOk(result: InvokeResult, worktree: string, toolDone: boolean): { v
   if (result.outcome.code !== 0) return { verdict: `the agent exited ${result.outcome.code}` };
   if (facts.exit?.how !== "eof") return { verdict: `the agent didn't leave on its own when its input closed (${facts.exit?.how ?? "unknown"})` };
   if (facts.exit.leftover) return { verdict: "the agent left processes running" };
-  if (!toolDone) return { verdict: "no tool call was seen to complete" };
+  if (!toolDone) return { verdict: "no edit or command was seen to complete" };
   if (smallFile(join(worktree, "done.txt"))?.trim() !== "ok") return { verdict: "done.txt doesn't say ok" };
   return { verdict: null };
 }
@@ -229,7 +253,12 @@ function gradeStop(result: InvokeResult, witnessed: readonly { pid: number; grou
   const facts = result.kind === "ran" ? result.outcome.acp : result.acp;
   if (witnessed.length === 0) return "no command the agent started was seen alive before the cancel";
   if (facts === undefined) return "the runner recorded no conversation";
+  // The expected end, and only it: answered cancelled in time (the runner stops an unanswered cancel and the
+  // conversation fails), no protocol breach, no timeout, and an ending the runner itself saw.
+  if (facts.protocolError !== null) return `the agent broke the protocol: ${facts.protocolError}`;
   if (facts.stop !== "cancelled") return `the prompt ended ${facts.stop ?? "without an answer"}, not cancelled`;
+  if (facts.exit === null || facts.exit.timedOut || facts.exit.how === "error") return "the agent's process didn't end cleanly after the cancel";
+  if (result.kind === "refused" && result.reason !== "provider-protocol") return `the run was refused: ${result.diagnostic ?? result.reason}`;
   // Every process alive at the cancel is gone — and so is every process group it was in: a leader that exited after
   // forking leaves its group behind, which is no stop at all.
   for (const { pid, group } of witnessed) {

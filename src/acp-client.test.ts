@@ -202,7 +202,7 @@ describe("the ACP conversation fails closed", () => {
       { sessionUpdate: "agent_message_chunk", content: { type: "resource", resource: { uri: "file:///x", text: "t", mimeType: 123 } } },
       { sessionUpdate: "tool_call_update", toolCallId: "t", content: [{ type: "content", content: { type: "resource_link", uri: "file:///x", name: "x", description: 123 } }] },
       { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi", annotations: "x" } },
-      { sessionUpdate: "agent_message_chunk", content: { type: "resource_link", uri: "u", name: "n", size: -1 } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "resource_link", uri: "u", name: "n", size: 1.5 } },
     ]) {
       const kindless = ready();
       kindless.conversation.receive(update(sid, body));
@@ -341,6 +341,30 @@ describe("the schema, as it is written", () => {
     ]) expect(handshakeWith({ ...opencode["initialize"], ...bad }).failure()).toMatchObject({ kind: "protocol" });
     const future = handshakeWith({ ...opencode["initialize"], agentCapabilities: { ...opencode["initialize"].agentCapabilities, sessionCapabilities: { close: {}, _future: true } } });
     expect(future.failure()).toBeNull();
+    // fork and load aren't in v1's session capabilities: the agent's own, and not read.
+    const unread = handshakeWith({ ...opencode["initialize"], agentCapabilities: { ...opencode["initialize"].agentCapabilities, sessionCapabilities: { fork: true, load: 3 } } });
+    expect(unread.failure()).toBeNull();
+  });
+
+  test("integers are judged only where the client reads them, exactly and in their schema's range", () => {
+    const line = (raw: string) => {
+      const conversation = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+      handshake(conversation, opencode);
+      conversation.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":${raw}}}`);
+      return conversation.failure();
+    };
+    // Exact integers, however written: zero at any exponent, trailing zeros past the point.
+    for (const ok of ["0e-999", "0e999", `1.${"0".repeat(401)}`, "3.0e1"]) expect(line(`{"sessionUpdate":"tool_call_update","toolCallId":"t","locations":[{"path":"/a","line":${ok}}]}`)).toBeNull();
+    for (const bad of ["1.0000000000000001", "4294967296", "-1", "1e-1"]) expect(line(`{"sessionUpdate":"tool_call_update","toolCallId":"t","locations":[{"path":"/a","line":${bad}}]}`)).toMatchObject({ kind: "protocol" });
+    // 64-bit fields hold 64-bit values, past JavaScript's safe range.
+    expect(line(`{"sessionUpdate":"usage_update","used":9007199254740993,"size":18446744073709551615}`)).toBeNull();
+    expect(line(`{"sessionUpdate":"usage_update","used":1,"size":18446744073709551616}`)).toMatchObject({ kind: "protocol" });
+    // Opaque data is never judged: raw input, metadata, a nested message-looking object.
+    expect(line(`{"sessionUpdate":"tool_call_update","toolCallId":"t","rawInput":{"line":1.0000000000000001,"size":1e400,"jsonrpc":"2.0","id":1e3},"_meta":{"code":0.5}}`)).toBeNull();
+    // An embedded resource matches one shape; the other shape's field, malformed, is the agent's own.
+    expect(line(`{"sessionUpdate":"agent_message_chunk","content":{"type":"resource","resource":{"uri":"u","text":"ok","blob":123}}}`)).toBeNull();
+    expect(line(`{"sessionUpdate":"agent_message_chunk","content":{"type":"resource","resource":{"uri":"u","blob":"b","text":123}}}`)).toBeNull();
+    expect(line(`{"sessionUpdate":"agent_message_chunk","content":{"type":"resource","resource":{"uri":"u","text":123,"blob":123}}}`)).toMatchObject({ kind: "protocol" });
   });
 
   test("an integer may be written 1e3; an update's fields may be null; a choice with an extra list is still just a choice", () => {

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runAcpChecks } from "./acp-check.js";
+import { acquire } from "./claim.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { register } from "./runner.js";
 import { openStore, type Store } from "./store.js";
@@ -85,4 +86,37 @@ describe.skipIf(!FENCED)("an ACP agent's check", () => {
     expect(store.acpCheck(id)).toMatchObject({ state: "failed" });
     expect(store.acpAttestationFor("opencode", RUNNER)).toBeNull();
   }, 180_000);
+});
+
+describe("a check's claim and its recovery", () => {
+  test("a check takes a runner slot like any build: with none free, it fails in words and its task fails", async () => {
+    register(store, { name: RUNNER, host: "test", capacity: 1, repos: [repo], now: new Date(), newToken: () => "tok" });
+    store.createTask({ id: "busy", title: "busy" }, new Date());
+    const busy = store.refFor("built-in", "busy").id;
+    store.placeTask(busy, repo);
+    expect(acquire(store, busy, RUNNER, { now: new Date(), token: "tok", newLeaseId: () => "busy-lease", ttlMs: 3_600_000 }).ok).toBe(true);
+    const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
+    await runAcpChecks(job());
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", result: expect.stringContaining("capacity") });
+    expect(store.getTask(`agent-check-${id}`)?.state).toBe("failed");
+    expect(store.acpAttestationFor("opencode", RUNNER)).toBeNull();
+  });
+
+  test("a check whose watch died with nothing running is closed whole: its task fails and its claim is let go", async () => {
+    const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
+    expect(store.claimAcpCheck(RUNNER, { repo, owner: "watch-1" }, new Date())).not.toBeNull();
+    store.createTask({ id: `agent-check-${id}`, title: "Check" }, new Date());
+    const ref = store.refFor("built-in", `agent-check-${id}`).id;
+    store.placeTask(ref, repo);
+    expect(acquire(store, ref, RUNNER, { now: new Date(), token: "tok", newLeaseId: () => `agent-check-${id}-dead`, ttlMs: 3_600_000 }).ok).toBe(true);
+    expect(store.bindAcpCheck(id, { taskRef: ref, launchJson: "{}" }, new Date())).toBe(true);
+    // The watch is gone; a new one takes over and recovers.
+    store.handle.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ?").run(new Date(Date.now() - 1000).toISOString(), RUNNER);
+    const leased = store.acquireWatchLease(RUNNER, repo, "watch-2", 60 * 60_000, new Date());
+    if (!leased.ok) throw new Error("watch");
+    await runAcpChecks({ ...job(), watch: { repo, owner: "watch-2" } });
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", result: "interrupted" });
+    expect(store.getTask(`agent-check-${id}`)?.state).toBe("failed");
+    expect(store.currentLiveLease(ref, new Date())).toBeNull();
+  });
 });

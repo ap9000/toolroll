@@ -179,9 +179,38 @@ const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
 /** An optional field: absent, null, or of its type. */
 const optional = (value: unknown, is: (one: unknown) => boolean): boolean => value === undefined || value === null || is(value);
-const integer = (value: unknown): boolean => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-const UINT32_MAX = 4_294_967_295;
-const uint32 = (value: unknown): boolean => integer(value) && (value as number) <= UINT32_MAX;
+/** Each parsed wire object's number tokens, by key, exactly as written (acp-client's JSON.parse reviver records them). */
+const NUMBER_SOURCES = new WeakMap<object, Map<string, string>>();
+
+/** The integer a JSON number token writes exactly (1e3, 1000.0, 0e-999 and 1.000…0 do), or null when it writes none. */
+function exactInteger(source: string): bigint | null {
+  const parts = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(source);
+  if (parts === null) return null;
+  let digits = `${parts[2]}${parts[3] ?? ""}`.replace(/^0+/, "");
+  if (digits === "") return 0n; // zero, at any exponent
+  const trailing = digits.length - digits.replace(/0+$/, "").length;
+  digits = digits.slice(0, digits.length - trailing);
+  const exponent = Number(parts[4] ?? "0") - (parts[3]?.length ?? 0) + trailing;
+  if (!Number.isSafeInteger(exponent) || exponent < 0) return null; // a fraction, or no number at all
+  if (digits.length + exponent > 400) return null; // far past any field's range
+  const exact = BigInt(digits) * 10n ** BigInt(exponent);
+  return parts[1] === "-" ? -exact : exact;
+}
+
+/** `holder[key]` as an integer in [min, max]: on the wire, exactly the integer its token writes; built in memory, a safe one. */
+function wireInteger(holder: Record<string, unknown>, key: string, min: bigint, max: bigint): boolean {
+  const value = holder[key];
+  if (typeof value !== "number") return false;
+  const source = NUMBER_SOURCES.get(holder)?.get(key);
+  const exact = source !== undefined ? exactInteger(source) : Number.isSafeInteger(value) ? BigInt(value) : null;
+  return exact !== null && exact >= min && exact <= max;
+}
+const optionalInteger = (holder: Record<string, unknown>, key: string, min: bigint, max: bigint): boolean =>
+  holder[key] === undefined || holder[key] === null || wireInteger(holder, key, min, max);
+const INT64 = [-(2n ** 63n), 2n ** 63n - 1n] as const;
+const UINT64 = [0n, 2n ** 64n - 1n] as const;
+const UINT32 = [0n, 2n ** 32n - 1n] as const;
+const INT32 = [-(2n ** 31n), 2n ** 31n - 1n] as const;
 const bool = (value: unknown): boolean => typeof value === "boolean";
 /** A list whose every entry passes. */
 const listOf = (is: (one: unknown) => boolean) => (value: unknown): boolean => Array.isArray(value) && value.every(is);
@@ -202,12 +231,13 @@ function wellFormedContent(block: unknown): boolean {
     case "audio": return str(block["data"]) && str(block["mimeType"]);
     case "resource_link":
       return str(block["uri"]) && str(block["name"]) && optional(block["mimeType"], str) && optional(block["title"], str)
-        && optional(block["description"], str) && optional(block["size"], integer);
+        && optional(block["description"], str) && optionalInteger(block, "size", ...INT64);
     case "resource": {
-      // An embedded resource carries its text or its blob, beside its uri.
+      // An embedded resource is one of two shapes — text contents or blob contents — beside its uri; a field the
+      // matched shape doesn't define is the agent's own, and isn't read.
       const resource = block["resource"];
       return isRecord(resource) && meta(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]))
-        && optional(resource["text"], str) && optional(resource["blob"], str) && optional(resource["mimeType"], str);
+        && optional(resource["mimeType"], str);
     }
     default: return false;
   }
@@ -231,7 +261,7 @@ function wellFormedToolFields(update: Record<string, unknown>, initial = false):
   if (!field("kind", one => str(one) && TOOL_KINDS.has(one))) return false;
   if (!field("status", one => str(one) && TOOL_STATUSES.has(one))) return false;
   if (!field("locations", list => Array.isArray(list) && list.every(one =>
-    isRecord(one) && meta(one) && str(one["path"]) && optional(one["line"], uint32)))) return false;
+    isRecord(one) && meta(one) && str(one["path"]) && optionalInteger(one, "line", ...UINT32)))) return false;
   if (!optional(update["name"], str)) return false;
   if (update["content"] !== undefined && update["content"] !== null && !(Array.isArray(update["content"]) && update["content"].every(wellFormedToolContent))) return false;
   return true;
@@ -256,7 +286,7 @@ const sessionModels = (value: unknown): boolean => isRecord(value) && meta(value
 const absentOr = (value: unknown, is: (one: unknown) => boolean): boolean => value === undefined || is(value);
 const capabilities = (value: unknown, flags: readonly string[]): boolean => absentOr(value, one => isRecord(one) && meta(one) && flags.every(flag => absentOr(one[flag], bool)));
 /** The session capabilities the schema names (each an optional, nullable object); others are left uninterpreted. */
-const SESSION_CAPABILITIES = ["list", "delete", "additionalDirectories", "resume", "close", "fork", "load"];
+const SESSION_CAPABILITIES = ["list", "delete", "additionalDirectories", "resume", "close"];
 
 /** initialize's answer, every field the schema gives it. */
 function wellFormedInitialize(result: Record<string, unknown>): boolean {
@@ -303,7 +333,7 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
     case "session_info_update":
       return optional(update["title"], str) && optional(update["updatedAt"], str);
     case "usage_update":
-      return integer(update["used"]) && integer(update["size"])
+      return wireInteger(update, "used", ...UINT64) && wireInteger(update, "size", ...UINT64)
         && optional(update["cost"], cost => isRecord(cost) && meta(cost) && typeof cost["amount"] === "number" && Number.isFinite(cost["amount"]) && str(cost["currency"]));
     case "notice":
       return str(update["severity"]) && str(update["title"]) && update["title"] !== "" && optional(update["description"], str);
@@ -322,28 +352,6 @@ const KNOWN_UPDATES = new Set(["agent_message_chunk", "agent_thought_chunk", "us
   "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update"]);
 
 const AUTH_REQUIRED = -32000;
-
-/** The keys whose numbers the client reads as integers. */
-const INTEGER_KEYS = new Set(["line", "size", "code", "used", "protocolVersion"]);
-
-/** Whether a JSON number token is exactly the safe integer it parsed to (1e3 and 1000.0 are; 1.0000000000000001 isn't). */
-function exactInteger(source: string, value: number): boolean {
-  if (!Number.isSafeInteger(value)) return true; // not read as an integer: the field's own check refuses it
-  const parts = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(source);
-  if (parts === null) return false;
-  const digits = `${parts[2]}${parts[3] ?? ""}`.replace(/^0+(?=\d)/, "");
-  const exponent = Number(parts[4] ?? "0") - (parts[3]?.length ?? 0);
-  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 400) return false;
-  let exact: bigint;
-  if (exponent >= 0) exact = BigInt(digits) * 10n ** BigInt(exponent);
-  else {
-    const cut = -exponent;
-    const padded = digits.padStart(cut + 1, "0");
-    if (!/^0*$/.test(padded.slice(-cut))) return false;
-    exact = BigInt(padded.slice(0, -cut));
-  }
-  return (parts[1] === "-" ? -exact : exact) === BigInt(value);
-}
 
 export function createAcpConversation(options: AcpConversationOptions): AcpConversation {
   let phase: AcpPhase = "initialize";
@@ -425,7 +433,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     }
     if (!isRecord(result)) return fail("protocol", `${purpose}: the answer was not an object`);
     if (purpose === "initialize") {
-      if (result["protocolVersion"] !== PROTOCOL_VERSION) return fail("protocol", `the agent speaks protocol version ${String(result["protocolVersion"])}, not ${PROTOCOL_VERSION}`);
+      if (!wireInteger(result, "protocolVersion", 0n, 65_535n) || result["protocolVersion"] !== PROTOCOL_VERSION) return fail("protocol", `the agent speaks protocol version ${String(result["protocolVersion"])}, not ${PROTOCOL_VERSION}`);
       const info = result["agentInfo"];
       if (!isRecord(info) || typeof info["name"] !== "string" || typeof info["version"] !== "string") return fail("identity", "the agent did not say its name and version");
       if (!wellFormedInitialize(result)) return fail("protocol", "initialize was answered with fields the protocol doesn't allow");
@@ -500,19 +508,16 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (raw.length > ACP_LINE_CAP || Buffer.byteLength(raw, "utf8") > ACP_LINE_CAP) return fail("protocol", "the agent wrote a line too long to read");
       if (raw.trim() === "") return { send: [], live: [] };
       let incoming: unknown;
-      // A top-level id must be exactly what it reads as: a number that JSON would round (1.0000000000000001) answers
-      // nothing, so no reply goes out under, and no answer is taken for, an id other than the one on the wire.
-      let roundedId = false;
       try {
+        // Every number's token is kept beside it: where the client reads an integer (a location's line, a resource's
+        // size, an error's code, a usage count), it is exactly the integer on the wire — 1e3 is 1000, but
+        // 1.0000000000000001 is not 1. Opaque data (raw input and output, metadata) is never read, so never judged.
         incoming = JSON.parse(raw, function (this: unknown, key: string, value: unknown, context?: { source?: string }) {
-          if (typeof value === "number") {
-            const source = context?.source;
-            if (key === "id" && this !== null && typeof this === "object" && "jsonrpc" in (this as object)
-              && (!Number.isSafeInteger(value) || source === undefined || source !== String(value))) roundedId = true;
-            // Where the client reads an integer (a location's line, a resource's size, an error's code, a usage count),
-            // it must be exactly the integer on the wire: 1e3 is 1000, but 1.0000000000000001 is not 1. Opaque numbers
-            // (raw input and output, metadata) are left as they are.
-            if (INTEGER_KEYS.has(key) && (source === undefined || !exactInteger(source, value))) roundedId = true;
+          if (typeof value === "number" && context?.source !== undefined && this !== null && typeof this === "object") {
+            const holder = this as object;
+            const sources = NUMBER_SOURCES.get(holder) ?? new Map<string, string>();
+            sources.set(key, context.source);
+            NUMBER_SOURCES.set(holder, sources);
           }
           return value;
         });
@@ -520,7 +525,11 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
         return fail("protocol", "the agent wrote a line that is not JSON");
       }
       if (!isRecord(incoming) || incoming["jsonrpc"] !== "2.0") return fail("protocol", "the agent wrote something that is not JSON-RPC 2.0");
-      if (roundedId) return fail("protocol", "a message carrying a number that isn't exactly what it reads as");
+      // The message's own id must be exactly what it reads as: a number JSON would round (1.0000000000000001) answers
+      // nothing, so no reply goes out under, and no answer is taken for, an id other than the one on the wire.
+      if (typeof incoming["id"] === "number" && (!Number.isSafeInteger(incoming["id"]) || NUMBER_SOURCES.get(incoming)?.get("id") !== String(incoming["id"]))) {
+        return fail("protocol", "a message whose id isn't exactly what it reads as");
+      }
       const method = incoming["method"];
       const id = incoming["id"];
       if (typeof method === "string") {
@@ -572,8 +581,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       const hasError = Object.prototype.hasOwnProperty.call(incoming, "error");
       if (hasResult === hasError) return fail("protocol", "a response must carry a result or an error, not both or neither");
       const error = incoming["error"];
-      if (hasError && !(isRecord(error) && typeof error["code"] === "number" && Number.isInteger(error["code"])
-        && error["code"] >= -2_147_483_648 && error["code"] <= 2_147_483_647 && typeof error["message"] === "string")) {
+      if (hasError && !(isRecord(error) && wireInteger(error, "code", ...INT32) && typeof error["message"] === "string")) {
         return fail("protocol", "a response with a malformed error");
       }
       return onResult(purpose, incoming["result"], hasError ? error as Record<string, unknown> : null);
@@ -630,7 +638,7 @@ export type AcpEnvelope = {
   stop: string | null;
   /** How the agent's process ended, as the runner saw it: on its own after stdin closed, or by our SIGTERM or kill;
    * and whether anything of its group was still alive at the reap. Null when the runner wrote none. */
-  exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean } | null;
+  exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean; timedOut: boolean } | null;
 };
 
 /** Read a conversation's retained record. Lines not typed `acp.*` are ignored. */
@@ -676,7 +684,7 @@ export function acpParse(stdout: string): AcpEnvelope {
     } else if (type === "acp.offered" && Array.isArray(event["models"])) {
       offered = event["models"].filter((one): one is string => typeof one === "string").slice(0, ACP_OFFERED_CAP + 1);
     } else if (type === "acp.exit" && typeof event["how"] === "string" && ["eof", "term", "kill", "self", "error"].includes(event["how"])) {
-      exit = { how: event["how"] as NonNullable<AcpEnvelope["exit"]>["how"], leftover: event["leftover"] === true };
+      exit = { how: event["how"] as NonNullable<AcpEnvelope["exit"]>["how"], leftover: event["leftover"] === true, timedOut: event["timedOut"] === true };
     } else if (type === "acp.failure" && failure === null) {
       failure = { kind: typeof event["kind"] === "string" ? event["kind"] : "protocol", text: typeof event["text"] === "string" ? event["text"] : "" };
     }

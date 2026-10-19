@@ -612,7 +612,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
         text = text.slice(end + 1);
       }
       if (acpSeparated && acpWords !== "" && !acpWords.endsWith("\n") && text !== "" && !/^\s/.test(text)) acpWords += " ";
-      acpSeparated = false;
+      // Only words actually written settle the break: an empty chunk leaves it owed to the next.
+      if (text !== "") acpSeparated = false;
       acpWords += text;
       if (acpWords.length <= ACP_WORDS_CAP) return [];
       // Flushed only at a line's end, so nothing the redaction reads (a key block's BEGIN, a `key=` and its value) is

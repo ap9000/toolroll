@@ -385,6 +385,20 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).not.toContain(token);
   });
 
+  test("an empty chunk between a step and a token doesn't spend the word boundary", () => {
+    for (const commands of [false, true]) {
+      const r = recorder(commands);
+      const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+      const records = [...all(r, [
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Checking credentials" } }),
+        acp({ sessionUpdate: "tool_call", toolCallId: "g1", title: "x", kind: "read", status: "pending" }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "" } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${token}\n` } }),
+      ]), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
   test("a key block opened in the unshown rest of a line past the hard cap still hides what follows", () => {
     const r = recorder(true);
     const records = [...all(r, [

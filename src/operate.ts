@@ -5099,6 +5099,8 @@ async function agentsCommand(positional: readonly string[], flags: Map<string, s
   if (acting === null) return fail(write, json, `agents ${action}`, "usage", "this takes your name and password — `--as <you>` and the hidden prompt", EXIT.usage);
   const verified = verifyApproverByPassword(store, acting.name, acting.token, store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)));
   if (!verified.ok) return fail(write, json, `agents ${action}`, "unauthenticated", "that is not an approver, or the password does not match", EXIT.refused);
+  // Which agents a runner admits, and how they bill, hold for every project the runner serves: an operator's call.
+  if (!store.isInstanceOperator(verified.who.name)) return fail(write, json, `agents ${action}`, "forbidden", "only an installation operator can check, revoke or set billing for a runner's agents", EXIT.refused);
   const name = ACP_AGENTS[provider].name;
   const now = clock();
   if (action === "revoke") {

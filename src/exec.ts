@@ -1576,8 +1576,9 @@ export type AcpRun = {
 
 /** What a caller (the conformance check) may do with a running ACP conversation. */
 export type AcpControl = {
-  /** Ask the agent to stop the prompt in flight. */
-  cancel: () => void;
+  /** Ask the agent to stop the prompt in flight; unanswered within `deadlineMs`, the agent is stopped and the
+   * conversation fails (a check's cancel must be answered in time). */
+  cancel: (deadlineMs?: number) => void;
   /** A fresh, plane-side reading, now, of what the agent itself started and is still running: the live (never zombie)
    * processes beneath the agent's own process — below any wrapper the fence put around it — with their process
    * groups. Null when it can't be read here (Windows). */
@@ -1800,7 +1801,14 @@ export function runAcpSession(
     armHandshake();
     try {
       acp.onControl?.({
-        cancel: () => write(conversation.cancel()),
+        cancel: (deadlineMs?: number) => {
+          write(conversation.cancel());
+          if (deadlineMs !== undefined) later(deadlineMs, () => {
+            if (settled || conversation.terminal() !== null) return;
+            conversation.refuse(`the agent didn't answer the cancel within ${Math.round(deadlineMs / 1000)} s`);
+            forceKill();
+          });
+        },
         liveDescendants: () => process.platform === "win32" ? null : exited() || child.pid === undefined ? [] : liveUnderAgent(child.pid, agentNames),
       });
     } catch { /* the caller's own failure */ }
@@ -1840,7 +1848,7 @@ export function runAcpSession(
       void settlement.then(empty => resolve({
         code: notFound ? NOT_FOUND_CODE : timedOut ? TIMEOUT_CODE : attachFailure !== null || empty === false ? CONTAINMENT_REFUSED_CODE : exitCode,
         // The runner's own account of the ending rides last: a type no agent can emit.
-        stdout: `${conversation.retained()}${JSON.stringify({ type: "acp.exit", how: endedBy, leftover: leftover || empty === false })}\n`,
+        stdout: `${conversation.retained()}${JSON.stringify({ type: "acp.exit", how: endedBy, leftover: leftover || empty === false, timedOut })}\n`,
         stderr: empty === false ? `${stderr}\nNative process containment could not prove all descendants exited.`.trim() : attachFailure !== null && stderr === "" ? attachFailure : stderr,
         timedOut,
         notFound,

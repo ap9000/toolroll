@@ -195,7 +195,9 @@ export type ParsedEnvelope = {
   /** What an ACP agent itself reported it used — kept on the run, never priced. Absent for every other dialect. */
   agentReportedUsage?: string | null;
   /** An ACP conversation's facts the conformance check reads (acp-client.ts AcpEnvelope): nothing else does. */
-  acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean } | null; agent: { name: string; version: string } | null; stop: string | null;
+  acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean; timedOut: boolean } | null; agent: { name: string; version: string } | null; stop: string | null;
+    /** The conversation broke the protocol (acpParse's protocolError), or null. */
+    protocolError: string | null;
     /** The plane's isolation probes for a check's first step (invoke.ts), when it ran them. */
     isolation?: { fileDenied: boolean; envClear: boolean } };
 };
@@ -1026,7 +1028,7 @@ function acpEnvelope(stdout: string): ParsedEnvelope {
     diagnostic: read.diagnostic === null ? null : safeDiagnostic(read.diagnostic),
     structuralTerminal: read.terminal === null ? null : { failed: true, text: read.terminal.text === null ? null : safeDiagnostic(read.terminal.text), code: read.terminal.code.slice(0, 128) },
     agentReportedUsage: read.reportedUsage,
-    acp: { offered: read.offered, exit: read.exit, agent: read.agent, stop: read.stop },
+    acp: { offered: read.offered, exit: read.exit, agent: read.agent, stop: read.stop, protocolError: read.protocolError },
   };
 }
 
