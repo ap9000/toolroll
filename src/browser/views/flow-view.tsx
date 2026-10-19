@@ -936,7 +936,7 @@ function CopyLine({ label, value }: { label: string; value: string }) {
 function RevealBox({ kind, reveal, onDone }: { kind: string; reveal: Reveal; onDone: () => void }) {
   return <div className="flex flex-col gap-2 rounded-lg border border-primary/40 bg-primary/5 p-3" data-trigger-reveal>
     <p className="text-body font-semibold">Copy these now. They aren't shown again.</p>
-    {reveal.address === null
+    {reveal.path === "" ? null : reveal.address === null
       ? <p className="text-caption font-normal">Save your public webhook address below first, then choose New address. <span className="break-all font-mono">{reveal.path}</span></p>
       : <CopyLine label="Address" value={reveal.address} />}
     {reveal.secret !== null && <CopyLine label="Secret" value={reveal.secret} />}
@@ -1112,35 +1112,46 @@ const SECRET_LABELS: Record<string, { label: string; hint: string }> = {
 };
 const SENDER_CHOICES: [string, string][] = [["none", "Unsigned (the address alone)"], ["standard", "Standard Webhooks"], ["github-style", "GitHub-style signature"], ["sentry", "Sentry"], ["vercel", "Vercel"]];
 
-/** v126: how a webhook's deliveries are proved, changed only here behind the password: who signs them, a set-up that
- * makes a new address (and a secret Toolroll makes, shown once), and the sender's own secret pasted. */
+/** v126: how a webhook's deliveries are proved, changed only here behind one password: who signs them, a new secret
+ * Toolroll makes (Standard, GitHub-style; shown once, the address kept), or the sender's own pasted (Sentry, Vercel) —
+ * first or as a replacement. New address is its own button and keeps the secret. */
 function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: BrowserFlowTrigger; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onReveal: (reveal: Reveal) => void }) {
   const hook = trigger.hook!;
-  const [sender, setSender] = useState(hook.sender ?? "none");
+  const current = hook.sender ?? "none";
+  const [sender, setSender] = useState(current);
+  const [secret, setSecret] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const go = async (path: string, fields: Record<string, string>) => {
     setBusy(true);
     const result = await send(`${view.flow.href}/triggers/${trigger.id}/${path}`, { ...fields, password }, csrf);
     setBusy(false); apply(result);
-    if (result.ok) setPassword("");
+    if (result.ok) { setPassword(""); setSecret(""); }
     if (result.reveal !== undefined) onReveal(result.reveal);
   };
-  const changing = sender !== (hook.sender ?? "none");
-  return <div className="mt-2 flex flex-col gap-2 rounded-md border p-2" data-trigger-signing={hook.sender ?? "none"}>
-    {hook.warning !== null && <p className={cn("text-caption font-normal", hook.sender === "none" || !hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
-    <Field label="Signed by" hint="Who signs this webhook's deliveries. Changing it keeps the address; it then needs setting up again.">
-      <select className="h-9 rounded-md border bg-background px-2 text-body" value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
-        {SENDER_CHOICES.map(([value, words]) => <option key={value} value={value}>{words}</option>)}
-      </select>
-    </Field>
-    <StepUp view={view} password={password} setPassword={setPassword} />
-    <div className="flex flex-wrap gap-1.5">
-      {changing && <Button type="button" size="sm" disabled={busy || !stepUpReady(view, password)} onClick={() => void go("sender", { sender })}>Change who signs it</Button>}
-      {!changing && hook.sender !== "none" && <Button type="button" size="sm" variant="outline" disabled={busy || !stepUpReady(view, password)} onClick={() => void go("setup", {})} data-trigger-setup>
-        {hook.makesSecret ? (hook.ready ? "New address and secret" : "Set up") : "New address"}</Button>}
+  const changing = sender !== current;
+  const words = SECRET_LABELS[current];
+  const ready = stepUpReady(view, password);
+  return <details className="mt-2 rounded-md border px-2 py-1.5" open={!hook.ready || hook.warning !== null} data-trigger-signing={current}>
+    <summary className="cursor-pointer text-body font-medium">Signing{hook.ready && current !== "none" ? "" : " · needs you"}</summary>
+    <div className="mt-2 flex flex-col gap-2">
+      {hook.warning !== null && <p className={cn("text-caption font-normal", current === "none" || !hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
+      <Field label="Signed by" hint="Who signs this webhook's deliveries. Changing it keeps the address and drops the secret: it then needs one again.">
+        <select className="h-9 rounded-md border bg-background px-2 text-body" value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
+          {SENDER_CHOICES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </Field>
+      {!changing && words !== undefined && <Field label={hook.ready ? `Replace ${words.label}` : words.label} hint={words.hint}>
+        <Input type="password" autoComplete="off" value={secret} onChange={event => setSecret(event.target.value)} data-trigger-secret />
+      </Field>}
+      <StepUp view={view} password={password} setPassword={setPassword} />
+      <div className="flex flex-wrap gap-1.5">
+        {changing && <Button type="button" size="sm" disabled={busy || !ready} onClick={() => void go("sender", { sender })}>Change who signs it</Button>}
+        {!changing && hook.makesSecret && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("setup", {})} data-trigger-setup>{hook.ready ? "Replace secret" : "Make its secret"}</Button>}
+        {!changing && words !== undefined && <Button type="button" size="sm" disabled={busy || !ready || secret.trim() === ""} onClick={() => void go("secret", { secret })}>{hook.ready ? "Replace secret" : "Save secret"}</Button>}
+      </div>
     </div>
-  </div>;
+  </details>;
 }
 
 function LinearSecret({ trigger, view, csrf, apply }: { trigger: BrowserFlowTrigger; view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
@@ -1259,7 +1270,7 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
         <ul className="mt-1 flex flex-col gap-1 text-caption text-muted-foreground font-normal">{trigger.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
       </details>}
       {trigger.hook?.sender != null && <WebhookSigning trigger={trigger} view={view} csrf={csrf} apply={apply} onReveal={revealed => setReveal({ kind: trigger.hook?.sender ?? trigger.kind, reveal: revealed })} />}
-      {trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
+      {trigger.hook?.sender == null && trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {trigger.button !== null && trigger.state === "active" && <Button size="sm" onClick={() => onPress(trigger.id)}>Start</Button>}
         {trigger.button !== null && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/share`, "form")}>{trigger.shared ? "New form link" : "Share as a form"}</Button>}

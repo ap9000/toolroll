@@ -24,7 +24,7 @@ import { addFlowTriggerTo, describeTrigger, HOOK_PATH, readHooksBase, triggerCon
 import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWords, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { readVersioned } from "./contracts/contract.js";
-import { FLOW_ALIASES, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
+import { FLOW_ALIASES, WEBHOOK_SENDERS, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
 import { parseSchedule } from "./flow-schedule.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -171,7 +171,13 @@ const STRUCTURAL = new Set(["format", "id", "kind", "goesTo", "next", "ifFails",
 function scrubDeep(value: unknown, scrub: (text: string) => string, key: string | null, inScripts: boolean): unknown {
   if (typeof value === "string") return key !== null && (STRUCTURAL.has(key) || (inScripts && key === "name")) ? value : scrub(value);
   if (Array.isArray(value)) return value.map(one => scrubDeep(one, scrub, key, inScripts));
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v, scrub, k, inScripts || k === "scripts")]));
+  if (value !== null && typeof value === "object") {
+    // v126: a webhook's sender is one of a fixed few words (who signs it), never prose: kept as it is, even when an
+    // account happens to share its name. An email trigger's sender is people's addresses, and is still scrubbed.
+    const record = value as Record<string, unknown>;
+    const webhookSender = record["kind"] === "webhook" && typeof record["sender"] === "string" && (WEBHOOK_SENDERS as readonly string[]).includes(record["sender"]);
+    return Object.fromEntries(Object.entries(record).map(([k, v]) => [k, webhookSender && k === "sender" ? v : scrubDeep(v, scrub, k, inScripts || k === "scripts")]));
+  }
   return value;
 }
 

@@ -752,7 +752,7 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (run.agent_reported_usage_json, never priced; saved runs read none).
 // v126 adds, and changes no saved row: signed webhooks into tasks (docs/plans/webhook-tasks.md): a receipt's typed state,
 // when its card was made and the item it holds while it waits for room (flow_trigger_event.state, accepted_at,
-// item_json); a trigger's credential generation and its turned-away deliveries (flow_trigger.hook_generation,
+// item_json); which saved secret a trigger's deliveries are proved with and its turned-away deliveries (flow_trigger.hook_credential,
 // dropped_count, dropped_since, limit_noted_at); who made a card (flow_card.created_kind); and the outside source a
 // task was filed from (task_source). Saved receipts read their state from their card, saved cards read a person.
 export const SCHEMA_VERSION = 126;
@@ -982,7 +982,9 @@ export const V126_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     item_json: { definition: "TEXT", saved: "NULL" },
   },
   flow_trigger: {
-    hook_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
+    // Which saved secret proves its deliveries: 'legacy' (the address every secret saved before v126 has), '' (none:
+    // deliveries are refused until one is saved), or the id of one written whole before the trigger pointed at it.
+    hook_credential: { definition: "TEXT NOT NULL DEFAULT 'legacy'", saved: "'legacy'" },
     dropped_count: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
     dropped_since: { definition: "TEXT", saved: "NULL" },
     limit_noted_at: { definition: "TEXT", saved: "NULL" },
@@ -1499,8 +1501,9 @@ export type FlowCardRow = FlowCardFields & { source: FlowCardSource | null };
 /** One line of a card's discussion: a comment (and whom it @mentioned), or who became its owner. */
 export type FlowCommentRow = { id: number; card: number; kind: "comment" | "owner"; author: string; body: string; mentions: string[]; at: string };
 export type FlowTriggerRow = { id: number; flow: number; kind: string; configJson: string; state: "active" | "paused" | "removed"; hookHash: string | null; cursor: string | null; nextAt: string | null; lastAt: string | null; lastOutcome: string | null; failures: number; createdBy: string; createdAt: string; updatedAt: string;
-  /** v126: which saved secret proves this trigger's deliveries (0 is the address saved before v126). */
-  hookGeneration: number;
+  /** v126: which saved secret proves this trigger's deliveries: "legacy" (the address every secret saved before v126
+   * has), "" (none yet: refused until one is saved), or the id of a secret written whole before the trigger pointed at it. */
+  hookCredential: string;
   /** v126: deliveries turned away because the hold queue was full, and since when, until a person clears them. */
   droppedCount: number; droppedSince: string | null };
 /** v126: what a trigger did with one delivery. Saved before v126: accepted when it made a card, skipped otherwise. */
@@ -1561,7 +1564,7 @@ function readFlowTriggerRow(row: Record<string, unknown>): FlowTriggerRow {
   return { id: Number(row["id"]), flow: Number(row["flow"]), kind: String(row["kind"]), configJson: String(row["config_json"]), state: String(row["state"]) as FlowTriggerRow["state"],
     hookHash: optional("hook_hash"), cursor: optional("cursor"), nextAt: optional("next_at"), lastAt: optional("last_at"), lastOutcome: optional("last_outcome"),
     failures: Number(row["failures"] ?? 0), createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedAt: String(row["updated_at"]),
-    hookGeneration: Number(row["hook_generation"] ?? 0), droppedCount: Number(row["dropped_count"] ?? 0), droppedSince: optional("dropped_since") };
+    hookCredential: row["hook_credential"] === null || row["hook_credential"] === undefined ? "legacy" : String(row["hook_credential"]), droppedCount: Number(row["dropped_count"] ?? 0), droppedSince: optional("dropped_since") };
 }
 
 function readFlowReceipt(row: Record<string, unknown>): FlowReceipt {
@@ -18809,15 +18812,14 @@ export class Store {
   }
 
   /**
-   * v126: a trigger's credentials change: the next generation, and (when given) its new settings, in one write. The old
-   * generation's secret is never read again, whatever happens to its file. The new generation, or null when the trigger
-   * is gone.
+   * v126: point a trigger at another saved secret ("" for none), and (when given) its new settings, in one write — only
+   * from the secret and settings the caller read, so of two changes at once exactly one lands. False when it changed
+   * meanwhile (or the trigger is gone): the caller then removes only the secret it wrote itself.
    */
-  advanceFlowHookGeneration(id: number, from: number, configJson: string | null, now: Date): number | null {
-    // Only from the generation the caller read: two changes at once can't both think theirs is current.
-    const row = this.db.prepare("UPDATE flow_trigger SET hook_generation = hook_generation + 1, config_json = COALESCE(?, config_json), updated_at = ? WHERE id = ? AND hook_generation = ? AND state != 'removed' RETURNING hook_generation")
-      .get(configJson, now.toISOString(), id, from);
-    return row === undefined ? null : Number(row["hook_generation"]);
+  swapFlowHookCredential(id: number, from: { credential: string; configJson: string }, to: string, configJson: string | null, now: Date): boolean {
+    const { changes } = this.db.prepare("UPDATE flow_trigger SET hook_credential = ?, config_json = COALESCE(?, config_json), updated_at = ? WHERE id = ? AND hook_credential = ? AND config_json = ? AND state != 'removed'")
+      .run(to, configJson, now.toISOString(), id, from.credential, from.configJson);
+    return Number(changes) === 1;
   }
 
   /** v126: what a trigger did with one delivery, or null when it never received it. */

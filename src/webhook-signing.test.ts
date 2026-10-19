@@ -63,6 +63,13 @@ describe("GitHub-style", () => {
 });
 
 describe("Sentry and Vercel", () => {
+  test("fixed vectors, computed with an independent HMAC implementation (Python's hmac)", () => {
+    const sentry = Buffer.from('{"action":"triggered","data":{"event":{"title":"TypeError: x is undefined"}}}');
+    expect(proveDelivery("sentry", "5e1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef", h({ "sentry-hook-signature": "734b1f0ad46312428a806429799d375a0a9be26e407ef990d05fa77223157101" }), sentry, NOW)).toEqual({ ok: true, signedId: null });
+    const vercel = Buffer.from('{"type":"deployment.error","payload":{"deployment":{"id":"dpl_1"}}}');
+    expect(proveDelivery("vercel", "VercelSecret0123456789", h({ "x-vercel-signature": "6a57effe447f04afc2f2f8e356d3ea3f666de9b9" }), vercel, NOW)).toEqual({ ok: true, signedId: null });
+  });
+
   const SECRET = "a".repeat(64);
   test("Sentry: hex HMAC-SHA256 of the raw bytes; an unsigned delivery says to use an Internal Integration", () => {
     const signature = createHmac("sha256", SECRET).update(BODY).digest("hex");

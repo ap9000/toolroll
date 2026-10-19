@@ -48,7 +48,7 @@ test.each([125, -125])("v%s: signed-webhook receipts and task sources are added;
   // A saved card counts toward the hourly limit at its arrival.
   expect(store.flowCardsAcceptedSince(trigger, new Date(now.getTime() - 60_000))).toBe(1);
   // A saved trigger is on its first credential generation, with nothing turned away; a saved card was a person's.
-  expect(store.getFlowTrigger(trigger)).toMatchObject({ hookGeneration: 0, droppedCount: 0, droppedSince: null });
+  expect(store.getFlowTrigger(trigger)).toMatchObject({ hookCredential: "legacy", droppedCount: 0, droppedSince: null });
   expect(store.getFlowCard(card)?.createdKind).toBe("person");
   expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   store.close();

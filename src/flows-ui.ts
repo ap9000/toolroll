@@ -33,7 +33,7 @@ function hookView(trigger: FlowTriggerRow, config: TriggerConfig, dir: string | 
   const sender = senderOf(config);
   const warning = sender === "none" ? "Unsigned: anyone with its address can add cards. Choose who signs its deliveries to close that."
     : (sender === "sentry" || sender === "vercel") && config.project === null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards. Name the project to narrow it.`
-    : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted` : "it is set up"}.` : null;
+    : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted` : "its secret is made"}.` : null;
   return { ready, needsSecret: sender === "sentry" || sender === "vercel", sender, makesSecret: sender === "standard" || sender === "github-style", warning };
 }
 
