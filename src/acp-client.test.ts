@@ -182,7 +182,15 @@ describe("the ACP conversation fails closed", () => {
     const stranger = ready();
     stranger.conversation.receive(JSON.stringify({ jsonrpc: "2.0", method: "session/something_new", params: { sessionId: "ses_other" } }));
     expect(stranger.conversation.failure()).toMatchObject({ kind: "protocol" });
-    for (const body of [{}, { sessionUpdate: 3 }, { sessionUpdate: "tool_call" }, { sessionUpdate: "tool_call_update" }, { sessionUpdate: "agent_message_chunk", content: "hi" }]) {
+    for (const body of [
+      {}, { sessionUpdate: 3 }, { sessionUpdate: "tool_call" }, { sessionUpdate: "tool_call_update" }, { sessionUpdate: "agent_message_chunk", content: "hi" },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text" } },
+      { sessionUpdate: "plan", entries: [{ content: 1 }] },
+      { sessionUpdate: "tool_call", toolCallId: "t", title: "x", kind: "teleport" },
+      { sessionUpdate: "tool_call_update", toolCallId: "t", status: "done" },
+      { sessionUpdate: "tool_call_update", toolCallId: "t", locations: [{ line: 3 }] },
+      { sessionUpdate: "tool_call_update", toolCallId: "t", content: [{ type: "content", content: { type: "text" } }] },
+    ]) {
       const kindless = ready();
       kindless.conversation.receive(update(sid, body));
       expect(kindless.conversation.failure()).toMatchObject({ kind: "protocol" });
@@ -226,6 +234,10 @@ describe("what the plane answers the agent", () => {
     const callless = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/request_permission", params: { sessionId: sid, options: [{ optionId: "once", kind: "allow_once" }] } }));
     expect(sent(callless.send)[0]).toMatchObject({ id: 9, error: { code: -32602 } });
     expect(callless.live).toEqual([{ sessionUpdate: "permission", toolCallId: null, title: null, kind: null, granted: false }]);
+    // Once the prompt is answered, nothing more is granted.
+    conversation.receive(answer(4, { stopReason: "end_turn" }));
+    const after = conversation.receive(ask(10, [{ optionId: "once", kind: "allow_once" }]));
+    expect(sent(after.send)[0]).toMatchObject({ id: 10, result: { outcome: { outcome: "cancelled" } } });
     expect(permissionAnswer({ options: "x" })).toBeNull();
     // The whole list must be well formed: a malformed entry, an unknown kind or an id twice chooses nothing.
     expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }, "junk"] })).toBeNull();

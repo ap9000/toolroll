@@ -162,22 +162,57 @@ export function permissionAnswer(params: unknown): { optionId: string; granted: 
   return null;
 }
 
+const str = (value: unknown): value is string => typeof value === "string";
+const TOOL_KINDS = new Set(["read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"]);
+const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed"]);
+
+/** One ACP content block, as the protocol defines it (text, image, audio, a resource link, an embedded resource). */
+function wellFormedContent(block: unknown): boolean {
+  if (!isRecord(block) || !str(block["type"])) return false;
+  switch (block["type"]) {
+    case "text": return str(block["text"]);
+    case "image": case "audio": return str(block["data"]) && str(block["mimeType"]);
+    case "resource_link": return str(block["uri"]) && str(block["name"]);
+    case "resource": return isRecord(block["resource"]) && str(block["resource"]["uri"]);
+    default: return false;
+  }
+}
+
+/** A tool call's content: content blocks, diffs, or terminals. */
+function wellFormedToolContent(item: unknown): boolean {
+  if (!isRecord(item) || !str(item["type"])) return false;
+  if (item["type"] === "content") return wellFormedContent(item["content"]);
+  if (item["type"] === "diff") return str(item["path"]) && str(item["newText"]) && (item["oldText"] === undefined || item["oldText"] === null || str(item["oldText"]));
+  if (item["type"] === "terminal") return str(item["terminalId"]);
+  return false;
+}
+
+/** The fields a tool call or its update may carry: each, when present, of the type the protocol gives it. */
+function wellFormedToolFields(update: Record<string, unknown>): boolean {
+  if (update["title"] !== undefined && !str(update["title"])) return false;
+  if (update["kind"] !== undefined && !(str(update["kind"]) && TOOL_KINDS.has(update["kind"]))) return false;
+  if (update["status"] !== undefined && !(str(update["status"]) && TOOL_STATUSES.has(update["status"]))) return false;
+  if (update["locations"] !== undefined && !(Array.isArray(update["locations"]) && update["locations"].every(one => isRecord(one) && str(one["path"])))) return false;
+  if (update["content"] !== undefined && update["content"] !== null && !(Array.isArray(update["content"]) && update["content"].every(wellFormedToolContent))) return false;
+  return true;
+}
+
 /** Whether a known update kind carries what it must; an unknown kind is left alone (not shown, not trusted). */
 function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolean {
-  const id = (key: string) => typeof update[key] === "string" && (update[key] as string) !== "" && (update[key] as string).length <= 256;
+  const id = (key: string) => str(update[key]) && update[key] !== "" && (update[key] as string).length <= 256;
   switch (kind) {
     case "agent_message_chunk":
     case "agent_thought_chunk":
     case "user_message_chunk":
-      return isRecord(update["content"]) && typeof update["content"]["type"] === "string";
+      return wellFormedContent(update["content"]);
     case "tool_call":
-      return id("toolCallId") && typeof update["title"] === "string";
+      return id("toolCallId") && str(update["title"]) && wellFormedToolFields(update);
     case "tool_call_update":
-      return id("toolCallId");
+      return id("toolCallId") && wellFormedToolFields(update);
     case "plan":
-      return Array.isArray(update["entries"]);
+      return Array.isArray(update["entries"]) && update["entries"].every(one => isRecord(one) && str(one["content"]) && str(one["priority"]) && str(one["status"]));
     case "available_commands_update":
-      return Array.isArray(update["availableCommands"]);
+      return Array.isArray(update["availableCommands"]) && update["availableCommands"].every(one => isRecord(one) && str(one["name"]));
     default:
       return true;
   }
@@ -356,7 +391,9 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
             title: isRecord(call) && typeof call["title"] === "string" ? call["title"] : null,
             kind: isRecord(call) && typeof call["kind"] === "string" ? call["kind"] : null,
           };
-          if (cancelled) {
+          // Granted only while our prompt runs and was not cancelled: before the model is confirmed, after the answer,
+          // or after a cancel, the request is answered "cancelled".
+          if (cancelled || phase !== "prompt") {
             return { send: [reply(id, { result: { outcome: { outcome: "cancelled" } } })], live: [{ ...step, granted: false }] };
           }
           if (answer === null) {
