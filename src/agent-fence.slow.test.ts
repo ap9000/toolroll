@@ -14,7 +14,7 @@ import { adapterFor } from "./provider.js";
 
 /** The read-only grants that are other tasks' git metadata: without the repository's own config, hooks and this
  * checkout's config, which every boundary holds read-only (their own test, below). */
-const siblingGrants = (paths: readonly string[]) => paths.filter(path => !/[/\\]\.git[/\\](config|hooks)$|[/\\]config\.worktree$/.test(path));
+const siblingGrants = (paths: readonly string[]) => paths.filter(path => !/[/\\]\.git[/\\](config|hooks)$|[/\\]config\.worktree$|[/\\]\.git$|[/\\](commondir|gitdir)$/.test(path));
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
@@ -200,15 +200,22 @@ describe("the agent fence", () => {
     const before = readFileSync(join(main, ".git", "config"), "utf8");
     const gitdir = binding.gitdir;
     expect(boundary.readOnly).toEqual(expect.arrayContaining([join(realpathSync(main), ".git", "config"), join(realpathSync(main), ".git", "hooks")]));
+    const pointer = readFileSync(join(worktree, ".git"), "utf8");
+    const commondir = readFileSync(join(gitdir, "commondir"), "utf8");
     const attempts = [
       `printf '[filter "x"]\\n\\tsmudge = touch /tmp/x\\n' >> '${join(main, ".git", "config")}'`,
       `printf '#!/bin/sh\\n' > '${join(main, ".git", "hooks", "post-checkout")}'`,
+      // Pointing Toolroll's git elsewhere: this checkout's .git file, or its metadata's commondir.
+      `printf 'gitdir: /tmp/elsewhere\\n' > '${join(worktree, ".git")}'`,
+      `printf '/tmp/elsewhere\\n' > '${join(gitdir, "commondir")}'`,
     ];
     for (const script of attempts) {
       const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", script], fence, grants) : linuxFenced("/bin/sh", ["-c", script], fence, grants);
       expect(spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).status).not.toBe(0);
     }
     expect(readFileSync(join(main, ".git", "config"), "utf8")).toBe(before);
+    expect(readFileSync(join(worktree, ".git"), "utf8")).toBe(pointer);
+    expect(readFileSync(join(gitdir, "commondir"), "utf8")).toBe(commondir);
     expect(existsSync(join(main, ".git", "hooks", "post-checkout"))).toBe(false);
     // (This checkout's own config.worktree counts only if the shared config — read-only above — turns it on.)
     void gitdir;
@@ -1240,9 +1247,13 @@ describe("another project's checkouts are out of reach", () => {
     const wrapped = macosFenced("/bin/sh", ["-c", attack], fence, grants);
     spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8" });
     expect(lstatSync(active).isDirectory()).toBe(true);
-    // Deleting contents may remove .git: a resumed launch must refuse, never adopt a sibling.
-    expect(() => trustedWorktreeBinding(main, active)).toThrow("trusted binding");
-    const control = macosFenced("/bin/sh", ["-c", attack], fence, { ...grants, pool: undefined });
+    // Deleting contents can't remove the checkout's .git pointer (read-only to every build): a resumed launch binds
+    // this checkout's own metadata, never a sibling's — or, were the pointer gone, refuses.
+    let bound: ReturnType<typeof trustedWorktreeBinding> | null = null;
+    try { bound = trustedWorktreeBinding(main, active); } catch (error) { expect(String(error)).toContain("trusted binding"); }
+    if (bound !== null) expect(bound.gitdir).not.toContain("sibling");
+    // The control: without the pool rule (and without the read-only pointer, which on its own also stops it), it works.
+    const control = macosFenced("/bin/sh", ["-c", attack], fence, { ...grants, pool: undefined, readOnly: grants.readOnly.filter(path => !/[/\\]\.git$/.test(path)) });
     spawnSync(control.file, control.args, { cwd: dir, encoding: "utf8" });
     expect(lstatSync(active).isSymbolicLink()).toBe(true);
     expect(() => trustedWorktreeBinding(main, active)).toThrow("trusted binding");

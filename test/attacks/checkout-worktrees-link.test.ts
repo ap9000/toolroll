@@ -41,8 +41,11 @@ describe("attack: a .git/worktrees symlink or planted entry becoming a grant", (
       const { boundary, fence, grants } = at.launch(provider);
       // Plain folders under the registry are only made read-only (they are the build's own .git); the link is never
       // followed, and nothing outside the registry is granted.
-      // Beside them, the repository's own config and hooks, read-only for every build.
-      expect(boundary.readOnly).toEqual([join(registry, "..", "config"), join(registry, "..", "hooks"), ...genuine, join(registry, "y"), join(registry, "z")].map(path => resolve(path)).sort());
+      // Beside them, what Toolroll's own git honours — the repository's config and hooks, this checkout's pointers —
+      // read-only for every build.
+      const control = /[/\\]\.git[/\\](config|hooks)$|[/\\]\.git$|[/\\](commondir|gitdir|config\.worktree)$/;
+      expect(boundary.readOnly.filter(path => control.test(path))).toEqual(expect.arrayContaining([resolve(registry, "..", "config"), resolve(registry, "..", "hooks")]));
+      expect(boundary.readOnly.filter(path => !control.test(path))).toEqual([...genuine, join(registry, "y"), join(registry, "z")]);
       expect(boundary.readOnly.every(path => realpathSync(path) === path)).toBe(true);
       expect(boundary.lookup).toEqual([at.sibling, join(at.sibling, ".git"), at.prefixSibling, join(at.prefixSibling, ".git")].sort());
       expect(JSON.stringify(grants)).not.toContain(join(registry, "x"));

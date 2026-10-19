@@ -35,8 +35,9 @@ describe("attack: a build swapping its own checkout for a symlink to a sibling c
     const { fence, grants } = at.launch("claude");
     underSeatbelt(swap(at), fence, grants, { cwd: at.active });
     expect(lstatSync(at.active).isDirectory()).toBe(true);
-    // Deleting the contents may remove .git: the resumed launch refuses rather than adopt anything.
-    expect(() => trustedWorktreeBinding(at.main, at.active, [at.pool])).toThrow(CheckoutBindingError);
+    // The checkout's .git pointer is read-only to every build (as Codex keeps it), so deleting the contents leaves it:
+    // the resumed launch binds the genuine checkout, never anything else.
+    expect(trustedWorktreeBinding(at.main, at.active, [at.pool]).gitdir).toBe(join(at.main, ".git", "worktrees", "task-0123abcd"));
     // Legitimate: inside the checkout everything is still writable, as the deletion just showed.
     const work = underSeatbelt("mkdir -p a/b && echo ok > a/b/c && cat a/b/c", fence, grants, { cwd: at.active });
     expect(work.stdout.trim(), work.stderr).toBe("ok");

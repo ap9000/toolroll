@@ -42,7 +42,7 @@
  */
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -266,15 +266,43 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   // What Toolroll's own git honours when it next runs in this repository, outside every fence — the shared config,
   // its hooks, and this checkout's own config — is read, never written: a build that could write them could make
   // that git run its commands (a hook, a filter, an fsmonitor), whatever the plane checks first.
+  // So are the pointers that say which git directory that is — this checkout's .git file, and its metadata's commondir
+  // and gitdir — or a build could point Toolroll's git at a directory of its own.
   if (main !== null) {
     readOnly.add(join(main, ".git", "config"));
     readOnly.add(join(main, ".git", "hooks"));
+    if (existsSync(join(main, ".git", "config.worktree"))) readOnly.add(join(main, ".git", "config.worktree"));
   }
-  // This checkout's own config counts only where git is told to read it (extensions.worktreeConfig, in the read-only
-  // config above), so one that doesn't exist yet needs no grant.
-  if (gitdir !== null && existsSync(join(gitdir, "config.worktree"))) readOnly.add(join(gitdir, "config.worktree"));
+  if (gitdir !== null) {
+    readOnly.add(join(worktree, ".git"));
+    for (const name of ["commondir", "gitdir"]) if (existsSync(join(gitdir, name))) readOnly.add(join(gitdir, name));
+    // This checkout's own config counts only where the shared config (read-only above) turns worktree config on; where
+    // it does, the file is made (empty) before the build so it can be held read-only too.
+    if (main !== null && worktreeConfigOn(main) && !existsSync(join(gitdir, "config.worktree"))) {
+      try { writeFileSync(join(gitdir, "config.worktree"), "", { flag: "wx", mode: 0o644 }); } catch { /* made meanwhile, or unwritable: checked below */ }
+    }
+    if (existsSync(join(gitdir, "config.worktree"))) readOnly.add(join(gitdir, "config.worktree"));
+  }
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
   return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
+}
+
+/** Whether a repository's shared config turns per-worktree config on (extensions.worktreeConfig), read without git. */
+function worktreeConfigOn(main: string): boolean {
+  let text: string;
+  try { text = readFileSync(join(main, ".git", "config"), "utf8"); } catch { return false; }
+  let section = "";
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const header = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"[^"]*")?\s*\]/.exec(line);
+    if (header !== null) { section = header[1]!.toLowerCase(); continue; }
+    const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
+    if (section === "extensions" && entry !== null && entry[1]!.toLowerCase() === "worktreeconfig") {
+      const value = (entry[2] ?? "true").trim().toLowerCase();
+      if (["true", "yes", "on", "1"].includes(value)) return true;
+    }
+  }
+  return false;
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
