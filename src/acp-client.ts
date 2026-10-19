@@ -165,6 +165,8 @@ export function permissionAnswer(params: unknown): { optionId: string; granted: 
 const str = (value: unknown): value is string => typeof value === "string";
 const TOOL_KINDS = new Set(["read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"]);
 const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed"]);
+const PLAN_PRIORITIES = new Set(["high", "medium", "low"]);
+const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
 /** One ACP content block, as the protocol defines it (text, image, audio, a resource link, an embedded resource). */
 function wellFormedContent(block: unknown): boolean {
@@ -173,7 +175,11 @@ function wellFormedContent(block: unknown): boolean {
     case "text": return str(block["text"]);
     case "image": case "audio": return str(block["data"]) && str(block["mimeType"]);
     case "resource_link": return str(block["uri"]) && str(block["name"]);
-    case "resource": return isRecord(block["resource"]) && str(block["resource"]["uri"]);
+    case "resource": {
+      // An embedded resource carries its text or its blob, beside its uri.
+      const resource = block["resource"];
+      return isRecord(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]));
+    }
     default: return false;
   }
 }
@@ -192,7 +198,8 @@ function wellFormedToolFields(update: Record<string, unknown>): boolean {
   if (update["title"] !== undefined && !str(update["title"])) return false;
   if (update["kind"] !== undefined && !(str(update["kind"]) && TOOL_KINDS.has(update["kind"]))) return false;
   if (update["status"] !== undefined && !(str(update["status"]) && TOOL_STATUSES.has(update["status"]))) return false;
-  if (update["locations"] !== undefined && !(Array.isArray(update["locations"]) && update["locations"].every(one => isRecord(one) && str(one["path"])))) return false;
+  if (update["locations"] !== undefined && !(Array.isArray(update["locations"]) && update["locations"].every(one =>
+    isRecord(one) && str(one["path"]) && (one["line"] === undefined || one["line"] === null || (typeof one["line"] === "number" && Number.isInteger(one["line"]) && one["line"] >= 0))))) return false;
   if (update["content"] !== undefined && update["content"] !== null && !(Array.isArray(update["content"]) && update["content"].every(wellFormedToolContent))) return false;
   return true;
 }
@@ -210,7 +217,8 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
     case "tool_call_update":
       return id("toolCallId") && wellFormedToolFields(update);
     case "plan":
-      return Array.isArray(update["entries"]) && update["entries"].every(one => isRecord(one) && str(one["content"]) && str(one["priority"]) && str(one["status"]));
+      return Array.isArray(update["entries"]) && update["entries"].every(one =>
+        isRecord(one) && str(one["content"]) && str(one["priority"]) && PLAN_PRIORITIES.has(one["priority"]) && str(one["status"]) && PLAN_STATUSES.has(one["status"]));
     case "available_commands_update":
       return Array.isArray(update["availableCommands"]) && update["availableCommands"].every(one => isRecord(one) && str(one["name"]));
     default:

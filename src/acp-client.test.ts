@@ -190,6 +190,10 @@ describe("the ACP conversation fails closed", () => {
       { sessionUpdate: "tool_call_update", toolCallId: "t", status: "done" },
       { sessionUpdate: "tool_call_update", toolCallId: "t", locations: [{ line: 3 }] },
       { sessionUpdate: "tool_call_update", toolCallId: "t", content: [{ type: "content", content: { type: "text" } }] },
+      { sessionUpdate: "agent_message_chunk", content: { type: "resource", resource: { uri: "file:///x" } } },
+      { sessionUpdate: "plan", entries: [{ content: "x", priority: "urgent", status: "pending" }] },
+      { sessionUpdate: "plan", entries: [{ content: "x", priority: "high", status: "skipped" }] },
+      { sessionUpdate: "tool_call_update", toolCallId: "t", locations: [{ path: "/a", line: "3" }] },
     ]) {
       const kindless = ready();
       kindless.conversation.receive(update(sid, body));
