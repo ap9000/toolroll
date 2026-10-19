@@ -290,6 +290,11 @@ export async function invokeAgent(
     // The billing the run was admitted under must be for the model about to be chosen.
     const stamp = store.acpBillingOfRun(runId);
     if (stamp !== null && stamp.model !== spec.model) return refuse(`this run was admitted to bill ${stamp.model}, not ${spec.model}`);
+    // And the money moment holds it to the hard monthly budgets as stamped — immutable since admission, so a
+    // declaration changed between a gate and this spawn changes nothing: metered work a budget holds never starts.
+    const billed = stamp?.kind === "plan" ? "subscription" as const : "api-key" as const;
+    const held = store.budgetGate(clock())({ ...store.budgetSubject(run.taskRef), agents: [{ provider: spec.provider, billing: billed }] });
+    if (held.over !== null) return refuse(`a monthly budget holds metered work, and ${name} on ${spec.model ?? "this model"} is metered here (budget)`);
   }
 
   // Auth mode decides how the credential reaches the process (the operator

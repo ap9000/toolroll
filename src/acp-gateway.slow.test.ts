@@ -121,6 +121,16 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     expect(store.handle.prepare("SELECT microusd, billing FROM run_spend WHERE run = ?").get(planned)).toEqual({ microusd: 0, billing: "subscription" });
   });
 
+  test("a hard monthly budget stops metered work at the spawn, whatever the declaration says by then", async () => {
+    check();
+    store.setBudget({ scope: "installation", key: "", limitMicrousd: 1_000_000, hardStop: true }, "test", T0);
+    // Admitted metered (no declaration); a plan declared after admission doesn't change what the run bills.
+    store.declareAcpBilling({ provider: "opencode", runner: RUNNER, model: "fake/model", kind: "plan", by: "test" }, T0);
+    const result = await run("ok");
+    expect(result).toMatchObject({ kind: "refused", reason: "provider-unattested", diagnostic: expect.stringContaining("(budget)") });
+    expect(ran()).toBe(false);
+  });
+
   test("an unchecked agent never starts", async () => {
     const result = await run("ok");
     expect(result).toMatchObject({ kind: "refused", reason: "provider-unattested", diagnostic: expect.stringContaining("toolroll agents check opencode") });
