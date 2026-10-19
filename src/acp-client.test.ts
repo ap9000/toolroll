@@ -150,6 +150,11 @@ describe("the ACP conversation fails closed", () => {
   });
 
   test("a response nobody asked for, a second answer, or one with both result and error fails", () => {
+    // An answer to our prompt must name its id exactly: 4.0000000000000001 is not 4.
+    const rounded = ready();
+    rounded.conversation.receive(`{"jsonrpc":"2.0","id":4.0000000000000001,"result":{"stopReason":"end_turn"}}`);
+    expect(acpParse(rounded.conversation.retained())).toMatchObject({ promptConsumed: false });
+    expect(rounded.conversation.failure()).toMatchObject({ kind: "protocol" });
     const stray = ready();
     stray.conversation.receive(answer(999, {}));
     expect(stray.conversation.failure()).toMatchObject({ kind: "protocol" });
@@ -195,6 +200,9 @@ describe("the ACP conversation fails closed", () => {
       { sessionUpdate: "plan", entries: [{ content: "x", priority: "high", status: "skipped" }] },
       { sessionUpdate: "tool_call_update", toolCallId: "t", locations: [{ path: "/a", line: "3" }] },
       { sessionUpdate: "agent_message_chunk", content: { type: "resource", resource: { uri: "file:///x", text: "t", mimeType: 123 } } },
+      { sessionUpdate: "tool_call_update", toolCallId: "t", content: [{ type: "content", content: { type: "resource_link", uri: "file:///x", name: "x", description: 123 } }] },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi", annotations: "x" } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "resource_link", uri: "u", name: "n", size: -1 } },
     ]) {
       const kindless = ready();
       kindless.conversation.receive(update(sid, body));
@@ -261,7 +269,7 @@ describe("what the plane answers the agent", () => {
     expect(permissionAnswer({ options: [] })).toBeNull();
     expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }] })).toBeNull();
     // An id that wouldn't come back as sent is never answered with a grant.
-    for (const raw of ['{"jsonrpc":"2.0","id":9007199254740993,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1e999,"method":"session/request_permission","params":{}}']) {
+    for (const raw of ['{"jsonrpc":"2.0","id":1.0000000000000001,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1.5,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":9007199254740993,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1e999,"method":"session/request_permission","params":{}}']) {
       const fresh = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
       handshake(fresh, opencode);
       expect(fresh.receive(raw.replace("{}", JSON.stringify({ sessionId: sid, toolCall: { toolCallId: "t" }, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] }))).send).toEqual([]);

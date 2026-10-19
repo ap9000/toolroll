@@ -171,18 +171,29 @@ const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed"])
 const PLAN_PRIORITIES = new Set(["high", "medium", "low"]);
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
-/** One ACP content block, as the protocol defines it (text, image, audio, a resource link, an embedded resource). */
+/** An optional field: absent, null, or of its type. */
+const optional = (value: unknown, is: (one: unknown) => boolean): boolean => value === undefined || value === null || is(value);
+const integer = (value: unknown): boolean => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const annotations = (value: unknown): boolean => optional(value, one => isRecord(one)
+  && optional(one["audience"], list => Array.isArray(list) && list.every(str))
+  && optional(one["priority"], n => typeof n === "number" && Number.isFinite(n))
+  && optional(one["lastModified"], str));
+
+/** One ACP content block, every field the protocol defines for its type checked (text, image, audio, a resource link, an embedded resource). */
 function wellFormedContent(block: unknown): boolean {
-  if (!isRecord(block) || !str(block["type"])) return false;
+  if (!isRecord(block) || !str(block["type"]) || !annotations(block["annotations"])) return false;
   switch (block["type"]) {
     case "text": return str(block["text"]);
-    case "image": case "audio": return str(block["data"]) && str(block["mimeType"]);
-    case "resource_link": return str(block["uri"]) && str(block["name"]) && (block["mimeType"] === undefined || block["mimeType"] === null || str(block["mimeType"]));
+    case "image": return str(block["data"]) && str(block["mimeType"]) && optional(block["uri"], str);
+    case "audio": return str(block["data"]) && str(block["mimeType"]);
+    case "resource_link":
+      return str(block["uri"]) && str(block["name"]) && optional(block["mimeType"], str) && optional(block["title"], str)
+        && optional(block["description"], str) && optional(block["size"], integer);
     case "resource": {
       // An embedded resource carries its text or its blob, beside its uri.
       const resource = block["resource"];
       return isRecord(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]))
-        && (resource["mimeType"] === undefined || resource["mimeType"] === null || str(resource["mimeType"]));
+        && optional(resource["text"], str) && optional(resource["blob"], str) && optional(resource["mimeType"], str);
     }
     default: return false;
   }
@@ -376,12 +387,20 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (raw.length > ACP_LINE_CAP || Buffer.byteLength(raw, "utf8") > ACP_LINE_CAP) return fail("protocol", "the agent wrote a line too long to read");
       if (raw.trim() === "") return { send: [], live: [] };
       let incoming: unknown;
+      // A top-level id must be exactly what it reads as: a number that JSON would round (1.0000000000000001) answers
+      // nothing, so no reply goes out under, and no answer is taken for, an id other than the one on the wire.
+      let roundedId = false;
       try {
-        incoming = JSON.parse(raw);
+        incoming = JSON.parse(raw, function (this: unknown, key: string, value: unknown, context?: { source?: string }) {
+          if (key === "id" && typeof value === "number" && this !== null && typeof this === "object" && "jsonrpc" in (this as object)
+            && (!Number.isSafeInteger(value) || context?.source === undefined || context.source !== String(value))) roundedId = true;
+          return value;
+        });
       } catch {
         return fail("protocol", "the agent wrote a line that is not JSON");
       }
       if (!isRecord(incoming) || incoming["jsonrpc"] !== "2.0") return fail("protocol", "the agent wrote something that is not JSON-RPC 2.0");
+      if (roundedId) return fail("protocol", "a message whose id isn't exactly the integer it reads as");
       const method = incoming["method"];
       const id = incoming["id"];
       if (typeof method === "string") {
