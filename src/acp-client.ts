@@ -153,6 +153,7 @@ export function permissionAnswer(params: unknown): { optionId: string; granted: 
   for (const one of params["options"]) {
     if (!isRecord(one) || typeof one["optionId"] !== "string" || one["optionId"] === "" || one["optionId"].length > 256) return null;
     if (typeof one["kind"] !== "string" || !OPTION_KINDS.has(one["kind"])) return null;
+    if (typeof one["name"] !== "string") return null;
     if (ids.has(one["optionId"])) return null;
     ids.add(one["optionId"]);
     options.push({ optionId: one["optionId"], kind: one["kind"] });
@@ -176,11 +177,12 @@ function wellFormedContent(block: unknown): boolean {
   switch (block["type"]) {
     case "text": return str(block["text"]);
     case "image": case "audio": return str(block["data"]) && str(block["mimeType"]);
-    case "resource_link": return str(block["uri"]) && str(block["name"]);
+    case "resource_link": return str(block["uri"]) && str(block["name"]) && (block["mimeType"] === undefined || block["mimeType"] === null || str(block["mimeType"]));
     case "resource": {
       // An embedded resource carries its text or its blob, beside its uri.
       const resource = block["resource"];
-      return isRecord(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]));
+      return isRecord(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]))
+        && (resource["mimeType"] === undefined || resource["mimeType"] === null || str(resource["mimeType"]));
     }
     default: return false;
   }
@@ -390,7 +392,8 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
           // A notification. Only session updates mean anything; the rest are ignored.
           return method === "session/update" ? onUpdate(params) : { send: [], live: [] };
         }
-        if (typeof id !== "number" && typeof id !== "string") return fail("protocol", "an agent request with a malformed id");
+        // An id we answer under must come back exactly as sent: a safe integer, or a bounded string.
+        if (!(typeof id === "number" && Number.isSafeInteger(id)) && !(typeof id === "string" && id.length <= 256)) return fail("protocol", "an agent request with a malformed id");
         if (method === "session/request_permission") {
           if (!isRecord(params) || sessionId === null || params["sessionId"] !== sessionId) return fail("protocol", "a permission request for another session");
           const call = params["toolCall"];

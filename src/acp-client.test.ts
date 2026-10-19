@@ -194,6 +194,7 @@ describe("the ACP conversation fails closed", () => {
       { sessionUpdate: "plan", entries: [{ content: "x", priority: "urgent", status: "pending" }] },
       { sessionUpdate: "plan", entries: [{ content: "x", priority: "high", status: "skipped" }] },
       { sessionUpdate: "tool_call_update", toolCallId: "t", locations: [{ path: "/a", line: "3" }] },
+      { sessionUpdate: "agent_message_chunk", content: { type: "resource", resource: { uri: "file:///x", text: "t", mimeType: 123 } } },
     ]) {
       const kindless = ready();
       kindless.conversation.receive(update(sid, body));
@@ -229,13 +230,13 @@ describe("what the plane answers the agent", () => {
     ]));
     expect(sent(granted.send)).toEqual([{ jsonrpc: "2.0", id: 5, result: { outcome: { outcome: "selected", optionId: "once" } } }]);
     expect(granted.live).toEqual([{ sessionUpdate: "permission", toolCallId: "t1", title: "rm", kind: "execute", granted: true }]);
-    const onlyAlways = conversation.receive(ask(6, [{ optionId: "always", kind: "allow_always" }, { optionId: "never", kind: "reject_always" }]));
+    const onlyAlways = conversation.receive(ask(6, [{ optionId: "always", kind: "allow_always", name: "Always" }, { optionId: "never", kind: "reject_always", name: "Never" }]));
     expect(sent(onlyAlways.send)[0]).toMatchObject({ id: 6, error: { code: -32602 } });
     expect(onlyAlways.live).toEqual([{ sessionUpdate: "permission", toolCallId: "t1", title: "rm", kind: "execute", granted: false }]);
-    const refused = conversation.receive(ask(8, [{ optionId: "no", kind: "reject_once" }]));
+    const refused = conversation.receive(ask(8, [{ optionId: "no", kind: "reject_once", name: "No" }]));
     expect(sent(refused.send)[0]).toMatchObject({ id: 8, result: { outcome: { optionId: "no" } } });
     // A request without a tool call is never granted, and still shows.
-    const callless = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/request_permission", params: { sessionId: sid, options: [{ optionId: "once", kind: "allow_once" }] } }));
+    const callless = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/request_permission", params: { sessionId: sid, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] } }));
     expect(sent(callless.send)[0]).toMatchObject({ id: 9, error: { code: -32602 } });
     expect(callless.live).toEqual([{ sessionUpdate: "permission", toolCallId: null, title: null, kind: null, granted: false }]);
     // Nor is a request whose tool call is malformed further down.
@@ -244,20 +245,28 @@ describe("what the plane answers the agent", () => {
       { toolCallId: "t3", locations: [{ path: "/a", line: "3" }] },
       { toolCallId: "t4", kind: "teleport" },
     ]) {
-      const malformed = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: `m-${toolCall.toolCallId}`, method: "session/request_permission", params: { sessionId: sid, toolCall, options: [{ optionId: "once", kind: "allow_once" }] } }));
+      const malformed = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: `m-${toolCall.toolCallId}`, method: "session/request_permission", params: { sessionId: sid, toolCall, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] } }));
       expect(sent(malformed.send)[0]).toMatchObject({ error: { code: -32602 } });
       expect(malformed.live[0]).toMatchObject({ granted: false });
     }
     // Once the prompt is answered, nothing more is granted.
     conversation.receive(answer(4, { stopReason: "end_turn" }));
-    const after = conversation.receive(ask(10, [{ optionId: "once", kind: "allow_once" }]));
+    const after = conversation.receive(ask(10, [{ optionId: "once", kind: "allow_once", name: "Once" }]));
     expect(sent(after.send)[0]).toMatchObject({ id: 10, result: { outcome: { outcome: "cancelled" } } });
     expect(permissionAnswer({ options: "x" })).toBeNull();
     // The whole list must be well formed: a malformed entry, an unknown kind or an id twice chooses nothing.
-    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }, "junk"] })).toBeNull();
-    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }, { optionId: "x", kind: "allow_sometimes" }] })).toBeNull();
-    expect(permissionAnswer({ options: [{ optionId: "same", kind: "allow_once" }, { optionId: "same", kind: "allow_always" }] })).toBeNull();
+    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once", name: "Once" }, "junk"] })).toBeNull();
+    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once", name: "Once" }, { optionId: "x", kind: "allow_sometimes", name: "x" }] })).toBeNull();
+    expect(permissionAnswer({ options: [{ optionId: "same", kind: "allow_once", name: "a" }, { optionId: "same", kind: "allow_always", name: "b" }] })).toBeNull();
     expect(permissionAnswer({ options: [] })).toBeNull();
+    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }] })).toBeNull();
+    // An id that wouldn't come back as sent is never answered with a grant.
+    for (const raw of ['{"jsonrpc":"2.0","id":9007199254740993,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1e999,"method":"session/request_permission","params":{}}']) {
+      const fresh = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+      handshake(fresh, opencode);
+      expect(fresh.receive(raw.replace("{}", JSON.stringify({ sessionId: sid, toolCall: { toolCallId: "t" }, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] }))).send).toEqual([]);
+      expect(fresh.failure()).toMatchObject({ kind: "protocol" });
+    }
   });
 
   test("every client method the plane doesn't offer is refused, each answered at once — however many", () => {
@@ -277,7 +286,7 @@ describe("what the plane answers the agent", () => {
     conversation.receive(update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Stopped." } }));
     expect(sent(conversation.cancel())).toEqual([{ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: sid } }]);
     // After a cancel, nothing more is granted: a permission request is answered "cancelled".
-    const late = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "t9" }, options: [{ optionId: "once", kind: "allow_once" }] } }));
+    const late = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "t9" }, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] } }));
     expect(sent(late.send)).toEqual([{ jsonrpc: "2.0", id: 50, result: { outcome: { outcome: "cancelled" } } }]);
     expect(late.live[0]).toMatchObject({ granted: false });
     const prompt = 4; // initialize 1, session/new 2, model 3, prompt 4
