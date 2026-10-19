@@ -26,7 +26,7 @@ export const INTERPRETER_INJECTION_ENV: readonly string[] = [
 ];
 
 /** Bumped whenever the conformance probe changes what it proves: every attestation made under another version is void. */
-export const ACP_CONFORMANCE_VERSION = 1;
+export const ACP_CONFORMANCE_VERSION = 2;
 
 export type FileBinding = {
   role: "launcher" | "interpreter" | "package" | "entry";

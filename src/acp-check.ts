@@ -54,28 +54,13 @@ export type AcpCheckJob = {
   progress?: (line: string) => void;
 };
 
-/** Close what no live watch holds any more, then run this runner's next check, if one is waiting. */
+/** Close what no live watch holds any more, let go of what finished checks still hold, then run this runner's next
+ * check, if one is waiting. */
 export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
   const clock = job.clock ?? (() => new Date());
   job.store.expireAcpChecks(clock());
-  for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) {
-    // A check whose runs are all finished — and whose processes are all accounted for — is closed whole: the request
-    // fails, its task fails, its claim is released and its checkout discarded. One whose step may still be running is
-    // left for a person: the request fails in words, and nothing it holds is touched.
-    const runs = [abandoned.step1Run, abandoned.step2Run].filter((one): one is number => one !== null);
-    const open = runs.some(run => job.store.getRun(run)?.outcome === null || job.store.openRunProcessCount(run, clock()) > 0);
-    if (open) { job.store.failAcpCheck(abandoned.id, "interrupted while a step may still be running — its checkout and claim were left for a person", clock()); continue; }
-    job.store.failAcpCheck(abandoned.id, "interrupted", clock());
-    if (abandoned.taskRef === null) continue;
-    const taskId = job.store.refForId(abandoned.taskRef)?.externalId;
-    const lease = job.store.currentLiveLease(abandoned.taskRef, clock());
-    if (lease !== null && lease.startsWith(`agent-check-${abandoned.id}-`)) release(job.store, lease, clock());
-    for (const row of job.store.listWorktrees().filter(one => one.taskRef === abandoned.taskRef)) {
-      if (row.releasedAt === null) await job.pool.release(row.path, clock());
-      await job.pool.discard(row.path, clock());
-    }
-    if (taskId !== undefined) job.store.setTaskState(taskId, "failed", clock());
-  }
+  for (const abandoned of job.store.abandonedAcpChecks(job.runner, clock())) job.store.failAcpCheck(abandoned.id, "interrupted", clock());
+  await settleChecks(job, clock);
   if (process.platform === "win32") return;
   const request = job.store.claimAcpCheck(job.runner, job.watch, clock());
   if (request === null) return;
@@ -86,6 +71,41 @@ export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
     job.progress?.(`agents: ${name} ${verdict === null ? "passed its check" : `failed its check — ${verdict}`}`);
   } catch (error) {
     job.store.failAcpCheck(request.id, `the check stopped: ${error instanceof Error ? error.message : String(error)}`, clock());
+  }
+  await settleChecks(job, clock);
+}
+
+/**
+ * Let go of what finished checks hold — their own claim, their checkout, their task — once nothing of theirs can
+ * still be running. A check is settled only when all of it is let go; anything that can't be yet (a run still open,
+ * a process not proved gone, a checkout that wouldn't discard) is retried on the next pass. Nothing another holder
+ * owns is touched: only the claim the check recorded as its own, and only its own branch's checkout, and only while
+ * no one else holds the task.
+ */
+async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> {
+  const { store } = job;
+  for (const request of store.unsettledAcpChecks(job.runner)) {
+    try {
+      if (request.taskRef === null) { store.settleAcpCheck(request.id, clock()); continue; }
+      const ref = request.taskRef;
+      const open = store.runsFor(ref).some(run => run.outcome === null || store.openRunProcessCount(run.id, clock()) > 0);
+      if (open) continue;
+      const lease = store.currentLiveLease(ref, clock());
+      if (lease !== null && lease !== request.leaseId) continue; // someone else holds the task now: not ours to touch
+      if (lease !== null) release(store, lease, clock());
+      const branch = `toolroll/agent-check-${request.id}`;
+      let discarded = true;
+      for (const row of store.listWorktrees().filter(one => one.taskRef === ref && one.branch === branch && one.repo === (request.watch?.repo ?? one.repo))) {
+        if (row.releasedAt === null) await job.pool.release(row.path, clock());
+        if (!(await job.pool.discard(row.path, clock())).ok) discarded = false;
+      }
+      if (!discarded) continue;
+      const taskId = store.refForId(ref)?.externalId;
+      if (taskId !== undefined) store.setTaskState(taskId, request.state === "passed" ? "done" : "failed", clock());
+      store.settleAcpCheck(request.id, clock());
+    } catch {
+      // Retried on the next pass.
+    }
   }
 }
 
@@ -110,17 +130,14 @@ async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Da
   const leaseId = `agent-check-${request.id}-${randomBytes(4).toString("hex")}`;
   const took = acquireForCheck(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => leaseId, ttlMs: 30 * 60_000, incarnation: job.watch.owner });
   if (!took.ok) { store.setTaskState(taskId, "failed", clock()); return fail(`the check couldn't claim its task (${took.reason})`); }
-  if (!store.bindAcpCheck(request.id, { taskRef: ref, launchJson: JSON.stringify(launch) }, clock())) {
+  if (!store.bindAcpCheck(request.id, { taskRef: ref, launchJson: JSON.stringify(launch), leaseId }, clock())) {
     release(store, leaseId, clock());
     store.setTaskState(taskId, "failed", clock());
     return fail("the check lost its watch before it began");
   }
+  // From here on, what the check holds is let go by settleChecks, whatever happens.
   const leased = await job.pool.lease({ repo: job.watch.repo, branch: `toolroll/${taskId}`, base: "HEAD", runner: job.runner, taskRef: ref, now: clock() });
-  if (!leased.ok) {
-    release(store, leaseId, clock());
-    store.setTaskState(taskId, "failed", clock());
-    return fail(`the check's checkout couldn't be made: ${leased.message}`);
-  }
+  if (!leased.ok) return fail(`the check's checkout couldn't be made: ${leased.message}`);
   const worktree = leased.worktree.path;
   const stateDir = dirname(realpathSync(store.databaseFile() ?? "."));
   // Named as a secret is, beside the database: fenced whether the state folder is Toolroll's own or shared.
@@ -130,11 +147,7 @@ async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Da
     verdict = await steps(job, request, { ref, leaseId, worktree, canaryFile }, clock);
   } finally {
     rmSync(canaryFile, { force: true });
-    release(store, leaseId, clock());
-    await job.pool.release(worktree, clock());
-    await job.pool.discard(worktree, clock());
   }
-  store.setTaskState(taskId, verdict === null ? "done" : "failed", clock());
   if (verdict !== null) store.failAcpCheck(request.id, verdict, clock());
   return verdict;
 }
@@ -259,6 +272,9 @@ function gradeStop(result: InvokeResult, witnessed: readonly { pid: number; grou
   if (facts.stop !== "cancelled") return `the prompt ended ${facts.stop ?? "without an answer"}, not cancelled`;
   if (facts.exit === null || facts.exit.timedOut || facts.exit.how === "error") return "the agent's process didn't end cleanly after the cancel";
   if (result.kind === "refused" && result.reason !== "provider-protocol") return `the run was refused: ${result.diagnostic ?? result.reason}`;
+  // Its whole process tree ended with it, proved: nothing left for the runner to kill, and no containment in doubt.
+  if (facts.exit.leftover) return "the agent left processes running after the cancel";
+  if (result.kind === "ran" && result.outcome.code === 126) return "the runner couldn't prove the agent's processes all ended";
   // Every process alive at the cancel is gone — and so is every process group it was in: a leader that exited after
   // forking leaves its group behind, which is no stop at all.
   for (const { pid, group } of witnessed) {

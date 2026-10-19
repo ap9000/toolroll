@@ -275,11 +275,19 @@ describe("what the plane answers the agent", () => {
     expect(permissionAnswer({ _meta: 123, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] })).toBeNull();
     expect(permissionAnswer({ _meta: { a: 1 }, options: [{ optionId: "once", kind: "allow_once", name: "Once", _meta: null }] })).toEqual({ optionId: "once", granted: true });
     // An id that wouldn't come back as sent is never answered with a grant.
-    for (const raw of ['{"jsonrpc":"2.0","id":1.0000000000000001,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1.5,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":9007199254740993,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1e999,"method":"session/request_permission","params":{}}']) {
+    for (const raw of ['{"jsonrpc":"2.0","id":1.0000000000000001,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1.5,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":9223372036854775808,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1e999,"method":"session/request_permission","params":{}}']) {
       const fresh = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
       handshake(fresh, opencode);
       expect(fresh.receive(raw.replace("{}", JSON.stringify({ sessionId: sid, toolCall: { toolCallId: "t" }, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] }))).send).toEqual([]);
       expect(fresh.failure()).toMatchObject({ kind: "protocol" });
+    }
+    // An integer id is answered under exactly the integer it writes — past 2^53, as 4e0, as -0 — and null under null.
+    for (const [token, echoed] of [["9007199254740993", "9007199254740993"], ["4e0", "4"], ["-0", "0"], ["1.0", "1"], ["null", "null"]]) {
+      const fresh = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+      handshake(fresh, opencode);
+      const sent = fresh.receive(`{"jsonrpc":"2.0","id":${token},"method":"session/request_permission","params":${JSON.stringify({ sessionId: sid, toolCall: { toolCallId: "t" }, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] })}}`).send;
+      expect(sent).toEqual([`{"jsonrpc":"2.0","id":${echoed},"result":{"outcome":{"outcome":"selected","optionId":"once"}}}`]);
+      expect(fresh.failure()).toBeNull();
     }
   });
 
@@ -359,6 +367,12 @@ describe("the schema, as it is written", () => {
     // 64-bit fields hold 64-bit values, past JavaScript's safe range.
     expect(line(`{"sessionUpdate":"usage_update","used":9007199254740993,"size":18446744073709551615}`)).toBeNull();
     expect(line(`{"sessionUpdate":"usage_update","used":1,"size":18446744073709551616}`)).toMatchObject({ kind: "protocol" });
+    // …and are shown and kept as the agent wrote them, never rounded to the nearest double.
+    const exact = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    handshake(exact, opencode);
+    const shown = exact.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"usage_update","used":9007199254740993,"size":18446744073709551615}}}`).live;
+    expect(shown).toEqual([{ sessionUpdate: "usage_update", used: "9007199254740993", size: "18446744073709551615" }]);
+    expect(exact.retained()).toContain('\\"used\\":\\"9007199254740993\\"');
     // Opaque data is never judged: raw input, metadata, a nested message-looking object.
     expect(line(`{"sessionUpdate":"tool_call_update","toolCallId":"t","rawInput":{"line":1.0000000000000001,"size":1e400,"jsonrpc":"2.0","id":1e3},"_meta":{"code":0.5}}`)).toBeNull();
     // An embedded resource matches one shape; the other shape's field, malformed, is the agent's own.

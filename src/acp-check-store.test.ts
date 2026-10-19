@@ -32,7 +32,7 @@ function runs(id: number): [number, number] {
   store.placeTask(ref, REPO);
   const took = acquire(store, ref, RUNNER, { now: T0, token: "tok", newLeaseId: () => `lease-${id}`, ttlMs: 3_600_000 });
   if (!took.ok) throw new Error(took.reason);
-  expect(store.bindAcpCheck(id, { taskRef: ref, launchJson: JSON.stringify(attestation.launch) }, T0)).toBe(true);
+  expect(store.bindAcpCheck(id, { taskRef: ref, launchJson: JSON.stringify(attestation.launch), leaseId: `lease-${id}` }, T0)).toBe(true);
   const start = () => store.startRun({ taskRef: ref, leaseId: `lease-${id}`, runner: RUNNER, branch: "check", worktree: "/w", route: { routeDigest: "legacy", phase: "build", provider: "opencode", model: "opencode/big-pickle", chosen: "legacy" }, now: T0 });
   const one = start();
   expect(store.consumeAcpCheckStep(id, 2, one, T0)).toBe(false); // out of order

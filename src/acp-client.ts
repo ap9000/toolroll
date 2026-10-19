@@ -201,9 +201,27 @@ function exactInteger(source: string): bigint | null {
 function wireInteger(holder: Record<string, unknown>, key: string, min: bigint, max: bigint): boolean {
   const value = holder[key];
   if (typeof value !== "number") return false;
+  // Every number the client reads came off the wire with its token: one without is refused, never taken as it reads.
   const source = NUMBER_SOURCES.get(holder)?.get(key);
-  const exact = source !== undefined ? exactInteger(source) : Number.isSafeInteger(value) ? BigInt(value) : null;
+  const exact = source === undefined ? null : exactInteger(source);
   return exact !== null && exact >= min && exact <= max;
+}
+
+/** A deep copy of a wire value in which every integer JavaScript would round (past 2^53) is its exact decimal string,
+ * so what is shown and kept is what the agent said. */
+function exactCopy(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(exactCopy);
+  if (!isRecord(value)) return value;
+  const sources = NUMBER_SOURCES.get(value);
+  const copy: Record<string, unknown> = {};
+  for (const [key, one] of Object.entries(value)) {
+    if (typeof one === "number" && !Number.isSafeInteger(one)) {
+      const source = sources?.get(key);
+      const exact = source === undefined ? null : exactInteger(source);
+      copy[key] = exact === null ? one : exact.toString();
+    } else copy[key] = exactCopy(one);
+  }
+  return copy;
 }
 const optionalInteger = (holder: Record<string, unknown>, key: string, min: bigint, max: bigint): boolean =>
   holder[key] === undefined || holder[key] === null || wireInteger(holder, key, min, max);
@@ -392,8 +410,11 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     pending.set(id, purpose);
     return line({ jsonrpc: "2.0", id, method, params });
   };
-  const reply = (id: unknown, outcome: { result: unknown } | { error: { code: number; message: string } }): string =>
-    line({ jsonrpc: "2.0", id, ...outcome });
+  /** A reply under the request's id, written as its token: an integer exactly (int64, past 2^53 too), a string, or null. */
+  const reply = (idToken: string, outcome: { result: unknown } | { error: { code: number; message: string } }): string => {
+    const body = line({ jsonrpc: "2.0", ...outcome });
+    return `{"jsonrpc":"2.0","id":${idToken},${body.slice('{"jsonrpc":"2.0",'.length)}`;
+  };
 
   const promptLine = (): string => {
     phase = "prompt";
@@ -421,7 +442,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (typeof stop !== "string" || !STOP_REASONS.has(stop)) return fail("protocol", "the prompt's answer carried no known stop reason");
       if (!isRecord(result) || !meta(result)) return fail("protocol", "the prompt's answer carried a malformed _meta");
       terminal = { stopReason: stop as AcpStopReason };
-      if (isRecord(result) && result["usage"] !== undefined) promptUsage = result["usage"];
+      if (isRecord(result) && result["usage"] !== undefined) promptUsage = exactCopy(result["usage"]);
       if (message !== "") keep({ type: "acp.message", content: bounded(message, MESSAGE_CAP) });
       keep({ type: "acp.terminal", stopReason: stop });
       phase = "ended";
@@ -491,9 +512,9 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     } else if (kind === "tool_call") {
       message = "";
     } else if (kind === "usage_update") {
-      usageUpdate = update;
+      usageUpdate = exactCopy(update);
     }
-    return { send: [], live: KNOWN_UPDATES.has(kind) ? [update] : [] };
+    return { send: [], live: KNOWN_UPDATES.has(kind) ? [exactCopy(update) as Record<string, unknown>] : [] };
   };
 
   return {
@@ -525,23 +546,31 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
         return fail("protocol", "the agent wrote a line that is not JSON");
       }
       if (!isRecord(incoming) || incoming["jsonrpc"] !== "2.0") return fail("protocol", "the agent wrote something that is not JSON-RPC 2.0");
-      // The message's own id must be exactly what it reads as: a number JSON would round (1.0000000000000001) answers
-      // nothing, so no reply goes out under, and no answer is taken for, an id other than the one on the wire.
-      if (typeof incoming["id"] === "number" && (!Number.isSafeInteger(incoming["id"]) || NUMBER_SOURCES.get(incoming)?.get("id") !== String(incoming["id"]))) {
-        return fail("protocol", "a message whose id isn't exactly what it reads as");
-      }
-      const method = incoming["method"];
+      // The message's own id is read by its token, as an exact integer (4, 4e0 and 4.0 are one id; 1.0000000000000001
+      // is none), so no reply goes out under, and no answer is taken for, an id other than the one on the wire.
+      const hasId = Object.prototype.hasOwnProperty.call(incoming, "id");
       const id = incoming["id"];
+      let idToken: string | null = null;
+      let idNumber: number | null = null;
+      if (typeof id === "number") {
+        const source = NUMBER_SOURCES.get(incoming)?.get("id");
+        const exact = source === undefined ? null : exactInteger(source);
+        if (exact === null || exact < INT64[0] || exact > INT64[1]) return fail("protocol", "a message whose id isn't an integer");
+        idToken = exact.toString();
+        if (BigInt(Number(exact)) === exact && Number.isSafeInteger(Number(exact))) idNumber = Number(exact);
+      } else if (typeof id === "string" && id.length <= 256) idToken = JSON.stringify(id);
+      else if (id === null && hasId) idToken = "null";
+      const method = incoming["method"];
       if (typeof method === "string") {
         const params = incoming["params"];
         // Anything that names a session must name ours.
         if (isRecord(params) && params["sessionId"] !== undefined && params["sessionId"] !== sessionId) return fail("protocol", "a message for another session");
-        if (id === undefined) {
+        if (!hasId) {
           // A notification. Only session updates mean anything; the rest are ignored.
           return method === "session/update" ? onUpdate(params) : { send: [], live: [] };
         }
-        // An id we answer under must come back exactly as sent: a safe integer, or a bounded string.
-        if (!(typeof id === "number" && Number.isSafeInteger(id)) && !(typeof id === "string" && id.length <= 256)) return fail("protocol", "an agent request with a malformed id");
+        // An id we answer under goes back exactly as sent: an integer, a bounded string, or null.
+        if (idToken === null) return fail("protocol", "an agent request with a malformed id");
         if (method === "session/request_permission") {
           if (!isRecord(params) || sessionId === null || params["sessionId"] !== sessionId) return fail("protocol", "a permission request for another session");
           const call = params["toolCall"];
@@ -558,25 +587,25 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
           // Granted only while our prompt runs and was not cancelled: before the model is confirmed, after the answer,
           // or after a cancel, the request is answered "cancelled".
           if (cancelled || phase !== "prompt") {
-            return { send: [reply(id, { result: { outcome: { outcome: "cancelled" } } })], live: [{ ...step, granted: false }] };
+            return { send: [reply(idToken, { result: { outcome: { outcome: "cancelled" } } })], live: [{ ...step, granted: false }] };
           }
           if (answer === null) {
-            return { send: [reply(id, { error: { code: -32602, message: "a permission request needs a tool call and an option this client can choose" } })], live: [{ ...step, granted: false }] };
+            return { send: [reply(idToken, { error: { code: -32602, message: "a permission request needs a tool call and an option this client can choose" } })], live: [{ ...step, granted: false }] };
           }
           return {
-            send: [reply(id, { result: { outcome: { outcome: "selected", optionId: answer.optionId } } })],
+            send: [reply(idToken, { result: { outcome: { outcome: "selected", optionId: answer.optionId } } })],
             live: [{ ...step, granted: answer.granted }],
           };
         }
-        return { send: [reply(id, { error: { code: -32601, message: "this client offers no such method" } })], live: [] };
+        return { send: [reply(idToken, { error: { code: -32601, message: "this client offers no such method" } })], live: [] };
       }
       // A response to one of ours.
-      if (typeof id !== "number") return fail("protocol", "a response with an id the plane never sent");
-      if (answered.has(id)) return fail("protocol", "a second answer to the same request");
-      const purpose = pending.get(id);
+      if (idNumber === null) return fail("protocol", "a response with an id the plane never sent");
+      if (answered.has(idNumber)) return fail("protocol", "a second answer to the same request");
+      const purpose = pending.get(idNumber);
       if (purpose === undefined) return fail("protocol", "a response with an id the plane never sent");
-      pending.delete(id);
-      answered.add(id);
+      pending.delete(idNumber);
+      answered.add(idNumber);
       const hasResult = Object.prototype.hasOwnProperty.call(incoming, "result");
       const hasError = Object.prototype.hasOwnProperty.call(incoming, "error");
       if (hasResult === hasError) return fail("protocol", "a response must carry a result or an error, not both or neither");

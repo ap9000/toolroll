@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runAcpChecks } from "./acp-check.js";
-import { acquire } from "./claim.js";
+import { acquire, release } from "./claim.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { register } from "./runner.js";
 import { openStore, type Store } from "./store.js";
@@ -102,21 +102,64 @@ describe("a check's claim and its recovery", () => {
     expect(store.acpAttestationFor("opencode", RUNNER)).toBeNull();
   });
 
-  test("a check whose watch died with nothing running is closed whole: its task fails and its claim is let go", async () => {
+  /** A check claimed by watch-1 and bound to its task under `leaseId`, whose watch then died; watch-2 takes over. */
+  const abandoned = (leaseId: (id: number) => string) => {
     const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
     expect(store.claimAcpCheck(RUNNER, { repo, owner: "watch-1" }, new Date())).not.toBeNull();
     store.createTask({ id: `agent-check-${id}`, title: "Check" }, new Date());
     const ref = store.refFor("built-in", `agent-check-${id}`).id;
     store.placeTask(ref, repo);
-    expect(acquire(store, ref, RUNNER, { now: new Date(), token: "tok", newLeaseId: () => `agent-check-${id}-dead`, ttlMs: 3_600_000 }).ok).toBe(true);
-    expect(store.bindAcpCheck(id, { taskRef: ref, launchJson: "{}" }, new Date())).toBe(true);
-    // The watch is gone; a new one takes over and recovers.
+    expect(acquire(store, ref, RUNNER, { now: new Date(), token: "tok", newLeaseId: () => leaseId(id), ttlMs: 3_600_000 }).ok).toBe(true);
+    expect(store.bindAcpCheck(id, { taskRef: ref, launchJson: "{}", leaseId: leaseId(id) }, new Date())).toBe(true);
     store.handle.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ?").run(new Date(Date.now() - 1000).toISOString(), RUNNER);
     const leased = store.acquireWatchLease(RUNNER, repo, "watch-2", 60 * 60_000, new Date());
     if (!leased.ok) throw new Error("watch");
-    await runAcpChecks({ ...job(), watch: { repo, owner: "watch-2" } });
-    expect(store.acpCheck(id)).toMatchObject({ state: "failed", result: "interrupted" });
+    return { id, ref };
+  };
+  const takeover = () => ({ ...job(), watch: { repo, owner: "watch-2" } });
+
+  test("a check whose watch died with nothing running is closed whole: its task fails and its claim is let go", async () => {
+    const { id, ref } = abandoned(id => `agent-check-${id}-dead`);
+    await runAcpChecks(takeover());
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", result: "interrupted", settledAt: expect.any(String) });
     expect(store.getTask(`agent-check-${id}`)?.state).toBe("failed");
     expect(store.currentLiveLease(ref, new Date())).toBeNull();
+  });
+
+  test("recovery never touches what a successor holds: another claim on the task, or a run still open", async () => {
+    const { id, ref } = abandoned(id => `agent-check-${id}-mine`);
+    // Someone else now holds the task (even under a look-alike lease id), with a run open.
+    release(store, `agent-check-${id}-mine`, new Date());
+    expect(acquire(store, ref, RUNNER, { now: new Date(), token: "tok", newLeaseId: () => `agent-check-${id}-foreign`, ttlMs: 3_600_000 }).ok).toBe(true);
+    await runAcpChecks(takeover());
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", settledAt: null });
+    expect(store.currentLiveLease(ref, new Date())).toBe(`agent-check-${id}-foreign`);
+    expect(store.getTask(`agent-check-${id}`)?.state).not.toBe("failed");
+  });
+
+  test("a checkout that won't discard leaves the check unsettled, and the next pass tries again", async () => {
+    const { id, ref } = abandoned(id => `agent-check-${id}-dead`);
+    const leased = await pool.lease({ repo, branch: `toolroll/agent-check-${id}`, base: "HEAD", runner: RUNNER, taskRef: ref, now: new Date() });
+    if (!leased.ok) throw new Error(leased.message);
+    let refusals = 1;
+    const real = pool.discard.bind(pool);
+    let calls = 0;
+    pool.discard = async (path, now) => { calls++; return refusals-- > 0 ? { ok: false, message: "busy" } : real(path, now); };
+    await runAcpChecks(takeover());
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", settledAt: null });
+    await runAcpChecks(takeover());
+    expect(calls).toBe(2);
+    expect(store.acpCheck(id)?.settledAt).not.toBeNull();
+    expect(store.listWorktrees().filter(one => one.branch === `toolroll/agent-check-${id}`)).toEqual([]);
+    expect(store.getTask(`agent-check-${id}`)?.state).toBe("failed");
+  });
+
+  test("a check that throws after its claim still lets go of everything", async () => {
+    const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
+    pool.lease = async () => { throw new Error("disk gone"); };
+    await runAcpChecks(job());
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", result: expect.stringContaining("disk gone"), settledAt: expect.any(String) });
+    expect(store.getTask(`agent-check-${id}`)?.state).toBe("failed");
+    expect(store.currentLiveLease(store.refFor("built-in", `agent-check-${id}`).id, new Date())).toBeNull();
   });
 });

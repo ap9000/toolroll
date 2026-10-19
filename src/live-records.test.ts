@@ -385,6 +385,22 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).not.toContain(token);
   });
 
+  test("a chunk starting with something cleaning removes, or a later update to a step, still keeps the boundary", () => {
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const pending = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "pending" });
+    const cases = [
+      ...["\r", "\v", "\f", "\uFEFF"].map(lead => [say("Checking credentials"), pending, say(lead), say(`\x1b[32m${token}\x1b[0m\n`)]),
+      [pending, say("Checking credentials"), acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "in_progress" }), say(`${token}\n`)],
+      [pending, say("Checking credentials"), acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" }), say(`${token}\n`)],
+    ];
+    for (const commands of [false, true]) for (const events of cases) {
+      const r = recorder(commands);
+      const records = [...all(r, events), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
   test("an empty chunk between a step and a token doesn't spend the word boundary", () => {
     for (const commands of [false, true]) {
       const r = recorder(commands);

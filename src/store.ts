@@ -5963,13 +5963,15 @@ CREATE TABLE IF NOT EXISTS acp_check_request (
   watch_owner         TEXT,
   task_ref            INTEGER REFERENCES task_ref(id),
   launch_json         TEXT,
+  lease_id            TEXT,
   steps_used          INTEGER NOT NULL DEFAULT 0 CHECK (steps_used BETWEEN 0 AND 2),
   step1_run           INTEGER REFERENCES run(id),
   step2_run           INTEGER REFERENCES run(id),
   step1_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step1_passed IN (0,1)),
   step2_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step2_passed IN (0,1)),
   result              TEXT,
-  finished_at         TEXT
+  finished_at         TEXT,
+  settled_at          TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS acp_check_running ON acp_check_request (runner) WHERE state = 'running';
 `;
@@ -5980,8 +5982,12 @@ export type AcpCheckRequest = {
   requestedBy: string; requestedAt: string; expiresAt: string;
   state: "pending" | "running" | "passed" | "failed" | "expired";
   watch: { repo: string; owner: string } | null; taskRef: number | null; launchJson: string | null;
+  /** The claim the check took on its task: the only one its cleanup may release. */
+  leaseId: string | null;
   stepsUsed: number; step1Run: number | null; step2Run: number | null; step1Passed: boolean; step2Passed: boolean;
   result: string | null; finishedAt: string | null;
+  /** When everything the finished check held (claim, checkout, task) was let go. */
+  settledAt: string | null;
 };
 
 export const ACP_BILLING_SCHEMA = `
@@ -15091,10 +15097,10 @@ export class Store {
   }
 
   /** Bind a running check, still owned and unexpired, to its task and the launch it inspected. */
-  bindAcpCheck(id: number, binding: { taskRef: number; launchJson: string }, now: Date): boolean {
+  bindAcpCheck(id: number, binding: { taskRef: number; launchJson: string; leaseId: string }, now: Date): boolean {
     const at = now.toISOString();
-    return Number(this.db.prepare(`UPDATE acp_check_request SET task_ref = ?, launch_json = ?
-      WHERE id = ? AND state = 'running' AND expires_at > ? AND task_ref IS NULL AND ${Store.WATCH_LIVE}`).run(binding.taskRef, binding.launchJson, id, at, at).changes) === 1;
+    return Number(this.db.prepare(`UPDATE acp_check_request SET task_ref = ?, launch_json = ?, lease_id = ?
+      WHERE id = ? AND state = 'running' AND expires_at > ? AND task_ref IS NULL AND ${Store.WATCH_LIVE}`).run(binding.taskRef, binding.launchJson, binding.leaseId, id, at, at).changes) === 1;
   }
 
   /** Consume step 1 or 2 for its run: in order, once, owned, unexpired. */
@@ -15158,6 +15164,16 @@ export class Store {
     const at = now.toISOString();
     return this.db.prepare(`SELECT * FROM acp_check_request WHERE runner = ? AND state = 'running' AND (expires_at <= ? OR NOT ${Store.WATCH_LIVE})`)
       .all(runner, at, at).map(readAcpCheck);
+  }
+
+  /** Finished checks on this runner whose claim, checkout and task are not yet let go: cleanup's to-do, retried each pass. */
+  unsettledAcpChecks(runner: string): AcpCheckRequest[] {
+    return this.db.prepare("SELECT * FROM acp_check_request WHERE runner = ? AND state IN ('passed','failed') AND settled_at IS NULL ORDER BY id").all(runner).map(readAcpCheck);
+  }
+
+  /** Mark a finished check's holdings let go. */
+  settleAcpCheck(id: number, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET settled_at = ? WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL").run(now.toISOString(), id).changes) === 1;
   }
 
   /** Pending checks past their time are expired, untouched. */
@@ -23354,7 +23370,8 @@ function readAcpCheck(row: Record<string, unknown>): AcpCheckRequest {
     expiresAt: String(row["expires_at"]),
     state: state === "running" || state === "passed" || state === "failed" || state === "expired" ? state : "pending",
     watch: row["watch_repo"] == null || row["watch_owner"] == null ? null : { repo: String(row["watch_repo"]), owner: String(row["watch_owner"]) },
-    taskRef: num("task_ref"), launchJson: text("launch_json"), stepsUsed: Number(row["steps_used"]), step1Run: num("step1_run"), step2Run: num("step2_run"),
+    taskRef: num("task_ref"), launchJson: text("launch_json"), leaseId: text("lease_id"), stepsUsed: Number(row["steps_used"]), step1Run: num("step1_run"), step2Run: num("step2_run"),
     step1Passed: Number(row["step1_passed"]) === 1, step2Passed: Number(row["step2_passed"]) === 1, result: text("result"), finishedAt: text("finished_at"),
+    settledAt: text("settled_at"),
   };
 }

@@ -611,7 +611,9 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
         acpSkipping = false;
         text = text.slice(end + 1);
       }
-      if (acpSeparated && acpWords !== "" && !acpWords.endsWith("\n") && text !== "" && !/^\s/.test(text)) acpWords += " ";
+      // A step between two messages is a word break, always written: whatever the next chunk starts with (a CR, a BOM,
+      // an escape) may be cleaned away, and the break with it.
+      if (acpSeparated && acpWords !== "" && !acpWords.endsWith("\n") && text !== "") acpWords += " ";
       // Only words actually written settle the break: an empty chunk leaves it owed to the next.
       if (text !== "") acpSeparated = false;
       acpWords += text;
@@ -636,7 +638,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     // a `key=` and the value still to come — is never split by one.
     // Anything else comes after the message's complete lines; an unfinished line waits for its end, whatever arrives.
     const records: LiveRecord[] = flushLines(at);
-    if (kind === "tool_call" || kind === "permission") acpSeparated = true;
+    if (kind === "tool_call" || kind === "tool_call_update" || kind === "permission") acpSeparated = true;
     if (kind === "permission") {
       // A request's title is free text (a command, a path anywhere): only the answer is shown.
       return [...records, ...openStep(at, null, "tool", update["granted"] === true ? "allowed once" : "refused")];
