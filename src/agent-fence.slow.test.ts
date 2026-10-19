@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
 import { adapterFor } from "./provider.js";
+
+/** The read-only grants that are other tasks' git metadata: without the repository's own config, hooks and this
+ * checkout's config, which every boundary holds read-only (their own test, below). */
+const siblingGrants = (paths: readonly string[]) => paths.filter(path => !/[/\\]\.git[/\\](config|hooks)$|[/\\]config\.worktree$/.test(path));
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
@@ -187,6 +191,34 @@ describe("the agent fence", () => {
     expect(() => trustedWorktreeBinding(main, worktree)).toThrow("The checkout's Git pointer was changed");
   });
 
+  test.skipIf(!macosFenceAvailable() && !linuxFenceAvailable())("a fenced build can't write the shared repository's config or hooks", () => {
+    const { main } = linkedCheckout();
+    const binding = trustedWorktreeBinding(main, worktree);
+    const boundary = taskBoundary({ worktree, provider: "claude", home, binding });
+    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
+    const grants = fenceGrants({ databaseFile: null, worktree, boundary });
+    const before = readFileSync(join(main, ".git", "config"), "utf8");
+    const gitdir = binding.gitdir;
+    expect(boundary.readOnly).toEqual(expect.arrayContaining([join(realpathSync(main), ".git", "config"), join(realpathSync(main), ".git", "hooks")]));
+    const attempts = [
+      `printf '[filter "x"]\\n\\tsmudge = touch /tmp/x\\n' >> '${join(main, ".git", "config")}'`,
+      `printf '#!/bin/sh\\n' > '${join(main, ".git", "hooks", "post-checkout")}'`,
+    ];
+    for (const script of attempts) {
+      const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", script], fence, grants) : linuxFenced("/bin/sh", ["-c", script], fence, grants);
+      expect(spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).status).not.toBe(0);
+    }
+    expect(readFileSync(join(main, ".git", "config"), "utf8")).toBe(before);
+    expect(existsSync(join(main, ".git", "hooks", "post-checkout"))).toBe(false);
+    // (This checkout's own config.worktree counts only if the shared config — read-only above — turns it on.)
+    void gitdir;
+    // Commits, the build's real work, still land.
+    const commit = "git -c user.name=t -c user.email=t@t commit --allow-empty -qm fenced";
+    const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", commit], fence, grants) : linuxFenced("/bin/sh", ["-c", commit], fence, grants);
+    const committed = spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" });
+    expect(committed.status, committed.stderr).toBe(0);
+  });
+
   test.skipIf(!macosFenceAvailable())("generated Codex and Claude fences permit linked checkout Git commands", () => {
     const { main, sibling, head } = linkedCheckout();
     const binding = trustedWorktreeBinding(main, worktree);
@@ -266,7 +298,7 @@ describe("the agent fence", () => {
         join(main, "package.json"), join(main, "src"), join(projects, "other"), join(state, "worktrees", "app", "task-2"),
       ].sort());
       // Another task's git metadata is read, never written; the checkout it names is looked up, never read.
-      expect(claude.readOnly).toEqual([join(main, ".git", "worktrees", "task-2")]);
+      expect(siblingGrants(claude.readOnly)).toEqual([join(main, ".git", "worktrees", "task-2")]);
       writeFileSync(join(main, ".git", "worktrees", "task-2", "gitdir"), `${join(state, "worktrees", "app", "task-2", ".git")}\n`);
       expect(taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "claude", home }).lookup).toEqual([join(state, "worktrees", "app", "task-2"), join(state, "worktrees", "app", "task-2", ".git")]);
       // Claude's CLI reads its own home to sign in and resume, so the OS fence leaves it; its file tools still refuse the sensitive files.
@@ -335,7 +367,7 @@ describe("the agent fence", () => {
       const before = readFileSync(join(metadata, "HEAD"), "utf8");
       const boundary = taskBoundary({ binding: trustedWorktreeBinding(repo, active), worktree: active, provider: "claude", home });
       expect(boundary.shell).toContain(other);
-      expect(boundary.readOnly).toEqual([metadata]);
+      expect(siblingGrants(boundary.readOnly)).toEqual([metadata]);
       const grants = fenceGrants({ databaseFile: null, worktree: active, boundary });
       const fenced = (script: string, rules = grants) => run("/bin/bash", ["-c", script], { cwd: active, processGroup: true, fence: boundary.shell, fenceGrants: rules, env: fencedGitEnv({}) });
 
@@ -942,10 +974,10 @@ describe("a link planted among the repository's worktree entries grants nothing"
   test("the boundary never follows it into a read-only grant, and Codex's policy keeps the folder denied", () => {
     const { boundary, fence, grants } = launch("codex");
     expect(fence).toContain(join(home, ".toolroll"));
-    expect(boundary.readOnly).toEqual([]);
+    expect(siblingGrants(boundary.readOnly)).toEqual([]);
     expect(JSON.stringify(boundary)).not.toContain("tool-secrets");
     const filesystem = parseFilesystem(codexFenceArgv(fence, false, grants));
-    expect([...filesystem].filter(([, mode]) => mode === "read")).toEqual([]);
+    expect([...filesystem].filter(([path, mode]) => mode === "read" && siblingGrants([path]).length > 0)).toEqual([]);
     expect(filesystem.get(join(home, ".toolroll"))).toBe("deny");
     // Bubblewrap masks the folder and binds nothing back from the planted link.
     const bwrap = linuxFenced("claude", [], fence, grants).args;

@@ -5,7 +5,7 @@
  * and looks a checkout up only when that checkout's own `.git` names the entry back.
  */
 import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { codexFenceArgv, linuxFenced } from "../../src/agent-fence.js";
 import { codexSandbox, expectNoMarker, lines, marker, needs, plane, q, seatbelt, underCodex, underSeatbelt, useScratch, write } from "./harness.js";
@@ -41,7 +41,8 @@ describe("attack: a .git/worktrees symlink or planted entry becoming a grant", (
       const { boundary, fence, grants } = at.launch(provider);
       // Plain folders under the registry are only made read-only (they are the build's own .git); the link is never
       // followed, and nothing outside the registry is granted.
-      expect(boundary.readOnly).toEqual([...genuine, join(registry, "y"), join(registry, "z")]);
+      // Beside them, the repository's own config and hooks, read-only for every build.
+      expect(boundary.readOnly).toEqual([join(registry, "..", "config"), join(registry, "..", "hooks"), ...genuine, join(registry, "y"), join(registry, "z")].map(path => resolve(path)).sort());
       expect(boundary.readOnly.every(path => realpathSync(path) === path)).toBe(true);
       expect(boundary.lookup).toEqual([at.sibling, join(at.sibling, ".git"), at.prefixSibling, join(at.prefixSibling, ".git")].sort());
       expect(JSON.stringify(grants)).not.toContain(join(registry, "x"));

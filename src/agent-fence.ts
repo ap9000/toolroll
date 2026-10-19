@@ -263,6 +263,16 @@ export function taskBoundary(options: { worktree: string; provider: string; home
       lookup.add(join(checkout, ".git"));
     }
   }
+  // What Toolroll's own git honours when it next runs in this repository, outside every fence — the shared config,
+  // its hooks, and this checkout's own config — is read, never written: a build that could write them could make
+  // that git run its commands (a hook, a filter, an fsmonitor), whatever the plane checks first.
+  if (main !== null) {
+    readOnly.add(join(main, ".git", "config"));
+    readOnly.add(join(main, ".git", "hooks"));
+  }
+  // This checkout's own config counts only where git is told to read it (extensions.worktreeConfig, in the read-only
+  // config above), so one that doesn't exist yet needs no grant.
+  if (gitdir !== null && existsSync(join(gitdir, "config.worktree"))) readOnly.add(join(gitdir, "config.worktree"));
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
   return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
 }
