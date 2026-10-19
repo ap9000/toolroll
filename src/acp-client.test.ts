@@ -382,6 +382,11 @@ describe("the schema, as it is written", () => {
     expect(proto["kind"]).toBeUndefined();
     expect(proto["status"]).toBeUndefined();
     expect(Object.getOwnPropertyNames(proto)).toContain("__proto__");
+    // At any depth, and a bare number too.
+    const nested = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    handshake(nested, opencode);
+    const deepCount = nested.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"usage_update","used":1,"size":2,"_meta":{"counts":${"[".repeat(80)}9007199254740993${"]".repeat(80)}}}}}`).live;
+    expect(JSON.stringify(deepCount)).toContain('"9007199254740993"');
     // Nothing nested deep enough to break a copy throws out of the client.
     const deep = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
     handshake(deep, opencode);

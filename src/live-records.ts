@@ -130,7 +130,7 @@ function escapeLeftOpen(line: string): EscapeCarry {
  * cleanLiveText reads escapes — or null while it is still open. Words written after it are words; words written
  * inside it are cleaned away with it.
  */
-function escapeEnd(text: string, carry: EscapeCarry): number | null {
+function escapeEnd(text: string, carry: EscapeCarry | "I"): number | null {
   if (carry === "C") {
     const done = /^[0-?]*[ -/]*[@-~]/.exec(text);
     if (done !== null) return done[0].length;
@@ -143,6 +143,12 @@ function escapeEnd(text: string, carry: EscapeCarry): number | null {
     if (stop + 1 === text.length) return null;
     return text[stop + 1] === "\\" ? stop + 2 : stop;
   }
+  if (carry === "I") {
+    // ESC and intermediate bytes so far: the rest is more of them, then one final byte.
+    const done = /^[ -/]*[0-~]/.exec(text);
+    if (done !== null) return done[0].length;
+    return /^[ -/]*$/.test(text) ? null : 0;
+  }
   if (carry === "E") {
     if (text === "") return null;
     if (text[0] === "[" || text[0] === "]") {
@@ -154,6 +160,14 @@ function escapeEnd(text: string, carry: EscapeCarry): number | null {
     return /^[ -/]*$/.test(text) ? null : 0;
   }
   return 0;
+}
+
+/** The escape `text` ends inside, read as cleanLiveText reads escapes: escapeLeftOpen's, or ESC with intermediate
+ * bytes ("I") that a final byte still has to finish. */
+function heldEscape(text: string): EscapeCarry | "I" {
+  const open = escapeLeftOpen(text);
+  if (open !== "") return open;
+  return /\x1b[ -/]+$/.test(text) ? "I" : "";
 }
 
 /**
@@ -654,14 +668,16 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       // A step between two messages is a word break, always written: whatever the next chunk starts with (a CR, a BOM,
       // an escape) may be cleaned away, and the break with it.
       const messageId = typeof update["messageId"] === "string" ? update["messageId"] : null;
-      if (messageId !== null && acpMessageId !== null && messageId !== acpMessageId) acpSeparated = true;
+      // The agent's own word on what is one message wins: a new id is a break, the same id is no break, whatever came
+      // between (a tool's update arriving mid-sentence doesn't split `api_` from `key=`). With no id, a step is a break.
+      if (messageId !== null && acpMessageId !== null) acpSeparated = messageId !== acpMessageId;
       if (messageId !== null) acpMessageId = messageId;
       if (acpSeparated && text !== "") {
         if (acpWords === "" || acpWords.endsWith("\n")) acpSeparated = false;
         else {
           // The break goes where cleaning can't take it: after any escape the held words left open, once it is over
           // (written inside it, it would be cleaned away with it). Still open, the break waits for the next chunk.
-          const at = escapeEnd(text, escapeLeftOpen(acpWords));
+          const at = escapeEnd(text, heldEscape(acpWords));
           if (at !== null) {
             text = `${text.slice(0, at)} ${text.slice(at)}`;
             acpSeparated = false;

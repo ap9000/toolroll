@@ -422,6 +422,30 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     }
   });
 
+  test("one message stays one across a tool's update: a credential split by it is still read whole", () => {
+    const say = (text: string, messageId: string) => acp({ sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text } });
+    for (const commands of [false, true]) {
+      const r = recorder(commands);
+      const records = [...all(r, [
+        acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "in_progress" }),
+        say("Using api_", "same"),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" }),
+        say("key=sensitive-test-value\n", "same"),
+      ]), ...r.end()];
+      expect(onDisk(records)).not.toContain("sensitive-test-value");
+    }
+  });
+
+  test("an escape left open with intermediate bytes still gets its break after it", () => {
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    for (const commands of [false, true]) {
+      const r = recorder(commands);
+      const records = [...all(r, [say("Checking credentials\x1b("), acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "pending" }), say(`B\x1b[32m${token}\x1b[0m\n`)]), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
   test("a key opener begun before a step — split, disguised, inside an escape — hides the step's target", () => {
     const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
     const reading = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "in_progress", locations: [{ path: "/pool/wt/sensitive-key-fragment" }] });

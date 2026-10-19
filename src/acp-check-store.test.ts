@@ -90,3 +90,29 @@ test("a pending check past its time expires untouched, and is never claimed", ()
   expect(store.expireAcpChecks(at(31))).toBe(1);
   expect(store.acpCheck(id)).toMatchObject({ state: "expired" });
 });
+
+test("one cleanup attempt at a time per check, and it settles only once no checkout of the check's branch is left", () => {
+  const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "m", by: "alex" }, T0);
+  expect(store.claimAcpCheck(RUNNER, WATCH, T0)).not.toBeNull();
+  runs(id);
+  expect(store.failAcpCheck(id, "no", T0)).toBe(true);
+  // A second watch's attempt waits while the first holds; the first may renew; a lapsed hold can be taken over.
+  expect(store.holdAcpSettle(id, "a", T0, 60_000)).toBe(true);
+  expect(store.holdAcpSettle(id, "b", T0, 60_000)).toBe(false);
+  expect(store.holdAcpSettle(id, "a", at(0.5), 60_000)).toBe(true);
+  expect(store.holdsAcpSettle(id, "b", at(0.5))).toBe(false);
+  // A checkout of the check's branch keeps it open, whatever the attempt last saw.
+  const ref = store.acpCheck(id)!.taskRef!;
+  store.saveWorktree({ path: "/w/late", repo: REPO, branch: `toolroll/agent-check-${id}`, runner: null, taskRef: ref, createdAt: T0.toISOString(), leasedAt: T0.toISOString(), releasedAt: null, verified: true });
+  expect(store.settleAcpCheck(id, "a", `toolroll/agent-check-${id}`, at(0.6))).toBe(false);
+  store.handle.prepare("DELETE FROM worktree WHERE path = ?").run("/w/late");
+  expect(store.settleAcpCheck(id, "b", `toolroll/agent-check-${id}`, at(0.6))).toBe(false); // not b's attempt
+  expect(store.settleAcpCheck(id, "a", `toolroll/agent-check-${id}`, at(0.6))).toBe(true);
+  expect(store.acpCheck(id)?.settledAt).not.toBeNull();
+  // Lapsed: another attempt can take a check over (here a fresh one, unsettled).
+  const other = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "m", by: "alex" }, T0);
+  expect(store.claimAcpCheck(RUNNER, WATCH, T0)).not.toBeNull();
+  expect(store.failAcpCheck(other, "no", T0)).toBe(true);
+  expect(store.holdAcpSettle(other, "a", T0, 60_000)).toBe(true);
+  expect(store.holdAcpSettle(other, "b", at(2), 60_000)).toBe(true);
+});

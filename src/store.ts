@@ -5971,7 +5971,9 @@ CREATE TABLE IF NOT EXISTS acp_check_request (
   step2_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step2_passed IN (0,1)),
   result              TEXT,
   finished_at         TEXT,
-  settled_at          TEXT
+  settled_at          TEXT,
+  settle_by           TEXT,
+  settle_until        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS acp_check_running ON acp_check_request (runner) WHERE state = 'running';
 `;
@@ -15181,9 +15183,31 @@ export class Store {
     return Number(this.db.prepare("UPDATE acp_check_request SET settled_at = NULL WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NOT NULL").run(id).changes) === 1;
   }
 
-  /** Mark a finished check's holdings let go. */
-  settleAcpCheck(id: number, now: Date): boolean {
-    return Number(this.db.prepare("UPDATE acp_check_request SET settled_at = ? WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL").run(now.toISOString(), id).changes) === 1;
+  /** Take — or renew — the one cleanup attempt a finished check may have at a time: free, lapsed, or already this one. */
+  holdAcpSettle(id: number, attempt: string, now: Date, ttlMs: number): boolean {
+    const at = now.toISOString();
+    return Number(this.db.prepare(`UPDATE acp_check_request SET settle_by = ?, settle_until = ?
+      WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL AND (settle_by IS NULL OR settle_by = ? OR settle_until <= ?)`)
+      .run(attempt, new Date(now.getTime() + ttlMs).toISOString(), id, attempt, at).changes) === 1;
+  }
+
+  /** Whether this cleanup attempt still holds the check. */
+  holdsAcpSettle(id: number, attempt: string, now: Date): boolean {
+    return this.db.prepare("SELECT 1 FROM acp_check_request WHERE id = ? AND settle_by = ? AND settle_until > ?").get(id, attempt, now.toISOString()) !== undefined;
+  }
+
+  /** Let go of a cleanup attempt (only this one). */
+  endAcpSettle(id: number, attempt: string): void {
+    this.db.prepare("UPDATE acp_check_request SET settle_by = NULL, settle_until = NULL WHERE id = ? AND settle_by = ?").run(id, attempt);
+  }
+
+  /** Mark a finished check's holdings let go — by the attempt holding it, and only if no checkout of its branch is
+   * left (one that landed late keeps it open, whatever the attempt last saw). */
+  settleAcpCheck(id: number, attempt: string, branch: string, now: Date): boolean {
+    return Number(this.db.prepare(`UPDATE acp_check_request SET settled_at = ?, settle_by = NULL, settle_until = NULL
+      WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL AND settle_by = ? AND settle_until > ?
+        AND NOT EXISTS (SELECT 1 FROM worktree w WHERE w.task_ref = acp_check_request.task_ref AND w.branch = ?)`)
+      .run(now.toISOString(), id, attempt, now.toISOString(), branch).changes) === 1;
   }
 
   /** Pending checks past their time are expired, untouched. */

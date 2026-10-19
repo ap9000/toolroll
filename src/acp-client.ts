@@ -207,27 +207,35 @@ function wireInteger(holder: Record<string, unknown>, key: string, min: bigint, 
   return exact !== null && exact >= min && exact <= max;
 }
 
-/** How deep a copied wire value goes; deeper, a value is carried as it parsed. */
-const COPY_DEPTH = 64;
+/** A number as the agent wrote it: past 2^53, its exact decimal string (when its token writes an integer). */
+function exactNumber(holder: object, key: string, item: number): unknown {
+  if (Number.isSafeInteger(item)) return item;
+  const source = NUMBER_SOURCES.get(holder)?.get(key);
+  const exact = source === undefined ? null : exactInteger(source);
+  return exact === null ? item : exact.toString();
+}
 
-/** A deep copy of a wire value in which every integer JavaScript would round (past 2^53) is its exact decimal string,
- * so what is shown and kept is what the agent said — in objects and arrays alike. Every key, `__proto__` included, is
- * the copy's own data, never an inherited field. */
-function exactCopy(value: unknown, depth = 0): unknown {
-  if (value === null || typeof value !== "object" || depth >= COPY_DEPTH) return value;
-  const sources = NUMBER_SOURCES.get(value);
-  const one = (key: string, item: unknown): unknown => {
-    if (typeof item !== "number" || Number.isSafeInteger(item)) return exactCopy(item, depth + 1);
-    const source = sources?.get(key);
-    const exact = source === undefined ? null : exactInteger(source);
-    return exact === null ? item : exact.toString();
-  };
-  if (Array.isArray(value)) return value.map((item, index) => one(String(index), item));
-  const copy: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    Object.defineProperty(copy, key, { value: one(key, item), enumerable: true, writable: true, configurable: true });
+/** `holder[key]`, copied with every integer JavaScript would round (past 2^53) as its exact decimal string, so what
+ * is shown and kept is what the agent said — at any depth, in objects and arrays alike (iteratively: no nesting can
+ * exhaust the stack). Every key, `__proto__` included, is the copy's own data, never an inherited field. */
+function exactField(holder: Record<string, unknown>, key: string): unknown {
+  const root = holder[key];
+  if (typeof root === "number") return exactNumber(holder, key, root);
+  if (root === null || typeof root !== "object") return root;
+  const fresh = (one: object): object => (Array.isArray(one) ? [] : {});
+  const out = fresh(root);
+  const stack: [object, object][] = [[root, out]];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    const [source, target] = next;
+    const entries: [string, unknown][] = Array.isArray(source) ? source.map((item, index) => [String(index), item]) : Object.entries(source);
+    for (const [name, item] of entries) {
+      let value: unknown = item;
+      if (typeof item === "number") value = exactNumber(source, name, item);
+      else if (item !== null && typeof item === "object") { value = fresh(item); stack.push([item, value as object]); }
+      Object.defineProperty(target, name, { value, enumerable: true, writable: true, configurable: true });
+    }
   }
-  return copy;
+  return out;
 }
 const optionalInteger = (holder: Record<string, unknown>, key: string, min: bigint, max: bigint): boolean =>
   holder[key] === undefined || holder[key] === null || wireInteger(holder, key, min, max);
@@ -448,7 +456,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (typeof stop !== "string" || !STOP_REASONS.has(stop)) return fail("protocol", "the prompt's answer carried no known stop reason");
       if (!isRecord(result) || !meta(result)) return fail("protocol", "the prompt's answer carried a malformed _meta");
       terminal = { stopReason: stop as AcpStopReason };
-      if (isRecord(result) && result["usage"] !== undefined) promptUsage = exactCopy(result["usage"]);
+      if (isRecord(result) && result["usage"] !== undefined) promptUsage = exactField(result, "usage");
       if (message !== "") keep({ type: "acp.message", content: bounded(message, MESSAGE_CAP) });
       keep({ type: "acp.terminal", stopReason: stop });
       phase = "ended";
@@ -518,9 +526,9 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     } else if (kind === "tool_call") {
       message = "";
     } else if (kind === "usage_update") {
-      usageUpdate = exactCopy(update);
+      usageUpdate = exactField(params, "update");
     }
-    return { send: [], live: KNOWN_UPDATES.has(kind) ? [exactCopy(update) as Record<string, unknown>] : [] };
+    return { send: [], live: KNOWN_UPDATES.has(kind) ? [exactField(params, "update") as Record<string, unknown>] : [] };
   };
 
   /** One line from the agent: what to send back, and what to show. */

@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchOf } from "./acp-attest.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
-import { acquire, acquireForCheck, release } from "./claim.js";
+import { acquire, acquireForCheck, heartbeat, release } from "./claim.js";
 import type { AcpControl, RunOptions } from "./exec.js";
 import { invokeAgent, type InvokeResult } from "./invoke.js";
 import type { ProviderRunner } from "./provider.js";
@@ -83,12 +83,19 @@ export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
  * can't be yet (a run still open, a process not proved gone, a checkout that wouldn't discard, someone else holding
  * the task) is retried on the next pass, and never touched.
  */
+/** How long one cleanup attempt, and its claim on the task, last between renewals. */
+const SETTLE_HOLD_MS = 10 * 60_000;
+
 async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> {
   const { store } = job;
   for (const request of store.unsettledAcpChecks(job.runner)) {
+    // One attempt at a time per check, across every watch of the runner: another attempt in flight is left alone.
+    const attempt = randomBytes(8).toString("hex");
+    if (!store.holdAcpSettle(request.id, attempt, clock(), SETTLE_HOLD_MS)) continue;
+    const branch = `toolroll/agent-check-${request.id}`;
     let held: string | null = null;
     try {
-      if (request.taskRef === null) { store.settleAcpCheck(request.id, clock()); continue; }
+      if (request.taskRef === null) { store.settleAcpCheck(request.id, attempt, branch, clock()); continue; }
       const ref = request.taskRef;
       const quiet = () => !store.runsFor(ref).some(run => run.outcome === null || store.openRunProcessCount(run.id, clock()) > 0);
       if (!quiet()) continue;
@@ -96,12 +103,17 @@ async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> 
       if (lease !== null && lease !== request.leaseId) continue; // someone else holds the task now: not ours to touch
       if (lease === null) {
         const fresh = `agent-check-${request.id}-settle-${randomBytes(4).toString("hex")}`;
-        const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: 10 * 60_000, incarnation: job.watch.owner });
+        const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: SETTLE_HOLD_MS, incarnation: job.watch.owner });
         if (!took.ok || !store.setAcpCheckLease(request.id, fresh)) { if (took.ok) release(store, fresh, clock()); continue; }
         held = fresh;
       } else held = lease;
-      const ours = () => store.currentLiveLease(ref, clock()) === held && quiet();
-      const branch = `toolroll/agent-check-${request.id}`;
+      const claim = held;
+      // Still this attempt's, the claim still live and the task still quiet — then both are renewed in full, so
+      // neither lapses during the step about to run.
+      const ours = (): boolean => {
+        if (!store.holdsAcpSettle(request.id, attempt, clock()) || store.currentLiveLease(ref, clock()) !== claim || !quiet()) return false;
+        return heartbeat(store, claim, clock(), SETTLE_HOLD_MS).ok && store.holdAcpSettle(request.id, attempt, clock(), SETTLE_HOLD_MS);
+      };
       let discarded = true;
       for (const row of store.listWorktrees().filter(one => one.taskRef === ref && one.branch === branch)) {
         if (!ours()) { discarded = false; break; }
@@ -112,11 +124,12 @@ async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> 
       if (!discarded || !ours()) continue;
       const taskId = store.refForId(ref)?.externalId;
       if (taskId !== undefined) store.setTaskState(taskId, request.state === "passed" ? "done" : "failed", clock());
-      store.settleAcpCheck(request.id, clock());
+      store.settleAcpCheck(request.id, attempt, branch, clock());
     } catch {
       // Retried on the next pass.
     } finally {
       if (held !== null && store.currentLiveLease(request.taskRef ?? -1, clock()) === held) release(store, held, clock());
+      store.endAcpSettle(request.id, attempt);
     }
   }
 }
