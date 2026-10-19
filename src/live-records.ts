@@ -551,6 +551,9 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   /** The latest output an open command showed, already redacted when it arrived (a later update may carry none). */
   const outputs = new Map<string, string[]>();
   let acpWords = "";
+  /** A step came between the held unfinished line and the words after it: they are joined with one space, so a token
+   * keeps the word boundary a scanner needs ("credentials ghp_…") and `key= value` still reads as one. */
+  let acpSeparated = false;
   /** Past the hard cap, the rest of that one line is not shown; each piece is still read for the key-block state, in
    * order — the state itself carries a split BEGIN across pieces, and an END split across two simply keeps the block
    * hidden (never the other way). Nothing is read twice. */
@@ -608,6 +611,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
         acpSkipping = false;
         text = text.slice(end + 1);
       }
+      if (acpSeparated && acpWords !== "" && !acpWords.endsWith("\n") && text !== "" && !/^\s/.test(text)) acpWords += " ";
+      acpSeparated = false;
       acpWords += text;
       if (acpWords.length <= ACP_WORDS_CAP) return [];
       // Flushed only at a line's end, so nothing the redaction reads (a key block's BEGIN, a `key=` and its value) is
@@ -630,6 +635,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     // a `key=` and the value still to come — is never split by one.
     // Anything else comes after the message's complete lines; an unfinished line waits for its end, whatever arrives.
     const records: LiveRecord[] = flushLines(at);
+    if (kind === "tool_call" || kind === "permission") acpSeparated = true;
     if (kind === "permission") {
       // A request's title is free text (a command, a path anywhere): only the answer is shown.
       return [...records, ...openStep(at, null, "tool", update["granted"] === true ? "allowed once" : "refused")];

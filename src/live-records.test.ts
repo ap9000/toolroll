@@ -274,7 +274,7 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
       ...r.end(),
     ];
     // An unfinished line waits for its end, whatever arrives between: judged whole, as the agent wrote it.
-    expect(records.filter(one => one.k === "say").map(one => (one as { t: string[] }).t)).toEqual([["Reading the file.Done."]]);
+    expect(records.filter(one => one.k === "say").map(one => (one as { t: string[] }).t)).toEqual([["Reading the file. Done."]]);
     expect(records.filter(one => one.k === "step").map(one => (one as { target?: string }).target)).toEqual(["src/a.ts", OUTSIDE_PROJECT]);
     expect(onDisk(records)).not.toContain(".ssh");
   });
@@ -372,6 +372,17 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     ]), ...r.end()];
     expect(onDisk(records)).not.toContain("correct-horse-battery-staple");
     expect(onDisk(records)).toContain("next");
+  });
+
+  test("a token after a step keeps its word boundary, so the scanner still sees it", () => {
+    const r = recorder(false);
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Checking credentials" } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "g1", title: "x", kind: "read", status: "pending" }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${token}\n` } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain(token);
   });
 
   test("a key block opened in the unshown rest of a line past the hard cap still hides what follows", () => {
