@@ -5,7 +5,7 @@ import { matchRoute, ROUTES } from './route-table.js';
 const COOKIE_ONLY_POSTS = [
   'edge.oauth-consent', 'code.act-other', 'code.answer-send', 'code.continue-send', 'code.recover-send', 'code.resume-send',
   'code.send-send', 'code.ship-send', 'code.start', 'code.stop-send', 'flow.hooks-address', 'flow.linear-key', 'flow.secrets', 'flow.trigger.secret', 'flow.unattended',
-  'spend.budget', 'settings.project-delete', 'settings.policy-send', 'settings.approval-send',
+  'spend.budget', 'settings.project-delete', 'settings.project-live-view', 'settings.policy-send', 'settings.approval-send',
   'settings.request-limits-send', 'settings.sessions-send', 'settings.sign-in-send', 'settings.updates-send',
   'settings.updates-seen-send', 'settings.updates-cancel-send', 'settings.retention-send',
   'settings.storage-send', 'settings.storage-clean-send', 'settings.storage-discard-send',
@@ -37,7 +37,7 @@ const PASSWORD_CEREMONIES = [
   '/settings/updates', '/settings/retention', '/settings/storage', '/settings/storage/clean', '/settings/storage/discard',
   '/settings/pull-requests', '/settings/checks', '/settings/backups', '/settings/data', '/settings/monitoring',
   '/settings/tools/connect', '/settings/tools/change', '/settings/slack/connect', '/settings/teams/connect', '/settings/discord/connect',
-  '/settings/chat-approval/confirm', '/settings/chat-approval/save',
+  '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view',
   '/control/instructions-approve', '/control/setup-approve', '/fleet/runner/register', '/fleet/runner/retire',
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
   '/projects/onboard-confirm', '/push/subscribe',

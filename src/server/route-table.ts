@@ -328,6 +328,7 @@ post("flows", "flow.trigger.share", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/
 post("flows", "flow.trigger.unshare", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/unshare$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/unshare" , ...EDIT_FLOWS });
 post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operator("An instance operator sets budgets.", "/spend") });
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
+post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
 post("pages", "ledger.checkpoint", "/ledger/checkpoint", operator("An instance operator makes ledger checkpoints.", "/ledger"));
 const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {

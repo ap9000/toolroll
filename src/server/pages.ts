@@ -417,7 +417,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   /** What the board says after a Reply or a steer, in fixed words (never text from the address). */
   const AGENT_SAID: Record<string, { tone: "info" | "error"; text: string }> = {
     replied: { tone: "info", text: "Reply sent. The agent reads it at its next check." },
-    steered: { tone: "info", text: "Note sent. The agent reads it at its next check." },
+    steered: { tone: "info", text: "Note sent. It shows in the conversation with whether the agent has read it." },
+    "steer-ended": { tone: "error", text: "That attempt ended before your note, so nothing was sent. Your note is kept below." },
+    "steered-next": { tone: "info", text: "Note sent. The task's next attempt reads it before starting." },
+    "steer-next-finished": { tone: "error", text: "This task is finished, so there's no next attempt to send it to. Your note is kept below." },
+    "steer-invalid": { tone: "error", text: "That note will not store. Your note is still in the box." },
+    "steer-stale": { tone: "error", text: "That form was already used. Your note is still in the box — send it again." },
     "reply-closed": { tone: "error", text: "That question was already answered." },
     "reply-stale": { tone: "error", text: "This attempt ended before your reply, so nothing was sent." },
     "reply-invalid": { tone: "error", text: "Write a reply of up to 1,500 characters." },
@@ -443,9 +448,10 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         selected = {
           ...agentRowOf(store, facts, now, evidenceRoot), live,
           question: live && facts.question !== null ? { ...facts.question, action: `${taskHref(facts.taskId)}/reply` } : null,
-          transcript: options.localRunner === undefined ? null : `/r/${facts.runId}?fragment=transcript`,
-          // The live look at its checkout needs this machine's runner and pool, as the run page's does.
-          peek: live && options.localRunner !== undefined && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
+          // The conversation's window: its notes answer anywhere; its transcript only from the machine that runs it (the window says so).
+          transcript: `/r/${facts.runId}?fragment=transcript&shape=records`,
+          // The live look at its checkout needs this machine's runner — the one running it — and pool, as the run page's does.
+          peek: live && options.localRunner !== undefined && run!.runner === options.localRunner && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
           files: (sealed?.files ?? []).slice(0, 30).map(one => ({ path: one.path, added: one.additions, removed: one.deletions })),
           filesMore: Math.max(0, (sealed?.fileCount ?? 0) - 30),
           steer: live ? { action: `${taskHref(facts.taskId)}/steer`, run: facts.runId } : null,

@@ -65,7 +65,7 @@ function doomed(db: Database, repo: string): Doomed {
 const SETTINGS: [table: string, column: string][] = [
   ["approval_policy", "repo"], ["verify_command", "repo"], ["worktree_setup", "repo"], ["backend_grant", "repo"], ["publication_grant", "repo"],
   ["intake_grant", "repo"], ["capability", "repo"], ["project_tool", "repo"], ["phase_config", "scope"], ["phase_tier_config", "scope"],
-  ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"],
+  ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"], ["live_detail_setting", "repo"],
   ["project_decision", "repo"], ["flow_script", "repo"], ["workflow_recipe", "repo"], ["team_lead_project", "project"],
 ];
 

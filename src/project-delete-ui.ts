@@ -31,7 +31,23 @@ export type ProjectSettingsView = {
   /** What its builds can reach: the project's named tools and whether each loads (names and words only, never a
    * secret), or why they couldn't be read. */
   access?: { tools: { name: string; loads: boolean; words: string }[] } | { problem: string };
+  /** Live view (live-detail.ts): whether running agents' commands and their output show, and whether this person may change it. */
+  liveView?: { commands: boolean; canChange: boolean; nonce?: string };
 };
+
+/** Live view: hidden by default; showing commands takes the password, hiding them is one step. */
+function liveViewHtml(view: ProjectSettingsView): Html | "" {
+  const live = view.liveView;
+  if (live === undefined) return "";
+  const said = live.commands
+    ? html`<p>Commands and their output show in the live view of this project's agents. Secrets are hidden where they're recognised, which isn't guaranteed.</p>`
+    : html`<p>Commands are hidden in the live view. You see which files an agent reads and edits, but not the commands it runs or their output.</p>`;
+  const change = !live.canChange ? html`<p class="meta">An approver for this project can change this.</p>`
+    : live.commands
+      ? postForm("/settings/project/live-view", html`<button type="submit">Hide commands</button><p class="meta">From the next run.</p>`, { hidden: { repo: view.repo, act: "off" } })
+      : postForm("/settings/project/live-view", html`<p class="meta">Output can include secrets the filter misses. Turn this on only where you're happy for anyone who can see this project to read it. From the next run.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Show commands</button>`, { hidden: { repo: view.repo, act: "on", nonce: live.nonce ?? "" } });
+  return html`<section class="build-access live-view" aria-labelledby="live-view-title" data-live-view-setting="${live.commands ? "commands" : "base"}"><h2 id="live-view-title">Live view</h2>${said}${change}</section>`;
+}
 
 /** Build access: one sentence for what a build gets, the detail on demand, and the way to change it. */
 function accessHtml(view: ProjectSettingsView): Html | "" {
@@ -74,7 +90,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: 
   const remote = html`<section class="build-access recorded-remote" aria-labelledby="recorded-remote-title"><h2 id="recorded-remote-title">Recorded remote</h2>${view.remoteUrl
     ? html`<p class="path">${view.remoteUrl}</p>`
     : html`<p>No remote recorded. Landed work waits for your review.</p>`}<details><summary>Change remote</summary><p>An owner or instance operator can run:</p><p class="path">toolroll repos add &lt;project&gt; --remote &lt;url&gt;</p></details></section>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${liveViewHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`
