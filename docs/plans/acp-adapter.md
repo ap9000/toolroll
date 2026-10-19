@@ -1,6 +1,6 @@
 # ACP agents: one protocol adapter for every coding agent that speaks it
 
-Status: spec v6 (2026-10-19) — v6 revises only Layer E (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
+Status: spec v7 (2026-10-19) — v6/v7 revise only Layer E (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
 
 ## Why
 
@@ -269,3 +269,54 @@ declaration per checked model, and "Revoke". `toolroll agents check|revoke|billi
 2. Is the request-as-admission exception tight enough (single use per step, runner incarnation, launch re-verified)?
 3. Are the two steps' pass conditions free of false passes (model non-compliance reading as isolation)?
 4. Is dropping the `--version` step acceptable given the bound hashes?
+
+
+## Layer E, v7 amendments (answering the v6 review)
+
+1. **Git hooks (P1, and older than ACP).** A lease's own git — branch creation and `worktree add`, run by Toolroll's
+   process outside every fence — now runs hardened (`checkoutGit`, teardown-git.ts): hooks off, fsmonitor off, and a
+   repository config that names a command refuses the lease with words, as teardown already does. The user's global
+   git setup still applies. This closes it for every build, not only checks (commit "Leases: a checkout's git runs
+   nothing the repository holds", with a test that a planted post-checkout and a config filter never run).
+2. **No false passes (P1).** Isolation is proven by the plane, never by the agent's words or files:
+   - For a check step, the gateway runs two **plane probes inside the exact fence and environment it is about to give
+     the agent**, after the fence and child environment are built and before spawn: `cat <canary>` (a file the job
+     wrote in the fenced state folder) must fail, and `printenv ANTHROPIC_API_KEY` with the launching environment
+     carrying a random canary key must print nothing. Both results ride the outcome (`acp.isolation`); either failing
+     fails the check. No agent involvement, so no compliance to fake.
+   - **session-ok** passes only on: a `tool_call` of kind `edit` (or `execute`) the runner saw complete; the prompt's
+     `end_turn`; the process ending on stdin EOF with nothing of its group left; and `done.txt` containing `ok`.
+   - **session-stop** cancels only after the runner has seen an `execute` tool call reach `in_progress` (the job waits
+     up to 60 s for it; none, and the step fails — never a pass by absence); it then requires the `cancelled` answer
+     within 15 s and the group reaped. Whether a descendant was alive at the reap is recorded, not required (an
+     agent's tool may run in its own group, which the custody observer covers as for every run).
+3. **Budget (P1).** Each step passes the same gates dispatch applies before it spends: the monthly budget for the
+   Agent checks project and installation (`budgetGate` in operate.ts, extracted and shared), runner capacity, and the
+   per-run cap rule — a model billed `metered` with any cap in force refuses (`budget-unenforceable`), one declared
+   `plan` doesn't. The billing stamp on each step's run is the same one settlement reads.
+4. **Cancellation evidence (P1).** A refused outcome after a spawn carries the same ACP facts as `ran`
+   (`acp` on the refused variant), so the check grades a `cancelled` step without relaxing what ordinary builds accept.
+5. **Revocation during setup (P1).** Closed in c556ea56: the live attestation is re-read at the spawn boundary.
+6. **Request fencing (P1).**
+   - Claim is runner-wide exclusive: one statement — `UPDATE acp_check_request SET state='running', incarnation=?
+     WHERE id=? AND state='pending' AND runner=? AND expires_at>? AND NOT EXISTS (SELECT 1 FROM acp_check_request
+     WHERE runner=? AND state='running')`.
+   - Recovery: at the start of every tick, a `running` request whose incarnation is not the runner's current one, or
+     past `expires_at`, is marked `failed` ("interrupted") — its task failed, its claim and worktree released and
+     discarded; nothing is attested.
+   - Steps bind runs: `step1_run`, `step2_run` columns, each set by the same CAS that consumes the step slot
+     (`… SET steps_used=1, step1_run=? WHERE id=? AND steps_used=0 AND state='running' AND incarnation=?`).
+   - Completion is one transaction: `UPDATE … SET state='passed' WHERE id=? AND state='running' AND incarnation=? AND
+     steps_used=2 AND step1_run=? AND step2_run=?` (exactly one row, else nothing) **and** `recordAcpAttestation`.
+7. **Lifecycle (P2).**
+   - The Agent checks repository is the runner's own: the job registers it in the runner's repo bindings
+     (`runner.repos`, the ordinary binding `acquire` proves) when it first makes it.
+   - The task is a bare built-in task (`createTask`, no scope, no plan), placed in that repository; admission is the
+     `legacy` route for the agent and model, as for any scope-less task.
+   - Run outcomes: a passed step finishes `failed` is wrong and `built` stamps first-success — so a step finishes with
+     outcome `refused` and reason `agent-check` (no strike, no success, no disposal road); the task ends `done` (pass)
+     or `failed` with the reason words. Nothing reads a check run as a build.
+   - The check worktree is discarded after settlement: released and removed through teardown's hardened remove
+     (`--force`), never kept dirty for a "next attempt".
+8. **Re-checking (P2).** `acpCheck` admission applies whenever the option is present — an existing attestation for the
+   same agent neither blocks nor satisfies a check; the new one replaces it only on a pass.
