@@ -57,3 +57,15 @@ test("a plan declaration covers exactly its model on its runner, and a run settl
 test("an ordinary provider's run carries no ACP stamp", () => {
   expect(store.acpBillingOfRun(admit("opus", "claude"))).toBeNull();
 });
+
+test("a hard monthly budget holds metered ACP work it can't price, and passes work on the agent's declared plan", () => {
+  store.setBudget({ scope: "installation", key: "", limitMicrousd: 10_000_000, hardStop: true }, "alex", T0);
+  const gate = store.budgetGate(T0);
+  const subject = { project: "/repo", person: null, subagent: null };
+  expect(gate({ ...subject, agents: [store.agentFor("opencode", "opencode/big-pickle", RUNNER)] }).over).not.toBeNull();
+  store.declareAcpBilling({ provider: "opencode", runner: RUNNER, model: "opencode/big-pickle", kind: "plan", by: "alex" }, T0);
+  expect(store.budgetGate(T0)({ ...subject, agents: [store.agentFor("opencode", "opencode/big-pickle", RUNNER)] }).over).toBeNull();
+  // The declaration is the model's, on that runner: another model, or the same one elsewhere, is still metered.
+  expect(store.budgetGate(T0)({ ...subject, agents: [store.agentFor("opencode", "google/gemini-2.5-flash", RUNNER)] }).over).not.toBeNull();
+  expect(store.budgetGate(T0)({ ...subject, agents: [store.agentFor("opencode", "opencode/big-pickle", "another")] }).over).not.toBeNull();
+});

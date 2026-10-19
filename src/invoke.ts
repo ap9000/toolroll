@@ -647,7 +647,9 @@ export async function invokeAgent(
   if (spec.provider === "claude" && managedKey === null && authMode === "subscription" && billingSeen.answered && evidence !== null) {
     store.recordProviderBilling("claude", evidence, new Date());
   }
-  store.fixRunBilling(runId, authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle), new Date());
+  // An ACP run bills as its admission stamp says (store.acpBillingOfRun): its agent's own plan, or metered.
+  const acpBilling = isAcpProvider(spec.provider) ? (store.acpBillingOfRun(runId)?.kind === "plan" ? "subscription" as const : "api-key" as const) : null;
+  store.fixRunBilling(runId, acpBilling ?? (authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle)), new Date());
 
   const envelope = adapter.parse(result.stdout);
   store.stampAgentReportedUsage(runId, envelope.agentReportedUsage ?? null);

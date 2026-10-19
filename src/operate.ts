@@ -3050,7 +3050,10 @@ async function tickCommand(
     // budget is raised (the 100% alert went out; the task page and the spend page say why).
     // Budgets are dollars: work that runs only on subscriptions passes (see Store.budgetGate).
     // Each provider as it bills now.
-    const budgeted = budgetHold(ref.id, store.agentsFor([spec.provider, ...skipProviders]));
+    // An ACP agent bills as its declaration for the exact model it would run on this runner.
+    const sealedModel = store.getScope(id)?.approvedProfile?.model ?? null;
+    const budgeted = budgetHold(ref.id, [...new Set([spec.provider, ...skipProviders])].map(provider =>
+      isAcpProvider(provider) ? store.agentFor(provider, provider === spec.provider ? spec.model ?? sealedModel : sealedModel, runner) : store.agentsFor([provider])[0]!));
     if (budgeted.over !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "budget", detail: budgetWords(budgeted) });
       continue;

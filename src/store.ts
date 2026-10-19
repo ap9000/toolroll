@@ -15360,6 +15360,16 @@ export class Store {
     };
   }
 
+  /** How one agent would bill new work now: an ACP agent by its declaration for that exact model on that runner
+   * (plan reads as a plan, anything else as metered), every other provider as agentsFor says. */
+  agentFor(provider: string, model: string | null, runner: string | null): BudgetAgent {
+    if (isAcpProvider(provider)) {
+      const declared = model === null || runner === null ? null : this.acpBillingFor(provider, runner, model);
+      return { provider, billing: declared?.kind === "plan" ? "subscription" : "api-key" };
+    }
+    return this.agentsFor([provider])[0]!;
+  }
+
   /** How each provider would bill new work now (see spend.billingOf). */
   agentsFor(providers: readonly string[]): BudgetAgent[] {
     return [...new Set(providers)].map(provider => ({ provider, billing: billingOf(provider, this.db) }));

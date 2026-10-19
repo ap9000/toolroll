@@ -2959,7 +2959,8 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
     if (request.leaseId !== undefined && !heartbeat(store, request.leaseId, clock()).ok) {
       return { ok: false, reason: "fenced", message: `${taskId}'s lease did not survive the resumed turn — the work is still in ${worktree}` };
     }
-    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [{ provider, billing: store.runBilling(request.runId) ?? store.agentsFor([provider])[0]!.billing }] }).over !== null) break;
+    // An ACP agent's turn bills as its own model's declaration on this runner, never as the attempt it continues.
+    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [isAcpProvider(provider) ? store.agentFor(provider, model ?? null, request.runner) : { provider, billing: store.runBilling(request.runId) ?? store.agentsFor([provider])[0]!.billing }] }).over !== null) break;
     if (store.agentPolicyRefusal(provider, model ?? null) !== null) break;
     const admitted = admitProtocolRepair(store, request, effective.profile, sessionId, clock);
     if (!admitted.ok) break;
@@ -3182,7 +3183,8 @@ async function ingestPark(args: {
 
     // v105: a repair turn spends too — a budget used up since the build began stops further turns (billed to a key).
     // It bills as the attempt it mends did.
-    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [{ provider: repairProvider, billing: store.runBilling(request.runId) ?? store.agentsFor([repairProvider])[0]!.billing }] }).over !== null) break;
+    // An ACP repair bills as its own model's declaration on this runner, never as the attempt it mends.
+    if (store.budgetGate(clock())({ ...store.budgetSubject(request.taskRef), agents: [isAcpProvider(repairProvider) ? store.agentFor(repairProvider, repairModel ?? null, request.runner) : { provider: repairProvider, billing: store.runBilling(request.runId) ?? store.agentsFor([repairProvider])[0]!.billing }] }).over !== null) break;
     // Sprint 8: nor does a repair run on a provider or model the organisation policy doesn't allow.
     if (store.agentPolicyRefusal(repairProvider, repairModel ?? null) !== null) break;
     const admitted = admitProtocolRepair(store, request, args.profile, sessionId, clock);

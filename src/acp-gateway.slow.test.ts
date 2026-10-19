@@ -109,6 +109,18 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("a run admitted on the agent's declared plan settles at $0 as a plan, after the gateway is done with it", async () => {
+    check();
+    store.finishRun(runId, { outcome: "refused", reason: "test", now: T0 });
+    store.declareAcpBilling({ provider: "opencode", runner: RUNNER, model: "fake/model", kind: "plan", by: "test" }, T0);
+    const ref = store.getRun(runId)!.taskRef;
+    const planned = store.startRun({ taskRef: ref, leaseId: "lease-1", runner: RUNNER, branch: "task", worktree, route: { routeDigest: "legacy", phase: "build", provider: "opencode", model: "fake/model", chosen: "legacy" }, now: T0 });
+    const result = await invokeAgent(store, planned, SPEC, ASK, { keyHome: home, env: { FAKE_ACP: "ok" }, idleTimeoutMs: 20_000, timeoutMs: 60_000 });
+    expect(result.kind).toBe("ran");
+    store.settleRunSpend(planned, T0);
+    expect(store.handle.prepare("SELECT microusd, billing FROM run_spend WHERE run = ?").get(planned)).toEqual({ microusd: 0, billing: "subscription" });
+  });
+
   test("an unchecked agent never starts", async () => {
     const result = await run("ok");
     expect(result).toMatchObject({ kind: "refused", reason: "provider-unattested", diagnostic: expect.stringContaining("toolroll agents check opencode") });
