@@ -4775,6 +4775,7 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(PROVIDER_AUTH_SCHEMA);
   db.exec(ACP_ATTESTATION_SCHEMA);
   db.exec(ACP_BILLING_SCHEMA);
+  db.exec(ACP_CHECK_SCHEMA);
   for (const [table, columns] of Object.entries(V125_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
@@ -5941,6 +5942,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS acp_attestation_live ON acp_attestation (provi
  * (the default, and what no row means — cost unknown, charged as unknown cost is) or the agent's own plan ($0,
  * counted as unmeasured). Each change is a new row; the newest is the declaration, its id the revision a run stamps.
  */
+/**
+ * v125: a requested ACP agent check (docs/plans/acp-adapter.md § Layer E): asked for with a password, claimed and run
+ * by one watch of the named runner — one running check per runner, which the partial unique index holds — through two
+ * bounded steps, each bound to its run and graded on plane evidence; the attestation is recorded only in the same
+ * transaction that marks the request passed.
+ */
+export const ACP_CHECK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS acp_check_request (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider            TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  runner              TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  conformance_version INTEGER NOT NULL,
+  requested_by        TEXT NOT NULL,
+  requested_at        TEXT NOT NULL,
+  expires_at          TEXT NOT NULL,
+  state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','running','passed','failed','expired')),
+  watch_repo          TEXT,
+  watch_owner         TEXT,
+  task_ref            INTEGER REFERENCES task_ref(id),
+  launch_json         TEXT,
+  steps_used          INTEGER NOT NULL DEFAULT 0 CHECK (steps_used BETWEEN 0 AND 2),
+  step1_run           INTEGER REFERENCES run(id),
+  step2_run           INTEGER REFERENCES run(id),
+  step1_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step1_passed IN (0,1)),
+  step2_passed        INTEGER NOT NULL DEFAULT 0 CHECK (step2_passed IN (0,1)),
+  result              TEXT,
+  finished_at         TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS acp_check_running ON acp_check_request (runner) WHERE state = 'running';
+`;
+
+/** A check request as the job and the screens read it. */
+export type AcpCheckRequest = {
+  id: number; provider: string; runner: string; model: string; conformanceVersion: number;
+  requestedBy: string; requestedAt: string; expiresAt: string;
+  state: "pending" | "running" | "passed" | "failed" | "expired";
+  watch: { repo: string; owner: string } | null; taskRef: number | null; launchJson: string | null;
+  stepsUsed: number; step1Run: number | null; step2Run: number | null; step1Passed: boolean; step2Passed: boolean;
+  result: string | null; finishedAt: string | null;
+};
+
 export const ACP_BILLING_SCHEMA = `
 CREATE TABLE IF NOT EXISTS acp_billing (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15009,6 +15052,110 @@ export class Store {
     return null;
   }
 
+  /** Ask for an ACP agent check on a runner (the caller proved the password); the request's id. Valid 30 minutes. */
+  requestAcpCheck(input: { provider: string; runner: string; model: string; by: string }, now: Date): number {
+    return Number(this.db.prepare(`INSERT INTO acp_check_request (provider, runner, model, conformance_version, requested_by, requested_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(input.provider, input.runner, input.model, ACP_CONFORMANCE_VERSION, input.by, now.toISOString(),
+      new Date(now.getTime() + 30 * 60_000).toISOString()).lastInsertRowid);
+  }
+
+  acpCheck(id: number): AcpCheckRequest | null {
+    const row = this.db.prepare("SELECT * FROM acp_check_request WHERE id = ?").get(id);
+    return row === undefined ? null : readAcpCheck(row);
+  }
+
+  /** The checks asked for an agent, newest first (for the providers screen). */
+  acpChecksFor(provider: string, limit = 10): AcpCheckRequest[] {
+    return this.db.prepare("SELECT * FROM acp_check_request WHERE provider = ? ORDER BY id DESC LIMIT ?").all(provider, limit).map(readAcpCheck);
+  }
+
+  /** The SQL that proves a watch still holds its lease (runner, repo, owner) at `?` — appended with its bindings. */
+  private static readonly WATCH_LIVE = "EXISTS (SELECT 1 FROM watch_lease w WHERE w.runner = acp_check_request.runner AND w.repo = acp_check_request.watch_repo AND w.owner = acp_check_request.watch_owner AND w.expires_at > ?)";
+
+  /**
+   * Claim the oldest pending, unexpired check for this runner, for the watch that will run it — one statement; the
+   * partial unique index refuses a second running check on the runner. Null when there is none (or another runs).
+   */
+  claimAcpCheck(runner: string, watch: { repo: string; owner: string }, now: Date): AcpCheckRequest | null {
+    const at = now.toISOString();
+    try {
+      const claimed = this.db.prepare(`UPDATE acp_check_request SET state = 'running', watch_repo = ?, watch_owner = ?
+        WHERE id = (SELECT id FROM acp_check_request WHERE runner = ? AND state = 'pending' AND expires_at > ? ORDER BY id LIMIT 1)
+          AND EXISTS (SELECT 1 FROM watch_lease w WHERE w.runner = ? AND w.repo = ? AND w.owner = ? AND w.expires_at > ?)
+        RETURNING id`).get(watch.repo, watch.owner, runner, at, runner, watch.repo, watch.owner, at);
+      return claimed === undefined ? null : this.acpCheck(Number(claimed["id"]));
+    } catch (error) {
+      if (/UNIQUE constraint failed/.test(String(error))) return null;
+      throw error;
+    }
+  }
+
+  /** Bind a running check, still owned and unexpired, to its task and the launch it inspected. */
+  bindAcpCheck(id: number, binding: { taskRef: number; launchJson: string }, now: Date): boolean {
+    const at = now.toISOString();
+    return Number(this.db.prepare(`UPDATE acp_check_request SET task_ref = ?, launch_json = ?
+      WHERE id = ? AND state = 'running' AND expires_at > ? AND task_ref IS NULL AND ${Store.WATCH_LIVE}`).run(binding.taskRef, binding.launchJson, id, at, at).changes) === 1;
+  }
+
+  /** Consume step 1 or 2 for its run: in order, once, owned, unexpired. */
+  consumeAcpCheckStep(id: number, step: 1 | 2, runId: number, now: Date): boolean {
+    const at = now.toISOString();
+    const column = step === 1 ? "step1_run" : "step2_run";
+    return Number(this.db.prepare(`UPDATE acp_check_request SET steps_used = ?, ${column} = ?
+      WHERE id = ? AND state = 'running' AND steps_used = ? AND ${column} IS NULL AND expires_at > ? AND ${Store.WATCH_LIVE}
+        ${step === 2 ? "AND step1_passed = 1" : ""}`).run(step, runId, id, step - 1, at, at).changes) === 1;
+  }
+
+  /** Record a step as passed, once its grading did: owned, unexpired, and only for the run the step was bound to. */
+  passAcpCheckStep(id: number, step: 1 | 2, runId: number, now: Date): boolean {
+    const at = now.toISOString();
+    const run = step === 1 ? "step1_run" : "step2_run";
+    const passed = step === 1 ? "step1_passed" : "step2_passed";
+    return Number(this.db.prepare(`UPDATE acp_check_request SET ${passed} = 1
+      WHERE id = ? AND state = 'running' AND ${run} = ? AND ${passed} = 0 AND expires_at > ? AND ${Store.WATCH_LIVE}`).run(id, runId, at, at).changes) === 1;
+  }
+
+  /**
+   * Publish a passed check: in one transaction, the request moves to passed — only if it is still running, unexpired,
+   * owned by its live watch, with both steps used, bound and passed, and both their runs finished as agent-check
+   * refusals — and the attestation is recorded. Anything else publishes nothing.
+   */
+  publishAcpCheck(id: number, attestation: Omit<AcpAttestation, "id" | "recordedAt" | "conformanceVersion">, now: Date): boolean {
+    const at = now.toISOString();
+    return this.transact(() => {
+      // The attestation must be for this request's agent and runner, and offer the model it was checked on.
+      const request = this.acpCheck(id);
+      if (request === null || request.provider !== attestation.provider || request.runner !== attestation.runner || !attestation.models.includes(request.model)) return false;
+      const moved = Number(this.db.prepare(`UPDATE acp_check_request SET state = 'passed', finished_at = ?, result = 'passed'
+        WHERE id = ? AND state = 'running' AND expires_at > ? AND ${Store.WATCH_LIVE}
+          AND steps_used = 2 AND step1_passed = 1 AND step2_passed = 1 AND conformance_version = ?
+          AND (SELECT COUNT(*) FROM run r WHERE r.id IN (step1_run, step2_run) AND r.task_ref = acp_check_request.task_ref
+               AND r.outcome = 'refused' AND r.reason = 'agent-check' AND r.finished_at IS NOT NULL) = 2`)
+        .run(at, id, at, at, ACP_CONFORMANCE_VERSION).changes);
+      if (moved !== 1) return false;
+      this.recordAcpAttestation(attestation, now);
+      return true;
+    });
+  }
+
+  /** Fail a check that hasn't finished, with its words. */
+  failAcpCheck(id: number, words: string, now: Date): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET state = 'failed', result = ?, finished_at = ? WHERE id = ? AND state IN ('pending','running')")
+      .run(words.slice(0, 2000), now.toISOString(), id).changes) === 1;
+  }
+
+  /** Running checks on this runner no live watch holds any more, or past their time: the ones recovery may close. */
+  abandonedAcpChecks(runner: string, now: Date): AcpCheckRequest[] {
+    const at = now.toISOString();
+    return this.db.prepare(`SELECT * FROM acp_check_request WHERE runner = ? AND state = 'running' AND (expires_at <= ? OR NOT ${Store.WATCH_LIVE})`)
+      .all(runner, at, at).map(readAcpCheck);
+  }
+
+  /** Pending checks past their time are expired, untouched. */
+  expireAcpChecks(now: Date): number {
+    return Number(this.db.prepare("UPDATE acp_check_request SET state = 'expired', finished_at = ? WHERE state = 'pending' AND expires_at <= ?").run(now.toISOString(), now.toISOString()).changes);
+  }
+
   /** Revoke an ACP agent's live attestation on a runner; whether there was one. */
   revokeAcpAttestation(provider: string, runner: string, by: string, now: Date): boolean {
     return Number(this.db.prepare("UPDATE acp_attestation SET revoked_at = ?, revoked_by = ? WHERE provider = ? AND runner = ? AND revoked_at IS NULL").run(now.toISOString(), by, provider, runner).changes) > 0;
@@ -23179,4 +23326,20 @@ function readGrant(row: Record<string, unknown>): BackendGrant {
 export type VerifiedAuthor = string & { readonly __verifiedAuthor: unique symbol };
 export function verifiedAuthor(name: string): VerifiedAuthor {
   return name as VerifiedAuthor;
+}
+
+
+function readAcpCheck(row: Record<string, unknown>): AcpCheckRequest {
+  const text = (key: string) => row[key] == null ? null : String(row[key]);
+  const num = (key: string) => row[key] == null ? null : Number(row[key]);
+  const state = String(row["state"]);
+  return {
+    id: Number(row["id"]), provider: String(row["provider"]), runner: String(row["runner"]), model: String(row["model"]),
+    conformanceVersion: Number(row["conformance_version"]), requestedBy: String(row["requested_by"]), requestedAt: String(row["requested_at"]),
+    expiresAt: String(row["expires_at"]),
+    state: state === "running" || state === "passed" || state === "failed" || state === "expired" ? state : "pending",
+    watch: row["watch_repo"] == null || row["watch_owner"] == null ? null : { repo: String(row["watch_repo"]), owner: String(row["watch_owner"]) },
+    taskRef: num("task_ref"), launchJson: text("launch_json"), stepsUsed: Number(row["steps_used"]), step1Run: num("step1_run"), step2Run: num("step2_run"),
+    step1Passed: Number(row["step1_passed"]) === 1, step2Passed: Number(row["step2_passed"]) === 1, result: text("result"), finishedAt: text("finished_at"),
+  };
 }
