@@ -226,6 +226,22 @@ describe("the agent fence", () => {
     expect(committed.status, committed.stderr).toBe(0);
   });
 
+  test.skipIf(!macosFenceAvailable() && !linuxFenceAvailable())("where a repository turns per-worktree config on, the checkout's config.worktree is made and held read-only", () => {
+    const { main } = linkedCheckout();
+    expect(spawnSync("git", ["config", "extensions.worktreeConfig", "true"], { cwd: main }).status).toBe(0);
+    const binding = trustedWorktreeBinding(main, worktree);
+    const boundary = taskBoundary({ worktree, provider: "claude", home, binding });
+    const file = join(binding.gitdir, "config.worktree");
+    expect(existsSync(file)).toBe(true);
+    expect(boundary.readOnly).toContain(file);
+    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
+    const grants = fenceGrants({ databaseFile: null, worktree, boundary });
+    const script = `printf '[core]\\n\\thooksPath = /tmp\\n' > '${file}'`;
+    const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", script], fence, grants) : linuxFenced("/bin/sh", ["-c", script], fence, grants);
+    expect(spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).status).not.toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("");
+  });
+
   test.skipIf(!macosFenceAvailable())("generated Codex and Claude fences permit linked checkout Git commands", () => {
     const { main, sibling, head } = linkedCheckout();
     const binding = trustedWorktreeBinding(main, worktree);

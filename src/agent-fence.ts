@@ -275,13 +275,20 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   }
   if (gitdir !== null) {
     readOnly.add(join(worktree, ".git"));
-    for (const name of ["commondir", "gitdir"]) if (existsSync(join(gitdir, name))) readOnly.add(join(gitdir, name));
+    // A linked checkout's metadata always has both (trustedWorktreeBinding read them): held read-only, never skipped.
+    for (const name of ["commondir", "gitdir"]) readOnly.add(join(gitdir, name));
     // This checkout's own config counts only where the shared config (read-only above) turns worktree config on; where
     // it does, the file is made (empty) before the build so it can be held read-only too.
-    if (main !== null && worktreeConfigOn(main) && !existsSync(join(gitdir, "config.worktree"))) {
-      try { writeFileSync(join(gitdir, "config.worktree"), "", { flag: "wx", mode: 0o644 }); } catch { /* made meanwhile, or unwritable: checked below */ }
-    }
-    if (existsSync(join(gitdir, "config.worktree"))) readOnly.add(join(gitdir, "config.worktree"));
+    if (main !== null && worktreeConfigOn(main)) {
+      if (!existsSync(join(gitdir, "config.worktree"))) {
+        try { writeFileSync(join(gitdir, "config.worktree"), "", { flag: "wx", mode: 0o644 }); } catch { /* made meanwhile: proved below */ }
+      }
+      // Fail closed: where git reads it, the file must exist (as a plain file) to be held read-only, or nothing launches.
+      let plain = false;
+      try { plain = lstatSync(join(gitdir, "config.worktree")).isFile(); } catch { plain = false; }
+      if (!plain) throw new CheckoutBindingError("This checkout's per-worktree git config couldn't be held read-only, so the build didn't start.");
+      readOnly.add(join(gitdir, "config.worktree"));
+    } else if (existsSync(join(gitdir, "config.worktree"))) readOnly.add(join(gitdir, "config.worktree"));
   }
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
   return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
