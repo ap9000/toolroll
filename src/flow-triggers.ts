@@ -452,7 +452,7 @@ function checksCardOf(store: Store, repo: string, key: string): string | null {
 }
 
 /** One outside thing into one card, at most once per trigger (a failing run, once per project). Keys and control characters never reach a card. */
-function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, item: Incoming, by: string, now: Date): { made: Made; note: string | null; card: number | null } {
+function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, item: Incoming, by: string, now: Date, byKind: "person" | "automation" = "automation"): { made: Made; note: string | null; card: number | null } {
   const flow = store.getFlow(trigger.flow);
   const definition = flow === null ? null : flowDefinitionOf(flow);
   if (flow === null || definition === null || flow.state !== "active") return { made: "skipped", note: "the flow isn't active", card: null };
@@ -473,7 +473,7 @@ function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, 
       store.recordFlowTriggerEvent(trigger.id, item.key, null, note, now);
       return { made: "skipped" as const, note: `${item.source.label}: ${note}`, card: null };
     }
-    const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: startZone(config, definition), by, source: item.source }, now);
+    const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: startZone(config, definition), by, byKind, source: item.source }, now);
     store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, null, item.onTime === true, item.ranScript ?? null);
     return { made: "added" as const, note: null, card };
   });
@@ -501,7 +501,7 @@ function fileOrderCard(store: Store, trigger: FlowTriggerRow, config: Extract<Tr
         store.recordFlowTriggerEvent(trigger.id, item.key, null, fired.note, now);
         return { made: "skipped" as const, note: fired.note, card: null };
       }
-      const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: zone, by: "Schedule", source: item.source }, now);
+      const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: zone, by: "Schedule", byKind: "automation", source: item.source }, now);
       store.updateFlowCard(card, { task: fired.taskId, primaryTask: fired.taskId, waiting: "Filed as a task" }, now);
       // The firing keeps its task: one-at-a-time and the weekly limit count it however the card moves later.
       store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, fired.taskId);
@@ -527,7 +527,7 @@ function outcomeWords(results: { made: Made; note: string | null }[], more: bool
 export function addTriggerCard(store: Store, trigger: FlowTriggerRow, item: Incoming, by: string, now: Date): { made: Made; note: string | null; card: number | null } {
   const config = triggerConfigOf(trigger);
   if (config === null || trigger.state !== "active") return { made: "skipped", note: "the trigger isn't active", card: null };
-  return makeCard(store, trigger, config, item, by, now);
+  return makeCard(store, trigger, config, item, by, now, "person");
 }
 
 /** Press a button trigger: the first answer is the card's title, the rest its details. */
@@ -537,7 +537,7 @@ export function pressFlowButton(store: Store, trigger: FlowTriggerRow, answers: 
   const said = config.questions.map((_question, index) => typeof answers[index] === "string" ? (answers[index] as string).trim() : "");
   if (said[0] === "") return { ok: false, message: `Answer “${config.questions[0]}”.` };
   const details = config.questions.slice(1).map((question, index) => said[index + 1] === "" ? null : `${question}\n${said[index + 1]}`).filter(one => one !== null).join("\n\n");
-  const result = makeCard(store, trigger, config, { key: `press:${now.toISOString()}:${randomUUID().slice(0, 8)}`, title: said[0]!, description: details === "" ? null : details, source: { kind: "button", label: config.label, url: null } }, actor, now);
+  const result = makeCard(store, trigger, config, { key: `press:${now.toISOString()}:${randomUUID().slice(0, 8)}`, title: said[0]!, description: details === "" ? null : details, source: { kind: "button", label: config.label, url: null } }, actor, now, "person");
   if (result.made !== "added") return { ok: false, message: result.note ?? "That didn't make a card." };
   store.setFlowCardWatcher(result.card!, actor, true, now);
   store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: `Pressed by ${actor}.` }, now);
@@ -764,12 +764,15 @@ async function checkTrigger(store: Store, trigger: FlowTriggerRow, config: Extra
     return { ok: false, said: fetched.problem, added: 0 };
   }
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Email";
-  const due = fetched.items.slice(0, CARDS_PER_CHECK);
+  // Known items are left out before the batch is taken (v126): a page of things already received can't keep the unseen
+  // ones behind it waiting.
+  const fresh = fetched.items.filter(item => !store.flowTriggerSaw(trigger.id, item.key));
+  const due = fresh.slice(0, CARDS_PER_CHECK);
   const results = due.map(item => "skip" in item
     ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}`, card: null } : { made: "seen" as Made, note: null, card: null })
     : makeCard(store, trigger, config, item, by, now));
   // A mailbox says itself whether more is waiting; its cursor is already just past what it read.
-  const more = fetched.more ?? fetched.items.length > CARDS_PER_CHECK;
+  const more = fetched.more ?? fresh.length > CARDS_PER_CHECK;
   // The cursor moves past what was handled, never past what is still waiting.
   const cursor = fetched.more !== undefined ? fetched.cursor ?? trigger.cursor : more ? due.at(-1)?.at ?? trigger.cursor : fetched.cursor ?? trigger.cursor;
   const said = results.length === 0 && fetched.said !== undefined ? fetched.said : outcomeWords(results, more);

@@ -248,7 +248,10 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
         title: (report ? `${stage.title}: ${card.title}` : card.title).slice(0, 200),
         repo,
         goal,
-        filedVia: `flow:${flow.id}`, filedBy: filerFor(card.createdBy), // who made the card asked for the work (an owner can be reassigned by anyone)
+        filedVia: `flow:${flow.id}`,
+        // Who made the card asked for the work (an owner can be reassigned by anyone). v126: an automation's card (a
+        // delivery, a poll, a schedule, a form) files as automation, by the kind kept on the card, never by its name.
+        filedBy: card.createdKind === "automation" ? { name: card.createdBy, kind: "automation" } : filerFor(card.createdBy),
         deliverable: report ? "report" : "branch",
         planning: report ? "skip" : stage.planning ?? "auto",
         acceptance: grant === null ? ACCEPTANCE[kind] : grant.terms.acceptance[kind],

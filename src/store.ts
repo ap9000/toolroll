@@ -750,7 +750,12 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // phase_tier_alternate and provider_readiness widen, and provider_auth_pause's auth mode admits 'agent-login'; each
 // table is rebuilt with every row and id carried over) and a run keeps what its agent itself reported it used
 // (run.agent_reported_usage_json, never priced; saved runs read none).
-export const SCHEMA_VERSION = 125;
+// v126 adds, and changes no saved row: signed webhooks into tasks (docs/plans/webhook-tasks.md): a receipt's typed state,
+// when its card was made and the item it holds while it waits for room (flow_trigger_event.state, accepted_at,
+// item_json); a trigger's credential generation and its turned-away deliveries (flow_trigger.hook_generation,
+// dropped_count, dropped_since, limit_noted_at); who made a card (flow_card.created_kind); and the outside source a
+// task was filed from (task_source). Saved receipts read their state from their card, saved cards read a person.
+export const SCHEMA_VERSION = 126;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -885,9 +890,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * same way. v123 only adds new tables (unattended flows, tool secrets) and the columns in V123_ADDED_COLUMNS ('mode',
  * 0 or null), checked the same way. v124 only adds new tables (the live conversation's setting and note history).
  * v125 rebuilds five tables with wider CHECKs, every row and id carried over (the rehearsal's history rules find them
- * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way.
+ * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
+ * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -964,6 +970,45 @@ export const V125_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     acp_billing_json: { definition: "TEXT", saved: "NULL" },
   },
 });
+
+/** v126: the columns it adds, with the value every row saved before it reads (docs/plans/webhook-tasks.md). A saved
+ * receipt reads no state (accepted when it has a card, skipped otherwise), no acceptance time (its arrival counts) and
+ * no held item; a saved trigger is on its first credential generation with nothing turned away; a saved card was made
+ * by a person. */
+export const V126_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  flow_trigger_event: {
+    state: { definition: "TEXT CHECK (state IN ('accepted','skipped','held','ignored'))", saved: "NULL" },
+    accepted_at: { definition: "TEXT", saved: "NULL" },
+    item_json: { definition: "TEXT", saved: "NULL" },
+  },
+  flow_trigger: {
+    hook_generation: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
+    dropped_count: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
+    dropped_since: { definition: "TEXT", saved: "NULL" },
+    limit_noted_at: { definition: "TEXT", saved: "NULL" },
+  },
+  flow_card: {
+    created_kind: { definition: "TEXT CHECK (created_kind IN ('person','automation'))", saved: "NULL" },
+  },
+});
+
+/** v126: the outside source a task was filed from, kept with the task (a card's own task link moves on; this never
+ * does). Written in the filing's transaction, copied whole to a revision, never changed. */
+export const TASK_SOURCE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS task_source (
+  task_id     TEXT PRIMARY KEY,
+  flow        INTEGER NOT NULL,
+  card        INTEGER NOT NULL,
+  card_entry  INTEGER NOT NULL,
+  source_json TEXT NOT NULL,
+  at          TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS task_source_immutable BEFORE UPDATE ON task_source
+BEGIN
+  SELECT RAISE(ABORT, 'a task source is immutable');
+END;
+CREATE INDEX IF NOT EXISTS flow_trigger_event_accepted ON flow_trigger_event (trigger, accepted_at);
+`;
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
 export function updateSafeSchema(version: number | null): boolean {
@@ -1453,7 +1498,14 @@ export type FlowCardSource = { kind: string; label: string; url: string | null; 
 export type FlowCardRow = FlowCardFields & { source: FlowCardSource | null };
 /** One line of a card's discussion: a comment (and whom it @mentioned), or who became its owner. */
 export type FlowCommentRow = { id: number; card: number; kind: "comment" | "owner"; author: string; body: string; mentions: string[]; at: string };
-export type FlowTriggerRow = { id: number; flow: number; kind: string; configJson: string; state: "active" | "paused" | "removed"; hookHash: string | null; cursor: string | null; nextAt: string | null; lastAt: string | null; lastOutcome: string | null; failures: number; createdBy: string; createdAt: string; updatedAt: string };
+export type FlowTriggerRow = { id: number; flow: number; kind: string; configJson: string; state: "active" | "paused" | "removed"; hookHash: string | null; cursor: string | null; nextAt: string | null; lastAt: string | null; lastOutcome: string | null; failures: number; createdBy: string; createdAt: string; updatedAt: string;
+  /** v126: which saved secret proves this trigger's deliveries (0 is the address saved before v126). */
+  hookGeneration: number;
+  /** v126: deliveries turned away because the hold queue was full, and since when, until a person clears them. */
+  droppedCount: number; droppedSince: string | null };
+/** v126: what a trigger did with one delivery. Saved before v126: accepted when it made a card, skipped otherwise. */
+export type FlowReceiptState = "accepted" | "skipped" | "held" | "ignored";
+export type FlowReceipt = { state: FlowReceiptState; card: number | null; note: string | null; at: string; acceptedAt: string | null; itemJson: string | null };
 export type FlowEventOutcome = "created" | "ok" | "fail" | "moved" | "approved" | "sent-back" | "cancelled";
 
 function readFlowRow(row: Record<string, unknown>): FlowRow {
@@ -1483,7 +1535,9 @@ function readFlowCardRow(row: Record<string, unknown>): FlowCardRow {
   const optional = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
   return { id: Number(row["id"]), flow: Number(row["flow"]), title: String(row["title"]), description: optional("description"), stage: String(row["stage"]), entry: Number(row["entry"]),
     state: String(row["state"]) as FlowCardRow["state"], task: optional("task"), primaryTask: optional("primary_task"), note: optional("note"), waiting: optional("waiting"), outputs, attached,
-    createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedAt: String(row["updated_at"]), source: readFlowCardSource(row["source_json"]), owner: optional("owner") };
+    createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedAt: String(row["updated_at"]), source: readFlowCardSource(row["source_json"]), owner: optional("owner"),
+    // v126: a card saved before it was a person's (what filing always assumed).
+    createdKind: row["created_kind"] === "automation" ? "automation" : "person" };
 }
 
 function readFlowCardSource(value: unknown): FlowCardSource | null {
@@ -1506,7 +1560,15 @@ function readFlowTriggerRow(row: Record<string, unknown>): FlowTriggerRow {
   const optional = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
   return { id: Number(row["id"]), flow: Number(row["flow"]), kind: String(row["kind"]), configJson: String(row["config_json"]), state: String(row["state"]) as FlowTriggerRow["state"],
     hookHash: optional("hook_hash"), cursor: optional("cursor"), nextAt: optional("next_at"), lastAt: optional("last_at"), lastOutcome: optional("last_outcome"),
-    failures: Number(row["failures"] ?? 0), createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedAt: String(row["updated_at"]) };
+    failures: Number(row["failures"] ?? 0), createdBy: String(row["created_by"]), createdAt: String(row["created_at"]), updatedAt: String(row["updated_at"]),
+    hookGeneration: Number(row["hook_generation"] ?? 0), droppedCount: Number(row["dropped_count"] ?? 0), droppedSince: optional("dropped_since") };
+}
+
+function readFlowReceipt(row: Record<string, unknown>): FlowReceipt {
+  const card = row["card"] === null || row["card"] === undefined ? null : Number(row["card"]);
+  const state = row["state"] === null || row["state"] === undefined ? (card === null ? "skipped" : "accepted") : String(row["state"]) as FlowReceiptState;
+  const optional = (key: string) => row[key] === null || row[key] === undefined ? null : String(row[key]);
+  return { state, card, note: optional("note"), at: String(row["at"]), acceptedAt: optional("accepted_at"), itemJson: optional("item_json") };
 }
 
 
@@ -4831,6 +4893,11 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "workflow_preview", "flow_id", "INTEGER");
   // v115: the task each standing-order firing filed, kept on the firing itself (a card's task changes as it moves).
   addColumn(db, "flow_trigger_event", "task", "TEXT");
+  // v126: signed webhooks into tasks (V126_ADDED_COLUMNS: saved rows read null or 0) and each task's outside source.
+  for (const [table, columns] of Object.entries(V126_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  db.exec(TASK_SOURCE_SCHEMA);
   db.exec(PLAN_AUTO_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
@@ -18060,11 +18127,13 @@ export class Store {
     return Number(changes) === 1;
   }
 
-  addFlowCard(card: { flow: number; title: string; description: string | null; stage: string; by: string; source?: FlowCardSource }, now: Date): number {
+  /** A new card. `byKind` (v126) is decided where the card is made, never read from `by`: a delivery, a poll, a schedule
+   * or a public form is automation whatever its label says; a person's own card (the default) is a person's. */
+  addFlowCard(card: { flow: number; title: string; description: string | null; stage: string; by: string; byKind?: "person" | "automation"; source?: FlowCardSource }, now: Date): number {
     return this.transact(() => {
       const stamp = now.toISOString();
-      const id = Number(this.db.prepare("INSERT INTO flow_card (flow, title, description, stage, state, created_by, created_at, updated_at, source_json) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)")
-        .run(card.flow, card.title, card.description, card.stage, card.by, stamp, stamp, card.source === undefined ? null : JSON.stringify(card.source)).lastInsertRowid);
+      const id = Number(this.db.prepare("INSERT INTO flow_card (flow, title, description, stage, state, created_by, created_at, updated_at, source_json, created_kind) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)")
+        .run(card.flow, card.title, card.description, card.stage, card.by, stamp, stamp, card.source === undefined ? null : JSON.stringify(card.source), card.byKind ?? "person").lastInsertRowid);
       this.db.prepare("INSERT INTO flow_event (card, from_stage, to_stage, outcome, actor, note, at) VALUES (?, NULL, ?, 'created', ?, NULL, ?)").run(id, card.stage, card.by, stamp);
       return id;
     });
@@ -18732,7 +18801,71 @@ export class Store {
    * firing) the task it filed. False when it was already recorded.
    */
   recordFlowTriggerEvent(trigger: number, key: string, card: number | null, note: string | null, now: Date, task: string | null = null, onTime = false, ranScript: string | null = null): boolean {
-    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task, on_time, ran_script) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(trigger, key, card, note, now.toISOString(), task, onTime ? 1 : 0, ranScript);
+    const at = now.toISOString();
+    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, task, on_time, ran_script, state, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(trigger, key, card, note, at, task, onTime ? 1 : 0, ranScript, card === null ? "skipped" : "accepted", card === null ? null : at);
+    return Number(changes) === 1;
+  }
+
+  /** v126: what a trigger did with one delivery, or null when it never received it. */
+  flowReceipt(trigger: number, key: string): FlowReceipt | null {
+    const row = this.db.prepare("SELECT card, note, at, state, accepted_at, item_json FROM flow_trigger_event WHERE trigger = ? AND key = ?").get(trigger, key);
+    return row === undefined ? null : readFlowReceipt(row);
+  }
+
+  /** v126: a delivery received but made no card for: ignored (not for this flow), or held until there's room (its
+   * prepared item kept whole). False when the key was already received. */
+  recordFlowReceipt(trigger: number, key: string, state: "ignored" | "held", note: string | null, itemJson: string | null, now: Date): boolean {
+    if ((state === "held") !== (itemJson !== null)) throw new Error("a held receipt keeps its item, and only a held one");
+    const { changes } = this.db.prepare("INSERT OR IGNORE INTO flow_trigger_event (trigger, key, card, note, at, state, item_json) VALUES (?, ?, NULL, ?, ?, ?, ?)")
+      .run(trigger, key, note, now.toISOString(), state, itemJson);
+    return Number(changes) === 1;
+  }
+
+  /** v126: a held delivery became its card. Only ever from held, in the card's own transaction: false (the caller rolls
+   * the card back) when it is no longer held. */
+  acceptHeldReceipt(trigger: number, key: string, card: number, now: Date): boolean {
+    const { changes } = this.db.prepare("UPDATE flow_trigger_event SET state = 'accepted', card = ?, accepted_at = ?, item_json = NULL WHERE trigger = ? AND key = ? AND state = 'held'")
+      .run(card, now.toISOString(), trigger, key);
+    return Number(changes) === 1;
+  }
+
+  /** v126: the cards a trigger made since `since`, counted when each was made (a held delivery counts when it became
+   * its card, not when it arrived). A receipt saved before v126 counts at its arrival. */
+  flowCardsAcceptedSince(trigger: number, since: Date): number {
+    const at = since.toISOString();
+    const row = this.db.prepare(`SELECT
+        (SELECT COUNT(*) FROM flow_trigger_event WHERE trigger = :trigger AND accepted_at > :at)
+      + (SELECT COUNT(*) FROM flow_trigger_event WHERE trigger = :trigger AND accepted_at IS NULL AND state IS NULL AND card IS NOT NULL AND at > :at) AS n`).get({ trigger, at });
+    return Number(row?.["n"] ?? 0);
+  }
+
+  /** v126: a trigger's held deliveries, oldest first. */
+  heldFlowReceipts(trigger: number, limit: number): { key: string; itemJson: string; at: string }[] {
+    return this.db.prepare("SELECT key, item_json, at FROM flow_trigger_event WHERE trigger = ? AND state = 'held' ORDER BY at, rowid LIMIT ?").all(trigger, limit)
+      .map(row => ({ key: String(row["key"]), itemJson: String(row["item_json"]), at: String(row["at"]) }));
+  }
+
+  /** v126: how many deliveries a trigger holds. */
+  heldFlowReceiptCount(trigger: number): number {
+    return Number(this.db.prepare("SELECT COUNT(*) AS n FROM flow_trigger_event WHERE trigger = ? AND state = 'held'").get(trigger)?.["n"] ?? 0);
+  }
+
+  /** v126: one delivery turned away because the hold queue was full: counted, and since when, until a person clears it. */
+  noteFlowDeliveryDropped(trigger: number, now: Date): void {
+    this.db.prepare("UPDATE flow_trigger SET dropped_count = dropped_count + 1, dropped_since = COALESCE(dropped_since, ?) WHERE id = ?").run(now.toISOString(), trigger);
+  }
+
+  /** v126: a person has seen the turned-away deliveries. */
+  clearFlowDeliveriesDropped(trigger: number): void {
+    this.db.prepare("UPDATE flow_trigger SET dropped_count = 0, dropped_since = NULL WHERE id = ?").run(trigger);
+  }
+
+  /** v126: whether this hour's "too many" note on a trigger is still to be written: true at most once an hour, claimed
+   * atomically so two deliveries at once write it once. */
+  claimFlowLimitNote(trigger: number, now: Date): boolean {
+    const { changes } = this.db.prepare("UPDATE flow_trigger SET limit_noted_at = ? WHERE id = ? AND (limit_noted_at IS NULL OR limit_noted_at <= ?)")
+      .run(now.toISOString(), trigger, new Date(now.getTime() - 3_600_000).toISOString());
     return Number(changes) === 1;
   }
 
