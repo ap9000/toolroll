@@ -584,7 +584,8 @@ export class WorktreePool {
 
     // Recorded before git moves it: a move that then fails leaves the next attempt's own base as the branch's origin.
     this.store.recordBranchBaseMove(taskRef, branch, head, main, now);
-    const moved = await this.runner(GIT, ["reset", "--keep", main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    // Hardened like every lease git: a planted reference-transaction or post-checkout hook never runs here.
+    const moved = await checkoutGit(this.runner)(path, ["reset", "--keep", main]);
     const after = await read(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const branchNow = await read(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
     if (moved.code !== 0 || after !== main || branchNow !== main || await this.isDirty(path) !== false) {

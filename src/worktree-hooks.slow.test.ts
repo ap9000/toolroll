@@ -55,3 +55,25 @@ test("a repository config that names a command refuses the lease, and runs nothi
   expect(leased).toMatchObject({ ok: false, message: expect.stringContaining("filter.evil.smudge") });
   expect(existsSync(marker)).toBe(false);
 });
+
+test("freshening a checkout onto current main runs no hook either", async () => {
+  const marker = join(dir, "freshen-hook-ran");
+  const oid = (ref: string) => execFileSync("git", ["rev-parse", ref], { cwd: repo, encoding: "utf8" }).trim();
+  store.createTask({ id: "t-3", title: "t" }, T0);
+  const taskRef = store.refFor("built-in", "t-3").id;
+  const first = oid("main");
+  const leased = await pool.lease({ repo, branch: "toolroll/t-3", base: "main", runner: "builder-1", taskRef, now: T0 });
+  if (!leased.ok) throw new Error(JSON.stringify(leased));
+  await pool.release(leased.worktree.path, T0);
+  // main moves on; a hook is planted; the next lease moves the untouched checkout to current main.
+  writeFileSync(join(repo, "NEW.md"), "new\n");
+  git("add", "NEW.md");
+  git("commit", "-q", "-m", "main moves");
+  writeFileSync(join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh\ntouch ${marker}\n`);
+  chmodSync(join(repo, ".git", "hooks", "reference-transaction"), 0o755);
+  const again = await pool.lease({ repo, branch: "toolroll/t-3", base: "main", runner: "builder-1", taskRef, now: T0, freshBase: { main: oid("main"), recordedBase: first } });
+  if (!again.ok) throw new Error(JSON.stringify(again));
+  // It did move (the hook would have fired on a live hook path), and nothing ran.
+  expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: again.worktree.path, encoding: "utf8" }).trim()).toBe(oid("main"));
+  expect(existsSync(marker)).toBe(false);
+});
