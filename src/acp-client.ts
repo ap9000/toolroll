@@ -127,7 +127,9 @@ function modelOffer(result: Record<string, unknown>): { mechanism: AcpModelMecha
   if (Array.isArray(options)) {
     const model = options.find(one => isRecord(one) && one["id"] === "model" && one["type"] === "select");
     if (isRecord(model) && Array.isArray(model["options"])) {
-      const offered = model["options"].flatMap(one => isRecord(one) && typeof one["value"] === "string" ? [one["value"]] : []);
+      // Choices, or groups of choices.
+      const choices = model["options"].flatMap(one => isRecord(one) && Array.isArray(one["options"]) ? one["options"] : [one]);
+      const offered = choices.flatMap(one => isRecord(one) && typeof one["value"] === "string" ? [one["value"]] : []);
       return { mechanism: "config-option", offered, current: typeof model["currentValue"] === "string" ? model["currentValue"] : null };
     }
   }
@@ -174,6 +176,11 @@ const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 /** An optional field: absent, null, or of its type. */
 const optional = (value: unknown, is: (one: unknown) => boolean): boolean => value === undefined || value === null || is(value);
 const integer = (value: unknown): boolean => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const UINT32_MAX = 4_294_967_295;
+const uint32 = (value: unknown): boolean => integer(value) && (value as number) <= UINT32_MAX;
+const bool = (value: unknown): boolean => typeof value === "boolean";
+/** A list whose every entry passes. */
+const listOf = (is: (one: unknown) => boolean) => (value: unknown): boolean => Array.isArray(value) && value.every(is);
 /** `_meta`, wherever the protocol allows it: absent, null, or an object. */
 const meta = (value: Record<string, unknown>): boolean => optional(value["_meta"], isRecord);
 const ROLES = new Set(["user", "assistant"]);
@@ -218,10 +225,45 @@ function wellFormedToolFields(update: Record<string, unknown>): boolean {
   if (update["kind"] !== undefined && !(str(update["kind"]) && TOOL_KINDS.has(update["kind"]))) return false;
   if (update["status"] !== undefined && !(str(update["status"]) && TOOL_STATUSES.has(update["status"]))) return false;
   if (update["locations"] !== undefined && !(Array.isArray(update["locations"]) && update["locations"].every(one =>
-    isRecord(one) && meta(one) && str(one["path"]) && optional(one["line"], integer)))) return false;
+    isRecord(one) && meta(one) && str(one["path"]) && optional(one["line"], uint32)))) return false;
   if (!optional(update["name"], str)) return false;
   if (update["content"] !== undefined && update["content"] !== null && !(Array.isArray(update["content"]) && update["content"].every(wellFormedToolContent))) return false;
   return true;
+}
+
+/** A session config option, every field its schema gives (a select's current value and choices, or groups of them). */
+const configChoice = (one: unknown): boolean => isRecord(one) && meta(one) && str(one["value"]) && str(one["name"]) && optional(one["description"], str);
+const configGroup = (one: unknown): boolean => isRecord(one) && meta(one) && str(one["group"]) && str(one["name"]) && listOf(configChoice)(one["options"]);
+function wellFormedConfigOption(option: unknown): boolean {
+  if (!isRecord(option) || !meta(option) || !str(option["id"]) || !str(option["name"]) || !optional(option["description"], str)
+    || !optional(option["category"], str) || !str(option["type"])) return false;
+  if (option["type"] !== "select") return false;
+  const choices = option["options"];
+  return str(option["currentValue"]) && Array.isArray(choices) && (choices.every(configChoice) || choices.every(configGroup));
+}
+const wellFormedConfigOptions = listOf(wellFormedConfigOption);
+const sessionModes = (value: unknown): boolean => isRecord(value) && meta(value) && str(value["currentModeId"])
+  && listOf(mode => isRecord(mode) && meta(mode) && str(mode["id"]) && str(mode["name"]) && optional(mode["description"], str))(value["availableModes"]);
+const sessionModels = (value: unknown): boolean => isRecord(value) && meta(value) && str(value["currentModelId"])
+  && listOf(model => isRecord(model) && meta(model) && str(model["modelId"]) && str(model["name"]) && optional(model["description"], str))(value["availableModels"]);
+const capabilities = (value: unknown, flags: readonly string[]): boolean => optional(value, one => isRecord(one) && meta(one) && flags.every(flag => optional(one[flag], bool)));
+
+/** initialize's answer, every field the schema gives it. */
+function wellFormedInitialize(result: Record<string, unknown>): boolean {
+  const info = result["agentInfo"];
+  if (!meta(result) || !isRecord(info) || !meta(info) || !str(info["name"]) || !str(info["version"]) || !optional(info["title"], str)) return false;
+  if (!optional(result["authMethods"], listOf(method => isRecord(method) && meta(method) && str(method["id"]) && str(method["name"]) && optional(method["description"], str)))) return false;
+  return optional(result["agentCapabilities"], caps => isRecord(caps) && meta(caps) && optional(caps["loadSession"], bool)
+    && capabilities(caps["promptCapabilities"], ["image", "audio", "embeddedContext"])
+    && capabilities(caps["mcpCapabilities"], ["http", "sse"])
+    && optional(caps["sessionCapabilities"], sessions => isRecord(sessions) && meta(sessions)
+      && Object.entries(sessions).every(([key, one]) => key === "_meta" || optional(one, entry => isRecord(entry) && meta(entry))))
+    && optional(caps["auth"], auth => isRecord(auth) && meta(auth)));
+}
+
+/** session/new's answer: the id, and every field of the modes, models and config options it may carry. */
+function wellFormedNewSession(result: Record<string, unknown>): boolean {
+  return meta(result) && optional(result["configOptions"], wellFormedConfigOptions) && optional(result["modes"], sessionModes) && optional(result["models"], sessionModels);
 }
 
 /** Whether a known update kind carries what it must; an unknown kind is left alone (not shown, not trusted). */
@@ -231,9 +273,10 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
     case "agent_message_chunk":
     case "agent_thought_chunk":
     case "user_message_chunk":
-      return wellFormedContent(update["content"]);
+      return wellFormedContent(update["content"]) && optional(update["messageId"], str);
     case "tool_call":
-      return id("toolCallId") && str(update["title"]) && wellFormedToolFields(update);
+      // The first report of a call carries its content as a list when it carries any (null is for updates).
+      return id("toolCallId") && str(update["title"]) && update["content"] !== null && wellFormedToolFields(update);
     case "tool_call_update":
       return id("toolCallId") && wellFormedToolFields(update);
     case "plan":
@@ -241,11 +284,32 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
         isRecord(one) && meta(one) && str(one["content"]) && str(one["priority"]) && PLAN_PRIORITIES.has(one["priority"]) && str(one["status"]) && PLAN_STATUSES.has(one["status"]));
     case "available_commands_update":
       return Array.isArray(update["availableCommands"]) && update["availableCommands"].every(one =>
-        isRecord(one) && meta(one) && str(one["name"]) && optional(one["description"], str));
+        isRecord(one) && meta(one) && str(one["name"]) && str(one["description"])
+        && optional(one["input"], input => isRecord(input) && meta(input) && str(input["hint"])));
+    case "current_mode_update":
+      return str(update["currentModeId"]);
+    case "config_option_update":
+      return wellFormedConfigOptions(update["configOptions"]);
+    case "session_info_update":
+      return optional(update["title"], str) && optional(update["updatedAt"], str);
+    case "usage_update":
+      return integer(update["used"]) && integer(update["size"])
+        && optional(update["cost"], cost => isRecord(cost) && meta(cost) && typeof cost["amount"] === "number" && Number.isFinite(cost["amount"]) && str(cost["currency"]));
+    case "notice":
+      return str(update["severity"]) && str(update["title"]) && update["title"] !== "" && optional(update["description"], str);
+    case "compaction_update":
+      return str(update["compactionId"]) && str(update["status"]) && optional(update["summary"], listOf(wellFormedContent)) && optional(update["error"], str);
+    case "compaction_summary_chunk":
+      return str(update["compactionId"]) && wellFormedContent(update["content"]);
     default:
       return true;
   }
 }
+
+/** The update kinds the plane knows; an unknown one is neither trusted nor passed on. */
+const KNOWN_UPDATES = new Set(["agent_message_chunk", "agent_thought_chunk", "user_message_chunk", "tool_call", "tool_call_update", "plan",
+  "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update", "notice",
+  "compaction_update", "compaction_summary_chunk"]);
 
 const AUTH_REQUIRED = -32000;
 
@@ -301,6 +365,8 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     const errorCode = error === null ? null : typeof error["code"] === "number" ? error["code"] : null;
     if (purpose === "close") {
       closeDone = true;
+      // An error to close is the agent's to have; an answer must be the empty object the schema gives it.
+      if (error === null && !(isRecord(result) && meta(result))) return fail("protocol", "session/close was answered with something other than an object");
       return { send: [], live: [] };
     }
     if (purpose === "prompt") {
@@ -313,6 +379,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       }
       const stop = isRecord(result) ? result["stopReason"] : undefined;
       if (typeof stop !== "string" || !STOP_REASONS.has(stop)) return fail("protocol", "the prompt's answer carried no known stop reason");
+      if (!isRecord(result) || !meta(result)) return fail("protocol", "the prompt's answer carried a malformed _meta");
       terminal = { stopReason: stop as AcpStopReason };
       if (isRecord(result) && result["usage"] !== undefined) promptUsage = result["usage"];
       if (message !== "") keep({ type: "acp.message", content: bounded(message, MESSAGE_CAP) });
@@ -329,6 +396,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (result["protocolVersion"] !== PROTOCOL_VERSION) return fail("protocol", `the agent speaks protocol version ${String(result["protocolVersion"])}, not ${PROTOCOL_VERSION}`);
       const info = result["agentInfo"];
       if (!isRecord(info) || typeof info["name"] !== "string" || typeof info["version"] !== "string") return fail("identity", "the agent did not say its name and version");
+      if (!wellFormedInitialize(result)) return fail("protocol", "initialize was answered with fields the protocol doesn't allow");
       agent = { name: bounded(info["name"], 128), version: bounded(info["version"], 64) };
       if (options.expect !== null && (agent.name !== options.expect.name || agent.version !== options.expect.version)) {
         return fail("identity", `the agent is ${agent.name} ${agent.version}, not the checked ${options.expect.name} ${options.expect.version}`);
@@ -343,6 +411,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     if (purpose === "session/new") {
       const id = result["sessionId"];
       if (typeof id !== "string" || id.trim() === "" || id.length > 256) return fail("protocol", "the session had no id");
+      if (!wellFormedNewSession(result)) return fail("protocol", "session/new was answered with fields the protocol doesn't allow");
       sessionId = id;
       keep({ type: "acp.session", sessionId: id });
       const offer = modelOffer(result);
@@ -355,7 +424,8 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       phase = "model";
       return { send: [request("session/set_config_option", { sessionId: id, configId: "model", value: options.model }, "model")], live: [] };
     }
-    // purpose === "model": the answer must show the model current.
+    // purpose === "model": the answer must be a well-formed set of config options, showing the model current.
+    if (!meta(result) || !wellFormedConfigOptions(result["configOptions"])) return fail("model-unavailable", "the model choice was answered with malformed config options");
     const chosen = modelOffer(result);
     if (chosen === null || chosen.mechanism !== "config-option" || chosen.current !== options.model) return fail("model-unavailable", `the agent did not make ${options.model} current`);
     keep({ type: "acp.model", model: options.model, mechanism });
@@ -380,7 +450,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     } else if (kind === "usage_update") {
       usageUpdate = update;
     }
-    return { send: [], live: [update] };
+    return { send: [], live: KNOWN_UPDATES.has(kind) ? [update] : [] };
   };
 
   return {
@@ -400,15 +470,23 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       let roundedId = false;
       try {
         incoming = JSON.parse(raw, function (this: unknown, key: string, value: unknown, context?: { source?: string }) {
-          if (key === "id" && typeof value === "number" && this !== null && typeof this === "object" && "jsonrpc" in (this as object)
-            && (!Number.isSafeInteger(value) || context?.source === undefined || context.source !== String(value))) roundedId = true;
+          if (typeof value === "number") {
+            const source = context?.source;
+            if (key === "id" && this !== null && typeof this === "object" && "jsonrpc" in (this as object)
+              && (!Number.isSafeInteger(value) || source === undefined || source !== String(value))) roundedId = true;
+            // Anywhere in a message, a number that only reads as an integer by rounding (1.0000000000000001, 1e-999)
+            // or that no double holds exactly is not the number on the wire: nothing the client reads may rest on it.
+            if (source === undefined || !Number.isFinite(value)) roundedId = true;
+            else if (Number.isInteger(value) && !/^-?(0|[1-9][0-9]*)(\.0+)?$/.test(source)) roundedId = true;
+            else if (Number.isInteger(value) && !Number.isSafeInteger(value)) roundedId = true;
+          }
           return value;
         });
       } catch {
         return fail("protocol", "the agent wrote a line that is not JSON");
       }
       if (!isRecord(incoming) || incoming["jsonrpc"] !== "2.0") return fail("protocol", "the agent wrote something that is not JSON-RPC 2.0");
-      if (roundedId) return fail("protocol", "a message whose id isn't exactly the integer it reads as");
+      if (roundedId) return fail("protocol", "a message carrying a number that isn't exactly what it reads as");
       const method = incoming["method"];
       const id = incoming["id"];
       if (typeof method === "string") {
@@ -460,7 +538,8 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       const hasError = Object.prototype.hasOwnProperty.call(incoming, "error");
       if (hasResult === hasError) return fail("protocol", "a response must carry a result or an error, not both or neither");
       const error = incoming["error"];
-      if (hasError && !(isRecord(error) && typeof error["code"] === "number" && Number.isInteger(error["code"]) && typeof error["message"] === "string")) {
+      if (hasError && !(isRecord(error) && typeof error["code"] === "number" && Number.isInteger(error["code"])
+        && error["code"] >= -2_147_483_648 && error["code"] <= 2_147_483_647 && typeof error["message"] === "string")) {
         return fail("protocol", "a response with a malformed error");
       }
       return onResult(purpose, incoming["result"], hasError ? error as Record<string, unknown> : null);

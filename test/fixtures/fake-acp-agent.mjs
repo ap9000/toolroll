@@ -31,10 +31,10 @@ process.stdin.on("data", chunk => {
       send({ id: message.id, result: { protocolVersion: 1, agentInfo: { name: "FakeCode", version: mode === "wrong-version" ? "9.9.9" : "1.0.0" }, agentCapabilities: { sessionCapabilities: { close: {} } }, authMethods: [] } });
     } else if (message.method === "session/new") {
       cwd = message.params.cwd;
-      send({ id: message.id, result: { sessionId, configOptions: [{ id: "model", type: "select", currentValue: "fake/default", options: [{ value: "fake/default" }, { value: "fake/model" }] }] } });
+      send({ id: message.id, result: { sessionId, configOptions: [{ id: "model", name: "Model", type: "select", currentValue: "fake/default", options: [{ value: "fake/default", name: "Default" }, { value: "fake/model", name: "Fake" }] }] } });
     } else if (message.method === "session/set_config_option") {
       const current = mode === "refuse-model" ? "fake/default" : message.params.value;
-      send({ id: message.id, result: { configOptions: [{ id: "model", type: "select", currentValue: current, options: [{ value: "fake/default" }, { value: "fake/model" }] }] } });
+      send({ id: message.id, result: { configOptions: [{ id: "model", name: "Model", type: "select", currentValue: current, options: [{ value: "fake/default", name: "Default" }, { value: "fake/model", name: "Fake" }] }] } });
     } else if (message.method === "session/prompt") {
       prompt = message.id;
       log(`prompt:${message.params.prompt[0].text}`);
