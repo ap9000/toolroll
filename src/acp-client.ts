@@ -343,6 +343,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (offer === null) return fail("model-unavailable", "the agent offers no way to choose a model");
       mechanism = offer.mechanism;
       offered = offer.offered.slice(0, 500);
+      keep({ type: "acp.offered", models: offered.filter(one => one.length <= 200).slice(0, 200) });
       if (offer.mechanism !== "config-option") return fail("model-unavailable", "the agent can't confirm which model it uses (it offers only session/set_model)");
       if (!offer.offered.includes(options.model)) return fail("model-unavailable", `the agent doesn't offer ${options.model}`);
       phase = "model";
@@ -501,6 +502,15 @@ export type AcpEnvelope = {
   diagnostic: string | null;
   /** A failure terminal, when the prompt was answered with anything but end_turn or the conversation failed. */
   terminal: { failed: true; text: string | null; code: string } | null;
+  /** The models the agent offered at session/new (the conformance check records them). */
+  offered: string[];
+  /** Who the agent said it is at initialize. */
+  agent: { name: string; version: string } | null;
+  /** The prompt's stop reason, when it answered with one. */
+  stop: string | null;
+  /** How the agent's process ended, as the runner saw it: on its own after stdin closed, or by our SIGTERM or kill;
+   * and whether anything of its group was still alive at the reap. Null when the runner wrote none. */
+  exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean } | null;
 };
 
 /** Read a conversation's retained record. Lines not typed `acp.*` are ignored. */
@@ -514,6 +524,9 @@ export function acpParse(stdout: string): AcpEnvelope {
   let rpcError: { code: number | null; message: string } | null = null;
   let terminals = 0;
   let failure: { kind: string; text: string } | null = null;
+  let offered: string[] = [];
+  let agent: AcpEnvelope["agent"] = null;
+  let exit: AcpEnvelope["exit"] = null;
   for (const raw of stdout.split("\n")) {
     if (raw.trim() === "") continue;
     let event: unknown;
@@ -524,7 +537,10 @@ export function acpParse(stdout: string): AcpEnvelope {
     }
     if (!isRecord(event)) continue;
     const type = event["type"];
-    if (type === "acp.agent") agentSeen = true;
+    if (type === "acp.agent") {
+      agentSeen = true;
+      if (agent === null && typeof event["name"] === "string" && typeof event["version"] === "string") agent = { name: event["name"], version: event["version"] };
+    }
     else if (type === "acp.session" && typeof event["sessionId"] === "string") {
       if (sessionId === null) sessionId = event["sessionId"];
       else if (sessionId !== event["sessionId"]) conflict = true;
@@ -537,6 +553,10 @@ export function acpParse(stdout: string): AcpEnvelope {
         const error = event["error"];
         rpcError = { code: typeof error["code"] === "number" ? error["code"] : null, message: typeof error["message"] === "string" ? error["message"] : "" };
       }
+    } else if (type === "acp.offered" && Array.isArray(event["models"])) {
+      offered = event["models"].filter((one): one is string => typeof one === "string").slice(0, 200);
+    } else if (type === "acp.exit" && typeof event["how"] === "string" && ["eof", "term", "kill", "self", "error"].includes(event["how"])) {
+      exit = { how: event["how"] as NonNullable<AcpEnvelope["exit"]>["how"], leftover: event["leftover"] === true };
     } else if (type === "acp.failure" && failure === null) {
       failure = { kind: typeof event["kind"] === "string" ? event["kind"] : "protocol", text: typeof event["text"] === "string" ? event["text"] : "" };
     }
@@ -566,5 +586,9 @@ export function acpParse(stdout: string): AcpEnvelope {
     promptConsumed: success,
     diagnostic: diagnostic === "" ? null : diagnostic,
     terminal: success || code === null ? null : { failed: true, text: diagnostic === "" ? null : diagnostic, code },
+    offered,
+    exit,
+    agent,
+    stop: terminals === 1 ? stop : null,
   };
 }

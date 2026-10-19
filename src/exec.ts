@@ -1621,6 +1621,8 @@ export function runAcpSession(
     let shuttingDown = false;
     /** Set when the plane itself signalled the agent after its terminal: an exit by that signal is clean. */
     let signalledAfterTerminal = false;
+    /** How the process came to end, for the record: on its own (before or after stdin closed), or by our signal. */
+    let endedBy: "self" | "eof" | "term" | "kill" | "error" = "self";
     let announced: string | null = null;
     const timers: ReturnType<typeof setTimeout>[] = [];
     const later = (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); timer.unref?.(); timers.push(timer); };
@@ -1632,6 +1634,7 @@ export function runAcpSession(
       }
     };
     const forceKill = (): void => {
+      endedBy = "kill";
       if (options.processGroup === true) killGroup(child);
       else child.kill("SIGKILL");
     };
@@ -1643,9 +1646,11 @@ export function runAcpSession(
       const endInput = () => {
         if (exited()) return;
         try { child.stdin?.end(); } catch { /* gone */ }
+        endedBy = "eof";
         later(ACP_SHUTDOWN_MS.eof, () => {
           if (exited()) return;
           signalledAfterTerminal = conversation.phase() === "ended";
+          endedBy = "term";
           termGroup(child);
           later(ACP_SHUTDOWN_MS.term, () => { if (!exited()) forceKill(); });
         });
@@ -1708,7 +1713,9 @@ export function runAcpSession(
       framing.finish();
       // Whatever the agent started in its own group and left running ends with it (a group id can't be reused while any
       // member lives, so this reaches only what it left). Escaped groups are the custody observer's, as for every runner.
+      let leftover = false;
       if (options.processGroup === true && container === null && child.pid !== undefined && process.platform !== "win32") {
+        try { process.kill(-child.pid, 0); leftover = true; } catch { leftover = false; }
         try { process.kill(-child.pid, "SIGKILL"); } catch { /* none left */ }
       }
       const terminal = conversation.terminal();
@@ -1718,7 +1725,8 @@ export function runAcpSession(
       const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);
       void settlement.then(empty => resolve({
         code: notFound ? NOT_FOUND_CODE : timedOut ? TIMEOUT_CODE : attachFailure !== null || empty === false ? CONTAINMENT_REFUSED_CODE : exitCode,
-        stdout: conversation.retained(),
+        // The runner's own account of the ending rides last: a type no agent can emit.
+        stdout: `${conversation.retained()}${JSON.stringify({ type: "acp.exit", how: endedBy, leftover: leftover || empty === false })}\n`,
         stderr: empty === false ? `${stderr}\nNative process containment could not prove all descendants exited.`.trim() : attachFailure !== null && stderr === "" ? attachFailure : stderr,
         timedOut,
         notFound,
@@ -1727,6 +1735,7 @@ export function runAcpSession(
     };
 
     child.on("error", error => {
+      endedBy = "error";
       notFound = (error as NodeJS.ErrnoException).code === "ENOENT";
       if (stderr === "") stderr = String(error);
       finish(null, null);

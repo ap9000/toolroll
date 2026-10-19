@@ -194,6 +194,8 @@ export type ParsedEnvelope = {
   structuralTerminal: import("./exhaustion.js").StructuralTerminal | null;
   /** What an ACP agent itself reported it used — kept on the run, never priced. Absent for every other dialect. */
   agentReportedUsage?: string | null;
+  /** An ACP conversation's facts the conformance check reads (acp-client.ts AcpEnvelope): nothing else does. */
+  acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean } | null; agent: { name: string; version: string } | null; stop: string | null };
 };
 
 type Adapter = {
@@ -1022,6 +1024,7 @@ function acpEnvelope(stdout: string): ParsedEnvelope {
     diagnostic: read.diagnostic === null ? null : safeDiagnostic(read.diagnostic),
     structuralTerminal: read.terminal === null ? null : { failed: true, text: read.terminal.text === null ? null : safeDiagnostic(read.terminal.text), code: read.terminal.code.slice(0, 128) },
     agentReportedUsage: read.reportedUsage,
+    acp: { offered: read.offered, exit: read.exit, agent: read.agent, stop: read.stop },
   };
 }
 

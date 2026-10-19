@@ -90,6 +90,8 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     expect(result.outcome.code).toBe(0);
     expect(readFileSync(join(worktree, "done.txt"), "utf8")).toBe("ok\n");
     expect(agentLog()).toEqual(["initialize", "session/new", "session/set_config_option", "session/prompt", "prompt:Write done.txt.", "session/close", "eof"]);
+    // What a conformance check reads: who it said it is, what it offered, and that it left on its own once stdin closed.
+    expect(result.outcome.acp).toMatchObject({ agent: { name: "FakeCode", version: "1.0.0" }, offered: ["fake/default", "fake/model"], stop: "end_turn", exit: { how: "eof", leftover: false } });
     const row = store.getRun(runId)!;
     expect(row.sessionId).toBe("ses_fake_1");
     expect(row.providerVersion).toBe("1.0.0");
@@ -151,7 +153,9 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
   test("what the agent started in its own group ends with it", async () => {
     check();
     const result = await run("descendant");
-    expect(result.kind).toBe("ran");
+    if (result.kind !== "ran") throw new Error(JSON.stringify(result));
+    // The runner says something of the group was still alive at the reap — and the reap ended it.
+    expect(result.outcome.acp?.exit).toEqual({ how: "eof", leftover: true });
     const pid = Number(readFileSync(join(worktree, "descendant.pid"), "utf8"));
     let alive = true;
     for (let i = 0; i < 20 && alive; i += 1) {

@@ -137,6 +137,8 @@ export type AgentOutcome = {
    * strikes of bad agent work).
    */
   initFailed: boolean;
+  /** An ACP conversation's facts (provider.ts ParsedEnvelope.acp): read by the conformance check only. */
+  acp?: NonNullable<import("./provider.js").ParsedEnvelope["acp"]>;
 };
 
 /**
@@ -806,6 +808,7 @@ export async function invokeAgent(
       sessionId: envelope.sessionId,
       finalMessage: envelope.finalMessage,
       structuredOutput: envelope.structuredOutput ?? null,
+      ...(envelope.acp === undefined ? {} : { acp: envelope.acp }),
       ending: envelope.ending ?? null,
       usage: {
         tokensIn: envelope.tokensIn,
