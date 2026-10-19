@@ -38,6 +38,7 @@ import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
+import { readDelivery } from "./webhook-readers.js";
 import { makesSecret, makeSecret, proveDelivery, secretShapeOk, SENDER_WORDS, WEBHOOK_SENDERS, type DistinctHeaders, type SigningSender, type WebhookSender } from "./webhook-signing.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
@@ -1048,26 +1049,37 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     const found = moved ? linearItem(config, body.data) : null;
     items = found === null ? [] : [found];
   } else if (config.kind === "webhook") {
-    // Any JSON, kept as sent: the trigger's own paths are picked from it, and it is shown whole when they find no text.
+    // v126: read by its sender's reader (webhook-readers.ts): Sentry's and Vercel's check shape, action and scope before
+    // an identity is claimed; the others pick their fields by dot-paths.
     const body = readWebhookPayload(payload);
-    const record = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-    const pick = (path: string | null) => path === null ? null : path.split(".").reduce<unknown>((node, part) => record(node)[part], body);
-    const title = pick(config.titleField ?? "title") ?? pick("summary") ?? pick("message");
-    const bodyText = pick(config.bodyField ?? "description") ?? pick("body") ?? pick("text");
-    // An unsigned webhook keys on what the sender says (as before); a signed one only on what its signature covers:
-    // Standard Webhooks' signed id, or the raw bytes. Keys carry the sender, so nothing unsigned stands for anything signed.
-    const bodyHash = createHash("sha256").update(delivery.body).digest("hex");
     const sender = senderOf(config);
-    const key = sender === "none"
+    const read = readDelivery(body, { sender, title: config.title, titleField: config.titleField, bodyField: config.bodyField, idField: config.idField ?? null, urlField: config.urlField ?? null, project: config.project ?? null, team: config.team ?? null });
+    // A delivery's own key: an unsigned webhook's is what the sender says (as before); a signed one's only what its
+    // signature covers — Standard Webhooks' signed id, or the raw bytes. Keys carry the sender, so nothing unsigned
+    // stands for anything signed.
+    const bodyHash = createHash("sha256").update(delivery.body).digest("hex");
+    const deliveryKey = sender === "none"
       ? `hook:${(header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || bodyHash).slice(0, 120)}`
       : proven.signedId !== null ? `v3:${sender}:wid:${proven.signedId}` : `v3:${sender}:body:${bodyHash}`;
-    items = [{ key, at: null, title: typeof title === "string" && title.trim() !== "" ? title : config.title,
-      description: `From a webhook:\n\n${typeof bodyText === "string" ? bodyText : JSON.stringify(body, null, 2)}`.slice(0, 4000),
-      source: { kind: "webhook", label: "Webhook", url: null } }];
+    // Not for this flow: received under the delivery's own key, so it never uses up the identity of what it names.
+    if (read.kind === "ignored") return written(() => { store.recordFlowReceipt(trigger.id, deliveryKey, "ignored", read.why, null, now); return { status: 202, said: `Ignored: ${read.why}.` }; });
+    if (read.kind === "skip") items = [{ key: deliveryKey, skip: read.why, label: "Webhook", at: null }];
+    else {
+      // The outside thing's identity, when it has one, groups its deliveries: one card per issue or deployment.
+      const key = read.identity === null ? deliveryKey : `v3:${sender}:id:${read.identity}`;
+      items = [{ key, at: null, title: read.title, description: read.description,
+        source: { kind: sender === "sentry" || sender === "vercel" ? sender : "webhook", label: read.label, url: read.url,
+          verified: sender, external: { id: read.identity, url: read.url }, receipt: key } }];
+    }
   }
   if (items.length === 0) return { status: 202, said: "Nothing for this flow." };
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Webhook";
   return written(() => {
+    // Received before (v126): said for what it was, never as a card that isn't there.
+    const first = items[0]!;
+    const before = items.length === 1 ? store.flowReceipt(trigger.id, first.key) : null;
+    if (before !== null) return { status: 202, said: before.state === "accepted" ? "Already received." : before.state === "held" ? "Already received; waiting for room."
+      : before.state === "skipped" ? `Already received; it wasn't added${before.note === null ? "" : `: ${before.note}`}.` : "Already received." };
     const results = items.slice(0, CARDS_PER_CHECK).map(item => "skip" in item
       ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}` } : { made: "seen" as Made, note: null })
       : makeCard(store, trigger, config, item, by, now));

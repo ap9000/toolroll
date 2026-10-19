@@ -76,7 +76,7 @@ describe("provisioning", () => {
     expect(trigger(id).lastOutcome).toBeNull();
     expect(deliver(token, '{"title":"Checkout broke"}', standard(key, "m1", '{"title":"Checkout broke"}'))).toEqual({ status: 202, said: "Added 1 card." });
     expect(store.flowReceipt(id, "v3:standard:wid:m1")?.state).toBe("accepted");
-    expect(deliver(token, '{"title":"Checkout broke"}', standard(key, "m1", '{"title":"Checkout broke"}'))).toEqual({ status: 202, said: "Nothing new." });
+    expect(deliver(token, '{"title":"Checkout broke"}', standard(key, "m1", '{"title":"Checkout broke"}'))).toEqual({ status: 202, said: "Already received." });
   });
 
   test("New address keeps the secret; Replace secret keeps the address; the replaced secret is refused even when its file survives", () => {

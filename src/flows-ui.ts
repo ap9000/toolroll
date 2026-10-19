@@ -5,6 +5,7 @@ import { draftFor, flowDefinitionOf } from "./flow-engine.js";
 import { describeStandingOrder } from "./flow-schedule.js";
 import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
 import { SENDER_WORDS } from "./webhook-signing.js";
+import { READER_CAPTURED } from "./webhook-readers.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
@@ -34,7 +35,10 @@ function hookView(trigger: FlowTriggerRow, config: TriggerConfig, dir: string | 
   const warning = sender === "none" ? "Unsigned: anyone with its address can add cards. Choose who signs its deliveries to close that."
     : (sender === "sentry" || sender === "vercel") && config.project === null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards. Name the project to narrow it.`
     : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted` : "its secret is made"}.` : null;
-  return { ready, needsSecret: sender === "sentry" || sender === "vercel", sender, makesSecret: sender === "standard" || sender === "github-style", warning };
+  // A reader written from its sender's documentation, not yet from a captured delivery, says so (webhook-readers.ts).
+  const unchecked = (sender === "sentry" || sender === "vercel") && !READER_CAPTURED[sender] && warning === null
+    ? `Toolroll's ${SENDER_WORDS[sender]} reader follows ${SENDER_WORDS[sender]}'s documented examples; it hasn't read a real delivery yet.` : null;
+  return { ready, needsSecret: sender === "sentry" || sender === "vercel", sender, makesSecret: sender === "standard" || sender === "github-style", warning: warning ?? unchecked };
 }
 
 export const FLOWS_CSS = `.flows{max-width:880px;min-width:0}.flows .card{padding:16px 18px;margin:12px 0}.flows .flow-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}.flows .flow-row h2{font-size:1.05rem;margin:0}.flows .flow-counts{font-size:.85rem;color:var(--so-muted)}.flows form{display:grid;gap:10px;margin:0}.flows label{display:grid;gap:6px}.flows input,.flows select{box-sizing:border-box;width:100%;max-width:100%}.flows button{justify-self:start;min-height:44px}.flows .flow-fallback ol{padding-left:20px}.flows summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}.flows .flow-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 0}.flows .flow-import{margin-top:18px;padding-top:14px;border-top:1px solid var(--so-line)}.flows .flow-import h3{font-size:.95rem;margin:0}.flows .flow-terms{list-style:none;padding:0;margin:8px 0 16px;display:grid;gap:10px}.flows .flow-terms li{white-space:pre-line;overflow-wrap:anywhere}.flows .flow-terms pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8rem;margin:6px 0 0}.flows .flow-import-preview h2{font-size:1rem;margin:20px 0 4px}.flows .flow-untrusted{font-weight:600}.flows button.primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary)}.flows fieldset{border:0;padding:0;margin:0;display:grid;gap:10px;min-width:0}.flows legend{font-weight:600;padding:0;margin-bottom:6px}.flows textarea[hidden]{display:none}.flows button.secondary{background:transparent;color:var(--foreground);border:1px solid var(--border)}@media(max-width:600px){.flows input,.flows select{font-size:16px}}@media(max-width:760px){.flows .card{padding:10px 12px;margin:8px 0;position:relative}.flows .flow-row{row-gap:2px}.flows .flow-row h2 a::after{content:"";position:absolute;inset:0;border-radius:inherit}.flows .flow-counts{line-height:1.35}}`;

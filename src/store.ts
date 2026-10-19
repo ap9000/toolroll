@@ -1495,6 +1495,8 @@ export type FlowScriptRow = { id: number; repo: string; name: string; about: str
  * `chat` (v89): the chat message it came from — the app, the channel, the conversation to answer in, the
  * message's thread, and the pairing that connected the channel (whose chat answers there). */
 export type FlowCardSource = { kind: string; label: string; url: string | null; mail?: { id: string | null; references: string[]; subject: string; from: string };
+  /** v126: a webhook delivery's sender that proved it ("none": unsigned), the outside thing it names, and its receipt's key. */
+  verified?: string; external?: { id: string | null; url: string | null }; receipt?: string;
   chat?: { app: string; installation: string; chat: string; conversation: string; thread: string; binding: number } };
 /** A flow card as read (src/contracts/flow-card.ts), and where it came from. */
 export type FlowCardRow = FlowCardFields & { source: FlowCardSource | null };
@@ -1551,11 +1553,16 @@ function readFlowCardSource(value: unknown): FlowCardSource | null {
     const parsed = read.value;
     const mail = parsed["mail"] !== null && typeof parsed["mail"] === "object" ? parsed["mail"] as Record<string, unknown> : null;
     const chat = parsed["chat"] !== null && typeof parsed["chat"] === "object" ? parsed["chat"] as Record<string, unknown> : null;
+    const external = parsed["external"] !== null && typeof parsed["external"] === "object" ? parsed["external"] as Record<string, unknown> : null;
     return { kind: String(parsed["kind"] ?? ""), label: parsed["label"], url: typeof parsed["url"] === "string" ? parsed["url"] : null,
       ...(mail === null || typeof mail["from"] !== "string" ? {} : { mail: { id: typeof mail["id"] === "string" ? mail["id"] : null, references: Array.isArray(mail["references"]) ? mail["references"].filter((one): one is string => typeof one === "string") : [],
         subject: typeof mail["subject"] === "string" ? mail["subject"] : "", from: mail["from"] } }),
       ...(chat === null || typeof chat["app"] !== "string" || typeof chat["chat"] !== "string" || typeof chat["thread"] !== "string" || typeof chat["binding"] !== "number" ? {} : { chat: {
-        app: chat["app"], installation: String(chat["installation"] ?? ""), chat: chat["chat"], conversation: typeof chat["conversation"] === "string" ? chat["conversation"] : chat["chat"], thread: chat["thread"], binding: chat["binding"] } }) };
+        app: chat["app"], installation: String(chat["installation"] ?? ""), chat: chat["chat"], conversation: typeof chat["conversation"] === "string" ? chat["conversation"] : chat["chat"], thread: chat["thread"], binding: chat["binding"] } }),
+      // v126: kept as they were written at receipt; a card saved before them has none.
+      ...(typeof parsed["verified"] === "string" ? { verified: parsed["verified"] } : {}),
+      ...(external === null ? {} : { external: { id: typeof external["id"] === "string" ? external["id"] : null, url: typeof external["url"] === "string" ? external["url"] : null } }),
+      ...(typeof parsed["receipt"] === "string" ? { receipt: parsed["receipt"] } : {}) };
   } catch { return null; }
 }
 
