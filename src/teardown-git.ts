@@ -76,35 +76,15 @@ function nestedRepository(path: string): boolean {
   return false;
 }
 
-const hardenedOptions = (cwd: string) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: ENV, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
-
-/** A refusal when the repository's own config (local or worktree scope, includes off) sets anything that runs a command. */
-async function repositoryConfigProblem(runner: Runner, cwd: string): Promise<ExecResult | null> {
-  const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], hardenedOptions(cwd));
-  if (config.code !== 0) return refused("its config couldn't be read");
-  const key = commandSetting(config.stdout);
-  return key === null ? null : refused(`the project's git config sets ${key}, which can run a command`);
-}
-
-/**
- * Git that makes a checkout (a lease's branch and `worktree add`), run by Toolroll's own process in the shared
- * repository a build can write to. The user's own git setup still applies (their global config: line endings, LFS
- * installed globally), but nothing the repository holds may run: no hooks (a planted post-checkout would run here,
- * outside every fence), no fsmonitor, and a repository config that names a command refuses the command, as teardown's
- * does.
- */
-export function checkoutGit(runner: Runner = run): (cwd: string, args: readonly string[], prefix?: readonly string[]) => Promise<ExecResult> {
-  return async (cwd, args, prefix = []) => {
-    const problem = await repositoryConfigProblem(runner, cwd);
-    if (problem !== null) return problem;
-    return runner("git", [...TEARDOWN_FLAGS, ...prefix, ...args], { cwd, timeoutMs: WORKTREE_TIMEOUT_MS });
-  };
-}
-
 /** The one way teardown runs git, including the target checkout immediately before removal. */
 export function teardownGit(runner: Runner = run): Git {
-  const options = hardenedOptions;
-  const configProblem = (cwd: string) => repositoryConfigProblem(runner, cwd);
+  const options = (cwd: string) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: ENV, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
+  const configProblem = async (cwd: string): Promise<ExecResult | null> => {
+    const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options(cwd));
+    if (config.code !== 0) return refused("its config couldn't be read");
+    const key = commandSetting(config.stdout);
+    return key === null ? null : refused(`the project's git config sets ${key}, which can run a command`);
+  };
   return async (cwd, args) => {
     const problem = await configProblem(cwd);
     if (problem !== null) return problem;

@@ -4,7 +4,6 @@
  * the binding from the plane's recorded repository and Git's own registry, never the pointer, and refuses the launch
  * when the pointer disagrees; agentFence never drops a secret, state, database or home-configuration deny.
  */
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { agentFence, CheckoutBindingError, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
@@ -63,8 +62,7 @@ describe("attack: a rewritten .git pointer weakening the fence", () => {
     ].join("\n"), fence, grants, { cwd: at.active });
     expectNoMarker(attack, secret);
     expect(lines(attack), attack.stderr).toEqual(["rewritten", "ssh-denied", "database-denied", "login-denied"]);
-    // The pointer is read-only to every build, so the rewrite failed: the next launch binds the genuine checkout.
-    expect(readFileSync(join(at.active, ".git"), "utf8")).not.toContain(".ssh");
-    expect(trustedWorktreeBinding(at.main, at.active, [at.pool]).gitdir).not.toContain(".ssh");
+    // The next launch reads the pointer from the registry, not the checkout: it refuses.
+    expect(() => trustedWorktreeBinding(at.main, at.active, [at.pool])).toThrow(CheckoutBindingError);
   });
 });

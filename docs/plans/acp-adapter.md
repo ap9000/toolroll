@@ -346,3 +346,11 @@ declaration per checked model, and "Revoke". `toolroll agents check|revoke|billi
    reason `agent-check` **and** each step's verdict recorded as passed on the request (`step1_passed`, `step2_passed`,
    each written by its own CAS after grading). Exactly one row, or nothing — and `recordAcpAttestation` runs inside that
    same transaction, so an expired, stale or unproven request can never publish.
+
+
+## Split out (2026-10-19, owner decision)
+
+The git-fence class v7/v8 item 1 described — Toolroll's own git honouring hooks, config and gitdir pointers a build can
+write, outside every fence — predates ACP and affects every agent. It moved to its own branch and PR
+(`git-fence-hardening`, docs/plans/git-fence-hardening.md there), to be finished for all agents. ACP agents ship with
+the same exposure every agent has today, no more; Layer E's design no longer depends on it.

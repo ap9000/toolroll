@@ -6,15 +6,11 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
 import { adapterFor } from "./provider.js";
-
-/** The read-only grants that are other tasks' git metadata: without the repository's own config, hooks and this
- * checkout's config, which every boundary holds read-only (their own test, below). */
-const siblingGrants = (paths: readonly string[]) => paths.filter(path => !/[/\\]\.git[/\\](config|hooks)$|[/\\]config\.worktree$|[/\\]\.git$|[/\\](commondir|gitdir)$/.test(path));
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { acquire } from "./claim.js";
@@ -191,64 +187,6 @@ describe("the agent fence", () => {
     expect(() => trustedWorktreeBinding(main, worktree)).toThrow("The checkout's Git pointer was changed");
   });
 
-  test.skipIf(!macosFenceAvailable() && !linuxFenceAvailable())("a fenced build can't write the shared repository's config or hooks", () => {
-    const { main } = linkedCheckout();
-    const binding = trustedWorktreeBinding(main, worktree);
-    const boundary = taskBoundary({ worktree, provider: "claude", home, binding });
-    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
-    const grants = fenceGrants({ databaseFile: null, worktree, boundary });
-    const before = readFileSync(join(main, ".git", "config"), "utf8");
-    const gitdir = binding.gitdir;
-    expect(boundary.readOnly).toEqual(expect.arrayContaining([join(realpathSync(main), ".git", "config"), join(realpathSync(main), ".git", "hooks")]));
-    const pointer = readFileSync(join(worktree, ".git"), "utf8");
-    const commondir = readFileSync(join(gitdir, "commondir"), "utf8");
-    const attempts = [
-      `printf '[filter "x"]\\n\\tsmudge = touch /tmp/x\\n' >> '${join(main, ".git", "config")}'`,
-      `printf '#!/bin/sh\\n' > '${join(main, ".git", "hooks", "post-checkout")}'`,
-      // Pointing Toolroll's git elsewhere: this checkout's .git file, or its metadata's commondir.
-      `printf 'gitdir: /tmp/elsewhere\\n' > '${join(worktree, ".git")}'`,
-      `printf '/tmp/elsewhere\\n' > '${join(gitdir, "commondir")}'`,
-    ];
-    for (const script of attempts) {
-      const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", script], fence, grants) : linuxFenced("/bin/sh", ["-c", script], fence, grants);
-      expect(spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).status).not.toBe(0);
-    }
-    expect(readFileSync(join(main, ".git", "config"), "utf8")).toBe(before);
-    expect(readFileSync(join(worktree, ".git"), "utf8")).toBe(pointer);
-    expect(readFileSync(join(gitdir, "commondir"), "utf8")).toBe(commondir);
-    expect(existsSync(join(main, ".git", "hooks", "post-checkout"))).toBe(false);
-    // (This checkout's own config.worktree counts only if the shared config — read-only above — turns it on.)
-    void gitdir;
-    // Commits, the build's real work, still land.
-    const commit = "git -c user.name=t -c user.email=t@t commit --allow-empty -qm fenced";
-    const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", commit], fence, grants) : linuxFenced("/bin/sh", ["-c", commit], fence, grants);
-    const committed = spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" });
-    expect(committed.status, committed.stderr).toBe(0);
-  });
-
-  test("a protected git file with another name on disk (a hard link made before) refuses the launch", () => {
-    const { main } = linkedCheckout();
-    const binding = trustedWorktreeBinding(main, worktree);
-    linkSync(join(main, ".git", "config"), join(dir, "config-alias"));
-    expect(() => taskBoundary({ worktree, provider: "claude", home, binding })).toThrow(/another name on disk/);
-  });
-
-  test.skipIf(!macosFenceAvailable() && !linuxFenceAvailable())("where a repository turns per-worktree config on, the checkout's config.worktree is made and held read-only", () => {
-    const { main } = linkedCheckout();
-    expect(spawnSync("git", ["config", "extensions.worktreeConfig", "true"], { cwd: main }).status).toBe(0);
-    const binding = trustedWorktreeBinding(main, worktree);
-    const boundary = taskBoundary({ worktree, provider: "claude", home, binding });
-    const file = join(binding.gitdir, "config.worktree");
-    expect(existsSync(file)).toBe(true);
-    expect(boundary.readOnly).toContain(file);
-    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, boundary });
-    const grants = fenceGrants({ databaseFile: null, worktree, boundary });
-    const script = `printf '[core]\\n\\thooksPath = /tmp\\n' > '${file}'`;
-    const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", script], fence, grants) : linuxFenced("/bin/sh", ["-c", script], fence, grants);
-    expect(spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).status).not.toBe(0);
-    expect(readFileSync(file, "utf8")).toBe("");
-  });
-
   test.skipIf(!macosFenceAvailable())("generated Codex and Claude fences permit linked checkout Git commands", () => {
     const { main, sibling, head } = linkedCheckout();
     const binding = trustedWorktreeBinding(main, worktree);
@@ -328,7 +266,7 @@ describe("the agent fence", () => {
         join(main, "package.json"), join(main, "src"), join(projects, "other"), join(state, "worktrees", "app", "task-2"),
       ].sort());
       // Another task's git metadata is read, never written; the checkout it names is looked up, never read.
-      expect(siblingGrants(claude.readOnly)).toEqual([join(main, ".git", "worktrees", "task-2")]);
+      expect(claude.readOnly).toEqual([join(main, ".git", "worktrees", "task-2")]);
       writeFileSync(join(main, ".git", "worktrees", "task-2", "gitdir"), `${join(state, "worktrees", "app", "task-2", ".git")}\n`);
       expect(taskBoundary({ binding: { main, gitdir: join(main, ".git", "worktrees", "task-1") }, worktree: tree, provider: "claude", home }).lookup).toEqual([join(state, "worktrees", "app", "task-2"), join(state, "worktrees", "app", "task-2", ".git")]);
       // Claude's CLI reads its own home to sign in and resume, so the OS fence leaves it; its file tools still refuse the sensitive files.
@@ -397,7 +335,7 @@ describe("the agent fence", () => {
       const before = readFileSync(join(metadata, "HEAD"), "utf8");
       const boundary = taskBoundary({ binding: trustedWorktreeBinding(repo, active), worktree: active, provider: "claude", home });
       expect(boundary.shell).toContain(other);
-      expect(siblingGrants(boundary.readOnly)).toEqual([metadata]);
+      expect(boundary.readOnly).toEqual([metadata]);
       const grants = fenceGrants({ databaseFile: null, worktree: active, boundary });
       const fenced = (script: string, rules = grants) => run("/bin/bash", ["-c", script], { cwd: active, processGroup: true, fence: boundary.shell, fenceGrants: rules, env: fencedGitEnv({}) });
 
@@ -1004,10 +942,10 @@ describe("a link planted among the repository's worktree entries grants nothing"
   test("the boundary never follows it into a read-only grant, and Codex's policy keeps the folder denied", () => {
     const { boundary, fence, grants } = launch("codex");
     expect(fence).toContain(join(home, ".toolroll"));
-    expect(siblingGrants(boundary.readOnly)).toEqual([]);
+    expect(boundary.readOnly).toEqual([]);
     expect(JSON.stringify(boundary)).not.toContain("tool-secrets");
     const filesystem = parseFilesystem(codexFenceArgv(fence, false, grants));
-    expect([...filesystem].filter(([path, mode]) => mode === "read" && siblingGrants([path]).length > 0)).toEqual([]);
+    expect([...filesystem].filter(([, mode]) => mode === "read")).toEqual([]);
     expect(filesystem.get(join(home, ".toolroll"))).toBe("deny");
     // Bubblewrap masks the folder and binds nothing back from the planted link.
     const bwrap = linuxFenced("claude", [], fence, grants).args;
@@ -1270,13 +1208,9 @@ describe("another project's checkouts are out of reach", () => {
     const wrapped = macosFenced("/bin/sh", ["-c", attack], fence, grants);
     spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8" });
     expect(lstatSync(active).isDirectory()).toBe(true);
-    // Deleting contents can't remove the checkout's .git pointer (read-only to every build): a resumed launch binds
-    // this checkout's own metadata, never a sibling's — or, were the pointer gone, refuses.
-    let bound: ReturnType<typeof trustedWorktreeBinding> | null = null;
-    try { bound = trustedWorktreeBinding(main, active); } catch (error) { expect(String(error)).toContain("trusted binding"); }
-    if (bound !== null) expect(bound.gitdir).not.toContain("sibling");
-    // The control: without the pool rule (and without the read-only pointer, which on its own also stops it), it works.
-    const control = macosFenced("/bin/sh", ["-c", attack], fence, { ...grants, pool: undefined, readOnly: grants.readOnly.filter(path => !/[/\\]\.git$/.test(path)) });
+    // Deleting contents may remove .git: a resumed launch must refuse, never adopt a sibling.
+    expect(() => trustedWorktreeBinding(main, active)).toThrow("trusted binding");
+    const control = macosFenced("/bin/sh", ["-c", attack], fence, { ...grants, pool: undefined });
     spawnSync(control.file, control.args, { cwd: dir, encoding: "utf8" });
     expect(lstatSync(active).isSymbolicLink()).toBe(true);
     expect(() => trustedWorktreeBinding(main, active)).toThrow("trusted binding");

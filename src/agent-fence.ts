@@ -42,7 +42,7 @@
  */
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -263,70 +263,8 @@ export function taskBoundary(options: { worktree: string; provider: string; home
       lookup.add(join(checkout, ".git"));
     }
   }
-  // What Toolroll's own git honours when it next runs in this repository, outside every fence — the shared config,
-  // its hooks, and this checkout's own config — is read, never written: a build that could write them could make
-  // that git run its commands (a hook, a filter, an fsmonitor), whatever the plane checks first.
-  // So are the pointers that say which git directory that is — this checkout's .git file, and its metadata's commondir
-  // and gitdir — or a build could point Toolroll's git at a directory of its own.
-  if (main !== null) {
-    readOnly.add(join(main, ".git", "config"));
-    readOnly.add(join(main, ".git", "hooks"));
-    if (existsSync(join(main, ".git", "config.worktree"))) readOnly.add(join(main, ".git", "config.worktree"));
-  }
-  // A file held read-only by path is only held if no other name reaches it: the sandbox already refuses a new hard link
-  // to a read-only file, so one made before must not exist — every protected file (and every hook that would run) has
-  // exactly one link, or nothing launches.
-  const singleLinked = (path: string): void => {
-    let stat;
-    try { stat = lstatSync(path); } catch { return; }
-    if (stat.isFile() && stat.nlink !== 1) throw new CheckoutBindingError(`${path} has another name on disk, so it can't be held read-only; the build didn't start.`);
-  };
-  if (main !== null) {
-    singleLinked(join(main, ".git", "config"));
-    singleLinked(join(main, ".git", "config.worktree"));
-    let hooks: string[] = [];
-    try { hooks = readdirSync(join(main, ".git", "hooks")); } catch { hooks = []; }
-    for (const hook of hooks) if (!hook.endsWith(".sample")) singleLinked(join(main, ".git", "hooks", hook));
-  }
-  if (gitdir !== null) {
-    for (const name of ["commondir", "gitdir", "config.worktree"]) singleLinked(join(gitdir, name));
-    singleLinked(join(worktree, ".git"));
-    readOnly.add(join(worktree, ".git"));
-    // A linked checkout's metadata always has both (trustedWorktreeBinding read them): held read-only, never skipped.
-    for (const name of ["commondir", "gitdir"]) readOnly.add(join(gitdir, name));
-    // This checkout's own config counts only where the shared config (read-only above) turns worktree config on; where
-    // it does, the file is made (empty) before the build so it can be held read-only too.
-    if (main !== null && worktreeConfigOn(main)) {
-      if (!existsSync(join(gitdir, "config.worktree"))) {
-        try { writeFileSync(join(gitdir, "config.worktree"), "", { flag: "wx", mode: 0o644 }); } catch { /* made meanwhile: proved below */ }
-      }
-      // Fail closed: where git reads it, the file must exist (as a plain file) to be held read-only, or nothing launches.
-      let plain = false;
-      try { plain = lstatSync(join(gitdir, "config.worktree")).isFile(); } catch { plain = false; }
-      if (!plain) throw new CheckoutBindingError("This checkout's per-worktree git config couldn't be held read-only, so the build didn't start.");
-      readOnly.add(join(gitdir, "config.worktree"));
-    } else if (existsSync(join(gitdir, "config.worktree"))) readOnly.add(join(gitdir, "config.worktree"));
-  }
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
   return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
-}
-
-/** Whether a repository's shared config turns per-worktree config on (extensions.worktreeConfig), read without git. */
-function worktreeConfigOn(main: string): boolean {
-  let text: string;
-  try { text = readFileSync(join(main, ".git", "config"), "utf8"); } catch { return false; }
-  let section = "";
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    const header = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"[^"]*")?\s*\]/.exec(line);
-    if (header !== null) { section = header[1]!.toLowerCase(); continue; }
-    const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
-    if (section === "extensions" && entry !== null && entry[1]!.toLowerCase() === "worktreeconfig") {
-      const value = (entry[2] ?? "true").trim().toLowerCase();
-      if (["true", "yes", "on", "1"].includes(value)) return true;
-    }
-  }
-  return false;
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */

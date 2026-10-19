@@ -34,7 +34,7 @@ import { HANDOFF_PREFIX, MAILBOX_SUFFIX, looksLikeProtocolFile, readMailbox } fr
 import { parseHandoff } from "./decision.js";
 import { diskBytes } from "./storage.js";
 import { markNeverIndex } from "./never-index.js";
-import { checkoutGit, refusal, teardownGit, type Git } from "./teardown-git.js";
+import { teardownGit, type Git } from "./teardown-git.js";
 
 export type Runner = (
   file: string,
@@ -492,10 +492,7 @@ export class WorktreePool {
       if (fromBase) {
         const base = await this.git(request.repo, ["rev-parse", "--verify", "--quiet", `${request.base as string}^{commit}`], READ_ONLY);
         const oid = base.stdout.trim();
-        if (base.code !== 0 || !/^[0-9a-f]{40,64}$/.test(oid)) {
-          const refused = refusal(base);
-          return { ok: false, reason: "git", message: refused !== null ? `Toolroll won't run git in this project: ${refused}` : `git couldn't find ${request.base as string}` };
-        }
+        if (base.code !== 0 || !/^[0-9a-f]{40,64}$/.test(oid)) return { ok: false, reason: "git", message: `git couldn't find ${request.base as string}` };
         const branch = await this.git(request.repo, ["update-ref", "--create-reflog", "-m", branchCreatedMessage(request.branch), `refs/heads/${request.branch}`, oid, "0".repeat(oid.length)]);
         if (branch.code !== 0) return { ok: false, reason: "git", message: firstLine(branch.stderr) };
         made = oid;
@@ -584,8 +581,7 @@ export class WorktreePool {
 
     // Recorded before git moves it: a move that then fails leaves the next attempt's own base as the branch's origin.
     this.store.recordBranchBaseMove(taskRef, branch, head, main, now);
-    // Hardened like every lease git: a planted reference-transaction or post-checkout hook never runs here.
-    const moved = await checkoutGit(this.runner)(path, ["reset", "--keep", main]);
+    const moved = await this.runner(GIT, ["reset", "--keep", main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
     const after = await read(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const branchNow = await read(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
     if (moved.code !== 0 || after !== main || branchNow !== main || await this.isDirty(path) !== false) {
@@ -1045,13 +1041,12 @@ export class WorktreePool {
   /** All disposal and inspection paths share the hardened teardown boundary. */
   private readonly teardown: Git = (cwd, args) => teardownGit(this.runner)(cwd, args);
 
-  /** A lease's own git (its branch and `worktree add`): hooks off, and nothing the repository's config names runs. */
   private git(
     cwd: string,
     args: readonly string[],
     prefix: readonly string[] = [],
   ): Promise<ExecResult> {
-    return checkoutGit(this.runner)(cwd, args, prefix);
+    return this.runner(GIT, [...prefix, ...args], { cwd, timeoutMs: WORKTREE_TIMEOUT_MS });
   }
 }
 
