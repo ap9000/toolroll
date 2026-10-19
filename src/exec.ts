@@ -57,6 +57,15 @@ export type RunOptions = ProcessTreeObserver & {
   stdin?: string;
   /** One ACP conversation (runAcpSession only): the brief, the sealed model, and the agent the attestation names. */
   acp?: AcpRun;
+  /** The conformance check's own admission (invokeAgent only; set by the check job and nothing else): this run is the
+   * request's current step, admitted by the request instead of an attestation. */
+  acpCheck?: {
+    requestId: number;
+    step: 1 | 2;
+    /** Step 1: the plane's isolation probes — a canary file in the fenced state, and a canary value the launching
+     * environment carries under a key every ACP launch sheds. */
+    isolation?: { file: string; fileCanary: string; envValue: string };
+  };
   /**
    * Absolute wall-clock ceiling. Keep this for bounded commands and repair
    * turns. Long-running provider sessions use idleTimeoutMs instead: useful

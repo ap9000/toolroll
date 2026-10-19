@@ -195,7 +195,9 @@ export type ParsedEnvelope = {
   /** What an ACP agent itself reported it used — kept on the run, never priced. Absent for every other dialect. */
   agentReportedUsage?: string | null;
   /** An ACP conversation's facts the conformance check reads (acp-client.ts AcpEnvelope): nothing else does. */
-  acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean } | null; agent: { name: string; version: string } | null; stop: string | null };
+  acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean } | null; agent: { name: string; version: string } | null; stop: string | null;
+    /** The plane's isolation probes for a check's first step (invoke.ts), when it ran them. */
+    isolation?: { fileDenied: boolean; envClear: boolean } };
 };
 
 type Adapter = {

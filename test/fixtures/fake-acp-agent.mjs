@@ -8,7 +8,8 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-const mode = process.env.FAKE_ACP ?? "ok";
+// With no FAKE_ACP, it does what the prompt asks, as an agent would: "sleep 120" is the slow mode, else ok.
+let mode = process.env.FAKE_ACP ?? "auto";
 const log = line => { if (process.env.FAKE_ACP_LOG) appendFileSync(process.env.FAKE_ACP_LOG, `${line}\n`); };
 if (process.env.FAKE_ACP_RAN) writeFileSync(process.env.FAKE_ACP_RAN, String(process.pid));
 const send = message => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
@@ -38,6 +39,10 @@ process.stdin.on("data", chunk => {
     } else if (message.method === "session/prompt") {
       prompt = message.id;
       log(`prompt:${message.params.prompt[0].text}`);
+      if (mode === "auto") mode = message.params.prompt[0].text.includes("sleep 120") ? "slow" : "ok";
+      // Claims a running command for the sleep prompt, but starts none.
+      if (mode === "slow-no-child") mode = message.params.prompt[0].text.includes("sleep 120") ? "slow-fake" : "ok";
+      if (mode === "slow-fake") { update({ sessionUpdate: "tool_call", toolCallId: "t-fake", title: "sleep", kind: "execute", status: "in_progress" }); continue; }
       if (mode === "stall") continue;
       if (mode === "quiet-exit") { update({ sessionUpdate: "available_commands_update", availableCommands: [] }); setTimeout(() => process.exit(0), 50); continue; }
       if (mode === "slow") {
@@ -72,4 +77,4 @@ process.stdin.on("data", chunk => {
     }
   }
 });
-process.stdin.on("end", () => { log("eof"); if (mode !== "stall" && mode !== "slow") process.exit(0); });
+process.stdin.on("end", () => { log("eof"); if (mode !== "stall" && mode !== "slow" && mode !== "slow-fake") process.exit(0); });
