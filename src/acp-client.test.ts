@@ -250,6 +250,8 @@ describe("what the plane answers the agent", () => {
     // Nor is a request whose tool call is malformed further down.
     for (const toolCall of [
       { toolCallId: "t5", content: [{ type: "content", content: { type: "text", text: "x", annotations: { audience: ["system"] } } }] },
+      { toolCallId: "t7", locations: [{ path: "/a", _meta: 123 }] },
+      { toolCallId: "t8", name: 123 },
       { toolCallId: "t6", _meta: 123 },
       { toolCallId: "t2", content: [{ type: "content", content: { type: "resource", resource: { uri: "file:///x" } } }] },
       { toolCallId: "t3", locations: [{ path: "/a", line: "3" }] },

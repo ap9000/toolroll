@@ -218,7 +218,8 @@ function wellFormedToolFields(update: Record<string, unknown>): boolean {
   if (update["kind"] !== undefined && !(str(update["kind"]) && TOOL_KINDS.has(update["kind"]))) return false;
   if (update["status"] !== undefined && !(str(update["status"]) && TOOL_STATUSES.has(update["status"]))) return false;
   if (update["locations"] !== undefined && !(Array.isArray(update["locations"]) && update["locations"].every(one =>
-    isRecord(one) && str(one["path"]) && (one["line"] === undefined || one["line"] === null || (typeof one["line"] === "number" && Number.isInteger(one["line"]) && one["line"] >= 0))))) return false;
+    isRecord(one) && meta(one) && str(one["path"]) && optional(one["line"], integer)))) return false;
+  if (!optional(update["name"], str)) return false;
   if (update["content"] !== undefined && update["content"] !== null && !(Array.isArray(update["content"]) && update["content"].every(wellFormedToolContent))) return false;
   return true;
 }
@@ -237,9 +238,10 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
       return id("toolCallId") && wellFormedToolFields(update);
     case "plan":
       return Array.isArray(update["entries"]) && update["entries"].every(one =>
-        isRecord(one) && str(one["content"]) && str(one["priority"]) && PLAN_PRIORITIES.has(one["priority"]) && str(one["status"]) && PLAN_STATUSES.has(one["status"]));
+        isRecord(one) && meta(one) && str(one["content"]) && str(one["priority"]) && PLAN_PRIORITIES.has(one["priority"]) && str(one["status"]) && PLAN_STATUSES.has(one["status"]));
     case "available_commands_update":
-      return Array.isArray(update["availableCommands"]) && update["availableCommands"].every(one => isRecord(one) && str(one["name"]));
+      return Array.isArray(update["availableCommands"]) && update["availableCommands"].every(one =>
+        isRecord(one) && meta(one) && str(one["name"]) && optional(one["description"], str));
     default:
       return true;
   }
@@ -366,6 +368,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     const update = params["update"];
     const kind = update["sessionUpdate"];
     if (typeof kind !== "string" || kind === "" || kind.length > 64) return fail("protocol", "a session update without a kind");
+    if (!meta(update) || !meta(params)) return fail("protocol", "a session update whose _meta isn't an object");
     if (!wellFormedUpdate(kind, update)) return fail("protocol", `a malformed ${kind} update`);
     if (kind === "agent_message_chunk") {
       const content = update["content"];
