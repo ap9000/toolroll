@@ -601,8 +601,10 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     const shown = open.get(call);
     const before = held.get(call);
     const stepKind = typeof update["kind"] === "string" ? ACP_KINDS[update["kind"]] ?? "tool" : shown?.kind ?? before?.kind ?? "tool";
+    // Output is read (and so redacted, in order) whatever the call, but kept only for a call shown or held — bounded
+    // by them — so an untracked or overflowing call leaves nothing behind.
     const output = stepKind === "command" ? acpOutput(update) : null;
-    if (output !== null) outputs.set(call, output);
+    if (output !== null && (shown !== undefined || before !== undefined || kind === "tool_call")) outputs.set(call, output);
     const done = (step: { id: string }): LiveRecord => {
       const out = outputs.get(call) ?? [];
       outputs.delete(call);
@@ -613,15 +615,17 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       open.delete(call);
       return [...records, done(shown)];
     }
-    if (before === undefined && kind === "tool_call_update") return records;
+    if (before === undefined && kind === "tool_call_update") { outputs.delete(call); return records; }
     const target = acpTarget(stepKind, update, before?.target ?? null);
     if (target === null && status !== "in_progress" && !ended) {
       if (before !== undefined || held.size < ACP_HELD_CAP) held.set(call, { kind: stepKind, target });
-      else records.push(...openStep(at, null, stepKind, null));
+      else { outputs.delete(call); records.push(...openStep(at, null, stepKind, null)); }
       return records;
     }
     held.delete(call);
     const opened = openStep(at, call, stepKind, target);
+    // A step shown "once" (past the open-step cap) is never closed by id: nothing of it is kept.
+    if (!open.has(call)) outputs.delete(call);
     if (!ended) return [...records, ...opened];
     // Shown and ended at once: a step and its result.
     const step = open.get(call);

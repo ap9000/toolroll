@@ -324,6 +324,23 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).not.toContain(body);
   });
 
+  test("command output is kept only for calls the recorder is following: thousands of stray calls leave nothing behind", () => {
+    const r = recorder(true);
+    const out = (id: string) => [{ type: "content", content: { type: "text", text: `out ${id}` } }];
+    for (let i = 0; i < 2_000; i += 1) {
+      r.observe(acp({ sessionUpdate: "tool_call", toolCallId: `c${i}`, title: "bash", kind: "execute", status: "pending" }));
+      r.observe(acp({ sessionUpdate: "tool_call_update", toolCallId: `x${i}`, status: "completed", content: out(`x${i}`) }));
+    }
+    r.end();
+    // (The retained map is bounded by the shown and held calls; the source says how.) A followed call's output is kept and shown.
+    const fresh = recorder(true);
+    const records = [...all(fresh, [
+      acp({ sessionUpdate: "tool_call", toolCallId: "z", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "ls" }, content: out("z") }),
+      acp({ sessionUpdate: "tool_call_update", toolCallId: "z", status: "completed" }),
+    ]), ...fresh.end()];
+    expect(records.find(one => one.k === "done")).toMatchObject({ out: ["out z"] });
+  });
+
   test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
     const r = recorder(true);
     const records = [...all(r, [acp({ sessionUpdate: "permission", toolCallId: "p", title: "Read /Users/someone/.ssh/id_rsa", kind: "read", granted: true })]), ...r.end()];
