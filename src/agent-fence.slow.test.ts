@@ -6,7 +6,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
@@ -224,6 +224,13 @@ describe("the agent fence", () => {
     const wrapped = macosFenceAvailable() ? macosFenced("/bin/sh", ["-c", commit], fence, grants) : linuxFenced("/bin/sh", ["-c", commit], fence, grants);
     const committed = spawnSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" });
     expect(committed.status, committed.stderr).toBe(0);
+  });
+
+  test("a protected git file with another name on disk (a hard link made before) refuses the launch", () => {
+    const { main } = linkedCheckout();
+    const binding = trustedWorktreeBinding(main, worktree);
+    linkSync(join(main, ".git", "config"), join(dir, "config-alias"));
+    expect(() => taskBoundary({ worktree, provider: "claude", home, binding })).toThrow(/another name on disk/);
   });
 
   test.skipIf(!macosFenceAvailable() && !linuxFenceAvailable())("where a repository turns per-worktree config on, the checkout's config.worktree is made and held read-only", () => {

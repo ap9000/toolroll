@@ -273,7 +273,24 @@ export function taskBoundary(options: { worktree: string; provider: string; home
     readOnly.add(join(main, ".git", "hooks"));
     if (existsSync(join(main, ".git", "config.worktree"))) readOnly.add(join(main, ".git", "config.worktree"));
   }
+  // A file held read-only by path is only held if no other name reaches it: the sandbox already refuses a new hard link
+  // to a read-only file, so one made before must not exist — every protected file (and every hook that would run) has
+  // exactly one link, or nothing launches.
+  const singleLinked = (path: string): void => {
+    let stat;
+    try { stat = lstatSync(path); } catch { return; }
+    if (stat.isFile() && stat.nlink !== 1) throw new CheckoutBindingError(`${path} has another name on disk, so it can't be held read-only; the build didn't start.`);
+  };
+  if (main !== null) {
+    singleLinked(join(main, ".git", "config"));
+    singleLinked(join(main, ".git", "config.worktree"));
+    let hooks: string[] = [];
+    try { hooks = readdirSync(join(main, ".git", "hooks")); } catch { hooks = []; }
+    for (const hook of hooks) if (!hook.endsWith(".sample")) singleLinked(join(main, ".git", "hooks", hook));
+  }
   if (gitdir !== null) {
+    for (const name of ["commondir", "gitdir", "config.worktree"]) singleLinked(join(gitdir, name));
+    singleLinked(join(worktree, ".git"));
     readOnly.add(join(worktree, ".git"));
     // A linked checkout's metadata always has both (trustedWorktreeBinding read them): held read-only, never skipped.
     for (const name of ["commondir", "gitdir"]) readOnly.add(join(gitdir, name));
