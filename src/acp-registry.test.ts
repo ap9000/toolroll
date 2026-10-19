@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProfile } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
+import { launchFromJson } from "./acp-attest.js";
 import { taskBoundary } from "./agent-fence.js";
 import { attestProvider } from "./attest.js";
 import { readAuthMode, readAuthModeStrict } from "./keys.js";
@@ -83,6 +84,32 @@ describe("an ACP agent's sign-in is fenced from every other build", () => {
     expect(shell("opencode")).not.toContain(at(".local/share/opencode"));
     expect(shell("opencode")).not.toContain(at(".config/opencode"));
     expect(shell("opencode")).toEqual(expect.arrayContaining([at(".cursor"), at(".claude")]));
+  });
+});
+
+describe("an ACP agent's stored launch", () => {
+  const sha = "a".repeat(64);
+  const bound = (role: string, path: string) => ({ role, path, sha256: sha, dev: 1, ino: 2, ctimeMs: 3, size: 4 });
+  test("executes only a bound file: the launcher, or the bound interpreter with the launcher as its script", () => {
+    const native = { file: "/opt/agent", prefix: [], bindings: [bound("launcher", "/opt/agent")] };
+    expect(launchFromJson(JSON.stringify(native))).toEqual(native);
+    const script = { file: "/usr/local/bin/node", prefix: ["/opt/agent.js"], bindings: [bound("launcher", "/opt/agent.js"), bound("interpreter", "/usr/local/bin/node")] };
+    expect(launchFromJson(JSON.stringify(script))).toEqual(script);
+    for (const bad of [
+      { ...native, file: "/bin/sh" },
+      { ...native, prefix: ["-c", "evil"] },
+      { ...script, file: "/bin/sh" },
+      { ...script, prefix: ["/tmp/other.js"] },
+      { ...script, bindings: [bound("launcher", "/opt/agent.js")] },
+      { ...native, bindings: [bound("interpreter", "/opt/agent")] },
+      { ...native, bindings: [{ ...bound("launcher", "/opt/agent"), sha256: "nope" }] },
+    ]) expect(launchFromJson(JSON.stringify(bad))).toBeNull();
+  });
+
+  test("an ACP launch sheds every known key and whatever makes an interpreter load other code", () => {
+    for (const id of ACP_PROVIDER_IDS) {
+      expect(adapterFor(id).extraOmitEnv).toEqual(expect.arrayContaining(["NODE_OPTIONS", "PYTHONPATH", "DYLD_INSERT_LIBRARIES", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"]));
+    }
   });
 });
 

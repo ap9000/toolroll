@@ -95,6 +95,18 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     expect(row.providerVersion).toBe("1.0.0");
   });
 
+  test("NODE_OPTIONS can't make the pinned interpreter run other code", async () => {
+    check();
+    const marker = join(dir, "injected");
+    writeFileSync(join(dir, "inject.cjs"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");`);
+    const result = await invokeAgent(store, runId, SPEC, ASK, {
+      keyHome: home, idleTimeoutMs: 20_000, timeoutMs: 60_000,
+      env: { FAKE_ACP: "ok", NODE_OPTIONS: `--require ${join(dir, "inject.cjs")}` },
+    });
+    expect(result.kind).toBe("ran");
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("an unchecked agent never starts", async () => {
     const result = await run("ok");
     expect(result).toMatchObject({ kind: "refused", reason: "provider-unattested", diagnostic: expect.stringContaining("toolroll agents check opencode") });

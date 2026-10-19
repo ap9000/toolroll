@@ -8,12 +8,22 @@
  * keeps the file's stat tuple and sha256. At spawn, after all asynchronous setup, every binding is checked again: a
  * changed stat is re-hashed, and the spawn refuses unless every hash still matches.
  *
- * What it proves, exactly: the bytes of those files are the bytes that passed the check. Not an exclusive lock on the
- * paths, and not the agent's other files (a bundle's chunks, its plugins): those are its configuration surface.
+ * What it proves, exactly: the bytes of those files are the bytes that passed the check, as of the re-check
+ * immediately before spawn. Not an exclusive lock on the paths: a writer racing the narrow window between that re-check
+ * and exec is not excluded (Node has no exec-by-descriptor), the same residual the version attestation states. Nor the
+ * agent's other files (a bundle's chunks, its plugins): those are its configuration surface. The environment
+ * variables that make an interpreter load other code are shed at every ACP launch (INTERPRETER_INJECTION_ENV).
  */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
+
+/** What makes an interpreter load code beside the script it was given: never passed to an ACP launch. */
+export const INTERPRETER_INJECTION_ENV: readonly string[] = [
+  "NODE_OPTIONS", "NODE_PATH", "NODE_REPL_EXTERNAL_MODULE", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONINSPECT",
+  "RUBYOPT", "RUBYLIB", "PERL5OPT", "PERL5LIB", "PERLLIB", "BUN_OPTIONS", "DENO_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+];
 
 /** Bumped whenever the conformance probe changes what it proves: every attestation made under another version is void. */
 export const ACP_CONFORMANCE_VERSION = 1;
@@ -215,5 +225,15 @@ export function launchFromJson(json: string): AcpLaunch | null {
     bindings.push({ role: b["role"] as FileBinding["role"], path: b["path"], sha256: b["sha256"], dev: b["dev"] as number, ino: b["ino"] as number, ctimeMs: b["ctimeMs"] as number, size: b["size"] as number });
   }
   if (bindings[0]?.role !== "launcher") return null;
-  return { file: value["file"], prefix: value["prefix"] as string[], bindings };
+  // What is executed is a bound file — the launcher itself, or the bound interpreter with the launcher as its script
+  // — and nothing a stored row could point elsewhere.
+  const launcher = bindings[0].path;
+  const prefix = value["prefix"] as string[];
+  if (value["file"] === launcher) {
+    if (prefix.length !== 0) return null;
+  } else {
+    const interpreter = bindings.find(one => one.role === "interpreter");
+    if (interpreter === undefined || interpreter.path !== value["file"] || prefix[prefix.length - 1] !== launcher) return null;
+  }
+  return { file: value["file"], prefix, bindings };
 }

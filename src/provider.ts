@@ -19,6 +19,7 @@
  * shell the model itself launches (Codex provider review, Q5).
  */
 
+import { INTERPRETER_INJECTION_ENV } from "./acp-attest.js";
 import { claudeFenceSettings, codexFenceArgv, type FenceGrants } from "./agent-fence.js";
 import { claudeSteerHooks } from "./steer-mailbox.js";
 import { type ExecResult, type RunOptions } from "./exec.js";
@@ -1030,7 +1031,8 @@ function acpAdapter(provider: AcpProviderId): Adapter {
     argv: () => [...ACP_AGENTS[provider].argv],
     parse: acpEnvelope,
     defaultRunner: runAcpSession,
-    extraOmitEnv: foreignCredentialEnv(provider),
+    // Every key Toolroll knows, and whatever would make the pinned interpreter load code beside the checked script.
+    extraOmitEnv: [...foreignCredentialEnv(provider), ...INTERPRETER_INJECTION_ENV],
     clampTimeout: (_phase, requested) => requested,
   };
 }
