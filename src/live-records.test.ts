@@ -260,7 +260,7 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(quiet)).not.toContain("notes.txt");
   });
 
-  test("words arrive in chunks and are shown as one message; a path outside the checkout is never named", () => {
+  test("words arrive in chunks and are shown whole — a line is never split, even by a step; a path outside the checkout is never named", () => {
     const r = recorder(true, "/pool/wt");
     const records = [
       ...all(r, [
@@ -273,7 +273,8 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
       ]),
       ...r.end(),
     ];
-    expect(records.filter(one => one.k === "say").map(one => (one as { t: string[] }).t)).toEqual([["Reading the file."], ["Done."]]);
+    // An unfinished line waits for its end, whatever arrives between: judged whole, as the agent wrote it.
+    expect(records.filter(one => one.k === "say").map(one => (one as { t: string[] }).t)).toEqual([["Reading the file.Done."]]);
     expect(records.filter(one => one.k === "step").map(one => (one as { target?: string }).target)).toEqual(["src/a.ts", OUTSIDE_PROJECT]);
     expect(onDisk(records)).not.toContain(".ssh");
   });
@@ -294,11 +295,9 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     const text = onDisk(records);
     expect(text).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
     expect(text).not.toContain("c2VjcmV0IGJvZHkgb2YgdGhlIGtleSBpcyBoZXJl");
-    // The output a command showed while running was read in order — inside the key block the message opened, so
-    // nothing of it is shown — and its result still closes the step.
-    const done = records.find(one => one.k === "done");
-    expect(done).toMatchObject({ ok: true });
-    expect(done).not.toHaveProperty("out");
+    // The command's output is judged on its own (a snapshot, from a fresh key state): key material in it is hidden by
+    // its shape; and its result still closes the step.
+    expect(records.find(one => one.k === "done")).toMatchObject({ ok: true });
   });
 
   test("output a command showed while running is kept for its result when the completion carries none", () => {
@@ -364,7 +363,7 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).not.toContain("sensitive-test-value");
   });
 
-  test("a key before a tool call and its value after are judged as the one line they are", () => {
+  test("a key before a tool call and its value after are judged as the one line they are (the line waits for its end)", () => {
     const r = recorder(true);
     const records = [...all(r, [
       acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Login with password=" } }),
@@ -375,14 +374,22 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).toContain("next");
   });
 
-  test("past the hard cap, an END the line already ended never closes a block opened after it", () => {
+  test("a key block opened in the unshown rest of a line past the hard cap still hides what follows", () => {
     const r = recorder(true);
     const records = [...all(r, [
-      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(262_145)}-----END PRIVATE KEY-----` } }),
-      acp({ sessionUpdate: "tool_call", toolCallId: "k1", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "cat k" }, content: [{ type: "content", content: { type: "text", text: "-----BEGIN PRIVATE KEY-----" } }] }),
-      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\nplain words inside the block\n" } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(262_145)}` } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "-----BEGIN PRIVATE KEY-----\nplain words inside the block\n" } }),
     ]), ...r.end()];
     expect(onDisk(records)).not.toContain("plain words inside the block");
+  });
+
+  test("a step's target is hidden while the message's unfinished line has opened a key block", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "-----BEGIN PRIVATE KEY-----" } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "t1", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "echo MIIEsecretcommandtext" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("MIIEsecretcommandtext");
   });
 
   test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
