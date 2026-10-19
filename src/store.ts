@@ -1843,7 +1843,7 @@ export type Run = {
    * How this attempt authenticated (v30) — 'subscription' or 'api-key' —
    * stamped by the gateway. Decides which exhaustion class a match yields.
    */
-  authMode?: "subscription" | "api-key" | null;
+  authMode?: "subscription" | "api-key" | "agent-login" | null;
   /**
    * The gateway's honest classification of how this attempt ENDED (v30),
    * computed where the structural terminal still exists (exhaustion.ts).
@@ -3805,7 +3805,7 @@ CREATE TABLE IF NOT EXISTS quota (
   -- key. auth_mode + a stable NON-SECRET
   -- credential fingerprint join the key. Defaults keep every pre-v30 row
   -- identical (mode 'subscription', empty fp) since that is what they were.
-  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription','api-key')),
+  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription','api-key','agent-login')),
   credential_fp TEXT NOT NULL DEFAULT '',
   state       TEXT NOT NULL CHECK (state IN ('exhausted','half-open')),
   reason      TEXT NOT NULL,
@@ -5971,6 +5971,7 @@ function widenForAcp(db: Database): void {
   };
   for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) widen(table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP);
   widen("provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
+  widen("quota", "CHECK (auth_mode IN ('subscription','api-key'))", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))");
 }
 
 /** A file from before the light tier keeps `tier IN ('strong')` in phase_tier_config's CHECK: rebuild the table with
@@ -19380,7 +19381,7 @@ export class Store {
     handoff: string | null;
     costUsd: number | null;
     provider: string | null;
-    authMode: "subscription" | "api-key" | null;
+    authMode: "subscription" | "api-key" | "agent-login" | null;
     ranMinutes: number | null;
     prNumber: number | null;
     prUrl: string | null;
@@ -19433,7 +19434,7 @@ export class Store {
         costUsd: row["cost_usd"] === null ? null : Number(row["cost_usd"]),
         provider: row["provider"] === null || row["provider"] === undefined ? null : String(row["provider"]),
         authMode:
-          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key"
+          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" || row["auth_mode"] === "agent-login"
             ? row["auth_mode"]
             : null,
         ranMinutes:
@@ -19479,7 +19480,7 @@ export class Store {
     startedAt: string;
     ranMinutes: number | null;
     costUsd: number | null;
-    authMode: "subscription" | "api-key" | null;
+    authMode: "subscription" | "api-key" | "agent-login" | null;
     prNumber: number | null;
     prUrl: string | null;
   }[] {
@@ -19518,7 +19519,7 @@ export class Store {
             : Math.max(1, Math.round((new Date(String(row["finished_at"])).getTime() - new Date(String(row["started_at"])).getTime()) / 60_000)),
         costUsd: row["cost_usd"] === null ? null : Number(row["cost_usd"]),
         authMode:
-          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key"
+          row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" || row["auth_mode"] === "agent-login"
             ? row["auth_mode"]
             : null,
         prNumber: row["pr_number"] === null || row["pr_number"] === undefined ? null : Number(row["pr_number"]),
@@ -20783,7 +20784,7 @@ export class Store {
 
   /** Record that a credential ran dry — from a structured signal or an operator, never prose. */
   stampQuota(
-    quota: { runner: string; provider: string; scope?: string; reason: string; resetAt?: Date; authMode?: "subscription" | "api-key"; credentialFp?: string },
+    quota: { runner: string; provider: string; scope?: string; reason: string; resetAt?: Date; authMode?: "subscription" | "api-key" | "agent-login"; credentialFp?: string },
     now: Date,
   ): void {
     this.db
@@ -20815,7 +20816,7 @@ export class Store {
     provider: string,
     scope: string,
     now: Date,
-    authMode: "subscription" | "api-key" = "subscription",
+    authMode: "subscription" | "api-key" | "agent-login" = "subscription",
     credentialFp = "",
   ): { state: "exhausted" | "half-open"; reason: string; resetAt: string | null } | null {
     const stamp = now.toISOString();
@@ -20845,7 +20846,7 @@ export class Store {
     provider: string,
     scope: string,
     now: Date,
-    authMode: "subscription" | "api-key" = "subscription",
+    authMode: "subscription" | "api-key" | "agent-login" = "subscription",
     credentialFp = "",
   ): { state: "exhausted" | "half-open"; reason: string; resetAt: string | null } | null {
     const row = this.db
@@ -20868,7 +20869,7 @@ export class Store {
    * while the probe flies. The probe's success clears the row; the same
    * structured signal that stamped it re-stamps on failure.
    */
-  consumeHalfOpen(runner: string, provider: string, scope: string, now: Date, authMode: "subscription" | "api-key" = "subscription", credentialFp = ""): boolean {
+  consumeHalfOpen(runner: string, provider: string, scope: string, now: Date, authMode: "subscription" | "api-key" | "agent-login" = "subscription", credentialFp = ""): boolean {
     const { changes } = this.db
       .prepare(
         `UPDATE quota SET state = 'exhausted', reset_at = ?
@@ -20879,7 +20880,7 @@ export class Store {
   }
 
   /** A structured all-clear (or an operator's), by name. */
-  clearQuota(runner: string, provider: string, scope: string, authMode: "subscription" | "api-key" = "subscription", credentialFp = ""): boolean {
+  clearQuota(runner: string, provider: string, scope: string, authMode: "subscription" | "api-key" | "agent-login" = "subscription", credentialFp = ""): boolean {
     const { changes } = this.db
       .prepare("DELETE FROM quota WHERE runner = ? AND provider = ? AND scope = ? AND auth_mode = ? AND credential_fp = ?")
       .run(runner, provider, scope, authMode, credentialFp);
@@ -21903,7 +21904,7 @@ function readRun(row: Record<string, unknown>): Run {
           ? (String(row["phase"]) as RunPhase)
           : null,
     // An auth mode is exactly one of the two words — anything else reads as unknown.
-    authMode: row["auth_mode"] === "api-key" ? "api-key" : row["auth_mode"] === "subscription" ? "subscription" : null,
+    authMode: row["auth_mode"] === "api-key" ? "api-key" : row["auth_mode"] === "subscription" ? "subscription" : row["auth_mode"] === "agent-login" ? "agent-login" : null,
     terminalClass:
       row["terminal_class"] === null || row["terminal_class"] === undefined
         ? null

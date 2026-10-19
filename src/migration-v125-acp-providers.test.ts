@@ -20,6 +20,7 @@ const WIDENED: readonly (readonly [string, string, string])[] = [
   ["phase_tier_alternate", NEW_PROVIDERS, OLD_PROVIDERS],
   ["provider_readiness", NEW_PROVIDERS, OLD_PROVIDERS],
   ["provider_auth_pause", NEW_MODES, OLD_MODES],
+  ["quota", "CHECK (auth_mode IN ('subscription','api-key','agent-login'))", "CHECK (auth_mode IN ('subscription','api-key'))"],
 ];
 
 /** Put a table back to the shape it had before ACP agents: the same DDL with the narrower CHECK, every row kept. */

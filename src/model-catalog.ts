@@ -6,6 +6,7 @@
  * installed CLIs are current. Everything lands in orders.db so pickers,
  * spend pins and "new model" notices read one saved snapshot.
  */
+import { isAcpProvider } from "./acp-agents.js";
 import { execFile } from "node:child_process";
 import { accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -215,6 +216,8 @@ export function modelOptions(store: Store, provider: ProviderId, now: Date, home
     });
   }
   if (provider === "gemini") return seenModels(store, "gemini").slice(0, 20).map(option);
+  // An ACP agent offers only the models its check recorded, on the runner that checked it — read there, never guessed.
+  if (isAcpProvider(provider)) return [];
   return seenModels(store, "openrouter").filter(model => model.tools).sort((a, b) => a.name.localeCompare(b.name)).map(option);
 }
 

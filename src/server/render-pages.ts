@@ -1004,7 +1004,7 @@ export function portfolioOverview(data: {
   ledger: {
     runId: number; taskId: string; title: string; repo: string | null; outcome: string; role: string;
     provider: string | null; model: string | null; startedAt: string; ranMinutes: number | null;
-    costUsd: number | null; authMode: "subscription" | "api-key" | null; prNumber: number | null; prUrl: string | null;
+    costUsd: number | null; authMode: "subscription" | "api-key" | "agent-login" | null; prNumber: number | null; prUrl: string | null;
   }[];
   /** "" when there is no session token: then no form renders. postForm adds the field itself. */
   csrf: string;

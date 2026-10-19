@@ -435,7 +435,9 @@ function profileWantsSkip(profile: ExecutionProfile): boolean {
   return (
     (profile.provider === "claude" && profile.permissionArgv === "bypassPermissions") ||
     ((profile.provider === "codex" || profile.provider === "openrouter") && profile.sandboxMode === "danger-full-access") ||
-    (profile.provider === "gemini" && profile.approvalArgv === "yolo")
+    (profile.provider === "gemini" && profile.approvalArgv === "yolo") ||
+    // An ACP agent's only posture is full access inside the fence.
+    isAcpProfile(profile)
   );
 }
 
