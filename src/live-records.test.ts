@@ -5,6 +5,7 @@
  * the run's own checkout; steps closed only by their own result, an unknown
  * end never shown as success; and a reader that trusts nothing it reads back.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
   createLiveRecorder, HIDDEN_KEY_BLOCK, HIDDEN_LINE, HIDDEN_TARGET, OUTSIDE_PROJECT, parseLiveRecord, parseLiveRecords,
@@ -237,5 +238,63 @@ describe("reading the file back", () => {
     expect(projectLiveText(parseLiveRecords(onDisk(records)))).toEqual([
       "the agent session started", "Looking at the form", "→ reading `src/form.ts`", "→ running `npm test`", "  ✗ failed", "→ organizing its plan",
     ]);
+  });
+});
+
+describe("an ACP agent's conversation (acp-client.ts hands each update over as {acp: update})", () => {
+  const opencode = JSON.parse(readFileSync(new URL("./fixtures/acp/opencode-1.18.18.json", import.meta.url), "utf8")) as { updates: Record<string, unknown>[] };
+  const acp = (update: Record<string, unknown>) => ({ acp: update });
+
+  test("OpenCode's real turn: the command it names only in a later update is shown once, with its output under the opt-in", () => {
+    const on = recorder(true, "<work>");
+    const records = [...all(on, opencode.updates.map(acp)), ...on.end()];
+    const steps = records.filter(one => one.k === "step");
+    expect(steps).toEqual([{ k: "step", at: T.toISOString(), id: "s1", kind: "command", target: "ls -la" }]);
+    const done = records.find(one => one.k === "done");
+    expect(done).toMatchObject({ k: "done", id: "s1", ok: true, out: expect.arrayContaining([expect.stringContaining("notes.txt")]) });
+    // Without the project's opt-in: the step shows, its command and output don't.
+    const off = recorder(false, "<work>");
+    const quiet = [...all(off, opencode.updates.map(acp)), ...off.end()];
+    expect(quiet.filter(one => one.k === "step")).toEqual([{ k: "step", at: T.toISOString(), id: "s1", kind: "command" }]);
+    expect(onDisk(quiet)).not.toContain("ls -la");
+    expect(onDisk(quiet)).not.toContain("notes.txt");
+  });
+
+  test("words arrive in chunks and are shown as one message; a path outside the checkout is never named", () => {
+    const r = recorder(true, "/pool/wt");
+    const records = [
+      ...all(r, [
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading " } }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "the file." } }),
+        acp({ sessionUpdate: "tool_call", toolCallId: "r1", title: "read", kind: "read", status: "pending", locations: [{ path: "/pool/wt/src/a.ts" }] }),
+        acp({ sessionUpdate: "tool_call_update", toolCallId: "r1", status: "completed" }),
+        acp({ sessionUpdate: "tool_call", toolCallId: "r2", title: "read", kind: "read", status: "completed", locations: [{ path: "/Users/someone/.ssh/id_rsa" }] }),
+        acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } }),
+      ]),
+      ...r.end(),
+    ];
+    expect(records.filter(one => one.k === "say").map(one => (one as { t: string[] }).t)).toEqual([["Reading the file."], ["Done."]]);
+    expect(records.filter(one => one.k === "step").map(one => (one as { target?: string }).target)).toEqual(["src/a.ts", OUTSIDE_PROJECT]);
+    expect(onDisk(records)).not.toContain(".ssh");
+  });
+
+  test("a call that never gets a target or starts is still shown when the run ends; permission answers are steps", () => {
+    const r = recorder(true);
+    const records = [
+      ...all(r, [
+        acp({ sessionUpdate: "tool_call", toolCallId: "h1", title: "think", kind: "think", status: "pending" }),
+        acp({ sessionUpdate: "permission", toolCallId: "x", title: "rm -rf build", kind: "execute", granted: true }),
+      ]),
+      ...r.end(),
+    ];
+    expect(records.filter(one => one.k === "step")).toEqual([
+      expect.objectContaining({ kind: "tool", target: "allowed once: rm -rf build", once: true }),
+      expect.objectContaining({ kind: "plan", once: true }),
+    ]);
+    // Without the opt-in, the answer shows and the command it was about doesn't.
+    const quiet = recorder(false);
+    const hidden = [...all(quiet, [acp({ sessionUpdate: "permission", toolCallId: "x", title: "rm -rf build", kind: "execute", granted: false })]), ...quiet.end()];
+    expect(hidden.filter(one => one.k === "step")).toEqual([expect.objectContaining({ kind: "tool", target: "refused", once: true })]);
+    expect(onDisk(hidden)).not.toContain("rm -rf");
   });
 });

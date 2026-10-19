@@ -534,10 +534,93 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     return null;
   };
 
+  /**
+   * ACP (acp-client.ts; the runner hands each session update over as `{acp: update}`). The record format is the one
+   * every dialect writes: a tool call is held — bounded — until it has a target, starts running or ends, and is then
+   * shown once (OpenCode names its command only in a later update); the words of a message, which arrive in chunks,
+   * are shown when the message ends (a tool call, or the end of the run).
+   */
+  const ACP_KINDS: Readonly<Record<string, LiveActivityKind>> = { read: "read", edit: "edit", delete: "edit", move: "edit", search: "search", execute: "command", fetch: "lookup", think: "plan" };
+  const ACP_HELD_CAP = 64;
+  const held = new Map<string, { kind: LiveActivityKind; target: string | null }>();
+  let acpWords = "";
+  const flushWords = (at: string): LiveRecord[] => {
+    const words = acpWords;
+    acpWords = "";
+    return words.trim() === "" ? [] : say(at, words);
+  };
+  const acpTarget = (kind: LiveActivityKind, update: Record<string, unknown>, before: string | null): string | null => {
+    if (kind === "command") {
+      const command = object(update["rawInput"])?.["command"];
+      return typeof command === "string" ? (options.commands ? liveCommand(command) : null) : before;
+    }
+    const first = Array.isArray(update["locations"]) ? object(update["locations"][0]) : null;
+    return first !== null && typeof first["path"] === "string" ? livePath(options.base, first["path"]) : before;
+  };
+  const acpOutput = (update: Record<string, unknown>): string[] => {
+    if (!options.commands || !Array.isArray(update["content"])) return [];
+    const text = update["content"].map(object).filter(one => one !== null && one["type"] === "content")
+      .map(one => object(one!["content"])).filter(block => block !== null && block["type"] === "text" && typeof block["text"] === "string")
+      .map(block => block!["text"] as string).join("\n");
+    return text === "" ? [] : liveOutput(text, keyState);
+  };
+  const acp = (update: Record<string, unknown>, at: string): LiveRecord[] => {
+    const kind = update["sessionUpdate"];
+    if (kind === "agent_message_chunk") {
+      const content = object(update["content"]);
+      if (content !== null && content["type"] === "text" && typeof content["text"] === "string" && acpWords.length < 64 * 1024) acpWords += content["text"];
+      return [];
+    }
+    if (kind === "permission") {
+      // A request's title is often the command itself: it is shown only where the project shows commands.
+      const title = options.commands && typeof update["title"] === "string" ? short(update["title"]) : null;
+      return [...flushWords(at), ...openStep(at, null, "tool", `${update["granted"] === true ? "allowed once" : "refused"}${title === null ? "" : `: ${title}`}`)];
+    }
+    if (kind !== "tool_call" && kind !== "tool_call_update") return [];
+    const call = providerId(update["toolCallId"]);
+    if (call === null) return [];
+    const status = update["status"];
+    const ended = status === "completed" || status === "failed";
+    const records: LiveRecord[] = kind === "tool_call" ? flushWords(at) : [];
+    const shown = open.get(call);
+    if (shown !== undefined) {
+      if (!ended) return records;
+      open.delete(call);
+      const out = shown.kind === "command" ? acpOutput(update) : [];
+      return [...records, { k: "done", at, id: shown.id, ok: status === "completed", ...(out.length > 0 ? { out } : {}) }];
+    }
+    const before = held.get(call);
+    if (before === undefined && kind === "tool_call_update") return records;
+    const stepKind = typeof update["kind"] === "string" ? ACP_KINDS[update["kind"]] ?? "tool" : before?.kind ?? "tool";
+    const target = acpTarget(stepKind, update, before?.target ?? null);
+    if (target === null && status !== "in_progress" && !ended) {
+      if (before !== undefined || held.size < ACP_HELD_CAP) held.set(call, { kind: stepKind, target });
+      else records.push(...openStep(at, null, stepKind, null));
+      return records;
+    }
+    held.delete(call);
+    if (!ended) return [...records, ...openStep(at, call, stepKind, target)];
+    // Shown and ended at once: a step and its result.
+    const opened = openStep(at, call, stepKind, target);
+    const step = open.get(call);
+    if (step === undefined) return [...records, ...opened];
+    open.delete(call);
+    const out = stepKind === "command" ? acpOutput(update) : [];
+    return [...records, ...opened, { k: "done", at, id: step.id, ok: status === "completed", ...(out.length > 0 ? { out } : {}) }];
+  };
+  const acpEnd = (at: string): LiveRecord[] => {
+    const records = flushWords(at);
+    for (const [, one] of held) records.push(...openStep(at, null, one.kind, one.target));
+    held.clear();
+    return records;
+  };
+
   return {
     observe(event) {
       try {
         const at = stamp();
+        const acpUpdate = object(event["acp"]);
+        if (acpUpdate !== null) return acp(acpUpdate, at);
         const type = event["type"];
         if (type === "system" || type === "assistant" || type === "user" || type === "result") return claude(event, at);
         if (typeof type === "string" && (type.startsWith("thread.") || type.startsWith("turn.") || type.startsWith("item."))) return codex(event, at);
@@ -548,7 +631,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     },
     end() {
       try {
-        return closeAll(stamp());
+        const at = stamp();
+        return [...acpEnd(at), ...closeAll(at)];
       } catch {
         return [];
       }
