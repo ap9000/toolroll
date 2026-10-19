@@ -364,6 +364,17 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(onDisk(records)).not.toContain("sensitive-test-value");
   });
 
+  test("a key before a tool call and its value after are judged as the one line they are", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Login with password=" } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "c10", title: "x", kind: "read", status: "pending" }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "correct-horse-battery-staple\nnext\n" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("correct-horse-battery-staple");
+    expect(onDisk(records)).toContain("next");
+  });
+
   test("past the hard cap, an END the line already ended never closes a block opened after it", () => {
     const r = recorder(true);
     const records = [...all(r, [

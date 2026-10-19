@@ -558,17 +558,33 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   const skipRead = (text: string): void => { redactLiveLines([text], keyState); };
   /** Before anything else is written, the message's complete lines are; a partial last line waits for its own end (a
    * `key=` and its value are never split by an update arriving between them), or for the end of the run. */
+  /** The unfinished last line a message boundary (a tool call) flushed: the next message's first line is read with it,
+   * so a `key=` before the boundary and its value after are judged as the one line they are. Bounded. */
+  let acpCarry = "";
+  /** Words to say, the first line hidden whole when, joined to the carried end of the line before, it reads as a secret. */
+  const sayAfterCarry = (at: string, given: string): LiveRecord[] => {
+    let words = given;
+    if (acpCarry !== "") {
+      const end = words.indexOf("\n");
+      const first = end < 0 ? words : words.slice(0, end);
+      if (first.trim() !== "" && liveSecretHit(acpCarry + first)) words = `${HIDDEN_LINE}${end < 0 ? "" : words.slice(end)}`;
+      if (first.trim() !== "" || end >= 0) acpCarry = "";
+    }
+    return words.trim() === "" ? [] : say(at, words);
+  };
   const flushLines = (at: string): LiveRecord[] => {
     const cut = acpWords.lastIndexOf("\n");
     if (cut < 0) return [];
     const whole = acpWords.slice(0, cut + 1);
     acpWords = acpWords.slice(cut + 1);
-    return whole.trim() === "" ? [] : say(at, whole);
+    return sayAfterCarry(at, whole);
   };
   const flushWords = (at: string): LiveRecord[] => {
     const words = acpWords;
     acpWords = "";
-    return words.trim() === "" ? [] : say(at, words);
+    const records = sayAfterCarry(at, words);
+    if (words !== "" && !words.endsWith("\n")) acpCarry = words.slice(words.lastIndexOf("\n") + 1).slice(-1024);
+    return records;
   };
   const acpTarget = (kind: LiveActivityKind, update: Record<string, unknown>, before: string | null): string | null => {
     if (kind === "command") {
@@ -608,7 +624,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       if (cut >= 0) {
         const whole = acpWords.slice(0, cut + 1);
         acpWords = acpWords.slice(cut + 1);
-        return whole.trim() === "" ? [] : say(at, whole);
+        return sayAfterCarry(at, whole);
       }
       if (acpWords.length <= ACP_LINE_HARD_CAP) return [];
       // One line with no end in sight: it is not shown — said once — and its rest is only read.
@@ -672,6 +688,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     held.clear();
     outputs.clear();
     acpSkipping = false;
+    acpCarry = "";
     return records;
   };
 
