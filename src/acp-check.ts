@@ -16,7 +16,7 @@
  * it is unexpired and its watch still holds its lease. Anything else fails the request, in words, and admits nothing.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchOf } from "./acp-attest.js";
@@ -221,8 +221,7 @@ function gradeOk(result: InvokeResult, worktree: string, toolDone: boolean): { v
   if (facts.exit?.how !== "eof") return { verdict: `the agent didn't leave on its own when its input closed (${facts.exit?.how ?? "unknown"})` };
   if (facts.exit.leftover) return { verdict: "the agent left processes running" };
   if (!toolDone) return { verdict: "no tool call was seen to complete" };
-  const done = join(worktree, "done.txt");
-  if (!existsSync(done) || readFileSync(done, "utf8").trim() !== "ok") return { verdict: "done.txt doesn't say ok" };
+  if (smallFile(join(worktree, "done.txt"))?.trim() !== "ok") return { verdict: "done.txt doesn't say ok" };
   return { verdict: null };
 }
 
@@ -235,4 +234,20 @@ function gradeStop(result: InvokeResult, witnessed: readonly number[]): string |
     try { process.kill(pid, 0); return `process ${pid}, alive at the cancel, is still running`; } catch { /* gone */ }
   }
   return null;
+}
+
+/** A file the agent wrote, read only if it is a plain file (no link followed, no FIFO or device) and tiny. */
+function smallFile(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 64) return null;
+    const buffer = Buffer.alloc(64);
+    return buffer.subarray(0, readSync(fd, buffer, 0, 64, 0)).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
 }

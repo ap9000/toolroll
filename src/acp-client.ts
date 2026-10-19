@@ -29,6 +29,9 @@
  * no agent can emit — which `acpParse` reads into the gateway's envelope.
  */
 
+/** How many offered models a conversation keeps (each id ≤ 200 characters). */
+export const ACP_OFFERED_CAP = 2000;
+
 /** The largest line (UTF-8 bytes) the plane reads from an agent; a longer one is a protocol failure. */
 export const ACP_LINE_CAP = 1024 * 1024;
 const MESSAGE_CAP = 64 * 1024;
@@ -446,8 +449,11 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       const offer = modelOffer(result);
       if (offer === null) return fail("model-unavailable", "the agent offers no way to choose a model");
       mechanism = offer.mechanism;
-      offered = offer.offered.slice(0, 500);
-      keep({ type: "acp.offered", models: offered.filter(one => one.length <= 200).slice(0, 200) });
+      // An agent can offer many hundreds (OpenCode lists every model of every provider it knows): kept bounded, and
+      // the model asked for is always among them when offered.
+      offered = offer.offered.filter(one => one.length <= 200).slice(0, ACP_OFFERED_CAP);
+      if (offer.offered.includes(options.model) && !offered.includes(options.model)) offered.push(options.model);
+      keep({ type: "acp.offered", models: offered });
       if (offer.mechanism !== "config-option") return fail("model-unavailable", "the agent can't confirm which model it uses (it offers only session/set_model)");
       if (!offer.offered.includes(options.model)) return fail("model-unavailable", `the agent doesn't offer ${options.model}`);
       phase = "model";
@@ -668,7 +674,7 @@ export function acpParse(stdout: string): AcpEnvelope {
         rpcError = { code: typeof error["code"] === "number" ? error["code"] : null, message: typeof error["message"] === "string" ? error["message"] : "" };
       }
     } else if (type === "acp.offered" && Array.isArray(event["models"])) {
-      offered = event["models"].filter((one): one is string => typeof one === "string").slice(0, 200);
+      offered = event["models"].filter((one): one is string => typeof one === "string").slice(0, ACP_OFFERED_CAP + 1);
     } else if (type === "acp.exit" && typeof event["how"] === "string" && ["eof", "term", "kill", "self", "error"].includes(event["how"])) {
       exit = { how: event["how"] as NonNullable<AcpEnvelope["exit"]>["how"], leftover: event["leftover"] === true };
     } else if (type === "acp.failure" && failure === null) {

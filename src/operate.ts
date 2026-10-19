@@ -1,5 +1,6 @@
-import { ACP_AGENTS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
+import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
+import { runAcpChecks } from "./acp-check.js";
 import { verifyLaunch } from "./acp-attest.js";
 import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
@@ -1496,6 +1497,8 @@ async function dispatch(
       });
     case "keys":
       return keysCommand(positional, flags, context);
+    case "agents":
+      return agentsCommand(positional, flags, context);
     case "setup":
       return setupCommand(positional, flags, context);
     case "verify":
@@ -2693,6 +2696,17 @@ async function tickCommand(
     root: pool,
     ...(context.gitRunner === undefined ? {} : { runner: context.gitRunner }),
   });
+
+  // ACP agent checks (acp-check.ts) run in a watch's own pass, under its lease, before anything is dispatched — one
+  // at a time per runner. Only a watch's full pass runs them (never a build lane, never a bare tick).
+  const watchOwner = text(flags, "incarnation");
+  if (watchOwner !== undefined && !buildsOnly) {
+    await runAcpChecks({
+      store, runner, token, pool: worktrees, clock,
+      watch: { repo: canonicalProject(repo) ?? resolve(repo), owner: watchOwner },
+      progress: line => { if (!json) write(line); },
+    });
+  }
 
   // Where a first attempt's branch grows from, resolved once per pass. A
   // detached HEAD refuses the pass rather than guessing: an unattended commit
@@ -5046,6 +5060,69 @@ async function providersCommand(
  * own — these are 0600 files under the operator's home, and whoever can
  * write them already owns the machine's spend.
  */
+/**
+ * `toolroll agents …` — the coding agents Toolroll runs over ACP (acp-agents.ts): what is installed here, which are
+ * checked on which runner, and how each checked model is billed. An agent runs only once its conformance check passed
+ * on that runner (acp-check.ts); asking for one, or declaring a model billed by the agent's own plan, takes a password.
+ *
+ *   agents                                        each agent: installed, checked, billing
+ *   agents check <agent> --model <m> [--runner r] ask the runner's watch to check it (password)
+ *   agents revoke <agent> [--runner r]            the agent stops running there
+ *   agents billing <agent> <model> plan|metered [--runner r]
+ */
+async function agentsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const [action = "list", provider, ...rest] = positional;
+  const runners = store.listRunners().filter(one => one.retiredAt === null).map(one => one.name);
+  const runnerGiven = text(flags, "runner");
+  const runner = runnerGiven ?? (runners.length === 1 ? runners[0]! : undefined);
+  if (action === "list") {
+    const rows = ACP_PROVIDER_IDS.map(id => {
+      const seen = inspectAcpAgent(id);
+      const checked = runners.flatMap(name => { const one = store.acpAttestationFor(id, name); return one === null ? [] : [{ runner: name, agent: one.agent, models: one.models, at: one.recordedAt }]; });
+      const latest = store.acpChecksFor(id, 1)[0] ?? null;
+      return { provider: id, name: ACP_AGENTS[id].name, installed: seen.found ? seen.realpath : null, checked, latestCheck: latest === null ? null : { id: latest.id, state: latest.state, model: latest.model, result: latest.result } };
+    });
+    if (json) { write(envelopeJson({ ok: true, command: "agents", agents: rows })); return EXIT.ok; }
+    for (const row of rows) {
+      write(`  ${row.name.padEnd(10)} ${row.installed === null ? "not installed" : row.installed}`);
+      for (const one of row.checked) write(`             checked on ${one.runner}: ${one.agent.name} ${one.agent.version}, ${one.models.length} models (${one.at.slice(0, 10)})`);
+      if (row.latestCheck !== null && row.latestCheck.state !== "passed") write(`             check #${row.latestCheck.id} (${row.latestCheck.model}): ${row.latestCheck.state}${row.latestCheck.result === null ? "" : ` — ${row.latestCheck.result}`}`);
+    }
+    write("  → `agents check <agent> --model <id>` asks this runner's watch to check one; it runs on the watch's next pass");
+    return EXIT.ok;
+  }
+  if (!["check", "revoke", "billing"].includes(action)) return fail(write, json, "agents", "usage", "`toolroll agents [check|revoke|billing]`", EXIT.usage);
+  if (provider === undefined || !isAcpProvider(provider)) return fail(write, json, `agents ${action}`, "usage", `which agent? ${ACP_PROVIDER_IDS.join(", ")}`, EXIT.usage);
+  if (runner === undefined || !runners.includes(runner)) return fail(write, json, `agents ${action}`, "usage", `which runner? --runner ${runners.join(" | ") || "<name>"}`, EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, `agents ${action}`, "usage", "this takes your name and password — `--as <you>` and the hidden prompt", EXIT.usage);
+  const verified = verifyApproverByPassword(store, acting.name, acting.token, store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)));
+  if (!verified.ok) return fail(write, json, `agents ${action}`, "unauthenticated", "that is not an approver, or the password does not match", EXIT.refused);
+  const name = ACP_AGENTS[provider].name;
+  const now = clock();
+  if (action === "revoke") {
+    const revoked = store.revokeAcpAttestation(provider, runner, verified.who.name, now);
+    return succeed(write, json, "agents revoke", { provider, runner, revoked }, () => [revoked ? `${name} no longer runs on ${runner}; check it again to bring it back.` : `${name} wasn't checked on ${runner}.`]);
+  }
+  if (action === "billing") {
+    const [model, kind] = rest;
+    if (model === undefined || !validModelId(model) || (kind !== "plan" && kind !== "metered")) return fail(write, json, "agents billing", "usage", "`agents billing <agent> <model> plan|metered`", EXIT.usage);
+    const revision = store.declareAcpBilling({ provider, runner, model, kind, by: verified.who.name }, now);
+    return succeed(write, json, "agents billing", { provider, runner, model, kind, revision }, () => [kind === "plan"
+      ? `${name} on ${model} (${runner}) is billed by ${name}'s own plan: its runs count as $0, unmeasured, and monthly budgets don't hold them. Runs already started keep the terms they started with.`
+      : `${name} on ${model} (${runner}) is metered: its cost is unknown, so capped work and hard budgets hold it.`]);
+  }
+  // check
+  const model = text(flags, "model");
+  if (model === undefined || !validModelId(model)) return fail(write, json, "agents check", "usage", "`agents check <agent> --model <id>` — a model the agent offers (its own list shows after the check)", EXIT.usage);
+  const id = store.requestAcpCheck({ provider, runner, model, by: verified.who.name }, now);
+  return succeed(write, json, "agents check", { provider, runner, model, request: id }, () => [
+    `Check #${id} asked for: ${name} on ${model}, on ${runner}. Its watch runs it on its next pass (two short runs, in the fence; the model's own spend).`,
+    "→ `toolroll agents` shows how it went.",
+  ]);
+}
+
 async function keysCommand(
   positional: readonly string[],
   flags: Map<string, string | true>,
