@@ -127,8 +127,9 @@ function modelOffer(result: Record<string, unknown>): { mechanism: AcpModelMecha
   if (Array.isArray(options)) {
     const model = options.find(one => isRecord(one) && one["id"] === "model" && one["type"] === "select");
     if (isRecord(model) && Array.isArray(model["options"])) {
-      // Choices, or groups of choices.
-      const choices = model["options"].flatMap(one => isRecord(one) && Array.isArray(one["options"]) ? one["options"] : [one]);
+      // Choices, or groups of choices — read as the same variant validation accepted: all choices, or all groups.
+      const options = model["options"];
+      const choices = options.every(configChoice) ? options : options.every(configGroup) ? options.flatMap(one => (one as Record<string, unknown>)["options"] as unknown[]) : [];
       const offered = choices.flatMap(one => isRecord(one) && typeof one["value"] === "string" ? [one["value"]] : []);
       return { mechanism: "config-option", offered, current: typeof model["currentValue"] === "string" ? model["currentValue"] : null };
     }
@@ -219,12 +220,14 @@ function wellFormedToolContent(item: unknown): boolean {
 }
 
 /** The fields a tool call or its update may carry: each, when present, of the type the protocol gives it. */
-function wellFormedToolFields(update: Record<string, unknown>): boolean {
+/** `initial`: a tool call's first report, whose fields are never null when present; an update's may be (unchanged). */
+function wellFormedToolFields(update: Record<string, unknown>, initial = false): boolean {
   if (!meta(update)) return false;
-  if (update["title"] !== undefined && !str(update["title"])) return false;
-  if (update["kind"] !== undefined && !(str(update["kind"]) && TOOL_KINDS.has(update["kind"]))) return false;
-  if (update["status"] !== undefined && !(str(update["status"]) && TOOL_STATUSES.has(update["status"]))) return false;
-  if (update["locations"] !== undefined && !(Array.isArray(update["locations"]) && update["locations"].every(one =>
+  const field = (key: string, is: (one: unknown) => boolean) => initial ? absentOr(update[key], is) : optional(update[key], is);
+  if (!field("title", str)) return false;
+  if (!field("kind", one => str(one) && TOOL_KINDS.has(one))) return false;
+  if (!field("status", one => str(one) && TOOL_STATUSES.has(one))) return false;
+  if (!field("locations", list => Array.isArray(list) && list.every(one =>
     isRecord(one) && meta(one) && str(one["path"]) && optional(one["line"], uint32)))) return false;
   if (!optional(update["name"], str)) return false;
   if (update["content"] !== undefined && update["content"] !== null && !(Array.isArray(update["content"]) && update["content"].every(wellFormedToolContent))) return false;
@@ -246,19 +249,23 @@ const sessionModes = (value: unknown): boolean => isRecord(value) && meta(value)
   && listOf(mode => isRecord(mode) && meta(mode) && str(mode["id"]) && str(mode["name"]) && optional(mode["description"], str))(value["availableModes"]);
 const sessionModels = (value: unknown): boolean => isRecord(value) && meta(value) && str(value["currentModelId"])
   && listOf(model => isRecord(model) && meta(model) && str(model["modelId"]) && str(model["name"]) && optional(model["description"], str))(value["availableModels"]);
-const capabilities = (value: unknown, flags: readonly string[]): boolean => optional(value, one => isRecord(one) && meta(one) && flags.every(flag => optional(one[flag], bool)));
+/** A field that may be left out but, when present, is never null. */
+const absentOr = (value: unknown, is: (one: unknown) => boolean): boolean => value === undefined || is(value);
+const capabilities = (value: unknown, flags: readonly string[]): boolean => absentOr(value, one => isRecord(one) && meta(one) && flags.every(flag => absentOr(one[flag], bool)));
+/** The session capabilities the schema names (each an optional, nullable object); others are left uninterpreted. */
+const SESSION_CAPABILITIES = ["list", "delete", "additionalDirectories", "resume", "close", "fork", "load"];
 
 /** initialize's answer, every field the schema gives it. */
 function wellFormedInitialize(result: Record<string, unknown>): boolean {
   const info = result["agentInfo"];
   if (!meta(result) || !isRecord(info) || !meta(info) || !str(info["name"]) || !str(info["version"]) || !optional(info["title"], str)) return false;
-  if (!optional(result["authMethods"], listOf(method => isRecord(method) && meta(method) && str(method["id"]) && str(method["name"]) && optional(method["description"], str)))) return false;
-  return optional(result["agentCapabilities"], caps => isRecord(caps) && meta(caps) && optional(caps["loadSession"], bool)
+  if (!absentOr(result["authMethods"], listOf(method => isRecord(method) && meta(method) && str(method["id"]) && str(method["name"]) && optional(method["description"], str)))) return false;
+  return absentOr(result["agentCapabilities"], caps => isRecord(caps) && meta(caps) && absentOr(caps["loadSession"], bool)
     && capabilities(caps["promptCapabilities"], ["image", "audio", "embeddedContext"])
     && capabilities(caps["mcpCapabilities"], ["http", "sse"])
-    && optional(caps["sessionCapabilities"], sessions => isRecord(sessions) && meta(sessions)
-      && Object.entries(sessions).every(([key, one]) => key === "_meta" || optional(one, entry => isRecord(entry) && meta(entry))))
-    && optional(caps["auth"], auth => isRecord(auth) && meta(auth)));
+    && absentOr(caps["sessionCapabilities"], sessions => isRecord(sessions) && meta(sessions)
+      && SESSION_CAPABILITIES.every(name => optional(sessions[name], entry => isRecord(entry) && meta(entry))))
+    && absentOr(caps["auth"], auth => isRecord(auth) && meta(auth) && optional(auth["logout"], logout => isRecord(logout) && meta(logout))));
 }
 
 /** session/new's answer: the id, and every field of the modes, models and config options it may carry. */
@@ -276,7 +283,7 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
       return wellFormedContent(update["content"]) && optional(update["messageId"], str);
     case "tool_call":
       // The first report of a call carries its content as a list when it carries any (null is for updates).
-      return id("toolCallId") && str(update["title"]) && update["content"] !== null && wellFormedToolFields(update);
+      return id("toolCallId") && str(update["title"]) && update["content"] !== null && wellFormedToolFields(update, true);
     case "tool_call_update":
       return id("toolCallId") && wellFormedToolFields(update);
     case "plan":
@@ -306,12 +313,34 @@ function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolea
   }
 }
 
-/** The update kinds the plane knows; an unknown one is neither trusted nor passed on. */
+/** The update kinds passed on to the live view: the ones the plane knows and never declined. Notices and compaction,
+ * which this client does not advertise, are validated when sent anyway, and go no further. */
 const KNOWN_UPDATES = new Set(["agent_message_chunk", "agent_thought_chunk", "user_message_chunk", "tool_call", "tool_call_update", "plan",
-  "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update", "notice",
-  "compaction_update", "compaction_summary_chunk"]);
+  "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update"]);
 
 const AUTH_REQUIRED = -32000;
+
+/** The keys whose numbers the client reads as integers. */
+const INTEGER_KEYS = new Set(["line", "size", "code", "used", "protocolVersion"]);
+
+/** Whether a JSON number token is exactly the safe integer it parsed to (1e3 and 1000.0 are; 1.0000000000000001 isn't). */
+function exactInteger(source: string, value: number): boolean {
+  if (!Number.isSafeInteger(value)) return true; // not read as an integer: the field's own check refuses it
+  const parts = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(source);
+  if (parts === null) return false;
+  const digits = `${parts[2]}${parts[3] ?? ""}`.replace(/^0+(?=\d)/, "");
+  const exponent = Number(parts[4] ?? "0") - (parts[3]?.length ?? 0);
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 400) return false;
+  let exact: bigint;
+  if (exponent >= 0) exact = BigInt(digits) * 10n ** BigInt(exponent);
+  else {
+    const cut = -exponent;
+    const padded = digits.padStart(cut + 1, "0");
+    if (!/^0*$/.test(padded.slice(-cut))) return false;
+    exact = BigInt(padded.slice(0, -cut));
+  }
+  return (parts[1] === "-" ? -exact : exact) === BigInt(value);
+}
 
 export function createAcpConversation(options: AcpConversationOptions): AcpConversation {
   let phase: AcpPhase = "initialize";
@@ -474,11 +503,10 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
             const source = context?.source;
             if (key === "id" && this !== null && typeof this === "object" && "jsonrpc" in (this as object)
               && (!Number.isSafeInteger(value) || source === undefined || source !== String(value))) roundedId = true;
-            // Anywhere in a message, a number that only reads as an integer by rounding (1.0000000000000001, 1e-999)
-            // or that no double holds exactly is not the number on the wire: nothing the client reads may rest on it.
-            if (source === undefined || !Number.isFinite(value)) roundedId = true;
-            else if (Number.isInteger(value) && !/^-?(0|[1-9][0-9]*)(\.0+)?$/.test(source)) roundedId = true;
-            else if (Number.isInteger(value) && !Number.isSafeInteger(value)) roundedId = true;
+            // Where the client reads an integer (a location's line, a resource's size, an error's code, a usage count),
+            // it must be exactly the integer on the wire: 1e3 is 1000, but 1.0000000000000001 is not 1. Opaque numbers
+            // (raw input and output, metadata) are left as they are.
+            if (INTEGER_KEYS.has(key) && (source === undefined || !exactInteger(source, value))) roundedId = true;
           }
           return value;
         });

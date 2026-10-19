@@ -323,3 +323,38 @@ describe("what the plane answers the agent", () => {
     expect(acpParse(failed.retained()).reportedUsage).toContain("0.07");
   });
 });
+
+describe("the schema, as it is written", () => {
+  const sid = opencode["sessionId"] as string;
+  const handshakeWith = (initialize: Record<string, unknown>) => {
+    const conversation = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    const [init] = sent(conversation.start());
+    conversation.receive(answer(init!.id, initialize));
+    return conversation;
+  };
+
+  test("capabilities may be left out but never null; unknown session capabilities are left alone", () => {
+    for (const bad of [
+      { agentCapabilities: null }, { authMethods: null },
+      { agentCapabilities: { ...opencode["initialize"].agentCapabilities, promptCapabilities: null } },
+      { agentCapabilities: { ...opencode["initialize"].agentCapabilities, auth: { logout: 3 } } },
+    ]) expect(handshakeWith({ ...opencode["initialize"], ...bad }).failure()).toMatchObject({ kind: "protocol" });
+    const future = handshakeWith({ ...opencode["initialize"], agentCapabilities: { ...opencode["initialize"].agentCapabilities, sessionCapabilities: { close: {}, _future: true } } });
+    expect(future.failure()).toBeNull();
+  });
+
+  test("an integer may be written 1e3; an update's fields may be null; a choice with an extra list is still just a choice", () => {
+    const conversation = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    handshake(conversation, opencode);
+    conversation.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","locations":[{"path":"/a","line":1e3}],"title":null,"kind":null,"status":null}}}`);
+    expect(conversation.failure()).toBeNull();
+    // Validation and extraction agree: a flat choice carrying "options" offers its own value, not the nested one.
+    const odd = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    const [init] = sent(odd.start());
+    const [open] = sent(odd.receive(answer(init!.id, opencode["initialize"])).send);
+    odd.receive(answer(open!.id, { sessionId: sid, configOptions: [{ id: "model", name: "Model", type: "select", currentValue: "other", options: [{ value: "other", name: "Other", options: [{ value: "google/gemini-2.5-flash" }] }] }] }));
+    expect(odd.offered()).toEqual(["other"]);
+    expect(odd.failure()).toMatchObject({ kind: "model-unavailable" });
+  });
+});
+
