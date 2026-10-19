@@ -182,7 +182,7 @@ describe("the ACP conversation fails closed", () => {
     const stranger = ready();
     stranger.conversation.receive(JSON.stringify({ jsonrpc: "2.0", method: "session/something_new", params: { sessionId: "ses_other" } }));
     expect(stranger.conversation.failure()).toMatchObject({ kind: "protocol" });
-    for (const body of [{}, { sessionUpdate: 3 }]) {
+    for (const body of [{}, { sessionUpdate: 3 }, { sessionUpdate: "tool_call" }, { sessionUpdate: "tool_call_update" }, { sessionUpdate: "agent_message_chunk", content: "hi" }]) {
       const kindless = ready();
       kindless.conversation.receive(update(sid, body));
       expect(kindless.conversation.failure()).toMatchObject({ kind: "protocol" });
@@ -227,6 +227,11 @@ describe("what the plane answers the agent", () => {
     expect(sent(callless.send)[0]).toMatchObject({ id: 9, error: { code: -32602 } });
     expect(callless.live).toEqual([{ sessionUpdate: "permission", toolCallId: null, title: null, kind: null, granted: false }]);
     expect(permissionAnswer({ options: "x" })).toBeNull();
+    // The whole list must be well formed: a malformed entry, an unknown kind or an id twice chooses nothing.
+    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }, "junk"] })).toBeNull();
+    expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }, { optionId: "x", kind: "allow_sometimes" }] })).toBeNull();
+    expect(permissionAnswer({ options: [{ optionId: "same", kind: "allow_once" }, { optionId: "same", kind: "allow_always" }] })).toBeNull();
+    expect(permissionAnswer({ options: [] })).toBeNull();
   });
 
   test("every client method the plane doesn't offer is refused, each answered at once — however many", () => {
@@ -245,6 +250,10 @@ describe("what the plane answers the agent", () => {
     conversation.receive(update(sid, opencode["updates"][1]));
     conversation.receive(update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Stopped." } }));
     expect(sent(conversation.cancel())).toEqual([{ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: sid } }]);
+    // After a cancel, nothing more is granted: a permission request is answered "cancelled".
+    const late = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 50, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "t9" }, options: [{ optionId: "once", kind: "allow_once" }] } }));
+    expect(sent(late.send)).toEqual([{ jsonrpc: "2.0", id: 50, result: { outcome: { outcome: "cancelled" } } }]);
+    expect(late.live[0]).toMatchObject({ granted: false });
     const prompt = 4; // initialize 1, session/new 2, model 3, prompt 4
     conversation.receive(answer(prompt, { stopReason: "cancelled" }));
     expect(conversation.cancel()).toEqual([]);

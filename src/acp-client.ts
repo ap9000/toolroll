@@ -137,15 +137,50 @@ function modelOffer(result: Record<string, unknown>): { mechanism: AcpModelMecha
   return null;
 }
 
-/** The answer to a permission request: the first `allow_once` option, else the first `reject_once`. */
+const OPTION_KINDS = new Set(["allow_once", "allow_always", "reject_once", "reject_always"]);
+
+/**
+ * The answer to a permission request: the `allow_once` option, else the `reject_once` one. The whole list must be
+ * well formed — every option an object with a non-empty id and a known kind, no id twice — or nothing is chosen: an
+ * id shared by "once" and "always" would make the answer mean either.
+ */
 export function permissionAnswer(params: unknown): { optionId: string; granted: boolean } | null {
-  if (!isRecord(params) || !Array.isArray(params["options"])) return null;
-  const options = params["options"].filter(isRecord);
-  const allow = options.find(one => one["kind"] === "allow_once" && typeof one["optionId"] === "string");
-  if (allow !== undefined) return { optionId: allow["optionId"] as string, granted: true };
-  const reject = options.find(one => one["kind"] === "reject_once" && typeof one["optionId"] === "string");
-  if (reject !== undefined) return { optionId: reject["optionId"] as string, granted: false };
+  if (!isRecord(params) || !Array.isArray(params["options"]) || params["options"].length === 0 || params["options"].length > 16) return null;
+  const options: { optionId: string; kind: string }[] = [];
+  const ids = new Set<string>();
+  for (const one of params["options"]) {
+    if (!isRecord(one) || typeof one["optionId"] !== "string" || one["optionId"] === "" || one["optionId"].length > 256) return null;
+    if (typeof one["kind"] !== "string" || !OPTION_KINDS.has(one["kind"])) return null;
+    if (ids.has(one["optionId"])) return null;
+    ids.add(one["optionId"]);
+    options.push({ optionId: one["optionId"], kind: one["kind"] });
+  }
+  const allow = options.find(one => one.kind === "allow_once");
+  if (allow !== undefined) return { optionId: allow.optionId, granted: true };
+  const reject = options.find(one => one.kind === "reject_once");
+  if (reject !== undefined) return { optionId: reject.optionId, granted: false };
   return null;
+}
+
+/** Whether a known update kind carries what it must; an unknown kind is left alone (not shown, not trusted). */
+function wellFormedUpdate(kind: string, update: Record<string, unknown>): boolean {
+  const id = (key: string) => typeof update[key] === "string" && (update[key] as string) !== "" && (update[key] as string).length <= 256;
+  switch (kind) {
+    case "agent_message_chunk":
+    case "agent_thought_chunk":
+    case "user_message_chunk":
+      return isRecord(update["content"]) && typeof update["content"]["type"] === "string";
+    case "tool_call":
+      return id("toolCallId") && typeof update["title"] === "string";
+    case "tool_call_update":
+      return id("toolCallId");
+    case "plan":
+      return Array.isArray(update["entries"]);
+    case "available_commands_update":
+      return Array.isArray(update["availableCommands"]);
+    default:
+      return true;
+  }
 }
 
 const AUTH_REQUIRED = -32000;
@@ -162,6 +197,8 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
   let mechanism: AcpModelMechanism | null = null;
   let offered: string[] = [];
   let nextId = 0;
+  /** Set once the plane asked the prompt to stop: from then on every permission request is answered "cancelled". */
+  let cancelled = false;
   /** Our requests not yet answered, by id. */
   const pending = new Map<number, Pending>();
   /** Ids we have seen answered — a second answer to any of them is a protocol failure. */
@@ -266,6 +303,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     const update = params["update"];
     const kind = update["sessionUpdate"];
     if (typeof kind !== "string" || kind === "" || kind.length > 64) return fail("protocol", "a session update without a kind");
+    if (!wellFormedUpdate(kind, update)) return fail("protocol", `a malformed ${kind} update`);
     if (kind === "agent_message_chunk") {
       const content = update["content"];
       if (isRecord(content) && content["type"] === "text" && typeof content["text"] === "string" && message.length < MESSAGE_CAP) {
@@ -318,6 +356,9 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
             title: isRecord(call) && typeof call["title"] === "string" ? call["title"] : null,
             kind: isRecord(call) && typeof call["kind"] === "string" ? call["kind"] : null,
           };
+          if (cancelled) {
+            return { send: [reply(id, { result: { outcome: { outcome: "cancelled" } } })], live: [{ ...step, granted: false }] };
+          }
           if (answer === null) {
             return { send: [reply(id, { error: { code: -32602, message: "a permission request needs a tool call and an option this client can choose" } })], live: [{ ...step, granted: false }] };
           }
@@ -346,6 +387,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     },
     cancel() {
       if (phase !== "prompt" || sessionId === null) return [];
+      cancelled = true;
       return [line({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } })];
     },
     close() {
