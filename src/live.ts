@@ -276,9 +276,10 @@ export function readLiveWindow(root: string, runId: number, from: number, allowT
   if ("unreadable" in opened) return { ok: false, reason: "unreadable" };
   const fd = opened.fd;
   try {
-    const stat = fstatSync(fd);
+    const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile()) return { ok: false, reason: "unreadable" };
-    const gen = `${format}:${stat.dev}:${stat.ino}`;
+    // Linux hands a removed file's inode straight to the next one made, so the birth time (ns) tells them apart too.
+    const gen = `${format}:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
     const size = Number(stat.size);
     if (size < from) return { ok: false, reason: "replaced" };
     const want = Math.min(size - from, READ_WINDOW + READ_LOOKAHEAD);
