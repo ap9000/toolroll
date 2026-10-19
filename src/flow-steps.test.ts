@@ -181,7 +181,7 @@ describe("updating the issue a card came from", () => {
     ]);
     expect(store.getFlowCard(fromGitHub)).toMatchObject({ stage: "done", outputs: { "close-it": "Commented on and closed GitHub issue #12." } });
 
-    const fromLinear = store.addFlowCard({ flow, title: "Refunds", description: null, stage: "close-it", by: "Linear", byKind: "person", source: { kind: "linear", label: "Linear ENG-9", url: "https://linear.app/acme/issue/ENG-9" } }, at(2));
+    const fromLinear = store.addFlowCard({ flow, title: "Refunds", description: null, stage: "close-it", by: "Linear", byKind: "automation", source: { kind: "linear", label: "Linear ENG-9", url: "https://linear.app/acme/issue/ENG-9" } }, at(2));
     writeFileSync(join(dir, "linear-key"), `${["lin", "api", "k".repeat(40)].join("_")}\n`, { mode: 0o600 });
     const asked: string[] = [];
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {

@@ -41,8 +41,13 @@ test.each(["hook:sentry", "Maya (AI)", "coordinator:pat"])("an account named %s 
   expect(store.getFlowCard(card)?.createdKind).toBe("person");
   const task = filedFrom(card);
   expect(store.taskFiler(task)).toEqual({ name, kind: "person" });
-  // Under "not the requester", their own approval is refused, by name, whatever the name looks like.
+  // Under "not the requester", their own approval is refused — through chat (the gate planInChat and the chat seal ask,
+  // kind "mode") and on the console — by name, whatever the name looks like; another approver's goes through.
   expect(store.requestersOf(task).has(name)).toBe(true);
+  store.setApprovalRules(REPO, { notRequester: true, protectProject: false, protectedPaths: [] }, "alex", T0);
+  expect(store.approvalGate(task, name, "mode")).toEqual({ verdict: "refuse", reason: "requester" });
+  expect(store.approvalGate(task, name, "person")).toEqual({ verdict: "refuse", reason: "requester" });
+  expect(store.approvalGate(task, "alex", "mode")).toEqual({ verdict: "seal", protectedWork: false });
 });
 
 test("a chat channel's message files as automation: no account named after the app becomes its requester", () => {
@@ -54,4 +59,7 @@ test("a chat channel's message files as automation: no account named after the a
   const task = filedFrom(card);
   expect(store.taskFiler(task)).toEqual({ name: "Slack", kind: "automation" });
   expect(store.requestersOf(task).has("Slack")).toBe(false);
+  // An unrelated account that happens to be called Slack may approve it under "not the requester".
+  store.setApprovalRules(REPO, { notRequester: true, protectProject: false, protectedPaths: [] }, "alex", T0);
+  expect(store.approvalGate(task, "Slack", "mode")).toEqual({ verdict: "seal", protectedWork: false });
 });
