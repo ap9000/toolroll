@@ -432,7 +432,7 @@ export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, acto
   let secret: string | null = null;
   if (config.kind === "github" && config.delivery === "webhook") { secret = randomBytes(24).toString("hex"); saveHookSecret(dir!, id, secret); }
   // v126: a webhook starts with no secret at all (not the legacy address): it is set up on its panel, never here.
-  if (config.kind === "webhook") store.swapFlowHookCredential(id, { credential: "legacy", configJson: JSON.stringify(config) }, "", null, now);
+  if (config.kind === "webhook") store.swapFlowHookCredential(id, { credential: "legacy", configJson: JSON.stringify(config), hookHash: token === null ? null : hookHash(token) }, { credential: "" }, null, now);
   const reveal = token === null ? null : { path: `${HOOK_PATH}${token}`, address: dir === null || readHooksBase(dir) === null ? null : `${readHooksBase(dir)}${HOOK_PATH}${token}`, secret };
   return { ok: true, id, said: token === null ? "Trigger added." : "Trigger added. Copy its address now; it isn't shown again.", reveal };
 }
@@ -442,13 +442,16 @@ export function renewFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
   const config = triggerConfigOf(trigger);
   if (config === null || !takesDeliveries(config) || trigger.state === "removed") return { ok: false, message: "That trigger has no webhook address." };
   const token = randomBytes(24).toString("base64url");
-  store.updateFlowTrigger(trigger.id, { hookHash: hookHash(token) }, now);
   let secret: string | null = null;
-  // GitHub's own trigger gets a new secret with its new address (as it always has); a webhook keeps its secret.
+  // GitHub's own trigger gets a new secret with its new address (as it always has); a webhook keeps its secret. Either
+  // way the address moves in one conditional write with the secret it is proven by, from the pair read here: a renewal
+  // that fails (or loses to another) leaves the working address and its secret exactly as they were.
   if (config.kind === "github") {
     secret = randomBytes(24).toString("hex");
-    const saved = nextHookCredential(store, trigger, secret, null, now, dir);
+    const saved = nextHookCredential(store, trigger, secret, null, now, dir, hookHash(token));
     if (!saved.ok) return saved;
+  } else if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson, hookHash: trigger.hookHash }, { credential: trigger.hookCredential, hookHash: hookHash(token) }, null, now)) {
+    return { ok: false, message: "That trigger changed meanwhile. Open it again." };
   }
   const base = readHooksBase(dir);
   return { ok: true, id: trigger.id, said: "New address made; the old one no longer works. Copy it now; it isn't shown again.", reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } };
@@ -1081,12 +1084,12 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
  * adopted from a place an unfinished change may have left something. The loser removes only what it wrote; the winner
  * removes the secret it replaced, as cleanup only (nothing points at it any more).
  */
-function nextHookCredential(store: Store, trigger: FlowTriggerRow, secret: string | null, configJson: string | null, now: Date, dir: string): { ok: true } | { ok: false; message: string } {
+function nextHookCredential(store: Store, trigger: FlowTriggerRow, secret: string | null, configJson: string | null, now: Date, dir: string, hookHash?: string): { ok: true } | { ok: false; message: string } {
   const credential = secret === null ? "" : randomBytes(16).toString("hex");
   if (secret !== null) {
     try { saveHookSecret(dir, trigger.id, secret, credential); } catch (error) { return { ok: false, message: error instanceof SecretStoreError ? error.message : "The secret couldn't be saved." }; }
   }
-  if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson }, credential, configJson, now)) {
+  if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson, hookHash: trigger.hookHash }, { credential, ...(hookHash === undefined ? {} : { hookHash }) }, configJson, now)) {
     dropHookSecret(dir, trigger.id, credential);
     return { ok: false, message: "That trigger changed meanwhile. Open it again." };
   }

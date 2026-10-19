@@ -19,6 +19,7 @@ import { addApprover } from "./scope.js";
 import { flowFromSteps } from "./flows.js";
 import { addFlowTriggerTo, changeFlowHookSender, hookReady, readHookSecret, receiveFlowHook, renewFlowHook, saveHookSecret, saveSigningSecret, setUpFlowHook, triggerConfigOf } from "./flow-triggers.js";
 import { exportFlow, importFlow, parseFlowFile, planFlowImport } from "./flow-share.js";
+import { flowView } from "./flows-ui.js";
 import { standardKey } from "./webhook-signing.js";
 import { flowHook } from "./server/remote-hooks.js";
 
@@ -120,6 +121,21 @@ describe("provisioning", () => {
     expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "fax" }, "alex", T0, dir)).toMatchObject({ ok: false });
     expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", idField: "data..id" }, "alex", T0, dir)).toMatchObject({ ok: false, message: expect.stringContaining("dot-path") });
   });
+});
+
+test("what the panel is given: who signs each webhook, whether its secret is made or pasted, and a warning in words until it is safe", () => {
+  const unsigned = add({ title: "Open" }).id;
+  const standardHook = add({ sender: "standard" }).id;
+  const sentryHook = add({ sender: "sentry" }).id;
+  const hookOf = (id: number) => flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null, { dir, repos: [REPO] }).triggers.find(one => one.id === id)!.hook;
+  expect(hookOf(unsigned)).toMatchObject({ ready: true, sender: "none", makesSecret: false, needsSecret: false, warning: expect.stringContaining("anyone with its address") });
+  expect(hookOf(standardHook)).toMatchObject({ ready: false, sender: "standard", makesSecret: true, needsSecret: false, warning: expect.stringContaining("until its secret is made") });
+  made(setUpFlowHook(store, trigger(standardHook), T0, dir));
+  expect(hookOf(standardHook)).toMatchObject({ ready: true, warning: null });
+  // Sentry's is pasted — offered again once set, to replace it — and an unscoped one says any project can add cards.
+  expect(hookOf(sentryHook)).toMatchObject({ ready: false, sender: "sentry", makesSecret: false, needsSecret: true });
+  made(saveSigningSecret(store, trigger(sentryHook), SENTRY_SECRET, T0, dir));
+  expect(hookOf(sentryHook)).toMatchObject({ ready: true, needsSecret: true, warning: expect.stringContaining("Any Sentry project") });
 });
 
 describe("credentials under races and crashes", () => {

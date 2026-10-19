@@ -18816,9 +18816,11 @@ export class Store {
    * from the secret and settings the caller read, so of two changes at once exactly one lands. False when it changed
    * meanwhile (or the trigger is gone): the caller then removes only the secret it wrote itself.
    */
-  swapFlowHookCredential(id: number, from: { credential: string; configJson: string }, to: string, configJson: string | null, now: Date): boolean {
-    const { changes } = this.db.prepare("UPDATE flow_trigger SET hook_credential = ?, config_json = COALESCE(?, config_json), updated_at = ? WHERE id = ? AND hook_credential = ? AND config_json = ? AND state != 'removed'")
-      .run(to, configJson, now.toISOString(), id, from.credential, from.configJson);
+  swapFlowHookCredential(id: number, from: { credential: string; configJson: string; hookHash: string | null }, to: { credential: string; hookHash?: string }, configJson: string | null, now: Date): boolean {
+    // The address moves with it when given: one write, from the very secret, settings and address the caller read.
+    const { changes } = this.db.prepare(`UPDATE flow_trigger SET hook_credential = ?, hook_hash = COALESCE(?, hook_hash), config_json = COALESCE(?, config_json), updated_at = ?
+      WHERE id = ? AND hook_credential = ? AND config_json = ? AND hook_hash IS ? AND state != 'removed'`)
+      .run(to.credential, to.hookHash ?? null, configJson, now.toISOString(), id, from.credential, from.configJson, from.hookHash);
     return Number(changes) === 1;
   }
 
