@@ -38,6 +38,7 @@ import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
+import { makesSecret, makeSecret, proveDelivery, secretShapeOk, SENDER_WORDS, WEBHOOK_SENDERS, type DistinctHeaders, type SigningSender, type WebhookSender } from "./webhook-signing.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
 import { describeSchedule, fileStandingOrder, firstFireAt, nextFireAt, parseSchedule, StandingOrderRefused, WEEKDAYS, type StandingOrder } from "./flow-schedule.js";
@@ -199,7 +200,24 @@ export function validateTriggerConfig(raw: unknown, context: { store: Store; flo
       return { kind: "flow", flow: flow.id, when: stage.id, zone };
     }
     case "webhook":
-      return { kind: "webhook", title: said(input.title) ?? "Webhook", titleField: said(input.titleField), bodyField: said(input.bodyField), zone };
+    {
+      // v126: Sentry and Vercel deliveries are read by their own readers, scoped by project (and Vercel's by team); the
+      // others pick their fields from the JSON by dot-paths. A setting that the sender doesn't read is refused, not kept.
+      const sender = input.sender ?? "none";
+      const provider = sender === "sentry" || sender === "vercel";
+      const project = said(input.project), team = said(input.team), idField = said(input.idField), urlField = said(input.urlField);
+      const titleField = said(input.titleField), bodyField = said(input.bodyField);
+      if (provider) {
+        for (const [path, value] of [["titleField", titleField], ["bodyField", bodyField], ["idField", idField], ["urlField", urlField]] as const) {
+          if (value !== null) refuse(path, `${SENDER_WORDS[sender]} deliveries are read by Toolroll's own ${SENDER_WORDS[sender]} reader; leave it out`);
+        }
+      } else if (project !== null) refuse("project", "only a Sentry or Vercel webhook is scoped to a project");
+      if (team !== null && sender !== "vercel") refuse("team", "only a Vercel webhook is scoped to a team");
+      for (const [path, value] of [["titleField", titleField], ["bodyField", bodyField], ["idField", idField], ["urlField", urlField]] as const) {
+        if (value !== null && !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(value)) refuse(path, "a dot-path like data.issue.id");
+      }
+      return { kind: "webhook", title: said(input.title) ?? "Webhook", titleField, bodyField, sender, project, team, idField, urlField, zone };
+    }
     case "plane-review": {
       const at = said(input.at) ?? "07:30";
       const clock = /^(\d{1,2}):(\d{2})$/.exec(at);
@@ -303,7 +321,7 @@ export function triggerConfigOf(trigger: FlowTriggerRow): TriggerConfig | null {
 /** What a saved trigger leaves out, it had as these (every release has saved them whole; a hand-made row may not). */
 const SAVED_DEFAULTS: Partial<Record<FlowTriggerKind, Record<string, unknown>>> = {
   button: { questions: ["What needs doing?", "Details"] }, schedule: { description: null }, github: { label: null, branch: null, from: "team", delivery: "poll" },
-  linear: { team: null, state: null, label: null, delivery: "poll" }, webhook: { title: "Webhook", titleField: null, bodyField: null }, email: { folder: "INBOX", sender: null, subject: null },
+  linear: { team: null, state: null, label: null, delivery: "poll" }, webhook: { title: "Webhook", titleField: null, bodyField: null, sender: "none", project: null, team: null, idField: null, urlField: null }, email: { folder: "INBOX", sender: null, subject: null },
 };
 
 /** A saved trigger's config (`configJson`, which carries no version) read by its one schema, what it leaves out filled. */
@@ -313,6 +331,9 @@ export function readTriggerConfig(raw: unknown): ContractResult<TriggerConfig> {
   return parseContract(triggerConfigSchema, body);
 }
 
+/** v126: who signs a webhook trigger's deliveries; one saved before senders were chosen is unsigned. */
+export const senderOf = (config: Extract<TriggerConfig, { kind: "webhook" }>): WebhookSender => config.sender ?? "none";
+
 /** Whether this trigger takes deliveries at a secret address rather than being checked. */
 export function takesDeliveries(config: TriggerConfig): boolean {
   return config.kind === "webhook" || ((config.kind === "github" || config.kind === "linear") && config.delivery === "webhook");
@@ -321,21 +342,29 @@ export function takesDeliveries(config: TriggerConfig): boolean {
 // ------------------------------------------------------ secrets on disk
 
 const hookHash = (token: string) => createHash("sha256").update(token).digest("hex");
-/** A webhook's signing secret: kept by Toolroll (tool-secret-store.ts) as `flow-hook.<trigger>`, in a file of that name before. */
-const hookSecret = (trigger: number) => ({ name: `flow-hook.${trigger}`, file: ["flow-hooks", `${trigger}.json`] });
+/**
+ * A webhook's signing secret: kept by Toolroll (tool-secret-store.ts) as `flow-hook.<trigger>`, in a file of that name
+ * before. v126: each credential generation has its own address; generation 0 is that address, so a trigger saved
+ * before v126 keeps authenticating with nothing moved, and a later generation never falls back to it.
+ */
+const hookSecret = (trigger: number, generation: number) => generation === 0
+  ? { name: `flow-hook.${trigger}`, file: ["flow-hooks", `${trigger}.json`] }
+  : { name: `flow-hook.${trigger}.g${generation}`, file: ["flow-hooks", `${trigger}.g${generation}.json`] };
 
-/** A webhook's signing secret (GitHub: made here; Linear: pasted from Linear). In the keychain (or an owner-only file where there's none), never a column. */
-export function saveHookSecret(dir: string, trigger: number, secret: string): void {
-  const held = hookSecret(trigger);
+/** A webhook's signing secret (made here, or pasted from its sender). In the keychain (or an owner-only file where there's none), never a column. */
+export function saveHookSecret(dir: string, trigger: number, secret: string, generation = 0): void {
+  const held = hookSecret(trigger, generation);
   writeHeldSecret(dir, held.name, held.file, `${JSON.stringify({ secret })}\n`);
 }
-export function readHookSecret(dir: string, trigger: number): string | null {
-  const held = hookSecret(trigger);
+/** The secret of exactly this generation, or null: never another generation's. */
+export function readHookSecret(dir: string, trigger: number, generation = 0): string | null {
+  const held = hookSecret(trigger, generation);
   try { const parsed = JSON.parse(readHeldSecret(dir, held.name, held.file) ?? "null") as { secret?: unknown } | null; return typeof parsed?.secret === "string" && parsed.secret !== "" ? parsed.secret : null; } catch { return null; }
 }
-function dropHookSecret(dir: string, trigger: number): void {
-  const held = hookSecret(trigger);
-  try { writeHeldSecret(dir, held.name, held.file, null); } catch { /* the trigger is gone; an orphan is never read */ }
+/** Best-effort cleanup only: a generation that is no longer current is never read, whether or not its secret is gone. */
+function dropHookSecret(dir: string, trigger: number, generation: number): void {
+  const held = hookSecret(trigger, generation);
+  try { writeHeldSecret(dir, held.name, held.file, null); } catch { /* never read again: the generation moved on */ }
 }
 
 const LINEAR = { name: "linear-key", file: ["linear-key"] };
@@ -408,7 +437,8 @@ export function renewFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
   const token = randomBytes(24).toString("base64url");
   store.updateFlowTrigger(trigger.id, { hookHash: hookHash(token) }, now);
   let secret: string | null = null;
-  if (config.kind === "github") { secret = randomBytes(24).toString("hex"); saveHookSecret(dir, trigger.id, secret); }
+  // GitHub's own trigger gets a new secret with its new address (as it always has); a webhook keeps its secret.
+  if (config.kind === "github") { secret = randomBytes(24).toString("hex"); saveHookSecret(dir, trigger.id, secret, trigger.hookGeneration); }
   const base = readHooksBase(dir);
   return { ok: true, id: trigger.id, said: "New address made; the old one no longer works. Copy it now; it isn't shown again.", reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } };
 }
@@ -425,7 +455,7 @@ export function setFlowTriggerOn(store: Store, trigger: FlowTriggerRow, on: bool
 
 export function removeFlowTrigger(store: Store, trigger: FlowTriggerRow, now: Date, dir: string | null, by?: string): void {
   store.updateFlowTrigger(trigger.id, { state: "removed", hookHash: null }, now, by);
-  if (dir !== null) dropHookSecret(dir, trigger.id);
+  if (dir !== null) dropHookSecret(dir, trigger.id, trigger.hookGeneration);
 }
 
 /** Checked by the worker's pass (rather than pushed, fired on a schedule or followed). */
@@ -923,13 +953,40 @@ async function fetchLinear(config: Extract<TriggerConfig, { kind: "linear" }>, t
 
 // ------------------------------------------------------------ deliveries
 
-export type HookDelivery = { headers: Record<string, string | string[] | undefined>; body: Buffer };
+/** v126: headers as Node's `headersDistinct` gives them, one value per line they arrived on, so a security header sent
+ * twice is seen twice (Node's `headers` joins repeated custom headers with commas). */
+export type HookDelivery = { headers: DistinctHeaders; body: Buffer };
 export type HookAnswer = { status: number; said: string };
 
-const header = (delivery: HookDelivery, name: string) => { const value = delivery.headers[name]; return Array.isArray(value) ? value[0] ?? "" : value ?? ""; };
+/** A header that only describes the delivery (not a security header): its first value. */
+const header = (delivery: HookDelivery, name: string) => delivery.headers[name]?.[0] ?? "";
 function sameHex(expected: string, given: string): boolean {
   const a = Buffer.from(expected, "utf8"), b = Buffer.from(given, "utf8");
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** How a webhook trigger's deliveries are proven, before anything in them is read: its sender's signature over the raw
+ * bytes with the current generation's secret. Null when proven (or unsigned); otherwise the refusal, which writes nothing. */
+function proveHook(trigger: FlowTriggerRow, config: TriggerConfig, delivery: HookDelivery, dir: string, now: Date): { signedId: string | null } | HookAnswer {
+  if (config.kind === "github") {
+    const secret = readHookSecret(dir, trigger.id, trigger.hookGeneration);
+    if (secret === null) return { status: 401, said: "Signature doesn't match." };
+    const proof = proveDelivery("github-style", secret, delivery.headers, delivery.body, now);
+    return proof.ok ? { signedId: null } : { status: 401, said: proof.said };
+  }
+  if (config.kind === "linear") {
+    const secret = readHookSecret(dir, trigger.id, trigger.hookGeneration);
+    if (secret === null) return { status: 401, said: "Paste Linear's signing secret on the flow's Triggers panel first." };
+    const sent = delivery.headers["linear-signature"] ?? [];
+    if (sent.length !== 1) return { status: 401, said: sent.length === 0 ? "The linear-signature header is missing." : "The linear-signature header was sent more than once." };
+    return sameHex(createHmac("sha256", secret).update(delivery.body).digest("hex"), sent[0]!.trim().toLowerCase()) ? { signedId: null } : { status: 401, said: "Signature doesn't match." };
+  }
+  const sender = config.kind === "webhook" ? senderOf(config) : "none";
+  if (sender === "none") return { signedId: null };
+  const secret = readHookSecret(dir, trigger.id, trigger.hookGeneration);
+  if (secret === null) return { status: 401, said: `This webhook isn't set up yet: set up ${SENDER_WORDS[sender]} signing on the flow's Triggers panel first.` };
+  const proof = proveDelivery(sender, secret, delivery.headers, delivery.body, now);
+  return proof.ok ? { signedId: proof.signedId } : { status: 401, said: proof.said };
 }
 
 /** A webhook delivery at a trigger's secret address: prove it, read it, make at most the cards it names. Nothing runs here. */
@@ -940,14 +997,14 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
   if (trigger === null || config === null || !takesDeliveries(config)) return { status: 404, said: "No such address." };
   if (!adapterPolicy({ caller: "service", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, said: "No access to this flow." };
   if (delivery.body.length > HOOK_BYTES) return { status: 413, said: "Too large." };
+  // Proven over the raw bytes before anything in them is read; a refusal writes nothing, not even the last outcome.
+  const proven = proveHook(trigger, config, delivery, dir, now);
+  if ("status" in proven) return proven;
   const note = (said: string) => { store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: said }, now); };
   let payload: unknown;
   try { payload = JSON.parse(delivery.body.toString("utf8")); } catch { return { status: 400, said: "Send JSON." }; }
   let items: Found[] = [];
   if (config.kind === "github") {
-    const secret = readHookSecret(dir, trigger.id);
-    const signature = header(delivery, "x-hub-signature-256");
-    if (secret === null || !sameHex(`sha256=${createHmac("sha256", secret).update(delivery.body).digest("hex")}`, signature)) return { status: 401, said: "Signature doesn't match." };
     const event = header(delivery, "x-github-event"), body = readGithubEvent(payload), action = body.action ?? "";
     const repository = body.repository?.full_name ?? "";
     if (event === "ping") { note("GitHub connected."); return { status: 200, said: "Connected." }; }
@@ -959,9 +1016,6 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
       : config.watch === "checks" && event === "workflow_run" && action === "completed" ? githubRunItem(config, body.workflow_run) : null;
     items = found === null ? [] : [found];
   } else if (config.kind === "linear") {
-    const secret = readHookSecret(dir, trigger.id);
-    if (secret === null) return { status: 401, said: "Paste Linear's signing secret on the flow's Triggers panel first." };
-    if (!sameHex(createHmac("sha256", secret).update(delivery.body).digest("hex"), header(delivery, "linear-signature"))) return { status: 401, said: "Signature doesn't match." };
     const body = readLinearEvent(payload), sent = Number(body.webhookTimestamp);
     if (!Number.isFinite(sent) || Math.abs(now.getTime() - sent) > 5 * 60_000) return { status: 401, said: "Too old." };
     if (body.type !== "Issue" || !["create", "update"].includes(body.action ?? "")) return { status: 202, said: "Ignored." };
@@ -976,8 +1030,14 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     const pick = (path: string | null) => path === null ? null : path.split(".").reduce<unknown>((node, part) => record(node)[part], body);
     const title = pick(config.titleField ?? "title") ?? pick("summary") ?? pick("message");
     const bodyText = pick(config.bodyField ?? "description") ?? pick("body") ?? pick("text");
-    const id = header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || createHash("sha256").update(delivery.body).digest("hex");
-    items = [{ key: `hook:${id.slice(0, 120)}`, at: null, title: typeof title === "string" && title.trim() !== "" ? title : config.title,
+    // An unsigned webhook keys on what the sender says (as before); a signed one only on what its signature covers:
+    // Standard Webhooks' signed id, or the raw bytes. Keys carry the sender, so nothing unsigned stands for anything signed.
+    const bodyHash = createHash("sha256").update(delivery.body).digest("hex");
+    const sender = senderOf(config);
+    const key = sender === "none"
+      ? `hook:${(header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || bodyHash).slice(0, 120)}`
+      : proven.signedId !== null ? `v3:${sender}:wid:${proven.signedId}` : `v3:${sender}:body:${bodyHash}`;
+    items = [{ key, at: null, title: typeof title === "string" && title.trim() !== "" ? title : config.title,
       description: `From a webhook:\n\n${typeof bodyText === "string" ? bodyText : JSON.stringify(body, null, 2)}`.slice(0, 4000),
       source: { kind: "webhook", label: "Webhook", url: null } }];
   }
@@ -991,22 +1051,105 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
   return { status: 202, said };
 }
 
-/** Save Linear's signing secret for a Linear webhook trigger (pasted on the secure panel, never in chat). */
-export function saveLinearSigningSecret(trigger: FlowTriggerRow, secret: string, dir: string): { ok: true } | { ok: false; message: string } {
-  const config = triggerConfigOf(trigger);
-  if (config?.kind !== "linear" || config.delivery !== "webhook") return { ok: false, message: "That trigger doesn't take Linear webhooks." };
-  const clean = secret.trim();
-  if (!/^[A-Za-z0-9_-]{16,200}$/.test(clean)) return { ok: false, message: "Paste the signing secret exactly as Linear shows it." };
-  saveHookSecret(dir, trigger.id, clean);
+/**
+ * v126: a webhook's credentials move to the next generation: its secret is saved at the next generation's address
+ * first, then the trigger moves to it (only from the generation read here), so a failure leaves the old secret current
+ * or no secret at all — never a stale one readable. The old generation's secret is then dropped as cleanup only.
+ */
+function nextHookCredential(store: Store, trigger: FlowTriggerRow, secret: string | null, configJson: string | null, now: Date, dir: string): { ok: true } | { ok: false; message: string } {
+  const next = trigger.hookGeneration + 1;
+  if (secret !== null) {
+    try { saveHookSecret(dir, trigger.id, secret, next); } catch (error) { return { ok: false, message: error instanceof SecretStoreError ? error.message : "The secret couldn't be saved." }; }
+  }
+  if (store.advanceFlowHookGeneration(trigger.id, trigger.hookGeneration, configJson, now) === null) {
+    if (secret !== null) dropHookSecret(dir, trigger.id, next);
+    return { ok: false, message: "That trigger changed meanwhile. Open it again." };
+  }
+  dropHookSecret(dir, trigger.id, trigger.hookGeneration);
   return { ok: true };
 }
 
-/** Whether a webhook trigger can prove its deliveries: GitHub always (its secret is made here), Linear once its secret is pasted. */
+/** A signing secret pasted on the secure panel behind the password, never in chat: Linear's, or a signed webhook's
+ * sender's (Sentry's or Vercel's own, or a Standard or GitHub-style one made elsewhere). */
+export function saveSigningSecret(store: Store, trigger: FlowTriggerRow, secret: string, now: Date, dir: string): { ok: true; said: string } | { ok: false; message: string } {
+  const config = triggerConfigOf(trigger);
+  const clean = secret.trim();
+  if (config?.kind === "linear" && config.delivery === "webhook") {
+    if (!/^[A-Za-z0-9_-]{16,200}$/.test(clean)) return { ok: false, message: "Paste the signing secret exactly as Linear shows it." };
+    const saved = nextHookCredential(store, trigger, clean, null, now, dir);
+    return saved.ok ? { ok: true, said: "Signing secret saved. Linear's deliveries can be proved now." } : saved;
+  }
+  if (config?.kind !== "webhook" || senderOf(config) === "none") return { ok: false, message: "That trigger doesn't take a signing secret. Choose who signs its deliveries first." };
+  const sender = senderOf(config) as SigningSender;
+  if (!secretShapeOk(sender, clean)) return { ok: false, message: SECRET_SHAPE_WORDS[sender] };
+  const saved = nextHookCredential(store, trigger, clean, null, now, dir);
+  return saved.ok ? { ok: true, said: `Signing secret saved. ${SENDER_WORDS[sender]} deliveries can be proved now; any earlier secret no longer works.` } : saved;
+}
+
+const SECRET_SHAPE_WORDS: Record<SigningSender, string> = {
+  sentry: "Paste the Client Secret exactly as Sentry shows it on the integration (letters and digits, 32 to 128 of them).",
+  vercel: "Paste the secret exactly as Vercel shows it (16 to 200 letters and digits).",
+  standard: "Paste the secret exactly as the sender shows it: whsec_ followed by its key.",
+  "github-style": "Paste the secret exactly as the sender shows it (16 to 200 characters, no spaces).",
+};
+
+/**
+ * v126: set up a signed webhook: a new address, and (for a sender Toolroll can make one for) a new secret, shown
+ * together once. Sentry's and Vercel's secrets are theirs: the address is made here and their secret is pasted next.
+ * The only place a webhook's credentials are made: creating a trigger (from the panel, the gallery or an import) never does.
+ */
+export function setUpFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, dir: string): TriggerMade {
+  const config = triggerConfigOf(trigger);
+  if (config?.kind !== "webhook" || trigger.state === "removed") return { ok: false, message: "Only a webhook trigger is set up here." };
+  const sender = senderOf(config);
+  let secret: string | null = null;
+  if (sender !== "none" && makesSecret(sender)) {
+    secret = makeSecret(sender);
+    const saved = nextHookCredential(store, trigger, secret, null, now, dir);
+    if (!saved.ok) return saved;
+  }
+  const token = randomBytes(24).toString("base64url");
+  store.updateFlowTrigger(trigger.id, { hookHash: hookHash(token) }, now);
+  const base = readHooksBase(dir);
+  const said = sender === "none" ? "New address made. Copy it now; it isn't shown again. Anyone with it can add cards: choose who signs its deliveries to close that."
+    : secret !== null ? `Set up. Copy the address and the secret now; neither is shown again. Paste both where ${SENDER_WORDS[sender]} deliveries are sent from.`
+    : `New address made. Copy it now; it isn't shown again. Paste it into ${SENDER_WORDS[sender]}, then paste ${SENDER_WORDS[sender]}'s secret here.`;
+  return { ok: true, id: trigger.id, said, reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } };
+}
+
+/**
+ * v126: change who signs a webhook's deliveries, in place: the trigger keeps its id, address and what it has received
+ * (keys carry the sender, so nothing received unsigned stands for anything signed). Its credentials move to the next
+ * generation with no secret: it isn't ready until it is set up again. Settings the new sender doesn't read are left out.
+ */
+export function changeFlowHookSender(store: Store, trigger: FlowTriggerRow, sender: unknown, actor: string, now: Date, dir: string): { ok: true; said: string } | { ok: false; message: string } {
+  const config = triggerConfigOf(trigger);
+  const flow = store.getFlow(trigger.flow);
+  const definition = flow === null ? null : flowDefinitionOf(flow);
+  if (config?.kind !== "webhook" || flow === null || definition === null || trigger.state === "removed") return { ok: false, message: "Only a webhook trigger's sender can change." };
+  if (typeof sender !== "string" || !(WEBHOOK_SENDERS as readonly string[]).includes(sender)) return { ok: false, message: "Choose who signs its deliveries." };
+  const next = sender as WebhookSender;
+  if (next === senderOf(config)) return { ok: true, said: "Nothing changed." };
+  const provider = next === "sentry" || next === "vercel";
+  const keep = (value: string | null | undefined) => value ?? undefined;
+  let changed: TriggerConfig;
+  try {
+    changed = validateTriggerConfig({ kind: "webhook", title: config.title, sender: next, zone: keep(config.zone),
+      ...(provider ? { project: keep(config.project), ...(next === "vercel" ? { team: keep(config.team) } : {}) }
+        : { titleField: keep(config.titleField), bodyField: keep(config.bodyField), idField: keep(config.idField), urlField: keep(config.urlField) }) }, { store, flow, definition, actor });
+  } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That sender can't be used here." }; }
+  const moved = nextHookCredential(store, trigger, null, JSON.stringify(changed), now, dir);
+  if (!moved.ok) return moved;
+  return { ok: true, said: next === "none" ? "Now unsigned: anyone with its address can add cards." : `Now signed by ${SENDER_WORDS[next]}. Set it up before deliveries are taken: until then they are refused.` };
+}
+
+/** Whether a webhook trigger can prove its deliveries: an unsigned webhook always (its address is all it has), the others
+ * once the current generation's secret is saved. */
 export function hookReady(trigger: FlowTriggerRow, dir: string | null): boolean {
   const config = triggerConfigOf(trigger);
   if (config === null || !takesDeliveries(config)) return false;
-  if (config.kind === "webhook") return true;
-  return dir !== null && readHookSecret(dir, trigger.id) !== null;
+  if (config.kind === "webhook" && senderOf(config) === "none") return true;
+  return dir !== null && readHookSecret(dir, trigger.id, trigger.hookGeneration) !== null;
 }
 
 // ------------------------------------------------------ public forms (v84)

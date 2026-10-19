@@ -99,7 +99,13 @@ function triggerOf(config: TriggerConfig, ask: (parameter: FlowFileParameter) =>
       ...(config.state === null ? {} : { state: config.state }),
       ...(config.label === null ? {} : { label: ask({ id: "linear-label", about: "The Linear label issues need", default: config.label }) }),
       delivery: config.delivery, ...zone };
-    case "webhook": return { kind: "webhook", title: config.title, ...(config.titleField === null ? {} : { titleField: config.titleField }), ...(config.bodyField === null ? {} : { bodyField: config.bodyField }), ...zone };
+    // v126: who signs it travels (never its secret or address: an imported signed webhook isn't set up until its
+    // secret is made or pasted there); the project and team it is scoped to are asked again, as another install's own.
+    case "webhook": return { kind: "webhook", title: config.title, ...(config.titleField == null ? {} : { titleField: config.titleField }), ...(config.bodyField == null ? {} : { bodyField: config.bodyField }),
+      ...((config.sender ?? "none") === "none" ? {} : { sender: config.sender }),
+      ...(config.project == null ? {} : { project: ask({ id: "webhook-project", about: "The project the signed webhook's deliveries must come from", default: config.project }) }),
+      ...(config.team == null ? {} : { team: ask({ id: "webhook-team", about: "The Vercel team the deliveries must come from", default: config.team }) }),
+      ...(config.idField == null ? {} : { idField: config.idField }), ...(config.urlField == null ? {} : { urlField: config.urlField }), ...zone };
     case "email": return { kind: "email", folder: config.folder,
       ...(config.sender === null ? {} : { sender: ask({ id: "email-sender", about: "Whose mail starts cards: addresses or domains, comma-separated (left empty: anyone's)", optional: true }) }),
       ...(config.subject === null ? {} : { subject: config.subject }), ...zone };

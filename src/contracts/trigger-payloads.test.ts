@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { openStore, type Store } from "../store.js";
 import { flowFromSteps } from "../flows.js";
-import { addFlowTriggerTo, githubItem, githubRunItem, linearItem, receiveFlowForm, receiveFlowHook, saveLinearSigningSecret, shareFlowButton, type TriggerConfig } from "../flow-triggers.js";
+import { addFlowTriggerTo, githubItem, githubRunItem, linearItem, receiveFlowForm, receiveFlowHook, saveSigningSecret, shareFlowButton, type TriggerConfig } from "../flow-triggers.js";
 import { parseObservationCases } from "../observations.js";
 import { jsonSchemaKeywords } from "./contract-test.js";
 import { formSubmissionSchema, githubEventSchema, githubIssueEventListSchema, githubIssueListSchema, githubRunListSchema, inboundMailSchema, linearAnswerSchema, linearEventSchema, readFormSubmission, readInboundMail } from "./trigger-payloads.js";
@@ -145,7 +145,7 @@ function hookOf(settings: Record<string, unknown>) {
   if (!made.ok) throw new Error(made.message);
   return { id: made.id, token: made.reveal!.path.split("/").at(-1)!, secret: made.reveal!.secret };
 }
-const deliver = (token: string, body: string, headers: Record<string, string> = {}, now = T0) => receiveFlowHook(store, token, { headers, body: Buffer.from(body) }, dir, now);
+const deliver = (token: string, body: string, headers: Record<string, string> = {}, now = T0) => receiveFlowHook(store, token, { headers: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, [value]])), body: Buffer.from(body) }, dir, now);
 
 describe("deliveries get today's answers", () => {
   it("a plain webhook takes any JSON and refuses what isn't", () => {
@@ -162,11 +162,13 @@ describe("deliveries get today's answers", () => {
       ["Webhook", "From a webhook:\n\n{\n  \"event\": {\n    \"name\": 5\n  },\n  \"summary\": \"ignored\"\n}"]].sort());
   });
 
-  it("GitHub: JSON before the signature, then the event, with odd bodies read as empty", () => {
+  it("GitHub: the signature before anything is read (v126), then the event, with odd bodies read as empty", () => {
     const hook = hookOf({ kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" });
     const signed = (body: string, event: string) => deliver(hook.token, body, { "x-github-event": event, "x-hub-signature-256": `sha256=${createHmac("sha256", hook.secret!).update(body).digest("hex")}` });
-    expect(deliver(hook.token, "{", { "x-github-event": "issues" })).toEqual({ status: 400, said: "Send JSON." });
-    expect(deliver(hook.token, "{}", { "x-github-event": "issues", "x-hub-signature-256": "sha256=00" })).toEqual({ status: 401, said: "Signature doesn't match." });
+    expect(deliver(hook.token, "{", { "x-github-event": "issues" })).toEqual({ status: 401, said: "The x-hub-signature-256 header is missing." });
+    expect(signed("{", "issues")).toEqual({ status: 400, said: "Send JSON." });
+    expect(deliver(hook.token, "{}", { "x-github-event": "issues", "x-hub-signature-256": "sha256=00" })).toEqual({ status: 401, said: "The signature isn't sha256=<hex>." });
+    expect(deliver(hook.token, "{}", { "x-github-event": "issues", "x-hub-signature-256": `sha256=${"0".repeat(64)}` })).toEqual({ status: 401, said: "Signature doesn't match." });
     expect(signed("{}", "ping")).toEqual({ status: 200, said: "Connected." });
     expect(signed("null", "issues")).toEqual({ status: 202, said: "Not this repository." });
     expect(signed(JSON.stringify({ action: "opened", repository: "acme/shop" }), "issues")).toEqual({ status: 202, said: "Not this repository." });
@@ -177,7 +179,7 @@ describe("deliveries get today's answers", () => {
   it("Linear: secret, signature and age first; then only issue creates and updates", () => {
     const hook = hookOf({ kind: "linear", team: "ENG", delivery: "webhook" });
     expect(deliver(hook.token, "{}")).toEqual({ status: 401, said: "Paste Linear's signing secret on the flow's Triggers panel first." });
-    expect(saveLinearSigningSecret(store.getFlowTrigger(hook.id)!, "s".repeat(32), dir)).toEqual({ ok: true });
+    expect(saveSigningSecret(store, store.getFlowTrigger(hook.id)!, "s".repeat(32), T0, dir)).toMatchObject({ ok: true });
     const signed = (body: unknown) => { const bytes = JSON.stringify(body); return deliver(hook.token, bytes, { "linear-signature": createHmac("sha256", "s".repeat(32)).update(bytes).digest("hex") }); };
     expect(deliver(hook.token, "{}", { "linear-signature": "00" })).toEqual({ status: 401, said: "Signature doesn't match." });
     expect(signed({ type: "Issue", action: "create" })).toEqual({ status: 401, said: "Too old." });

@@ -38,7 +38,7 @@ const LIMITED_ACCESS = {
   'flow.card.decide': 'resource', 'flow.card.move': 'resource', 'flow.card.watch': 'resource',
   'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
   'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
-  'flow.trigger.secret': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
+  'flow.trigger.secret': 'resource', 'flow.trigger.setup': 'resource', 'flow.trigger.sender': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
   'settings.flows-on': 'collection', 'settings.knowledge-refresh': 'unscoped',
   'settings.knowledge-change': 'unscoped', 'settings.learning-change': 'unscoped',
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',

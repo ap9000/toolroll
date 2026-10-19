@@ -1952,6 +1952,32 @@
                 "type": "string",
                 "maxLength": 80
               },
+              "sender": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "standard",
+                  "github-style",
+                  "sentry",
+                  "vercel"
+                ]
+              },
+              "project": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "team": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "idField": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "urlField": {
+                "type": "string",
+                "maxLength": 80
+              },
               "zone": {
                 "type": "string",
                 "maxLength": 60

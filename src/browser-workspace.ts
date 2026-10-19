@@ -428,8 +428,10 @@ export type BrowserFlowTrigger = {
   /** Where the status points a person (a plane review's long waits: Needs you). */
   statusLink: BrowserLink | null;
   button: { label: string; questions: string[] } | null;
-  /** A webhook trigger: whether it can prove deliveries yet (Linear needs its signing secret pasted). */
-  hook: { ready: boolean; needsSecret: boolean } | null;
+  /** A webhook trigger: whether it can prove deliveries yet (Linear, Sentry and Vercel need their signing secret pasted).
+   * v126: a webhook's sender (who signs it; "none" is the address alone), whether Toolroll makes its secret, and a
+   * warning in words when anyone could add cards (unsigned) or any project could (a Sentry or Vercel webhook unscoped). */
+  hook: { ready: boolean; needsSecret: boolean; sender: string | null; makesSecret: boolean; warning: string | null } | null;
   checkable: boolean;
   /** A button shared as a public form (its link works). */
   shared: boolean;

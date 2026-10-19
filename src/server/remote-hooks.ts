@@ -64,7 +64,7 @@ export async function flowHook(ctx: RemoteHookContext, request: IncomingMessage,
     });
   } catch (error) { return reply(error instanceof Error && error.message === "too-large" ? 413 : 400, "Couldn't read that."); }
   try {
-    const answer = receiveFlowHook(store, url.pathname.slice(HOOK_PATH.length), { headers: request.headers, body: Buffer.concat(chunks) }, options.configDir, clock());
+    const answer = receiveFlowHook(store, url.pathname.slice(HOOK_PATH.length), { headers: request.headersDistinct, body: Buffer.concat(chunks) }, options.configDir, clock());
     return reply(answer.status, answer.said);
   } catch { return reply(500, "Not saved."); }
 }

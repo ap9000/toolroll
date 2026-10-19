@@ -18808,6 +18808,18 @@ export class Store {
     return Number(changes) === 1;
   }
 
+  /**
+   * v126: a trigger's credentials change: the next generation, and (when given) its new settings, in one write. The old
+   * generation's secret is never read again, whatever happens to its file. The new generation, or null when the trigger
+   * is gone.
+   */
+  advanceFlowHookGeneration(id: number, from: number, configJson: string | null, now: Date): number | null {
+    // Only from the generation the caller read: two changes at once can't both think theirs is current.
+    const row = this.db.prepare("UPDATE flow_trigger SET hook_generation = hook_generation + 1, config_json = COALESCE(?, config_json), updated_at = ? WHERE id = ? AND hook_generation = ? AND state != 'removed' RETURNING hook_generation")
+      .get(configJson, now.toISOString(), id, from);
+    return row === undefined ? null : Number(row["hook_generation"]);
+  }
+
   /** v126: what a trigger did with one delivery, or null when it never received it. */
   flowReceipt(trigger: number, key: string): FlowReceipt | null {
     const row = this.db.prepare("SELECT card, note, at, state, accepted_at, item_json FROM flow_trigger_event WHERE trigger = ? AND key = ?").get(trigger, key);
