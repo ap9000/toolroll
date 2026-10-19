@@ -1,6 +1,6 @@
 # ACP agents: one protocol adapter for every coding agent that speaks it
 
-Status: spec v5 (2026-10-19). v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
+Status: spec v6 (2026-10-19) — v6 revises only Layer E (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
 
 ## Why
 
@@ -171,3 +171,101 @@ Round 3 (v3):
 Round 4 (v4):
 1. Script launchers could escape the interpreter binding via `env` + child PATH → the gateway parses the shebang and spawns the attested interpreter explicitly; native launchers direct; PATH-switch, shebang-change and symlink-swap regressions (§ Admission).
 2. Storage contradiction → one additive nullable `run.agent_reported_usage_json` column; no role widening anywhere (§ Identity migration list).
+
+
+## Layer E, revised (v6)
+
+Implementing A–D showed that the v4/v5 probe design — check spawns that are *not* runs, behind a `GatewayLedger`
+interface splitting every durable write the gateway makes — would rewrite most of `invokeAgent` (session, version and
+start stamps, fence and tools records, usage, terminal class, spend settlement, custody, stop watch, process
+witnesses). v6 keeps every guarantee that design bought with a much smaller change: **a check is a real run of a real
+internal task**, so all of those writes, the fence, the stop watch, the spend rollups and the live view apply
+unchanged; the gateway gains exactly one admission exception, a single-use check request standing in for the
+attestation the check is about to create.
+
+### Where a check runs
+
+- **The Agent checks project.** A plane-owned git repository `<state>/agent-checks` (made on first use: `git init`, one
+  empty commit), registered as an ordinary project named "Agent checks". Each check files one built-in task in it,
+  "Check OpenCode (opencode/big-pickle)", through `fileTaskProposal` with `filedVia: "agent-check"` — unapproved like
+  every filing, so the queue never dispatches it. The check job drives it directly, as below. The task is visible
+  like any other (its runs on the Agents board, live); it ends `done` or `failed`.
+- **Who runs it: the runner.** `toolroll agents check <agent> [--model m] [--runner r]` and the providers screen's
+  "Check this agent" are credentialed (password; approver) and only *request* a check: an `acp_check_request` row
+  (id, provider, runner, model, `CONFORMANCE_VERSION`, requested_by, requested_at, expires_at = +30 min, state
+  `pending|running|passed|failed|expired`, task_ref, result_json). The named runner's watch loop picks up its own pending
+  requests at the start of a tick, before dispatch, so the check happens under that runner's custody and on that
+  runner's binary — the attestation is per runner, and only the runner can prove the binary it will run.
+- **The job, per request** (one at a time per runner):
+  1. Claim the request: `UPDATE … SET state='running', claimed_incarnation=? WHERE id=? AND state='pending' AND
+     expires_at > now AND runner=?` — zero rows, nothing happens.
+  2. Inspect the PATH binary (acp-inspect.ts) and compute its launch (`launchOf`): the bound files are written onto the
+     request (`launch_json`) in the same transaction as step 1's follow-up; a launch that can't be computed fails the
+     request with its words.
+  3. File (or reuse) the check task, place it in the Agent checks project, acquire its claim with the runner's own
+     credentials (`acquire`, the ordinary claim), and lease a worktree from the ordinary worktree manager — the same
+     pool, binding and fence as any build.
+  4. Run the two check steps below, each an ordinary `startRun` (role `builder`, route `legacy` for the agent and model)
+     and an ordinary `invokeAgent`, which admits it on the request instead of an attestation (next section).
+  5. Release the claim and worktree; settle the task (`done` on pass, `failed` otherwise); write the request's result;
+     on pass, record the attestation (`recordAcpAttestation`) **in the same transaction** that marks the request
+     `passed`, binding the launch from step 2, the identity the handshake gave, the models it offered, and the checks.
+
+### The gateway's one exception
+
+`invokeAgent(…, { acpCheck: requestId })` — for an ACP provider with no live attestation only — admits the spawn when,
+in one read immediately before the existing re-check position: the request is `running`, unexpired, for this
+provider, runner, claimed incarnation and model; `run.taskRef` is the request's task; and the request's recorded launch
+re-verifies (`verifyLaunch`). The spawn uses that launch and passes `expect: null` to the handshake (the check is what
+learns the identity). Each step consumes a step slot: `UPDATE acp_check_request SET steps_used = steps_used + 1 WHERE
+id=? AND steps_used = ? AND state='running'` with the expected index — so a request admits exactly its two steps, in
+order, and nothing else. A check request never satisfies an ordinary build, and an attestation never satisfies a
+check step (an architecture test: `acpCheck` is set only by the check job).
+
+### The two steps and what they prove
+
+1. **session-ok** — prompt: create `done.txt` containing `ok`, then run `printenv ANTHROPIC_API_KEY > env.txt` and
+   `cat <canary> > fenced.txt` (`<canary>` a file the job wrote inside the fenced state folder), then stop. Launched
+   with `ANTHROPIC_API_KEY=<random canary>` in the *launching* environment. Passes only if: the prompt answered
+   `end_turn`; the agent then exited **on stdin EOF / session close without a signal** (the runner records how the
+   process ended, below); `done.txt` contains `ok`; `env.txt` exists and does not contain the key canary; `fenced.txt`
+   exists and does not contain the file canary. A missing `env.txt` or `fenced.txt` fails the check — absence of
+   evidence is not isolation.
+2. **session-stop** — prompt: run `sleep 120`. The job cancels after the agent's first tool update (or 10 s);
+   passes only if the prompt answers `cancelled` within 15 s and the runner then reaped the group with nothing of it
+   left (the runner records the reap and whether any member remained, below).
+
+The models the agent offered (`session/new`'s list, on the success step) and the identity it gave (`initialize`'s
+`agentInfo`) are what the attestation records; a later check of the same binary must report the same identity.
+The `--version` step of v5 is dropped: the bound files' hashes are the identity; `agentInfo` is the agent's own claim,
+recorded and required to match at every build's handshake.
+
+### What the runner adds for this
+
+`runAcpSession` appends two lines to the retained record: `acp.offered` (the model list, bounded) and `acp.exit`
+(`how: "eof" | "term" | "kill" | "error"`, `leftovers: n` — members of the group still alive at the reap). The
+parser surfaces both on the envelope (`agentOffered`, `agentExit`); `invokeAgent` returns the envelope's ACP facts on
+the `ran` outcome for the check job only. Nothing else reads them.
+
+### Billing (v6 keeps v5's model-scoped design, built here)
+
+`acp_billing (provider, runner, model, kind 'metered'|'plan', revision, set_at, set_by)`, declared at check time
+(default metered) and changeable (credentialed). The run stamp `(billing_kind, billing_revision, billing_model)` goes on
+the run in `startRun`'s transaction for ACP runs — the moment it is admitted for budget — and settlement prices from
+the stamp: `plan` → $0, "billed by <agent>'s own plan", counted as unmeasured coverage; `metered` → today's unknown-cost
+rule. A check run is billed the same way as any run of its model.
+
+### Surfaces
+
+The providers screen and `toolroll providers` show each ACP agent's inspection, its live check (when, by whom, the
+identity, the models) or none, a "Check this agent" form (model pick from the agent's own `--version`-free inspection is
+impossible, so the form takes a model id; the first check may use the agent's default by naming it), the billing
+declaration per checked model, and "Revoke". `toolroll agents check|revoke|billing`. DESIGN §9d rewritten.
+
+### Review questions for v6
+
+1. Is a real internal task/run for each check sound — anything in disposal, the queue, attention or spend that would
+   treat it wrongly?
+2. Is the request-as-admission exception tight enough (single use per step, runner incarnation, launch re-verified)?
+3. Are the two steps' pass conditions free of false passes (model non-compliance reading as isolation)?
+4. Is dropping the `--version` step acceptable given the bound hashes?
