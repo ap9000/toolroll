@@ -1,6 +1,6 @@
 # ACP agents: one protocol adapter for every coding agent that speaks it
 
-Status: spec v8 (2026-10-19) — v6/v7/v8 revise only Layer E (v8: § "Layer E, v8") (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
+Status: spec v9 (2026-10-19) — v6–v9 revise only Layer E (v9: § "Layer E, v9") (v8: § "Layer E, v8") (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
 
 ## Why
 
@@ -354,3 +354,19 @@ The git-fence class v7/v8 item 1 described — Toolroll's own git honouring hook
 write, outside every fence — predates ACP and affects every agent. It moved to its own branch and PR
 (`git-fence-hardening`, docs/plans/git-fence-hardening.md there), to be finished for all agents. ACP agents ship with
 the same exposure every agent has today, no more; Layer E's design no longer depends on it.
+
+
+## Layer E, v9 (answering the v8 review; the git items moved out, above)
+
+1. **Cancellation is graded on a live witness (v8 #3).** The runner's control gains `liveDescendants()`: a fresh,
+   plane-side reading, at the moment it is called, of the agent's live descendants — from a process listing of the
+   agent's process tree when there is no native container, or from the container's own member list (the cgroup's
+   `cgroup.procs`) when there is. Windows job objects give no member list: checks refuse on Windows ("agent checks
+   need macOS or Linux"). The session-stop step polls `liveDescendants()` after the agent's `execute` update (which only
+   times it) for up to 60 s; it cancels only once at least one live descendant is seen, recording exactly those pids.
+   After settlement it passes only if the prompt answered `cancelled`, the run's process ending was the reap, and every
+   recorded pid is gone (`kill(pid, 0)` → ESRCH) — or, under a container, the settlement proved it empty
+   (`containment.empty === true`). An exited helper from earlier never counts: only what was alive at the cancel does.
+2. **Native containment (v8 #4)** is covered by the same `liveDescendants()` reading (above); the observer is not needed
+   for the check.
+3. Items 3 (ownership and recovery) and 4 (publication) of v8 stand as written; the v8 review found them sound.
