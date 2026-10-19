@@ -15171,6 +15171,16 @@ export class Store {
     return this.db.prepare("SELECT * FROM acp_check_request WHERE runner = ? AND state IN ('passed','failed') AND settled_at IS NULL ORDER BY id").all(runner).map(readAcpCheck);
   }
 
+  /** The claim a finished check's cleanup now holds on its task (its first one expired): the only one it may release. */
+  setAcpCheckLease(id: number, leaseId: string): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET lease_id = ? WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL").run(leaseId, id).changes) === 1;
+  }
+
+  /** A finished check holds something again (a checkout that landed after recovery settled it): cleanup reopens. */
+  unsettleAcpCheck(id: number): boolean {
+    return Number(this.db.prepare("UPDATE acp_check_request SET settled_at = NULL WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NOT NULL").run(id).changes) === 1;
+  }
+
   /** Mark a finished check's holdings let go. */
   settleAcpCheck(id: number, now: Date): boolean {
     return Number(this.db.prepare("UPDATE acp_check_request SET settled_at = ? WHERE id = ? AND state IN ('passed','failed') AND settled_at IS NULL").run(now.toISOString(), id).changes) === 1;

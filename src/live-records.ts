@@ -126,6 +126,37 @@ function escapeLeftOpen(line: string): EscapeCarry {
 }
 
 /**
+ * Where, in `text`, the escape `carry` left open at the end of what came before is over — read exactly as
+ * cleanLiveText reads escapes — or null while it is still open. Words written after it are words; words written
+ * inside it are cleaned away with it.
+ */
+function escapeEnd(text: string, carry: EscapeCarry): number | null {
+  if (carry === "C") {
+    const done = /^[0-?]*[ -/]*[@-~]/.exec(text);
+    if (done !== null) return done[0].length;
+    return /^[0-?]*[ -/]*$/.test(text) ? null : 0;
+  }
+  if (carry === "O") {
+    const stop = text.search(/[\x07\x1b\u009c]/);
+    if (stop < 0) return null;
+    if (text[stop] !== "\x1b") return stop + 1;
+    if (stop + 1 === text.length) return null;
+    return text[stop + 1] === "\\" ? stop + 2 : stop;
+  }
+  if (carry === "E") {
+    if (text === "") return null;
+    if (text[0] === "[" || text[0] === "]") {
+      const rest = escapeEnd(text.slice(1), text[0] === "[" ? "C" : "O");
+      return rest === null ? null : rest + 1;
+    }
+    const done = /^[ -/]*[0-~]/.exec(text);
+    if (done !== null) return done[0].length;
+    return /^[ -/]*$/.test(text) ? null : 0;
+  }
+  return 0;
+}
+
+/**
  * The ways one line can be read when judging where a key block begins or
  * ends: exactly as it will be shown (cleaned, with the escape the previous
  * line left open finished first), with only colour sequences removed, and
@@ -396,7 +427,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   const clock = options.clock ?? (() => new Date());
   let sequence = 0;
   /** A key block the agent began in one message stays hidden through the next, until it ends or a new session starts. */
-  const keyState = { inKey: false };
+  const keyState: KeyState = { inKey: false };
   /** Provider call id → our step, while it is open. */
   const open = new Map<string, { id: string; kind: LiveActivityKind }>();
 
@@ -554,6 +585,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   /** A step came between the held unfinished line and the words after it: they are joined with one space, so a token
    * keeps the word boundary a scanner needs ("credentials ghp_…") and `key= value` still reads as one. */
   let acpSeparated = false;
+  /** The message the held words belong to, when the agent names it: a new id is a new message, and a word break. */
+  let acpMessageId: string | null = null;
   /** Past the hard cap, the rest of that one line is not shown; each piece is still read for the key-block state, in
    * order — the state itself carries a split BEGIN across pieces, and an END split across two simply keeps the block
    * hidden (never the other way). Nothing is read twice. */
@@ -578,7 +611,14 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   };
   /** Whether the message's unfinished line opens a key block it hasn't finished saying: until that line is judged,
    * what comes between (a step's target) is hidden — never shown on the strength of a state not yet read. */
-  const heldKeyOpen = (): boolean => /BEGIN/i.test(cleanLiveText(acpWords).replace(/[^A-Za-z]/g, ""));
+  const heldKeyOpen = (): boolean => {
+    if (/BEGIN/i.test(cleanLiveText(acpWords).replace(/[^A-Za-z]/g, ""))) return true;
+    // Read as redaction will read it — every reading, from the state carried so far — on a copy of that state: a block
+    // it would open, or an opener it has begun and not finished, hides the target.
+    const probe: KeyState = { inKey: keyState.inKey, ...(keyState.tail === undefined ? {} : { tail: keyState.tail }) };
+    redactLiveLines(acpWords === "" ? [] : acpWords.split(/\r?\n/), probe);
+    return probe.inKey || (probe.tail ?? "").split("|").slice(0, 3).some(prefix => prefix !== "");
+  };
   const acpTarget = (kind: LiveActivityKind, update: Record<string, unknown>, before: string | null): string | null => {
     if (kind === "command") {
       const command = object(update["rawInput"])?.["command"];
@@ -613,9 +653,21 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       }
       // A step between two messages is a word break, always written: whatever the next chunk starts with (a CR, a BOM,
       // an escape) may be cleaned away, and the break with it.
-      if (acpSeparated && acpWords !== "" && !acpWords.endsWith("\n") && text !== "") acpWords += " ";
-      // Only words actually written settle the break: an empty chunk leaves it owed to the next.
-      if (text !== "") acpSeparated = false;
+      const messageId = typeof update["messageId"] === "string" ? update["messageId"] : null;
+      if (messageId !== null && acpMessageId !== null && messageId !== acpMessageId) acpSeparated = true;
+      if (messageId !== null) acpMessageId = messageId;
+      if (acpSeparated && text !== "") {
+        if (acpWords === "" || acpWords.endsWith("\n")) acpSeparated = false;
+        else {
+          // The break goes where cleaning can't take it: after any escape the held words left open, once it is over
+          // (written inside it, it would be cleaned away with it). Still open, the break waits for the next chunk.
+          const at = escapeEnd(text, escapeLeftOpen(acpWords));
+          if (at !== null) {
+            text = `${text.slice(0, at)} ${text.slice(at)}`;
+            acpSeparated = false;
+          }
+        }
+      }
       acpWords += text;
       if (acpWords.length <= ACP_WORDS_CAP) return [];
       // Flushed only at a line's end, so nothing the redaction reads (a key block's BEGIN, a `key=` and its value) is

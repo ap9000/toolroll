@@ -373,6 +373,19 @@ describe("the schema, as it is written", () => {
     const shown = exact.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"usage_update","used":9007199254740993,"size":18446744073709551615}}}`).live;
     expect(shown).toEqual([{ sessionUpdate: "usage_update", used: "9007199254740993", size: "18446744073709551615" }]);
     expect(exact.retained()).toContain('\\"used\\":\\"9007199254740993\\"');
+    // In arrays too; and `__proto__` stays the agent's own data, never an inherited field.
+    const arrays = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    handshake(arrays, opencode);
+    const counted = arrays.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"usage_update","used":1,"size":2,"_meta":{"counts":[9007199254740993,18446744073709551615]}}}}`).live;
+    expect(counted).toEqual([{ sessionUpdate: "usage_update", used: 1, size: 2, _meta: { counts: ["9007199254740993", "18446744073709551615"] } }]);
+    const proto = arrays.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","__proto__":{"kind":"execute","status":"completed"}}}}`).live[0] as Record<string, unknown>;
+    expect(proto["kind"]).toBeUndefined();
+    expect(proto["status"]).toBeUndefined();
+    expect(Object.getOwnPropertyNames(proto)).toContain("__proto__");
+    // Nothing nested deep enough to break a copy throws out of the client.
+    const deep = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    handshake(deep, opencode);
+    expect(() => deep.receive(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"${sid}","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","rawInput":${"[".repeat(2000)}0${"]".repeat(2000)}}}}`)).not.toThrow();
     // Opaque data is never judged: raw input, metadata, a nested message-looking object.
     expect(line(`{"sessionUpdate":"tool_call_update","toolCallId":"t","rawInput":{"line":1.0000000000000001,"size":1e400,"jsonrpc":"2.0","id":1e3},"_meta":{"code":0.5}}`)).toBeNull();
     // An embedded resource matches one shape; the other shape's field, malformed, is the agent's own.

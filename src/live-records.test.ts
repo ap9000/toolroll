@@ -401,6 +401,39 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     }
   });
 
+  test("the break after a step survives an escape left open across it, and a new message id is a new message", () => {
+    const token = `ghp_${"a1B2c3D4e5".repeat(3)}abcdef`;
+    const say = (text: string, messageId?: string) => acp({ sessionUpdate: "agent_message_chunk", ...(messageId === undefined ? {} : { messageId }), content: { type: "text", text } });
+    const step = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "pending" });
+    const permission = acp({ sessionUpdate: "permission", toolCallId: "c1", title: "x", kind: "read", granted: true });
+    const cases = [
+      [say("Checking credentials\x1b]0;title"), step, say(`\x07\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\x1b]0;title"), permission, say(`\x07\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\u009d0;title"), step, say(`\u009c\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\x1b"), step, say(`\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials\x1b]0;ti"), step, say("tle"), say(`\x07\x1b[32m${token}\x1b[0m\n`)],
+      [say("Checking credentials", "first"), acp({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Inspecting" } }), say(`${token}\n`, "second")],
+      [say("Checking credentials", "first"), say(`${token}\n`, "second")],
+    ];
+    for (const commands of [false, true]) for (const events of cases) {
+      const r = recorder(commands);
+      const records = [...all(r, events), ...r.end()];
+      expect(onDisk(records)).not.toContain(token);
+    }
+  });
+
+  test("a key opener begun before a step — split, disguised, inside an escape — hides the step's target", () => {
+    const say = (text: string) => acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const reading = acp({ sessionUpdate: "tool_call", toolCallId: "c1", title: "Inspect", kind: "read", status: "in_progress", locations: [{ path: "/pool/wt/sensitive-key-fragment" }] });
+    for (const opener of ["-----BE\nGIN PRIVATE KEY-----", "-----ＢＥＧＩＮ PRIVATE KEY-----", "\x1b]0;-----BEGIN PRIVATE KEY-----"]) {
+      for (const commands of [false, true]) {
+        const r = recorder(commands);
+        const records = [...all(r, [say(opener), reading, say("\nplain key material\n-----END PRIVATE KEY-----\n")]), ...r.end()];
+        expect(onDisk(records), opener).not.toContain("sensitive-key-fragment");
+      }
+    }
+  });
+
   test("an empty chunk between a step and a token doesn't spend the word boundary", () => {
     for (const commands of [false, true]) {
       const r = recorder(commands);

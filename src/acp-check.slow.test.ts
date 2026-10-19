@@ -154,6 +154,55 @@ describe("a check's claim and its recovery", () => {
     expect(store.getTask(`agent-check-${id}`)?.state).toBe("failed");
   });
 
+  test("while cleanup tears a checkout down, it holds the task: no one else can claim it mid-way", async () => {
+    const { id, ref } = abandoned(id => `agent-check-${id}-dead`);
+    const leased = await pool.lease({ repo, branch: `toolroll/agent-check-${id}`, base: "HEAD", runner: RUNNER, taskRef: ref, now: new Date() });
+    if (!leased.ok) throw new Error(leased.message);
+    // The check's own claim lapses first, so cleanup must take a fresh one of its own.
+    release(store, `agent-check-${id}-dead`, new Date());
+    const real = pool.release.bind(pool);
+    let successor: boolean | null = null;
+    pool.release = async (path, now) => {
+      successor = acquire(store, ref, RUNNER, { now: new Date(), token: "tok", newLeaseId: () => "successor", ttlMs: 3_600_000 }).ok;
+      return real(path, now);
+    };
+    await runAcpChecks(takeover());
+    expect(successor).toBe(false);
+    expect(store.acpCheck(id)?.settledAt).not.toBeNull();
+    expect(store.currentLiveLease(ref, new Date())).toBeNull();
+  });
+
+  test("a step that throws after its run began finishes that run, and the check settles", async () => {
+    const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
+    // The canary can't be written: a directory stands where it goes.
+    mkdirSync(join(dir, `acp-check-secret-${id}`));
+    writeFileSync(join(dir, `acp-check-secret-${id}`, "x"), "");
+    await runAcpChecks(job());
+    const request = store.acpCheck(id)!;
+    expect(request).toMatchObject({ state: "failed", settledAt: expect.any(String) });
+    expect(store.getRun(request.step1Run!)?.outcome).toBe("refused");
+  });
+
+  test("a checkout that lands after recovery settled the check reopens its cleanup", async () => {
+    const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
+    const real = pool.lease.bind(pool);
+    pool.lease = async options => {
+      // Meanwhile the watch is replaced and recovery closes — and settles — the check.
+      store.handle.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ?").run(new Date(Date.now() - 1000).toISOString(), RUNNER);
+      if (!store.acquireWatchLease(RUNNER, repo, "watch-2", 60 * 60_000, new Date()).ok) throw new Error("watch");
+      const claim = store.currentLiveLease(store.refFor("built-in", `agent-check-${id}`).id, new Date())!;
+      release(store, claim, new Date());
+      await runAcpChecks(takeover());
+      expect(store.acpCheck(id)?.settledAt).not.toBeNull();
+      return real(options);
+    };
+    await runAcpChecks(job());
+    pool.lease = real;
+    // The late checkout reopened cleanup, and the pass's own closing settle let it go.
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", settledAt: expect.any(String) });
+    expect(store.listWorktrees().filter(one => one.branch === `toolroll/agent-check-${id}`)).toEqual([]);
+  });
+
   test("a check that throws after its claim still lets go of everything", async () => {
     const id = store.requestAcpCheck({ provider: "opencode", runner: RUNNER, model: "fake/model", by: "alex" }, new Date());
     pool.lease = async () => { throw new Error("disk gone"); };

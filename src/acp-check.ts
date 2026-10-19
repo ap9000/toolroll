@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchOf } from "./acp-attest.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
-import { acquireForCheck, release } from "./claim.js";
+import { acquire, acquireForCheck, release } from "./claim.js";
 import type { AcpControl, RunOptions } from "./exec.js";
 import { invokeAgent, type InvokeResult } from "./invoke.js";
 import type { ProviderRunner } from "./provider.js";
@@ -76,35 +76,47 @@ export async function runAcpChecks(job: AcpCheckJob): Promise<void> {
 }
 
 /**
- * Let go of what finished checks hold — their own claim, their checkout, their task — once nothing of theirs can
- * still be running. A check is settled only when all of it is let go; anything that can't be yet (a run still open,
- * a process not proved gone, a checkout that wouldn't discard) is retried on the next pass. Nothing another holder
- * owns is touched: only the claim the check recorded as its own, and only its own branch's checkout, and only while
- * no one else holds the task.
+ * Let go of what finished checks hold — their checkout, their task, their claim — once nothing of theirs can still be
+ * running. The whole teardown happens under a live claim of the check's own on its task (its first, or a fresh one
+ * recorded in its place when that expired), so no one else can take the task while its checkout goes; ownership is
+ * re-read before every step that destroys anything. A check is settled only when all of it is let go; anything that
+ * can't be yet (a run still open, a process not proved gone, a checkout that wouldn't discard, someone else holding
+ * the task) is retried on the next pass, and never touched.
  */
 async function settleChecks(job: AcpCheckJob, clock: () => Date): Promise<void> {
   const { store } = job;
   for (const request of store.unsettledAcpChecks(job.runner)) {
+    let held: string | null = null;
     try {
       if (request.taskRef === null) { store.settleAcpCheck(request.id, clock()); continue; }
       const ref = request.taskRef;
-      const open = store.runsFor(ref).some(run => run.outcome === null || store.openRunProcessCount(run.id, clock()) > 0);
-      if (open) continue;
+      const quiet = () => !store.runsFor(ref).some(run => run.outcome === null || store.openRunProcessCount(run.id, clock()) > 0);
+      if (!quiet()) continue;
       const lease = store.currentLiveLease(ref, clock());
       if (lease !== null && lease !== request.leaseId) continue; // someone else holds the task now: not ours to touch
-      if (lease !== null) release(store, lease, clock());
+      if (lease === null) {
+        const fresh = `agent-check-${request.id}-settle-${randomBytes(4).toString("hex")}`;
+        const took = acquire(store, ref, job.runner, { now: clock(), token: job.token, newLeaseId: () => fresh, ttlMs: 10 * 60_000, incarnation: job.watch.owner });
+        if (!took.ok || !store.setAcpCheckLease(request.id, fresh)) { if (took.ok) release(store, fresh, clock()); continue; }
+        held = fresh;
+      } else held = lease;
+      const ours = () => store.currentLiveLease(ref, clock()) === held && quiet();
       const branch = `toolroll/agent-check-${request.id}`;
       let discarded = true;
-      for (const row of store.listWorktrees().filter(one => one.taskRef === ref && one.branch === branch && one.repo === (request.watch?.repo ?? one.repo))) {
+      for (const row of store.listWorktrees().filter(one => one.taskRef === ref && one.branch === branch)) {
+        if (!ours()) { discarded = false; break; }
         if (row.releasedAt === null) await job.pool.release(row.path, clock());
+        if (!ours()) { discarded = false; break; }
         if (!(await job.pool.discard(row.path, clock())).ok) discarded = false;
       }
-      if (!discarded) continue;
+      if (!discarded || !ours()) continue;
       const taskId = store.refForId(ref)?.externalId;
       if (taskId !== undefined) store.setTaskState(taskId, request.state === "passed" ? "done" : "failed", clock());
       store.settleAcpCheck(request.id, clock());
     } catch {
       // Retried on the next pass.
+    } finally {
+      if (held !== null && store.currentLiveLease(request.taskRef ?? -1, clock()) === held) release(store, held, clock());
     }
   }
 }
@@ -138,6 +150,12 @@ async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Da
   // From here on, what the check holds is let go by settleChecks, whatever happens.
   const leased = await job.pool.lease({ repo: job.watch.repo, branch: `toolroll/${taskId}`, base: "HEAD", runner: job.runner, taskRef: ref, now: clock() });
   if (!leased.ok) return fail(`the check's checkout couldn't be made: ${leased.message}`);
+  // Recovery may have closed — even settled — the check while its checkout was being made: what landed late reopens
+  // cleanup, so the next pass lets it go.
+  if (store.acpCheck(request.id)?.state !== "running") {
+    store.unsettleAcpCheck(request.id);
+    return fail("the check was closed while its checkout was being made");
+  }
   const worktree = leased.worktree.path;
   const stateDir = dirname(realpathSync(store.databaseFile() ?? "."));
   // Named as a secret is, beside the database: fenced whether the state folder is Toolroll's own or shared.
@@ -154,7 +172,22 @@ async function check(job: AcpCheckJob, request: AcpCheckRequest, clock: () => Da
 
 type StepContext = { ref: number; leaseId: string; worktree: string; canaryFile: string };
 
+/** A check step's run, finished as the check's own refusal — once, if it is still open. */
+function finishCheckRun(store: Store, run: number, clock: () => Date): void {
+  if (store.getRun(run)?.outcome === null) store.finishRun(run, { outcome: "refused", reason: "agent-check", now: clock() });
+}
+
+/** The two steps; whatever throws, the step's run in flight is finished (cleanup still waits for its processes). */
 async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext, clock: () => Date): Promise<string | null> {
+  let current: number | null = null;
+  try {
+    return await runSteps(job, request, at, clock, run => { current = run; });
+  } finally {
+    if (current !== null) finishCheckRun(job.store, current, clock);
+  }
+}
+
+async function runSteps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext, clock: () => Date, track: (run: number) => void): Promise<string | null> {
   const { store } = job;
   const spec = { provider: request.provider as Parameters<typeof invokeAgent>[2]["provider"], model: request.model };
   const ask = (brief: string) => ({ phase: "build" as const, brief, maxTurns: 1, permissionMode: "bypassPermissions", skipPermissions: true, resumeSession: null });
@@ -166,7 +199,7 @@ async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext
   };
   const startRun = () => store.startRun({ taskRef: at.ref, leaseId: at.leaseId, runner: job.runner, branch: `toolroll/agent-check-${request.id}`, worktree: at.worktree,
     route: { routeDigest: "legacy", phase: "build", provider: request.provider, model: request.model, chosen: "legacy" }, now: clock() });
-  const finish = (run: number) => store.finishRun(run, { outcome: "refused", reason: "agent-check", now: clock() });
+  const finish = (run: number) => finishCheckRun(store, run, clock);
   const options = (extra: Partial<RunOptions>): Parameters<typeof invokeAgent>[4] => ({
     cwd: at.worktree, idleTimeoutMs: 60_000, timeoutMs: 300_000, clock,
     ...(job.keyHome === undefined ? {} : { keyHome: job.keyHome }),
@@ -178,6 +211,7 @@ async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext
   const held1 = budget();
   if (held1 !== null) return held1;
   const run1 = startRun();
+  track(run1);
   if (!store.consumeAcpCheckStep(request.id, 1, run1, clock())) { finish(run1); return "the check stopped admitting its first step (expired, or its watch lost the lease)"; }
   const fileCanary = randomBytes(18).toString("hex");
   const envValue = `sk-ant-canary-${randomBytes(18).toString("hex")}`;
@@ -209,6 +243,7 @@ async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext
   const held2 = budget();
   if (held2 !== null) return held2;
   const run2 = startRun();
+  track(run2);
   if (!store.consumeAcpCheckStep(request.id, 2, run2, clock())) { finish(run2); return "the check stopped admitting its second step"; }
   let witnessed: { pid: number; group: number }[] = [];
   let started = false;
