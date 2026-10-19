@@ -647,7 +647,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     return cancelled.ok ? settle(cancelled.said) : answer(409, { ok: false, said: cancelled.message });
   };
 
-  type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "setup" | "sender" | "share" | "unshare";
+  type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "setup" | "sender" | "share" | "unshare" | "dropped";
   const triggerAct = (verb: TriggerVerb) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who } = ctx;
     const change = openFlowChange(ctx);
@@ -662,6 +662,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       return shared.ok ? settle(shared.said, { reveal: shared.reveal }) : answer(409, { ok: false, said: shared.message });
     }
     if (verb === "unshare") { stopSharingFlowButton(store, trigger, now); return settle("The form link no longer works."); }
+    // v126: a person has seen that deliveries were turned away (the banner stays until then).
+    if (verb === "dropped") { store.clearFlowDeliveriesDropped(trigger.id); return settle("Cleared."); }
     if (verb === "press") {
       let answers: unknown;
       try { answers = JSON.parse(body.get("answers") ?? "[]"); } catch { answers = []; }
@@ -832,6 +834,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flow.trigger.secret": triggerAct("secret"),
     "flow.trigger.setup": triggerAct("setup"),
     "flow.trigger.sender": triggerAct("sender"),
+    "flow.trigger.dropped": triggerAct("dropped"),
     "flow.trigger.share": triggerAct("share"),
     "flow.trigger.unshare": triggerAct("unshare"),
     "recipes.prepare-send": recipeAct("prepare"),

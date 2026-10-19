@@ -18870,6 +18870,12 @@ export class Store {
       .map(row => ({ key: String(row["key"]), itemJson: String(row["item_json"]), at: String(row["at"]) }));
   }
 
+  /** v126: a held delivery that can't become its card (its words no longer pass): left out, with why. */
+  skipHeldReceipt(trigger: number, key: string, note: string): boolean {
+    const { changes } = this.db.prepare("UPDATE flow_trigger_event SET state = 'skipped', note = ?, item_json = NULL WHERE trigger = ? AND key = ? AND state = 'held'").run(note, trigger, key);
+    return Number(changes) === 1;
+  }
+
   /** v126: how many deliveries a trigger holds. */
   heldFlowReceiptCount(trigger: number): number {
     return Number(this.db.prepare("SELECT COUNT(*) AS n FROM flow_trigger_event WHERE trigger = ? AND state = 'held'").get(trigger)?.["n"] ?? 0);

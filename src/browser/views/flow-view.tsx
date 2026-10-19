@@ -1270,6 +1270,11 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
         <summary className="cursor-pointer text-body font-medium">What each run files</summary>
         <ul className="mt-1 flex flex-col gap-1 text-caption text-muted-foreground font-normal">{trigger.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
       </details>}
+      {trigger.hook?.dropped != null && <div className="mt-2 flex flex-col gap-1.5 rounded-md border border-attention/50 p-2" data-trigger-dropped>
+        <p className="text-body font-medium">{trigger.hook.dropped.count === 1 ? "1 delivery was" : `${trigger.hook.dropped.count} deliveries were`} turned away since {ago(trigger.hook.dropped.since)}: too many were already waiting.</p>
+        <p className="text-caption text-muted-foreground font-normal">{trigger.hook.dropped.resend}</p>
+        <Button size="sm" variant="outline" className="self-start" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/dropped`, trigger.kind)}>Clear</Button>
+      </div>}
       {trigger.hook?.sender != null && <WebhookSigning trigger={trigger} view={view} csrf={csrf} apply={apply} onReveal={revealed => setReveal({ kind: trigger.hook?.sender ?? trigger.kind, reveal: revealed })} />}
       {trigger.hook?.sender == null && trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
       <div className="mt-2 flex flex-wrap gap-1.5">

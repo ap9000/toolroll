@@ -49,7 +49,10 @@ export async function telegramHook(ctx: RemoteHookContext, request: IncomingMess
 
 export async function flowHook(ctx: RemoteHookContext, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const { store, options, clock } = ctx;
-  const reply = (status: number, said: string) => { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ said })); request.resume(); };
+  const reply = (status: number, said: string, retryAfter?: number) => {
+    response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...(retryAfter === undefined ? {} : { "retry-after": String(retryAfter) }) });
+    response.end(JSON.stringify({ said })); request.resume();
+  };
   if (url.pathname.startsWith(FORM_PATH)) return flowForm(ctx, request, response, url);
   if (options.configDir === undefined || !url.pathname.startsWith(HOOK_PATH)) return reply(404, "No such address.");
   if (request.method !== "POST") return reply(405, "Send a POST.");
@@ -65,7 +68,7 @@ export async function flowHook(ctx: RemoteHookContext, request: IncomingMessage,
   } catch (error) { return reply(error instanceof Error && error.message === "too-large" ? 413 : 400, "Couldn't read that."); }
   try {
     const answer = receiveFlowHook(store, url.pathname.slice(HOOK_PATH.length), { headers: request.headersDistinct, body: Buffer.concat(chunks) }, options.configDir, clock());
-    return reply(answer.status, answer.said);
+    return reply(answer.status, answer.said, answer.retryAfter);
   } catch { return reply(500, "Not saved."); }
 }
 

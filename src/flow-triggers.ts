@@ -39,6 +39,7 @@ import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
 import { identityOf, readDelivery } from "./webhook-readers.js";
+import { CARDS_PER_HOUR, countUnproven, HELD_AT_MOST, UNKNOWN_ADDRESS } from "./webhook-limits.js";
 import { makesSecret, makeSecret, proveDelivery, secretShapeOk, SENDER_WORDS, WEBHOOK_SENDERS, type DistinctHeaders, type SigningSender, type WebhookSender } from "./webhook-signing.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
@@ -608,6 +609,8 @@ export async function runFlowTriggers(store: Store, repo: string, now: Date, io:
     const config = triggerConfigOf(trigger);
     if (config === null) continue;
     try {
+      // v126: deliveries held over the hourly limit become their cards as the hour makes room.
+      if (takesDeliveries(config)) pass.added += drainHeldDeliveries(store, trigger, now);
       if (config.kind === "schedule" && config.script !== undefined && trigger.nextAt !== null && Date.parse(trigger.nextAt) <= now.getTime()) {
         const fired = await fireScript(store, trigger, config, now, io, true);
         pass.added += fired.added;
@@ -971,7 +974,8 @@ async function fetchLinear(config: Extract<TriggerConfig, { kind: "linear" }>, t
 /** v126: headers as Node's `headersDistinct` gives them, one value per line they arrived on, so a security header sent
  * twice is seen twice (Node's `headers` joins repeated custom headers with commas). */
 export type HookDelivery = { headers: DistinctHeaders; body: Buffer };
-export type HookAnswer = { status: number; said: string };
+/** `retryAfter` (seconds): a 429's Retry-After. */
+export type HookAnswer = { status: number; said: string; retryAfter?: number };
 
 /** A header that only describes the delivery (not a security header): its first value. */
 const header = (delivery: HookDelivery, name: string) => delivery.headers[name]?.[0] ?? "";
@@ -1006,15 +1010,25 @@ function proveHook(trigger: FlowTriggerRow, config: TriggerConfig, delivery: Hoo
 
 /** A webhook delivery at a trigger's secret address: prove it, read it, make at most the cards it names. Nothing runs here. */
 export function receiveFlowHook(store: Store, token: string, delivery: HookDelivery, dir: string, now: Date): HookAnswer {
-  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return { status: 404, said: "No such address." };
+  // v126 floods (webhook-limits.ts): what doesn't prove itself is counted per address, and past the minute's limit is
+  // answered 429 and does nothing. A delivery that proves itself is never refused by this count.
+  const unproven = (address: string, answer: HookAnswer): HookAnswer => {
+    const count = countUnproven(store, address, now);
+    return count.over ? { status: 429, said: "Too many. Try again later.", retryAfter: count.retryAfterSeconds } : answer;
+  };
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return unproven(UNKNOWN_ADDRESS, { status: 404, said: "No such address." });
   const trigger = store.flowTriggerByHook(hookHash(token));
   const config = trigger === null ? null : triggerConfigOf(trigger);
-  if (trigger === null || config === null || !takesDeliveries(config)) return { status: 404, said: "No such address." };
+  if (trigger === null || config === null || !takesDeliveries(config)) return unproven(UNKNOWN_ADDRESS, { status: 404, said: "No such address." });
   if (!adapterPolicy({ caller: "service", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, said: "No access to this flow." };
+  const address = trigger.hookHash ?? UNKNOWN_ADDRESS;
+  // An unsigned webhook has nothing to prove: every delivery to it counts (and it is lossy under a flood, by design).
+  const unsigned = config.kind === "webhook" && senderOf(config) === "none";
+  if (unsigned) { const counted = unproven(address, { status: 0, said: "" }); if (counted.status === 429) return counted; }
   if (delivery.body.length > HOOK_BYTES) return { status: 413, said: "Too large." };
   // Proven over the raw bytes before anything in them is read; a refusal writes nothing, not even the last outcome.
   const proven = proveHook(trigger, config, delivery, dir, now);
-  if ("status" in proven) return proven;
+  if ("status" in proven) return unsigned ? proven : unproven(address, proven);
   const note = (said: string) => { store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: said }, now); };
   // Every write a delivery makes is bound to the trigger as it was proven against (v126): its secret, settings, address
   // and state, read again in the same transaction. A change that landed meanwhile (a new secret, another sender, a new
@@ -1088,6 +1102,29 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     const first = items[0]!;
     const before = items.length === 1 ? store.flowReceipt(trigger.id, first.key) : null;
     if (before !== null) return repeatAnswer(before);
+    // The hourly card limit (v126), decided in this same transaction, counted when each card was made: a signed delivery
+    // over it is held whole and made into its card when there's room; an unsigned one is turned away.
+    const making = items.filter((item): item is Incoming & { at: string | null } => !("skip" in item));
+    if (making.length > 0 && store.flowCardsAcceptedSince(trigger.id, new Date(now.getTime() - 3_600_000)) >= CARDS_PER_HOUR) {
+      if (store.claimFlowLimitNote(trigger.id, now)) note(unsigned ? "Too many in the last hour: new deliveries are turned away until there's room." : "Too many in the last hour: new deliveries are held until there's room.");
+      if (unsigned) return { status: 429, said: "Too many in the last hour. Try again later.", retryAfter: 3600 };
+      const item = making[0]!;
+      // Screened before it is kept, as a card's words are: a held item is never something a card couldn't hold.
+      const words = flowCardText(item.title, item.description);
+      if ("problem" in words) {
+        const why = words.problem.startsWith("That looks like a key") ? "it looked like it held a key or password" : words.problem;
+        store.recordFlowTriggerEvent(trigger.id, item.key, null, why, now);
+        return { status: 202, said: `No new cards. Left out 1 item: ${item.source.label}: ${why}.` };
+      }
+      if (store.heldFlowReceiptCount(trigger.id) >= HELD_AT_MOST) {
+        // Turned away, written nowhere but the trigger's lasting count: the sender's own log is where it can be resent from.
+        store.noteFlowDeliveryDropped(trigger.id, now);
+        return { status: 503, said: "Too many waiting already. Resend it later from the sender's delivery log." };
+      }
+      const held: HeldItem = { title: words.title, description: words.description, source: item.source, by };
+      store.recordFlowReceipt(trigger.id, item.key, "held", null, JSON.stringify(held), now);
+      return { status: 202, said: "Held: it will be added when there's room." };
+    }
     const results = items.slice(0, CARDS_PER_CHECK).map(item => "skip" in item
       ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}` } : { made: "seen" as Made, note: null })
       : makeCard(store, trigger, config, item, by, now));
@@ -1095,6 +1132,50 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     note(said);
     return { status: 202, said };
   });
+}
+
+/** v126: a held delivery, kept whole until there's room for its card: its words (already screened), where it came from
+ * and who sent it. */
+type HeldItem = { title: string; description: string | null; source: FlowCardSource; by: string };
+
+function readHeldItem(json: string): HeldItem | null {
+  try {
+    const raw = JSON.parse(json) as Record<string, unknown>;
+    const source = raw["source"] as FlowCardSource | undefined;
+    if (typeof raw["title"] !== "string" || (raw["description"] !== null && typeof raw["description"] !== "string") || typeof raw["by"] !== "string" || typeof source?.label !== "string" || typeof source.kind !== "string") return null;
+    return { title: raw["title"], description: raw["description"] as string | null, source, by: raw["by"] };
+  } catch { return null; }
+}
+
+/**
+ * v126: make a trigger's held deliveries into their cards while the last hour has room, oldest first. Each in its own
+ * transaction: the receipt is still held, the flow still takes cards, the words still pass; the card and the receipt's
+ * move to accepted land together, or neither does. A held item that no longer passes is left out, with why.
+ */
+export function drainHeldDeliveries(store: Store, trigger: FlowTriggerRow, now: Date): number {
+  const config = triggerConfigOf(trigger);
+  if (config === null || !takesDeliveries(config) || trigger.state !== "active") return 0;
+  let added = 0;
+  for (;;) {
+    const room = CARDS_PER_HOUR - store.flowCardsAcceptedSince(trigger.id, new Date(now.getTime() - 3_600_000));
+    if (room <= 0) return added;
+    const next = store.heldFlowReceipts(trigger.id, 1)[0];
+    if (next === undefined) return added;
+    const made = store.transact(() => {
+      if (store.flowReceipt(trigger.id, next.key)?.state !== "held") return "gone" as const;
+      const flow = store.getFlow(trigger.flow);
+      const definition = flow === null ? null : flowDefinitionOf(flow);
+      if (flow === null || definition === null || flow.state !== "active") return "wait" as const;
+      const item = readHeldItem(next.itemJson);
+      const words = item === null ? { problem: "it couldn't be read back" } : flowCardText(item.title, item.description);
+      if (item === null || "problem" in words) { store.skipHeldReceipt(trigger.id, next.key, "problem" in words ? words.problem : "it couldn't be read back"); return "left" as const; }
+      const card = store.addFlowCard({ flow: flow.id, title: words.title, description: words.description, stage: startZone(config, definition), by: item.by, byKind: "automation", source: item.source }, now);
+      if (!store.acceptHeldReceipt(trigger.id, next.key, card, now)) throw new Error("a held delivery changed while its card was made");
+      return "added" as const;
+    });
+    if (made === "wait") return added;
+    if (made === "added") added++;
+  }
 }
 
 /** v126: a delivery received before, answered for what it was — never as a card that isn't there. */
