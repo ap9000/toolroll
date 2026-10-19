@@ -1,6 +1,6 @@
 # ACP agents: one protocol adapter for every coding agent that speaks it
 
-Status: spec v7 (2026-10-19) — v6/v7 revise only Layer E (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
+Status: spec v8 (2026-10-19) — v6/v7/v8 revise only Layer E (v8: § "Layer E, v8") (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
 
 ## Why
 
@@ -320,3 +320,29 @@ declaration per checked model, and "Revoke". `toolroll agents check|revoke|billi
      (`--force`), never kept dirty for a "next attempt".
 8. **Re-checking (P2).** `acpCheck` admission applies whenever the option is present — an existing attestation for the
    same agent neither blocks nor satisfies a check; the new one replaces it only on a pass.
+
+
+## Layer E, v8 (answering the v7 review)
+
+1. **Lease git (P1).** `freshen()` now runs hardened too (f48ce902). The check-then-run race is closed at its root: no
+   build can write the shared repository's `.git/config` or `.git/hooks`, nor its checkout's `.git` pointer, its
+   metadata's `commondir`/`gitdir`, or a `config.worktree` git reads — read-only grants in every task boundary on every
+   platform (7b5c4477, b10a8907, 0c1c3bbd), with any pre-existing second hard link to one refusing the launch
+   (a3681934). The config check that remains guards only what was planted before.
+2. **Cancellation is graded on plane evidence (P1).** The session-stop step passes only on facts the agent can't
+   write: the runner's process-tree observation (`onDescendant`, as for every run's custody) records at least one
+   descendant of the agent's process **before** the cancel is sent; after settlement every descendant the run
+   witnessed is proven gone (`onDescendantExit`, or absent from a fresh process listing); and the prompt answered
+   `cancelled`. The agent's `execute/in_progress` update only times the cancel; it proves nothing. No witnessed
+   descendant within 60 s, and the step fails.
+3. **Ownership and recovery (P1).** A request is owned by one watch: the claim records the claiming watch's lease
+   (`watch_lease`, the same lease that admits its tick) beside the runner. Recovery treats a `running` request as
+   abandoned only when that lease is no longer live (expired or released) or the request is past `expires_at`; it then
+   proves the request's runs are finished and their processes gone (the run rows settled, the custody witnesses all
+   exited) before it releases and discards the worktree — any doubt leaves the worktree for a person and fails the
+   request. Ownership is proven again (lease still live and the claimer's) before each step's consume CAS.
+4. **Publication (P1).** The final transaction requires, in one statement: `state='running'`, `expires_at > now`, the
+   owning watch lease still live and the claimer's, `steps_used=2`, both bound runs finished with outcome `refused`
+   reason `agent-check` **and** each step's verdict recorded as passed on the request (`step1_passed`, `step2_passed`,
+   each written by its own CAS after grading). Exactly one row, or nothing — and `recordAcpAttestation` runs inside that
+   same transaction, so an expired, stale or unproven request can never publish.
