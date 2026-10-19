@@ -311,6 +311,19 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(records.find(one => one.k === "done")).toMatchObject({ ok: false, out: ["1 failing"] });
   });
 
+  test("a long message flushed in pieces never splits a key block's opening line between them", () => {
+    const r = recorder(true);
+    const opener = "-----BEGIN PRIVATE KEY-----";
+    // Not shaped like key material: only the block itself (its BEGIN read whole) hides it.
+    const body = "plain words that sit inside the block";
+    // The first chunk ends partway through the opener, past the size a message is flushed at.
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"y".repeat(17_000)}\n${opener.slice(0, 12)}` } }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${opener.slice(12)}\n${body}\n` } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain(body);
+  });
+
   test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
     const r = recorder(true);
     const records = [...all(r, [acp({ sessionUpdate: "permission", toolCallId: "p", title: "Read /Users/someone/.ssh/id_rsa", kind: "read", granted: true })]), ...r.end()];

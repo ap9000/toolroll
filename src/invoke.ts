@@ -19,7 +19,7 @@
 
 import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
-import { ACP_AGENTS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
+import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { verifyLaunch } from "./acp-attest.js";
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
@@ -287,6 +287,9 @@ export async function invokeAgent(
     if (invocation.phase !== "build" && invocation.phase !== "repair") return refuse(`${name} builds and repairs only`);
     if (spec.model === null || !acpAttestation.models.includes(spec.model)) return refuse(`${name} didn't offer ${spec.model ?? "a model"} when it was checked — check it again, or choose one it offered`);
     if (invocation.maxBudgetUsd !== undefined) return refuse(`${name} can't hold a dollar cap, so it doesn't run capped work (budget-unenforceable)`);
+    // The billing the run was admitted under must be for the model about to be chosen.
+    const stamp = store.acpBillingOfRun(runId);
+    if (stamp !== null && stamp.model !== spec.model) return refuse(`this run was admitted to bill ${stamp.model}, not ${spec.model}`);
   }
 
   // Auth mode decides how the credential reaches the process (the operator
@@ -491,7 +494,7 @@ export async function invokeAgent(
     ...(stdin === undefined ? {} : { stdin }),
     ...(liveInput === null ? {} : { liveInput }),
     // One ACP conversation: the brief, the sealed model, and who the check says the agent is.
-    ...(acpAttestation === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation.agent, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }) } }),
+    ...(acpAttestation === null || spec.model === null ? {} : { acp: { prompt: buildInvocation.brief, model: spec.model, expect: acpAttestation.agent, ...(runOptions.acp?.onControl === undefined ? {} : { onControl: runOptions.acp.onControl }), ...(runOptions.acp?.handshakeMs === undefined ? {} : { handshakeMs: runOptions.acp.handshakeMs }) } }),
     ...(hardTimeoutMs === undefined ? {} : { timeoutMs: hardTimeoutMs }),
     ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
     ...(defaultTimeoutMs === undefined ? {} : { timeoutMs: defaultTimeoutMs }),
@@ -604,7 +607,12 @@ export async function invokeAgent(
 
     // The ACP launch re-proved HERE, after every await: each bound file is still the one that passed its check.
     if (acpAttestation !== null) {
-      const verified = verifyLaunch(acpAttestation.launch);
+      // The record is read again here, after every await: a check revoked or replaced during setup starts nothing.
+      const live = store.acpAttestationFor(spec.provider, run.runner);
+      if (live === null || live.id !== acpAttestation.id) {
+        return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: `${ACP_AGENTS[spec.provider as AcpProviderId].name}'s check was revoked or replaced while this run was being set up — nothing was started` };
+      }
+      const verified = verifyLaunch(live.launch);
       if (!verified.ok) {
         return { kind: "refused", reason: "provider-unattested", providerVersion: acpAttestation.agent.version, diagnostic: verified.problem };
       }

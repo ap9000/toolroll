@@ -545,6 +545,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   /** A message's words are shown in one piece when it ends — or, past this many characters, in pieces as they come:
    * every word passes the shared redaction in the order the agent wrote it, none is dropped unseen. */
   const ACP_WORDS_CAP = 16 * 1024;
+  /** A line with no end in sight is flushed whole past this (it is cut to a line's length on the way out anyway). */
+  const ACP_LINE_HARD_CAP = 256 * 1024;
   const held = new Map<string, { kind: LiveActivityKind; target: string | null }>();
   /** The latest output an open command showed, already redacted when it arrived (a later update may carry none). */
   const outputs = new Map<string, string[]>();
@@ -576,7 +578,14 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
       const content = object(update["content"]);
       if (content === null || content["type"] !== "text" || typeof content["text"] !== "string") return [];
       acpWords += content["text"];
-      return acpWords.length > ACP_WORDS_CAP ? flushWords(at) : [];
+      if (acpWords.length <= ACP_WORDS_CAP) return [];
+      // Flushed only at a line's end, so a marker the redaction reads (a key block's BEGIN) is never split across two
+      // pieces; the partial last line waits for the rest of itself.
+      const cut = acpWords.lastIndexOf("\n");
+      if (cut < 0) return acpWords.length > ACP_LINE_HARD_CAP ? flushWords(at) : [];
+      const whole = acpWords.slice(0, cut + 1);
+      acpWords = acpWords.slice(cut + 1);
+      return whole.trim() === "" ? [] : say(at, whole);
     }
     // Anything else ends the words before it: the file keeps the agent's order.
     const records: LiveRecord[] = flushWords(at);

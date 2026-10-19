@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { launchOf } from "./acp-attest.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { acquire } from "./claim.js";
@@ -72,11 +72,11 @@ function check(): void {
   store.recordAcpAttestation({ provider: "opencode", runner: RUNNER, launch, agent: { name: "FakeCode", version: "1.0.0" }, cliVersion: "1.0.0", models: ["fake/model"], checks: ["test"], recordedBy: "test" }, T0);
 }
 
-function run(mode: string, extra: { idleTimeoutMs?: number; timeoutMs?: number; onControl?: (control: { cancel: () => void }) => void } = {}): Promise<InvokeResult> {
+function run(mode: string, extra: { idleTimeoutMs?: number; timeoutMs?: number; onControl?: (control: { cancel: () => void }) => void; handshakeMs?: number } = {}): Promise<InvokeResult> {
   const env = { FAKE_ACP: mode, FAKE_ACP_LOG: join(dir, "agent.log"), FAKE_ACP_RAN: join(dir, "ran") };
   return invokeAgent(store, runId, SPEC, ASK, {
     keyHome: home, env, idleTimeoutMs: extra.idleTimeoutMs ?? 20_000, timeoutMs: extra.timeoutMs ?? 60_000,
-    ...(extra.onControl === undefined ? {} : { acp: { prompt: "", model: "", expect: null, onControl: extra.onControl } }),
+    ...(extra.onControl === undefined && extra.handshakeMs === undefined ? {} : { acp: { prompt: "", model: "", expect: null, ...(extra.onControl === undefined ? {} : { onControl: extra.onControl }), ...(extra.handshakeMs === undefined ? {} : { handshakeMs: extra.handshakeMs }) } }),
   });
 }
 const ran = () => existsSync(join(dir, "ran"));
@@ -162,6 +162,50 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
       try { process.kill(pid, 0); await new Promise(resolve => setTimeout(resolve, 100)); } catch { alive = false; }
     }
     expect(alive).toBe(false);
+  });
+
+  test("a check revoked or replaced while the run was being set up starts nothing", async () => {
+    check();
+    const real = store.acpAttestationFor.bind(store);
+    let reads = 0;
+    vi.spyOn(store, "acpAttestationFor").mockImplementation((provider, runner) => (++reads === 1 ? real(provider, runner) : null));
+    const result = await run("ok");
+    expect(result).toMatchObject({ kind: "refused", reason: "provider-unattested", diagnostic: expect.stringContaining("revoked or replaced") });
+    expect(ran()).toBe(false);
+  });
+
+  test("a second, conflicting answer — even one with no newline before the exit — is never a success", async () => {
+    check();
+    const result = await run("double-answer");
+    expect(result.kind === "refused" || result.outcome.code !== 0).toBe(true);
+  });
+
+  for (const mode of ["pipe-holder", "escaped-pipe-holder"] as const) {
+    test(`a stray holding the agent's pipes (${mode === "pipe-holder" ? "in its group" : "in a group of its own"}) doesn't hold the run open`, async () => {
+      check();
+      const started = Date.now();
+      const result = await run(mode);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(result.kind).toBe("ran");
+      const pid = Number(readFileSync(join(worktree, "stray.pid"), "utf8"));
+      try { process.kill(pid, "SIGKILL"); } catch { /* reaped already */ }
+    });
+  }
+
+  test("an agent that ignores EOF and SIGTERM after answering is killed by the ladder — and the answered build still succeeds", async () => {
+    check();
+    const result = await run("ignore-term");
+    if (result.kind !== "ran") throw new Error(JSON.stringify(result));
+    expect(result.outcome.code).toBe(0);
+    expect(result.outcome.acp?.exit?.how).toBe("kill");
+  }, 30_000);
+
+  test("an agent that never answers initialize is stopped by the handshake deadline", async () => {
+    check();
+    const started = Date.now();
+    const result = await run("silent-init", { handshakeMs: 1_000, idleTimeoutMs: 60_000 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.kind === "refused" || result.outcome.code !== 0).toBe(true);
   });
 
   test("a cancel mid-prompt is answered cancelled, and is not a success", async () => {

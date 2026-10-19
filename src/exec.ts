@@ -1560,10 +1560,16 @@ export type AcpRun = {
   expect: { name: string; version: string } | null;
   /** Handed the conversation's controls once it starts (the conformance probe cancels with it). */
   onControl?: (control: { cancel: () => void }) => void;
+  /** Each handshake step's deadline (ACP_HANDSHAKE_MS unless a test shortens it). */
+  handshakeMs?: number;
 };
 
 /** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */
 export const ACP_SHUTDOWN_MS = { close: 2_000, eof: 5_000, term: 5_000 } as const;
+/** How long each handshake step (initialize, session/new, choosing the model) may take before the agent is stopped. */
+export const ACP_HANDSHAKE_MS = 30_000;
+/** After the agent itself has exited, how long its pipes may stay open (a descendant holding them) before they are closed. */
+const ACP_PIPES_AFTER_EXIT_MS = 5_000;
 
 /** SIGTERM the child's process group (POSIX) or the child alone; a container's own stop is the forced one, later. */
 function termGroup(child: import("node:child_process").ChildProcess): void {
@@ -1619,8 +1625,10 @@ export function runAcpSession(
     let notFound = false;
     let settled = false;
     let shuttingDown = false;
-    /** Set when the plane itself signalled the agent after its terminal: an exit by that signal is clean. */
-    let signalledAfterTerminal = false;
+    /** The signals the plane itself sent after the prompt was answered, by its own shutdown ladder: an exit by one of
+     * those is clean. A stop or a timeout kills through other roads and never sets these. */
+    let termAfterTerminal = false;
+    let killAfterTerminal = false;
     /** How the process came to end, for the record: on its own (before or after stdin closed), or by our signal. */
     let endedBy: "self" | "eof" | "term" | "kill" | "error" = "self";
     let announced: string | null = null;
@@ -1638,6 +1646,19 @@ export function runAcpSession(
       if (options.processGroup === true) killGroup(child);
       else child.kill("SIGKILL");
     };
+    /** Each handshake step has its own deadline, beside the run's clocks. */
+    let handshakePhase: string | null = null;
+    const armHandshake = (): void => {
+      const phase = conversation.phase();
+      if (phase === handshakePhase || (phase !== "initialize" && phase !== "session" && phase !== "model")) return;
+      handshakePhase = phase;
+      const limit = acp.handshakeMs ?? ACP_HANDSHAKE_MS;
+      later(limit, () => {
+        if (settled || conversation.phase() !== phase) return;
+        conversation.refuse(`the agent took more than ${limit / 1000} s to answer ${phase === "initialize" ? "initialize" : phase === "session" ? "session/new" : "the model choice"}`);
+        forceKill();
+      });
+    };
     const exited = (): boolean => child.exitCode !== null || child.signalCode !== null;
     const shutdown = (): void => {
       if (shuttingDown) return;
@@ -1649,10 +1670,14 @@ export function runAcpSession(
         endedBy = "eof";
         later(ACP_SHUTDOWN_MS.eof, () => {
           if (exited()) return;
-          signalledAfterTerminal = conversation.phase() === "ended";
+          termAfterTerminal = conversation.phase() === "ended";
           endedBy = "term";
           termGroup(child);
-          later(ACP_SHUTDOWN_MS.term, () => { if (!exited()) forceKill(); });
+          later(ACP_SHUTDOWN_MS.term, () => {
+            if (exited()) return;
+            killAfterTerminal = conversation.phase() === "ended";
+            forceKill();
+          });
         });
       };
       const close = conversation.close();
@@ -1668,6 +1693,7 @@ export function runAcpSession(
 
     const onLine = (framed: BoundedJsonlLine): void => {
       if (settled) return;
+      armHandshake();
       const reaction = framed.overflowed
         ? (conversation.refuse("the agent wrote a line too long to read"), { send: [], live: [] })
         : conversation.receive(framed.prefix.toString("utf8"));
@@ -1682,6 +1708,7 @@ export function runAcpSession(
       }
       const phase = conversation.phase();
       if (phase === "failed" || phase === "ended") shutdown();
+      else armHandshake();
     };
     const framing = boundedJsonlFramer(ACP_LINE_CAP, onLine);
 
@@ -1702,26 +1729,40 @@ export function runAcpSession(
     child.stdin?.on("error", () => { /* EPIPE: the agent's exit decides */ });
 
     write(conversation.start());
+    armHandshake();
     try { acp.onControl?.({ cancel: () => write(conversation.cancel()) }); } catch { /* the caller's own failure */ }
 
-    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
-      if (settled) return;
-      settled = true;
-      for (const timer of timers) clearTimeout(timer);
-      watchdog.stop();
-      liveProviders.delete(child);
-      framing.finish();
-      // Whatever the agent started in its own group and left running ends with it (a group id can't be reused while any
-      // member lives, so this reaches only what it left). Escaped groups are the custody observer's, as for every runner.
-      let leftover = false;
+    // The moment the agent itself exits, what it left in its own group ends with it — not at "close", which a
+    // descendant holding the agent's pipes can postpone forever; and if those pipes are still open shortly after, they
+    // are closed, so settlement never waits on a stray. Escaped groups are the custody observer's, as for every runner.
+    let leftover = false;
+    child.on("exit", () => {
       if (options.processGroup === true && container === null && child.pid !== undefined && process.platform !== "win32") {
         try { process.kill(-child.pid, 0); leftover = true; } catch { leftover = false; }
         try { process.kill(-child.pid, "SIGKILL"); } catch { /* none left */ }
       }
+      later(ACP_PIPES_AFTER_EXIT_MS, () => {
+        if (settled) return;
+        for (const pipe of [child.stdout, child.stderr, child.stdin]) { try { pipe?.destroy(); } catch { /* gone */ } }
+      });
+    });
+
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (settled) return;
+      // The last record, even one with no newline after it, is read before anything is decided.
+      framing.finish();
+      settled = true;
+      for (const timer of timers) clearTimeout(timer);
+      watchdog.stop();
+      liveProviders.delete(child);
+      // Whatever the agent started in its own group and left running ends with it (a group id can't be reused while any
+      // member lives, so this reaches only what it left). Escaped groups are the custody observer's, as for every runner.
       const terminal = conversation.terminal();
       const answered = terminal !== null && "stopReason" in terminal && terminal.stopReason === "end_turn" && conversation.failure() === null;
-      // A clean exit after the answer, or the plane's own post-answer signal, is success; anything else is its code.
-      const exitCode = answered && (code === 0 || (signalledAfterTerminal && (signal === "SIGTERM" || code === 143))) ? 0 : (code ?? 1);
+      // A clean exit after the answer, or an exit by the plane's own post-answer signal (its shutdown ladder's SIGTERM,
+      // then SIGKILL), is success; anything else — a stop, a timeout, another signal — is its code.
+      const ownSignal = (termAfterTerminal && (signal === "SIGTERM" || code === 143)) || (killAfterTerminal && (signal === "SIGKILL" || code === 137));
+      const exitCode = answered && !timedOut && (code === 0 || ownSignal) ? 0 : (code ?? 1);
       const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);
       void settlement.then(empty => resolve({
         code: notFound ? NOT_FOUND_CODE : timedOut ? TIMEOUT_CODE : attachFailure !== null || empty === false ? CONTAINMENT_REFUSED_CODE : exitCode,

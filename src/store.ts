@@ -1,4 +1,4 @@
-import { isAcpProfile } from "./acp-agents.js";
+import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
@@ -958,7 +958,11 @@ export const V123_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 /** v125: the column it adds, with the value every row saved before it reads: what a run's ACP agent itself reported it
  * used (acp-client.ts; never priced). Runs saved before it read none. */
 export const V125_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
-  run: { agent_reported_usage_json: { definition: "TEXT", saved: "NULL" } },
+  run: {
+    agent_reported_usage_json: { definition: "TEXT", saved: "NULL" },
+    // An ACP run's billing, stamped when it is admitted (AcpBillingStamp); every other run, and every saved one, none.
+    acp_billing_json: { definition: "TEXT", saved: "NULL" },
+  },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -4770,6 +4774,7 @@ function initializeStore(db: Database, file: string): Store {
   widenForAcp(db);
   db.exec(PROVIDER_AUTH_SCHEMA);
   db.exec(ACP_ATTESTATION_SCHEMA);
+  db.exec(ACP_BILLING_SCHEMA);
   for (const [table, columns] of Object.entries(V125_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
@@ -5930,6 +5935,27 @@ CREATE TABLE IF NOT EXISTS acp_attestation (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS acp_attestation_live ON acp_attestation (provider, runner) WHERE revoked_at IS NULL;
 `;
+
+/**
+ * v125: how an ACP agent's work on one model is billed, per runner (docs/plans/acp-adapter.md § Billing): metered
+ * (the default, and what no row means — cost unknown, charged as unknown cost is) or the agent's own plan ($0,
+ * counted as unmeasured). Each change is a new row; the newest is the declaration, its id the revision a run stamps.
+ */
+export const ACP_BILLING_SCHEMA = `
+CREATE TABLE IF NOT EXISTS acp_billing (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider  TEXT NOT NULL CHECK (provider IN ('opencode','cursor','cline','qwen','goose')),
+  runner    TEXT NOT NULL,
+  model     TEXT NOT NULL,
+  kind      TEXT NOT NULL CHECK (kind IN ('metered','plan')),
+  set_at    TEXT NOT NULL,
+  set_by    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS acp_billing_by ON acp_billing (provider, runner, model, id);
+`;
+
+/** An ACP run's billing as stamped when the run was admitted: never re-read from the live declaration. */
+export type AcpBillingStamp = { kind: "metered" | "plan"; revision: number; model: string };
 
 /** An ACP agent's live attestation, as the gateway reads it. */
 export type AcpAttestation = {
@@ -14434,6 +14460,11 @@ export class Store {
         reviewAttempt,
       );
     const id = Number(inserted.lastInsertRowid);
+    // An ACP run's billing is the declaration standing for its runner and model NOW, stamped with the row it bills:
+    // settlement reads this stamp, never the live declaration (docs/plans/acp-adapter.md § Billing).
+    if (provider !== undefined && provider !== null && isAcpProvider(provider) && model !== null) {
+      this.db.prepare("UPDATE run SET acp_billing_json = ? WHERE id = ?").run(JSON.stringify(this.acpBillingFor(provider, run.runner, model)), id);
+    }
     // The attempt key (Agents board): opaque, minted with the row, and the only key its stream state is recorded under.
     this.db.prepare("UPDATE run SET attempt_key = ? WHERE id = ?").run(mintAttemptKey(), id);
     // The provenance row lands in the same transaction as the run row —
@@ -14953,6 +14984,31 @@ export class Store {
     };
   }
 
+  /** Declare how an ACP agent's work on one model is billed on a runner; the new revision. */
+  declareAcpBilling(input: { provider: string; runner: string; model: string; kind: "metered" | "plan"; by: string }, now: Date): number {
+    return Number(this.db.prepare("INSERT INTO acp_billing (provider, runner, model, kind, set_at, set_by) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(input.provider, input.runner, input.model, input.kind, now.toISOString(), input.by).lastInsertRowid);
+  }
+
+  /** The billing declaration standing for an ACP agent's model on a runner: metered, revision 0, when none was made. */
+  acpBillingFor(provider: string, runner: string, model: string): AcpBillingStamp {
+    const row = this.db.prepare("SELECT id, kind FROM acp_billing WHERE provider = ? AND runner = ? AND model = ? ORDER BY id DESC LIMIT 1").get(provider, runner, model);
+    return row === undefined ? { kind: "metered", revision: 0, model } : { kind: row["kind"] === "plan" ? "plan" : "metered", revision: Number(row["id"]), model };
+  }
+
+  /** The billing an ACP run was admitted under, or null (not an ACP run, or unreadable — then it is metered). */
+  acpBillingOfRun(runId: number): AcpBillingStamp | null {
+    const raw = this.db.prepare("SELECT acp_billing_json FROM run WHERE id = ?").get(runId)?.["acp_billing_json"];
+    if (typeof raw !== "string") return null;
+    try {
+      const value = JSON.parse(raw) as Record<string, unknown>;
+      if ((value["kind"] === "metered" || value["kind"] === "plan") && typeof value["revision"] === "number" && typeof value["model"] === "string") {
+        return { kind: value["kind"], revision: value["revision"], model: value["model"] };
+      }
+    } catch { /* unreadable: metered */ }
+    return null;
+  }
+
   /** Revoke an ACP agent's live attestation on a runner; whether there was one. */
   revokeAcpAttestation(provider: string, runner: string, by: string, now: Date): boolean {
     return Number(this.db.prepare("UPDATE acp_attestation SET revoked_at = ?, revoked_by = ? WHERE provider = ? AND runner = ? AND revoked_at IS NULL").run(now.toISOString(), by, provider, runner).changes) > 0;
@@ -15016,7 +15072,10 @@ export class Store {
     const row = this.db.prepare("SELECT run.provider, run.model, run.cost_usd, run.tokens_in, run.tokens_out, run.auth_mode, s.billing FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?").get(id);
     if (row === undefined) return;
     // How the run is billed is fixed the first time it's settled (its chain entry's, or the provider's login or key).
+    // An ACP run is billed as its stamp says: its agent's own plan reads as a plan ($0), anything else as metered.
+    const acpStamp = isAcpProvider(String(row["provider"])) ? this.acpBillingOfRun(id) : null;
     const billing: Billing = row["billing"] === "subscription" || row["billing"] === "api-key" ? row["billing"]
+      : isAcpProvider(String(row["provider"])) ? (acpStamp?.kind === "plan" ? "subscription" : "api-key")
       : row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" ? row["auth_mode"] : billingOf(String(row["provider"]), this.db);
     const priced = priceWork(this.db, { provider: String(row["provider"]), model: row["model"] == null ? null : String(row["model"]), billing,
       costUsd: row["cost_usd"] == null ? null : Number(row["cost_usd"]), tokensIn: row["tokens_in"] == null ? null : Number(row["tokens_in"]), tokensOut: row["tokens_out"] == null ? null : Number(row["tokens_out"]) });

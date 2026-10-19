@@ -2636,7 +2636,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       handoff: run?.handoff ?? null,
       costUsd: run?.costUsd ?? null,
       provider: run?.provider ?? null,
-      authMode: run?.authMode === "subscription" || run?.authMode === "api-key" ? run.authMode : null,
+      authMode: run?.authMode === "subscription" || run?.authMode === "api-key" || run?.authMode === "agent-login" ? run.authMode : null,
       ranMinutes:
         run === null || run.finishedAt === null
           ? null

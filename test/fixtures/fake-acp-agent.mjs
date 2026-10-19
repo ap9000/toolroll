@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // A stand-in ACP agent for the gateway's slow tests (src/acp-gateway.slow.test.ts). What it does is FAKE_ACP:
-// ok | stall | quiet-exit | wrong-version | refuse-model | descendant | slow (holds the prompt until cancelled or killed).
+// ok | stall | quiet-exit | wrong-version | refuse-model | descendant | slow (holds the prompt until cancelled or killed)
+// | double-answer (a second, conflicting answer with no newline, then exit) | pipe-holder (a stray in its group keeps
+// stdout open) | escaped-pipe-holder (the same, in a group of its own) | ignore-term (answers, then ignores EOF and
+// SIGTERM) | silent-init (never answers initialize).
 // It writes what it was asked into $FAKE_ACP_LOG, and touches $FAKE_ACP_RAN when it starts.
 import { appendFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -24,6 +27,7 @@ process.stdin.on("data", chunk => {
     const message = JSON.parse(line);
     log(message.method ?? `answer:${message.id}`);
     if (message.method === "initialize") {
+      if (mode === "silent-init") continue;
       send({ id: message.id, result: { protocolVersion: 1, agentInfo: { name: "FakeCode", version: mode === "wrong-version" ? "9.9.9" : "1.0.0" }, agentCapabilities: { sessionCapabilities: { close: {} } }, authMethods: [] } });
     } else if (message.method === "session/new") {
       cwd = message.params.cwd;
@@ -37,6 +41,11 @@ process.stdin.on("data", chunk => {
       if (mode === "stall") continue;
       if (mode === "quiet-exit") { update({ sessionUpdate: "available_commands_update", availableCommands: [] }); setTimeout(() => process.exit(0), 50); continue; }
       if (mode === "slow") { update({ sessionUpdate: "tool_call", toolCallId: "t-slow", title: "sleep", kind: "execute", status: "in_progress" }); continue; }
+      if (mode === "pipe-holder" || mode === "escaped-pipe-holder") {
+        const stray = spawn("sleep", ["300"], { stdio: ["ignore", "inherit", "inherit"], detached: mode === "escaped-pipe-holder" });
+        writeFileSync(join(cwd, "stray.pid"), String(stray.pid));
+      }
+      if (mode === "ignore-term") { process.on("SIGTERM", () => {}); process.stdin.removeAllListeners("end"); setInterval(() => {}, 1000); }
       if (mode === "descendant") {
         const child = spawn("sleep", ["300"], { stdio: "ignore" });
         writeFileSync(join(cwd, "descendant.pid"), String(child.pid));
@@ -46,6 +55,8 @@ process.stdin.on("data", chunk => {
       update({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Wrote done.txt." } });
       send({ id: prompt, result: { stopReason: "end_turn" } });
+      if (mode === "double-answer") { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: prompt, result: { stopReason: "refusal" } })); setTimeout(() => process.exit(0), 50); }
+      if (mode === "pipe-holder" || mode === "escaped-pipe-holder") setTimeout(() => process.exit(0), 50);
     } else if (message.method === "session/cancel") {
       if (prompt !== null) send({ id: prompt, result: { stopReason: "cancelled" } });
     } else if (message.method === "session/close") {
