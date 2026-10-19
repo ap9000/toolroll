@@ -249,6 +249,8 @@ describe("what the plane answers the agent", () => {
     expect(callless.live).toEqual([{ sessionUpdate: "permission", toolCallId: null, title: null, kind: null, granted: false }]);
     // Nor is a request whose tool call is malformed further down.
     for (const toolCall of [
+      { toolCallId: "t5", content: [{ type: "content", content: { type: "text", text: "x", annotations: { audience: ["system"] } } }] },
+      { toolCallId: "t6", _meta: 123 },
       { toolCallId: "t2", content: [{ type: "content", content: { type: "resource", resource: { uri: "file:///x" } } }] },
       { toolCallId: "t3", locations: [{ path: "/a", line: "3" }] },
       { toolCallId: "t4", kind: "teleport" },
@@ -268,6 +270,8 @@ describe("what the plane answers the agent", () => {
     expect(permissionAnswer({ options: [{ optionId: "same", kind: "allow_once", name: "a" }, { optionId: "same", kind: "allow_always", name: "b" }] })).toBeNull();
     expect(permissionAnswer({ options: [] })).toBeNull();
     expect(permissionAnswer({ options: [{ optionId: "once", kind: "allow_once" }] })).toBeNull();
+    expect(permissionAnswer({ _meta: 123, options: [{ optionId: "once", kind: "allow_once", name: "Once" }] })).toBeNull();
+    expect(permissionAnswer({ _meta: { a: 1 }, options: [{ optionId: "once", kind: "allow_once", name: "Once", _meta: null }] })).toEqual({ optionId: "once", granted: true });
     // An id that wouldn't come back as sent is never answered with a grant.
     for (const raw of ['{"jsonrpc":"2.0","id":1.0000000000000001,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1.5,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":9007199254740993,"method":"session/request_permission","params":{}}', '{"jsonrpc":"2.0","id":1e999,"method":"session/request_permission","params":{}}']) {
       const fresh = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });

@@ -147,13 +147,13 @@ const OPTION_KINDS = new Set(["allow_once", "allow_always", "reject_once", "reje
  * id shared by "once" and "always" would make the answer mean either.
  */
 export function permissionAnswer(params: unknown): { optionId: string; granted: boolean } | null {
-  if (!isRecord(params) || !Array.isArray(params["options"]) || params["options"].length === 0 || params["options"].length > 16) return null;
+  if (!isRecord(params) || !meta(params) || !Array.isArray(params["options"]) || params["options"].length === 0 || params["options"].length > 16) return null;
   const options: { optionId: string; kind: string }[] = [];
   const ids = new Set<string>();
   for (const one of params["options"]) {
     if (!isRecord(one) || typeof one["optionId"] !== "string" || one["optionId"] === "" || one["optionId"].length > 256) return null;
     if (typeof one["kind"] !== "string" || !OPTION_KINDS.has(one["kind"])) return null;
-    if (typeof one["name"] !== "string") return null;
+    if (typeof one["name"] !== "string" || !meta(one)) return null;
     if (ids.has(one["optionId"])) return null;
     ids.add(one["optionId"]);
     options.push({ optionId: one["optionId"], kind: one["kind"] });
@@ -174,14 +174,17 @@ const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 /** An optional field: absent, null, or of its type. */
 const optional = (value: unknown, is: (one: unknown) => boolean): boolean => value === undefined || value === null || is(value);
 const integer = (value: unknown): boolean => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-const annotations = (value: unknown): boolean => optional(value, one => isRecord(one)
-  && optional(one["audience"], list => Array.isArray(list) && list.every(str))
+/** `_meta`, wherever the protocol allows it: absent, null, or an object. */
+const meta = (value: Record<string, unknown>): boolean => optional(value["_meta"], isRecord);
+const ROLES = new Set(["user", "assistant"]);
+const annotations = (value: unknown): boolean => optional(value, one => isRecord(one) && meta(one)
+  && optional(one["audience"], list => Array.isArray(list) && list.every(role => str(role) && ROLES.has(role)))
   && optional(one["priority"], n => typeof n === "number" && Number.isFinite(n))
   && optional(one["lastModified"], str));
 
 /** One ACP content block, every field the protocol defines for its type checked (text, image, audio, a resource link, an embedded resource). */
 function wellFormedContent(block: unknown): boolean {
-  if (!isRecord(block) || !str(block["type"]) || !annotations(block["annotations"])) return false;
+  if (!isRecord(block) || !str(block["type"]) || !annotations(block["annotations"]) || !meta(block)) return false;
   switch (block["type"]) {
     case "text": return str(block["text"]);
     case "image": return str(block["data"]) && str(block["mimeType"]) && optional(block["uri"], str);
@@ -192,7 +195,7 @@ function wellFormedContent(block: unknown): boolean {
     case "resource": {
       // An embedded resource carries its text or its blob, beside its uri.
       const resource = block["resource"];
-      return isRecord(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]))
+      return isRecord(resource) && meta(resource) && str(resource["uri"]) && (str(resource["text"]) || str(resource["blob"]))
         && optional(resource["text"], str) && optional(resource["blob"], str) && optional(resource["mimeType"], str);
     }
     default: return false;
@@ -201,7 +204,7 @@ function wellFormedContent(block: unknown): boolean {
 
 /** A tool call's content: content blocks, diffs, or terminals. */
 function wellFormedToolContent(item: unknown): boolean {
-  if (!isRecord(item) || !str(item["type"])) return false;
+  if (!isRecord(item) || !str(item["type"]) || !meta(item)) return false;
   if (item["type"] === "content") return wellFormedContent(item["content"]);
   if (item["type"] === "diff") return str(item["path"]) && str(item["newText"]) && (item["oldText"] === undefined || item["oldText"] === null || str(item["oldText"]));
   if (item["type"] === "terminal") return str(item["terminalId"]);
@@ -210,6 +213,7 @@ function wellFormedToolContent(item: unknown): boolean {
 
 /** The fields a tool call or its update may carry: each, when present, of the type the protocol gives it. */
 function wellFormedToolFields(update: Record<string, unknown>): boolean {
+  if (!meta(update)) return false;
   if (update["title"] !== undefined && !str(update["title"])) return false;
   if (update["kind"] !== undefined && !(str(update["kind"]) && TOOL_KINDS.has(update["kind"]))) return false;
   if (update["status"] !== undefined && !(str(update["status"]) && TOOL_STATUSES.has(update["status"]))) return false;
