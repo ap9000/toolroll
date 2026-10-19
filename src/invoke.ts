@@ -18,7 +18,8 @@
  */
 
 import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
-import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV } from "./keys.js";
+import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
+import { isKeyedProvider } from "./acp-agents.js";
 import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
@@ -303,15 +304,18 @@ export async function invokeAgent(
       diagnostic: strict.problem,
     };
   }
-  const authMode: "subscription" | "api-key" = strict.mode;
+  const authMode: AuthMode = strict.mode;
   if (spec.provider === "claude" && invocation.phase !== "review") {
     const problem = claudeSettingsAuthProblem(options.env?.["CLAUDE_CONFIG_DIR"] ?? process.env["CLAUDE_CONFIG_DIR"] ?? join(keyHome ?? homedir(), ".claude"));
     if (problem !== null) return { kind: "refused", reason: "auth-mode", providerVersion: attested?.version ?? null, diagnostic: problem };
   }
-  const ownKeyEnv = OWN_KEY_ENV[spec.provider];
+  // An ACP agent has no key Toolroll holds or injects: its own and everyone else's are shed (adapter.extraOmitEnv).
+  const keyed = isKeyedProvider(spec.provider) ? spec.provider : null;
+  const ownKeyEnv = keyed === null ? [] : OWN_KEY_ENV[keyed];
+  const keyEnvName = keyed === null ? null : PROVIDER_KEY_ENV[keyed];
   const managedKey =
-    authMode === "api-key"
-      ? readProviderKey(spec.provider, keyHome) ?? (process.env[PROVIDER_KEY_ENV[spec.provider]] || null)
+    authMode === "api-key" && keyed !== null && keyEnvName !== null
+      ? readProviderKey(keyed, keyHome) ?? (process.env[keyEnvName] || null)
       : null;
   // Resume XOR mint, enforced at the GATEWAY (Codex gemini verify round 2,
   // finding 3): a resume and a minted start id are mutually exclusive —
@@ -419,7 +423,7 @@ export async function invokeAgent(
     // A fenced build's git never expires a reflog, so gc never rewrites another task's (agent-fence.ts).
     ...(fence.length > 0 ? fencedGitEnv({ ...process.env, ...(runOptions.env ?? {}) }) : {}),
     ...(codexHome === null ? {} : { CODEX_HOME: codexHome.dir }),
-    ...(managedKey === null ? {} : { [PROVIDER_KEY_ENV[spec.provider]]: managedKey }),
+    ...(managedKey === null || keyEnvName === null ? {} : { [keyEnvName]: managedKey }),
     // This key is deliberately last: no caller may point an agent back at
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),
@@ -436,7 +440,7 @@ export async function invokeAgent(
     // must not override the ONE canonical key this mode injected.
     ...(authMode === "subscription"
       ? ownKeyEnv
-      : ownKeyEnv.filter(name => name !== PROVIDER_KEY_ENV[spec.provider])),
+      : ownKeyEnv.filter(name => name !== keyEnvName)),
   ];
   const launchOptions: RunOptions = {
     ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants }),

@@ -5,6 +5,7 @@
  * takes the owner there. Everything here reads what is already recorded — runner readiness reports, sign-in pauses,
  * plan-limit readings, tool tests, skill tests, integration checks — and never probes anything that spends.
  */
+import { isAcpProvider } from "./acp-agents.js";
 import { projectBatchChecks } from "./batch-policy.js";
 import type { Store } from "./store.js";
 import type { ChatControl } from "./chat-controls.js";
@@ -81,7 +82,7 @@ function agentsOf(store: Store, repo: string, now: Date, authMode: (provider: Pr
     // Signed out only on a real sign-in failure: a sign-in pause from a run, the worker's login check saying not logged
     // in, or the key a key-only provider needs missing. A provider on an API key gets the key step, never the sign-in.
     const pause = authPauseOf(store, pair.provider);
-    const mode = pause?.authMode ?? (SUBSCRIPTION_CAPABLE[pair.provider] ? authMode(pair.provider) : "api-key");
+    const mode = pause?.authMode ?? (isAcpProvider(pair.provider) ? "agent-login" : SUBSCRIPTION_CAPABLE[pair.provider] ? authMode(pair.provider) : "api-key");
     const key = mode === "api-key";
     const outWords = key ? "Needs a working API key" : "Signed out";
     const outNext = (detail: string) => key ? `Save a working API key: run \`${messageCommand({ provider: pair.provider, authMode: "api-key" })}\` on this computer${detail}.` : `Sign in: run \`${messageCommand({ provider: pair.provider, authMode: "subscription" })}\` on this computer${detail}.`;

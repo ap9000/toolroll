@@ -14,6 +14,8 @@
  */
 import type { Store } from "./store.js";
 import { PROVIDER_IDS, type ProviderId } from "./provider.js";
+import { withAcp, type KeyedProviderId } from "./acp-agents.js";
+import type { AuthMode } from "./keys.js";
 
 /** Every sign-in message's dedupe key starts here: `signin:<kind>:<provider>:<ordinal>:<person>`.
  * Not a lifecycle (`life:`) key: those are progress chatter, and an undelivered
@@ -25,7 +27,7 @@ CREATE TABLE IF NOT EXISTS provider_auth_pause (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   provider    TEXT NOT NULL,
   ordinal     INTEGER NOT NULL,
-  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription', 'api-key')),
+  auth_mode   TEXT NOT NULL DEFAULT 'subscription' CHECK (auth_mode IN ('subscription', 'api-key', 'agent-login')),
   opened_at   TEXT NOT NULL,
   first_run   INTEGER,
   task_ref    INTEGER,
@@ -49,15 +51,15 @@ export type AuthPause = {
   id: number;
   provider: ProviderId;
   ordinal: number;
-  authMode: "subscription" | "api-key";
+  authMode: AuthMode;
   openedAt: string;
   firstRun: number | null;
   taskRef: number | null;
   runs: number;
 };
 
-const NAMES: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", openrouter: "OpenRouter", gemini: "Gemini" };
-const SIGN_IN: Record<ProviderId, string> = { claude: "claude /login", codex: "codex login", gemini: "gemini", openrouter: "toolroll keys set openrouter" };
+const NAMES: Record<ProviderId, string> = withAcp<KeyedProviderId, string>({ claude: "Claude", codex: "Codex", openrouter: "OpenRouter", gemini: "Gemini" }, agent => agent.name);
+const SIGN_IN: Record<ProviderId, string> = withAcp<KeyedProviderId, string>({ claude: "claude /login", codex: "codex login", gemini: "gemini", openrouter: "toolroll keys set openrouter" }, agent => agent.signIn);
 
 export function providerName(provider: string): string {
   return (PROVIDER_IDS as readonly string[]).includes(provider) ? NAMES[provider as ProviderId] : provider;
@@ -92,7 +94,7 @@ function readPause(row: Record<string, unknown>): AuthPause {
     id: Number(row["id"]),
     provider: String(row["provider"]) as ProviderId,
     ordinal: Number(row["ordinal"]),
-    authMode: row["auth_mode"] === "api-key" ? "api-key" : "subscription",
+    authMode: row["auth_mode"] === "api-key" ? "api-key" : row["auth_mode"] === "agent-login" ? "agent-login" : "subscription",
     openedAt: String(row["opened_at"]),
     firstRun: row["first_run"] == null ? null : Number(row["first_run"]),
     taskRef: row["task_ref"] == null ? null : Number(row["task_ref"]),
@@ -145,7 +147,7 @@ export function openAuthPauses(store: Store): AuthPause[] {
  */
 export function pauseForAuth(
   store: Store,
-  args: { provider: string; authMode: "subscription" | "api-key" | null; runId: number; taskRef: number; now: Date },
+  args: { provider: string; authMode: AuthMode | null; runId: number; taskRef: number; now: Date },
 ): { opened: boolean; pause: AuthPause } {
   return store.transact(() => {
     const db = store.handle;

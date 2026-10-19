@@ -17,12 +17,13 @@
  * Every road that admits work asks here: scope approval, the tick before a
  * run starts (and build() as the last look), the lead and project chats, subagents and flow steps.
  */
+import { isAcpProfile } from "./acp-agents.js";
 import type { Database } from "./store.js";
 import type { ExecutionProfile } from "./scope.js";
 
 export type PermissionLevel = "safe" | "standard" | "escalated";
 export const PERMISSION_LEVELS: readonly PermissionLevel[] = ["safe", "standard", "escalated"];
-export const POLICY_PROVIDERS = ["claude", "codex", "gemini", "openrouter"] as const;
+export const POLICY_PROVIDERS = ["claude", "codex", "gemini", "openrouter", "opencode", "cursor", "cline", "qwen", "goose"] as const;
 export type PolicyProvider = (typeof POLICY_PROVIDERS)[number];
 
 /** The policy as saved: null lists allow everything of their kind. */
@@ -81,7 +82,7 @@ export function readPolicy(db: Database): SavedPolicy {
 
 // ---- words -------------------------------------------------------------------------------
 
-export const PROVIDER_NAMES: Record<PolicyProvider, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter" };
+export const PROVIDER_NAMES: Record<PolicyProvider, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode", cursor: "Cursor", cline: "Cline", qwen: "Qwen Code", goose: "Goose" };
 export const LEVEL_NAMES: Record<PermissionLevel, string> = { safe: "Safe", standard: "Standard", escalated: "Escalated" };
 export const LEVEL_HINTS: Record<PermissionLevel, string> = {
   safe: "Edits in the project only. Codex and OpenRouter can't run this low.",
@@ -155,6 +156,8 @@ export const levelAbove = (level: PermissionLevel, ceiling: PermissionLevel): bo
 export function levelOfProfile(profile: ExecutionProfile): PermissionLevel {
   if (profile.provider === "claude") return profile.permissionArgv === "bypassPermissions" ? "escalated" : profile.permissionArgv === "auto" ? "standard" : "safe";
   if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? "escalated" : "safe";
+  // An ACP agent runs any tool it chooses inside the OS fence: full access, and nothing lower exists.
+  if (isAcpProfile(profile)) return "escalated";
   return profile.sandboxMode === "danger-full-access" ? "escalated" : "standard";
 }
 
@@ -162,6 +165,7 @@ export function levelOfProfile(profile: ExecutionProfile): PermissionLevel {
 function profileAt(profile: ExecutionProfile, level: PermissionLevel): ExecutionProfile | null {
   if (profile.provider === "claude") return { ...profile, permissionArgv: level === "escalated" ? "bypassPermissions" : level === "standard" ? "auto" : "acceptEdits" };
   if (profile.provider === "gemini") return { ...profile, approvalArgv: level === "escalated" ? "yolo" : "auto_edit" };
+  if (isAcpProfile(profile)) return level === "escalated" ? profile : null;
   return level === "safe" ? null : { ...profile, sandboxMode: level === "escalated" ? "danger-full-access" : "workspace-write" };
 }
 
@@ -169,6 +173,7 @@ function profileAt(profile: ExecutionProfile, level: PermissionLevel): Execution
 export function levelWords(profile: ExecutionProfile): string {
   if (profile.provider === "claude") return profile.permissionArgv === "bypassPermissions" ? "full access" : profile.permissionArgv === "auto" ? "auto" : "accept edits";
   if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? "full access" : "auto edit";
+  if (isAcpProfile(profile)) return "full access inside the OS fence";
   return profile.sandboxMode === "danger-full-access" ? "full access" : "the workspace sandbox";
 }
 

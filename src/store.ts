@@ -1,3 +1,4 @@
+import { isAcpProfile } from "./acp-agents.js";
 import { reclaimDatabase } from "./database-reclaim.js";
 import { BASELINE_SCHEMA, BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -744,7 +745,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // sealing key's record (tool_secret_key, tool_secret_legacy).
 // v124 adds, and changes no saved row: the live conversation's project setting (live_detail_setting: "Show commands in
 // the live view", absent means off) and the runs each steering note reached (steer_note_run; older notes have none).
-export const SCHEMA_VERSION = 124;
+// v125 changes no saved row: ACP agents become providers (the provider CHECKs of phase_config, phase_tier_config,
+// phase_tier_alternate and provider_readiness widen, and provider_auth_pause's auth mode admits 'agent-login'; each
+// table is rebuilt with every row and id carried over) and a run keeps what its agent itself reported it used
+// (run.agent_reported_usage_json, never priced; saved runs read none).
+export const SCHEMA_VERSION = 125;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -878,8 +883,10 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * table (branch_base_move) and the nullable column in V122_ADDED_COLUMNS (a project's recorded remote), checked the
  * same way. v123 only adds new tables (unattended flows, tool secrets) and the columns in V123_ADDED_COLUMNS ('mode',
  * 0 or null), checked the same way. v124 only adds new tables (the live conversation's setting and note history).
+ * v125 rebuilds five tables with wider CHECKs, every row and id carried over (the rehearsal's history rules find them
+ * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -945,6 +952,12 @@ export const V123_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     on_time: { definition: "INTEGER NOT NULL DEFAULT 0", saved: "0" },
     ran_script: { definition: "TEXT", saved: "NULL" },
   },
+});
+
+/** v125: the column it adds, with the value every row saved before it reads: what a run's ACP agent itself reported it
+ * used (acp-client.ts; never priced). Runs saved before it read none. */
+export const V125_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: { agent_reported_usage_json: { definition: "TEXT", saved: "NULL" } },
 });
 
 /** Whether a database settled at `version` reaches this build's schema through update-safe migrations alone. */
@@ -2469,7 +2482,7 @@ CREATE TABLE IF NOT EXISTS mcp_idempotency (
 CREATE TABLE IF NOT EXISTS phase_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -2485,7 +2498,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -2501,7 +2514,7 @@ CREATE TABLE IF NOT EXISTS phase_tier_config (
 -- substitutes for it.
 CREATE TABLE IF NOT EXISTS provider_readiness (
   runner      TEXT NOT NULL REFERENCES runner(name) ON DELETE CASCADE,
-  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider    TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   state       TEXT NOT NULL CHECK (state IN ('ready','unavailable','unknown')),
   reason      TEXT NOT NULL,
   probe       TEXT NOT NULL,
@@ -4750,6 +4763,14 @@ function initializeStore(db: Database, file: string): Store {
   addColumn(db, "task_ref", "route_tier", "TEXT");
   widenPhaseTierSchema(db);
   db.exec(PHASE_TIER_ALTERNATE_SCHEMA);
+  // v125: ACP agents as providers, their own sign-in as an auth mode (rows carry over, CHECKs widen; the auth schema
+  // runs again to put back the open-pause index the rebuild dropped), and what an agent itself reported it used
+  // (V125_ADDED_COLUMNS: never priced, saved runs read none).
+  widenForAcp(db);
+  db.exec(PROVIDER_AUTH_SCHEMA);
+  for (const [table, columns] of Object.entries(V125_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   db.exec(REVIEW_SCHEMA);
   db.exec(RETENTION_SCHEMA);
   // 1-day evidence: an older file's retention_setting only allowed 7 days or more (no version bump: its rows carry over).
@@ -5875,13 +5896,40 @@ CREATE TABLE IF NOT EXISTS phase_tier_alternate (
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','routine','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
   PRIMARY KEY (scope, phase, tier, provider)
 );
 `;
+
+/** The provider CHECK before ACP agents joined (acp-agents.ts), and after: the same list, five ids longer. */
+const PROVIDERS_BEFORE_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini'))";
+const PROVIDERS_WITH_ACP = "CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose'))";
+/** The sign-in pause's auth mode before an ACP agent's own sign-in ('agent-login'), and after. */
+const AUTH_MODES_BEFORE_ACP = "CHECK (auth_mode IN ('subscription', 'api-key'))";
+const AUTH_MODES_WITH_ACP = "CHECK (auth_mode IN ('subscription', 'api-key', 'agent-login'))";
+
+/**
+ * v125: ACP agents as providers (docs/plans/acp-adapter.md): every row carries over whole, the CHECKs only widen. Each table whose stored DDL still has the old list is rebuilt with the wider one, through rebuildExact — the
+ * stored DDL must be exactly a known shape with the old clause appearing once, or the open refuses. Indexes the rebuild
+ * drops are put back by their own schema's IF NOT EXISTS, which the caller runs again after.
+ */
+function widenForAcp(db: Database): void {
+  const widen = (table: string, before: string, after: string) => {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+    if (row === undefined) return;
+    const stored = String(row["sql"]);
+    if (stored.includes(after)) return;
+    if (stored.split(before).length !== 2) throw new Error(`the ${table} table's DDL is not a shape this migration knows — refusing to widen it`);
+    const named = (sql: string) => (name: string) => sql.replace(new RegExp(`^CREATE TABLE (?:IF NOT EXISTS )?"?${table}"?`), `CREATE TABLE ${name}`);
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(one => String(one["name"]));
+    rebuildExact(db, table, named(stored), named(stored.replace(before, after)), columns);
+  };
+  for (const table of ["phase_config", "phase_tier_config", "phase_tier_alternate", "provider_readiness"]) widen(table, PROVIDERS_BEFORE_ACP, PROVIDERS_WITH_ACP);
+  widen("provider_auth_pause", AUTH_MODES_BEFORE_ACP, AUTH_MODES_WITH_ACP);
+}
 
 /** A file from before the light tier keeps `tier IN ('strong')` in phase_tier_config's CHECK: rebuild the table with
  * the wider one, keeping every row, in one transaction. A file already widened is untouched. */
@@ -5894,7 +5942,7 @@ function widenPhaseTierSchema(db: Database): void {
   scope      TEXT NOT NULL,
   phase      TEXT NOT NULL CHECK (phase IN ('plan','build','repair','review')),
   tier       TEXT NOT NULL CHECK (tier IN ('light','strong')),
-  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini')),
+  provider   TEXT NOT NULL CHECK (provider IN ('claude','codex','openrouter','gemini','opencode','cursor','cline','qwen','goose')),
   model      TEXT,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL,
@@ -7649,6 +7697,7 @@ export class Store {
             ? { ...profile, permissionArgv: "bypassPermissions" }
             : profile.provider === "gemini"
               ? { ...profile, approvalArgv: "yolo" }
+              : isAcpProfile(profile) ? profile
               : { ...profile, sandboxMode: "danger-full-access" };
       }
       // Anything still above the ceiling files at the highest level beneath it its provider has; a provider with none
@@ -14826,7 +14875,7 @@ export class Store {
    * structural signal is gone. `auth-expired` pauses its provider; every
    * other class is observational.
    */
-  stampTerminalClass(id: number, authMode: "subscription" | "api-key", terminalClass: TerminalClass): void {
+  stampTerminalClass(id: number, authMode: "subscription" | "api-key" | "agent-login", terminalClass: TerminalClass): void {
     // FIRST-WRITE only (Codex E2/E3 review, finding 8): the gateway stamps
     // the disposal class exactly once, before disposition; nothing may
     // overwrite it into a class/auth pairing the recognizer never produced.
@@ -22604,6 +22653,7 @@ export function permissionModeOfProfile(profile: ExecutionProfile | null): Unatt
   if (profile === null) return null;
   if (profile.provider === "claude") return profile.permissionArgv === "bypassPermissions" ? "bypassPermissions" : "auto";
   if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? "bypassPermissions" : "auto";
+  if (isAcpProfile(profile)) return "bypassPermissions";
   return profile.sandboxMode === "danger-full-access" ? "bypassPermissions" : "auto";
 }
 

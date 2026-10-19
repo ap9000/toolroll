@@ -49,6 +49,7 @@
  * a legacy approval governed by its sealed profile alone.
  */
 
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { createHash } from "node:crypto";
 import type { EvidenceKind } from "./contracts/acceptance-terms.js";
 import {
@@ -342,9 +343,15 @@ function economyReason(input: RouteInput, phase: Phase): string {
 }
 
 function reviewProblem(spec: { provider: string }): string | null {
+  if (isAcpProvider(spec.provider)) return `${ACP_AGENTS[spec.provider].name} builds and repairs only — configure or override the reviewer to claude or codex`;
   return spec.provider === "gemini"
     ? "gemini has no isolation posture for the review phase yet — configure or override the reviewer to claude or codex"
     : null;
+}
+
+/** ACP agents run with full access inside the fence; a plan is read-only work, which they can't be held to. */
+function planProblem(spec: { provider: string }): string | null {
+  return isAcpProvider(spec.provider) ? `${ACP_AGENTS[spec.provider].name} builds and repairs only — configure or override the planner to claude, codex or gemini` : null;
 }
 
 /**
@@ -400,11 +407,11 @@ export function recommendRoute(input: RouteInput): PhaseRoute {
     const override = overrideFor("plan");
     const recommended = { provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier };
     if (pin !== null) {
-      legs.push({ phase: "plan", provider: pin.provider, model: pin.model, tier: rec.tier, chosen: "pinned", recommended, reasons: [`pinned to ${specWords(pin)} by the plan request — nothing overrides a pin`], problem: null });
+      legs.push({ phase: "plan", provider: pin.provider, model: pin.model, tier: rec.tier, chosen: "pinned", recommended, reasons: [`pinned to ${specWords(pin)} by the plan request — nothing overrides a pin`], problem: planProblem(pin) });
     } else if (override !== null) {
-      legs.push({ phase: "plan", provider: override.provider, model: override.model, tier: rec.tier, chosen: "override", recommended, reasons: [`overridden by ${override.by} to ${specWords(override)} (recommended ${specWords(rec.spec)})`], problem: null });
+      legs.push({ phase: "plan", provider: override.provider, model: override.model, tier: rec.tier, chosen: "override", recommended, reasons: [`overridden by ${override.by} to ${specWords(override)} (recommended ${specWords(rec.spec)})`], problem: planProblem(override) });
     } else {
-      legs.push({ phase: "plan", provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier, chosen: "recommended", recommended, reasons: rec.reasons, problem: null });
+      legs.push({ phase: "plan", provider: rec.spec.provider, model: rec.spec.model, tier: rec.tier, chosen: "recommended", recommended, reasons: rec.reasons, problem: planProblem(rec.spec) });
     }
   }
 

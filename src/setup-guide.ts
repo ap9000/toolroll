@@ -1,4 +1,5 @@
 /** Read-only suggestions for the shared desktop and browser setup flow. */
+import { withAcp, type KeyedProviderId } from "./acp-agents.js";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,12 +7,12 @@ import { join } from "node:path";
 import { validModelId, type ProviderId } from "./provider.js";
 import { planInstall, applyInstall, skillContent, SKILL_DIR, SKILL_FILE } from "./skills.js";
 
-export const ASSISTANTS: Record<ProviderId, { name: string; description: string }> = {
+export const ASSISTANTS: Record<ProviderId, { name: string; description: string }> = withAcp<KeyedProviderId, { name: string; description: string }>({
   claude: { name: "Claude", description: "Use Claude Code for your tasks." },
   codex: { name: "Codex", description: "Use your OpenAI coding assistant." },
   gemini: { name: "Gemini", description: "Use Google's coding assistant." },
   openrouter: { name: "OpenRouter", description: "Use a model from your OpenRouter account." },
-};
+}, agent => ({ name: agent.name, description: `Use ${agent.name} for builds, once it's checked on this computer.` }));
 export type ModelChoice = { value: string; label: string };
 export function modelChoices(provider: ProviderId, configured: string | null, home = homedir()): ModelChoice[] {
   // Aliases documented at https://code.claude.com/docs/en/model-config.

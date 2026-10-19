@@ -1,5 +1,6 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
+import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { publicChatText } from "./chat-display.js";
@@ -219,10 +220,12 @@ function runtimeTerms(profile: ExecutionProfile): string {
         ? profile.approvalArgv === "yolo"
           ? "Full access: every tool is approved automatically (--approval-mode yolo)."
           : "Edits are approved automatically; other tools are refused."
+        : isAcpProfile(profile)
+          ? "Full access inside the OS fence: the agent runs any tool it chooses, and nothing outside the fence is reachable."
         : profile.sandboxMode === "danger-full-access"
           ? "Full access: approvals and sandbox are bypassed (--dangerously-bypass-approvals-and-sandbox)."
           : "Commands use the workspace-write sandbox.";
-  return `${profile.provider} · ${profile.model}\n${permission}\n${profile.timeoutSeconds} seconds ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}${profile.provider === "claude" ? `; at most ${profile.maxTurns} turns` : ""}. Repairs: ${profile.repairModel}, ${profile.repairTimeoutSeconds} seconds${profile.provider === "claude" ? `, at most ${profile.repairMaxTurns} turns` : ""}.`;
+  return `${profile.provider} · ${profile.model}\n${permission}\n${isAcpProfile(profile) ? `${profile.timeoutSeconds} seconds per attempt, or ${profile.idleTimeoutSeconds} seconds silent` : `${profile.timeoutSeconds} seconds ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}`}${profile.provider === "claude" ? `; at most ${profile.maxTurns} turns` : ""}. Repairs: ${profile.repairModel}, ${profile.repairTimeoutSeconds} seconds${profile.provider === "claude" ? `, at most ${profile.repairMaxTurns} turns` : ""}.`;
 }
 function resultOf(store: Store, task: string, run: number, repo: string) {
   const ref = store.lookupRef(task)!;

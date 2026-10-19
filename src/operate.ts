@@ -1,3 +1,5 @@
+import { ACP_AGENTS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
+import { inspectAcpAgent } from "./acp-inspect.js";
 import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
@@ -3008,7 +3010,8 @@ async function tickCommand(
       : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
     let unattestedLane: string | null = null;
     for (const candidate of new Set(skipProviders)) {
-      if (attestationOf(candidate) === null) continue;
+      // An ACP agent is always attested (absence is denial); every other tier-1 provider has no range.
+      if (attestationOf(candidate) === null && !isAcpProvider(candidate)) continue;
       let verdict = attestedThisPass.get(candidate);
       if (verdict === undefined) {
         verdict = await attestProvider(candidate, inspectionOf(candidate).binary);
@@ -4888,6 +4891,13 @@ async function providersCommand(
   const probed = await Promise.all(
     PROVIDER_IDS.map(async id => {
       const facts = inspectionOf(id);
+      // An ACP agent is looked at, never run (acp-inspect.ts): its version is its package's, read; whether it may
+      // run is its conformance check.
+      if (isAcpProvider(id)) {
+        const seen = inspectAcpAgent(id);
+        const version = { code: seen.found ? 0 : 127, stdout: seen.found ? (seen.package?.version ?? "") : "", stderr: "", notFound: !seen.found, timedOut: false };
+        return { id, facts, version, installed: seen.found, identity: seen.found ? `not checked on this computer — run \`toolroll agents check ${id}\`` : null };
+      }
       // A version probe carries no key (Codex gemini verify, finding 2).
       const version = await probe(facts.binary, ["--version"], { timeoutMs: 5_000, omitEnv: ALL_CREDENTIAL_ENV });
       const installed = version.code === 0 && !version.notFound;
@@ -5036,7 +5046,8 @@ async function keysCommand(
     return fail(write, json, "keys", "usage", `unknown \`keys ${action ?? ""}\` — try ${KEYS_ACTIONS.join(", ")}`, EXIT.usage);
   }
   if (action === "status") {
-    const rows = PROVIDER_IDS.map(one => ({
+    // ACP agents sign in their own way: Toolroll keeps no key for them, so they aren't listed here.
+    const rows = PROVIDER_IDS.filter(isKeyedProvider).map(one => ({
       provider: one,
       envName: PROVIDER_KEY_ENV[one],
       ...keyStatus(one),
@@ -5060,7 +5071,10 @@ async function keysCommand(
     return EXIT.ok;
   }
   if (provider === undefined || !isProviderId(provider)) {
-    return fail(write, json, `keys ${action}`, "usage", `which provider? ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
+    return fail(write, json, `keys ${action}`, "usage", `which provider? ${PROVIDER_IDS.filter(isKeyedProvider).join(", ")}`, EXIT.usage);
+  }
+  if (!isKeyedProvider(provider)) {
+    return fail(write, json, `keys ${action}`, "refused", `${ACP_AGENTS[provider].name} signs in its own way (\`${ACP_AGENTS[provider].signIn}\`) — Toolroll keeps no key for it`, EXIT.refused);
   }
   if (action === "clear") {
     const cleared = clearProviderKey(provider);
@@ -5086,7 +5100,7 @@ async function keysCommand(
     if (wanted !== "subscription" && wanted !== "api-key") {
       return fail(write, json, "keys auth", "usage", `\`toolroll keys auth ${provider} subscription|api-key\``, EXIT.usage);
     }
-    const set = setAuthMode(provider, wanted as AuthMode);
+    const set = setAuthMode(provider, wanted);
     if (!set.ok) {
       return fail(write, json, "keys auth", "refused", `${provider} has no subscription login — it is api-key only`, EXIT.refused);
     }

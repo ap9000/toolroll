@@ -1,3 +1,5 @@
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
+import type { ProviderId } from "./contracts/provider.js";
 import { skillsContext } from "./project-skills.js";
 import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
@@ -85,7 +87,7 @@ export type PlanRequest = {
   clock?: () => Date;
   model?: string;
   /** The harness this planning session runs on. */
-  provider?: "claude" | "codex" | "openrouter" | "gemini";
+  provider?: ProviderId;
   maxTurns?: number;
   timeoutMs?: number;
   pulseMs?: number;
@@ -686,6 +688,10 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
     maxTurns = DEFAULT_PLAN_TURNS,
   } = request;
+  // An ACP agent works with full access inside the fence: it builds and repairs, and is never handed a plan (routing refuses it first).
+  if (request.provider !== undefined && isAcpProvider(request.provider)) {
+    return { ok: false, kind: "failure", reason: "provider-unsupported", message: `${ACP_AGENTS[request.provider].name} builds and repairs only — configure the planner to claude, codex or gemini` };
+  }
 
   // The same custody checks as a build: the claim is ours under exactly
   // this lease, and the directory is a worktree this pool leased to us for

@@ -40,6 +40,7 @@
  * rename or remove a folder of the user's above a fenced path or the temp
  * folder, which would reach the fenced path under a new name.
  */
+import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -175,7 +176,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
 const HOME_CONFIGURATION = [".claude", ".claude.json", ".codex", ".gemini", ".ssh", ".aws", ".gnupg", ".netrc", ".git-credentials", ".kube", join(".config", "gh"), join(".docker", "config.json")];
 /** What a provider's own CLI reads to sign in and keep its sessions. The OS fence around Claude and Gemini holds
  * their whole process, so those stay reachable there; Codex fences only its agent's commands, so it keeps none. */
-const PROVIDER_HOME: Record<string, readonly string[]> = { claude: [".claude", ".claude.json"], gemini: [".gemini"], codex: [], openrouter: [] };
+const PROVIDER_HOME: Record<string, readonly string[]> = {
+  claude: [".claude", ".claude.json"], gemini: [".gemini"], codex: [], openrouter: [],
+  // Each ACP agent keeps its own configuration and sign-in where its row says (acp-agents.ts).
+  ...Object.fromEntries(ACP_PROVIDER_IDS.map(id => [id, ACP_AGENTS[id].home])),
+};
 /** What Claude's own file tools refuse inside its home: the CLI reads these itself, its model never needs to. */
 const CLAUDE_FILE_TOOL_HOME = [".claude.json", join(".claude", ".credentials.json"), join(".claude", "settings.json"), join(".claude", "settings.local.json"), ".npmrc"];
 

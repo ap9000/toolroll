@@ -1,4 +1,5 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
+import { ACP_AGENTS, isAcpProfile } from "../acp-agents.js";
 import { type Html,html,htmlString,joinHtml,postForm,replaceMarkup } from "../html.js";
 import { closedQuestionReason, closedQuestionWords } from "../decision.js";
 import { type RunActivity } from "../activity-line.js";
@@ -169,6 +170,7 @@ export function permissionWordsOf(profile: Scope["profile"] | null | undefined):
     ? profile.permissionArgv === "bypassPermissions" ? "Full access" : "Auto permissions"
     : profile.provider === "gemini"
       ? profile.approvalArgv === "yolo" ? "Full access" : "Auto permissions"
+      : isAcpProfile(profile) ? "Full access"
       : profile.sandboxMode === "danger-full-access" ? "Full access" : "Workspace sandbox";
 }
 
@@ -461,6 +463,7 @@ export function permissionModeOfProfile(profile: Scope["profile"] | null | undef
     ? profile.permissionArgv === "bypassPermissions" ? "bypassPermissions" : "auto"
     : profile.provider === "gemini"
       ? profile.approvalArgv === "yolo" ? "bypassPermissions" : "auto"
+      : isAcpProfile(profile) ? "bypassPermissions"
       : profile.sandboxMode === "danger-full-access" ? "bypassPermissions" : "auto";
 }
 
@@ -569,6 +572,8 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
         }, stops after ${profile.maxTurns} turns, ${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}; repairs on ${repair}, ${profile.repairMaxTurns} turns / ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`
       : profile.provider === "gemini"
         ? html`<p class="meta">Runs on <span class="mono">gemini · ${profile.model}</span> — ${profile.approvalArgv === "yolo" ? "Full access via --approval-mode yolo; every tool auto-approved" : "Auto via --approval-mode auto_edit; edits auto-approved, other tools refused"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}), spend reported in tokens only; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`
+        : isAcpProfile(profile)
+          ? html`<p class="meta">Runs on <span class="mono">${ACP_AGENTS[profile.provider].name} (via ACP) · ${profile.model}</span> — full access inside the OS fence; the agent runs any tool it chooses and nothing asks. No turn limit: stops after ${Math.round(profile.timeoutSeconds / 60)} min, or ${Math.round(profile.idleTimeoutSeconds / 60)} min silent; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min, or ${Math.round(profile.repairIdleTimeoutSeconds / 60)} min silent.</p>`
         : html`<p class="meta">Runs on <span class="mono">${profile.provider} · ${profile.model}</span> — ${profile.sandboxMode === "danger-full-access" ? "FULL permissions via --dangerously-bypass-approvals-and-sandbox; nothing asks" : "workspace-write sandbox"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}); repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`;
   return base;
 }

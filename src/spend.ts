@@ -26,7 +26,8 @@ export function billingOf(provider: string, db?: Database): Billing {
   const base = provider.replace(/-(subscription|api)$/, "");
   if (provider.endsWith("-api")) return "api-key";
   const setting: Billing = provider.endsWith("-subscription") ? "subscription"
-    : Object.hasOwn(SUBSCRIPTION_CAPABLE, provider) ? readAuthMode(provider as ProviderId) : "api-key";
+    // An ACP agent's work is metered until its billing declaration says otherwise (that is per run, not here).
+    : Object.hasOwn(SUBSCRIPTION_CAPABLE, provider) ? (readAuthMode(provider as ProviderId) === "subscription" ? "subscription" : "api-key") : "api-key";
   if (setting === "api-key" || db === undefined) return setting;
   return seenBilling(db, base) ?? setting;
 }

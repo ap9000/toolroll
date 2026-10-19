@@ -18,11 +18,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, write
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId } from "./provider.js";
+import { isAcpProvider, type KeyedProviderId } from "./acp-agents.js";
 import { namedPath } from "./names.js";
 
 /** The ONE env name each provider's own harness reads its key from —
  * where a managed key is INJECTED. */
-export const PROVIDER_KEY_ENV: Record<ProviderId, string> = {
+export const PROVIDER_KEY_ENV: Record<KeyedProviderId, string> = {
   claude: "ANTHROPIC_API_KEY",
   codex: "OPENAI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
@@ -32,7 +33,7 @@ export const PROVIDER_KEY_ENV: Record<ProviderId, string> = {
 /** EVERY env name a provider reads its OWN key from — what subscription
  * mode STRIPS so an ambient key cannot override the login. gemini reads
  * two; the rest read one. */
-export const OWN_KEY_ENV: Record<ProviderId, readonly string[]> = {
+export const OWN_KEY_ENV: Record<KeyedProviderId, readonly string[]> = {
   // v105: the bearer-token and Codex-specific aliases bill a key just the same, so a sign-in run sheds them too.
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
   codex: ["OPENAI_API_KEY", "CODEX_API_KEY"],
@@ -50,13 +51,16 @@ export function keysDir(home: string = homedir()): string {
  * — a Claude/ChatGPT plan, a Google cached login — and the API key is
  * kept but NOT handed to the process, so its own auth wins. "api-key"
  * hands the stored (or ambient) key to the process. openrouter has no
- * login and is always api-key.
+ * login and is always api-key. An ACP agent (acp-agents.ts) has neither:
+ * it signs in its own way and Toolroll never holds a key for it —
+ * "agent-login", which says nothing about how it is billed (that is the
+ * agent's billing declaration, per model).
  */
-export type AuthMode = "subscription" | "api-key";
+export type AuthMode = "subscription" | "api-key" | "agent-login";
 
 /** Providers that CAN authenticate without an API key (a subscription or
  * cached login). openrouter cannot — it is api-key only. */
-export const SUBSCRIPTION_CAPABLE: Record<ProviderId, boolean> = {
+export const SUBSCRIPTION_CAPABLE: Record<KeyedProviderId, boolean> = {
   claude: true,
   codex: true,
   gemini: true,
@@ -65,7 +69,7 @@ export const SUBSCRIPTION_CAPABLE: Record<ProviderId, boolean> = {
 
 /** The default when nothing is set: subscription where it exists (prefer
  * the plan the operator already pays for), api-key otherwise. */
-export const DEFAULT_AUTH_MODE: Record<ProviderId, AuthMode> = {
+export const DEFAULT_AUTH_MODE: Record<KeyedProviderId, AuthMode> = {
   // Claude and Codex have first-class subscriptions most operators
   // already pay for — prefer them. Gemini support here is key-based (a
   // Google cached login is possible but not our road), and openrouter is
@@ -76,11 +80,12 @@ export const DEFAULT_AUTH_MODE: Record<ProviderId, AuthMode> = {
   openrouter: "api-key",
 };
 
-function authModeFileFor(provider: ProviderId, home: string): string {
+function authModeFileFor(provider: KeyedProviderId, home: string): string {
   return join(keysDir(home), `${provider}.auth`);
 }
 
 export function readAuthMode(provider: ProviderId, home: string = homedir()): AuthMode {
+  if (isAcpProvider(provider)) return "agent-login";
   if (!SUBSCRIPTION_CAPABLE[provider]) return "api-key";
   try {
     const value = readFileSync(authModeFileFor(provider, home), "utf8").trim();
@@ -98,6 +103,7 @@ export function readAuthMode(provider: ProviderId, home: string = homedir()): Au
  * no subscription login is the key, whatever the file says.
  */
 export function readAuthModeStrict(provider: ProviderId, home: string = homedir()): { ok: true; mode: AuthMode } | { ok: false; problem: string } {
+  if (isAcpProvider(provider)) return { ok: true, mode: "agent-login" };
   if (!SUBSCRIPTION_CAPABLE[provider]) return { ok: true, mode: "api-key" };
   let raw: string;
   try {
@@ -117,8 +123,8 @@ export function readAuthModeStrict(provider: ProviderId, home: string = homedir(
 }
 
 export function setAuthMode(
-  provider: ProviderId,
-  mode: AuthMode,
+  provider: KeyedProviderId,
+  mode: "subscription" | "api-key",
   home: string = homedir(),
 ): { ok: true } | { ok: false; reason: "no-subscription" } {
   if (mode === "subscription" && !SUBSCRIPTION_CAPABLE[provider]) {
@@ -129,7 +135,7 @@ export function setAuthMode(
   return { ok: true };
 }
 
-export function keyFileFor(provider: ProviderId, home: string = homedir()): string {
+export function keyFileFor(provider: KeyedProviderId, home: string = homedir()): string {
   return join(keysDir(home), provider);
 }
 
@@ -140,7 +146,7 @@ export function plausibleKey(value: string): boolean {
 }
 
 export function saveProviderKey(
-  provider: ProviderId,
+  provider: KeyedProviderId,
   value: string,
   home: string = homedir(),
 ): { ok: true } | { ok: false; reason: "implausible" } {
@@ -153,7 +159,7 @@ export function saveProviderKey(
   return { ok: true };
 }
 
-export function readProviderKey(provider: ProviderId, home: string = homedir()): string | null {
+export function readProviderKey(provider: KeyedProviderId, home: string = homedir()): string | null {
   try {
     const value = readFileSync(keyFileFor(provider, home), "utf8").trim();
     return plausibleKey(value) ? value : null;
@@ -162,7 +168,7 @@ export function readProviderKey(provider: ProviderId, home: string = homedir()):
   }
 }
 
-export function clearProviderKey(provider: ProviderId, home: string = homedir()): boolean {
+export function clearProviderKey(provider: KeyedProviderId, home: string = homedir()): boolean {
   const file = keyFileFor(provider, home);
   if (!existsSync(file)) return false;
   rmSync(file, { force: true });
@@ -184,7 +190,7 @@ export type KeyVerdict =
   | { ok: false; reason: "unreachable" }
   | { ok: false; reason: "unexpected"; status: number };
 
-const VERIFY_ENDPOINT: Record<ProviderId, { url: string; headers: (key: string) => Record<string, string> }> = {
+const VERIFY_ENDPOINT: Record<KeyedProviderId, { url: string; headers: (key: string) => Record<string, string> }> = {
   gemini: {
     // The key rides the x-goog-api-key HEADER (round 2, finding 6):
     // Google's current guidance, and it keeps the secret out of the URL
@@ -207,7 +213,7 @@ const VERIFY_ENDPOINT: Record<ProviderId, { url: string; headers: (key: string) 
 };
 
 export async function verifyProviderKey(
-  provider: ProviderId,
+  provider: KeyedProviderId,
   value: string,
   fetcher: typeof fetch = fetch,
   timeoutMs = 10_000,
@@ -255,7 +261,7 @@ export async function verifyProviderKey(
 }
 
 /** Words for a verdict, safe to render on any surface (never the key). */
-export function verdictWords(provider: ProviderId, verdict: KeyVerdict): string {
+export function verdictWords(provider: KeyedProviderId, verdict: KeyVerdict): string {
   if (verdict.ok) return `the ${provider} key works`;
   if (verdict.reason === "rejected") return `${provider} rejected this key — check the paste, or whether it is the right provider`;
   if (verdict.reason === "unreachable") return `couldn't reach ${provider} to check the key — it is stored; verify later`;
@@ -264,7 +270,7 @@ export function verdictWords(provider: ProviderId, verdict: KeyVerdict): string 
 
 /** What a surface may say about a key: that it exists and when it last
  * changed — NEVER the value, never a prefix, never a length. */
-export function keyStatus(provider: ProviderId, home: string = homedir()): { set: boolean; updatedAt: string | null } {
+export function keyStatus(provider: KeyedProviderId, home: string = homedir()): { set: boolean; updatedAt: string | null } {
   try {
     const stat = statSync(keyFileFor(provider, home));
     return { set: true, updatedAt: stat.mtime.toISOString() };
