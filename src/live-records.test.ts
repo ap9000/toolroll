@@ -353,6 +353,27 @@ describe("an ACP agent's conversation (acp-client.ts hands each update over as {
     expect(records.filter(one => one.k === "say").flatMap(one => (one as { t: string[] }).t)).toContain("next line");
   });
 
+  test("an update that isn't a message boundary, arriving mid-line, never splits a key from its value", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "api_key=" } }),
+      acp({ sessionUpdate: "usage_update", used: 1, size: 10 }),
+      acp({ sessionUpdate: "plan", entries: [] }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "sensitive-test-value\n" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("sensitive-test-value");
+  });
+
+  test("past the hard cap, an END the line already ended never closes a block opened after it", () => {
+    const r = recorder(true);
+    const records = [...all(r, [
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${"x".repeat(262_145)}-----END PRIVATE KEY-----` } }),
+      acp({ sessionUpdate: "tool_call", toolCallId: "k1", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "cat k" }, content: [{ type: "content", content: { type: "text", text: "-----BEGIN PRIVATE KEY-----" } }] }),
+      acp({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\nplain words inside the block\n" } }),
+    ]), ...r.end()];
+    expect(onDisk(records)).not.toContain("plain words inside the block");
+  });
+
   test("a permission request's title — a command, or a path anywhere — never reaches the file", () => {
     const r = recorder(true);
     const records = [...all(r, [acp({ sessionUpdate: "permission", toolCallId: "p", title: "Read /Users/someone/.ssh/id_rsa", kind: "read", granted: true })]), ...r.end()];
