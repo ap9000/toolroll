@@ -1,6 +1,6 @@
 # ACP agents: one protocol adapter for every coding agent that speaks it
 
-Status: spec v9 (2026-10-19) — v6–v9 revise only Layer E (v9: § "Layer E, v9") (v8: § "Layer E, v8") (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
+Status: spec v10 (2026-10-19) — v6–v10 revise only Layer E (v10: § "Layer E, v10") (v9: § "Layer E, v9") (v8: § "Layer E, v8") (v7 answers the v6 review: § "Layer E, v7 amendments") (§ "Layer E, revised (v6)" at the end), after layers A–D shipped and were reviewed. Earlier: v1 → Codex REVISE (8 findings), v2 → REVISE (7), v3 → REVISE (4), v4 → REVISE (2); every finding answered below (§ "Review ledger"). Owner decision: Alex, 2026-10-19 ("first move to acp adapter so we can get all the agents running").
 
 ## Why
 
@@ -370,3 +370,22 @@ the same exposure every agent has today, no more; Layer E's design no longer dep
 2. **Native containment (v8 #4)** is covered by the same `liveDescendants()` reading (above); the observer is not needed
    for the check.
 3. Items 3 (ownership and recovery) and 4 (publication) of v8 stand as written; the v8 review found them sound.
+
+
+## Layer E, v10 (answering the v9 review; and what implementation changed)
+
+1. **The live witness counts only what the agent started, alive, by group.** One process listing (pid, ppid, pgid,
+   state, command name — never arguments) finds the agent's own process below any fence wrapper (the first process
+   whose command is the agent's launch: bubblewrap's monitor and the wrapper are never counted; on macOS sandbox-exec
+   execs in place) and returns every live, non-zombie process beneath it with its process group. After settlement the
+   step passes only if every witnessed pid **and every witnessed process group** is gone.
+2. **Where a check runs (implementation).** Not a dedicated "Agent checks" project: a check is a task of the claiming
+   watch's own project (a registered, admitted repository its runner is bound to), on a throwaway branch
+   `toolroll/agent-check-<id>` whose checkout and branch are discarded afterwards. Same custody, fence and spend; no
+   new project admission road.
+3. **The isolation probes run on the process-group road** — `run()` applies the fence only there (found while
+   building: the gateway's older fence self-check never ran fenced; recorded on the git-fence-hardening branch). The
+   canary is named as a secret beside the database, so it is fenced whether the state folder is Toolroll's own or
+   shared.
+4. **Real evidence (2026-10-19):** OpenCode 1.18.18 passed in an isolated world and was attested (399 models); an
+   ordinary build turn then ran through the gateway in the fence and wrote its file.

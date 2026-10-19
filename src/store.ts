@@ -15138,6 +15138,15 @@ export class Store {
     });
   }
 
+  /** The check request, when it still admits this run as its current step: running, unexpired, its watch's lease
+   * live, and the step bound to exactly this run. Null otherwise. */
+  acpCheckAdmitting(id: number, step: 1 | 2, runId: number, now: Date): AcpCheckRequest | null {
+    const at = now.toISOString();
+    const row = this.db.prepare(`SELECT * FROM acp_check_request WHERE id = ? AND state = 'running' AND expires_at > ? AND ${Store.WATCH_LIVE}
+      AND steps_used = ? AND ${step === 1 ? "step1_run" : "step2_run"} = ?`).get(id, at, at, step, runId);
+    return row === undefined ? null : readAcpCheck(row);
+  }
+
   /** Fail a check that hasn't finished, with its words. */
   failAcpCheck(id: number, words: string, now: Date): boolean {
     return Number(this.db.prepare("UPDATE acp_check_request SET state = 'failed', result = ?, finished_at = ? WHERE id = ? AND state IN ('pending','running')")

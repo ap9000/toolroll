@@ -1578,39 +1578,56 @@ export type AcpRun = {
 export type AcpControl = {
   /** Ask the agent to stop the prompt in flight. */
   cancel: () => void;
-  /** A fresh, plane-side reading, now, of the agent's live descendants: from a process listing of its tree, or the
-   * native container's own member list. Null when it can't be read here (a job object has no member list). */
-  liveDescendants: () => number[] | null;
+  /** A fresh, plane-side reading, now, of what the agent itself started and is still running: the live (never zombie)
+   * processes beneath the agent's own process — below any wrapper the fence put around it — with their process
+   * groups. Null when it can't be read here (Windows). */
+  liveDescendants: () => { pid: number; group: number }[] | null;
 };
 
-/** The live descendants of `root`, from one process listing (identifiers only). */
-function liveTreeOf(root: number): number[] | null {
+type ProcessRow = { pid: number; parent: number; group: number; state: string; name: string };
+
+/** One process listing: ids, group, state and command name only (never arguments — they can carry a brief). */
+function processRows(): ProcessRow[] | null {
   try {
-    const rows = execFileSync("/bin/ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 2_000, maxBuffer: 4 * 1024 * 1024 })
-      .trim().split("\n").map(line => line.trim().split(/\s+/).map(Number));
-    const children = new Map<number, number[]>();
-    for (const [pid, parent] of rows) if (Number.isSafeInteger(pid) && Number.isSafeInteger(parent)) children.set(parent!, [...(children.get(parent!) ?? []), pid!]);
-    const found: number[] = [];
-    const pending = [...(children.get(root) ?? [])];
-    while (pending.length > 0) {
-      const pid = pending.pop()!;
-      found.push(pid);
-      pending.push(...(children.get(pid) ?? []));
-    }
-    return found;
+    return execFileSync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,stat=,comm="], { encoding: "utf8", timeout: 2_000, maxBuffer: 8 * 1024 * 1024 })
+      .split("\n").flatMap(line => {
+        const parts = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+        return parts === null ? [] : [{ pid: Number(parts[1]), parent: Number(parts[2]), group: Number(parts[3]), state: parts[4]!, name: parts[5]!.trim() }];
+      });
   } catch {
     return null;
   }
 }
 
-/** A Linux cgroup's members (other than `root`), from its own cgroup.procs; null where there is no such list. */
-function containerMembers(container: Container, root: number | undefined): number[] | null {
-  if (container.backend === "job-object") return null;
-  try {
-    return readFileSync(join(container.id, "cgroup.procs"), "utf8").trim().split("\n").map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0 && pid !== root);
-  } catch {
-    return null;
+/**
+ * What the agent started and is still running: from `root` (the spawned process — the agent itself, or a fence
+ * wrapper around it), down to the agent's own process (the first whose command is the agent's launch, `names`), then
+ * every live, non-zombie process beneath it, with its group. The agent itself and any wrapper are never counted.
+ */
+function liveUnderAgent(root: number, names: readonly string[]): { pid: number; group: number }[] | null {
+  const rows = processRows();
+  if (rows === null) return null;
+  const children = new Map<number, ProcessRow[]>();
+  for (const row of rows) children.set(row.parent, [...(children.get(row.parent) ?? []), row]);
+  const self = rows.find(row => row.pid === root);
+  const named = (row: ProcessRow) => names.some(name => row.name === name || row.name.endsWith(`/${name}`));
+  // The agent: the root when it is the agent (macOS sandbox-exec execs in place), else the first named descendant.
+  let agent: number | null = self !== undefined && named(self) ? root : null;
+  const pending = [...(children.get(root) ?? [])];
+  while (agent === null && pending.length > 0) {
+    const row = pending.shift()!;
+    if (named(row)) agent = row.pid;
+    else pending.push(...(children.get(row.pid) ?? []));
   }
+  if (agent === null) return [];
+  const found: { pid: number; group: number }[] = [];
+  const below = [...(children.get(agent) ?? [])];
+  while (below.length > 0) {
+    const row = below.pop()!;
+    if (!row.state.startsWith("Z")) found.push({ pid: row.pid, group: row.group });
+    below.push(...(children.get(row.pid) ?? []));
+  }
+  return found;
 }
 
 /** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */
@@ -1669,6 +1686,8 @@ export function runAcpSession(
     if (options.processGroup === true && container === null) observeProcessTree(child, options);
 
     const conversation = createAcpConversation({ cwd: options.cwd ?? process.cwd(), prompt: acp.prompt, model: acp.model, expect: acp.expect });
+    // The agent's own process, as a listing names it: the launched file, or the script a pinned interpreter runs.
+    const agentNames = [...new Set([file, ...args.slice(0, 2)].filter(one => one.startsWith("/")).map(one => one.split("/").pop()!).filter(one => one !== ""))];
     let stderr = "";
     let timedOut = false;
     let notFound = false;
@@ -1782,7 +1801,7 @@ export function runAcpSession(
     try {
       acp.onControl?.({
         cancel: () => write(conversation.cancel()),
-        liveDescendants: () => exited() || child.pid === undefined ? [] : container !== null ? containerMembers(container, child.pid) : liveTreeOf(child.pid),
+        liveDescendants: () => process.platform === "win32" ? null : exited() || child.pid === undefined ? [] : liveUnderAgent(child.pid, agentNames),
       });
     } catch { /* the caller's own failure */ }
 

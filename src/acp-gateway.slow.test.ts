@@ -233,7 +233,7 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
 
   test("a cancel mid-prompt is answered cancelled, is not a success, and what was alive at the cancel is gone after", async () => {
     check();
-    let witnessed: number[] = [];
+    let witnessed: { pid: number; group: number }[] = [];
     const result = await run("slow", { onControl: control => {
       // Cancel only once a live descendant is seen, from the plane's own reading of the agent's tree.
       const poll = setInterval(() => {
@@ -243,10 +243,10 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
       setTimeout(() => clearInterval(poll), 20_000).unref();
     } });
     expect(witnessed.length).toBeGreaterThan(0);
-    expect(witnessed).toContain(Number(readFileSync(join(worktree, "slow.pid"), "utf8")));
+    expect(witnessed.map(one => one.pid)).toContain(Number(readFileSync(join(worktree, "slow.pid"), "utf8")));
     expect(result.kind === "ran" ? result.outcome.code : -1).not.toBe(0);
     expect(agentLog()).toContain("session/cancel");
-    for (const pid of witnessed) expect(() => process.kill(pid, 0)).toThrow();
+    for (const { pid } of witnessed) expect(() => process.kill(pid, 0)).toThrow();
   });
 });
 

@@ -173,7 +173,7 @@ async function steps(job: AcpCheckJob, request: AcpCheckRequest, at: StepContext
   if (held2 !== null) return held2;
   const run2 = startRun();
   if (!store.consumeAcpCheckStep(request.id, 2, run2, clock())) { finish(run2); return "the check stopped admitting its second step"; }
-  let witnessed: number[] = [];
+  let witnessed: { pid: number; group: number }[] = [];
   let started = false;
   const second = await invokeAgent(store, run2, spec, ask(CHECK_PROMPTS.stop), options({
     acpCheck: { requestId: request.id, step: 2 },
@@ -225,13 +225,16 @@ function gradeOk(result: InvokeResult, worktree: string, toolDone: boolean): { v
   return { verdict: null };
 }
 
-function gradeStop(result: InvokeResult, witnessed: readonly number[]): string | null {
+function gradeStop(result: InvokeResult, witnessed: readonly { pid: number; group: number }[]): string | null {
   const facts = result.kind === "ran" ? result.outcome.acp : result.acp;
   if (witnessed.length === 0) return "no command the agent started was seen alive before the cancel";
   if (facts === undefined) return "the runner recorded no conversation";
   if (facts.stop !== "cancelled") return `the prompt ended ${facts.stop ?? "without an answer"}, not cancelled`;
-  for (const pid of witnessed) {
+  // Every process alive at the cancel is gone — and so is every process group it was in: a leader that exited after
+  // forking leaves its group behind, which is no stop at all.
+  for (const { pid, group } of witnessed) {
     try { process.kill(pid, 0); return `process ${pid}, alive at the cancel, is still running`; } catch { /* gone */ }
+    try { process.kill(-group, 0); return `process group ${group}, alive at the cancel, still has members`; } catch { /* gone */ }
   }
   return null;
 }
