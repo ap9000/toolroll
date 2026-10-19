@@ -16,7 +16,10 @@
  *
  * The plane offers no client capabilities (no file system, no terminal), so
  * every agent request except `session/request_permission` is answered
- * "method not found". Builds are full access inside the OS fence, so a
+ * "method not found". A model is chosen only through a `model` config option,
+ * whose answer shows the model current: `session/set_model` answers with
+ * nothing to observe, so an agent that offers only that is refused until a
+ * fixture proves how it confirms. Builds are full access inside the OS fence, so a
  * permission request is granted once (`allow_once`, never `allow_always`);
  * the fence, not this answer, is the boundary — OpenCode runs commands
  * without asking at all.
@@ -26,10 +29,8 @@
  * no agent can emit — which `acpParse` reads into the gateway's envelope.
  */
 
-/** The largest line the plane reads from an agent; a longer one is a protocol failure. */
+/** The largest line (UTF-8 bytes) the plane reads from an agent; a longer one is a protocol failure. */
 export const ACP_LINE_CAP = 1024 * 1024;
-/** Agent requests answered in one conversation, at most. */
-export const ACP_AGENT_REQUESTS_CAP = 1000;
 const MESSAGE_CAP = 64 * 1024;
 const TEXT_CAP = 2048;
 const USAGE_CAP = 8 * 1024;
@@ -161,14 +162,15 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
   let mechanism: AcpModelMechanism | null = null;
   let offered: string[] = [];
   let nextId = 0;
-  let agentRequests = 0;
   /** Our requests not yet answered, by id. */
   const pending = new Map<number, Pending>();
   /** Ids we have seen answered — a second answer to any of them is a protocol failure. */
   const answered = new Set<number>();
   /** The words since the last tool call: the agent's last message. */
   let message = "";
-  let reported: unknown = null;
+  /** The agent's own accounts of what it used: the prompt answer's `usage`, and the last `usage_update`. Never priced. */
+  let promptUsage: unknown = null;
+  let usageUpdate: unknown = null;
   const retained: string[] = [];
 
   const keep = (record: Record<string, unknown>) => { retained.push(line(record)); };
@@ -211,9 +213,8 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       const stop = isRecord(result) ? result["stopReason"] : undefined;
       if (typeof stop !== "string" || !STOP_REASONS.has(stop)) return fail("protocol", "the prompt's answer carried no known stop reason");
       terminal = { stopReason: stop as AcpStopReason };
-      if (isRecord(result) && result["usage"] !== undefined) reported = result["usage"];
+      if (isRecord(result) && result["usage"] !== undefined) promptUsage = result["usage"];
       if (message !== "") keep({ type: "acp.message", content: bounded(message, MESSAGE_CAP) });
-      if (reported !== null) keep({ type: "acp.reported", usage: bounded(JSON.stringify(reported), USAGE_CAP) });
       keep({ type: "acp.terminal", stopReason: stop });
       phase = "ended";
       return { send: [], live: [] };
@@ -247,20 +248,14 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       if (offer === null) return fail("model-unavailable", "the agent offers no way to choose a model");
       mechanism = offer.mechanism;
       offered = offer.offered.slice(0, 500);
+      if (offer.mechanism !== "config-option") return fail("model-unavailable", "the agent can't confirm which model it uses (it offers only session/set_model)");
       if (!offer.offered.includes(options.model)) return fail("model-unavailable", `the agent doesn't offer ${options.model}`);
       phase = "model";
-      return {
-        send: [offer.mechanism === "config-option"
-          ? request("session/set_config_option", { sessionId: id, configId: "model", value: options.model }, "model")
-          : request("session/set_model", { sessionId: id, modelId: options.model }, "model")],
-        live: [],
-      };
+      return { send: [request("session/set_config_option", { sessionId: id, configId: "model", value: options.model }, "model")], live: [] };
     }
-    // purpose === "model": the config option's answer must show the model current; set_model answers empty.
-    if (mechanism === "config-option") {
-      const offer = modelOffer(result);
-      if (offer === null || offer.current !== options.model) return fail("model-unavailable", `the agent did not make ${options.model} current`);
-    }
+    // purpose === "model": the answer must show the model current.
+    const chosen = modelOffer(result);
+    if (chosen === null || chosen.mechanism !== "config-option" || chosen.current !== options.model) return fail("model-unavailable", `the agent did not make ${options.model} current`);
     keep({ type: "acp.model", model: options.model, mechanism });
     return { send: [promptLine()], live: [] };
   };
@@ -270,6 +265,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     if (sessionId === null || params["sessionId"] !== sessionId) return fail("protocol", "an update for another session");
     const update = params["update"];
     const kind = update["sessionUpdate"];
+    if (typeof kind !== "string" || kind === "" || kind.length > 64) return fail("protocol", "a session update without a kind");
     if (kind === "agent_message_chunk") {
       const content = update["content"];
       if (isRecord(content) && content["type"] === "text" && typeof content["text"] === "string" && message.length < MESSAGE_CAP) {
@@ -278,7 +274,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     } else if (kind === "tool_call") {
       message = "";
     } else if (kind === "usage_update") {
-      reported = update;
+      usageUpdate = update;
     }
     return { send: [], live: [update] };
   };
@@ -292,7 +288,7 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     },
     receive(raw) {
       if (phase === "failed") return { send: [], live: [] };
-      if (raw.length > ACP_LINE_CAP) return fail("protocol", "the agent wrote a line too long to read");
+      if (raw.length > ACP_LINE_CAP || Buffer.byteLength(raw, "utf8") > ACP_LINE_CAP) return fail("protocol", "the agent wrote a line too long to read");
       if (raw.trim() === "") return { send: [], live: [] };
       let incoming: unknown;
       try {
@@ -304,21 +300,30 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       const method = incoming["method"];
       const id = incoming["id"];
       if (typeof method === "string") {
+        const params = incoming["params"];
+        // Anything that names a session must name ours.
+        if (isRecord(params) && params["sessionId"] !== undefined && params["sessionId"] !== sessionId) return fail("protocol", "a message for another session");
         if (id === undefined) {
           // A notification. Only session updates mean anything; the rest are ignored.
-          return method === "session/update" ? onUpdate(incoming["params"]) : { send: [], live: [] };
+          return method === "session/update" ? onUpdate(params) : { send: [], live: [] };
         }
         if (typeof id !== "number" && typeof id !== "string") return fail("protocol", "an agent request with a malformed id");
-        if (++agentRequests > ACP_AGENT_REQUESTS_CAP) return fail("protocol", "the agent asked too many times");
         if (method === "session/request_permission") {
-          const params = incoming["params"];
-          if (!isRecord(params) || params["sessionId"] !== sessionId) return fail("protocol", "a permission request for another session");
-          const answer = permissionAnswer(params);
-          if (answer === null) return { send: [reply(id, { error: { code: -32602, message: "no option this client can choose" } })], live: [] };
-          const call = isRecord(params["toolCall"]) ? params["toolCall"] : {};
+          if (!isRecord(params) || sessionId === null || params["sessionId"] !== sessionId) return fail("protocol", "a permission request for another session");
+          const call = params["toolCall"];
+          const answer = isRecord(call) && typeof call["toolCallId"] === "string" && call["toolCallId"] !== "" ? permissionAnswer(params) : null;
+          const step = {
+            sessionUpdate: "permission",
+            toolCallId: isRecord(call) && typeof call["toolCallId"] === "string" ? call["toolCallId"] : null,
+            title: isRecord(call) && typeof call["title"] === "string" ? call["title"] : null,
+            kind: isRecord(call) && typeof call["kind"] === "string" ? call["kind"] : null,
+          };
+          if (answer === null) {
+            return { send: [reply(id, { error: { code: -32602, message: "a permission request needs a tool call and an option this client can choose" } })], live: [{ ...step, granted: false }] };
+          }
           return {
             send: [reply(id, { result: { outcome: { outcome: "selected", optionId: answer.optionId } } })],
-            live: [{ sessionUpdate: "permission", toolCallId: call["toolCallId"] ?? null, title: call["title"] ?? null, kind: call["kind"] ?? null, granted: answer.granted }],
+            live: [{ ...step, granted: answer.granted }],
           };
         }
         return { send: [reply(id, { error: { code: -32601, message: "this client offers no such method" } })], live: [] };
@@ -331,9 +336,13 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
       pending.delete(id);
       answered.add(id);
       const hasResult = Object.prototype.hasOwnProperty.call(incoming, "result");
+      const hasError = Object.prototype.hasOwnProperty.call(incoming, "error");
+      if (hasResult === hasError) return fail("protocol", "a response must carry a result or an error, not both or neither");
       const error = incoming["error"];
-      if (hasResult === isRecord(error)) return fail("protocol", "a response must carry a result or an error");
-      return onResult(purpose, incoming["result"], isRecord(error) ? error : null);
+      if (hasError && !(isRecord(error) && typeof error["code"] === "number" && Number.isInteger(error["code"]) && typeof error["message"] === "string")) {
+        return fail("protocol", "a response with a malformed error");
+      }
+      return onResult(purpose, incoming["result"], hasError ? error as Record<string, unknown> : null);
     },
     cancel() {
       if (phase !== "prompt" || sessionId === null) return [];
@@ -353,7 +362,12 @@ export function createAcpConversation(options: AcpConversationOptions): AcpConve
     agent: () => agent,
     mechanism: () => mechanism,
     offered: () => offered.slice(),
-    retained: () => retained.length === 0 ? "" : `${retained.join("\n")}\n`,
+    retained: () => {
+      // The agent's own usage accounts ride every outcome — a failure spent too.
+      const usage = promptUsage === null && usageUpdate === null ? [] : [line({ type: "acp.reported", usage: bounded(JSON.stringify({ prompt: promptUsage, update: usageUpdate }), USAGE_CAP) })];
+      const all = [...retained, ...usage];
+      return all.length === 0 ? "" : `${all.join("\n")}\n`;
+    },
   };
 }
 

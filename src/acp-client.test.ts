@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { ACP_AGENT_REQUESTS_CAP, ACP_LINE_CAP, acpParse, createAcpConversation, permissionAnswer, type AcpConversation } from "./acp-client.js";
+import { ACP_LINE_CAP, acpParse, createAcpConversation, permissionAnswer, type AcpConversation } from "./acp-client.js";
 
 // Real transcripts, recorded 2026-10-19 (docs/plans/acp-adapter.md § Evidence).
 const opencode = JSON.parse(readFileSync(new URL("./fixtures/acp/opencode-1.18.18.json", import.meta.url), "utf8")) as Record<string, any>;
@@ -77,16 +77,20 @@ describe("the ACP conversation, against real agents", () => {
     expect(acpParse(unechoed.retained())).toMatchObject({ promptConsumed: false, terminal: { failed: true, code: "model-unavailable" } });
   });
 
-  test("Gemini: the model chosen by set_model; a quota error on the prompt is a failed terminal, never success", () => {
+  test("Gemini: an agent that can only set_model (nothing to observe) is refused before any prompt", () => {
     const model = gemini["session/new"].models.availableModels[1].modelId as string;
     const conversation = createAcpConversation({ cwd: "<work>", prompt: "x", model, expect: GEMINI });
     const [init] = sent(conversation.start());
     const [open] = sent(conversation.receive(answer(init!.id, gemini["initialize"])).send);
-    const [choose] = sent(conversation.receive(answer(open!.id, gemini["session/new"])).send);
-    expect(choose).toMatchObject({ method: "session/set_model", params: { sessionId: gemini["sessionId"], modelId: model } });
-    const [prompt] = sent(conversation.receive(answer(choose!.id, {})).send);
-    conversation.receive(update(gemini["sessionId"], gemini["updates"][0]));
-    conversation.receive(failWith(prompt!.id, gemini["promptError"]));
+    expect(conversation.receive(answer(open!.id, gemini["session/new"])).send).toEqual([]);
+    expect(conversation.mechanism()).toBe("set-model");
+    expect(conversation.failure()).toMatchObject({ kind: "model-unavailable" });
+  });
+
+  test("Gemini's real quota error, answering a prompt, is a failed terminal — never success", () => {
+    const conversation = createAcpConversation({ cwd: "<work>", prompt: "x", model: "google/gemini-2.5-flash", expect: OPENCODE });
+    const prompt = handshake(conversation, opencode);
+    conversation.receive(failWith(prompt.id, gemini["promptError"]));
     expect(conversation.phase()).toBe("ended");
     const parsed = acpParse(conversation.retained());
     expect(parsed).toMatchObject({ promptConsumed: false, terminal: { failed: true, code: "rpc:429" } });
@@ -136,7 +140,8 @@ describe("the ACP conversation fails closed", () => {
   });
 
   test("malformed, oversized and non-JSON-RPC lines are protocol failures", () => {
-    for (const bad of ["{not json", JSON.stringify({ id: 1, result: {} }), JSON.stringify([1]), `"${"x".repeat(ACP_LINE_CAP)}"`]) {
+    // The cap is in bytes: a line of three-byte characters under the cap in characters is still over it.
+    for (const bad of ["{not json", JSON.stringify({ id: 1, result: {} }), JSON.stringify([1]), `"${"x".repeat(ACP_LINE_CAP)}"`, `"${"€".repeat(400_000)}"`]) {
       const { conversation } = ready();
       conversation.receive(bad);
       expect(conversation.failure()).toMatchObject({ kind: "protocol" });
@@ -155,9 +160,15 @@ describe("the ACP conversation fails closed", () => {
     expect(acpParse(twice.conversation.retained())).toMatchObject({ promptConsumed: false });
     expect(twice.conversation.failure()).toMatchObject({ kind: "protocol" });
 
-    const both = ready();
-    both.conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: both.prompt.id, result: { stopReason: "end_turn" }, error: { code: 1, message: "x" } }));
-    expect(acpParse(both.conversation.retained())).toMatchObject({ promptConsumed: false });
+    for (const error of [{ code: 1, message: "x" }, null, { code: "1", message: "x" }]) {
+      const both = ready();
+      both.conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: both.prompt.id, result: { stopReason: "end_turn" }, error }));
+      expect(acpParse(both.conversation.retained())).toMatchObject({ promptConsumed: false });
+      expect(both.conversation.failure()).toMatchObject({ kind: "protocol" });
+    }
+    const malformed = ready();
+    malformed.conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: malformed.prompt.id, error: { message: "no code" } }));
+    expect(malformed.conversation.failure()).toMatchObject({ kind: "protocol" });
   });
 
   test("an update or permission request for another session fails", () => {
@@ -167,6 +178,15 @@ describe("the ACP conversation fails closed", () => {
     const asking = ready();
     asking.conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "session/request_permission", params: { sessionId: "nope", options: [] } }));
     expect(asking.conversation.failure()).toMatchObject({ kind: "protocol" });
+    // Any notification naming another session, and an update with no kind, fail too.
+    const stranger = ready();
+    stranger.conversation.receive(JSON.stringify({ jsonrpc: "2.0", method: "session/something_new", params: { sessionId: "ses_other" } }));
+    expect(stranger.conversation.failure()).toMatchObject({ kind: "protocol" });
+    for (const body of [{}, { sessionUpdate: 3 }]) {
+      const kindless = ready();
+      kindless.conversation.receive(update(sid, body));
+      expect(kindless.conversation.failure()).toMatchObject({ kind: "protocol" });
+    }
   });
 
   test("a sign-in the agent wants is its own failure", () => {
@@ -199,19 +219,24 @@ describe("what the plane answers the agent", () => {
     expect(granted.live).toEqual([{ sessionUpdate: "permission", toolCallId: "t1", title: "rm", kind: "execute", granted: true }]);
     const onlyAlways = conversation.receive(ask(6, [{ optionId: "always", kind: "allow_always" }, { optionId: "never", kind: "reject_always" }]));
     expect(sent(onlyAlways.send)[0]).toMatchObject({ id: 6, error: { code: -32602 } });
+    expect(onlyAlways.live).toEqual([{ sessionUpdate: "permission", toolCallId: "t1", title: "rm", kind: "execute", granted: false }]);
     const refused = conversation.receive(ask(8, [{ optionId: "no", kind: "reject_once" }]));
     expect(sent(refused.send)[0]).toMatchObject({ id: 8, result: { outcome: { optionId: "no" } } });
+    // A request without a tool call is never granted, and still shows.
+    const callless = conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/request_permission", params: { sessionId: sid, options: [{ optionId: "once", kind: "allow_once" }] } }));
+    expect(sent(callless.send)[0]).toMatchObject({ id: 9, error: { code: -32602 } });
+    expect(callless.live).toEqual([{ sessionUpdate: "permission", toolCallId: null, title: null, kind: null, granted: false }]);
     expect(permissionAnswer({ options: "x" })).toBeNull();
   });
 
-  test("every client method the plane doesn't offer is refused, and an agent that asks without end is stopped", () => {
+  test("every client method the plane doesn't offer is refused, each answered at once — however many", () => {
     const conversation = ready();
     for (const method of ["fs/read_text_file", "fs/write_text_file", "terminal/create"]) {
       const reply = sent(conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: method, method, params: {} })).send);
       expect(reply).toEqual([{ jsonrpc: "2.0", id: method, error: { code: -32601, message: "this client offers no such method" } }]);
     }
-    for (let i = 0; i < ACP_AGENT_REQUESTS_CAP; i += 1) conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: `r${i}`, method: "fs/read_text_file", params: {} }));
-    expect(conversation.failure()).toMatchObject({ kind: "protocol" });
+    for (let i = 0; i < 1500; i += 1) expect(conversation.receive(JSON.stringify({ jsonrpc: "2.0", id: `r${i}`, method: "fs/read_text_file", params: {} })).send).toHaveLength(1);
+    expect(conversation.failure()).toBeNull();
   });
 
   test("cancel is a notification for this session, only while the prompt runs; the final message is the words after the last step", () => {
@@ -226,12 +251,17 @@ describe("what the plane answers the agent", () => {
     expect(acpParse(conversation.retained())).toMatchObject({ finalMessage: "Stopped.", terminal: { code: "cancelled" } });
   });
 
-  test("the agent's usage report is kept apart, unpriced", () => {
+  test("the agent's usage reports are kept apart, unpriced — both of them, whatever the outcome", () => {
     const conversation = ready();
     conversation.receive(update(sid, { sessionUpdate: "usage_update", used: 1200, size: 200000, cost: { amount: 0.42, currency: "USD" } }));
-    conversation.receive(answer(4, { stopReason: "end_turn" }));
+    conversation.receive(answer(4, { stopReason: "end_turn", usage: { inputTokens: 900, outputTokens: 300 } }));
     const parsed = acpParse(conversation.retained());
     expect(parsed.reportedUsage).toContain("0.42");
+    expect(parsed.reportedUsage).toContain("900");
     expect(parsed).not.toHaveProperty("costUsd");
+    const failed = ready();
+    failed.receive(update(sid, { sessionUpdate: "usage_update", used: 10, size: 100, cost: { amount: 0.07, currency: "USD" } }));
+    failed.receive(failWith(4, { code: 429, message: "quota" }));
+    expect(acpParse(failed.retained()).reportedUsage).toContain("0.07");
   });
 });
