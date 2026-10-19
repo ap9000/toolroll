@@ -1136,6 +1136,7 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
     <summary className="cursor-pointer text-body font-medium">Signing{hook.ready && current !== "none" ? "" : " · needs you"}</summary>
     <div className="mt-2 flex flex-col gap-2">
       {hook.warning !== null && <p className={cn("text-caption font-normal", current === "none" || !hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
+      {hook.readerNote !== null && <p className="text-caption text-muted-foreground font-normal" data-trigger-reader-note>{hook.readerNote}</p>}
       <Field label="Signed by" hint="Who signs this webhook's deliveries. Changing it keeps the address and drops the secret: it then needs one again.">
         <select className="h-9 rounded-md border bg-background px-2 text-body" value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
           {SENDER_CHOICES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}

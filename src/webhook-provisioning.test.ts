@@ -136,6 +136,9 @@ test("what the panel is given: who signs each webhook, whether its secret is mad
   expect(hookOf(sentryHook)).toMatchObject({ ready: false, sender: "sentry", makesSecret: false, needsSecret: true });
   made(saveSigningSecret(store, trigger(sentryHook), SENTRY_SECRET, T0, dir));
   expect(hookOf(sentryHook)).toMatchObject({ ready: true, needsSecret: true, warning: expect.stringContaining("Any Sentry project") });
+  // Its reader's status is said on its own line, whatever else the row warns about.
+  expect(hookOf(sentryHook)?.readerNote).toContain("Reader unverified");
+  expect(hookOf(standardHook)?.readerNote).toBeNull();
 });
 
 describe("credentials under races and crashes", () => {

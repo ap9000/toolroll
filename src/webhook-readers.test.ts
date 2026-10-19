@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { flowFromSteps } from "./flows.js";
 import { addFlowTriggerTo, receiveFlowHook, saveSigningSecret, setUpFlowHook } from "./flow-triggers.js";
-import { readDelivery, safeLink, type ReaderSettings } from "./webhook-readers.js";
+import { readDelivery, safeLink, SENTRY_HOSTS, VERCEL_HOSTS, type ReaderSettings } from "./webhook-readers.js";
 
 const T0 = new Date("2026-10-19T12:00:00.000Z");
 const fixture = (name: string) => readFileSync(new URL(`../test/fixtures/webhooks/${name}`, import.meta.url));
@@ -26,11 +26,15 @@ describe("readers", () => {
       url: "https://acme.sentry.io/organizations/acme/issues/1170820242/events/68f8ab4ca0b24f6d8a7cf29e1ee8e6e8/",
       description: "From a Sentry issue, in checkout/rounding.ts in roundTotal." });
     expect(readDelivery(parse("sentry-issue-created.documented.json"), settings({ sender: "sentry", project: "web" }))).toMatchObject({ kind: "item", identity: "1170820243", url: "https://acme.sentry.io/issues/1170820243/" });
-    expect(readDelivery(parse("sentry-issue-resolved.documented.json"), settings({ sender: "sentry" }))).toEqual({ kind: "ignored", why: "not an issue alert or a new issue (resolved)" });
+    expect(readDelivery(parse("sentry-issue-resolved.documented.json"), settings({ sender: "sentry" }))).toEqual({ kind: "ignored", why: "not an issue alert or a new issue" });
   });
 
   test("Sentry's scope is read from the body: another project is ignored", () => {
     expect(readDelivery(parse("sentry-issue-alert.documented.json"), settings({ sender: "sentry", project: "1" }))).toMatchObject({ kind: "item" });
+    // An alert names its project by number; its slug is read from the event's API address, on Sentry's own host only.
+    expect(readDelivery(parse("sentry-issue-alert.documented.json"), settings({ sender: "sentry", project: "web" }))).toMatchObject({ kind: "item", identity: "1170820242" });
+    const elsewhere = JSON.parse(fixture("sentry-issue-alert.documented.json").toString().replace("https://sentry.io/api/0/projects/acme/web/", "https://evil.example/api/0/projects/acme/web/")) as unknown;
+    expect(readDelivery(elsewhere, settings({ sender: "sentry", project: "web" }))).toEqual({ kind: "ignored", why: "from another Sentry project" });
     expect(readDelivery(parse("sentry-issue-alert.documented.json"), settings({ sender: "sentry", project: "2" }))).toEqual({ kind: "ignored", why: "from another Sentry project" });
     expect(readDelivery(parse("sentry-issue-created.documented.json"), settings({ sender: "sentry", project: "api" }))).toEqual({ kind: "ignored", why: "from another Sentry project" });
   });
@@ -38,9 +42,23 @@ describe("readers", () => {
   test("Vercel: only a failed deployment, from its project and team, linked to its inspection page", () => {
     expect(readDelivery(parse("vercel-deployment-error.documented.json"), settings({ sender: "vercel", project: "prj_1", team: "team_1" }))).toEqual({
       kind: "item", identity: "dpl_8f3k2j", label: "Vercel deployment", title: "shop failed to deploy", url: "https://vercel.com/acme/shop/8f3k2j", description: "From a failed Vercel deployment." });
-    expect(readDelivery(parse("vercel-deployment-succeeded.documented.json"), settings({ sender: "vercel" }))).toEqual({ kind: "ignored", why: "not a failed deployment (deployment.succeeded)" });
+    expect(readDelivery(parse("vercel-deployment-succeeded.documented.json"), settings({ sender: "vercel" }))).toEqual({ kind: "ignored", why: "not a failed deployment" });
     expect(readDelivery(parse("vercel-deployment-error.documented.json"), settings({ sender: "vercel", project: "prj_2" }))).toEqual({ kind: "ignored", why: "from another Vercel project" });
     expect(readDelivery(parse("vercel-deployment-error.documented.json"), settings({ sender: "vercel", team: "team_2" }))).toEqual({ kind: "ignored", why: "from another Vercel team" });
+  });
+
+  test("nothing the sender wrote is kept as the reason for an event Toolroll doesn't take", () => {
+    const token = ["ghp", "Q".repeat(36)].join("_");
+    expect(readDelivery({ action: token, data: {} }, settings({ sender: "sentry" }))).toEqual({ kind: "ignored", why: "not an issue alert or a new issue" });
+    expect(readDelivery({ type: token }, settings({ sender: "vercel" }))).toEqual({ kind: "ignored", why: "not a failed deployment" });
+  });
+
+  test("an identity is judged as sent: padding, hidden characters or length never become another identity", () => {
+    const generic = settings({ idField: "id" });
+    expect(readDelivery({ id: "\nABC" }, generic)).toEqual({ kind: "skip", why: "its identity isn't usable" });
+    expect(readDelivery({ id: " ABC " }, generic)).toEqual({ kind: "skip", why: "its identity isn't usable" });
+    expect(readDelivery({ id: `ABC${" ".repeat(200)}` }, generic)).toEqual({ kind: "skip", why: "its identity isn't usable" });
+    expect(readDelivery({ id: "ABC" }, generic)).toMatchObject({ kind: "item", identity: "ABC" });
   });
 
   test("generic: a configured identity that can't be used makes nothing, never some other identity", () => {
@@ -55,11 +73,19 @@ describe("readers", () => {
   });
 
   test("a link is kept only as an https address on its sender's site, without user information, query or fragment, or anything like a secret", () => {
-    expect(safeLink("https://acme.sentry.io/issues/1/?query=is%3Aunresolved#a", ["sentry.io"])).toBe("https://acme.sentry.io/issues/1/");
-    expect(safeLink("https://sentry.io.evil.example/issues/1/", ["sentry.io"])).toBeNull();
-    expect(safeLink("https://notsentry.io/issues/1/", ["sentry.io"])).toBeNull();
-    expect(safeLink("http://acme.sentry.io/issues/1/", ["sentry.io"])).toBeNull();
-    expect(safeLink("https://user:pass@acme.sentry.io/issues/1/", ["sentry.io"])).toBeNull();
+    expect(safeLink("https://acme.sentry.io/issues/1/?query=is%3Aunresolved#a", SENTRY_HOSTS)).toBe("https://acme.sentry.io/issues/1/");
+    expect(safeLink("https://sentry.io.evil.example/issues/1/", SENTRY_HOSTS)).toBeNull();
+    expect(safeLink("https://notsentry.io/issues/1/", SENTRY_HOSTS)).toBeNull();
+    expect(safeLink("http://acme.sentry.io/issues/1/", SENTRY_HOSTS)).toBeNull();
+    expect(safeLink("https://user:pass@acme.sentry.io/issues/1/", SENTRY_HOSTS)).toBeNull();
+    // Vercel's inspection pages are on vercel.com itself: not its subdomains.
+    expect(safeLink("https://vercel.com/acme/shop/8f3k2j", VERCEL_HOSTS)).toBe("https://vercel.com/acme/shop/8f3k2j");
+    expect(safeLink("https://shop.vercel.com/acme", VERCEL_HOSTS)).toBeNull();
+    // A token spelled with percent-escapes is the same token; a path that won't decode isn't kept.
+    expect(safeLink(`https://vercel.com/%67hp_${"Q".repeat(36)}`, VERCEL_HOSTS)).toBeNull();
+    expect(safeLink(`https://status.example/a/%67%68%70_${"Q".repeat(36)}`, null)).toBeNull();
+    expect(safeLink("https://status.example/%E0%A4%A", null)).toBeNull();
+    expect(safeLink("https://status.example/a%0Ab", null)).toBeNull();
     expect(safeLink(`https://status.example/${["ghp", "Q".repeat(36)].join("_")}`, null)).toBeNull();
     expect(safeLink(`https://status.example/${"a".repeat(2000)}`, null)).toBeNull();
     expect(safeLink("javascript:alert(1)", null)).toBeNull();
@@ -97,7 +123,9 @@ describe("through a trigger", () => {
     // The card reads back with its source whole.
     expect(store.getFlowCard(store.lastFlowTriggerCard(id)!)?.source).toMatchObject({ verified: "sentry", external: { id: "1170820242" }, receipt: "v3:sentry:id:1170820242" });
     // A resolved issue is ignored, received under its delivery's key: no identity is used up.
-    expect(send("sentry-issue-resolved.documented.json")).toEqual({ status: 202, said: "Ignored: not an issue alert or a new issue (resolved)." });
+    expect(send("sentry-issue-resolved.documented.json")).toEqual({ status: 202, said: "Ignored: not an issue alert or a new issue." });
+    // The same ignored delivery again is answered for what it was.
+    expect(send("sentry-issue-resolved.documented.json")).toEqual({ status: 202, said: "Already received." });
     expect(store.flowReceipt(id, "v3:sentry:id:1170820243")).toBeNull();
     expect(send("sentry-issue-created.documented.json")).toEqual({ status: 202, said: "Added 1 card." });
   });
@@ -105,7 +133,7 @@ describe("through a trigger", () => {
   test("Vercel: a deployment that succeeded, or failed elsewhere, is ignored without using up the deployment it names", () => {
     const { id, token } = hook({ sender: "vercel", project: "prj_1" });
     const send = (body: Buffer) => receiveFlowHook(store, token, { headers: { "x-vercel-signature": [createHmac("sha1", SECRET).update(body).digest("hex")] }, body }, dir, T0);
-    expect(send(fixture("vercel-deployment-succeeded.documented.json"))).toEqual({ status: 202, said: "Ignored: not a failed deployment (deployment.succeeded)." });
+    expect(send(fixture("vercel-deployment-succeeded.documented.json"))).toEqual({ status: 202, said: "Ignored: not a failed deployment." });
     const elsewhere = Buffer.from(fixture("vercel-deployment-error.documented.json").toString("utf8").replace('"prj_1"', '"prj_2"'));
     expect(send(elsewhere)).toEqual({ status: 202, said: "Ignored: from another Vercel project." });
     expect(store.flowReceipt(id, "v3:vercel:id:dpl_8f3k2j")).toBeNull();
@@ -129,5 +157,10 @@ describe("through a trigger", () => {
     expect(cards()).toEqual([expect.objectContaining({ title: "Checkout down", source: expect.objectContaining({ url: "https://status.example/INC-7", receipt: "v3:standard:id:INC-7" }) })]);
     expect(send("m3", { incident: { name: "No id" } })).toEqual({ status: 202, said: "No new cards. Left out 1 item: Webhook: its identity is missing." });
     expect(send("m3", { incident: { name: "No id" } })).toEqual({ status: 202, said: "Already received; it wasn't added: its identity is missing." });
+    // A signed delivery id that looks like a key is never a key, a note or a card: received under its bytes, made into nothing.
+    const planted = ["ghp", "Q".repeat(36)].join("_");
+    expect(send(planted, { incident: { id: "INC-9", name: "Secret id" } })).toEqual({ status: 202, said: "No new cards. Left out 1 item: Webhook: its delivery id: it looked like it held a key or password." });
+    expect(store.handle.prepare("SELECT key FROM flow_trigger_event WHERE trigger = ? AND key LIKE ?").all(id, `%${planted}%`)).toEqual([]);
+    expect(JSON.stringify(cards())).not.toContain(planted);
   });
 });

@@ -38,7 +38,7 @@ import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
-import { readDelivery } from "./webhook-readers.js";
+import { identityOf, readDelivery } from "./webhook-readers.js";
 import { makesSecret, makeSecret, proveDelivery, secretShapeOk, SENDER_WORDS, WEBHOOK_SENDERS, type DistinctHeaders, type SigningSender, type WebhookSender } from "./webhook-signing.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
@@ -49,7 +49,7 @@ import type { CodeResult } from "./flow-code.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { prepareUnattendedCandidates, grantSignsScriptOf, scriptProvenanceOf, scriptRanDigestOf } from "./flow-unattended.js";
 import { tmpdir } from "node:os";
-import type { FlowCardSource, FlowRow, FlowTriggerRow, Store } from "./store.js";
+import type { FlowCardSource, FlowReceipt, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
 import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
 
@@ -1058,12 +1058,21 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     // signature covers — Standard Webhooks' signed id, or the raw bytes. Keys carry the sender, so nothing unsigned
     // stands for anything signed.
     const bodyHash = createHash("sha256").update(delivery.body).digest("hex");
+    // A signed delivery id is outside words too: one that isn't a usable identity (padded, hidden characters, too long,
+    // or looking like a key) is never a key; the delivery is received under its bytes, and made into nothing.
+    const signedId = proven.signedId === null ? null : identityOf(proven.signedId);
     const deliveryKey = sender === "none"
       ? `hook:${(header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || bodyHash).slice(0, 120)}`
-      : proven.signedId !== null ? `v3:${sender}:wid:${proven.signedId}` : `v3:${sender}:body:${bodyHash}`;
+      : signedId?.ok === true ? `v3:${sender}:wid:${signedId.id}` : `v3:${sender}:body:${bodyHash}`;
+    if (signedId?.ok === false) items = [{ key: deliveryKey, skip: `its delivery id: ${signedId.why}`, label: "Webhook", at: null }];
     // Not for this flow: received under the delivery's own key, so it never uses up the identity of what it names.
-    if (read.kind === "ignored") return written(() => { store.recordFlowReceipt(trigger.id, deliveryKey, "ignored", read.why, null, now); return { status: 202, said: `Ignored: ${read.why}.` }; });
-    if (read.kind === "skip") items = [{ key: deliveryKey, skip: read.why, label: "Webhook", at: null }];
+    else if (read.kind === "ignored") return written(() => {
+      const before = store.flowReceipt(trigger.id, deliveryKey);
+      if (before !== null) return repeatAnswer(before);
+      store.recordFlowReceipt(trigger.id, deliveryKey, "ignored", read.why, null, now);
+      return { status: 202, said: `Ignored: ${read.why}.` };
+    });
+    else if (read.kind === "skip") items = [{ key: deliveryKey, skip: read.why, label: "Webhook", at: null }];
     else {
       // The outside thing's identity, when it has one, groups its deliveries: one card per issue or deployment.
       const key = read.identity === null ? deliveryKey : `v3:${sender}:id:${read.identity}`;
@@ -1078,8 +1087,7 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     // Received before (v126): said for what it was, never as a card that isn't there.
     const first = items[0]!;
     const before = items.length === 1 ? store.flowReceipt(trigger.id, first.key) : null;
-    if (before !== null) return { status: 202, said: before.state === "accepted" ? "Already received." : before.state === "held" ? "Already received; waiting for room."
-      : before.state === "skipped" ? `Already received; it wasn't added${before.note === null ? "" : `: ${before.note}`}.` : "Already received." };
+    if (before !== null) return repeatAnswer(before);
     const results = items.slice(0, CARDS_PER_CHECK).map(item => "skip" in item
       ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}` } : { made: "seen" as Made, note: null })
       : makeCard(store, trigger, config, item, by, now));
@@ -1087,6 +1095,12 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     note(said);
     return { status: 202, said };
   });
+}
+
+/** v126: a delivery received before, answered for what it was — never as a card that isn't there. */
+function repeatAnswer(before: FlowReceipt): HookAnswer {
+  return { status: 202, said: before.state === "accepted" ? "Already received." : before.state === "held" ? "Already received; waiting for room."
+    : before.state === "skipped" ? `Already received; it wasn't added${before.note === null ? "" : `: ${before.note}`}.` : "Already received." };
 }
 
 /**
