@@ -1,4 +1,5 @@
 import { steerControlsFor } from "../steer-controls.js";
+import { cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
 import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
@@ -433,6 +434,9 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "pausing-with-note": { tone: "info", text: "Pausing. Your note goes to it as soon as it stops." },
     "pause-note-stale": { tone: "error", text: "That form was already used, so your note was not sent. It is still in the box — send it again." },
     resuming: { tone: "info", text: "Resuming. It carries on where it stopped." },
+    revealed: { tone: "info", text: "Shown in Finder." },
+    "reveal-refused": { tone: "error", text: "That checkout couldn't be shown: it isn't this attempt's running checkout on this computer any more." },
+    "reveal-mac-only": { tone: "error", text: "Show in Finder works on a Mac. Copy the command instead." },
   };
 
   // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
@@ -465,6 +469,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           // A note goes only to an attempt that reads notes (steer-controls.ts); the composer says what it takes.
           steer: composer?.steer ?? null,
           controls: composer?.controls ?? null,
+          checkout: (() => {
+            if (!live || who.role !== "approver" || store.isDemo()) return null;
+            const proof = localCheckoutOf(store, facts.runId, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
+            return proof.ok ? { path: proof.path, cd: cdCommandOf(proof.path), reveal: `/r/${facts.runId}/reveal` } : null;
+          })(),
           canAct: who.role === "approver" && !store.isDemo(),
           taskHref: taskHref(facts.taskId),
           // The run's own address: a finished result opens on its result page, anything else on its record.

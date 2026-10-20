@@ -448,6 +448,8 @@ post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sam
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });
 post("flows", "recipes.launch-send", "/recipes/launch", { limited: "collection" });
 for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}` });
+// Cockpit E: reveal a running attempt's proved checkout in Finder (nothing is launched in it).
+post("tasks", "run.act.reveal", `^\\/r\\/${ID}\\/reveal$`, { project: "run", limited: "resource", callers: ["cookie"], sample: "/r/1/reveal", ...approver("Only an approver can show an agent's files.") });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });
 post("tasks", "incident.resolve", `^\\/i\\/${ID}\\/resolve$`, { project: "incident", sample: "/i/1/resolve" });
 

@@ -611,6 +611,9 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   /** What this running attempt takes (steer-capabilities.ts): how a note reaches it (or why none does), Pause and
    * Stop for the exact run each names. Null when it is not running or this person may not act. */
   controls?: BrowserAgentControls | null;
+  /** Cockpit E: this running attempt's checkout, proved to be on this machine — the cd command to copy, and where Show
+   * in Finder posts. Absent off this machine, for a viewer, or once it ends. Nothing is ever launched in it. */
+  checkout?: { path: string; cd: string; reveal: string } | null;
   /** Whether this person may reply or steer (an approver, outside the demo); a viewer sees the question but no composer. */
   canAct: boolean;
   /** The task, and once finished the run's own page (its result page when it built one). */

@@ -130,6 +130,22 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
   </Collapsible>;
 }
 
+/** This running attempt's files, on this computer (cockpit E): the words first, then the path, "Copy the command"
+ * (a cd to paste into your own terminal) and Show in Finder. Toolroll launches nothing in them. A phone shows the path. */
+function CheckoutActions({ checkout }: { checkout: NonNullable<BrowserAgentDetail["checkout"]> }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { void navigator.clipboard?.writeText(checkout.cd).then(() => setCopied(true), () => setCopied(false)); };
+  return <section aria-label="Its files" className="flex flex-col gap-1.5" data-agent-checkout>
+    <p className="text-caption font-medium text-muted-foreground">Its files</p>
+    <p className="text-caption text-muted-foreground">These files were written by an agent. Your shell's startup scripts and prompt tools (git status in the prompt, direnv, .envrc) can run code from them when you open a terminal there.</p>
+    <code className="block break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono" data-agent-checkout-path>{checkout.path}</code>
+    <div className="flex flex-wrap gap-2 phone:hidden">
+      <Button type="button" variant="outline" size="sm" onClick={copy} data-agent-copy-cd>{copied ? "Copied" : "Copy the command"}</Button>
+      <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><Button type="submit" variant="outline" size="sm">Show in Finder</Button></PostForm>
+    </div>
+  </section>;
+}
+
 /** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
 function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const question = detail.question;
@@ -204,6 +220,7 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       </div> : detail.line !== null && <p className={cn("text-body break-words", detail.group === "stuck" ? "text-warning" : "text-muted-foreground")} data-agent-line>{detail.line}</p>}
       <ConversationPane url={detail.transcript} live={detail.live} />
       <ChangesPane detail={detail} />
+      {detail.checkout != null && detail.canAct && <CheckoutActions checkout={detail.checkout} />}
     </div>
     {/* One footer, pinned on a desk: what the agent takes and its controls, then the composer (never one over the other). */}
     <div className="flex flex-col desk:sticky desk:bottom-0 desk:bg-card phone:shrink-0" data-agent-footer>

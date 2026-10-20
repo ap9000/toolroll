@@ -1,4 +1,6 @@
 import { steerCapabilityOf } from "../steer-capabilities.js";
+import { localCheckoutOf } from "../checkout-proof.js";
+import { execFile } from "node:child_process";
 
 /** A form's way back to a flow card ("flow:<flow>:<card>"), read strictly: numbers only, never a path. */
 function returnedFlow(value: string | null): { flow: number; card: number } | null {
@@ -1318,6 +1320,23 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return taskMutation(response, who, act.taskId, verb, posted, now);
   };
 
+  // Cockpit E: Show in Finder — the checkout proved again right now (live, this machine's runner, inside the pool),
+  // then Finder asked to reveal it with a fixed argv. Nothing runs in it; a Mac only.
+  async function runReveal(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    const asked = /^\/r\/([0-9]{1,15})\/reveal$/.exec(url.pathname);
+    if (asked === null) return noPage(who, response);
+    readForm(posted, CONSOLE_FORMS.runReveal);
+    const id = Number(asked[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) return refuse(response, who, 404, "no such run");
+    if (store.isDemo()) return refuse(response, who, 403, "the demo authorizes nothing");
+    const proof = localCheckoutOf(store, id, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
+    if (!proof.ok) return redirect(response, `/agents?run=${id}&said=reveal-refused`);
+    if (process.platform !== "darwin" && options.revealPath === undefined) return redirect(response, `/agents?run=${id}&said=reveal-mac-only`);
+    (options.revealPath ?? (path => { execFile("open", ["-R", path], () => { /* Finder's answer is not ours to wait on */ }); }))(proof.path);
+    return redirect(response, `/agents?run=${id}&said=revealed`);
+  }
   async function runNote(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now, posted } = ctx;
     const noted = /^\/r\/([0-9]{1,15})\/note$/.exec(url.pathname);
@@ -2961,6 +2980,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.unblock": taskAct("unblock"),
     "task.act.repair-dependency": taskAct("repair-dependency"),
     "task.act.follow-up": taskAct("follow-up"),
+    "run.act.reveal": runReveal,
     "run.act.note": runNote,
     "run.act.comment": runComment,
     "run.act.revise": runRevise,
