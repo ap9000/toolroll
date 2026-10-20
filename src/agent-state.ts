@@ -181,7 +181,9 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
   // count per flow over its deciding zones.
   const repos = flowRepos ?? (access.repos ?? store.listProjects().map(one => one.path));
   const deciding = store.handle.prepare("SELECT COUNT(*) AS n FROM flow_card WHERE flow = ? AND state = 'active' AND stage IN (SELECT value FROM json_each(?))");
-  const namedCards = store.handle.prepare("SELECT id, stage, entry, updated_at FROM flow_card WHERE flow = ? AND state = 'active' AND stage IN (SELECT value FROM json_each(?)) ORDER BY updated_at DESC, id DESC LIMIT ?");
+  // A card's visit began when it entered its stage (its newest arrival there): fixed for the visit, unlike updated_at.
+  const namedCards = store.handle.prepare(`SELECT c.id, c.stage, c.entry, COALESCE((SELECT MAX(e.at) FROM flow_event e WHERE e.card = c.id AND e.to_stage = c.stage), c.created_at) AS entered_at
+    FROM flow_card c WHERE c.flow = ? AND c.state = 'active' AND c.stage IN (SELECT value FROM json_each(?)) ORDER BY entered_at DESC, c.id DESC LIMIT ?`);
   for (const flow of store.listFlows(repos)) {
     const definition = flowDefinitionOf(flow);
     if (definition === null) continue;
@@ -190,7 +192,7 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
     const n = Number(deciding.get(flow.id, JSON.stringify(zones))?.["n"] ?? 0);
     for (let i = 0; i < n; i++) bump(flow.repo, "needs-you");
     if (n > 0) flowAsks.set(flow.repo, [...(flowAsks.get(flow.repo) ?? []), ...namedCards.all(flow.id, JSON.stringify(zones), FLOW_ASKS)
-      .map(row => ({ card: Number(row["id"]), stage: String(row["stage"]), entry: Number(row["entry"]), at: String(row["updated_at"]) }))]);
+      .map(row => ({ card: Number(row["id"]), stage: String(row["stage"]), entry: Number(row["entry"]), at: String(row["entered_at"]) }))]);
   }
 
   const rank = (one: FamilyState) => DISPLAY_STATES.indexOf(one.state);

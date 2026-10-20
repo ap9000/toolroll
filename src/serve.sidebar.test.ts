@@ -291,9 +291,12 @@ describe("the sidebar's project states", () => {
     expect((await asks()).find(one => one.task === "t-terms")!.key).not.toBe(first);
     // More waiting than a project names: the newest still has a key.
     for (let i = 0; i < 101; i++) plan(`t-many-${i}`, "c".repeat(32), new Date(Date.now() - (200 - i) * 1000));
-    plan("t-newest", "d".repeat(32), new Date(Date.now() + 5_000));
-    store.handle.prepare("UPDATE task SET updated_at = ? WHERE id = 't-newest'").run(new Date(Date.now() + 5_000).toISOString());
-    expect((await asks()).map(one => one.task)).toContain("t-newest");
+    // An old task whose plan changes now is news now: its ask is named, however many newer tasks wait.
+    plan("t-old", "d".repeat(32), new Date(Date.now() - 90 * 86_400_000));
+    plan("t-old", "e".repeat(32), new Date(Date.now() + 5_000), "a revised plan");
+    const named = await asks();
+    expect(named.map(one => one.task)).toContain("t-old");
+    expect(Date.parse(named.find(one => one.task === "t-old")!.at)).toBeGreaterThan(Date.now() - 60_000);
   });
 
   test("one summary room per page, and only for a browser session", async () => {

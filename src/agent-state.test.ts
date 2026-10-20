@@ -258,6 +258,16 @@ describe("a project's counts, over the Tasks list's own families", () => {
     expect(of()[REPO]!.counts).toMatchObject({ failed: 0, "needs-you": 1 });
   });
 
+  test("a flow card's ask is the visit's: an edit to the card never makes it new", () => {
+    const flow = store.createFlow({ repo: OTHER, name: "Review", by: "sam", definitionJson: JSON.stringify(flowFromSteps([{ title: "Decide", kind: "approval" }], null)) }, NOW);
+    const start = (JSON.parse(store.getFlow(flow)!.definitionJson) as { start: string }).start;
+    const card = store.addFlowCard({ flow, title: "Refund?", description: null, stage: start, by: "sam", byKind: "person" }, NOW);
+    const ask = () => of()[OTHER]!.flowAsks[0]!;
+    const before = ask();
+    store.raw().prepare("UPDATE flow_card SET updated_at = ?, note = 'a comment' WHERE id = ?").run(new Date(NOW.getTime() + 3_600_000).toISOString(), card);
+    expect(ask()).toEqual(before);
+  });
+
   test("flow decisions are counted without a cap", () => {
     const flow = store.createFlow({ repo: OTHER, name: "Bulk", by: "sam", definitionJson: JSON.stringify(flowFromSteps([{ title: "Decide", kind: "approval" }], null)) }, NOW);
     const start = (JSON.parse(store.getFlow(flow)!.definitionJson) as { start: string }).start;
