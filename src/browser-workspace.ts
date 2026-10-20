@@ -25,6 +25,9 @@ export type BrowserProject = { name: string; path: string; href: string; knowled
  * project yet. */
 export type BrowserProjectState = { path: string | null; name: string; href: string; state: DisplayState; counts: StateCounts;
   tasks: BrowserRailTask[]; more: number;
+  /** Everything here that needs this person, as opaque keys (one per obligation and version: the chime's subjects),
+   * with the task and agent each is about so a tab already showing one stays quiet. */
+  asks: BrowserAsk[];
   /** The projects folded together to keep a snapshot inside one live frame: their counts summed, `more` of them. */
   others?: true };
 
@@ -62,15 +65,25 @@ export function boundProjectSummary(rows: readonly BrowserProjectState[], budget
     if (folded.size === 0) return null;
     const counts = Object.fromEntries(DISPLAY_ORDER.map(key => [key, [...folded].reduce((sum, index) => sum + out[index]!.counts[key], 0)])) as StateCounts;
     const state = DISPLAY_ORDER.find(key => key !== 'idle' && counts[key] > 0) ?? 'idle';
-    return { path: null, name: `${folded.size} more ${folded.size === 1 ? 'project' : 'projects'}`, href: '/projects', state, counts, tasks: [], more: folded.size, others: true };
+    return { path: null, name: `${folded.size} more ${folded.size === 1 ? 'project' : 'projects'}`, href: '/projects', state, counts, tasks: [], more: folded.size, others: true,
+      asks: [...folded].flatMap(index => out[index]!.asks) };
   };
   const assemble = () => { const others = othersOf(); return [...out.filter((_, index) => !folded.has(index)), ...(others === null ? [] : [others])]; };
   for (const { index } of order) {
     if (size(assemble()) <= budget) break;
     folded.add(index);
   }
-  return assemble();
+  // Still too large: the oldest asks go last (their counts stay; only their chimes are lost).
+  let assembled = assemble();
+  while (size(assembled) > budget) {
+    const fullest = assembled.reduce((best, one, index) => one.asks.length > (assembled[best]?.asks.length ?? -1) ? index : best, -1);
+    if (fullest === -1 || assembled[fullest]!.asks.length === 0) break;
+    assembled = assembled.map((one, index) => index === fullest ? { ...one, asks: one.asks.slice(0, -1) } : one);
+  }
+  return assembled;
 }
+/** One thing that needs this person, as the chime knows it: an opaque key (never words), and what it is about. */
+export type BrowserAsk = { key: string; task: string | null; run: number | null };
 /** One task on the rail: its state, and its agent's last act when one is at work (else the state's words). */
 export type BrowserRailTask = { id: string; title: string; href: string; state: DisplayState; line: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */

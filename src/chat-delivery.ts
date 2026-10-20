@@ -52,7 +52,7 @@ import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
-import { attentionSubjectOf, watchedPing } from "./agent-board.js";
+import { attentionSubjectOf, neverHeld, watchedPing } from "./agent-board.js";
 /**
  * The watch at a chat app's final fence (cockpit §3, R11), right before the network: a notice about an agent its
  * person has open now waits, as a held part, until the watch ends; then it is delivered as usual. The subject is the
@@ -908,13 +908,15 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
 
 /** Quiet mode: the task's one card (or its group's) in this person's chat, planned once and then repainted in
  * place whenever what it says changes. */
-function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notification: Parameters<typeof isTaskFact>[0] & { taskRef: number | null; taskId: string | null; createdAt: string }, now: Date): void {
+function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notification: Parameters<typeof isTaskFact>[0] & { kind: string; taskRef: number | null; taskId: string | null; createdAt: string }, now: Date): void {
   const { state, store, identity } = options;
   if (notification.taskRef === null || notification.taskId === null) return;
   const card = store.chatCardFor(`${state.provider}:${binding.id}`, notification.taskRef, store.getTask(notification.taskId)?.createdAt ?? notification.createdAt, now);
   const view = quietCardView(store, card.tasks, now, options.evidenceRoot, binding.approver);
   if (view === null) return;
-  const content: ChatContent = { text: view.text, link: view.link, ...(card.tasks.length === 1 ? { task: notification.taskId } : {}) };
+  // A card about one task is that task's: its person's watch may hold it at the final fence (never a security kind).
+  const content: ChatContent = { text: view.text, link: view.link, ...(card.tasks.length === 1 ? { task: notification.taskId } : {}),
+    ...(card.tasks.length === 1 && notification.taskId !== null && !neverHeld(notification.kind) ? { watch: true as const } : {}) };
   const shown = chatHash(JSON.stringify(content));
   if (card.message !== null) {
     if (card.digest === shown) return;
@@ -941,7 +943,11 @@ function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRe
   // A single update keeps its task and run, so a reply to it names that work.
   const single = batch.items.length === 1 ? batch.items[0]! : null;
   const task = single === null ? null : store.refById(single.taskRef)?.externalId ?? null;
-  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }) };
+  // Holdable when it is about one task or run and its fact is a kind a watch may hold (the batch line for a finished
+  // run, or the one notification joining it).
+  const joining = notification === null ? null : options.store.notificationById(notification);
+  const holdable = (task !== null || single?.run != null) && (joining === null || !neverHeld(joining.kind));
+  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }), ...(holdable ? { watch: true as const } : {}) };
   // A message about one result, plan, failure or pull request acts in place (chat-decide.ts), as on Telegram: its
   // buttons are minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps them.
   const offer = decideOfferFor(options, binding, view.target, repos, now);

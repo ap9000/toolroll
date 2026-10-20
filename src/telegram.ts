@@ -842,7 +842,9 @@ async function deliverOutboxTo(
     if (rows.length === 0) continue;
 
     const ids = rows.map(row => row.id);
-    const fence = (): string | null => {
+    // `beforeSend`: the fence before a transport call also asks the watch; the one after a confirmed send never does,
+    // so a message Telegram accepted is recorded as delivered, never released for sending again.
+    const fence = (beforeSend = true): string | null => {
       const channel = channelProblem();
       if (channel !== null) return channel;
       for (const row of rows) {
@@ -850,7 +852,7 @@ async function deliverOutboxTo(
         if (problem !== null) return problem;
         // The watch, at the last moment before the network: a held row's claim is released (its finalize is then a
         // no-op), so nothing is spent on it.
-        if (store.telegramWatchFence(row, binding, owner, clock()) !== "send") return WATCHED_SINCE_CLAIM;
+        if (beforeSend && store.telegramWatchFence(row, binding, owner, clock()) !== "send") return WATCHED_SINCE_CLAIM;
       }
       return null;
     };
@@ -866,7 +868,7 @@ async function deliverOutboxTo(
       if (sent.messageId === null) return { ok: false, error: "Telegram returned no confirmed message identity" };
       for (const row of messageRows) store.recordTelegramMessage(row, binding, sent.messageId, clock());
       // Keep the old message's history but never acknowledge a replaced pairing.
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? sent : { ok: false, error: after };
     };
     const imageSender = async (row: TelegramDelivery): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> => {
@@ -904,7 +906,7 @@ async function deliverOutboxTo(
         return { ok: false, error: answer.uncertain || (answer.ok && messageId == null) ? "Screenshot delivery is unconfirmed; retry may duplicate it" : "Telegram did not accept the screenshot" };
       }
       store.recordTelegramMessage(row, binding, String(messageId), clock());
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, String(messageId)) } : { ok: false, error: after };
     };
     /** Screenshots with a result (result-shots.ts): photos, several as one album, re-proved before every call. Each is
@@ -974,7 +976,7 @@ async function deliverOutboxTo(
         return edited;
       }
       if (!onlyExisting) store.recordTelegramMessage(row, binding, messageId, clock());
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? edited : { ok: false, error: after };
     };
     /** Quiet mode: the task's one card (or its group's), created silently and then only ever edited. */
@@ -997,7 +999,7 @@ async function deliverOutboxTo(
         if (edited.ok) {
           store.setChatCardMessage(card.id, card.message, shown);
           store.recordTelegramMessage(fact, binding, card.message, clock());
-          const after = (await readAccess()) ?? fence();
+          const after = (await readAccess()) ?? fence(false);
           return after === null ? edited : { ok: false, error: after };
         }
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
@@ -1066,7 +1068,7 @@ async function deliverOutboxTo(
             placeDecideTokens(store, tokens, batch.message);
             store.setChatBatchMessage(batch.id, batch.message, shown);
             store.recordTelegramMessage(fact, binding, batch.message, clock());
-            const after = (await readAccess()) ?? fence();
+            const after = (await readAccess()) ?? fence(false);
             return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, batch.message) } : { ok: false, error: after };
           }
           // A failed edit: the buttons it carried never act, and the card's old ones keep working.
@@ -1101,7 +1103,7 @@ async function deliverOutboxTo(
         const edited = await editProgress(transport, binding.chatId, earlier, words, keyboard);
         if (edited.ok) {
           store.recordTelegramMessage(fact, binding, earlier, clock());
-          const after = (await readAccess()) ?? fence();
+          const after = (await readAccess()) ?? fence(false);
           return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, earlier) } : { ok: false, error: after };
         }
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
@@ -1125,7 +1127,7 @@ async function deliverOutboxTo(
         ? await deliverDigest(botId, binding, sender, rows, digest.lastSentAt, clock, taskId => chatTitle(store, taskId))
         : await deliverOne(store, botId, binding, sender, rows[0]!, clock, phoneOrigin, evidenceRoot, projects);
     }
-    const finalProblem = outcome.ok ? (await readAccess()) ?? fence() : null;
+    const finalProblem = outcome.ok ? (await readAccess()) ?? fence(false) : null;
     const settled = finalProblem === null ? outcome : { ok: false as const, error: finalProblem };
     // A skipped screenshot settles its row but nothing reached the phone.
     const skipped = settled.ok && settled.receipt !== null && settled.receipt.startsWith("skipped:");

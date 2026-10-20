@@ -490,16 +490,20 @@ export type WorkStateRow = { repo: string | null; rootId: string; code: string; 
   liveRun: number | null; unfinished: number | null; resultRun: number | null;
   /** The Tasks list ranks it as waiting its turn (custody confirmations from another computer included). */
   waits: boolean;
+  /** What it needs now, as an identity: its code and the question, hold, result or stop it is about. A new one of
+   * these is a new thing to need a person, even on the same task. */
+  version: string;
   /** Every task_ref of the family (its versions), for counting each of its live attempts. */
   members: number[] };
 export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
   const projection = registerValidators(store);
   return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
+      code||':'||COALESCE(question_id,'')||':'||COALESCE(agent_ask,'')||':'||COALESCE(hold_id,'')||':'||COALESCE(result_id,'')||':'||COALESCE(stop_run,'') version,
       (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked`)
     .all(parameters(now, access, {}, custodyReadings(store)))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
-      resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
+      resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
 }
 
 /** Families whose headline is Ready for review, newest first: the Tasks

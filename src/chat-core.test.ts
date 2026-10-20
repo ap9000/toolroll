@@ -31,8 +31,9 @@ let store: Store;
 let now: Date;
 let alexToken = "";
 const merges: Array<{ runId: number; by: string }> = [];
+let onSend: (() => void) | undefined;
 const world = (): ChatWorld => ({ store, clock: () => now, evidenceRoot: dir, projects: () => [REPO], origin: "https://console.example",
-  merge: async input => { merges.push(input); return { ok: true }; } });
+  merge: async input => { merges.push(input); return { ok: true }; }, onSend: () => onSend?.() });
 const later = (ms: number) => { now = new Date(now.getTime() + ms); };
 const live = (provider: ChatProvider, installation: string) => new ChatCore(store, provider).liveBindings(installation);
 const who = (name: string) => {
@@ -269,6 +270,102 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     h.tap(current(h, m0, delivered[0]!.message), /^Yes$/, m0);
     await h.pass();
     expect(store.getTask("payout-2")?.state).toBe("queued");
+  });
+
+  test("notifications: a question planned before its person opened the agent waits at the final fence, then arrives once", async () => {
+    const m0 = h.member(0);
+    await pair(h, "alex", m0);
+    const ref = placed("form-9", "Fix the signup form");
+    propose(store, { taskId: "form-9", goal: "Fix the form", touches: ["src/form.ts"], acceptance: [{ id: "c1", statement: "Works.", how: null, evidence: ["check"] }], now });
+    expect(approve(store, "form-9", "alex", now, store.getScope("form-9")!.digest, alexToken).ok).toBe(true);
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route fixture");
+    const run = store.startRun({ taskRef: ref, leaseId: "l-form-9", runner: RUNNER, branch: "so/form-9", worktree: `/pool/form-9`, route: authority.stamp, now });
+    const key = attemptKeyOf(store, run)!;
+    recordAgentTurn(store, { run, attemptKey: key, state: "busy", at: now });
+    await h.pass();
+    const said = () => h.cards(m0).filter(one => one.text.includes("Keep the honeypot field?"));
+    // Planned with nobody watching; its first send fails, so it is still waiting to go.
+    h.failSends(1);
+    ingestStatus(store, run, key, { lines: [{ status: "needs-decision", key: "honeypot", question: "Keep the honeypot field?" }], nextOffset: 10 }, now);
+    await h.pass();
+    expect(said()).toEqual([]);
+    // The person opens the agent before the retry falls due, and keeps it open through every retry: the final fence
+    // holds it each time.
+    const view = ["v", "9".repeat(23)].join("");
+    for (let step = 0; step < 40; step++) {
+      holdAgentView(store, view, "alex", run, now);
+      await h.pass();
+      expect(said()).toEqual([]);
+      later(15_000);
+    }
+    // The watch ends with the question still open: it arrives, once.
+    later(VIEW_LEASE_MS + 60_000);
+    await h.pass();
+    await h.pass();
+    expect(said()).toHaveLength(1);
+  });
+
+  test("notifications: a watch opened while a message is going out never makes it go twice", async () => {
+    const m0 = h.member(0);
+    await pair(h, "alex", m0);
+    const ref = placed("menu-4", "Fix the menu");
+    propose(store, { taskId: "menu-4", goal: "Fix the menu", touches: ["src/menu.ts"], acceptance: [{ id: "c1", statement: "Works.", how: null, evidence: ["check"] }], now });
+    expect(approve(store, "menu-4", "alex", now, store.getScope("menu-4")!.digest, alexToken).ok).toBe(true);
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route fixture");
+    const run = store.startRun({ taskRef: ref, leaseId: "l-menu-4", runner: RUNNER, branch: "so/menu-4", worktree: `/pool/menu-4`, route: authority.stamp, now });
+    const key = attemptKeyOf(store, run)!;
+    recordAgentTurn(store, { run, attemptKey: key, state: "busy", at: now });
+    await h.pass();
+    const said = () => h.cards(m0).filter(one => one.text.includes("Keep the mega menu?"));
+    ingestStatus(store, run, key, { lines: [{ status: "needs-decision", key: "mega", question: "Keep the mega menu?" }], nextOffset: 10 }, now);
+    // The person opens the agent at the very moment the app accepts the message.
+    onSend = () => holdAgentView(store, ["v", "4".repeat(23)].join(""), "alex", run, now);
+    try { await h.pass(); } finally { onSend = undefined; }
+    expect(said()).toHaveLength(1);
+    // What the app accepted is recorded as delivered, never released to be sent (or repainted) again.
+    if (h.provider === "telegram") {
+      const asked = store.listNotifications("all").find(one => one.kind === "agent-question" && one.run === run)!;
+      expect(store.handle.prepare("SELECT delivered_at IS NOT NULL AS done FROM notification_delivery WHERE notification = ?").get(asked.id)).toEqual({ done: 1 });
+    }
+    const sends = h.posted(m0);
+    later(VIEW_LEASE_MS + 60_000);
+    await h.pass();
+    await h.pass();
+    expect(said()).toHaveLength(1);
+    expect(h.posted(m0)).toBe(sends);
+  });
+
+  test("notifications: watching an old attempt never keeps a new attempt's question waiting", async () => {
+    const m0 = h.member(0);
+    await pair(h, "alex", m0);
+    const ref = placed("nav-2", "Fix the nav");
+    propose(store, { taskId: "nav-2", goal: "Fix the nav", touches: ["src/nav.ts"], acceptance: [{ id: "c1", statement: "Works.", how: null, evidence: ["check"] }], now });
+    expect(approve(store, "nav-2", "alex", now, store.getScope("nav-2")!.digest, alexToken).ok).toBe(true);
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route fixture");
+    // The first attempt, watched and kept open, its own pings held.
+    const first = store.startRun({ taskRef: ref, leaseId: "l-nav-2a", runner: RUNNER, branch: "so/nav-2", worktree: `/pool/nav-2a`, route: authority.stamp, now });
+    const view = ["v", "2".repeat(23)].join("");
+    holdAgentView(store, view, "alex", first, now);
+    recordAgentTurn(store, { run: first, attemptKey: attemptKeyOf(store, first)!, state: "busy", at: now });
+    await h.pass();
+    store.finishRun(first, { outcome: "failed", reason: "agent", now });
+    // A new attempt asks; the person still has the old one open.
+    later(1_000);
+    holdAgentView(store, view, "alex", first, now);
+    const again = store.routeAuthorityFor(ref, "builder");
+    if (!again?.ok) throw new Error("route fixture");
+    const second = store.startRun({ taskRef: ref, leaseId: "l-nav-2b", runner: RUNNER, branch: "so/nav-2", worktree: `/pool/nav-2b`, route: again.stamp, now });
+    const key = attemptKeyOf(store, second)!;
+    recordAgentTurn(store, { run: second, attemptKey: key, state: "busy", at: now });
+    ingestStatus(store, second, key, { lines: [{ status: "needs-decision", key: "sticky", question: "Make the nav sticky?" }], nextOffset: 10 }, now);
+    await h.pass();
+    later(2_000);
+    holdAgentView(store, view, "alex", first, now);
+    await h.pass();
+    expect(h.cards(m0).filter(one => one.text.includes("Make the nav sticky?"))).toHaveLength(1);
   });
 
   test("notifications: a security alert about a watched run is never held, at planning or at the final fence", async () => {

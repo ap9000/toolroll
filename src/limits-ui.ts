@@ -77,19 +77,18 @@ const shortReset = (resetsAt: string, now: Date) => {
  * are not compared here (they stay in the details). An operator's view, as the Limits view is. Null: nothing reported.
  */
 export function usageChipOf(windows: Parameters<typeof limitsView>[0], now: Date): BrowserUsageChip | null {
-  let top: { one: (typeof windows)[number]; percent: number; reached: boolean } | null = null;
-  for (const one of windows) {
-    const turned = one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime();
-    const percent = turned ? 0 : one.usedPercent, reached = !turned && one.reached;
-    if (top === null || percent > top.percent || (reached && !top.reached)) top = { one, percent, reached };
-  }
-  if (top === null) return null;
-  const { one, percent, reached } = top;
-  const stale = now.getTime() - Date.parse(one.observedAt) > 30 * 60_000;
-  const turned = one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime();
-  const reset = turned ? "new window" : one.resetsAt === null ? "resets: unknown" : `resets ${shortReset(one.resetsAt, now)}`;
-  const text = `${PROVIDER_NAMES[one.provider] ?? one.provider} ${windowLabel(one.window, one.windowMinutes)} · ${Math.round(percent)}% · ${reset}${stale ? ` · as of ${ago(one.observedAt, now)}` : ""}`;
-  return { text, tone: toneOf(percent, reached), stale, href: "/work", title: `What the providers last reported: ${text}` };
+  // A window whose reset has passed since its reading is not measured again yet: it ranks below every current one, and
+  // shows what was last read, as stale — never an inferred 0%.
+  const expired = (one: (typeof windows)[number]) => one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime();
+  const rank = (one: (typeof windows)[number]) => (expired(one) ? -1_000 : 0) + one.usedPercent + (one.reached && !expired(one) ? 1_000 : 0);
+  const top = [...windows].sort((a, b) => rank(b) - rank(a))[0];
+  if (top === undefined) return null;
+  const old = expired(top);
+  const stale = old || now.getTime() - Date.parse(top.observedAt) > 30 * 60_000;
+  // A window with no known length or reset has no reset to name.
+  const reset = old ? "window reset" : top.resetsAt === null || top.windowMinutes === null ? "resets: unknown" : `resets ${shortReset(top.resetsAt, now)}`;
+  const text = `${PROVIDER_NAMES[top.provider] ?? top.provider} ${windowLabel(top.window, top.windowMinutes)} · ${Math.round(top.usedPercent)}% · ${reset}${stale ? ` · as of ${ago(top.observedAt, now)}` : ""}`;
+  return { text, tone: old ? "neutral" : toneOf(top.usedPercent, top.reached), stale, href: "/work", title: `What the providers last reported: ${text}` };
 }
 
 /** The same tiles for the page without scripts. */

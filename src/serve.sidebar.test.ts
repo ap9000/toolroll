@@ -235,9 +235,14 @@ describe("the sidebar's project states", () => {
       });
       const signedIn = await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alexToken }), redirect: "manual" });
       const cookie = (signedIn.headers.get("set-cookie") ?? "").split(";")[0]!;
-      const rows = (workspaceOf(await (await fetch(`${at}/agents`, { headers: { cookie } })).text()).projectStates ?? []).flatMap(one => one.tasks);
-      expect(rows.length).toBeGreaterThan(100);
+      const states = workspaceOf(await (await fetch(`${at}/agents`, { headers: { cookie } })).text()).projectStates ?? [];
+      const rows = states.flatMap(one => one.tasks);
+      // Every one is listed or counted (the frame bound turns some into "more"), and every listed one says what it needs.
+      expect(rows.length + states.reduce((sum, one) => sum + one.more, 0)).toBe(108);
+      expect(rows.length).toBeGreaterThan(0);
       expect(rows.filter(one => one.line === "Needs you")).toEqual([]);
+      // Each one that needs this person is a chime subject.
+      expect(states.reduce((sum, one) => sum + one.asks.length, 0)).toBe(108);
     } finally {
       many.closeAllConnections?.();
       await new Promise<void>(resolve => many.close(() => resolve()));

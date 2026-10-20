@@ -901,11 +901,16 @@ export class ChatMessages extends ChatCore {
     // A security alert never waits behind its task's earlier pings (one may be held while its person watches the agent).
     if (row.taskRef !== null && !neverHeld(String(current["kind"]))) {
       // Skipped history never fences what follows it: it is settled.
-      const earlier = this.db.prepare(`SELECT n.id FROM notification n
+      const earlier = this.db.prepare(`SELECT n.*, d.next_attempt_at AS held_until, d.last_error AS held_error FROM notification n
         LEFT JOIN notification_delivery d ON d.notification = n.id AND d.destination = ?
         WHERE n.task_ref = ? AND n.id < ? AND n.resolved_at IS NULL AND ${TELEGRAM_UNSETTLED}`)
         .all(row.destination, row.taskRef, row.id);
-      if (earlier.some(one => !batch.includes(Number(one["id"])))) return TELEGRAM_HOLD_REASONS.order;
+      // One a watch is holding (cockpit §3) keeps nothing behind it: it goes when the watch ends, and what followed
+      // it about another attempt is not that watch's to delay.
+      // Held: deferred by a watch (a future next attempt with no failure behind it), or watched right now.
+      const held = (one: Record<string, unknown>) => (one["held_until"] != null && String(one["held_until"]) > now.toISOString() && one["held_error"] == null)
+        || typeof watchedPing(this.store, readNotification(one), binding.approver, now) === "object";
+      if (earlier.some(one => !batch.includes(Number(one["id"])) && !held(one))) return TELEGRAM_HOLD_REASONS.order;
     }
     return null;
   }

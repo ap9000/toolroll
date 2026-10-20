@@ -393,7 +393,16 @@ export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
   const states: BrowserProjectState[] = [];
   for (const one of parsed) {
     if (one === null || typeof one !== "object") return null;
-    const { path, name, href, state, counts, tasks, more, others } = one as Record<string, unknown>;
+    const { path, name, href, state, counts, tasks, more, others, asks } = one as Record<string, unknown>;
+    if (!Array.isArray(asks)) return null;
+    const asked: BrowserProjectState["asks"] = [];
+    for (const ask of asks) {
+      if (ask === null || typeof ask !== "object") return null;
+      const a = ask as Record<string, unknown>;
+      if (typeof a["key"] !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(a["key"]) || !(a["task"] === null || text(a["task"], 400))
+        || !(a["run"] === null || (typeof a["run"] === "number" && Number.isInteger(a["run"]) && a["run"] > 0))) return null;
+      asked.push({ key: a["key"], task: a["task"] as string | null, run: a["run"] as number | null });
+    }
     if (others !== undefined && others !== true) return null;
     if (!(path === null || text(path, 4096)) || !text(name, 400) || !text(href, 8192) || !(href as string).startsWith("/")
       || !DISPLAY_STATES.includes(state as DisplayState) || counts === null || typeof counts !== "object"
@@ -408,7 +417,7 @@ export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
         || !DISPLAY_STATES.includes(t["state"] as DisplayState) || !text(t["line"], 2000)) return null;
       rail.push({ id: t["id"] as string, title: t["title"] as string, href: t["href"] as string, state: t["state"] as DisplayState, line: t["line"] as string });
     }
-    states.push({ path: path as string | null, name: name as string, href: href as string, state: state as DisplayState, counts: read as BrowserProjectState["counts"], tasks: rail, more,
+    states.push({ path: path as string | null, name: name as string, href: href as string, state: state as DisplayState, counts: read as BrowserProjectState["counts"], tasks: rail, more, asks: asked,
       ...(others === true ? { others: true as const } : {}) });
   }
   return states;
@@ -476,7 +485,16 @@ function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
   const count = needsYouTotal(states);
   // The chime hears every snapshot this page sees (it plays only when this browser turned it on).
   const chime = useRef<ReturnType<typeof createChime> | null>(null);
-  useEffect(() => { chime.current = createChime(); return () => { chime.current?.close(); chime.current = null; }; }, []);
+  useEffect(() => {
+    // What this tab shows: a task's page, or one agent opened on the Agents board.
+    chime.current = createChime(undefined, () => {
+      const at = new URL(window.location.href);
+      const task = at.pathname.startsWith("/t/") ? decodeURIComponent(at.pathname.slice(3).split("/")[0] ?? "") || null : null;
+      const run = at.pathname === "/agents" && /^[1-9][0-9]{0,9}$/.test(at.searchParams.get("run") ?? "") ? Number(at.searchParams.get("run")) : null;
+      return { visible: document.visibilityState === "visible", task, run };
+    });
+    return () => { chime.current?.close(); chime.current = null; };
+  }, []);
   useEffect(() => { if (states !== null) chime.current?.see(states); }, [states]);
   useEffect(() => {
     document.title = titleWithCount(document.title, count);

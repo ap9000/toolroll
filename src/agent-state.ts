@@ -76,10 +76,16 @@ const WAITING_CODES = new Set(["queued", "planning-ready", "scouting-ready", "up
 const AT_WORK = new Set(["running", "stopping"]);
 
 /** One task family's strongest state in a project, and its one line when an agent is at work on it. */
-export type FamilyState = { rootId: string; state: DisplayState; line: string | null };
+export type FamilyState = { rootId: string; state: DisplayState; line: string | null;
+  /** What it needs a person for, as an identity (task, question, hold, result…), and the agent it is about. */
+  ask?: { version: string; run: number | null } };
 export type ProjectState = { repo: string | null; state: DisplayState; counts: StateCounts;
   /** Each family that counted, strongest first (flow cards count without one). */
-  families: FamilyState[] };
+  families: FamilyState[];
+  /** Flow cards waiting at a person's decision, by identity (newest first, at most FLOW_ASKS per flow). */
+  flowAsks: { card: number; stage: string }[] };
+/** Flow cards named per flow in a project's asks; the count stays complete beyond them. */
+const FLOW_ASKS = 50;
 
 /**
  * A project's states for one person: complete counts over every task family they may see, with the Tasks list's own
@@ -91,6 +97,8 @@ export type ProjectState = { repo: string | null; state: DisplayState; counts: S
 export function projectStates(store: Store, access: WorkSummaryAccess, account: string, now: Date, root?: string, flowRepos?: readonly string[]): ProjectState[] {
   const counts = new Map<string | null, StateCounts>();
   const strongest = new Map<string, FamilyState & { repo: string | null }>();
+  const asked = new Map<string, { version: string; run: number | null }>();
+  const flowAsks = new Map<string | null, { card: number; stage: string }[]>();
   const bump = (repo: string | null, state: DisplayState, rootId?: string, line: string | null = null) => {
     const current = counts.get(repo) ?? { ...NO_COUNTS };
     current[state] += 1;
@@ -141,7 +149,7 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
     if (asks && (result?.["outcome"] === "failed" || (row.resultRun !== null && checksFailed(row.resultRun)))) { bump(row.repo, "failed", row.rootId); continue; }
     // A family the person's lead has taken on waits on nobody (the Tasks list's rule); a failure still leads, above.
     if (row.leadClaim) { bump(row.repo, "waiting", row.rootId); continue; }
-    if (asks || row.personNeed) { bump(row.repo, "needs-you", row.rootId); needing.add(row.rootId); continue; }
+    if (asks || row.personNeed) { bump(row.repo, "needs-you", row.rootId); needing.add(row.rootId); asked.set(row.rootId, { version: row.version, run: row.liveRun }); continue; }
     if (WAITING_CODES.has(row.code)) { bump(row.repo, "waiting", row.rootId); continue; }
     if (row.code === "complete" && row.resultRun !== null && unseen.has(row.resultRun)) bump(row.repo, "done", row.rootId);
   }
@@ -159,7 +167,13 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
     if (facts === null || facts.outcome !== null) { bump(family.repo, "working", family.rootId, line); continue; }
     const at = activity.at;
     const state = displayStateOf(factsOfAttempt(facts, at, false, now));
-    if (state === "needs-you") { if (!needing.has(family.rootId)) { bump(family.repo, "needs-you", family.rootId, line); needing.add(family.rootId); } else bump(family.repo, "working", family.rootId, line); continue; }
+    if (state === "needs-you") {
+      if (!needing.has(family.rootId)) {
+        bump(family.repo, "needs-you", family.rootId, line); needing.add(family.rootId);
+        asked.set(family.rootId, { version: `${family.version}|agent:${id}:${facts.question?.id ?? facts.turn ?? ""}`, run: id });
+      } else bump(family.repo, "working", family.rootId, line);
+      continue;
+    }
     bump(family.repo, state === "stuck" ? "stuck" : "working", family.rootId, line);
   }
 
@@ -167,6 +181,7 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
   // count per flow over its deciding zones.
   const repos = flowRepos ?? (access.repos ?? store.listProjects().map(one => one.path));
   const deciding = store.handle.prepare("SELECT COUNT(*) AS n FROM flow_card WHERE flow = ? AND state = 'active' AND stage IN (SELECT value FROM json_each(?))");
+  const namedCards = store.handle.prepare("SELECT id, stage FROM flow_card WHERE flow = ? AND state = 'active' AND stage IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT ?");
   for (const flow of store.listFlows(repos)) {
     const definition = flowDefinitionOf(flow);
     if (definition === null) continue;
@@ -174,10 +189,16 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
     if (zones.length === 0) continue;
     const n = Number(deciding.get(flow.id, JSON.stringify(zones))?.["n"] ?? 0);
     for (let i = 0; i < n; i++) bump(flow.repo, "needs-you");
+    if (n > 0) flowAsks.set(flow.repo, [...(flowAsks.get(flow.repo) ?? []), ...namedCards.all(flow.id, JSON.stringify(zones), FLOW_ASKS)
+      .map(row => ({ card: Number(row["id"]), stage: String(row["stage"]) }))]);
   }
 
   const rank = (one: FamilyState) => DISPLAY_STATES.indexOf(one.state);
   return [...counts.entries()].map(([repo, value]) => ({ repo, ...rollUp(value),
-    families: [...strongest.values()].filter(one => one.repo === repo).map(({ rootId, state, line }) => ({ rootId, state, line })).sort((a, b) => rank(a) - rank(b)) }))
+    families: [...strongest.values()].filter(one => one.repo === repo).map(({ rootId, state, line }) => {
+      const ask = state === "needs-you" ? asked.get(rootId) : undefined;
+      return { rootId, state, line, ...(ask === undefined ? {} : { ask }) };
+    }).sort((a, b) => rank(a) - rank(b)),
+    flowAsks: flowAsks.get(repo) ?? [] }))
     .sort((a, b) => (a.repo ?? "").localeCompare(b.repo ?? ""));
 }

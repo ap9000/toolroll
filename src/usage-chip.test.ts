@@ -17,6 +17,11 @@ test("the most-used window leads, with its reset", () => {
 test("an old reading stays visibly stale; an unknown reset says so; a turned-over window starts again", () => {
   expect(usageChipOf([window({ observedAt: at(-120) })], now)).toMatchObject({ text: "Claude 5-hour · 40% · resets 3h · as of 2h ago", stale: true });
   expect(usageChipOf([window({ resetsAt: null })], now)!.text).toBe("Claude 5-hour · 40% · resets: unknown");
-  expect(usageChipOf([window({ usedPercent: 100, reached: true, resetsAt: at(-1) })], now)).toMatchObject({ text: "Claude 5-hour · 0% · new window", tone: "neutral" });
+  // A reset that passed since the reading: what was read, marked stale, never an inferred 0%.
+  expect(usageChipOf([window({ usedPercent: 82, resetsAt: at(-1), observedAt: at(-10) })], now)).toMatchObject({ text: "Claude 5-hour · 82% · window reset · as of 10m ago", tone: "neutral", stale: true });
+  // A current window outranks an expired one, however high the old reading.
+  expect(usageChipOf([window({ usedPercent: 95, resetsAt: at(-1) }), window({ provider: "codex", usedPercent: 30 })], now)!.text).toBe("Codex 5-hour · 30% · resets 3h");
+  // No known length: no reset to name, even with a timestamp.
+  expect(usageChipOf([window({ window: "custom", windowMinutes: null })], now)!.text).toBe("Claude custom · 40% · resets: unknown");
   expect(usageChipOf([window({ usedPercent: 100, reached: true })], now)!.tone).toBe("danger");
 });

@@ -12,7 +12,7 @@ import { ProjectStates, projectCountWords, readProjectStates, SUMMARY_REJOIN_MS,
 
 const task = (id: string, state: BrowserRailTask["state"], line = "Ran tests"): BrowserRailTask => ({ id, title: `Task ${id}`, href: `/t/${id}`, state, line });
 const project = (path: string | null, over: Partial<BrowserProjectState["counts"]>, top: BrowserProjectState["state"], tasks: BrowserRailTask[] = [], more = 0): BrowserProjectState =>
-  ({ path, name: path === null ? "No project" : path.split("/").pop()!, href: path === null ? "/work" : `/work?project=${encodeURIComponent(path)}`, state: top, counts: { ...NO_COUNTS, ...over }, tasks, more });
+  ({ path, name: path === null ? "No project" : path.split("/").pop()!, href: path === null ? "/work" : `/work?project=${encodeURIComponent(path)}`, state: top, counts: { ...NO_COUNTS, ...over }, tasks, more, asks: [] });
 
 test("counts read strongest first, zeros left out, and an idle project says nothing", () => {
   expect(projectCountWords(project("/r/shop", { working: 2, "needs-you": 1, done: 1 }, "needs-you"))).toBe("1 needs you · 2 working · 1 done");

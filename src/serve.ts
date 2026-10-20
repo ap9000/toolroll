@@ -6,7 +6,9 @@ import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agen
 import { usageChipOf } from './limits-ui.js';
 /** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
 const RAIL_TASKS = 6;
-import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+/** Asks a project names for the chime (its count is complete beyond them). */
+const ASKS_PER_PROJECT = 100;
+import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -1446,6 +1448,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
       } catch { /* the rows keep their state's words */ }
     }
+    // The chime's subjects: an opaque key per obligation and version, scoped to this reader (no words, no ids in it).
+    const keyOf = (...parts: (string | number)[]) => createHash('sha256').update([actor, ...parts].join('\u0000')).digest('base64url').slice(0, 22);
+    const asksOf = (state: ProjectState | undefined): BrowserAsk[] => [
+      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run }]),
+      ...(state?.flowAsks ?? []).map(one => ({ key: keyOf('flow', one.card, one.stage), task: null, run: null })),
+    ].slice(0, ASKS_PER_PROJECT);
     const railOf = (state: ProjectState | undefined) => {
       const families = state?.families ?? [];
       const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
@@ -1453,7 +1461,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const line = one.state === 'needs-you' || one.state === 'failed' ? needWords.get(one.rootId) ?? null : one.line;
         return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
       });
-      return { tasks, more: Math.max(0, families.length - RAIL_TASKS) };
+      return { tasks, more: Math.max(0, families.length - RAIL_TASKS), asks: asksOf(state) };
     };
     const rows: BrowserProjectState[] = projects.map(one => {
       const state = states.get(one.path);

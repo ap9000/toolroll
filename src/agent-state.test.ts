@@ -168,7 +168,7 @@ describe("a project's counts, over the Tasks list's own families", () => {
     store.addFlowCard({ flow, title: "Refund?", description: null, stage: start, by: "sam", byKind: "person" }, NOW);
     const states = of();
     expect(states[REPO]!.counts["needs-you"]).toBe(1);
-    expect(states[OTHER]).toEqual({ repo: OTHER, state: "idle", counts: NO_COUNTS, families: [] });
+    expect(states[OTHER]).toEqual({ repo: OTHER, state: "idle", counts: NO_COUNTS, families: [], flowAsks: [] });
     // A task with no project yet: counted where the Tasks list counts it (for an operator who includes unplaced work).
     store.createTask({ id: "nowhere", title: "Somewhere" }, NOW);
     store.refFor("built-in", "nowhere");
