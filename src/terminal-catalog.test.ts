@@ -52,3 +52,12 @@ test("an installation without a catalog reads as no terminals and gets no catalo
   removeUpdateGate(store.raw(), update);
   expect(activeTerminalUpdateWork(store.raw())).toEqual({ terminals: 0 });
 });
+
+test("an update that began before the catalog existed still refuses a start (fail closed)", () => {
+  const update = randomUUID();
+  installUpdateGate(store.raw(), update);
+  const ledger = openTerminalLedger(store.raw())!;
+  expect(() => ledger.reserve("d".repeat(32))).toThrow(/Toolroll is updating/);
+  removeUpdateGate(store.raw(), update);
+  expect(() => ledger.reserve("d".repeat(32))).not.toThrow();
+});

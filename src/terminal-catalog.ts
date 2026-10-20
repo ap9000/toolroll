@@ -57,6 +57,9 @@ export function openTerminalLedger(orders: Database, alive: (pid: number) => boo
   }
   return {
     reserve(id) {
+      // Fail closed even where this catalog had no gate to install (it didn't exist yet when the update began): the main
+      // database's own admission pause refuses too.
+      if (orders.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name GLOB 'so_desktop_update_*' LIMIT 1").get() !== undefined) throw new Error(PAUSED);
       try { db.prepare("INSERT INTO live_terminal (id, console_pid, state, at) VALUES (?, ?, 'starting', ?)").run(id, process.pid, new Date().toISOString()); }
       catch (error) { throw new Error(error instanceof Error && error.message.includes(PAUSED) ? PAUSED : "No terminal can start right now (its record couldn't be written)."); }
     },
