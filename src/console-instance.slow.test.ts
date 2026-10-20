@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { agentFence, macosFenceAvailable, macosFenced } from "./agent-fence.js";
+import { agentFence, codexFenceArgv, macosFenceAvailable, macosFenced } from "./agent-fence.js";
 import { claimInstance, instanceRunDir, openInstanceSocket, readInstance, runDirProblem } from "./console-instance.js";
 import { openStore, type Store } from "./store.js";
 
@@ -69,6 +69,10 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
     mkdirSync(join(dir, "elsewhere"));
     symlinkSync(join(dir, "elsewhere"), run);
     expect(fenceNow()).toEqual(expect.arrayContaining([run, join(dir, "elsewhere")]));
+    // …and through the Codex profile too: the link's own pathname is denied, not only its target.
+    const codex = codexFenceArgv(fenceNow(), false).find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
+    expect(codex).toContain(`${JSON.stringify(run)}="deny"`);
+    expect(codex).toContain(`${JSON.stringify(join(dir, "elsewhere"))}="deny"`);
     rmSync(run);
     mkdirSync(join(run, ".git"), { recursive: true });
     expect(fenceNow()).toContain(run);

@@ -447,7 +447,9 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
     for (const path of held.deny) access.set(path, "deny");
     for (const path of held.write) access.set(path, "write");
   }
-  for (const path of deny) access.set(real(path), "deny");
+  // Denies are keyed where they resolve; the console's run folder is also denied by its own pathname, so a link there
+  // stays unreplaceable, not only its target.
+  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
     "-c", 'default_permissions="standing-orders"',

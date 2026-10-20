@@ -144,3 +144,10 @@ test("a database that can't be checked is refused, never read as nothing running
   expect(await runQuickStart([], broken.write, broken.value)).toBe(3);
   expect(broken.did).toEqual([]);
 });
+
+test("a console that stops while the project is being added is never opened: proved again right before", async () => {
+  await liveConsole();
+  const { value, write, did } = seams({ admit: async path => { did.push(`admit ${path}`); for (const close of closers.splice(0).reverse()) await close(); return 0; } });
+  expect(await runQuickStart([], write, value)).toBe(3);
+  expect(did).toEqual([`admit ${repo}`]);
+});
