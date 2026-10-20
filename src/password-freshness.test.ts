@@ -420,7 +420,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/chat-actions.ts#<module>": 2,
     "src/chat-actions.ts#executeSharedAction@25": 1,
     "src/control-setup.ts#<module>": 2,
-    "src/control-setup.ts#approveSetup@2>store.transact()@1": 1,
+    "src/control-setup.ts#approveSetup@2>store.transact(_)@1": 1,
     "src/desktop-host.ts#<module>": 2,
     "src/desktop-host.ts#desktopMain@14": 2,
     "src/desktop-host.ts#pairDesktopLogin@10": 3,
@@ -460,7 +460,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#retentionCommand@153": 1,
     "src/operate.ts#reviewSwitchCommand@158": 1,
     "src/operate.ts#reviewTaskCommand@38": 1,
-    "src/operate.ts#routeTaskCommand@119>edited:store.editTaskRoute().authenticate@2": 1,
+    "src/operate.ts#routeTaskCommand@119>edited:store.editTaskRoute(ref.id,_,clock()).authenticate@2": 1,
     "src/operate.ts#runCommand@140": 1,
     "src/operate.ts#runnerCommand@22": 4,
     "src/operate.ts#scopeTask@118": 1,
@@ -471,8 +471,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
-    "src/scope.ts#addApprover@32>store.transact()@1": 1,
-    "src/scope.ts#approve@44>store.transact()@1": 1,
+    "src/scope.ts#addApprover@32>store.transact(_)@1": 1,
+    "src/scope.ts#approve@44>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@40": 1,
     "src/serve.ts#createDecisionServer@1": 3,
     "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateApprover@220": 2,
@@ -480,7 +480,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatAckSend@23": 1,
     "src/server/chat.ts#createChatHandlers@1>chatConfig@14": 1,
     "src/server/chat.ts#createChatHandlers@1>chatFile@22": 1,
-    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess()@5>withFreshness()@1": 1,
+    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess(_,_)@5>withFreshness(chat-send,_)@1": 1,
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@11": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 2,
@@ -545,14 +545,14 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#createPeopleHandlers@2>joinSend@17": 1,
     "src/store.ts#Store.accountOf@149": 2,
     "src/store.ts#Store.bootstrapApproverIfNone@883": 1,
-    "src/store.ts#Store.bootstrapApproverIfNone@883>transact()@1": 1,
+    "src/store.ts#Store.bootstrapApproverIfNone@883>transact(_)@1": 1,
     "src/store.ts#Store.consumeInviteAndCreateAccount@201": 1,
-    "src/store.ts#Store.consumeInviteAndCreateAccount@201>transact()@1": 1,
+    "src/store.ts#Store.consumeInviteAndCreateAccount@201>transact(_)@1": 1,
     "src/store.ts#Store.getRunner@234": 2,
     "src/store.ts#Store.saveApprover@148": 1,
-    "src/store.ts#Store.saveApprover@148>once()@1>transact()@1": 1,
+    "src/store.ts#Store.saveApprover@148>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@231": 1,
-    "src/store.ts#Store.saveRunner@231>once()@1>transact()@1": 1
+    "src/store.ts#Store.saveRunner@231>once(mutation,saveRunner,_)@1>transact(_)@1": 1
   },
   "credential_hash": {
     "src/export.ts#<module>": 2,
@@ -561,27 +561,27 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#<module>": 1,
     "src/store.ts#Store.accountOf@149": 2,
     "src/store.ts#Store.approverHash@156": 2,
-    "src/store.ts#Store.bootstrapApproverIfNone@883>transact()@1": 1,
-    "src/store.ts#Store.consumeInviteAndCreateAccount@201>transact()@1": 1,
+    "src/store.ts#Store.bootstrapApproverIfNone@883>transact(_)@1": 1,
+    "src/store.ts#Store.consumeInviteAndCreateAccount@201>transact(_)@1": 1,
     "src/store.ts#Store.getRunner@234": 1,
-    "src/store.ts#Store.saveApprover@148>once()@1>transact()@1": 1,
-    "src/store.ts#Store.saveRunner@231>once()@1>transact()@1": 1,
-    "src/store.ts#Store.signInWithSso@225>transact()@1": 1,
+    "src/store.ts#Store.saveApprover@148>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
+    "src/store.ts#Store.saveRunner@231>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
+    "src/store.ts#Store.signInWithSso@225>transact(_)@1": 1,
     "src/store.ts#mergeCredentialsForV118@61": 1
   },
   "fresh": {
     "src/acp-check.ts#settleChecks@2": 4,
-    "src/acp-check.ts#settleChecks@2>took:acquire().newLeaseId@2": 1,
+    "src/acp-check.ts#settleChecks@2>took:acquire(store,ref,job.runner,_).newLeaseId@2": 1,
     "src/acp-client.ts#exactField@11": 3,
     "src/backup.ts#runningNow@18": 2,
     "src/browser-workspace.ts#<module>": 2,
     "src/browser/app.tsx#Navigation@21": 3,
     "src/browser/chime.ts#createChime@10>see@3": 2,
-    "src/browser/chime.ts#createChime@10>see@3>window.setTimeout()@6>exclusively()@1": 2,
+    "src/browser/chime.ts#createChime@10>see@3>window.setTimeout(_,CHIME_SETTLE_MS)@6>exclusively(_)@1": 2,
     "src/browser/live-task.tsx#ActivityLine@2": 1,
     "src/browser/team-chat.tsx#<module>": 1,
-    "src/browser/team-chat.tsx#TeamChat@7><anonymous>@44>execute().then()@1": 1,
-    "src/browser/team-chat.tsx#TeamChat@7>accept:useCallback()@7": 1,
+    "src/browser/team-chat.tsx#TeamChat@7><anonymous>@44>execute().then(_)@1": 1,
+    "src/browser/team-chat.tsx#TeamChat@7>accept:useCallback(_,_)@7": 1,
     "src/browser/team-chat.tsx#TeamChat@7>send@13": 1,
     "src/browser/team-chat.tsx#restore@2": 1,
     "src/browser/views/flow-view.tsx#StepUp@44": 1,
@@ -589,27 +589,27 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/budget-alerts.ts#budgetAlertPass@1": 2,
     "src/chat-decide.ts#decideOffer@11": 5,
     "src/chat-decide.ts#staleWhy@28": 6,
-    "src/chat-flow.ts#answerChatFlowPrompt@18>store.transact()@1": 2,
+    "src/chat-flow.ts#answerChatFlowPrompt@18>store.transact(_)@1": 2,
     "src/checkout-cleanup.ts#cleanCheckouts@14>wanted@2": 3,
     "src/checkout-cleanup.ts#slimKeptCheckouts@15>wanted@3": 2,
     "src/discord-chat.ts#deliverDiscordPart@8": 3,
     "src/evidence-pack.ts#ledgerExportChunks@4": 1,
-    "src/flow-engine.ts#workStage@10>filed:store.transact()@3": 12,
+    "src/flow-engine.ts#workStage@10>filed:store.transact(_)@3": 12,
     "src/flow-pull-request.ts#pullRequestStep@2": 2,
     "src/flow-send.ts#chooseStep@15": 3,
     "src/flow-send.ts#keep@12": 5,
     "src/flow-send.ts#sendStep@14": 3,
-    "src/flow-steps.ts#claimStep@2>store.transact()@1": 5,
+    "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 5,
     "src/flow-triggers.ts#checkTrigger@49": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@26": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
     "src/landed-cleanup.ts#removeCheckout@31>wanted@2": 4,
     "src/ledger-view.ts#ledgerBody@2": 7,
-    "src/ledger-view.ts#ledgerBody@2>shown.map()@4": 1,
+    "src/ledger-view.ts#ledgerBody@2>shown.map(_)@4": 1,
     "src/mcp-oauth.ts#<module>": 1,
     "src/mcp-oauth.ts#createOAuthHttp@9>consentHtml@14": 1,
-    "src/model-catalog.ts#recordCatalog@8>store.transact()@1": 2,
+    "src/model-catalog.ts#recordCatalog@8>store.transact(_)@1": 2,
     "src/models-cli.ts#runModelsCommand@1": 3,
     "src/models-ui.ts#<module>": 1,
     "src/models-ui.ts#modelsHtml@4": 4,
@@ -630,16 +630,16 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release.ts#runRelease@10": 1,
     "src/restart-certification.ts#verifyRestartRecovery@6": 4,
     "src/run-closeout.ts#closeOutCheckouts@11": 4,
-    "src/runner.ts#recoverDead@17>recovery:store.transact()@1": 3,
+    "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,
     "src/scope.ts#proveAccountNow@39": 4,
     "src/serve.ts#createDecisionServer@1>checkLocalAgents@98": 1,
-    "src/serve.ts#createDecisionServer@1>checkLocalAgents@98>localSignInChecking:Promise.all():map()@1": 1,
+    "src/serve.ts#createDecisionServer@1>checkLocalAgents@98>localSignInChecking:Promise.all(map()):map(_)@1": 1,
     "src/serve.ts#createDecisionServer@1>connectionCheck@41": 2,
     "src/serve.ts#createDecisionServer@1>handle@93": 4,
     "src/serve.ts#createDecisionServer@1>sendScreen@116": 2,
     "src/serve.ts#createDecisionServer@1>sendScreen@116>workspace@5": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 3,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp().session@11": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11": 1,
     "src/server/render-people.ts#ssoStepUps@3": 1,
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,
     "src/server/request-context.ts#<module>": 1,
@@ -674,8 +674,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>handle@93>requestFacts.sso.fresh@4": 1,
     "src/serve.ts#createDecisionServer@1>sendScreen@116>workspace@5": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp().confirm@13": 1,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp().session@11": 1
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11": 1
   },
   "freshFloor": {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@51>floor@6": 1,
@@ -689,15 +689,15 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "freshnessFor": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25>withFreshness()@2": 1,
+    "src/chat-actions.ts#executeSharedAction@25>withFreshness(approve-standard,_)@2": 1,
     "src/scope.ts#freshnessFor@37": 1,
     "src/scope.ts#proveAccountNow@39": 1,
     "src/server/chat.ts#<module>": 2,
-    "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2>fresh:withFreshness()@1": 1,
+    "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/task-views.ts#<module>": 2,
-    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17>fresh:withFreshness()@1": 1,
+    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>withFreshness()@10": 1
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>withFreshness(approve-standard,_)@10": 1
   },
   "mergeAsPerson": {
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
@@ -728,7 +728,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp().confirm@13>freshFacts.run()@1": 1
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13>freshFacts.run(runtime.freshFactsOf(),_)@1": 1
   },
   "scryptSync": {
     "src/scope.ts#<module>": 2,
@@ -767,7 +767,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#<module>": 2,
     "src/serve.ts#createDecisionServer@1>handle@93>requestFacts.sso.fresh@4": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp().session@11>sso.fresh:freshFacts.run()@1": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11>sso.fresh:freshFacts.run(runtime.freshFactsOf(),_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1
   },
@@ -789,7 +789,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#agentsCommand@43": 1,
     "src/operate.ts#dispatch@14": 1,
     "src/operate.ts#proposalsCommand@122": 1,
-    "src/operate.ts#taskAction@88>runTaskOutcomeCommand().operator@1": 1,
+    "src/operate.ts#taskAction@88>runTaskOutcomeCommand(action,rest,flags,_).operator@1": 1,
     "src/operate.ts#verifyApproverByPassword@127": 1,
     "src/principal.ts#verifyApproverByPassword@4": 1,
     "src/server/chat.ts#<module>": 2,
@@ -802,16 +802,16 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "withFreshness": {
     "src/chat-actions.ts#<module>": 2,
     "src/chat-actions.ts#executeSharedAction@25": 1,
-    "src/chat-actions.ts#executeSharedAction@25>act@3>store.savepoint()@1": 1,
+    "src/chat-actions.ts#executeSharedAction@25>act@3>store.savepoint(_)@1": 1,
     "src/scope.ts#withFreshness@35": 1,
     "src/server/chat.ts#<module>": 2,
-    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess()@5": 1,
+    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess(_,_)@5": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 1,
     "src/server/task-views.ts#<module>": 2,
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>approved:spendingOnlyOnSuccess()@11": 1
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>approved:spendingOnlyOnSuccess(_,_)@11": 1
   }
 };
 describe("the tripwire", () => {
@@ -848,6 +848,8 @@ describe("the tripwire", () => {
       : WRAPPERS.includes(node.type ?? "") ? named(node["expression"] as Node)
       : node.type === "Identifier" ? node["name"] as string
       : node.type === "Literal" ? String(node["value"])
+      // A one-piece template is the plain text it spells (`checks[\`identify\`]` is `checks.identify`).
+      : node.type === "TemplateLiteral" && (node["quasis"] as Node[]).length === 1 ? String(((node["quasis"] as Node[])[0]!["value"] as { cooked: string }).cooked)
       : node.type === "MemberExpression" ? [named(node["object"] as Node), named(node["property"] as Node)].filter(one => one !== null).join(".")
       : node.type === "PrivateIdentifier" ? `#${String(node["name"])}`
       : node.type === "CallExpression" ? `${named(node["callee"] as Node) ?? "<call>"}()` : null;
@@ -882,7 +884,9 @@ describe("the tripwire", () => {
             : one.type === "AssignmentExpression" && key === "right" ? named(one["left"] as Node)
             : classLabel !== null ? classLabel
             // A call's arguments are owned by the call, under whatever owns the call (`passwordChecks.check:wrap()`).
-            : one.type === "CallExpression" && key === "arguments" ? [owner, `${named(one["callee"] as Node) ?? "<call>"}()`].filter(part => part !== null).join(":")
+            // …and by what the call is given: its arguments' names are part of the label, so composing the same
+            // value into another object (`Object.assign(passwordChecks, …)` vs `Object.assign(display, …)`) is a new place.
+            : one.type === "CallExpression" && key === "arguments" ? [owner, `${named(one["callee"] as Node) ?? "<call>"}(${(one["arguments"] as Node[]).map(argument => named(argument) ?? "_").join(",")})`].filter(part => part !== null).join(":")
             // Everything else passes its owner down unchanged — wrappers (`as`, `satisfies`, `!`, parentheses), choices
             // (`a ? f : g`, `override ?? f`), sequences, arrays, awaits — so a value is owned by where it is written to
             // until something names it anew. (A function body starts with no owner of its own.)
@@ -967,6 +971,9 @@ describe("the tripwire", () => {
       pair(owner => `const ${owner}: Record<string, unknown> = {}; export function create() { (${owner} as { identify?: unknown }).identify = function identify(x: never) { const fresh = x; return fresh; }; }`),
       pair(owner => `const wrap = <T,>(f: T) => f; export function create() { const ${owner} = { check: wrap(function identify(x: never) { const fresh = x; return fresh; }) }; return ${owner}; }`),
       pair(owner => `export function create() { const ${owner} = { check: class Check { read(x: never) { const fresh = x; return fresh; } } }; return ${owner}; }`),
+      pair(owner => `const display = {}; const passwordChecks = {}; export function create() { Object.assign(${owner}, { identify(value: { sso: { fresh: boolean } }) { return value.sso.fresh; } }); }`),
+      [places([{ path: "h.ts", text: "export function create() { const checks: Record<string, unknown> = {}; checks[`display`] = (value: { sso: { fresh: boolean } }) => value.sso.fresh; }" }]),
+        places([{ path: "h.ts", text: "export function create() { const checks: Record<string, unknown> = {}; checks[`identify`] = (value: { sso: { fresh: boolean } }) => value.sso.fresh; }" }])],
     ]) expect(b).not.toEqual(a);
     // The wrappers that check a password are watched by name.
     expect(mentions([{ path: "w.ts", text: "export const w = (store: never, by: string, p: string) => verifyApproverByPassword(store, by, p, []);" }])["verifyApproverByPassword"]).toEqual({ "w.ts": 1 });
