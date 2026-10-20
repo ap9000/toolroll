@@ -97,22 +97,27 @@ gains one rule: `method: "session"` is produced in exactly one place and refused
 ### 5. The local CLI (Alex, 2026-10-20: "stop asking on CLI and apply wherever we're signed in")
 
 The CLI's "signed in" is the **remembered login**: `up-login.txt` beside the database (0600, written durably by
-`toolroll up`, denied to every agent by the fence's secret patterns, never read on a remote run). Today only a few CLI
-commands fall back to it; most still want `--as … --token …` on each write.
+`toolroll up`, denied to every agent by the fence's secret patterns, never read on a remote run — `credentialsFrom`
+returns the token's person first). The CLI **already** falls back to it wherever a command takes credentials through
+`credentialsFrom`/`askCredentials`, so most CLI writes already need no typing. What Passwordless adds:
 
-- One helper, `cliCredential(flags, context)`, used by every CLI command that takes `--as/--token`: a typed `--token`
-  (or `--token-file`/stdin) is used as today; with Passwordless on and no token given, the remembered login stands in
-  (an `--as` naming someone else is refused, not silently replaced). It returns the source: `typed` or `remembered`.
-- The remembered login's password is real, so the act proves through the same prover; the ledger records the method as
-  `cli-login` so it reads as passwordless, not as a typed password.
-- **Credential acts** on the CLI (the closed list's CLI twins: `approver add`, token minting, people, worker register,
-  flow trigger secrets, mode signing with chat approval, Passwordless on) refuse `remembered`: a typed password only.
-- Passwordless off → unchanged (the few commands that fall back to the remembered login today still do).
+- **Every person-credential read goes through `credentialsFrom`.** The commands that read `--token` directly for a
+  person's password are moved onto it (an `--as` naming someone else without a token is still refused, never silently
+  replaced). Worker, coordinator and lead tokens are not person passwords and stay as they are.
+- `credentialsFrom` reports its **source** (`typed` or `remembered`); an act proved with the remembered login is
+  recorded with the method `cli-login`, so the ledger never reads it as a typed password.
+- **Credential acts refuse `remembered` while Passwordless is on**: a typed `--token` (or stdin/file) only. The CLI
+  list mirrors the browser's: `approver add`; minting an API token; inviting people and widening access; `runner
+  register` and **`runner bind`** (widens a worker's projects); **`bridge telegram pair`** and any other chat pairing;
+  **`chat-approval on`** (and changing its limits); signing a mode with chat approval; a flow trigger's
+  setup/secret/sender/scope; `passwordless on`. A static test enumerates them.
+- Passwordless off → exactly today's CLI behaviour.
 - The remote CLI (API tokens over HTTP) is unchanged.
 
-Tests: with Passwordless on, an approval, a settings change and a task merge succeed from the CLI with no `--token`;
-`--as someone-else` without a token is refused; every credential command refuses the remembered login; Passwordless
-off restores today's behaviour; a remote run never reads the file.
+Tests: with Passwordless on, an approval, a settings change and a task merge succeed from the CLI with no `--token`
+and record `cli-login`; `--as someone-else` without a token is refused; every listed credential command refuses the
+remembered login and accepts a typed one; Passwordless off restores today's behaviour; a remote run never reads the
+file.
 
 ## Tests
 
@@ -149,3 +154,10 @@ password from sign-in itself.
 2. **The credential list was incomplete** → added inviting people, widening access, registering a worker, a flow
    trigger's setup/secret/sender/scope, and signing a mode with chat approval. The static test enumerates exactly
    these routes on `proveCredential`.
+
+## Review — round 4 (Codex on §5: NO-GO, 1 finding)
+
+The CLI credential list missed `runner bind`, `bridge telegram pair` and `chat-approval on` (all through
+`askCredentials`, which already accepts the remembered login) → added, and §5 now states the CLI already uses the
+remembered login through `credentialsFrom`; Passwordless only routes stray `--token` reads through it, records
+`cli-login`, and makes the listed credential commands typed-only.
