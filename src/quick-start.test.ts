@@ -151,3 +151,10 @@ test("a console that stops while the project is being added is never opened: pro
   expect(await runQuickStart([], write, value)).toBe(3);
   expect(did).toEqual([`admit ${repo}`]);
 });
+
+test("an already-added project is opened only after the console proves itself again, after reading the registry", async () => {
+  await liveConsole();
+  const { value, write, did } = seams({ enrolled: async () => { for (const close of closers.splice(0).reverse()) await close(); return true; } });
+  expect(await runQuickStart([], write, value)).toBe(3);
+  expect(did).toEqual([]);
+});

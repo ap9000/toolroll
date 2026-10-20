@@ -107,13 +107,13 @@ export async function runQuickStart(argv: readonly string[], write: (line: strin
   if (!enrolled) {
     const admitted = await seams.admit(repo);
     if (admitted !== 0) return admitted;
-    // Admission took time: the console proved before it is proved again, on both channels, right before its address
-    // is shown or opened — never a listener that took the port meanwhile.
-    const again = await prove(seams);
-    if (!again.ok || again.url !== proof.url || again.pid !== proof.pid) {
-      write(`Toolroll can't attach: ${again.ok ? "the console changed while the project was being added" : again.message} — run \`toolroll up\`.`);
-      return EXIT.refused;
-    }
+  }
+  // Whatever happened since the first proof (reading the registry, adding the project), the console is proved again,
+  // on both channels, right before its address is shown or opened — never a listener that took the port meanwhile.
+  const again = await prove(seams);
+  if (!again.ok || again.url !== proof.url || again.pid !== proof.pid) {
+    write(`Toolroll can't attach: ${again.ok ? "the console changed while the project was being added" : again.message} — run \`toolroll up\`.`);
+    return EXIT.refused;
   }
   write(`Toolroll is on ${proof.url}`);
   if (seams.terminal) await seams.openBrowser(proof.url);
