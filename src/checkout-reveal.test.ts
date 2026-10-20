@@ -101,15 +101,41 @@ const revealAs = async (cookie: string, run: number) => fetch(`${base}/r/${run}/
   headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: await csrfFor(cookie), return: "agents" }).toString() });
 
 test("Finder is the system's own open, by absolute path, from /, with a minimal environment and one path argument; a failure is reported", async () => {
-  const calls: { file: string; args: readonly string[]; options: { cwd: string; env: Record<string, string>; timeout: number } }[] = [];
-  expect(await revealInFinder("/pool/wt one; rm -rf ~", (file, args, options, done) => { calls.push({ file, args, options }); done(null); })).toBe(true);
-  expect(calls).toEqual([{ file: "/usr/bin/open", args: ["-R", "/pool/wt one; rm -rf ~"], options: { cwd: "/", env: { PATH: "/usr/bin:/bin" }, timeout: 10_000 } }]);
+  const calls: { file: string; args: readonly string[]; options: { cwd: string; env: Record<string, string> } }[] = [];
+  expect(await revealInFinder("/pool/wt one; rm -rf ~", (file, args, options, done) => { calls.push({ file, args, options }); done(null); return undefined; })).toBe(true);
+  expect(calls).toEqual([{ file: "/usr/bin/open", args: ["-R", "/pool/wt one; rm -rf ~"], options: { cwd: "/", env: { PATH: "/usr/bin:/bin" } } }]);
   expect(REVEAL_COMMAND).toBe("/usr/bin/open");
-  expect(await revealInFinder("/pool/x", (_file, _args, _options, done) => done(new Error("exit 1")))).toBe(false);
+  expect(await revealInFinder("/pool/x", (_file, _args, _options, done) => { done(new Error("exit 1")); return undefined; })).toBe(false);
   expect(await revealInFinder("/pool/x", () => { throw new Error("spawn failed"); })).toBe(false);
   // Without a test's revealer, only a Mac offers it.
   expect(canReveal(false)).toBe(process.platform === "darwin");
   expect(canReveal(true)).toBe(true);
+});
+
+test("at the deadline Finder's answer is 'not shown', the child is killed outright, and a late success changes nothing", async () => {
+  // A child that ignores the deadline: the answer still comes, as a failure, and it is killed.
+  const signals: string[] = [];
+  let late: ((error: Error | null) => void) | undefined;
+  const started = Date.now();
+  expect(await revealInFinder("/pool/x", (_file, _args, _options, done) => { late = done; return { kill: signal => signals.push(signal) }; }, 50)).toBe(false);
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(signals).toEqual(["SIGKILL"]);
+  // A child that exits zero after the deadline (it handled the signal): still not shown.
+  late?.(null);
+  let settledLate: boolean | undefined;
+  const pending = revealInFinder("/pool/x", (_file, _args, _options, done) => { setTimeout(() => done(null), 120); return { kill: () => {} }; }, 50).then(shown => { settledLate = shown; });
+  await pending;
+  expect(settledLate).toBe(false);
+  // A real child that ignores SIGTERM is ended by the deadline, and the answer is not shown.
+  const { spawn } = await import("node:child_process");
+  let real: ReturnType<typeof spawn> | undefined;
+  expect(await revealInFinder("/pool/x", (_file, _args, _options, done) => {
+    real = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    real.on("exit", code => done(code === 0 ? null : new Error(`exit ${code}`)));
+    return real;
+  }, 200)).toBe(false);
+  await new Promise<void>(resolve => { if (real?.exitCode !== null || real?.signalCode !== null) resolve(); else real?.once("exit", () => resolve()); });
+  expect(real?.signalCode).toBe("SIGKILL");
 });
 
 test("Finder's failure is said truthfully, never as shown", async () => {

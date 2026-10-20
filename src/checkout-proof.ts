@@ -28,13 +28,19 @@ export function localCheckoutOf(store: Store, runId: number, local: { runner?: s
 }
 
 /** How Finder is asked: the system's own `open` by absolute path (never found through PATH), from the root directory,
- * with a minimal environment, one argument. Resolves true when it answered success within ten seconds. */
-export type RevealExec = (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; timeout: number }, done: (error: Error | null) => void) => void;
+ * with a minimal environment, one argument. True only when it answered success before the deadline: at the deadline
+ * the answer is "not shown", the child is killed outright, and anything it says later is ignored. */
+export type RevealExec = (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }, done: (error: Error | null) => void) => { kill: (signal: NodeJS.Signals) => unknown } | undefined;
 export const REVEAL_COMMAND = "/usr/bin/open";
-export function revealInFinder(path: string, run: RevealExec = (file, args, options, done) => { execFile(file, [...args], options, error => done(error)); }): Promise<boolean> {
+export const REVEAL_DEADLINE_MS = 10_000;
+export function revealInFinder(path: string, run: RevealExec = (file, args, options, done) => execFile(file, [...args], options, error => done(error)), deadlineMs = REVEAL_DEADLINE_MS): Promise<boolean> {
   return new Promise(resolve => {
-    try { run(REVEAL_COMMAND, ["-R", path], { cwd: "/", env: { PATH: "/usr/bin:/bin" }, timeout: 10_000 }, error => resolve(error === null)); }
-    catch { resolve(false); }
+    let settled = false;
+    let child: ReturnType<RevealExec>;
+    const finish = (shown: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(shown); };
+    const timer = setTimeout(() => { finish(false); try { child?.kill("SIGKILL"); } catch { /* already gone */ } }, deadlineMs);
+    try { child = run(REVEAL_COMMAND, ["-R", path], { cwd: "/", env: { PATH: "/usr/bin:/bin" } }, error => finish(error === null)); }
+    catch { finish(false); }
   });
 }
 
