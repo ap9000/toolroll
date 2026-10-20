@@ -1,6 +1,6 @@
 # Passwordless mode — plan
 
-Status: v2, 2026-10-20 — Codex round 1 NO-GO (5 findings) folded in (§ Review). Branch `passwordless`.
+Status: v3, 2026-10-20 — Codex rounds 1–2 folded in (§ Review). Branch `passwordless`.
 
 ## What
 
@@ -26,10 +26,19 @@ absolute), sign-out, and "end this session" on the Sessions page are the protect
 - **Machine callers**: API tokens, OAuth, the MCP gateway, chat bridges (Telegram/Slack/…) and the remote CLI keep their
   own rules; step-up routes stay browser-only. Passwordless is about the person at a browser.
 - **Credential acts** still take a typed password (or a one-use identity-provider re-check, `sso-now`), because each
-  creates or widens a way in. The closed list: changing your password; sign-in methods and identity-provider (SSO)
-  settings; creating an API token; OAuth consent (connecting an outside app); pairing a chat (Telegram, Slack, Teams,
-  Discord); turning on approving from chat or changing its limits; turning Passwordless **on**. Turning it **off**
-  is one click.
+  creates or widens a way in. The closed list:
+  - **your own login**: changing your password; sign-in methods and identity-provider (SSO) settings;
+  - **machine credentials**: creating an API token; OAuth consent (connecting an outside app); registering or replacing
+    a worker (`/fleet/runner/register`);
+  - **people**: inviting someone (`/people/invite`); widening anyone's access, including to instance operator
+    (`/people/projects`);
+  - **channels that can act**: pairing a chat (Telegram, Slack, Teams, Discord); turning on approving from chat or
+    changing its limits; signing an operating mode **with** chat approval (`/mode/sign`, `chat-approve=1` — signing a
+    mode without it is an ordinary act);
+  - **inbound hooks**: a flow trigger's setup, secret, accepted sender or scope
+    (`/flows/:flow/triggers/:trigger/{setup,secret,sender,scope}`) — they create ingress credentials or widen what is
+    accepted;
+  - **Passwordless itself**: turning it **on**. Turning it **off** is one click.
 
 ## How
 
@@ -113,3 +122,9 @@ Passwordless for the local CLI (it has no session; it keeps asking), per-project
 4. **Background inherits facts** → cleared when detaching, with a test.
 5. **Forms** → submit rules updated too; the static ban is narrowed to re-authentication fields; no repeated helper
    text.
+
+## Review — round 2 (Codex: 4 CLOSED, 1 OPEN)
+
+2. **The credential list was incomplete** → added inviting people, widening access, registering a worker, a flow
+   trigger's setup/secret/sender/scope, and signing a mode with chat approval. The static test enumerates exactly
+   these routes on `proveCredential`.
