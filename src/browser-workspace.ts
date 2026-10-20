@@ -584,6 +584,11 @@ export type BrowserAgentRow = {
   agent: string;
 };
 export type BrowserAgentQuestion = { id: number; key: string; text: string; action: string };
+export type BrowserAgentControls = {
+  send: "live" | "mailbox" | null; words: string;
+  pause: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until: string | null } | null;
+  stop: { action: string; run: number; label: string } | null;
+};
 export type BrowserAgentDetail = BrowserAgentRow & {
   live: boolean;
   question: BrowserAgentQuestion | null;
@@ -595,6 +600,9 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   filesMore: number;
   /** Steer the running agent (POST /t/<task>/steer): null once it has finished. */
   steer: { action: string; run: number } | null;
+  /** What this running attempt takes (steer-capabilities.ts): how a note reaches it (or why none does), Pause and
+   * Stop for the exact run each names. Null when it is not running or this person may not act. */
+  controls?: BrowserAgentControls | null;
   /** Whether this person may reply or steer (an approver, outside the demo); a viewer sees the question but no composer. */
   canAct: boolean;
   /** The task, and once finished the run's own page (its result page when it built one). */

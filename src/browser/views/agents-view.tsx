@@ -115,7 +115,7 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
     </CollapsibleTrigger>
     <CollapsibleContent className="pt-1.5 pl-5">
     {detail.live
-      ? detail.peek === null ? <p className="text-body text-muted-foreground">The changes can be read on the computer that runs the agent.</p>
+      ? detail.peek === null ? <p className="text-body text-muted-foreground">Output from other computers isn't shown yet.</p>
         : fragment === null ? <p className="text-body text-muted-foreground">Looking at the checkout…</p>
         : <GuardedHtml html={fragment} className="so-native-region text-body" />
       : detail.files.length === 0 ? <p className="text-body text-muted-foreground">No saved changes.</p>
@@ -148,6 +148,32 @@ function saveDraft(run: number, draft: SteerDraft): void {
   try { draft.text === "" && !draft.submitted ? sessionStorage.removeItem(draftStore(run)) : sessionStorage.setItem(draftStore(run), JSON.stringify(draft)); } catch { /* a convenience only */ }
 }
 
+/** What this running agent takes (steer-capabilities.ts), said plainly, with Pause / Resume and Stop for the exact run
+ * each names. Every form goes back to this agent. */
+function Controls({ detail }: { detail: BrowserAgentDetail }) {
+  const controls = detail.controls;
+  if (controls == null || !detail.canAct) return null;
+  const pause = controls.pause;
+  return <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3 phone:px-4" data-agent-controls={controls.send ?? "none"}>
+    <p className="min-w-0 flex-1 text-caption text-muted-foreground" data-agent-capability>{controls.words}</p>
+    {pause !== null && (pause.state === "paused"
+      ? <PostForm action={pause.action} data-agent-resume>
+          <input type="hidden" name="run" value={String(pause.run)} /><input type="hidden" name="request" value={pause.requests[2]} />
+          <input type="hidden" name="mode" value="resume" /><input type="hidden" name="return" value="agents" />
+          <Button type="submit" variant="outline" size="sm" className="h-9 phone:h-11">Resume</Button>
+        </PostForm>
+      : <PostForm action={pause.action} data-agent-pause>
+          <input type="hidden" name="run" value={String(pause.run)} /><input type="hidden" name="request" value={pause.requests[0]} />
+          <input type="hidden" name="return" value="agents" />
+          <Button type="submit" variant="outline" size="sm" className="h-9 phone:h-11" disabled={pause.state === "pausing"}>{pause.state === "pausing" ? "Pausing…" : "Pause"}</Button>
+        </PostForm>)}
+    {controls.stop !== null && <PostForm action={controls.stop.action} data-agent-stop={controls.stop.run}>
+      <input type="hidden" name="run" value={String(controls.stop.run)} /><input type="hidden" name="return" value="agents" />
+      <Button type="submit" variant="outline" size="sm" className="h-9 phone:h-11">{controls.stop.label}</Button>
+    </PostForm>}
+  </div>;
+}
+
 /** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
 function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const question = detail.question;
@@ -162,6 +188,8 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
     return next;
   });
   if (!detail.canAct) return null;
+  // A running attempt that takes no notes: Controls above says why, and nothing here pretends otherwise.
+  if (question === null && detail.live && detail.controls != null && detail.controls.send === null) return null;
   // The attempt ended with a note still unsent: it is shown, and can go to the task's next attempt instead.
   if (question === null && detail.steer === null) {
     if (text.trim() === "") return null;
@@ -217,6 +245,7 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       <ConversationPane url={detail.transcript} live={detail.live} />
       <ChangesPane detail={detail} />
     </div>
+    <Controls detail={detail} />
     <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
   </section>;
 }

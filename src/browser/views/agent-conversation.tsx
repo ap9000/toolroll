@@ -279,7 +279,7 @@ export function ConversationPane({ url, live }: { url: string | null; live: bool
   }, [conversation.revision]);
   const shown = merged(conversation);
   const failed = "Couldn't read the conversation just now. Trying again.";
-  const empty = conversation.state === "off" ? "The transcript can be read on the computer that runs the agent."
+  const empty = conversation.state === "off" ? "Output from other computers isn't shown yet."
     : conversation.state === "unavailable" || conversation.state === "error" ? failed
     : conversation.state === "loading" ? "Reading the conversation…" : live ? "Nothing yet. What the agent says and does shows here as it works." : "This agent left no transcript.";
   return <section aria-label="Conversation" className="flex min-h-0 flex-col">

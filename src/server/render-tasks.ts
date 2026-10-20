@@ -1503,6 +1503,9 @@ export function taskBodyParts(data: {
   steering?: SteerNote[];
   /** A build's agent is running now and reads new notes when it next checks for them (v120). */
   steeringLive?: boolean;
+  /** The running build a note from this page is bound to (cockpit §4): the exact attempt, so a stale page's note is
+   * refused rather than filed for whatever runs later. Null: no build reads notes now (the note waits for the next). */
+  steeringRun?: number | null;
   /** The publication grant the publisher would act under — from
    * publicationGrantFor(repo) only; null when none, or no project. */
   grant?: PublicationGrant | null;
@@ -1829,7 +1832,9 @@ export function taskBodyParts(data: {
     data.csrf === "" || task.state === "done" || task.state === "cancelled"
       ? ""
       : joinHtml([
-        postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem"><button type="submit">Steer</button>`, { attrs: { class: "row" } }),
+        postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem">${
+          data.steeringRun == null ? "" : html`<input type="hidden" name="run" value="${String(data.steeringRun)}"><input type="hidden" name="key" value="${randomUUID()}"><input type="hidden" name="return" value="task">`
+        }<button type="submit">Steer</button>`, { attrs: { class: "row", id: "steering" } }),
         html`<p class="meta">${steerDestinationWords(steeringLive)} A note can't widen the approved scope.</p>`,
       ]);
   const steeringCard =

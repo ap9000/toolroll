@@ -1,3 +1,4 @@
+import { steerCapabilityOf } from "../steer-capabilities.js";
 import { originOf } from "../task-source.js";
 import { ACP_AGENTS, isAcpProvider } from "../acp-agents.js";
 import { handlersOf } from './handler-registry.js';
@@ -1737,6 +1738,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (who.via !== "cookie") {
           return refuse(response, who, 403, "steering is a browser session's act");
         }
+        // The same gates as a pause or a stop (the route's act scope already refuses a viewer; this says why).
+        if (who.role !== "approver") return taskScreen(response, who, taskId, "your login can watch — sending an agent a note is an approver's act", 403);
         // From the Agents view, the note is for the exact run on screen (live-conversation.md §6): filed only while that
         // run is still the task's live build, once per draft key. Nothing is filed on a refusal; the view keeps the draft.
         // An unsent note from an attempt that ended, sent on to the task's next attempt from that agent's page: filed
@@ -1754,15 +1757,28 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return redirect(response, `/agents?run=${ended.id}&said=${filed.reason === "task-finished" ? "steer-next-finished" : filed.reason === "key-reused" ? "steer-stale" : "steer-invalid"}`);
         }
         // A form that asks for a run but names none properly is refused — never quietly filed unbound.
-        if (body.get("return") === "agents" || body.has("run") || body.has("key")) {
+        if (body.get("return") === "agents" || body.get("return") === "task" || body.has("run") || body.has("key")) {
           const runRaw = body.get("run") ?? "";
           const keyRaw = body.get("key") ?? "";
-          if (body.get("return") !== "agents" || !/^[1-9][0-9]{0,14}$/.test(runRaw) || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw)) {
+          const from = body.get("return");
+          if ((from !== "agents" && from !== "task") || !/^[1-9][0-9]{0,14}$/.test(runRaw) || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw)) {
             return taskScreen(response, who, taskId, "that note did not say which agent it is for, so nothing was sent", 400);
           }
           const shown = store.getRun(Number(runRaw));
           if (shown === null || shown.taskRef !== ref.id) return taskScreen(response, who, taskId, "that run is not part of this task", 404);
+          // An attempt that takes no notes (a planner, a scout, a reviewer, one repairing its handoff) is never filed one:
+          // it would never read it (cockpit §4).
+          const capability = steerCapabilityOf(store, shown.id, now);
+          if (capability !== null && capability.send === null) {
+            return from === "agents" ? redirect(response, `/agents?run=${shown.id}&said=steer-no-notes`) : taskScreen(response, who, taskId, capability.words, 409);
+          }
           const bound = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw });
+          // From the task page: back to its steering card, or the refusal in words (the page keeps nothing to restore).
+          if (from === "task") {
+            if (bound.ok) return redirect(response, `${taskHref(taskId)}#steering`);
+            return taskScreen(response, who, taskId, bound.reason === "attempt-ended" || bound.reason === "task-finished" ? "that attempt ended before your note, so nothing was sent — reload and send it to the current one"
+              : bound.reason === "invalid-note" ? "that note will not store" : "that form was already used — reload and send it again", 409);
+          }
           // The draft's own key comes back: only that draft is cleared from the box.
           if (bound.ok) return redirect(response, `/agents?run=${shown.id}&said=steered&sent=${keyRaw}`);
           if (bound.reason === "attempt-ended" || bound.reason === "task-finished") return redirect(response, `/agents?run=${shown.id}&said=steer-ended`);
@@ -2454,6 +2470,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, 409);
         }
         const back = body.get("return") ?? "";
+        // From the Agents board: back to the same agent, saying what happens now.
+        if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=stopping`);
         return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
       }
       case "pause": {
@@ -2484,6 +2502,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, asked.reason === "invalid-note" ? 400 : 409);
         }
         const back = body.get("return") ?? "";
+        if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=${body.get("mode") === "resume" ? "resuming" : note === "" ? "pausing" : "pausing-with-note"}`);
         return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
       }
       case "resume-arm": {

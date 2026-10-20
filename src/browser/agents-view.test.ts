@@ -97,6 +97,31 @@ describe("the Agents board", () => {
     expect(host.querySelector("[data-agent-composer]")).toBeNull();
   });
 
+  test("the controls offer what the attempt takes: Pause or Resume and Stop for the exact run, and words where notes can't go", () => {
+    const requests: [string, string, string] = ["web-a", "web-b", "web-c"];
+    render(board(detail({ question: null, controls: { send: "live", words: "Notes reach the agent right away.",
+      pause: { action: "/t/t-7/pause", run: 7, state: null, requests, until: null }, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })));
+    expect(host.querySelector("[data-agent-capability]")?.textContent).toBe("Notes reach the agent right away.");
+    const pause = host.querySelector<HTMLFormElement>("[data-agent-pause]")!;
+    expect([...pause.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value])).toEqual(expect.arrayContaining([["run", "7"], ["request", "web-a"], ["return", "agents"]]));
+    expect(host.querySelector<HTMLFormElement>('[data-agent-stop="7"]')?.getAttribute("action")).toBe("/t/t-7/stop");
+    expect(host.querySelector('[data-agent-composer="steer"]')).not.toBeNull();
+    // Paused: Resume instead of Pause.
+    act(() => root?.render(createElement(AgentsView, { view: board(detail({ question: null, controls: { send: "live", words: "Notes reach the agent right away.",
+      pause: { action: "/t/t-7/pause", run: 7, state: "paused", requests, until: null }, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })) })));
+    expect(host.querySelector("[data-agent-pause]")).toBeNull();
+    expect(host.querySelector<HTMLFormElement>("[data-agent-resume]")?.querySelector<HTMLInputElement>('input[name="mode"]')?.value).toBe("resume");
+    // Repairing its handoff: no box, the words say why, and Stop names the owning attempt.
+    act(() => root?.render(createElement(AgentsView, { view: board(detail({ question: null, steer: null, controls: { send: null,
+      words: "It's repairing its handoff and reads no notes now. Stop this attempt to change its course.", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop this attempt" } } })) })));
+    expect(host.querySelector("[data-agent-composer]")).toBeNull();
+    expect(host.querySelector("[data-agent-unsent]")).toBeNull();
+    expect(host.querySelector('[data-agent-stop="7"]')?.textContent).toBe("Stop this attempt");
+    // A viewer gets no controls.
+    act(() => root?.render(createElement(AgentsView, { view: board(detail({ canAct: false, controls: { send: "mailbox", words: "x", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })) })));
+    expect(host.querySelector("[data-agent-controls]")).toBeNull();
+  });
+
   test("the opened agent's room nudges the workspace to read again", async () => {
     const nudged = vi.fn();
     window.addEventListener(WORKSPACE_NUDGE, nudged);
