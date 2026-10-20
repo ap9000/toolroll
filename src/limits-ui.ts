@@ -4,7 +4,7 @@
  * costs nothing per run, so its windows are what bind it; budgets bind work
  * billed to an API key. An instance operator's view.
  */
-import type { BrowserLimitTile, BrowserLimits } from "./browser-workspace.js";
+import type { BrowserLimitTile, BrowserLimits, BrowserUsageChip } from "./browser-workspace.js";
 import { windowLabel } from "./provider-limits.js";
 import { usd, type BudgetState } from "./spend.js";
 import { html, type Html } from "./html.js";
@@ -62,6 +62,34 @@ export function limitsView(
     });
   }
   return tiles.length === 0 ? null : { tiles };
+}
+
+/** One short reset: "3h", "25 min", or "Fri 11 PM". */
+const shortReset = (resetsAt: string, now: Date) => {
+  const minutes = Math.max(1, Math.round((Date.parse(resetsAt) - now.getTime()) / 60_000));
+  return minutes < 60 ? `${minutes} min` : minutes < 24 * 60 ? `${Math.round(minutes / 60)}h` : resetWords(resetsAt, now);
+};
+
+/**
+ * The usage chip (cockpit §3, R16): the subscription window with the highest use the providers last reported, as
+ * "Claude 5-hour · 82% · resets 3h". A reading older than 30 minutes stays visibly stale ("as of 2h ago"), judged by
+ * the reading's age as the Limits view judges it; a window with no known reset says "resets: unknown". API-key budgets
+ * are not compared here (they stay in the details). An operator's view, as the Limits view is. Null: nothing reported.
+ */
+export function usageChipOf(windows: Parameters<typeof limitsView>[0], now: Date): BrowserUsageChip | null {
+  let top: { one: (typeof windows)[number]; percent: number; reached: boolean } | null = null;
+  for (const one of windows) {
+    const turned = one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime();
+    const percent = turned ? 0 : one.usedPercent, reached = !turned && one.reached;
+    if (top === null || percent > top.percent || (reached && !top.reached)) top = { one, percent, reached };
+  }
+  if (top === null) return null;
+  const { one, percent, reached } = top;
+  const stale = now.getTime() - Date.parse(one.observedAt) > 30 * 60_000;
+  const turned = one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime();
+  const reset = turned ? "new window" : one.resetsAt === null ? "resets: unknown" : `resets ${shortReset(one.resetsAt, now)}`;
+  const text = `${PROVIDER_NAMES[one.provider] ?? one.provider} ${windowLabel(one.window, one.windowMinutes)} · ${Math.round(percent)}% · ${reset}${stale ? ` · as of ${ago(one.observedAt, now)}` : ""}`;
+  return { text, tone: toneOf(percent, reached), stale, href: "/work", title: `What the providers last reported: ${text}` };
 }
 
 /** The same tiles for the page without scripts. */

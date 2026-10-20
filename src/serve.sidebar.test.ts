@@ -252,6 +252,15 @@ describe("the sidebar's project states", () => {
     expect(await dot.text()).toContain("<circle");
   });
 
+  test("the usage chip is an operator's, and never on a password page", async () => {
+    store.handle.prepare("INSERT INTO provider_limit (provider, window, used_percent, window_minutes, resets_at, reached, plan, observed_at) VALUES ('claude','five_hour',82,300,?,0,NULL,?)")
+      .run(new Date(Date.now() + 3 * 3_600_000).toISOString(), new Date().toISOString());
+    const alex = await login("alex", alexToken);
+    expect((await page("/agents", alex)).usage).toMatchObject({ text: "Claude 5-hour · 82% · resets 3h" });
+    const robin = await login("robin", robinToken);
+    expect((await page("/agents", robin)).usage).toBeUndefined();
+  });
+
   test("one summary room per page, and only for a browser session", async () => {
     const alex = await login("alex", alexToken);
     expect((await fetch(url("/live?room=summary&room=summary"), { headers: { cookie: alex } })).status).toBe(400);

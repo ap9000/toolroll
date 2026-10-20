@@ -536,6 +536,8 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
         <span className="so-recent-chat-kind" aria-hidden="true">{chat.kind === "task" ? "Task" : "Project"}</span><span className="so-recent-chat-title">{chat.title}</span>
       </a>)}
     </nav>}
+    {workspace.usage && !workspace.sensitive && <a className="so-usage-chip" href={workspace.usage.href} title={workspace.usage.title}
+      data-usage-chip={workspace.usage.tone} data-usage-stale={workspace.usage.stale ? "" : undefined}>{workspace.usage.text}</a>}
     <FleetStatus workspace={workspace} />
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
       <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[901px]:h-11 max-[901px]:min-h-11">Sign out</ViewButton></PostForm></div>

@@ -3,6 +3,7 @@ import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
 import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
+import { usageChipOf } from './limits-ui.js';
 /** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
 const RAIL_TASKS = 6;
 import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
@@ -1340,6 +1341,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
         // The sidebar's project states: never on a sensitive page (no rail, no summary stream there).
         ...(() => { if (sensitive) return {}; try { return { projectStates: projectSummary() }; } catch { return {}; } })(),
+        // The usage chip: the Limits view's own audience (an operator on a browser session), never a sensitive page.
+        ...(() => {
+          const actor = requestFacts.actor;
+          if (sensitive || !actor || requestFacts.csrf === '' || !store.isInstanceOperator(actor)) return {};
+          try { const usage = usageChipOf(store.providerLimits(), clock()); return usage === null ? {} : { usage }; } catch { return {}; }
+        })(),
         conversation, ...(extras.team ? { team: extras.team } : {}), focus: extras.focus ?? null, result: extras.result ?? null,
         catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),

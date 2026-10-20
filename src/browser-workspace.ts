@@ -159,6 +159,8 @@ export type BrowserLimitTile = {
   detail: string; tone: 'neutral' | 'warning' | 'danger'; marks: number[]; title: string | null; href: string | null;
 };
 export type BrowserLimits = { tiles: BrowserLimitTile[] };
+/** The sidebar's usage chip (limits-ui.ts usageChipOf): the most-used subscription window, stale when its reading is old. */
+export type BrowserUsageChip = { text: string; tone: BrowserLimitTile['tone']; stale: boolean; href: string; title: string };
 export type BrowserSettingsView = {
   kind: 'settings';
   said: string | null;
@@ -622,6 +624,8 @@ export type BrowserWorkspace = {
   projects: BrowserProject[]; crew: BrowserCrewItem[]; crewTruncated: boolean;
   /** The sidebar's project states; absent on a sensitive page. The summary room keeps them current. */
   projectStates?: BrowserProjectState[];
+  /** The most-used subscription window, for an operator; absent for everyone else and on a sensitive page. */
+  usage?: BrowserUsageChip;
   conversation: BrowserConversation | null;
   team?: TeamSnapshot;
   focus: { id: string; title: string; html: string } | null;
