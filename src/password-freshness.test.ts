@@ -141,6 +141,8 @@ const productionSources = (dir: string): string[] => readdirSync(dir, { withFile
   : audited(one.name) ? [join(dir, one.name)] : []);
 const langOf = (path: string): "ts" | "tsx" | "js" | "jsx" => /x$/.test(path) ? (/\.[cm]?jsx$/.test(path) ? "jsx" : "tsx") : /\.[cm]?js$/.test(path) ? "js" : "ts";
 type Hits = Record<string, Record<string, number>>;
+/** Nodes that change only types or grouping: what flows through them, and who owns it, is unchanged. */
+const WRAPPERS = ["ChainExpression", "ParenthesizedExpression", "TSNonNullExpression", "TSAsExpression", "TSSatisfiesExpression", "TSTypeAssertion"];
 const FACT_NAMES = new Set(["passwordAt", "ssoReauthAt", "ssoNowAt", "freshFloor"]);
 const WATCHED_CALLS = new Set(["authenticateAccount", "authenticateApprover", "checkApproverPassword", "proveAccountNow", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone"]);
 type Node = { type?: string; [key: string]: unknown };
@@ -177,7 +179,6 @@ function audit(files: { path: string; text: string }[]): Hits {
       if (set instanceof Set) { if (!set.has(local)) { set.add(local); changed = true; } }
       else if (!set.has(local)) { set.set(local, original); changed = true; }
     };
-    const WRAPPERS = ["ChainExpression", "ParenthesizedExpression", "TSNonNullExpression", "TSAsExpression", "TSSatisfiesExpression", "TSTypeAssertion"];
     const unwrap = (node: Node | null | undefined): Node | null => node == null ? null : WRAPPERS.includes(node.type ?? "") ? unwrap(node["expression"] as Node) : node;
     /**
      * ONE reading of how a value flows into a pattern, used both to learn aliases and to flag reads: from the value's
@@ -879,6 +880,8 @@ describe("the tripwire", () => {
             : classLabel !== null ? classLabel
             : one.type === "CallExpression" && key === "arguments" ? `${named(one["callee"] as Node) ?? "<call>"}()`
             : one.type === "ObjectExpression" || one.type === "ClassBody" ? owner
+            // Wrappers that change only types or grouping (`as`, `satisfies`, `!`, parentheses) keep the owner.
+            : WRAPPERS.includes(one.type ?? "") ? owner
             : null;
           walk(value, where, next, count);
         }
@@ -946,9 +949,13 @@ describe("the tripwire", () => {
     const keyed = audit([{ path: "keyed.ts", text: "import { authenticateAccount as rawCheck } from './scope.js'; const passwordChecks = { check: rawCheck }; export const f = (store: never, name: string, token: string) => passwordChecks.check(store, name, token);" }]);
     expect(keyed["authenticateAccount()"]).toEqual({ "keyed.ts": 1 });
     // A named function rehomed under another object keeps a different identity (owner and own name both count).
-    const home = places([{ path: "g.ts", text: "export function create() { function identify(x: never) { const fresh = x; return fresh; } return identify; }" }]);
-    const rehomed = places([{ path: "g.ts", text: "const auxiliary = { check: function identify(x: never) { const fresh = x; return fresh; } }; export function create() { const identify = auxiliary.check; return identify; }" }]);
-    expect(rehomed).not.toEqual(home);
+    // Same enclosing function, same ordinal: only the owner differs — plain, `as` and `satisfies` alike.
+    const home = places([{ path: "g.ts", text: "export function create() { const identify = function identify(x: never) { const fresh = x; return fresh; }; return identify; }" }]);
+    for (const wrap of [(f: string) => f, (f: string) => `(${f}) as (x: never) => never`, (f: string) => `(${f}) satisfies (x: never) => never`]) {
+      const rehomed = places([{ path: "g.ts", text: `export function create() { const passwordChecks = { check: ${wrap("function identify(x: never) { const fresh = x; return fresh; }")} }; const identify = passwordChecks.check; return identify; }` }]);
+      expect(Object.keys(rehomed["fresh"] ?? {})).toEqual(["g.ts#create@1>passwordChecks.check:identify@1"]);
+      expect(rehomed).not.toEqual(home);
+    }
     // The wrappers that check a password are watched by name.
     expect(mentions([{ path: "w.ts", text: "export const w = (store: never, by: string, p: string) => verifyApproverByPassword(store, by, p, []);" }])["verifyApproverByPassword"]).toEqual({ "w.ts": 1 });
     const roads = mentions([{ path: "roads.ts", text: "export const a = (store: never, n: string, p: string) => { const h = store.approverHash(n); scrypt(p, 'salt', 64, () => {}); return db.prepare(`SELECT credential_hash FROM approver WHERE name = ${n}`); };" }]);
