@@ -337,6 +337,8 @@ export function createSharedGuards(runtime: GuardsRuntime) {
         runtime.sessions.delete(id);
         return null;
       }
+      // Ended in another process (or from Sessions): the cached copy is dropped, never used.
+      if (!runtime.sessions.stillSaved(id)) { Map.prototype.delete.call(runtime.sessions, id); return null; }
       if (touch) { session.lastSeen = now; runtime.sessions.persist(session, true); }
       // A touch that found the session ended elsewhere dropped it: this request is not signed in by it.
       if (touch && !runtime.sessions.holds(session)) return null;

@@ -304,8 +304,9 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       "term.socket": socketWithoutUpgrade,
     }),
     upgrade,
-    /** Shutdown: no more attaches, every socket dropped, every program ended (bounded by the host's grace). */
-    async close(): Promise<void> {
+    /** Shutdown: no more attaches, every socket dropped, every program ended (bounded by the host's grace). The problem,
+     * when a terminal's processes couldn't be proved stopped. */
+    async close(): Promise<Error | null> {
       unsubscribe();
       clearInterval(sweep);
       for (const ws of sockets) ws.terminate();
@@ -314,8 +315,10 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       const stopped = await deps.host?.stop();
       if (stopped !== undefined && !stopped.clean) {
         logEvent("error", "terminal.shutdown-uncertain", {});
-        throw new Error("A live terminal's processes could not be proved stopped. Check for them before replacing Toolroll.");
+        // Reported, never thrown: the server still closes, and its close callback carries this (serve.ts).
+        return new Error("A live terminal's processes could not be proved stopped. Check for them before replacing Toolroll.");
       }
+      return null;
     },
   };
 }

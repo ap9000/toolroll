@@ -161,3 +161,22 @@ transcript reader for sessions started outside Toolroll.
 
 Stated limit: a process that detaches from the terminal, is reparented, AND leaves the worktree before it was noted is
 not found — no worse than closing any terminal window on macOS.
+
+## Review — round 3 (Codex confirmation on b54e1e27, NO-GO: 3 closed, 5 open + 1 new), and what changed
+
+- **1 (session).** Every save of an existing session is an UPDATE (`Store.updateWebSession`); only sign-in inserts. A
+  missing row drops the cached copy. Every cookie lookup also proves the saved row exists, so an ended session stops
+  authenticating at once, not after the 60 s touch throttle.
+- **3 + new High (who is swept).** Only *proven* members are ever signalled: descendants, own-tty processes started
+  before the end, and processes noted while it ran (now also 250 ms after any output or typing, so a job that a command
+  starts is noted before the shell can exit). Processes found only because they work inside the worktree are **never
+  signalled** — one may be the person's own shell or a server from elsewhere — but while any remains, cleanup is
+  `uncertain` and the worktree stays; Remove re-checks at removal time and proceeds once they have left.
+- **4 (lsof).** Only lsof's "some listed process is gone" exit (1, no signal, no timeout) is accepted; anything else
+  is unreadable → uncertain. Linux /proc reads fail closed except ENOENT.
+- **6 (shutdown).** The server always closes; an unproved terminal shutdown is the close callback's error, and `up`
+  prints it and exits failed instead of "Toolroll stopped".
+- **7 (uncertain rows).** An uncertain sweep keeps its catalog row (`uncertain`), counted by the updater while its
+  console lives, until the terminal is removed.
+- Background security check: a start also refuses on the main database's own update pause, so an update that began
+  before the terminal catalog existed still fails closed (687226e3).

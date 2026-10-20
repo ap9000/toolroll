@@ -5,8 +5,9 @@
  *
  * - a start inserts its row before any work, and an update's gate (a trigger) refuses that insert while the update
  *   owns admission: no terminal starts during a drain;
- * - a row is `starting` or `running` until the terminal's sweep ends, then deleted; the updater counts rows whose
- *   console is still alive as active work, so "update when idle" waits for running terminals;
+ * - a row is `starting` or `running` until the terminal's sweep ends, then deleted — or kept as `uncertain` when the
+ *   sweep couldn't prove its processes gone, until the terminal is removed; the updater counts rows whose console is
+ *   still alive as active work, so "update when idle" waits for running and unproved terminals;
  * - rows of a console that is gone are stale (its programs went with it, or are swept at its next start).
  */
 import { chmodSync, lstatSync } from "node:fs";
@@ -18,7 +19,7 @@ import type { TerminalLedger } from "./live-terminal.js";
 
 const gatePrefix = "so_terminal_update_";
 const PAUSED = "Toolroll is updating. Running terminals keep going; new ones can start after the update.";
-const SCHEMA = "CREATE TABLE IF NOT EXISTS live_terminal (id TEXT PRIMARY KEY, console_pid INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('starting','running')), at TEXT NOT NULL)";
+const SCHEMA = "CREATE TABLE IF NOT EXISTS live_terminal (id TEXT PRIMARY KEY, console_pid INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('starting','running','uncertain')), at TEXT NOT NULL)";
 
 export function terminalCatalogPath(orders: Database): string | null {
   const main = orders.prepare("PRAGMA database_list").all().find(row => row["name"] === "main")?.["file"];
@@ -64,7 +65,14 @@ export function openTerminalLedger(orders: Database, alive: (pid: number) => boo
       catch (error) { throw new Error(error instanceof Error && error.message.includes(PAUSED) ? PAUSED : "No terminal can start right now (its record couldn't be written)."); }
     },
     running(id) { db.prepare("UPDATE live_terminal SET state='running', at=? WHERE id=?").run(new Date().toISOString(), id); },
-    release(id) { try { db.prepare("DELETE FROM live_terminal WHERE id=?").run(id); } catch { /* the next start drops it as stale */ } },
+    // A sweep that couldn't prove its processes gone stays written down: the updater counts it while this console lives.
+    release(id, cleanup) {
+      try {
+        if (cleanup === "uncertain") db.prepare("UPDATE live_terminal SET state='uncertain', at=? WHERE id=?").run(new Date().toISOString(), id);
+        else db.prepare("DELETE FROM live_terminal WHERE id=?").run(id);
+      } catch { /* the next start drops it as stale */ }
+    },
+    forget(id) { try { db.prepare("DELETE FROM live_terminal WHERE id=?").run(id); } catch { /* stale later */ } },
   };
 }
 

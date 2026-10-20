@@ -45,3 +45,20 @@ test("a touch of a kept session still saves it", () => {
   expect(sessions.holds(session)).toBe(true);
   store.close();
 });
+
+test("a project switch (an ordinary save) never brings back a session ended elsewhere (round 3)", () => {
+  const store = openStore(":memory:");
+  if (!addApprover(store, "alex", new Date()).ok) throw new Error("bootstrap failed");
+  const sessions = new PersistentSessions(store);
+  const id = "c".repeat(64);
+  const now = Date.now();
+  const session: Session = { name: "alex", csrf: "c", role: "approver", generation: store.accountOf("alex")!.generation, createdAt: now, lastSeen: now, project: null, projectRevision: 0, sawBoardAt: null };
+  sessions.set(id, session);
+  store.dropWebSession(PersistentSessions.hash(id));
+  expect(sessions.stillSaved(id)).toBe(false);
+  session.project = "/somewhere";
+  sessions.persist(session);
+  expect(store.webSession(PersistentSessions.hash(id))).toBeNull();
+  expect(sessions.holds(session)).toBe(false);
+  store.close();
+});

@@ -61,3 +61,13 @@ test("an update that began before the catalog existed still refuses a start (fai
   removeUpdateGate(store.raw(), update);
   expect(() => ledger.reserve("d".repeat(32))).not.toThrow();
 });
+
+test("a sweep that couldn't prove its processes gone stays counted until the terminal is removed (round 3)", () => {
+  const ledger = openTerminalLedger(store.raw())!;
+  ledger.reserve("e".repeat(32));
+  ledger.running("e".repeat(32));
+  ledger.release("e".repeat(32), "uncertain");
+  expect(activeTerminalUpdateWork(store.raw())).toEqual({ terminals: 1 });
+  ledger.forget("e".repeat(32));
+  expect(activeTerminalUpdateWork(store.raw())).toEqual({ terminals: 0 });
+});

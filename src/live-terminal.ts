@@ -152,6 +152,8 @@ type Session = TerminalSummary & {
   /** The worktree's real path and the program's start, for finding jobs left in it. */
   worktreeReal: string;
   startedMs: number;
+  /** The sweep proved its own processes gone, and only someone else's work in the worktree kept it from "clean". */
+  residentsOnly: boolean;
   cols: number;
   rows: number;
   scrollback: Scrollback;
@@ -170,8 +172,10 @@ export type TerminalLedger = {
   reserve(id: string): void;
   running(id: string): void;
   release(id: string, cleanup: "clean" | "uncertain" | null): void;
+  /** The terminal is removed (its worktree went after a clean sweep): nothing of it is left to count. */
+  forget(id: string): void;
 };
-const NO_LEDGER: TerminalLedger = { reserve() {}, running() {}, release() {} };
+const NO_LEDGER: TerminalLedger = { reserve() {}, running() {}, release() {}, forget() {} };
 
 export class TerminalError extends Error {
   constructor(message: string) { super(message); this.name = "TerminalError"; }
@@ -194,6 +198,8 @@ export type TerminalHostOptions = {
   ledger?: TerminalLedger;
   /** The process table (tests stand a failing one in); null when it can't be read. */
   processes?: () => ProcessTable | null;
+  /** Who else works in a worktree (tests stand theirs in); default worktreeResidents. */
+  residents?: (table: ProcessTable, worktreeReal: string) => Set<number> | null;
 };
 
 const clamp = (value: number, range: { min: number; max: number }) => Math.min(range.max, Math.max(range.min, Math.trunc(value)));
@@ -308,13 +314,14 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), cols, rows, scrollback: new Scrollback(this.options.scrollbackBytes), viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, cols, rows, scrollback: new Scrollback(this.options.scrollbackBytes), viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);
       this.ledger.running(id);
       reserved = false;
       this.noteCustody();
       pty.onData(data => {
+        this.noteSoon();
         const chunk = Buffer.from(data, "utf8");
         session.scrollback.push(chunk);
         for (const viewer of session.viewers) { try { viewer.output(chunk); } catch { /* the viewer's own close handles it */ } }
@@ -360,6 +367,7 @@ export class TerminalHost {
     if (pty == null) return true;
     if (pty.pendingInput() + Buffer.byteLength(data) > MAX_PENDING_INPUT) return false;
     pty.write(data);
+    this.noteSoon();
     return true;
   }
 
@@ -369,6 +377,14 @@ export class TerminalHost {
     session.cols = clamp(cols, COLS);
     session.rows = clamp(rows, ROWS);
     try { session.pty.resize(session.cols, session.rows); } catch { /* it exited between */ }
+  }
+
+  private noteTimer: NodeJS.Timeout | null = null;
+  /** Activity (output, typing) usually means a command started: note processes shortly after, at most every 250 ms. */
+  private noteSoon(): void {
+    if (this.noteTimer !== null) return;
+    this.noteTimer = setTimeout(() => { this.noteTimer = null; this.noteCustody(); }, 250);
+    this.noteTimer.unref?.();
   }
 
   /** Note every running terminal's processes now, and keep doing so while any runs. */
@@ -413,9 +429,7 @@ export class TerminalHost {
     const members = (): Map<number, string> => {
       const table = this.processes();
       if (table === null) { readable = false; return new Map(); }
-      const residents = worktreeResidents(table, session);
-      if (residents === null) { readable = false; return new Map(); }
-      const found = membersOf(table, session, residents);
+      const found = membersOf(table, session);
       for (const [pid, started] of found) session.known.set(pid, started);
       return found;
     };
@@ -446,6 +460,12 @@ export class TerminalHost {
     } finally {
       // The leader's exit is waited for, but never without bound.
       await Promise.race([session.exited, pause(1_000)]);
+      // Proven members gone is not enough to free the worktree: nothing of this user may still be working in it.
+      if (cleanup === "clean") {
+        const table = this.processes();
+        const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal);
+        if (residents === null || residents.size > 0) { cleanup = "uncertain"; session.residentsOnly = residents !== null; }
+      }
       session.cleanup = readable && leaderGone() ? cleanup : "uncertain";
       if (session.endedAt === null) session.endedAt = this.clock().toISOString();
       this.ledger.release(session.id, session.cleanup);
@@ -459,8 +479,15 @@ export class TerminalHost {
     if (session === undefined) return;
     if (session.pty !== null) throw new TerminalError("Close the terminal before removing it.");
     if (session.closing !== null) await session.closing;
-    if (session.cleanup !== "clean") throw new TerminalError("Something this terminal started may still be running in its worktree, so the worktree stays. Check for it, then remove the worktree with `git worktree remove`.");
+    const busy = new TerminalError("Something may still be running in this terminal's worktree, so the worktree stays. Stop it (or leave the folder), then remove the worktree with `git worktree remove`.");
+    // Uncertain only because someone else was working in the worktree: it may go once they have left (checked below).
+    if (session.cleanup !== "clean" && !session.residentsOnly) throw busy;
+    // Checked again now: a shell or server may have moved into the worktree since the sweep.
+    const table = this.processes();
+    const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal);
+    if (residents === null || residents.size > 0) throw busy;
     this.sessions.delete(id);
+    this.ledger.forget(id);
     for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit?.code ?? null, signal: session.exit?.signal ?? null }); } catch { /* gone */ } }
     session.viewers.clear();
     const result = await (this.options.git ?? teardownGit())(session.repo, ["worktree", "remove", "--force", "--", session.worktree]);
@@ -482,6 +509,7 @@ export class TerminalHost {
     this.stopped = true;
     await Promise.all([...this.sessions.keys()].map(id => this.close(id, "console")));
     if (this.custodyTimer !== null) { clearInterval(this.custodyTimer); this.custodyTimer = null; }
+    if (this.noteTimer !== null) { clearTimeout(this.noteTimer); this.noteTimer = null; }
     return { clean: [...this.sessions.values()].every(one => one.cleanup === "clean") };
   }
 }
@@ -509,13 +537,11 @@ export function readProcessTable(): ProcessTable | null {
  * the leader, everything whose controlling terminal is its terminal and that started before it ended (a later process
  * on a reused device is someone else's), and every descendant of those. Never this console itself.
  */
-export function membersOf(table: ProcessTable, session: { leader: number; tty: string | null; known: ReadonlyMap<number, string>; exitedAt: number | null },
-  residents: ReadonlySet<number> = new Set()): Map<number, string> {
+export function membersOf(table: ProcessTable, session: { leader: number; tty: string | null; known: ReadonlyMap<number, string>; exitedAt: number | null }): Map<number, string> {
   const found = new Map<number, string>();
   const startedMs = (started: string) => Date.parse(started);
   for (const [pid, row] of table) {
     if (pid === process.pid || pid <= 1) continue;
-    if (residents.has(pid)) { found.set(pid, row.started); continue; }
     const noted = session.known.get(pid);
     const ownTty = session.tty !== null && row.tty === session.tty && (session.exitedAt === null || startedMs(row.started) <= session.exitedAt + 1_000);
     // The leader by pid only while it runs: after it exits its pid may be someone else's (it is noted by start time).
@@ -528,22 +554,25 @@ export function membersOf(table: ProcessTable, session: { leader: number; tty: s
   return found;
 }
 
-/** Each process's working directory (Linux: /proc; macOS: lsof); null when they can't be read. A process gone in
- * between is simply absent. */
+/** Each listed process's working directory (Linux: /proc; macOS: lsof). Null when they can't all be read: a timeout,
+ * a signal or partial output is unreadable, never a smaller answer. A process gone in between is simply absent. */
 export function cwdsOf(pids: readonly number[]): Map<number, string> | null {
   const cwds = new Map<number, string>();
   if (pids.length === 0) return cwds;
   if (process.platform === "linux") {
-    for (const pid of pids) { try { cwds.set(pid, readlinkSync(`/proc/${pid}/cwd`)); } catch { /* gone or not ours */ } }
+    for (const pid of pids) {
+      try { cwds.set(pid, readlinkSync(`/proc/${pid}/cwd`)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+    }
     return cwds;
   }
   let text: string;
-  try { text = execFileSync("lsof", ["-a", "-d", "cwd", "-Fpn", "-p", pids.join(",")], { encoding: "utf8", timeout: 5_000, maxBuffer: 8 * 1024 * 1024 }); }
+  try { text = execFileSync("lsof", ["-a", "-d", "cwd", "-Fpn", "-p", pids.join(",")], { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024 }); }
   catch (error) {
-    // lsof exits 1 when some listed process is gone; what it printed still counts. No output at all is unreadable.
-    const out = (error as { stdout?: unknown }).stdout;
-    if (typeof out !== "string" || out === "") return (error as { status?: unknown }).status === 1 ? cwds : null;
-    text = out;
+    // lsof exits 1 (and nothing else) when some listed process is gone; a timeout or a signal is unreadable.
+    const failure = error as { status?: unknown; signal?: unknown; code?: unknown; stdout?: unknown };
+    if (failure.status !== 1 || failure.signal != null || failure.code === "ETIMEDOUT" || typeof failure.stdout !== "string") return null;
+    text = failure.stdout;
   }
   let pid: number | null = null;
   for (const line of text.split("\n")) {
@@ -554,18 +583,16 @@ export function cwdsOf(pids: readonly number[]): Map<number, string> | null {
 }
 
 /**
- * Orphans living in a terminal's worktree: this user's processes reparented to init that started while it ran and
- * whose working directory is inside its worktree. When the program exits the OS detaches the terminal from them and
- * their parent is gone, so this is what still ties a left-behind job to its terminal. Null when unreadable.
+ * This user's processes working inside a terminal's worktree, whoever started them, other than the proven members
+ * already being swept. They are never signalled (one may be the person's own shell or a server they started from
+ * elsewhere); while any remains, the terminal's cleanup is uncertain and its worktree stays. Null when unreadable.
  */
-export function worktreeResidents(table: ProcessTable, session: { worktreeReal: string; startedMs: number; exitedAt: number | null }): Set<number> | null {
+export function worktreeResidents(table: ProcessTable, worktreeReal: string, exclude: ReadonlySet<number> = new Set()): Set<number> | null {
   const uid = process.getuid?.() ?? -1;
-  const until = (session.exitedAt ?? Date.now()) + 1_000;
-  const candidates = [...table].filter(([pid, row]) => pid !== process.pid && row.ppid === 1 && row.uid === uid
-    && Date.parse(row.started) >= session.startedMs - 1_000 && Date.parse(row.started) <= until).map(([pid]) => pid);
+  const candidates = [...table].filter(([pid, row]) => pid !== process.pid && row.uid === uid && !exclude.has(pid)).map(([pid]) => pid);
   const cwds = cwdsOf(candidates);
   if (cwds === null) return null;
-  return new Set([...cwds].filter(([, cwd]) => cwd === session.worktreeReal || cwd.startsWith(`${session.worktreeReal}/`)).map(([pid]) => pid));
+  return new Set([...cwds].filter(([, cwd]) => cwd === worktreeReal || cwd.startsWith(`${worktreeReal}/`)).map(([pid]) => pid));
 }
 
 /** One client frame, read strictly; null closes the socket. */

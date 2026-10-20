@@ -85,6 +85,17 @@ const until = async (check: () => boolean, ms = 6000) => {
 };
 
 describe.skipIf(spawn === null || process.platform === "win32")("live terminals over HTTP", () => {
+  test("a server whose terminal couldn't be proved stopped still closes, and says so", async () => {
+    const blindHost = new TerminalHost({ spawn: spawn!, worktreeRoot: join(home, "blind"), closeGraceMs: 200, programs: { claude: { file: "/bin/cat", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "" }), residents: () => null });
+    const blind = createDecisionServer({ store, evidenceRoot: home, repos: [repo], terminalHost: blindHost } as Parameters<typeof createDecisionServer>[0]);
+    await new Promise<void>(resolve => blind.listen(0, "127.0.0.1", resolve));
+    await blindHost.start({ name: "alex", generation: store.accountOf("alex")!.generation }, repo, "claude");
+    const error = await new Promise<Error | undefined>(resolve => blind.close(resolve));
+    expect(error?.message).toMatch(/could not be proved stopped/);
+    expect(blind.listening).toBe(false);
+  });
+
   test("start takes the operator's password; nothing starts without it", async () => {
     const cookie = await login();
     const csrf = await csrfOf(cookie);

@@ -1723,7 +1723,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // the owner record well inside the service's exit window (Oct 2: deploys
   // over 0.9.11 found it still held by a killed process).
   /** Set once the terminal handlers exist (below): drops every socket and ends every program. */
-  const terminalClosing: { close?: () => Promise<void> } = {};
+  const terminalClosing: { close?: () => Promise<Error | null>; problem?: Error | null } = {};
   let codingClosing: Promise<void> | null = null;
   const closeCoding = (): Promise<void> => {
     leadClosing = true;
@@ -1742,7 +1742,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), terminalClosing.close?.(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())])
+      // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
+      .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
     });

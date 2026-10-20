@@ -8504,7 +8504,10 @@ async function upCommand(
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
   if (instanceSocket.ok) instanceSocket.close();
   if (mintedSecret !== null) clearInstance(store, mintedSecret);
-  await new Promise<void>(done => console_.server.close(() => done()));
+  let closeProblem: Error | null = null;
+  await new Promise<void>(done => console_.server.close(error => { closeProblem = error ?? null; done(); }));
+  // A live terminal that couldn't be proved stopped (or any other close failure) is said, never "stopped".
+  if (closeProblem !== null && fatal === null) fatal = (closeProblem as Error).message;
 
   if (fatal !== null) {
     // The startup envelope (when json) already went out; the exit code is

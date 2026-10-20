@@ -128,24 +128,28 @@ export class PersistentSessions extends Map<string, Session> {
   override set(id: string, session: Session): this {
     super.set(id, session);
     this.ids.set(session, id);
-    this.persist(session);
+    this.savedAt.set(session, Date.now());
+    this.db.saveWebSession({ idHash: PersistentSessions.hash(id), account: session.name, csrf: session.csrf, role: session.role, generation: session.generation, createdAt: session.createdAt,
+      lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null });
     return this;
   }
   override delete(id: string): boolean {
     this.db.dropWebSession(PersistentSessions.hash(id));
     return super.delete(id);
   }
-  /** Keep a changed session (its project, its provider check); `seen` only once a minute. */
+  /**
+   * Keep a changed session (its project, its provider check); `seen` only once a minute. Only ever an update: a session
+   * ended elsewhere (another process, Sessions) is dropped here, never written back by its cached copy (live terminals
+   * review, rounds 2–3, finding 1).
+   */
   persist(session: Session, seen = false): void {
     const id = this.ids.get(session);
     if (id === undefined || (seen && Date.now() - (this.savedAt.get(session) ?? 0) < 60_000)) return;
-    // Being seen only updates a kept session: one ended elsewhere (another process, Sessions) is never written back by
-    // its cached copy — it is dropped here instead (live terminals review, round 2 finding 1).
-    if (seen && this.db.webSession(PersistentSessions.hash(id)) === null) { super.delete(id); return; }
     this.savedAt.set(session, Date.now());
-    this.db.saveWebSession({ idHash: PersistentSessions.hash(id), account: session.name, csrf: session.csrf, role: session.role, generation: session.generation, createdAt: session.createdAt,
-      lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null });
+    if (!this.db.updateWebSession({ idHash: PersistentSessions.hash(id), lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null })) super.delete(id);
   }
+  /** Whether this cookie's session is still saved (one ended in another process is not). */
+  stillSaved(id: string): boolean { return this.db.webSession(PersistentSessions.hash(id)) !== null; }
   /** A cookie from before a restart, if its session is still kept. */
   load(id: string): Session | null {
     const row = this.db.webSession(PersistentSessions.hash(id));

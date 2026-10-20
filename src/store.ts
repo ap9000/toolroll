@@ -22321,6 +22321,13 @@ export class Store {
       .run(idempotencyKey, operation, JSON.stringify(result ?? null), actor, at.toISOString());
     return result;
   }
+
+  /** A kept web session's changes: never inserts, so a session ended elsewhere is not brought back by a cached copy.
+   * False when it is gone. (Kept last in the class: the freshness tripwire pins method positions.) */
+  updateWebSession(session: Pick<WebSessionRow, "idHash" | "lastSeen" | "project" | "projectRevision" | "ssoAt">): boolean {
+    return Number(this.db.prepare("UPDATE web_session SET last_seen = ?, project = ?, project_revision = ?, sso_at = ? WHERE id_hash = ?")
+      .run(session.lastSeen, session.project, session.projectRevision, session.ssoAt, session.idHash).changes) > 0;
+  }
 }
 
 /** A stored count or id that must be a whole, non-negative number — a

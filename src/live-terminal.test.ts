@@ -3,7 +3,7 @@
  * the session cap, and a close that takes the whole process group.
  */
 import { describe, test, expect, beforeAll, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,7 +136,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     const started = await host.start(ALEX, repo, "shell");
     const { seen, viewer } = watcher();
     host.attach(started.id, viewer);
-    host.input(started.id, "set +H; (trap '' HUP; exec sleep 60) & echo child=$! ; sleep 0.3; exit\n");
+    host.input(started.id, "set +H; (trap '' HUP; exec sleep 60) & echo child=$! ; sleep 1; exit\n");
     await until(() => /child=\d+/.test(seen.out));
     const child = Number(/child=(\d+)/.exec(seen.out)![1]);
     await until(() => host.get(started.id)!.cleanup !== null);
@@ -226,8 +226,30 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     const ended = Date.parse("Tue Oct 20 10:30:00 2026");
     expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }).keys()].sort()).toEqual([P0, P1, P2]);
     expect([...membersOf(table, { leader: P4, tty: null, known: new Map([[P2, "a different start"]]), exitedAt: null }).keys()]).toEqual([P4]);
-    // A resident of its worktree (found by working directory) counts, with its descendants.
-    expect([...membersOf(table, { leader: P4, tty: null, known: new Map(), exitedAt: ended }, new Set([P5])).keys()]).toEqual([P5]);
+  });
+
+  test("someone else working in the worktree is never signalled; it keeps the worktree until they leave (round 3)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const outsider = spawnChild("/bin/sleep", ["30"], { cwd: started.worktree, stdio: "ignore" });
+    try {
+      await until(() => outsider.pid !== undefined);
+      await host.close(started.id);
+      expect(gone(outsider.pid!)).toBe(false);
+      expect(host.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+      await expect(host.remove(started.id)).rejects.toThrow(/may still be running/);
+      expect(existsSync(started.worktree)).toBe(true);
+    } finally { outsider.kill("SIGKILL"); }
+    await until(() => gone(outsider.pid!));
+    await host.remove(started.id);
+    expect(existsSync(started.worktree)).toBe(false);
+  });
+
+  test("an unreadable list of who works in the worktree is uncertain", async () => {
+    const unsure = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "unsure"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "" }), residents: () => null });
+    const started = await unsure.start(ALEX, repo, "shell");
+    expect(await unsure.stop()).toEqual({ clean: false });
+    await expect(unsure.remove(started.id)).rejects.toThrow(/may still be running/);
   });
 
   test("remove drops an ended session and its worktree, keeps the branch", async () => {
