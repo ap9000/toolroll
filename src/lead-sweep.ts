@@ -5,8 +5,12 @@
  * the first line of the child's conclusion, `Verdict: fixed | not reproducible | blocked | done — why`, which the
  * sweep's brief asks for. It is read strictly: anything else reads as no verdict, never a guess.
  */
+import { createHash } from "node:crypto";
+import { withActor } from "./actor.js";
 import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
-import type { Store } from "./store.js";
+import { chatTaskRun } from "./chat-task-actions.js";
+import { verifiedAuthor, type Store } from "./store.js";
+import { requestTaskStop, type StopRequest } from "./task-control.js";
 
 export const SWEEP_VERDICTS = ["fixed", "not reproducible", "blocked", "done"] as const;
 export type SweepVerdict = typeof SWEEP_VERDICTS[number];
@@ -27,7 +31,10 @@ export function verdictOf(conclusion: string | null | undefined): { verdict: Swe
 export type SweepRow = {
   ordinal: number;
   label: string;
+  /** The child's family root: its identity in the sweep. */
   task: string;
+  /** The task the family is on now (a revision of the child, after one): what an act on this row acts on. */
+  active: string;
   state: AssignmentSnapshot["state"] | "missing";
   detail: string;
   verdict: { verdict: SweepVerdict; why: string } | null;
@@ -56,7 +63,7 @@ export function sweepTable(store: Store, id: number, now: Date, repos: readonly 
     const resultTask = assignment?.receipt?.taskId ?? null;
     const conclusion = run === null ? null : store.getRun(run)?.handoff ?? null;
     return {
-      ordinal: child.ordinal, label: child.label, task: child.rootTask,
+      ordinal: child.ordinal, label: child.label, task: child.rootTask, active: assignment?.activeTaskId ?? child.rootTask,
       state: assignment?.state ?? "missing", detail: assignment?.detail ?? "This task is gone.",
       verdict: verdictOf(conclusion),
       result: run === null || resultTask === null ? null : { taskId: resultTask, runId: run },
@@ -73,4 +80,42 @@ export function sweepTable(store: Store, id: number, now: Date, repos: readonly 
 export function sweepLine(table: SweepTable): string {
   const verdicts = SWEEP_VERDICTS.filter(one => (table.counts.byVerdict[one] ?? 0) > 0).map(one => `${table.counts.byVerdict[one]} ${one}`);
   return `${table.counts.settled} of ${table.counts.total} settled${verdicts.length === 0 ? "" : ` — ${verdicts.join(", ")}`}`;
+}
+
+/** Not ready yet: working, being checked, or waiting on a decision — what "cancel the rest" acts on. */
+export const SWEEP_OPEN: ReadonlySet<SweepRow["state"]> = new Set(["working", "checking", "needs-decision"]);
+
+/** One open item exactly as it stands now: its active task, state, attempt (a running build to stop) and last change. */
+export type SweepOpenItem = { label: string; task: string; state: string; run: number | null; at: string | null };
+
+/** Exactly what "cancel the rest" would act on now; any change makes a card or a form for it stale. */
+export function sweepOpen(store: Store, table: SweepTable, now: Date): SweepOpenItem[] {
+  return table.rows.filter(row => SWEEP_OPEN.has(row.state)).map(row => ({
+    label: row.label, task: row.active, state: row.state, run: chatTaskRun(store, row.active, "stop", now), at: store.getTask(row.active)?.updatedAt ?? null,
+  }));
+}
+
+export const sweepOpenDigest = (open: readonly SweepOpenItem[]): string => createHash("sha256").update(JSON.stringify(open)).digest("hex");
+
+/**
+ * Cancel the rest: a running build is stopped through the ordinary stop (process-exit safeguards and all); anything
+ * else is cancelled. Every refusal is said, never swallowed. The caller has proved `open` is what stands now.
+ */
+export function cancelSweepRest(store: Store, actor: string, open: readonly SweepOpenItem[], now: Date, via: StopRequest["via"]): string {
+  let cancelled = 0, stopping = 0;
+  const refused: string[] = [];
+  for (const item of open) {
+    if (item.run !== null) {
+      const stop = requestTaskStop(store, { taskId: item.task, runId: item.run, by: verifiedAuthor(actor), via }, now);
+      if (stop.ok) stopping += 1; else refused.push(`${item.label} (${stop.detail})`);
+      continue;
+    }
+    const result = withActor({ account: actor, lead: false }, () => store.cancelTask(item.task, now));
+    if (result.ok) cancelled += 1; else refused.push(`${item.label} (${String((result as { reason?: unknown }).reason ?? "refused")})`);
+  }
+  const parts = [`Cancelled ${cancelled} item${cancelled === 1 ? "" : "s"}.`];
+  if (stopping > 0) parts.push(`Stop requested for ${stopping} running build${stopping === 1 ? "" : "s"}: ${stopping === 1 ? "it stops" : "they stop"} at the next safe point; cancel ${stopping === 1 ? "it" : "them"} from the task page once stopped.`);
+  if (refused.length > 0) parts.push(`Not cancelled: ${refused.join("; ")}.`);
+  parts.push("Finished results stay.");
+  return parts.join(" ");
 }

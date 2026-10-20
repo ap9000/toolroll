@@ -1,7 +1,7 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
 import { fileTaskProposal } from "./proposal.js";
-import { sweepTable, VERDICT_RULE } from "./lead-sweep.js";
+import { cancelSweepRest, sweepOpen, sweepTable, VERDICT_RULE, type SweepOpenItem } from "./lead-sweep.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -587,11 +587,14 @@ export function prepareSharedAction(
     // Exactly the items open now: if any settles or starts in between, the card is stale and a fresh one is needed.
     const table = sweepTable(store, integer(input, "sweep"), now, who.repos);
     if (table === null || table.repo !== repo) throw Error("That sweep isn't one of yours.");
-    const open = table.rows.filter(row => row.state === "working" || row.state === "checking" || row.state === "needs-decision");
-    if (open.length === 0) throw Error("Nothing in that sweep is still running.");
-    state = { open: open.map(row => row.task) };
+    // Exactly the items as they stand now — each one's active task (a revision, after one), state, running attempt and
+    // last change: any change makes this card stale, so nothing is acted on that wasn't shown.
+    const open = sweepOpen(store, table, now);
+    if (open.length === 0) throw Error("Nothing in that sweep is still unfinished.");
+    state = { open };
     title = `Cancel the rest of ${table.title}`;
-    terms.push(`Stops ${open.length} unfinished item${open.length === 1 ? "" : "s"}: ${open.map(row => row.label).join(", ")}.`, "Finished results stay.");
+    const running = open.filter(one => one.run !== null);
+    terms.push(`Cancels ${open.length - running.length} unfinished item${open.length - running.length === 1 ? "" : "s"}${running.length === 0 ? "" : ` and stops ${running.length} running build${running.length === 1 ? "" : "s"}`}: ${open.map(one => `${one.label} (${one.task})`).join(", ")}.`, "Finished results stay.");
   } else if (operation === "sweep_file") {
     // Everything the person approves is on this screen: the shared rules, every item, the one success test, the
     // limit. Confirming files exactly these and approves exactly these scopes; anything changed is a new card.
@@ -602,13 +605,17 @@ export function prepareSharedAction(
     const maxParallel = integer(input, "maxParallel");
     if (maxParallel < 1 || maxParallel > 8) throw Error("Run 1 to 8 at once.");
     request["title"] = sweepTitle; request["brief"] = brief; request["items"] = cleaned.map(({ title, item }) => ({ title, item }));
-    state = {};
     const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
     title = `Start a sweep in ${project}: ${sweepTitle}`;
     // Every word each child's scope will hold is shown here (the security review: nothing approved off-screen): its
     // goal is the shared rules, then its item, then the verdict line; its success test is the shared acceptance.
     const acceptance = Array.isArray(input["acceptance"]) ? input["acceptance"] as Record<string, unknown>[] : [];
     if (acceptance.length === 0) throw Error("A sweep needs a success test every item shares.");
+    // Every child's scope exactly as filing would make it — its words AND its agent's permissions, limits and route —
+    // found by filing them in a savepoint that is always rolled back (prepare writes nothing). They are on this card and
+    // in its state: if a project default changes before confirm, the card is stale and nothing is filed or approved.
+    const children = sweepChildScopes(store, who, repo, brief, cleaned.map(({ title, item }) => ({ title, item })), input["acceptance"], now);
+    state = { children: children.map(one => one.fingerprint) };
     const tests = acceptance.map((one, index) => `Success test ${index + 1}${typeof one["id"] === "string" ? ` (${one["id"]})` : ""}: ${String(one["statement"] ?? "")}${Array.isArray(one["evidence"]) ? ` — shown by ${(one["evidence"] as unknown[]).map(String).join(", ")}` : ""}`);
     terms.push(
       `${cleaned.length} tasks, each in its own worktree on its own branch, at most ${maxParallel} running at once, built directly (no separate planning step).`,
@@ -616,6 +623,7 @@ export function prepareSharedAction(
       ...cleaned.map(one => `Item ${one.index + 1} — ${one.title}: ${one.item}`),
       `Each item's goal is the shared rules, then its own item, then: ${VERDICT_RULE}`,
       ...tests.map(line => `Every item — ${line}`),
+      ...(children.every(one => one.runtime === children[0]!.runtime) ? [`Every item — ${children[0]!.runtime}`] : children.map((one, index) => `Item ${index + 1} — ${one.runtime}`)),
       "Confirming files all of them and approves each one's scope exactly as shown. An item that needs a second person, or that the project's rules keep from its requester, is filed and waits for its own approval.",
       "Each ends with a verdict (fixed, not reproducible, blocked or done) and the sweep's table shows them as they land.",
     );
@@ -1261,12 +1269,8 @@ export function executeSharedAction(
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
       else if (payload.operation === "sweep_cancel_rest") {
-        let cancelled = 0;
-        for (const task of (payload.state["open"] as string[])) {
-          const result = withActor({ account: who.name, lead: false }, () => store.cancelTask(task, now));
-          if (result.ok) cancelled += 1;
-        }
-        return { ok: true as const, taskId: null, said: `Cancelled ${cancelled} unfinished item${cancelled === 1 ? "" : "s"}. Finished results stay.`, href: `/sweeps/${Number(req["sweep"])}` };
+        const said = cancelSweepRest(store, who.name, payload.state["open"] as SweepOpenItem[], now, "web");
+        return { ok: true as const, taskId: null, said, href: `/sweeps/${Number(req["sweep"])}` };
       }
       else if (payload.operation === "sweep_file") {
         const done = fileSweep(store, who, id, payload, options.review?.password ?? "", now);
@@ -1410,6 +1414,45 @@ export function executeSharedAction(
  * back), link them to one sweep record, then approve each one's scope through the ordinary approval (its own digest,
  * its own rules). A child the approval refuses stays filed and unapproved; it is named, never retried.
  */
+/** One child as filing makes it (the shared brief, its item, the verdict rule; the shared acceptance; built directly). */
+function fileSweepChild(store: Store, who: VerifiedApprover, repo: string, brief: string, one: { title: string; item: string }, acceptance: unknown, now: Date) {
+  return fileTaskProposal(store, {
+    title: one.title, repo, goal: `${brief}\n\nThis item:\n${one.item}\n\n${VERDICT_RULE}`, acceptance, planning: "skip",
+    filedVia: "mate", filedBy: { name: who.name, kind: "person" as const }, proposedVia: "mate", admittedRepos: [...who.repos],
+  }, now);
+}
+
+/** A filed child's scope in the words an approval agrees to (no identity lines), its runtime terms, and their digest. */
+function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[] } {
+  const scope = store.getScope(taskId);
+  if (scope === null) throw Error("A sweep item has no scope to show.");
+  const authority = scopeAuthorityOf(scope, { authMode: readAuthModeStrict });
+  if (!authority.ok) throw Error(authority.problem);
+  const words = describeScope(scope).filter(line => !/^\s*(reference|approved)\s/.test(line)).map(line => line.trim());
+  const runtime = `Agent permissions and limits: ${runtimeTerms(authority.profile)} ${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`.trim();
+  return { fingerprint: hash({ words, runtime, authMode: authority.authMode }), runtime, words };
+}
+
+/** Every child as filing would make it, found in a savepoint that is always rolled back: prepare never writes. */
+function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, brief: string, items: { title: string; item: string }[], acceptance: unknown, now: Date) {
+  const dryRun = new Error("sweep dry run");
+  let found: ReturnType<typeof sweepChildScopeOf>[] = [];
+  // Inside one transaction (filing opens its own; transact flattens), a savepoint that always rolls back.
+  store.transact(() => {
+    try {
+      store.savepoint(() => {
+        found = items.map((one, index) => {
+          const made = fileSweepChild(store, who, repo, brief, one, acceptance, now);
+          if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) can't be filed: ${made.message}`);
+          return sweepChildScopeOf(store, made.id);
+        });
+        throw dryRun;
+      });
+    } catch (error) { if (error !== dryRun) throw error; }
+  });
+  return found;
+}
+
 function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, password: string, now: Date): { said: string; href: string } {
   const req = payload.request;
   const already = store.sweepOfProposal(proposal);
@@ -1420,11 +1463,11 @@ function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payloa
     maxParallel: Number(req["maxParallel"]), proposal }, now);
   const filed: { id: string; title: string }[] = [];
   for (const [index, one] of items.entries()) {
-    const made = fileTaskProposal(store, {
-      title: one.title, repo: payload.repo, goal: `${brief}\n\nThis item:\n${one.item}\n\n${VERDICT_RULE}`, acceptance: req["acceptance"], planning: "skip",
-      filedVia: "mate", filedBy: { name: who.name, kind: "person" as const }, proposedVia: "mate", admittedRepos: [...who.repos],
-    }, now);
+    const made = fileSweepChild(store, who, payload.repo, brief, one, req["acceptance"], now);
     if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) couldn't be filed: ${made.message}. Nothing was filed.`);
+    // Each filed scope must be exactly the one the card showed (words, permissions, limits, route); else nothing is filed.
+    if (sweepChildScopeOf(store, made.id).fingerprint !== (payload.state["children"] as string[] | undefined)?.[index])
+      throw Error(`Item ${index + 1} (${one.title}) no longer matches what you reviewed (a project default changed). Nothing was filed; ask for a fresh card.`);
     store.addSweepTask(sweep, made.id, index, one.title);
     filed.push({ id: made.id, title: one.title });
   }

@@ -3,10 +3,9 @@
  * facts on each look (the page follows the console's live beat). The only sweep-wide act is "cancel the rest"; steer,
  * cancel or retry one child is that task's own page.
  */
-import { withActor } from "../actor.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { html, postForm } from "../html.js";
-import { sweepLine, sweepTable, type SweepRow } from "../lead-sweep.js";
+import { cancelSweepRest, sweepLine, sweepOpen, sweepOpenDigest, sweepTable, type SweepRow } from "../lead-sweep.js";
 import { refuse, screen } from "./chrome.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
@@ -17,8 +16,6 @@ const SWEEP_PATH = /^\/sweeps\/([1-9][0-9]{0,9})(?:\/cancel-rest)?$/;
 const STATE_WORDS: Record<SweepRow["state"], string> = {
   working: "Working", checking: "Checking", "needs-decision": "Needs you", "ready-to-check": "Ready", complete: "Complete", cancelled: "Cancelled", missing: "Gone",
 };
-/** A child not yet ready — working, being checked, or waiting on a decision: what cancel-rest stops. */
-const OPEN: ReadonlySet<SweepRow["state"]> = new Set(["working", "checking", "needs-decision"]);
 
 export function createSweepHandlers(runtime: ServerRuntime) {
   const { store, clock, sendScreen, chromeFor, evidenceRoot, consoleProjects, liveRefreshSeconds } = runtime;
@@ -37,8 +34,10 @@ export function createSweepHandlers(runtime: ServerRuntime) {
       <td>${row.verdict === null ? html`<span class="meta">—</span>` : html`<strong>${row.verdict.verdict}</strong> <span class="meta">${row.verdict.why}</span>`}</td>
       <td>${row.result === null ? "" : html`<a href="/t/${encodeURIComponent(row.result.taskId)}">Result →</a>`}</td>
     </tr>`);
-    const openCount = table.rows.filter(row => OPEN.has(row.state)).length;
-    const cancel = who.role !== "approver" || openCount === 0 ? "" : html`<details class="card"><summary>Cancel the rest (${openCount})</summary>${postForm(`/sweeps/${id}/cancel-rest`, html`<p>Stops every item that isn't ready yet. Finished results stay.</p><label class="arm"><input type="checkbox" name="confirm" value="yes" required> Cancel ${openCount} unfinished item${openCount === 1 ? "" : "s"}</label><button class="danger">Cancel the rest</button>`)}</details>`;
+    // The form names exactly what it would act on (each item's active task, state and attempt): a change is refused.
+    const open = sweepOpen(store, table, clock());
+    const running = open.filter(one => one.run !== null).length;
+    const cancel = who.role !== "approver" || open.length === 0 ? "" : html`<details class="card"><summary>Cancel the rest (${open.length})</summary>${postForm(`/sweeps/${id}/cancel-rest`, html`<p>Cancels ${open.length - running} unfinished item${open.length - running === 1 ? "" : "s"}${running === 0 ? "" : ` and stops ${running} running build${running === 1 ? "" : "s"}`}: ${open.map(one => one.label).join(", ")}. Finished results stay.</p><label class="arm"><input type="checkbox" name="confirm" value="yes" required> Cancel the rest</label><button class="danger">Cancel the rest</button>`, { hidden: { snapshot: sweepOpenDigest(open) } })}</details>`;
     const body = html`<h1>${table.title}</h1>${said === null ? "" : html`<p role="status">${said}</p>`}
       <p class="meta">${sweepLine(table)} · at most ${table.maxParallel} at once · each item is its own task in its own worktree</p>
       <table class="sweep-table"><thead><tr><th>#</th><th>Item</th><th>State</th><th>Verdict</th><th></th></tr></thead><tbody>${rows}</tbody></table>${cancel}`;
@@ -53,12 +52,9 @@ export function createSweepHandlers(runtime: ServerRuntime) {
     if (table === null) return refuse(response, who, 404, "There's no sweep at this address you can see.", "/chat");
     if (body.get("confirm") !== "yes") return redirect(response, `/sweeps/${id}?said=${encodeURIComponent("Tick the box to cancel the rest.")}`);
     const now = clock();
-    let cancelled = 0;
-    for (const row of table.rows.filter(one => OPEN.has(one.state))) {
-      const result = withActor({ account: who.name, lead: false }, () => store.cancelTask(row.task, now));
-      if (result.ok) cancelled += 1;
-    }
-    return redirect(response, `/sweeps/${id}?said=${encodeURIComponent(`Cancelled ${cancelled} unfinished item${cancelled === 1 ? "" : "s"}. Finished results stay.`)}`);
+    const open = sweepOpen(store, table, now);
+    if (body.get("snapshot") !== sweepOpenDigest(open)) return redirect(response, `/sweeps/${id}?said=${encodeURIComponent("The sweep changed while you were reading. Look again, then cancel.")}`);
+    return redirect(response, `/sweeps/${id}?said=${encodeURIComponent(cancelSweepRest(store, who.name, open, now, "web"))}`);
   }
 
   return { registrations: handlersOf("tasks", { "sweep.page": page, "sweep.cancel-rest": cancelRest }) };

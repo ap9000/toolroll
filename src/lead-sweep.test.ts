@@ -194,10 +194,8 @@ describe("lead sweeps", () => {
     }
   });
 
-  test("all or none: a child that can't be filed files nothing", () => {
-    const id = sweepCard({ acceptance: [{ id: "", statement: "", evidence: [] }] });
-    expect(confirm(id, true)).toMatchObject({ ok: false });
-    expect(store.sweepOfProposal(id)).toBeNull();
+  test("all or none: a child that can't be filed files nothing — refused already at the card (the dry run)", () => {
+    expect(() => sweepCard({ acceptance: [{ id: "", statement: "", evidence: [] }] })).toThrow(/can't be filed/);
     expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()!["n"])).toBe(0);
   });
 
@@ -230,6 +228,33 @@ describe("lead sweeps", () => {
     expect(sweepLine(table)).toMatch(/^0 of 4 settled/);
     // The lead reads it as facts, and drafts "cancel the rest" as one card.
     const cancel = prepareSharedAction(store, who, "sweep_cancel_rest", { sweep }, root, now);
-    expect(cancel.terms.join("\n")).toMatch(/Stops 4 unfinished items/);
+    expect(cancel.terms.join("\n")).toMatch(/Cancels 4 unfinished items/);
+  });
+
+  test("each child's permissions and limits are on the card, and a default changed before confirm approves nothing (review r1 #1)", () => {
+    const id = sweepCard();
+    const saved = store.getLeadProposal(id)!.payload as { terms: string[] };
+    expect(saved.terms.join("\n")).toMatch(/Every item — Agent permissions and limits:/);
+    // The project's build model changes after the person read the card.
+    store.setPhaseConfig("installation", "build", "claude", "opus", "changed", now);
+    // The secure review itself sees the card is stale: nothing is filed or approved.
+    expect(() => confirm(id, true)).toThrow(/changed/);
+    expect(store.sweepOfProposal(id)).toBeNull();
+    expect(Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()!["n"])).toBe(0);
+  });
+
+  test("cancel-the-rest says what it couldn't cancel, never reports success over it (review r1 #2)", () => {
+    register(store, { name: "w2", host: "h", capacity: 9, repos: [repo], now, newToken: () => "tok-w2" });
+    expect(confirm(sweepCard(), true)).toMatchObject({ ok: true });
+    const sweep = Number(store.handle.prepare("SELECT id FROM lead_sweep ORDER BY id DESC LIMIT 1").get()!["id"]);
+    const first = store.sweepTasks(sweep)[0]!;
+    // Claimed, but no build has started: it can't be cancelled yet, and the card must say so.
+    expect(acquire(store, store.refFor("built-in", first.rootTask).id, "w2", { token: "tok-w2", now }).ok).toBe(true);
+    const id = proposal("sweep_cancel_rest", { sweep });
+    const done = confirm(id) as { ok: boolean; said: string };
+    expect(done.ok).toBe(true);
+    expect(done.said).toMatch(/Cancelled 2 items\./);
+    expect(done.said).toMatch(new RegExp(`Not cancelled: ${first.label} \\(`));
+    expect(store.getTask(first.rootTask)?.state).not.toBe("cancelled");
   });
 });

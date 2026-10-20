@@ -830,7 +830,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>approved:spendingOnlyOnSuccess(_,_)@11": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
-    "src/chat-actions.ts#fileSweep@26": 1,
+    "src/chat-actions.ts#fileSweep@29": 1,
   },
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {
