@@ -253,3 +253,13 @@ test("a link is judged at the length it is kept: escaped non-ASCII past 2,000 is
   const brief = scoutBrief("t", "g", null, "m", "r.json", [], false, null, false, [], words);
   expect(brief).toContain(url.replace(/STANDING-ORDERS/g, "STANDING[quoted]-ORDERS"));
 });
+
+test("a shortened link always shows its whole host: a cut never hides where it goes", async () => {
+  const { linkWords } = await import("./task-source.js");
+  const host = `acme.sentry.io-${"a".repeat(80)}.evil.example`;
+  const shown = linkWords(`https://${host}/issues/1/`);
+  expect(shown.startsWith(host)).toBe(true);
+  expect(linkWords(`https://acme.sentry.io/${"p".repeat(200)}/end`)).toMatch(/^acme\.sentry\.io\/p+…p+\/end$/);
+  expect(linkWords("https://xn--pple-43d.com/x")).toBe("xn--pple-43d.com/x");
+  expect(linkWords("not a url")).toBe("a link");
+});

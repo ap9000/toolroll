@@ -39,9 +39,12 @@ export function hostOf(url: string | null): string | null {
 /** Where a link goes, as it is shown: its host and path (no scheme), the middle elided when long, so the destination is
  * always visible beside the label. */
 export function linkWords(url: string, max = 72): string {
-  let shown: string;
-  try { const parsed = new URL(url); shown = `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`; } catch { shown = url; }
-  return shown.length <= max ? shown : `${shown.slice(0, Math.ceil(max / 2) - 1)}…${shown.slice(shown.length - Math.floor(max / 2))}`;
+  let host: string, path: string;
+  try { const parsed = new URL(url); host = parsed.host; path = parsed.pathname === "/" ? "" : parsed.pathname; } catch { return "a link"; }
+  // The host is never shortened (a cut inside it could show one site's name for another's address; URL.host is already
+  // punycode for any non-ASCII name): only the path's middle is elided when long.
+  const room = Math.max(12, max - host.length);
+  return path.length <= room ? `${host}${path}` : `${host}${path.slice(0, Math.ceil(room / 2) - 1)}…${path.slice(path.length - Math.floor(room / 2))}`;
 }
 
 /** How a snapshot's delivery was proved, in words: "signed by Sentry", or "unsigned". */

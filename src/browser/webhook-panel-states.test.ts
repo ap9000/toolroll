@@ -113,7 +113,7 @@ test("a card from a signed webhook says how it was proved and where its link goe
   await act(async () => card.click());
   const line = [...document.querySelectorAll("p")].find(one => one.textContent?.startsWith("From Sentry issue"))!;
   // The link shows where it goes — host and path, its middle elided when long — beside what it is.
-  expect(line.textContent).toMatch(/^From Sentry issue \(signed by Sentry\) · acme\.sentry\.io\/organizations\/acme\/i…e+\/$/);
+  expect(line.textContent).toMatch(/^From Sentry issue \(signed by Sentry\) · acme\.sentry\.io\/organizations\/acme\/issues\/1…e+\/$/);
   const link = line.querySelector("a")!;
   expect(link.getAttribute("href")).toBe(url);
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
