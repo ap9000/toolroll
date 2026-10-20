@@ -400,8 +400,8 @@ export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
       if (ask === null || typeof ask !== "object") return null;
       const a = ask as Record<string, unknown>;
       if (typeof a["key"] !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(a["key"]) || !(a["task"] === null || text(a["task"], 400))
-        || !(a["run"] === null || (typeof a["run"] === "number" && Number.isInteger(a["run"]) && a["run"] > 0))) return null;
-      asked.push({ key: a["key"], task: a["task"] as string | null, run: a["run"] as number | null });
+        || !(a["run"] === null || (typeof a["run"] === "number" && Number.isInteger(a["run"]) && a["run"] > 0)) || !text(a["at"], 64)) return null;
+      asked.push({ key: a["key"], task: a["task"] as string | null, run: a["run"] as number | null, at: a["at"] as string });
     }
     if (others !== undefined && others !== true) return null;
     if (!(path === null || text(path, 4096)) || !text(name, 400) || !text(href, 8192) || !(href as string).startsWith("/")

@@ -62,10 +62,17 @@ import { attentionSubjectOf, neverHeld, watchedPing } from "./agent-board.js";
 export function heldForWatch(state: ChatState, store: Store, part: number, event: { kind: string }, approver: string, content: ChatContent, now: Date): boolean {
   // Fail closed: only a notice planned as holdable (a kind a watch may hold) is ever held here.
   if (event.kind !== "notice" || content.watch !== true) return false;
-  const taskRef = content.task ? store.lookupRef(content.task)?.id ?? null : null;
-  const decided = watchedPing(store, { kind: "notice", run: content.run ?? null, taskRef }, approver, now);
-  if (decided === "send" || decided === "skip") return false;
-  state.holdPart(part, decided.hold);
+  // One part may cover several tasks (a grouped card, a batch): it waits only while every one of them is watched,
+  // until the first of those watches ends.
+  const subjects = content.subjects ?? [{ ref: content.task ? store.lookupRef(content.task)?.id ?? null : null, run: content.run ?? null }];
+  if (subjects.length === 0) return false;
+  let until: string | null = null;
+  for (const subject of subjects) {
+    const decided = watchedPing(store, { kind: "notice", run: subject.run, taskRef: subject.ref }, approver, now);
+    if (decided === "send" || decided === "skip") return false;
+    if (until === null || decided.hold < until) until = decided.hold;
+  }
+  state.holdPart(part, until!);
   return true;
 }
 export const chatObject = (v: unknown): Record<string, unknown> =>
@@ -915,8 +922,11 @@ function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notif
   const view = quietCardView(store, card.tasks, now, options.evidenceRoot, binding.approver);
   if (view === null) return;
   // A card about one task is that task's: its person's watch may hold it at the final fence (never a security kind).
+  // A card about its tasks is theirs: its person's watch may hold it at the final fence while every one of them is
+  // watched (never for a security kind).
   const content: ChatContent = { text: view.text, link: view.link, ...(card.tasks.length === 1 ? { task: notification.taskId } : {}),
-    ...(card.tasks.length === 1 && notification.taskId !== null && !neverHeld(notification.kind) ? { watch: true as const } : {}) };
+    ...(card.tasks.length > 0 && !neverHeld(notification.kind) ? { watch: true as const } : {}),
+    ...(card.tasks.length > 1 && !neverHeld(notification.kind) ? { subjects: card.tasks.slice(0, 100).map(ref => ({ ref, run: null })) } : {}) };
   const shown = chatHash(JSON.stringify(content));
   if (card.message !== null) {
     if (card.digest === shown) return;
@@ -943,11 +953,12 @@ function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRe
   // A single update keeps its task and run, so a reply to it names that work.
   const single = batch.items.length === 1 ? batch.items[0]! : null;
   const task = single === null ? null : store.refById(single.taskRef)?.externalId ?? null;
-  // Holdable when it is about one task or run and its fact is a kind a watch may hold (the batch line for a finished
-  // run, or the one notification joining it).
+  // Holdable when its fact is a kind a watch may hold (the batch line for a finished run, or the notification joining
+  // it); a batch of several holds only while every one of them is watched.
   const joining = notification === null ? null : options.store.notificationById(notification);
-  const holdable = (task !== null || single?.run != null) && (joining === null || !neverHeld(joining.kind));
-  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }), ...(holdable ? { watch: true as const } : {}) };
+  const holdable = batch.items.length > 0 && (joining === null || !neverHeld(joining.kind));
+  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }), ...(holdable ? { watch: true as const } : {}),
+    ...(holdable && batch.items.length > 1 ? { subjects: batch.items.slice(0, 100).map(one => ({ ref: one.taskRef, run: one.run })) } : {}) };
   // A message about one result, plan, failure or pull request acts in place (chat-decide.ts), as on Telegram: its
   // buttons are minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps them.
   const offer = decideOfferFor(options, binding, view.target, repos, now);

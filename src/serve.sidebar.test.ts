@@ -278,6 +278,24 @@ describe("the sidebar's project states", () => {
     expect(seen()).toBe(true);
   });
 
+  test("a changed plan is a new thing to need a person (a new chime key); the newest ask always has a key", async () => {
+    const plan = (id: string, digest: string, at: Date, goal = "do it") => {
+      if (store.getTask(id) === null) { store.createTask({ id, title: id }, at); store.placeTask(store.refFor("built-in", id, "ours").id, repoA); }
+      store.saveScope({ taskId: id, goal, outOfScope: null, touches: [], acceptance: [], proposedAt: at.toISOString(), digest, approvedAt: null, approvedBy: null, approvedDigest: null });
+    };
+    const alex = await login("alex", alexToken);
+    const asks = async () => statesOf((await page("/agents", alex)).projectStates)[repoA]!.asks;
+    plan("t-terms", "a".repeat(32), new Date(Date.now() - 60_000));
+    const first = (await asks()).find(one => one.task === "t-terms")!.key;
+    plan("t-terms", "b".repeat(32), new Date(), "do it differently");
+    expect((await asks()).find(one => one.task === "t-terms")!.key).not.toBe(first);
+    // More waiting than a project names: the newest still has a key.
+    for (let i = 0; i < 101; i++) plan(`t-many-${i}`, "c".repeat(32), new Date(Date.now() - (200 - i) * 1000));
+    plan("t-newest", "d".repeat(32), new Date(Date.now() + 5_000));
+    store.handle.prepare("UPDATE task SET updated_at = ? WHERE id = 't-newest'").run(new Date(Date.now() + 5_000).toISOString());
+    expect((await asks()).map(one => one.task)).toContain("t-newest");
+  });
+
   test("one summary room per page, and only for a browser session", async () => {
     const alex = await login("alex", alexToken);
     expect((await fetch(url("/live?room=summary&room=summary"), { headers: { cookie: alex } })).status).toBe(400);

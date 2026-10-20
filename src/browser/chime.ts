@@ -2,19 +2,23 @@
  * The chime (docs/plans/agents-cockpit.md §3): an optional sound when something new needs this person and no visible
  * tab is already showing it. Off by default and set per browser. Its subjects are the summary's asks — one opaque key
  * per obligation and version, scoped to the reader by the server, never words — so a second question on the same task
- * is new, and nothing private is kept. One chime per key across every open tab: the check and the remembering happen
- * under one Web Lock, and a key once heard is remembered, so a reconnect or another tab replays nothing. The first
- * snapshot a page sees only learns what is already waiting.
+ * is new, and nothing private is kept (an older format that kept words is removed). One chime per key across every
+ * open tab: the check and the remembering happen under one Web Lock. A key once heard is remembered for 30 days, and an
+ * ask unchanged since before that memory reaches back is never news, so a reconnect, another tab or a returning
+ * subject replays nothing. The first snapshot a page sees only learns what is already waiting.
  */
 import type { BrowserAsk, BrowserProjectState } from "../browser-workspace.js";
 
 const SETTING = "toolroll.chime";
-const HEARD = "toolroll.chime.heard";
+/** What this browser has heard: opaque keys with when, and how far back that memory reaches. */
+const MEMORY = "toolroll.chime.v2";
+/** An earlier format kept words: it is removed, never read. */
+const LEGACY = "toolroll.chime.heard";
 const CHANNEL = "toolroll-chime";
 /** How long a tab waits to hear that a visible tab is showing the subject before claiming it. */
 export const CHIME_SETTLE_MS = 200;
-/** Remembered keys, newest kept. */
-const HEARD_KEEP = 2_000;
+/** How long a heard key is kept. An ask unchanged since before the memory reaches back is never news. */
+export const CHIME_MEMORY_MS = 30 * 86_400_000;
 
 /** What this tab shows now: whether it is visible, and the task page or agent it has open. */
 export type Showing = { visible: boolean; task: string | null; run: number | null };
@@ -26,9 +30,28 @@ export function asksOf(states: readonly BrowserProjectState[]): BrowserAsk[] {
 const storage = (): Storage | null => { try { return window.localStorage; } catch { return null; } };
 export function chimeOn(): boolean { try { return storage()?.getItem(SETTING) === "1"; } catch { return false; } }
 export function setChime(on: boolean): void { try { if (on) storage()?.setItem(SETTING, "1"); else storage()?.removeItem(SETTING); } catch { /* this browser keeps no settings */ } }
-function heard(): Set<string> { try { const raw = JSON.parse(storage()?.getItem(HEARD) ?? "[]"); return new Set(Array.isArray(raw) ? raw.filter((one): one is string => typeof one === "string") : []); } catch { return new Set(); } }
-function remember(keys: readonly string[]): void {
-  try { storage()?.setItem(HEARD, JSON.stringify([...new Set([...heard(), ...keys])].slice(-HEARD_KEEP))); } catch { /* nothing to remember with */ }
+type Memory = { since: number; keys: Record<string, number> };
+const OPAQUE = /^[A-Za-z0-9_-]{8,64}$/;
+function memory(): Memory {
+  try { storage()?.removeItem(LEGACY); } catch { /* nothing to remove */ }
+  try {
+    const raw = JSON.parse(storage()?.getItem(MEMORY) ?? "null") as Partial<Memory> | null;
+    const keys: Record<string, number> = {};
+    for (const [key, at] of Object.entries(raw?.keys ?? {})) if (OPAQUE.test(key) && typeof at === "number") keys[key] = at;
+    return { since: typeof raw?.since === "number" ? raw.since : 0, keys };
+  } catch { return { since: 0, keys: {} }; }
+}
+function remember(keys: readonly string[], now: number): void {
+  const kept = memory();
+  // Keys older than the memory's reach are dropped, and the reach moves up with them.
+  const reach = now - CHIME_MEMORY_MS;
+  for (const [key, at] of Object.entries(kept.keys)) if (at < reach) { delete kept.keys[key]; kept.since = Math.max(kept.since, at); }
+  for (const key of keys) if (OPAQUE.test(key)) kept.keys[key] = now;
+  try { storage()?.setItem(MEMORY, JSON.stringify(kept)); } catch { /* nothing to remember with */ }
+}
+/** Heard before: kept as heard, or unchanged since before the memory reaches back. */
+function heardBefore(ask: BrowserAsk, kept: Memory): boolean {
+  return Object.hasOwn(kept.keys, ask.key) || (kept.since > 0 && Date.parse(ask.at) <= kept.since);
 }
 
 /** A tone, made here (no file to fetch): two short notes. */
@@ -80,16 +103,16 @@ export function createChime(play: () => void = playChime, showing: () => Showing
       const here = showing();
       const onScreen = asks.filter(one => here.visible && ((one.task !== null && one.task === here.task) || (one.run !== null && one.run === here.run))).map(one => one.key);
       for (const key of onScreen) { shown.add(key); channel?.postMessage({ showing: key }); }
-      if (before === null) { remember(asks.map(one => one.key)); return; }
-      const fresh = asks.map(one => one.key).filter(key => !before.has(key));
+      if (before === null) { remember(asks.map(one => one.key), Date.now()); return; }
+      const fresh = asks.filter(one => !before.has(one.key));
       if (fresh.length === 0) return;
       window.setTimeout(() => {
         void exclusively(() => {
           // Under the lock: what any tab has heard is final, so exactly one tab claims each key.
-          const old = heard();
-          const mine = fresh.filter(key => !old.has(key));
-          remember(fresh);
-          if (chimeOn() && mine.some(key => !shown.has(key))) play();
+          const kept = memory();
+          const mine = fresh.filter(one => !heardBefore(one, kept));
+          remember(fresh.map(one => one.key), Date.now());
+          if (chimeOn() && mine.some(one => !shown.has(one.key))) play();
         });
       }, CHIME_SETTLE_MS);
     },

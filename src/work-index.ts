@@ -491,19 +491,24 @@ export type WorkStateRow = { repo: string | null; rootId: string; code: string; 
   /** The Tasks list ranks it as waiting its turn (custody confirmations from another computer included). */
   waits: boolean;
   /** What it needs now, as an identity: its code and the question, hold, result or stop it is about. A new one of
-   * these is a new thing to need a person, even on the same task. */
+   * these — or a changed plan or approval terms (its digests) — is a new thing to need a person, even on the same task. */
   version: string;
+  /** When the family last changed (the list's own sort time): newer asks are named first. */
+  at: string;
+  /** The agent its ask is about: the live one, or the one whose question or decision it parked on. */
+  askRun: number | null;
   /** Every task_ref of the family (its versions), for counting each of its live attempts. */
   members: number[] };
 export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
   const projection = registerValidators(store);
   return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
-      code||':'||COALESCE(question_id,'')||':'||COALESCE(agent_ask,'')||':'||COALESCE(hold_id,'')||':'||COALESCE(result_id,'')||':'||COALESCE(stop_run,'') version,
+      code||':'||COALESCE(question_id,'')||':'||COALESCE(agent_ask,'')||':'||COALESCE(hold_id,'')||':'||COALESCE(result_id,'')||':'||COALESCE(stop_run,'')||':'||COALESCE(digest,'')||':'||COALESCE(scope_digest,'') version,
+      sort_at, COALESCE(live_run,(SELECT run FROM decision WHERE id=question_id),(SELECT run FROM agent_question WHERE id=agent_ask)) ask_run,
       (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked`)
     .all(parameters(now, access, {}, custodyReadings(store)))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
-      resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
+      resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), at: String(row['sort_at'] ?? ''), askRun: row['ask_run'] == null ? null : n(row, 'ask_run'), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
 }
 
 /** Families whose headline is Ready for review, newest first: the Tasks

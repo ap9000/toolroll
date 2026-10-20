@@ -842,9 +842,17 @@ async function deliverOutboxTo(
     if (rows.length === 0) continue;
 
     const ids = rows.map(row => row.id);
-    // `beforeSend`: the fence before a transport call also asks the watch; the one after a confirmed send never does,
-    // so a message Telegram accepted is recorded as delivered, never released for sending again.
-    const fence = (beforeSend = true): string | null => {
+    // Once any part of this delivery has reached Telegram it is committed: a watch opening between its parts never
+    // releases it (that would send the parts already accepted again). Every transport call below goes through `wire`.
+    let sentAny = false;
+    const wire: TelegramTransport = async (...args) => {
+      const answer = await transport(...args);
+      if (answer.ok === true) sentAny = true;
+      return answer;
+    };
+    // `beforeSend`: the fence before a transport call also asks the watch — until something of this delivery went out;
+    // the one after a confirmed send never does, so a message Telegram accepted is recorded as delivered.
+    const fence = (beforeSend = !sentAny): string | null => {
       const channel = channelProblem();
       if (channel !== null) return channel;
       for (const row of rows) {
@@ -860,7 +868,7 @@ async function deliverOutboxTo(
       // Finish every await before the synchronous fence and transport call.
       const problem = (await readAccess()) ?? fence();
       if (problem !== null) return { ok: false, error: problem };
-      const sent = await send(transport, binding.chatId, text, keyboard, entities, silent);
+      const sent = await send(wire, binding.chatId, text, keyboard, entities, silent);
       if (!sent.ok) {
         if (sent.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + sent.retryAfter * 1_000).toISOString());
         return sent;
@@ -892,7 +900,7 @@ async function deliverOutboxTo(
       store.markResultShotsSent(row.destination, row.run, [artifact], clock());
       // No await between the access fence, file validation and upload.
       let answer: Awaited<ReturnType<TelegramTransport>>;
-      try { answer = await transport("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
+      try { answer = await wire("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
         field: "document", bytes: verified.bytes, contentType: verified.format === "png" ? "image/png" : "image/jpeg", fileName: resultImageFileName(row.taskId, row.run, artifact, verified.format),
       });
       } catch {
@@ -932,11 +940,11 @@ async function deliverOutboxTo(
         let answer: Awaited<ReturnType<TelegramTransport>>;
         try {
           answer = batch.length > 1
-            ? await transport("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
+            ? await wire("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
               undefined, upload(batch[0]!, "shot0"), batch.slice(1).map((one, index) => upload(one, `shot${index + 1}`)))
             : batch[0]!.photo
-              ? await transport("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
-              : await transport("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
+              ? await wire("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
+              : await wire("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
         } catch { answer = { ok: false, uncertain: true }; }
         if (!answer.ok && answer.uncertain !== true) {
           store.unmarkResultShotsSent(row.destination, plan.run, ids);
@@ -967,7 +975,7 @@ async function deliverOutboxTo(
       try { button = phoneLinkButton(phoneOrigin?.() ?? null, card.link); } catch { /* No trusted origin. */ }
       const keyboard = button === null ? [] : [button];
       if (messageId === null) return sender(card.text, keyboard, rows, card.entities);
-      const edited = await editProgress(transport, binding.chatId, messageId, card.text, keyboard, card.entities);
+      const edited = await editProgress(wire, binding.chatId, messageId, card.text, keyboard, card.entities);
       if (!edited.ok) {
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
         // Only Telegram's definitive missing/uneditable response permits a
@@ -995,7 +1003,7 @@ async function deliverOutboxTo(
         return { ok: true, messageId: card.message };
       }
       if (card.message !== null) {
-        const edited = await editProgress(transport, binding.chatId, card.message, view.text, keyboard, view.entities);
+        const edited = await editProgress(wire, binding.chatId, card.message, view.text, keyboard, view.entities);
         if (edited.ok) {
           store.setChatCardMessage(card.id, card.message, shown);
           store.recordTelegramMessage(fact, binding, card.message, clock());
@@ -1061,7 +1069,7 @@ async function deliverOutboxTo(
           const problem = (await readAccess()) ?? fence();
           if (problem !== null) return { ok: false, error: problem };
           mintFor();
-          const edited = await editProgress(transport, binding.chatId, batch.message, text, keyboard);
+          const edited = await editProgress(wire, binding.chatId, batch.message, text, keyboard);
           if (edited.ok) {
             // The repaint landed: the old words' buttons retire and the new ones ride the message.
             retireDecideTokens(store, "telegram", binding.chatId, batch.message, clock());
@@ -1100,7 +1108,7 @@ async function deliverOutboxTo(
       if (earlier !== null) {
         const problem = (await readAccess()) ?? fence();
         if (problem !== null) return { ok: false, error: problem };
-        const edited = await editProgress(transport, binding.chatId, earlier, words, keyboard);
+        const edited = await editProgress(wire, binding.chatId, earlier, words, keyboard);
         if (edited.ok) {
           store.recordTelegramMessage(fact, binding, earlier, clock());
           const after = (await readAccess()) ?? fence(false);

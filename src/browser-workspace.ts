@@ -83,7 +83,9 @@ export function boundProjectSummary(rows: readonly BrowserProjectState[], budget
   return assembled;
 }
 /** One thing that needs this person, as the chime knows it: an opaque key (never words), and what it is about. */
-export type BrowserAsk = { key: string; task: string | null; run: number | null };
+export type BrowserAsk = { key: string; task: string | null; run: number | null;
+  /** When it last changed (ISO): one older than the chime's memory reaches back is never news. */
+  at: string };
 /** One task on the rail: its state, and its agent's last act when one is at work (else the state's words). */
 export type BrowserRailTask = { id: string; title: string; href: string; state: DisplayState; line: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */

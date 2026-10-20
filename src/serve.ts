@@ -1450,10 +1450,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     // The chime's subjects: an opaque key per obligation and version, scoped to this reader (no words, no ids in it).
     const keyOf = (...parts: (string | number)[]) => createHash('sha256').update([actor, ...parts].join('\u0000')).digest('base64url').slice(0, 22);
+    // Newest first, so a new ask always has a key however many older ones wait (those were heard when they were new).
     const asksOf = (state: ProjectState | undefined): BrowserAsk[] => [
-      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run }]),
-      ...(state?.flowAsks ?? []).map(one => ({ key: keyOf('flow', one.card, one.stage), task: null, run: null })),
-    ].slice(0, ASKS_PER_PROJECT);
+      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ at: one.ask.at, ask: { key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run, at: one.ask.at } }]),
+      ...(state?.flowAsks ?? []).map(one => ({ at: one.at, ask: { key: keyOf('flow', one.card, one.stage, one.entry), task: null, run: null, at: one.at } })),
+    ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, ASKS_PER_PROJECT).map(one => one.ask);
     const railOf = (state: ProjectState | undefined) => {
       const families = state?.families ?? [];
       const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {

@@ -5,9 +5,9 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { NO_COUNTS } from "../agent-state-words.js";
 import type { BrowserAsk, BrowserProjectState } from "../browser-workspace.js";
-import { CHIME_SETTLE_MS, createChime, setChime, type Showing } from "./chime.js";
+import { CHIME_MEMORY_MS, CHIME_SETTLE_MS, createChime, setChime, type Showing } from "./chime.js";
 
-const ask = (key: string, task: string | null = null, run: number | null = null): BrowserAsk => ({ key: `k${key.padEnd(10, "0")}`, task, run });
+const ask = (key: string, task: string | null = null, run: number | null = null, at = new Date().toISOString()): BrowserAsk => ({ key: `k${key.padEnd(10, "0")}`, task, run, at });
 const snapshot = (...asks: BrowserAsk[]): BrowserProjectState[] => [{ path: "/r", name: "r", href: "/work", state: asks.length ? "needs-you" : "idle",
   counts: { ...NO_COUNTS, "needs-you": asks.length }, tasks: [], more: 0, asks }];
 const away = (): Showing => ({ visible: false, task: null, run: null });
@@ -80,5 +80,25 @@ test("only opaque keys are kept, never words", async () => {
   const kept = Object.keys(localStorage).map(key => `${key}=${localStorage.getItem(key)}`).join("\n");
   expect(kept).toContain("kq000000000");
   expect(kept).not.toMatch(/t-1|question|\?/);
+  tab.close();
+});
+
+test("an older format that kept words is removed; a subject unchanged since before the memory reaches back never chimes", async () => {
+  localStorage.setItem("toolroll.chime.heard", JSON.stringify(["t-1\u0000Keep the old OAuth button?"]));
+  setChime(true);
+  let plays = 0;
+  const tab = createChime(() => { plays += 1; }, away);
+  tab.see(snapshot());
+  expect(localStorage.getItem("toolroll.chime.heard")).toBeNull();
+  // A key heard long ago has been forgotten, but what it was about has not changed since: still no news.
+  const long = Date.now() - CHIME_MEMORY_MS - 86_400_000;
+  localStorage.setItem("toolroll.chime.v2", JSON.stringify({ since: long + 1000, keys: {} }));
+  tab.see(snapshot(ask("old", "t-5", null, new Date(long).toISOString())));
+  await settle();
+  expect(plays).toBe(0);
+  // Something that changed since does chime.
+  tab.see(snapshot(ask("old", "t-5", null, new Date(long).toISOString()), ask("new", "t-6")));
+  await settle();
+  expect(plays).toBe(1);
   tab.close();
 });

@@ -750,5 +750,11 @@ describe("who is watching", () => {
     // Fail closed: a part not planned as holdable (a security alert about this very task) is never held.
     expect(heldForWatch(state, store, 9, { kind: "notice" }, "alex", { text: "A secret was found", task: "t-1", run }, at(2000))).toBe(false);
     expect(held).toHaveLength(1);
+    // A part covering several tasks waits only while every one of them is watched.
+    store.createTask({ id: "t-2", title: "t-2" }, T0);
+    const other = store.refFor(BUILT_IN, "t-2").id;
+    expect(heldForWatch(state, store, 10, { kind: "notice" }, "alex", { text: "Two done", watch: true, subjects: [{ ref: taskRef, run }, { ref: other, run: null }] }, at(2000))).toBe(false);
+    expect(heldForWatch(state, store, 10, { kind: "notice" }, "alex", { text: "Two done", watch: true, subjects: [{ ref: taskRef, run }, { ref: null, run }] }, at(2000))).toBe(true);
+    expect(held.at(-1)).toEqual([10, at(1000 + VIEW_LEASE_MS).toISOString()]);
   });
 });
