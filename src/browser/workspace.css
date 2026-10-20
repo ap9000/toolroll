@@ -203,6 +203,9 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-usage-chip[data-usage-chip="danger"] { color: var(--so-danger); border-color: var(--so-danger); }
 .so-usage-chip[data-usage-stale] { border-style: dashed; opacity: .75; }
 @media (hover: hover) and (pointer: fine) { .so-usage-chip:hover { color: var(--so-ink); } }
+.so-fresh-chip { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0 10px var(--so-space-sm); font-size: 12px; color: var(--so-muted); }
+.so-fresh-chip button { margin-left: auto; padding: 2px 8px; min-height: 26px; border: 1px solid var(--so-line); border-radius: 6px; background: transparent; color: var(--so-ink); font: inherit; cursor: pointer; }
+@media (max-width: 900px) { .so-fresh-chip button { min-height: 44px; } }
 .so-chime-switch { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 26px; margin: 0 10px; font-size: 12px; color: var(--so-muted); cursor: pointer; }
 .so-chime-switch input { margin: 0; accent-color: var(--so-ink); }
 .so-fleet { display: grid; gap: 2px; margin: auto 0 var(--so-space-sm); padding: var(--so-space-sm) 10px; border-top: 1px solid var(--so-line); }

@@ -65,7 +65,7 @@ acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
 approve as approveScope,
-hasFreshIdentitySignIn,
+freshnessFor, hasFreshIdentitySignIn, withFreshness,
 modeFilingCoverage,PLACEHOLDER_RUBRIC,
 proposeGuarded,
 type UnattendedPermissionMode
@@ -2353,7 +2353,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (!consumeApprovalNonce(nonce, who.name, taskId, digest)) {
           return approvalProblem("that approval form is stale — read it again", 409);
         }
-        if (token === "" && !hasFreshIdentitySignIn(who.name)) {
+        // An empty password stands for an identity-provider check moments ago, or (cockpit B2) a password remembered on
+        // this session; approve() decides whether these terms may stand on a remembered one.
+        if (token === "" && !hasFreshIdentitySignIn(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
           return approvalProblem("approval requires your password, typed again", 400);
         }
         const scopeRow = store.getScope(taskId);
@@ -2374,7 +2376,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             return approvalProblem(`approval is blocked: ${view.problem}`, 409);
           }
         }
-        const approved = approveScope(store, taskId, who.name, now, scopeRow.digest, token);
+        const approved = withFreshness("approve-standard", () => approveScope(store, taskId, who.name, now, scopeRow.digest, token));
         if (!approved.ok) {
           // v102: a first yes on protected work is recorded, not refused — the page says who else is needed.
           if (approved.reason === "second-approver") return approvalProblem(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }), 200);

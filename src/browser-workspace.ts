@@ -655,6 +655,9 @@ export type BrowserWorkspace = {
   projects: BrowserProject[]; crew: BrowserCrewItem[]; crewTruncated: boolean;
   /** The sidebar's project states; absent on a sensitive page. The summary room keeps them current. */
   projectStates?: BrowserProjectState[];
+  /** Cockpit B2: this session's remembered password — minutes left, and where Forget posts. Absent unless it is
+   * live on a direct local request; never on a sensitive page. */
+  fresh?: { minutes: number; forget: string };
   /** The most-used subscription window, for an operator; absent for everyone else and on a sensitive page. */
   usage?: BrowserUsageChip;
   conversation: BrowserConversation | null;

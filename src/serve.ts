@@ -139,7 +139,11 @@ RESULT_REVIEW_SCRIPT
 import { buildReviewOf } from "./review-switch.js";
 import { isAlive as runnerAlive } from "./runner.js";
 import {
-freshIdentitySignIn
+FRESH_WINDOW_MS,
+freshFacts,
+ssoCheckedNow,
+freshIdentitySignIn,
+type FreshFacts
 } from "./scope.js";
 import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
@@ -324,7 +328,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const ssoSettings = () => readSsoSettings(options.configDir);
   const ssoOffer = () => { const settings = ssoSettings(); return settings === null ? null : { label: settings.label, operatorsOnly: settings.passwords === "operators" }; };
   /** A step-up within this long of the provider checking someone needs no password. */
-  const SSO_FRESH_MS = 10 * 60_000;
   // The one-time sign-in link `up` opens in the browser: single use, ten minutes, from this computer only. Only a hash
   // of the code is kept, in memory; the code itself is never written to a log or the ledger.
   const signInLinks = new Map<string, { account: string; expires: number }>();
@@ -739,14 +742,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Every signed-in page shares the workspace shell; pages showing a one-time secret opt out (forceSensitive).
       browser: who.via === 'cookie',
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
-      sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } : undefined,
+      sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider", fresh: ssoCheckedNow(who.session.sso.at) } : undefined,
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
       workspaceRequest: url.searchParams.get('request'),
     };
     // An empty password stands for a fresh identity-provider sign-in, for this person only (v100).
-    if (method === "GET" || method === "POST") return freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
+    // Cockpit B2: this request's facts for password freshness — the one place they are set (scope.ts honours them).
+    const fresh: FreshFacts | null = who.via === 'cookie' ? { actor: who.name, passwordAt: who.session.passwordAt ?? null, ssoAt: who.session.sso?.at ?? null,
+      local: fromThisComputer(request), floor: who.session.freshFloor ?? 0, stamp: at => { if (fromThisComputer(request)) who.session.passwordAt = at; } } : null;
+    if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
@@ -812,7 +818,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         store.recordAction({ ...entry, at: clock().toISOString(), outcome: "error" });
         throw error;
       }
-    })));
+    }))));
     return respond(response, 405, "text/plain; charset=utf-8", "no such method here");
   }
 
@@ -1343,6 +1349,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
         // The sidebar's project states: never on a sensitive page (no rail, no summary stream there).
         ...(() => { if (sensitive) return {}; try { return { projectStates: projectSummary() }; } catch { return {}; } })(),
+        // Cockpit B2: the remembered password's chip, only where it could be used (a direct local request).
+        ...(() => {
+          const facts = freshFacts.getStore();
+          if (sensitive || facts == null || !facts.local) return {};
+          const at = facts.passwordAt;
+          if (at === null || at <= facts.floor) return {};
+          const left = FRESH_WINDOW_MS - (Date.now() - at);
+          return left <= 0 ? {} : { fresh: { minutes: Math.max(1, Math.ceil(left / 60_000)), forget: '/session/forget-password' } };
+        })(),
         // The usage chip: the Limits view's own audience (an operator on a browser session), never a sensitive page.
         ...(() => {
           const actor = requestFacts.actor;
@@ -1864,7 +1879,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get managedRepos() { return managedRepos; },
     get joinSourceOf() { return joinSourceOf; },
     get ssoSettings() { return ssoSettings; },
-    get SSO_FRESH_MS() { return SSO_FRESH_MS; },
     get oauthTokenBudget() { return oauthTokenBudget; },
     get hookContext() { return hookContext; },
     get teamsSourceBudget() { return teamsSourceBudget; },

@@ -1,3 +1,4 @@
+import { freshnessFor, withFreshness } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -847,7 +848,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // The password, typed again, on EVERY message (v2 ruling 2): chat is
     // spend, and a seven-day cookie is not a spend credential.
     const password = body.get("token") ?? "";
-    if (password === "" || !authenticateApprover(who, password).ok) {
+    // Typed now, or (cockpit B2) remembered on this session from a direct local request within its window — an
+    // identity-provider check never stands in here.
+    const proved = password === "" ? withFreshness("chat-send", () => freshnessFor(who.name)) !== null && withFreshness("chat-send", () => authenticateApprover(who, "")).ok
+      : authenticateApprover(who, password).ok;
+    if (!proved) {
       return redirect(response, `/chat?said=${encodeURIComponent("chat spends — your password, typed again, with every message")}`);
     }
     const message = (body.get("message") ?? "").trim();

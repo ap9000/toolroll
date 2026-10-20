@@ -455,6 +455,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       lastSeen: Date.now(),
       project: defaultProject,
       projectRevision: 1,
+      passwordAt: Date.now(),
     });
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/");
@@ -506,6 +507,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       lastSeen: Date.now(),
       project: defaultProject,
       projectRevision: 1,
+      // A password typed to sign in is a verified entry: it starts this session's freshness window (cockpit B2).
+      passwordAt: Date.now(),
     });
     response.setHeader(
       "Set-Cookie",

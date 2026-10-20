@@ -569,6 +569,10 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
     </nav>}
     {workspace.usage && !workspace.sensitive && <a className="so-usage-chip" href={workspace.usage.href} title={workspace.usage.title}
       data-usage-chip={workspace.usage.tone} data-usage-stale={workspace.usage.stale ? "" : undefined}>{workspace.usage.text}</a>}
+    {workspace.fresh && !workspace.sensitive && <PostForm action={workspace.fresh.forget} className="so-fresh-chip" data-fresh-chip>
+      <input type="hidden" name="return" value={workspace.path} />
+      <span>Password remembered · {workspace.fresh.minutes} min</span><button type="submit">Forget</button>
+    </PostForm>}
     {!workspace.sensitive && workspace.projectStates !== undefined && <ChimeSwitch />}
     <FleetStatus workspace={workspace} />
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>

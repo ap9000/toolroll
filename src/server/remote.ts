@@ -1,3 +1,4 @@
+import { ssoCheckedNow } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -42,14 +43,13 @@ export interface RemoteRuntime {
   managedRepos: () => string[];
   joinSourceOf: (request: IncomingMessage) => string;
   ssoSettings: () => import("../oidc.js").OidcSettings | null;
-  SSO_FRESH_MS: number;
   oauthTokenBudget: SourceAdmission;
   hookContext: RemoteHookContext;
   teamsSourceBudget: SourceAdmission;
   teamsTenantBudget: SourceAdmission;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
-  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, SSO_FRESH_MS, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
+  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
 
   /**
    * The full principal a live `so_` API token stands for: its person and their generation, the token's own read/act
@@ -143,7 +143,7 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       const who = identify(request, false);
       if (who === null || who.via !== "cookie") return null;
       return { name: who.name, role: who.role, csrf: who.session.csrf,
-        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } };
+        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider", fresh: ssoCheckedNow(who.session.sso.at) } };
     },
     sameSite: request => {
       const origin = request.headers.origin, referer = request.headers.referer;

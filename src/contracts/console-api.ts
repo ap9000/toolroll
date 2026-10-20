@@ -115,6 +115,7 @@ export const CONSOLE_FORMS = {
 
   demo: formContract("POST /chat/demo/ask, /chat/demo/<id>/approve|change|revise|complete", ["message", "note"]),
   updatesDismiss: formContract("POST /settings/updates/dismiss", ["version", "quiet", "return"]),
+  forgetPassword: formContract("POST /session/forget-password", ["return"]),
   updatesChecks: formContract("POST /settings/updates/checks", ["check"]),
   code: formContract("POST /code, /code/start, /code/<session>/<act>, /code/<anything else>", ["repo", "password", "title", "model", "prompt", "requestId", "base", "candidate", "goal", "acceptance", "visual", "decision", "answers"], { prefixes: ["question:"] }),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),

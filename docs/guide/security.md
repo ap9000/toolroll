@@ -49,6 +49,29 @@ that asks the provider to check them again. An existing account can be
 linked to the provider from the Sign-in page. Every sign-in, account made,
 access change and settings change is in the action ledger.
 
+## Your password, remembered for a while
+
+On this computer (a direct connection to `localhost`, never through a proxy or
+another address), a password you typed — to sign in, or for any step-up — is
+remembered for **15 minutes** for two everyday acts only: approving a plan
+whose terms are standard permissions with one approver, and sending a chat
+message. Leave the password box empty and it's used. (Replying to an agent's
+question, steering, pausing and stopping never ask for a password.) The window starts only from a password you typed (or the identity
+provider checking you again), is never extended by using it, and ends at sign
+out, when the session or your credentials change, or when you press
+**Forget** beside "Password remembered" in the sidebar.
+
+Everything else still asks for your password typed now: raised permissions,
+protected (two-person) work, plans an agent wrote, merging, publishing,
+signing a mode, credentials and secrets, people and access, project
+admission, deleting, and resuming or overriding a stopped build. An approval
+records how you were checked — "approved by alex (password remembered from
+10:42)" — in the task and the action ledger.
+
+The trade-off, plainly: if someone takes over your signed-in session on this
+computer within those 15 minutes, they can approve standard-permission work.
+Press **Forget** before you step away, or sign out.
+
 ## Sessions and API tokens
 
 **Settings → Sessions & tokens** shows where you're signed in (the browser,

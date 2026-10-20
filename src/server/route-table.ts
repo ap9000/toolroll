@@ -87,6 +87,9 @@ export interface RouteDeclaration {
   readonly roleRefusal?: RouteRefusal;
   /** The largest form body a POST here reads (else the console's default). */
   readonly bodyCap?: number;
+  /** Cockpit B2: whether a password remembered on this session may stand in here (`allowlist`), or never. Only the
+   * allowlisted acts run their check inside `withFreshness` (scope.ts); every other step-up is `never`. */
+  readonly freshness: "never" | "allowlist";
 }
 
 type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage">>;
@@ -119,6 +122,7 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
     roleBrowser: options.roleBrowser ?? false,
     ...(options.roleRefusal === undefined ? {} : { roleRefusal: options.roleRefusal }),
     ...(options.bodyCap === undefined ? {} : { bodyCap: options.bodyCap }),
+    freshness: options.freshness ?? "never",
   });
 }
 const edge = (domain: Domain, id: string, method: RouteMethod, path: string, options: Options = {}) => row("edge", domain, id, method, path.startsWith("^") ? path : exact(path), options);
@@ -289,6 +293,8 @@ for (const one of ["approve", "change", "revise", "complete"]) post("chat", `cha
 post("settings", "provider.resume", "^\\/providers\\/[a-z]+\\/resume$", { sample: "/providers/codex/resume" });
 post("settings", "settings.updates-dismiss", "/settings/updates/dismiss");
 post("settings", "settings.updates-checks", "/settings/updates/checks");
+// Cockpit B2: Forget ends this session's remembered password now.
+post("settings", "session.forget-password", "/session/forget-password");
 const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
 post("tasks", "code.start", "/code/start", CODING_ACT);
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
@@ -404,7 +410,7 @@ post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task",
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });
 post("tasks", "task.act.cancel", `^\\/t\\/${TASK}\\/cancel$`, { project: "task", limited: "resource", sample: "/t/one/cancel" });
 post("tasks", "task.act.scope", `^\\/t\\/${TASK}\\/scope$`, { project: "task", limited: "resource", sample: "/t/one/scope", bodyCap: LARGE_FORM });
-post("tasks", "task.act.approve", `^\\/t\\/${TASK}\\/approve$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/approve" });
+post("tasks", "task.act.approve", `^\\/t\\/${TASK}\\/approve$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/approve", freshness: "allowlist" });
 post("tasks", "task.act.plan", `^\\/t\\/${TASK}\\/plan$`, { project: "task", limited: "resource", sample: "/t/one/plan" });
 post("tasks", "task.act.plan-edit", `^\\/t\\/${TASK}\\/plan-edit$`, { project: "task", limited: "resource", sample: "/t/one/plan-edit" });
 post("tasks", "task.act.next", `^\\/t\\/${TASK}\\/next$`, { project: "task", limited: "resource", sample: "/t/one/next" });
@@ -436,7 +442,7 @@ post("chat", "chat.config", "/chat/config", { scope: "step-up" });
 for (const one of ["mint", "follow", "end", "stop"]) post("chat", `chat.mate-${one}`, `/chat/mate/${one}`, { callers: ["cookie"], ...(one === "mint" ? { scope: "step-up" as const } : {}) });
 for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}` });
 for (const one of ["confirm", "dismiss"]) post("chat", `coordinator.proposal.${one}`, `^\\/proposals\\/${ID}\\/${one}$`, { sample: `/proposals/1/${one}` });
-post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation" });
+post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist" });
 post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up", sample: `/chat/file/${"a".repeat(32)}` });
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });

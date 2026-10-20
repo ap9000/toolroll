@@ -168,8 +168,9 @@ test("someone who signs in only with the provider approves a task on a fresh sig
   const digest = store.getScope("t-sso")?.digest ?? "";
   const page = async () => (await fetch(`${base}/t/t-sso`, { headers: { cookie } })).text();
   const nonceOf = (html: string) => /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? "";
-  // Eleven minutes on, an empty password approves nothing.
-  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60_000);
+  // Sixteen minutes on — past the provider check that counts as now (ten) and past a remembered one (fifteen, for an
+  // allowlisted approval: cockpit B2) — an empty password approves nothing.
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
   expect((await post("/t/t-sso/approve", { nonce: nonceOf(await page()), digest, token: "" })).status).toBe(400);
   expect(store.getScope("t-sso")?.approvedBy ?? null).toBeNull();
   vi.restoreAllMocks();

@@ -274,6 +274,8 @@ export function approvalSheetHtml(input: {
   /** The in-place editor (task page): the scope route, a draft the server
    * refused (with why), whether it opens on arrival, and the plan's steps editor. */
   edit: { action: string; draft: URLSearchParams | null; problem: string | null; open: boolean; stepsHref: string | null } | null;
+  /** Cockpit B2: this person's password is remembered (when, ISO) and these terms may stand on it. */
+  freshSince?: string | null;
 }): Html {
   const { scope, route } = input;
   // A machine-drafted repair appends its brief to the signed goal; the row
@@ -454,7 +456,8 @@ export function approvalSheetHtml(input: {
       consent,
       html`<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">`,
       html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${passwordNote}"></label>`,
-      html`<p class="approval-password-note" id="${passwordNote}">Your password signs this approval.</p>`,
+      input.freshSince == null ? html`<p class="approval-password-note" id="${passwordNote}">Your password signs this approval.</p>`
+        : html`<p class="approval-password-note" id="${passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
       html`<button type="submit" data-primary-action>${submit}</button></div>`,
       html`<p class="approval-after">${after}</p>`,
       html`<div class="approval-secondary">${editor ?? html`<a class="approval-link" href="${input.editHref}">Edit plan</a>`}<a class="approval-link" href="${input.notNowHref}">Not now</a></div>`,
@@ -833,10 +836,20 @@ export function nonceHashOf(value: string): string {
 }
 
 /** The approve POST's refusal, in words a person can act on. */
+/** " (password remembered from 10:42)" when the approval stood on a remembered password or sign-in; nothing otherwise. */
+export function approvalProofWords(proof: { method: string; at: string } | null | undefined): string {
+  if (proof == null) return "";
+  if (proof.method === "fresh-password") return ` (password remembered from ${whenText(proof.at)})`;
+  if (proof.method === "fresh-sso") return ` (sign-in remembered from ${whenText(proof.at)})`;
+  return "";
+}
+const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+
 export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
   if (reason === "unrouted") return "not approved: this scope predates agent routing and its old approval no longer stands — edit and re-file the scope so it is routed under today’s agents, then approve it";
   if (reason === "profile-unresolved") return "not approved: the scope cannot name an exact agent for every role — fix the agent setup and re-file it";
+  if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";
   return `not approved: ${reason}`;
 }
 
@@ -1439,6 +1452,10 @@ export function taskBodyParts(data: {
   steerComposer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
   /** This task's latest attempts, newest first (a tab's unsent draft for one that ended is offered on). */
   steerRecent?: number[];
+  /** Cockpit B2: when this person's remembered password was given, when it may approve these terms. */
+  approvalFresh?: string | null;
+  /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
+  approvalProof?: { method: string; at: string } | null;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -1871,7 +1888,7 @@ export function taskBodyParts(data: {
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
           approval.approved
-            ? html`<p class="meta scope-seal">Approved by ${approval.by} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
+            ? html`<p class="meta scope-seal">Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
             : html`<p class="meta"><span class="seal">signs ${shortDigest(scope.digest)}</span> — approval binds to this exact wording</p><p class="meta">Not approved${approval.reason === "changed" ? " — approved once, then rewritten" : ""}</p>`,
           html`</div>`,
         ], "\n");
@@ -2007,6 +2024,7 @@ export function taskBodyParts(data: {
           csrf: data.csrf,
           nonce: data.nonce,
           digest: data.approvalDigest ?? scope.digest,
+          freshSince: data.approvalFresh ?? null,
           returnTo: null,
           scope,
           planDocument: data.plan === "drafted" ? data.planDocument : null,
@@ -2187,7 +2205,7 @@ export function taskBodyParts(data: {
     scope === null
       ? prop("scope", "none yet")
       : approval.approved
-        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by} · ${whenTime(approval.at)}`)
+        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)}`)
         : prop("scope", approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved");
   const strikesRow = data.strikes > 0 ? prop("strikes", `${data.strikes} failed attempt(s)`) : "";
   const propsCard = html`<div class="card props">${workerRow}${queueRow}${scopeRow}${publishesRow}${economics}${strikesRow}</div>`;
@@ -2201,7 +2219,7 @@ export function taskBodyParts(data: {
     facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/board?view=order" }] });
   }
   facts.push(scope === null ? { label: "Scope", parts: ["none yet"] }
-    : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
+    : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
     : { label: "Scope", parts: [approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved"] });
   facts.push({ label: "Publishes as", parts: [publishesAs] });
   // v102: who asked for it, and what the project's approval rules need.

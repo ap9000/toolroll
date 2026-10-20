@@ -9,6 +9,7 @@ import { activeRemote } from "./remote-run.js";
 import { claimActor, currentActor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { isAcpProfile, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
+import { levelOfProfile } from "./policy.js";
 export { isAcpProfile };
 /**
  * What a task is allowed to become, agreed before anything builds it.
@@ -1051,7 +1052,9 @@ export type ApproveResult =
   | { ok: false; reason: "requester" | "person-required" }
   | { ok: false; reason: "second-approver"; have: number; need: number; already: boolean }
   /** Sprint 8: the organisation policy stops these terms (a provider, a model, the permission ceiling); `message` says which. */
-  | { ok: false; reason: "policy"; message: string };
+  | { ok: false; reason: "policy"; message: string }
+  /** Cockpit B2: a remembered password can't approve these terms (protected, escalated, or a quarantined filing). */
+  | { ok: false; reason: "password-now" };
 
 /**
  * Whether this name-and-token pair is a person the store knows. Shared by
@@ -1124,19 +1127,72 @@ export function authenticateAccount(
 export const freshIdentitySignIn = new AsyncLocalStorage<{ actor: string | null }>();
 export const hasFreshIdentitySignIn = (by: string): boolean => freshIdentitySignIn.getStore()?.actor === by;
 
+/**
+ * PASSWORD FRESHNESS (docs/plans/agents-cockpit.md B2). An allowlisted everyday act — and only one — may stand on a
+ * password (or an identity-provider re-check) given on this same session in the last fifteen minutes, instead of a
+ * password typed now, when the request comes straight from this computer. The console sets the request's facts
+ * (`freshFacts`); an allowlisted act opts in with `withFreshness`; `authenticateApprover` is the one place it is
+ * honoured. The window starts only from a verified password entry or an explicit re-check, is never extended by use,
+ * and ends at sign-out, a session or credential change, or Forget (`floor`).
+ */
+export type FreshOp = "approve-standard" | "chat-send" | "reply-question";
+/** An identity-provider check this recent stands in for a password typed now, for any step-up (v100). */
+export const SSO_NOW_MS = 10 * 60_000;
+/** Whether the provider checked this person recently enough to count as now: the one reading of SSO freshness. */
+export function ssoCheckedNow(ssoAt: number | null | undefined, now = Date.now()): boolean {
+  return ssoAt != null && ssoAt > 0 && now - ssoAt < SSO_NOW_MS && ssoAt <= now + 60_000;
+}
+export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso";
+export const FRESH_WINDOW_MS = 15 * 60_000;
+export type FreshFacts = {
+  actor: string;
+  /** When a password was last verified on this session (ms), and when the provider last checked the person. */
+  passwordAt: number | null; ssoAt: number | null;
+  /** Straight from this computer: a loopback peer naming a loopback host, with no forwarding headers. */
+  local: boolean;
+  /** Nothing before this counts (Forget). */
+  floor: number;
+  /** Record a verified password entry on this session. */
+  stamp: (at: number) => void;
+};
+export const freshFacts = new AsyncLocalStorage<FreshFacts | null>();
+const freshScope = new AsyncLocalStorage<FreshOp>();
+/** Run an allowlisted act: within it, a fresh password or re-check may stand in for one typed now. */
+export function withFreshness<T>(op: FreshOp, act: () => T): T { return freshScope.run(op, act); }
+/** The freshness this act may stand on now, or null: only inside an allowlisted act, for this person, on a direct
+ * local request, within the window, after any Forget. */
+export function freshnessFor(by: string, now = Date.now()): { method: "fresh-password" | "fresh-sso"; at: number } | null {
+  const op = freshScope.getStore(), facts = freshFacts.getStore();
+  if (op === undefined || facts == null || facts.actor !== by || !facts.local) return null;
+  const within = (at: number | null): at is number => at !== null && at > facts.floor && at <= now + 60_000 && now - at < FRESH_WINDOW_MS;
+  if (within(facts.passwordAt)) return { method: "fresh-password", at: facts.passwordAt };
+  if (within(facts.ssoAt)) return { method: "fresh-sso", at: facts.ssoAt };
+  return null;
+}
+
 export function authenticateApprover(
   store: Store,
   by: string,
   token: string,
   repo?: string | null,
-): { ok: true } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
-  // An empty password is never checked as a password (and never counts toward a lockout).
-  if (token === "") return hasFreshIdentitySignIn(by) ? approverStanding(store, by, repo) : { ok: false, reason: "not-an-approver" };
+): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
+  const now = Date.now();
+  const proved = (method: AuthMethod, at: number) => { const standing = approverStanding(store, by, repo); return standing.ok ? { ok: true as const, method, at } : standing; };
+  // An empty password is never checked as a password (and never counts toward a lockout): it stands for an
+  // identity-provider check moments ago, or — inside an allowlisted act only — a fresh one.
+  if (token === "") {
+    if (hasFreshIdentitySignIn(by)) return proved("sso-now", freshFacts.getStore()?.ssoAt ?? now);
+    const fresh = freshnessFor(by, now);
+    return fresh === null ? { ok: false, reason: "not-an-approver" } : proved(fresh.method, fresh.at);
+  }
   const account = authenticateAccount(store, by, token);
   if (!account.ok) {
     return { ok: false, reason: account.reason === "no-approvers" ? "no-approvers" : "not-an-approver" };
   }
-  return approverStanding(store, by, repo);
+  // A verified password entry starts this session's window (the console decides whether this request may).
+  const facts = freshFacts.getStore();
+  if (facts != null && facts.actor === by) facts.stamp(now);
+  return proved("password-now", now);
 }
 
 /**
@@ -1289,6 +1345,11 @@ export function approve(
     if (policy !== null) return { ok: false as const, reason: "policy" as const, message: policy };
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict === "refuse") return { ok: false as const, reason: gate.reason };
+    // A remembered password (cockpit B2) approves only everyday work: one approver, standard permissions, terms a
+    // person filed. Protected work, escalated terms and quarantined filings take a password typed now.
+    if ((authenticated.method === "fresh-password" || authenticated.method === "fresh-sso") && !freshlyApprovable(store, taskId, scope, gate.verdict === "seal" && !gate.protectedWork)) {
+      return { ok: false as const, reason: "password-now" as const };
+    }
     if (gate.verdict === "vote") {
       store.recordApprovalVote(taskId, scope.digest, by, now);
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };
@@ -1303,8 +1364,26 @@ export function approve(
     if (!sealed) return { ok: false as const, reason: "changed" as const };
     const approved = store.getScope(taskId);
     if (approved === null) return { ok: false as const, reason: "no-scope" as const };
+    // How the person was proved, beside the seal (cockpit B2): a password typed now, a re-check now, or a remembered
+    // one — with when, and the credential generation it stood on.
+    store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
+      outcome: authenticated.method, source: "work", detail: `${new Date(authenticated.at).toISOString()} · generation ${store.accountOf(by)?.generation ?? 0}` });
     return { ok: true as const, scope: approved };
   });
+}
+
+/** The ledger act that records how an approval's person was proved (password-now, sso-now, fresh-password, fresh-sso). */
+export const APPROVAL_PROOF = "approval proved";
+
+/** Whether a remembered password may approve these terms: one approver (no protected work), standard permissions
+ * (never escalated), and not filed by a coordinator, a lead or a scout (those keep their own password ceremony). */
+export function freshlyApprovable(store: Store, taskId: string, scope: Scope, singleApprover: boolean): boolean {
+  if (!singleApprover) return false;
+  if (scope.profile == null || levelOfProfile(scope.profile) === "escalated") return false;
+  const ref = store.handle.prepare("SELECT coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
+  if (ref === undefined || ref["coordinator_cid"] != null) return false;
+  const via = store.handle.prepare("SELECT proposed_via FROM task_scope WHERE task_id = ?").get(taskId)?.["proposed_via"];
+  return !(via === "mate" || via === "coordinator" || via === "scout");
 }
 
 /**

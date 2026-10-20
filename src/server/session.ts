@@ -48,6 +48,10 @@ export type Session = {
   projectRevision: number;
   /** v100: signed in with the identity provider, and when it last checked them (a step-up within 10 minutes needs no password). */
   sso?: { at: number };
+  /** Cockpit B2: when a password was last verified on this session (in memory only: a restart forgets it). */
+  passwordAt?: number;
+  /** Forget: nothing verified before this counts as fresh. */
+  freshFloor?: number;
   /** v101: the browser and address it signed in from, for the person to recognise it. */
   agent?: string | null;
   address?: string | null;

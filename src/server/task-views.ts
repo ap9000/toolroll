@@ -1,3 +1,4 @@
+import { APPROVAL_PROOF, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { taskBaseOf } from "../task-base.js";
@@ -525,6 +526,22 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         base: taskBaseOf(runtime.store, taskId),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
+        approvalProof: (() => {
+          if (ref === null) return null;
+          const row = runtime.store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1").get(ref.externalId, APPROVAL_PROOF);
+          const at = typeof row?.["detail"] === "string" ? row["detail"].split(" · ")[0] : null;
+          return row === undefined || at === null || Number.isNaN(Date.parse(at ?? "")) ? null : { method: String(row["outcome"]), at: at! };
+        })(),
+        // Cockpit B2: whether this person's remembered password may approve these exact terms (the same rule approve()
+        // applies), and since when.
+        approvalFresh: (() => {
+          const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
+          if (scope === null || who?.via !== "cookie") return null;
+          const fresh = withFreshness("approve-standard", () => freshnessFor(who.name));
+          if (fresh === null) return null;
+          const gate = runtime.store.approvalGate(ref!.externalId, who.name, "person");
+          return freshlyApprovable(runtime.store, ref!.externalId, scope, gate.verdict === "seal" && !gate.protectedWork) ? new Date(fresh.at).toISOString() : null;
+        })(),
         steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
         // The running attempt's composer, for an approver on a browser session (steer-controls.ts).
         steerComposer: (() => {
