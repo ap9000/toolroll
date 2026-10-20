@@ -8,12 +8,12 @@
  * --json, it starts nothing and changes nothing: it says what it would do. Outside a repository, it scans as before
  * (the scan is also `toolroll scan`).
  */
-import { existsSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { proveLiveConsole, type AttachProof, type AttachSeams } from "./console-instance.js";
 import { underAgent } from "./prompt.js";
 import { envelopeJson } from "./envelope.js";
 import { createRequire } from "node:module";
-import { openStoreReadOnly, SCHEMA_VERSION } from "./store.js";
+import { openStoreReadOnly, readSchemaVersion, SCHEMA_VERSION } from "./store.js";
 
 export type QuickStartSeams = {
   databaseFile: string;
@@ -40,15 +40,20 @@ const EXIT = { ok: 0, refused: 3 } as const;
 /** Whether argv is a bare `toolroll` (nothing, or only --json). */
 export const isBareInvocation = (argv: readonly string[]): boolean => argv.every(one => one === "--json");
 
-/** The database's schema version, read without changing anything; null when it can't be read. */
-function schemaOf(file: string): number | null {
+/** The database's schema version by the store's own strict reader, read without changing anything. */
+function schemaOf(file: string): { ok: true; version: number | null } | { ok: false } {
   try {
     // Loaded only here, as the store loads it: the CLI's other commands never pay for (or warn about) it.
     const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
     const db = new DatabaseSync(file, { readOnly: true });
-    try { const row = db.prepare("SELECT version FROM schema_version").get(); return row === undefined ? null : Number(row["version"]); }
+    try { const read = readSchemaVersion(db as unknown as Parameters<typeof readSchemaVersion>[0]); return read.ok ? read : { ok: false }; }
     finally { db.close(); }
-  } catch { return null; }
+  } catch { return { ok: false }; }
+}
+/** Whether the database file is there: "absent" only when the system says so (ENOENT), never for a path it won't show. */
+function databasePresence(file: string): "present" | "absent" | "unknown" {
+  try { lstatSync(file); return "present"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown"; }
 }
 
 async function prove(seams: QuickStartSeams): Promise<AttachProof> {
@@ -57,11 +62,13 @@ async function prove(seams: QuickStartSeams): Promise<AttachProof> {
   // database that can't be read, is mid-upgrade or is newer than this build can't be checked, so it is refused.
   const none = { ok: false, state: "none", message: "no console is running" } as const;
   const unverifiable = (why: string) => ({ ok: false, state: "refused", message: `${why}, so a running console can't be checked — run \`toolroll up\` to see what's wrong` } as const);
-  if (!existsSync(seams.databaseFile)) return none;
-  const version = schemaOf(seams.databaseFile);
-  if (version === null || !Number.isSafeInteger(version)) return unverifiable("Toolroll's database can't be read");
-  if (version > 0 && version < SCHEMA_VERSION) return none;
-  if (version !== SCHEMA_VERSION) return unverifiable(version < 0 ? "Toolroll's database is being upgraded" : "Toolroll's database is from a newer build");
+  const presence = databasePresence(seams.databaseFile);
+  if (presence === "absent") return none;
+  if (presence === "unknown") return unverifiable("Toolroll's database can't be reached");
+  const schema = schemaOf(seams.databaseFile);
+  if (!schema.ok) return unverifiable("Toolroll's database can't be read");
+  if (schema.version === null || (schema.version > 0 && schema.version < SCHEMA_VERSION)) return none;
+  if (schema.version !== SCHEMA_VERSION) return unverifiable("Toolroll's database is being upgraded");
   const store = openStoreReadOnly(seams.databaseFile);
   if (store === null) return unverifiable("Toolroll's database can't be read");
   try { return await proveLiveConsole(seams.databaseFile, store, seams.build, seams.attach ?? {}); }

@@ -13,7 +13,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { connect as tcpConnect, createServer as createTcpServer, createServer as createSocketServer, type Server as NetServer } from "node:net";
 import { join } from "node:path";
-import { askSocket, claimInstance, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceRunDir, openInstanceSocket, prepareRunDir, proveLiveConsole, readInstance, runDirProblem, socketPathProblem, socketProof } from "./console-instance.js";
+import { askSocket, claimInstance, recordLiveness, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceRunDir, openInstanceSocket, prepareRunDir, proveLiveConsole, readInstance, runDirProblem, socketPathProblem, socketProof } from "./console-instance.js";
 import { createDecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -82,8 +82,8 @@ describe("the proofs", () => {
   });
 
   test("a stopping console forgets only its own record", async () => {
-    const first = await claimInstance(store, databaseFile, { pid: fakePid(1), port: 4180, build: BUILD, socket: "0000000000000001.sock" }, new Date(), async () => false);
-    const second = await claimInstance(store, databaseFile, { pid: fakePid(2), port: 4181, build: BUILD, socket: "0000000000000002.sock" }, new Date(), async () => false);
+    const first = await claimInstance(store, databaseFile, { pid: fakePid(1), port: 4180, build: BUILD, socket: "0000000000000001.sock" }, new Date(), async () => "gone" as const);
+    const second = await claimInstance(store, databaseFile, { pid: fakePid(2), port: 4181, build: BUILD, socket: "0000000000000002.sock" }, new Date(), async () => "gone" as const);
     clearInstance(store, first!);
     expect(readInstance(store)?.pid).toBe(fakePid(2));
     clearInstance(store, second!);
@@ -159,13 +159,37 @@ describe("the discovery socket", () => {
     let release: () => void = () => {};
     const gate = new Promise<void>(resolve => { release = resolve; });
     // Both see the same (dead) record; the slow one checks liveness while the fast one claims.
-    await claimInstance(store, databaseFile, { pid: fakePid(8), port: 3, build: BUILD, socket: "0000000000000008.sock" }, new Date(), async () => false);
-    const slow = claimInstance(store, databaseFile, { pid: fakePid(6), port: 1, build: BUILD, socket: "0000000000000006.sock" }, new Date(), async () => { await gate; return false; });
-    const fast = await claimInstance(store, databaseFile, { pid: fakePid(7), port: 2, build: BUILD, socket: "0000000000000007.sock" }, new Date(), async () => false);
+    await claimInstance(store, databaseFile, { pid: fakePid(8), port: 3, build: BUILD, socket: "0000000000000008.sock" }, new Date(), async () => "gone" as const);
+    const slow = claimInstance(store, databaseFile, { pid: fakePid(6), port: 1, build: BUILD, socket: "0000000000000006.sock" }, new Date(), async () => { await gate; return "gone" as const; });
+    const fast = await claimInstance(store, databaseFile, { pid: fakePid(7), port: 2, build: BUILD, socket: "0000000000000007.sock" }, new Date(), async () => "gone" as const);
     release();
     expect(fast).not.toBeNull();
     expect(await slow).toBeNull();
     expect(readInstance(store)?.pid).toBe(fakePid(7));
+  });
+});
+
+describe("taking the record", () => {
+  test("only from nobody, or from a console confirmed gone: a slow, malformed or wrongly proved answer keeps the record", async () => {
+    const first = await claimInstance(store, databaseFile, { pid: fakePid(10), port: 1, build: BUILD, socket: "000000000000000a.sock" }, new Date(), async () => "gone" as const);
+    for (const answer of ["live", "unknown"] as const) {
+      expect(await claimInstance(store, databaseFile, { pid: fakePid(11), port: 2, build: BUILD, socket: "000000000000000b.sock" }, new Date(), async () => answer)).toBeNull();
+      expect(readInstance(store)?.secret).toBe(first);
+    }
+    // A socket that answers without the secret (an agent's) is "unknown", never "gone".
+    expect(prepareRunDir(run)).toBeNull();
+    const liar = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify({ pid: fakePid(10), proof: "c".repeat(64) })}\n`)));
+    await new Promise<void>(resolve => liar.listen(join(run, "000000000000000a.sock"), () => resolve()));
+    closers.push(() => closeServer(liar));
+    expect(await recordLiveness(databaseFile, readInstance(store)!)).toBe("unknown");
+    expect(await claimInstance(store, databaseFile, { pid: fakePid(12), port: 3, build: BUILD, socket: "000000000000000c.sock" }, new Date())).toBeNull();
+    expect(readInstance(store)?.secret).toBe(first);
+  });
+
+  test("a record this build can't read is never taken for none: not claimed over, and attaching is refused", async () => {
+    store.handle.prepare("INSERT INTO console_instance (id, secret, pid, port, build, socket, started_at) VALUES (1, 'not-a-secret', 1, 1, 'x', 'bad', 'now')").run();
+    expect(await claimInstance(store, databaseFile, { pid: fakePid(13), port: 3, build: BUILD, socket: "000000000000000d.sock" }, new Date(), async () => "gone" as const)).toBeNull();
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
   });
 });
 
@@ -196,7 +220,7 @@ describe("attaching", () => {
   test("a malformed proof (not 64 hex characters, even of the same length in letters) is refused, never a crash", async () => {
     expect(prepareRunDir(run)).toBeNull();
     const name = "00000000000000aa.sock";
-    await claimInstance(store, databaseFile, { pid: process.pid, port: 1, build: BUILD, socket: name }, new Date(), async () => false);
+    await claimInstance(store, databaseFile, { pid: process.pid, port: 1, build: BUILD, socket: name }, new Date(), async () => "gone" as const);
     const odd = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify({ pid: process.pid, build: BUILD, database: databaseFile, port: 1, proof: "é".repeat(64) })}\n`)));
     await new Promise<void>(resolve => odd.listen(join(run, name), () => resolve()));
     closers.push(() => closeServer(odd));
@@ -209,7 +233,7 @@ describe("attaching", () => {
     closers.push(() => closeServer(replacement));
     expect(prepareRunDir(run)).toBeNull();
     const name = "00000000000000bb.sock";
-    const secret = (await claimInstance(store, databaseFile, { pid: process.pid, port, build: BUILD, socket: name }, new Date(), async () => false))!;
+    const secret = (await claimInstance(store, databaseFile, { pid: process.pid, port, build: BUILD, socket: name }, new Date(), async () => "gone" as const))!;
     const recorded = { pid: process.pid, build: BUILD, database: databaseFile, port, proof: socketProof(secret, "3".repeat(64)) };
     const impostor = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify(recorded)}\n`)));
     await new Promise<void>(resolve => impostor.listen(join(run, name), () => resolve()));

@@ -5,7 +5,7 @@
  * or opens: it says what it would do. Outside a repository it is not this command (the scan runs as before).
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { capturedEnvelope } from "./envelope.js";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { join } from "node:path";
@@ -127,6 +127,18 @@ test("a database that can't be checked is refused, never read as nothing running
   const older = seams();
   expect(await runQuickStart([], older.write, older.value)).toBe(0);
   expect(older.did).toEqual(["up"]);
+  // Two version rows (the store's own strict reader refuses them): can't be checked, never "older".
+  { const db = new DatabaseSync(databaseFile); db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION - 1); db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION + 1); db.close(); }
+  const twoRows = seams();
+  expect(await runQuickStart([], twoRows.write, twoRows.value)).toBe(3);
+  expect(twoRows.did).toEqual([]);
+  // A folder that won't show whether the database is there: refused, never "nothing running".
+  chmodSync(state, 0o000);
+  try {
+    const hidden = seams();
+    expect(await runQuickStart([], hidden.write, hidden.value)).toBe(3);
+    expect(hidden.did).toEqual([]);
+  } finally { chmodSync(state, 0o700); }
   writeFileSync(databaseFile, "not a database");
   const broken = seams();
   expect(await runQuickStart([], broken.write, broken.value)).toBe(3);

@@ -55,12 +55,17 @@ const LINE_CAP = 4096;
 export type InstanceRecord = { secret: string; pid: number; port: number; build: string; socket: string; startedAt: string };
 export type HelloFacts = { pid: number; build: string; database: string; port: number };
 
-export function readInstance(store: Store): InstanceRecord | null {
+/** The record as stored: none, one this build can't read (never taken for none), or the record. */
+export function readInstanceState(store: Store): { state: "none" } | { state: "invalid" } | { state: "ok"; record: InstanceRecord } {
   const row = store.handle.prepare("SELECT secret, pid, port, build, socket, started_at FROM console_instance WHERE id = 1").get();
-  if (row === undefined) return null;
+  if (row === undefined) return { state: "none" };
   const secret = String(row["secret"]), pid = Number(row["pid"]), port = Number(row["port"]), socket = String(row["socket"]);
-  if (!/^[0-9a-f]{64}$/.test(secret) || !Number.isSafeInteger(pid) || !Number.isInteger(port) || port < 1 || port > 65535 || !SOCKET_NAME.test(socket)) return null;
-  return { secret, pid, port, build: String(row["build"]), socket, startedAt: String(row["started_at"]) };
+  if (!/^[0-9a-f]{64}$/.test(secret) || !Number.isSafeInteger(pid) || !Number.isInteger(port) || port < 1 || port > 65535 || !SOCKET_NAME.test(socket)) return { state: "invalid" };
+  return { state: "ok", record: { secret, pid, port, build: String(row["build"]), socket, startedAt: String(row["started_at"]) } };
+}
+export function readInstance(store: Store): InstanceRecord | null {
+  const read = readInstanceState(store);
+  return read.state === "ok" ? read.record : null;
 }
 
 /** A stopping console forgets itself — only its own record, never a newer start's. */
@@ -181,13 +186,18 @@ export async function openInstanceSocket(databaseFile: string, facts: HelloFacts
   return { ok: true, name, close: () => { server.close(); } };
 }
 
-/** Whether a record's console is live: its socket answers a fresh challenge with the record's secret and pid. */
-export async function recordIsLive(databaseFile: string, record: InstanceRecord, ask: typeof askSocket = askSocket): Promise<boolean> {
+/**
+ * A record's console: "live" (its socket answers a fresh challenge with the record's secret and pid), "gone" (nobody
+ * is listening on its socket, or the socket isn't there), or "unknown" (anything else: slow, malformed, a wrong proof).
+ * Only "gone" lets another start take the record.
+ */
+export async function recordLiveness(databaseFile: string, record: InstanceRecord, ask: typeof askSocket = askSocket): Promise<"live" | "gone" | "unknown"> {
   const socketPath = join(instanceRunDir(databaseFile), record.socket);
-  if (socketPathProblem(socketPath) !== null) return false;
+  if (socketPathProblem(socketPath) !== null) return "unknown";
   const challenge = randomBytes(32).toString("hex");
-  const asked = await ask(socketPath, { verb: "hello", challenge }, 1_500);
-  return "answer" in asked && asked.answer["pid"] === record.pid && same(asked.answer["proof"], socketProof(record.secret, challenge));
+  const asked = await ask(socketPath, { verb: "hello", challenge }, 5_000);
+  if ("none" in asked) return asked.none === "no-listener" ? "gone" : "unknown";
+  return asked.answer["pid"] === record.pid && same(asked.answer["proof"], socketProof(record.secret, challenge)) ? "live" : "unknown";
 }
 
 /**
@@ -195,11 +205,14 @@ export async function recordIsLive(databaseFile: string, record: InstanceRecord,
  * database, by any spelling of its path). The write is a compare-and-set on the record it checked: two starts racing
  * can't both win. Null: not claimed (this console runs, but `toolroll` won't attach to it).
  */
-export async function claimInstance(store: Store, databaseFile: string, facts: { pid: number; port: number; build: string; socket: string }, now: Date, isLive: (record: InstanceRecord) => Promise<boolean> = record => recordIsLive(databaseFile, record)): Promise<string | null> {
+export async function claimInstance(store: Store, databaseFile: string, facts: { pid: number; port: number; build: string; socket: string }, now: Date, liveness: (record: InstanceRecord) => Promise<"live" | "gone" | "unknown"> = record => recordLiveness(databaseFile, record)): Promise<string | null> {
   const rawSecret = (): string | null => { const row = store.handle.prepare("SELECT secret FROM console_instance WHERE id = 1").get(); return row === undefined ? null : String(row["secret"]); };
   const checked = rawSecret();
-  const current = readInstance(store);
-  if (current !== null && await isLive(current)) return null;
+  // Taken only from nobody, or from a console confirmed gone: never on a check that merely failed, and never over a
+  // record this build can't read.
+  const current = readInstanceState(store);
+  if (current.state === "invalid") return null;
+  if (current.state === "ok" && await liveness(current.record) !== "gone") return null;
   const secret = randomBytes(32).toString("hex");
   return store.transact(() => {
     // Exactly the record that was checked (or none): anything else is another start's newer claim.
@@ -228,9 +241,12 @@ export type AttachSeams = {
  */
 export async function proveLiveConsole(databaseFile: string, store: Store, build: string, seams: AttachSeams = {}): Promise<AttachProof> {
   const restart = "stop it and run `toolroll up` again";
-  // No record: nothing is running here (a console that couldn't claim one isn't offered).
-  const record = readInstance(store);
-  if (record === null) return { ok: false, state: "none", message: "no console is running" };
+  // No record: nothing is running here (a console that couldn't claim one isn't offered). One this build can't read
+  // isn't "nothing": it is refused.
+  const read = readInstanceState(store);
+  if (read.state === "none") return { ok: false, state: "none", message: "no console is running" };
+  if (read.state === "invalid") return { ok: false, state: "refused", message: `the console's record can't be read — ${restart}` };
+  const record = read.record;
   const dir = instanceRunDir(databaseFile);
   const problem = runDirProblem(dir) ?? socketPathProblem(join(dir, record.socket));
   if (problem !== null) return { ok: false, state: "refused", message: `the console's socket can't be trusted: ${problem}` };

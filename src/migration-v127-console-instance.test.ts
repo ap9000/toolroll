@@ -33,7 +33,7 @@ test.each([126, -126])("v%s: the running console's instance record is added; eve
   expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(127);
   // Nothing recorded until a console starts; then it can be.
   expect(readInstance(store)).toBeNull();
-  await claimInstance(store, file, { pid: fakePid(1), port: 4180, build: "test", socket: "0000000000000001.sock" }, now, async () => false);
+  await claimInstance(store, file, { pid: fakePid(1), port: 4180, build: "test", socket: "0000000000000001.sock" }, now, async () => "gone" as const);
   expect(readInstance(store)?.port).toBe(4180);
   expect(store.getTask("t-1")?.title).toBe("kept");
   store.close();

@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentFence, macosFenceAvailable, macosFenced } from "./agent-fence.js";
 import { claimInstance, instanceRunDir, openInstanceSocket, readInstance } from "./console-instance.js";
@@ -17,8 +17,13 @@ const BUILD = "9.9.9-test";
 const PROBE = `
 const fs = require("node:fs"), net = require("node:net");
 const [db, socket] = process.argv.slice(1);
-const out = { db: "denied", answers: [] };
+const run = require("node:path").dirname(socket);
+const out = { db: "denied", answers: [], run: [] };
 try { fs.readFileSync(db); out.db = "read"; } catch {}
+// The run folder's namespace: no new entry, no rename, no removal of the listening console's socket.
+for (const [label, act] of [["create", () => fs.writeFileSync(run + "/planted.sock", "")], ["rename", () => fs.renameSync(socket, socket + ".moved")], ["remove", () => fs.unlinkSync(socket)]]) {
+  try { act(); out.run.push(label + ":done"); } catch { out.run.push(label + ":denied"); }
+}
 const ask = request => new Promise(resolve => {
   const c = net.createConnection(socket);
   let buffer = "";
@@ -39,7 +44,7 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
   beforeEach(() => { dir = realpathSync(mkdtempSync(join("/tmp", "so-cif-"))); });
   afterEach(() => { close?.(); close = null; store?.close(); store = null; rmSync(dir, { recursive: true, force: true }); });
 
-  test.each([["the default state folder", "s/orders.db"], ["a custom database directory", "custom/db/state.sqlite"]])("in %s: only hello's public facts, no secret, nothing changed", async (_label, relative) => {
+  test.each([["Toolroll's own state folder", "toolroll/orders.db"], ["a folder shared with other things", "s/orders.db"], ["a custom database directory", "custom/db/state.sqlite"]])("in %s: only hello's public facts, no secret, nothing changed", async (_label, relative) => {
     const databaseFile = join(dir, relative);
     const state = join(databaseFile, "..");
     mkdirSync(state, { recursive: true, mode: 0o700 });
@@ -62,7 +67,9 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
       child.stdout.on("data", chunk => { stdout += String(chunk); });
       child.on("close", status => resolve({ stdout, status }));
     });
-    const seen = JSON.parse(result.stdout) as { db: string; answers: Record<string, unknown>[] };
+    const seen = JSON.parse(result.stdout) as { db: string; answers: Record<string, unknown>[]; run: string[] };
+    expect(seen.run).toEqual(["create:denied", "rename:denied", "remove:denied"]);
+    expect(lstatSync(socketPath).isSocket()).toBe(true);
     // The database (and so the instance secret) is out of its reach.
     expect(seen.db).toBe("denied");
     expect(result.stdout).not.toContain(secret);

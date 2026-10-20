@@ -40,6 +40,7 @@
  * rename or remove a folder of the user's above a fenced path or the temp
  * folder, which would reach the fenced path under a new name.
  */
+import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -127,6 +128,9 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     const database = real(options.databaseFile);
     const state = dirname(database);
     for (const suffix of ["", "-wal", "-shm", "-journal"]) if (existsSync(database + suffix)) fence.add(database + suffix);
+    // The console's run folder (its discovery sockets, console-instance.ts) beside the database, wherever that is: no
+    // build may add, rename or remove anything in it while a console listens there.
+    if (existsSync(join(state, INSTANCE_DIR))) fence.add(join(state, INSTANCE_DIR));
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not
