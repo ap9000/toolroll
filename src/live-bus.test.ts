@@ -323,6 +323,13 @@ describe("one connection per page", () => {
       } finally { rooms.close(); }
     });
 
+  test("a refusal nested in another keeps the outer one: the connection it closes still says `ended`", () => {
+    const page = new Page();
+    const connection = new LiveConnection(response(page));
+    connection.refuse(() => { connection.refuse(() => {}); connection.close(); });
+    expect(page.sent).toEqual(["event: ended\ndata: {}\n\n"]);
+  });
+
   test.each([false, "throws"] as const)("initial frames fail closed when the proof is %s", proof => {
     const rooms = createTaskRooms(() => "private", { bus });
     const page = new Page();

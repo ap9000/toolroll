@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
+import { restartLive } from "./live.js";
 /** The live task page in the browser (live-task.tsx): a stream nudge reads the workspace again, a nudge for what the
  * page already shows does not, who else is here shows in the header, nothing reads on a timer, and the same
  * last-activity line on the task page. */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+// A test that signs the page out stops the page's one stream; the next test starts signed in.
+afterEach(() => restartLive());
 import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskView, BrowserWorkspace } from "../browser-workspace.js";
 import { useWorkspace } from "./app.js";

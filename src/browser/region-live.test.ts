@@ -47,3 +47,30 @@ test("a stream that ended because it was refused closes, and listens again 30 s 
     expect(opened).toEqual(["/live?room=workspace", "/live?room=workspace"]);
   } finally { vi.useRealTimers(); }
 });
+
+test("a retry the server refuses (an error the browser gives up on) is tried again 30 s later too", () => {
+  vi.useFakeTimers();
+  try {
+    const streams: Array<{ listeners: Map<string, () => void>; closed: boolean; readyState: number }> = [];
+    class RefusedStream {
+      listeners = new Map<string, () => void>(); closed = false; readyState = 1;
+      constructor(url: string) { opened.push(url); streams.push(this); }
+      addEventListener(name: string, listener: () => void) { this.listeners.set(name, listener); }
+      close() { this.closed = true; this.readyState = 2; }
+    }
+    (globalThis as unknown as { EventSource: unknown }).EventSource = RefusedStream;
+    document.body.innerHTML = `<div id="board-region"></div>`;
+    run(regionScript("board-region", "board"));
+    streams[0]!.listeners.get("ended")!();
+    vi.advanceTimersByTime(30_000);
+    // Still signed out: the browser closes the retry with an error.
+    streams[1]!.readyState = 2;
+    streams[1]!.listeners.get("error")!();
+    vi.advanceTimersByTime(30_000);
+    expect(opened).toHaveLength(3);
+    // A passing error while the browser reconnects by itself is left to it.
+    streams[2]!.listeners.get("error")!();
+    vi.advanceTimersByTime(60_000);
+    expect(opened).toHaveLength(3);
+  } finally { vi.useRealTimers(); }
+});

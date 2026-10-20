@@ -27,7 +27,7 @@ import { HeadlineBadge, headlineGlyph } from "./views/status-summary.js";
 import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
-import { useLiveRoom } from "./live.js";
+import { stopLive, useLiveRoom } from "./live.js";
 import { chimeOn, createChime, setChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import "./workspace.css";
@@ -147,7 +147,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
       setNotice(received.pending ? "Delivery is not confirmed. Check again before sending another message." : "");
     } catch (error) {
       if (!mounted.current) return;
-      if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
+      if (error instanceof WorkspaceAuthError) { stopLive(); state.current.stale = true; setStale(true); }
       setNotice(error instanceof Error ? error.message : "Updates are unavailable. Your work is still saved.");
       // One failure-only retry: a server fingerprint may stay unchanged after this missed read.
       // A second failure waits for a new event or an explicit refresh; healthy pages never poll.
@@ -221,7 +221,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
       }
     } catch (error) {
       if (!mounted.current) return;
-      if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
+      if (error instanceof WorkspaceAuthError) { stopLive(); state.current.stale = true; setStale(true); }
       setNotice(error instanceof WorkspaceAuthError ? error.message : "Delivery is not confirmed. Check again before sending another message.");
       void check();
     } finally {

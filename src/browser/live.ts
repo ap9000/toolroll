@@ -23,6 +23,8 @@ export type LiveListener = (event: LiveEventName, data: Record<string, unknown>)
 export const LIVE_EVENT = "so:live";
 const EVENTS = ["change", "here", "gone", "turn"] as const;
 const RETRY_MS = 30_000;
+/** After the server refused a room (`gone`), how long a page waits for the stream's own verdict before it reopens. */
+const REFUSAL_SETTLE_MS = 2_000;
 
 export const roomName = (kind: string, id?: string | number | null, params?: Record<string, string | number | boolean | null | undefined>): string => {
   const query = new URLSearchParams();
@@ -31,11 +33,19 @@ export const roomName = (kind: string, id?: string | number | null, params?: Rec
   return `${kind}${id === null || id === undefined ? "" : `:${encodeURIComponent(String(id))}`}${tail === "" ? "" : `?${tail}`}`;
 };
 
-class LiveHub {
+export class LiveHub {
   private readonly subscriptions = new Map<number, { room: string; listener: LiveListener; hidden: boolean }>();
   private next = 0;
   private source: EventSource | null = null;
   private url = "";
+  /** The rooms the open stream still holds on the server: its rooms, less each one it heard `gone` for. */
+  private held = new Set<string>();
+  private stopped = false;
+  /** When the open stream last heard a room refused, and the reopen waiting on it. */
+  private refusedAt = 0;
+  private settling: number | null = null;
+  /** After the stream ended or was given up on, no new one opens before this (its retry timer reconciles then). */
+  private quietUntil = 0;
   private scheduled = false;
   private watching = false;
 
@@ -60,15 +70,54 @@ class LiveHub {
     return rooms.length === 0 ? "" : `/live?${rooms.map(room => `room=${encodeURIComponent(room)}`).join("&")}`;
   }
 
+  /** The page learned it is signed out: no stream again until it is loaded afresh (signing in reloads it). Dropping
+   * its rooms one by one would otherwise reopen the stream each time, into a request that can't sign in. */
+  stop(): void {
+    this.stopped = true;
+    this.unsettle();
+    this.source?.close();
+    this.source = null;
+    this.url = "";
+  }
+
+  private unsettle(): void {
+    if (this.settling !== null) window.clearTimeout(this.settling);
+    this.settling = null;
+  }
+
+  /** Signed in again without a reload: the rooms the page still wants open as one stream. */
+  restart(): void {
+    if (!this.stopped) return;
+    this.stopped = false;
+    this.schedule();
+  }
+
   private reconcile(): void {
-    if (typeof EventSource === "undefined" || typeof document === "undefined") return;
+    if (this.stopped || typeof EventSource === "undefined" || typeof document === "undefined") return;
     if (!this.watching) {
       this.watching = true;
       document.addEventListener("visibilitychange", () => this.reconcile());
-      window.addEventListener("online", () => this.reconcile());
+      // Back online: the network was the problem, so try now rather than at the retry.
+      window.addEventListener("online", () => { this.quietUntil = 0; this.reconcile(); });
     }
     const url = this.wanted(document.hidden);
     if (url === this.url && (url === "" || this.source !== null)) return;
+    // A room the server refused (`gone`) has already left the open stream, so a page that drops just those rooms keeps
+    // it as it is: reopening at once would race the stream's own end (a sign-out answers every room `gone`, then
+    // `ended`) into a request that can't sign in.
+    const rooms = url === "" ? [] : new URLSearchParams(url.slice(url.indexOf("?") + 1)).getAll("room");
+    if (this.source !== null && rooms.length > 0 && rooms.length === this.held.size && rooms.every(room => this.held.has(room))) { this.url = url; return; }
+    // Just refused: a sign-out answers every room `gone` and then `ended`, and the page drops rooms as it hears them. Wait
+    // for the stream's verdict before reopening — `ended` closes it for the retry; a stream still open after this
+    // (one room narrowed, the rest fine) reopens with the rooms wanted then.
+    // The stream just ended (refused) or was given up on: whatever the page drops or adds meanwhile waits for the retry.
+    if (url !== "" && Date.now() < this.quietUntil) return;
+    const waited = Date.now() - this.refusedAt;
+    if (this.source !== null && url !== "" && waited < REFUSAL_SETTLE_MS) {
+      if (this.settling === null) this.settling = window.setTimeout(() => { this.settling = null; this.reconcile(); }, REFUSAL_SETTLE_MS - waited);
+      return;
+    }
+    this.unsettle();
     this.source?.close();
     this.source = null;
     this.url = url;
@@ -77,6 +126,8 @@ class LiveHub {
     document.documentElement.dataset["live"] = "1";
     const source = new EventSource(url);
     this.source = source;
+    this.held = new Set(new URLSearchParams(url.slice(url.indexOf("?") + 1)).getAll("room"));
+    this.refusedAt = 0;
     const deliver = (event: LiveEventName, raw: string): void => {
       let data: Record<string, unknown> = {};
       try { const parsed: unknown = JSON.parse(raw); if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* an empty hint */ }
@@ -84,17 +135,23 @@ class LiveHub {
       for (const one of [...this.subscriptions.values()]) if (room === null || one.room === room) one.listener(event, data);
       window.dispatchEvent(new CustomEvent(LIVE_EVENT, { detail: { room, event, data } }));
     };
-    for (const name of EVENTS) source.addEventListener(name, event => deliver(name, (event as MessageEvent<string>).data));
+    for (const name of EVENTS) source.addEventListener(name, event => {
+      const raw = (event as MessageEvent<string>).data;
+      if (name === "gone" && this.source === source) { this.refusedAt = Date.now(); try { const room: unknown = (JSON.parse(raw) as Record<string, unknown>)["room"]; if (typeof room === "string") this.held.delete(room); } catch { /* no room named */ } }
+      deliver(name, raw);
+    });
     // The server's stream fell behind and ended: every part reads again; the browser reconnects.
     source.addEventListener("reload", () => deliver("reload", "{}"));
     // Every room refused this page (it was signed out, or lost its access): stop, rather than let the browser reconnect at
     // once into a request that can't sign in; try once more in a while, as after an error answer.
     source.addEventListener("ended", () => {
       if (this.source !== source) return;
+      this.unsettle();
       source.close();
       this.source = null;
       this.url = "";
       deliver("lost", "{}");
+      this.quietUntil = Date.now() + RETRY_MS;
       window.setTimeout(() => this.reconcile(), RETRY_MS);
     });
     source.addEventListener("error", () => {
@@ -103,12 +160,18 @@ class LiveHub {
       this.url = "";
       deliver("lost", "{}");
       // The browser gave up (an error answer, not a dropped line): try once more in a while.
+      this.quietUntil = Date.now() + RETRY_MS;
       window.setTimeout(() => this.reconcile(), RETRY_MS);
     });
   }
 }
 
 const hub = new LiveHub();
+
+/** The page is signed out (a read answered with the sign-in page): its live stream stops until the page is loaded
+ * afresh, or reconnects in place (`restartLive`). */
+export function stopLive(): void { hub.stop(); }
+export function restartLive(): void { hub.restart(); }
 
 /** Rooms a server-rendered region may ask the page's stream for (chrome.ts regionScript): it pushes the name onto
  * `window.__soLiveRooms`, before or after this module loads, and hears its events as `so:live`. */

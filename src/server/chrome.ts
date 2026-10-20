@@ -295,7 +295,9 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     // listen again in 30 s, as the page's own stream does (browser/live.ts RETRY_MS).
     `else if(typeof EventSource!=="undefined"){var listen=function(){var es=new EventSource("/live?room=workspace");` +
     `es.addEventListener("change",function(){heard("change");});es.addEventListener("reload",function(){heard("reload");});` +
-    `es.addEventListener("ended",function(){es.close();setTimeout(listen,30000);});};listen();` +
+    // A retry the server answers with an error (still signed out) is given up by the browser: try again later too.
+    `var again=function(){es.close();setTimeout(listen,30000);};` +
+    `es.addEventListener("ended",again);es.addEventListener("error",function(){if(es.readyState===2)again();});};listen();` +
     `document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh();});}` +
     `})();`
   );

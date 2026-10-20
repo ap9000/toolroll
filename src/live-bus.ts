@@ -194,8 +194,9 @@ export class LiveConnection {
    * connection, the page is told the stream `ended` and stops, rather than reconnecting at once into a request that
    * can't sign in. Any other close — the page going, a later shutdown, an overflow — says nothing of it. */
   refuse(leave: () => void): void {
+    const outer = this.refusing;
     this.refusing = true;
-    try { leave(); } finally { this.refusing = false; }
+    try { leave(); } finally { this.refusing = outer; }
   }
   /** Run when the connection ends; returns the undo for a room that leaves first. */
   onClose(leave: () => void): () => void { this.leaves.add(leave); return () => { this.leaves.delete(leave); }; }

@@ -520,9 +520,13 @@ async function approveOnPage(id) {
   if (approved?.approved_by !== "alex") throw new Error(`${id} wasn't approved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
 }
 /** Wait for a task's build to finish with its checks passed; returns the run. */
-async function builtAndChecked(id, timeoutMs = 600_000) {
-  const run = await until(`${id} to be built`, async () => { const one = latestBuild(id); return one?.finished_at ? one : null; }, { timeoutMs, everyMs: 5000 });
-  if (run.outcome !== "built") throw new Error(`${id}'s build ended ${run.outcome}`);
+/** `after`: a build that ended before (a stopped one) is not the answer; wait for a later one. */
+async function builtAndChecked(id, timeoutMs = 600_000, after = 0) {
+  const run = await until(`${id} to be built`, async () => { const one = latestBuild(id); return one?.finished_at && one.id > after ? one : null; }, { timeoutMs, everyMs: 5000 });
+  if (run.outcome !== "built") {
+    const all = rows(`SELECT r.id, r.outcome, r.reason FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND r.role = 'builder' ORDER BY r.id`);
+    throw new Error(`${id}'s build ended ${run.outcome}: ${all.map(one => `run ${one.id} ${one.outcome ?? "running"}${one.reason ? ` (${one.reason})` : ""}`).join(", ")}`);
+  }
   await until(`${id} to be done`, async () => taskState(id) === "done", { timeoutMs: 180_000, everyMs: 3000 });
   return run;
 }
@@ -714,7 +718,8 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   await Promise.all([page.waitForNavigation(), confirm.locator("button").first().click()]);
   const resumed = rows(`SELECT resumed_by, resumed_via FROM run_stop WHERE run = ${running.id}`)[0];
   if (resumed?.resumed_by !== "alex") throw new Error(`the resume: ${JSON.stringify(resumed)}`);
-  const built = await builtAndChecked(id);
+  // The stopped build is already finished; the answer is the resumed one, which may not have started yet.
+  const built = await builtAndChecked(id, 600_000, running.id);
   return { stopped: running.id, finished: built.id, settlement: stopped.settlement };
 });
 
