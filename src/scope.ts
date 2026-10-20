@@ -1165,7 +1165,10 @@ export const freshFacts = new AsyncLocalStorage<FreshFacts | null>();
 const refunds = new AsyncLocalStorage<(() => void)[]>();
 /**
  * Run an act a re-check may prove, spending the re-check only if the act happens: when it throws (a rolled-back
- * transaction) or `failed` says it was refused, every re-check it spent is put back. Synchronous acts only.
+ * transaction) or `failed` says it was refused, every re-check it spent is put back. ONLY for acts whose every effect
+ * is in one database transaction (an approval, a chat approval proposal, a chat turn opening): there, "refused" and
+ * "thrown" prove nothing happened. Every other step-up spends its re-check whatever comes of it (fail-closed: at worst
+ * the person confirms with their provider again). Synchronous acts only.
  */
 export function spendingOnlyOnSuccess<T>(act: () => T, failed: (result: T) => boolean): T {
   const spent: (() => void)[] = [];
@@ -1174,16 +1177,6 @@ export function spendingOnlyOnSuccess<T>(act: () => T, failed: (result: T) => bo
   catch (error) { for (const refund of spent) refund(); throw error; }
   if (failed(result)) for (const refund of spent) refund();
   // Succeeded here, but an enclosing act (an outer transaction, the request itself) may still fail: it owns them now.
-  else refunds.getStore()?.push(...spent);
-  return result;
-}
-/** The same, for a whole asynchronous act (a console request): its outcome decides only once it has finished. */
-export async function spendingOnlyIfDone<T>(act: () => Promise<T>, failed: (result: T | undefined, error: unknown) => boolean): Promise<T> {
-  const spent: (() => void)[] = [];
-  let result: T | undefined;
-  try { result = await refunds.run(spent, act); }
-  catch (error) { for (const refund of spent) refund(); throw error; }
-  if (failed(result, null)) for (const refund of spent) refund();
   else refunds.getStore()?.push(...spent);
   return result;
 }

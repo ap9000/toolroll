@@ -152,14 +152,13 @@ test("a step-up is an explicit re-check made on request, spent by the one step-u
   const after = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
   expect(after).toContain("Confirm with Okta</a>");
   expect(decodeURIComponent((await add(csrfOf(after), "shadcn")).headers.get("location") ?? "")).toContain("problem=");
-  // A step-up the console refuses after proving (a period it doesn't offer) keeps the re-check for the next one.
+  // A step-up the console refuses after proving (a period it doesn't offer) still spent the re-check: outside an
+  // approval, nothing proves an act didn't happen, so the console never gives one back (fail-closed).
   expect((await providerSignIn("?reauth=1&return=/settings/tools", cookie)).headers.get("location")).toBe("/settings/tools");
   const retention = await (await fetch(`${base}/settings/retention`, { headers: { cookie } })).text();
   const refusedPeriod = await fetch(`${base}/settings/retention`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf: csrfOf(retention), evidence: "123456", password: "" }) });
   expect(decodeURIComponent(refusedPeriod.headers.get("location") ?? "")).toContain("Choose a period");
-  const still = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
-  expect(still).toContain('data-sso-step-up="confirmed"');
-  expect((await add(csrfOf(still), "shadcn")).headers.get("location")).toContain("said=");
+  expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).toContain("Confirm with Okta</a>");
   // An unspent re-check lasts five minutes.
   expect((await providerSignIn("?reauth=1&return=/settings/tools", cookie)).headers.get("location")).toBe("/settings/tools");
   vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000);

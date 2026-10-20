@@ -45,7 +45,9 @@ The client secret is kept in `sign-in.json` beside the database (`0600`),
 never in the database. People who sign in with the provider have no
 password here: an approval or any other step-up is confirmed with a
 **Confirm with …** link that asks the provider to check them again. That
-re-check counts for one step-up, within five minutes; signing in with the
+re-check counts for one step-up, within five minutes, and is used up by it even
+when that step-up is refused — except approving a plan or sending a chat
+message, which give it back when nothing happened. Signing in with the
 provider never counts as one. An existing account can be
 linked to the provider from the Sign-in page. Every sign-in, account made,
 access change and settings change is in the action ledger.

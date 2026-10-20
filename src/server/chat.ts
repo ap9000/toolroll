@@ -716,8 +716,12 @@ export function createChatHandlers(runtime: ServerRuntime) {
       if (!dismissed) noteLead(who.session.csrf, null, "that proposal was already acted on");
       return redirect(response, chatReturnWithLatest(back));
     }
-    // A re-check is spent only if the whole confirmation commits (the proposal's own transaction included).
-    const outcome = spendingOnlyOnSuccess(() => confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) }), result => !result.ok || ("already" in result && result.already === true));
+    // A scope approval's re-check is spent only if the whole confirmation commits (one transaction: the proposal's
+    // settlement included). Any other action spends it whatever comes of it (its effects aren't all in the database).
+    const confirmIt = () => confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+    const proposed = store.getLeadProposal(id);
+    const approving = proposed?.kind === "action" && sharedActionPayload(proposed.payload)?.operation === "scope_approve";
+    const outcome = approving ? spendingOnlyOnSuccess(confirmIt, result => !result.ok || ("already" in result && result.already === true)) : confirmIt();
     if (cardJson) {
       if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
       return cardAnswer(200, true, outcome.said, outcome.taskId);

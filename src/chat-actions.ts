@@ -1159,8 +1159,9 @@ export function executeSharedAction(
       );
   }
   try {
-    // A re-check (sso-now) is spent only if the action happens: a refusal or a rolled-back savepoint puts it back.
-    return spendingOnlyOnSuccess(() => store.savepoint(() => {
+    // A scope approval's re-check (sso-now) is spent only if it happens: a refusal or a rolled-back savepoint puts it
+    // back (its every effect is in this transaction). Other actions spend it whatever comes of them.
+    const act = () => store.savepoint(() => {
       const task = typeof req["task"] === "string" ? req["task"] : null,
         repo = payload.repo,
         actor = who.name;
@@ -1335,7 +1336,8 @@ export function executeSharedAction(
                               ? "Saved project knowledge restored."
                               : "Project knowledge saved.";
       return { ok: true as const, taskId, said };
-    }), result => !result.ok || ("already" in result && result.already === true));
+    });
+    return payload.operation === "scope_approve" ? spendingOnlyOnSuccess(act, result => !result.ok || ("already" in result && result.already === true)) : act();
   } catch (error) {
     return refuse(
       "refused",

@@ -187,10 +187,15 @@ function audit(files: { path: string; text: string }[]): Hits {
             if (property.type === "RestElement") continue;
             bind(property["value"] as Node, keyName(property["key"] as Node), false);
           }
+          if (target.type === "ArrayPattern") for (const element of target["elements"] as (Node | null)[]) if (element !== null) bind(element, from, fromCall);
+          if (target.type === "RestElement") bind(target["argument"] as Node, from, fromCall);
         };
+        const paramsOf = (node: Node): Node[] => ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type ?? "") ? (node["params"] as Node[]) : [];
         const source = (node: Node | null | undefined): [string | null, boolean] => [lastName(node), node?.type === "CallExpression"];
         if (one.type === "VariableDeclarator") bind(one["id"] as Node, ...source(one["init"] as Node));
         if (one.type === "AssignmentExpression") bind(one["left"] as Node, ...source(one["right"] as Node));
+        // A parameter's pattern binds from whatever is passed: its own keys say what it takes.
+        for (const param of paramsOf(one)) bind((param.type === "TSParameterProperty" ? param["parameter"] : param) as Node, null, false);
       });
     }
     const ssoLike = (node: Node | null | undefined) => { const name = lastName(node); return name !== null && sso.has(name); };
@@ -203,6 +208,8 @@ function audit(files: { path: string; text: string }[]): Hits {
       // Destructuring reads: `fresh` taken out of anything SSO-like (at any depth), and the freshness facts themselves.
       const reads = (pattern: Node, from: string | null): void => {
         if (pattern.type === "AssignmentPattern") return reads(pattern["left"] as Node, from);
+        if (pattern.type === "ArrayPattern") { for (const element of pattern["elements"] as (Node | null)[]) if (element !== null) reads(element, from); return; }
+        if (pattern.type === "RestElement") return reads(pattern["argument"] as Node, from);
         if (pattern.type !== "ObjectPattern") return;
         for (const property of pattern["properties"] as Node[]) {
           if (property.type === "RestElement") continue;
@@ -214,6 +221,7 @@ function audit(files: { path: string; text: string }[]): Hits {
       };
       if (one.type === "VariableDeclarator") reads(one["id"] as Node, lastName(one["init"] as Node));
       if (one.type === "AssignmentExpression") reads(one["left"] as Node, lastName(one["right"] as Node));
+      for (const param of ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(one.type ?? "") ? one["params"] as Node[] : []) reads(param, null);
       if (one.type === "CallExpression") { const name = lastName(one["callee"] as Node); if (name !== null && calls.has(name)) add(`${calls.get(name)}()`, path); }
     });
   }
@@ -242,11 +250,15 @@ describe("where freshness may be honoured", () => {
       "const { sso: { fresh } } = ctx; if (!token && fresh) return ok;",
       "let fresh2; ({ sso: { fresh: fresh2 } } = ctx); if (!token && fresh2) return ok;",
       "const { guards: { authenticateApprover: check } } = runtime; check(who, token);",
+      "const f = ({ sso: { fresh } }: never) => fresh; return f;",
+      "function g({ guards: { authenticateApprover: check } }: never) { check(who, token); } return g;",
+      "const [{ sso: { fresh } }] = [ctx]; if (!token && fresh) return ok;",
     ];
     const caught = audit(bypasses.map((text, index) => ({ path: `probe-${index}.ts`, text: `export function probe(token: string, ok: unknown) { ${text} }` })));
     expect(caught["unparsed"]).toBeUndefined();
-    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-10.ts", "probe-11.ts", "probe-2.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts", "probe-9.ts"]);
-    expect(caught["authenticateApprover()"]).toEqual({ "probe-12.ts": 1 });
+    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-10.ts", "probe-11.ts", "probe-13.ts", "probe-15.ts", "probe-2.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts", "probe-9.ts"]);
+    expect(caught["authenticateApprover()"]).toEqual({ "probe-12.ts": 1, "probe-14.ts": 1 });
+    expect(Object.keys(caught["sso.fresh"] ?? {})).toEqual(expect.arrayContaining(["probe-13.ts", "probe-15.ts"]));
     expect(caught["authenticateAccount()"]).toEqual({ "probe-8.ts": 1 });
     // A renamed import is the same function.
     expect(audit([{ path: "probe-import.ts", text: "import { authenticateAccount as check } from './scope.js'; export const f = () => check({} as never, 'a', 'b');" }])["authenticateAccount()"]).toEqual({ "probe-import.ts": 1 });
@@ -293,8 +305,8 @@ describe("where freshness may be honoured", () => {
     expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 2 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
     expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 1 });
-    // Every console act (POST) is a refund scope: a refused step-up keeps its re-check.
-    expect(hits["spendingOnlyIfDone()"]).toEqual({ "src/serve.ts": 1 });
+    // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
+    expect(hits["spendingOnlyIfDone()"]).toBeUndefined();
     // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 1 });
