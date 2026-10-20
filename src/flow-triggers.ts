@@ -38,7 +38,7 @@ import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
-import { identityOf, readDelivery } from "./webhook-readers.js";
+import { identityOf, looksSecret, readDelivery, safeLink } from "./webhook-readers.js";
 import { CARDS_PER_HOUR, countUnproven, HELD_AT_MOST, UNKNOWN_ADDRESS } from "./webhook-limits.js";
 import { makesSecret, makeSecret, proveDelivery, secretShapeOk, SENDER_WORDS, WEBHOOK_SENDERS, type DistinctHeaders, type SigningSender, type WebhookSender } from "./webhook-signing.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
@@ -1025,7 +1025,7 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
   // An unsigned webhook has nothing to prove: every delivery to it counts (and it is lossy under a flood, by design).
   const unsigned = config.kind === "webhook" && senderOf(config) === "none";
   if (unsigned) { const counted = unproven(address, { status: 0, said: "" }); if (counted.status === 429) return counted; }
-  if (delivery.body.length > HOOK_BYTES) return { status: 413, said: "Too large." };
+  if (delivery.body.length > HOOK_BYTES) return unsigned ? { status: 413, said: "Too large." } : unproven(address, { status: 413, said: "Too large." });
   // Proven over the raw bytes before anything in them is read; a refusal writes nothing, not even the last outcome.
   const proven = proveHook(trigger, config, delivery, dir, now);
   if ("status" in proven) return unsigned ? proven : unproven(address, proven);
@@ -1056,7 +1056,8 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     items = found === null ? [] : [found];
   } else if (config.kind === "linear") {
     const body = readLinearEvent(payload), sent = Number(body.webhookTimestamp);
-    if (!Number.isFinite(sent) || Math.abs(now.getTime() - sent) > 5 * 60_000) return { status: 401, said: "Too old." };
+    // Signed but stale: as unproven as no signature at all, so it counts toward the address's minute.
+    if (!Number.isFinite(sent) || Math.abs(now.getTime() - sent) > 5 * 60_000) return unproven(address, { status: 401, said: "Too old." });
     if (body.type !== "Issue" || !["create", "update"].includes(body.action ?? "")) return { status: 202, said: "Ignored." };
     // A state trigger fires when the issue arrives in that state, not on every later edit there.
     const moved = body.action === "create" || body.updatedFrom?.stateId !== undefined || config.state === null;
@@ -1106,23 +1107,30 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     // over it is held whole and made into its card when there's room; an unsigned one is turned away.
     const making = items.filter((item): item is Incoming & { at: string | null } => !("skip" in item));
     if (making.length > 0 && store.flowCardsAcceptedSince(trigger.id, new Date(now.getTime() - 3_600_000)) >= CARDS_PER_HOUR) {
-      if (store.claimFlowLimitNote(trigger.id, now)) note(unsigned ? "Too many in the last hour: new deliveries are turned away until there's room." : "Too many in the last hour: new deliveries are held until there's room.");
+      // Rejections are decided before anything is written: an unsigned one writes nothing at all.
       if (unsigned) return { status: 429, said: "Too many in the last hour. Try again later.", retryAfter: 3600 };
-      const item = making[0]!;
-      // Screened before it is kept, as a card's words are: a held item is never something a card couldn't hold.
-      const words = flowCardText(item.title, item.description);
-      if ("problem" in words) {
-        const why = words.problem.startsWith("That looks like a key") ? "it looked like it held a key or password" : words.problem;
-        store.recordFlowTriggerEvent(trigger.id, item.key, null, why, now);
-        return { status: 202, said: `No new cards. Left out 1 item: ${item.source.label}: ${why}.` };
-      }
       if (store.heldFlowReceiptCount(trigger.id) >= HELD_AT_MOST) {
-        // Turned away, written nowhere but the trigger's lasting count: the sender's own log is where it can be resent from.
+        // Turned away, written nowhere but the trigger's lasting count.
         store.noteFlowDeliveryDropped(trigger.id, now);
         return { status: 503, said: "Too many waiting already. Resend it later from the sender's delivery log." };
       }
-      const held: HeldItem = { title: words.title, description: words.description, source: item.source, by };
-      store.recordFlowReceipt(trigger.id, item.key, "held", null, JSON.stringify(held), now);
+      const item = making[0]!;
+      // Screened and bounded whole before it is kept — its words as a card's are, and where it came from (label, link,
+      // identity) as a delivery's are: a held item is never something a card couldn't hold.
+      const words = flowCardText(item.title, item.description);
+      const source = heldSourceOf(item.source, item.key);
+      const problem = "problem" in words ? (words.problem.startsWith("That looks like a key") ? "it looked like it held a key or password" : words.problem) : source === null ? "where it came from couldn't be kept safely" : null;
+      if (problem !== null || "problem" in words || source === null) {
+        store.recordFlowTriggerEvent(trigger.id, item.key, null, problem, now);
+        return { status: 202, said: `No new cards. Left out 1 item: ${problem}.` };
+      }
+      const held = JSON.stringify({ title: words.title, description: words.description, source, by } satisfies HeldItem);
+      if (held.length > HELD_ITEM_BYTES) {
+        store.recordFlowTriggerEvent(trigger.id, item.key, null, "too large to hold", now);
+        return { status: 202, said: "No new cards. Left out 1 item: too large to hold." };
+      }
+      store.recordFlowReceipt(trigger.id, item.key, "held", null, held, now);
+      if (store.claimFlowLimitNote(trigger.id, now)) note("Too many in the last hour: new deliveries are held until there's room.");
       return { status: 202, said: "Held: it will be added when there's room." };
     }
     const results = items.slice(0, CARDS_PER_CHECK).map(item => "skip" in item
@@ -1137,6 +1145,22 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
 /** v126: a held delivery, kept whole until there's room for its card: its words (already screened), where it came from
  * and who sent it. */
 type HeldItem = { title: string; description: string | null; source: FlowCardSource; by: string };
+/** A held item's whole size, at most: its words fit a card, so anything near this is not a card's item. */
+const HELD_ITEM_BYTES = 12_000;
+
+/** Where a held delivery came from, made safe to keep: a bounded label and kind with nothing that looks like a key, a
+ * link made safe (https, no user information, query or fragment), a screened identity. Null when it can't be. */
+function heldSourceOf(source: FlowCardSource, key: string): FlowCardSource | null {
+  const label = source.label.slice(0, 120), kind = source.kind.slice(0, 40);
+  if (looksSecret(label) || looksSecret(kind)) return null;
+  const id = source.external?.id == null ? null : identityOf(source.external.id);
+  if (id !== null && !id.ok) return null;
+  const url = safeLink(source.url, null);
+  return { kind, label, url,
+    ...(source.verified === undefined ? {} : { verified: source.verified.slice(0, 20) }),
+    ...(source.external === undefined ? {} : { external: { id: id?.ok === true ? id.id : null, url: safeLink(source.external.url, null) } }),
+    ...(source.receipt === undefined ? {} : { receipt: key.slice(0, 200) }) };
+}
 
 function readHeldItem(json: string): HeldItem | null {
   try {
@@ -1148,34 +1172,48 @@ function readHeldItem(json: string): HeldItem | null {
 }
 
 /**
- * v126: make a trigger's held deliveries into their cards while the last hour has room, oldest first. Each in its own
- * transaction: the receipt is still held, the flow still takes cards, the words still pass; the card and the receipt's
- * move to accepted land together, or neither does. A held item that no longer passes is left out, with why.
+ * v126: make a trigger's held deliveries into their cards while the last hour has room, oldest first. Each card in its
+ * own write transaction, which reads everything it acts on under the write lock: the trigger (still active, still
+ * taking deliveries), the hour's room, the oldest held receipt, the flow; then the same guards intake has (a failing
+ * run already owned by another card in the project is left out). The card and the receipt's move to accepted land
+ * together, or neither does.
  */
 export function drainHeldDeliveries(store: Store, trigger: FlowTriggerRow, now: Date): number {
-  const config = triggerConfigOf(trigger);
-  if (config === null || !takesDeliveries(config) || trigger.state !== "active") return 0;
   let added = 0;
   for (;;) {
-    const room = CARDS_PER_HOUR - store.flowCardsAcceptedSince(trigger.id, new Date(now.getTime() - 3_600_000));
-    if (room <= 0) return added;
-    const next = store.heldFlowReceipts(trigger.id, 1)[0];
-    if (next === undefined) return added;
-    const made = store.transact(() => {
-      if (store.flowReceipt(trigger.id, next.key)?.state !== "held") return "gone" as const;
-      const flow = store.getFlow(trigger.flow);
+    const step = store.transact(() => {
+      const current = store.getFlowTrigger(trigger.id);
+      const config = current === null ? null : triggerConfigOf(current);
+      if (current === null || config === null || current.state !== "active" || !takesDeliveries(config)) return "stop" as const;
+      if (store.flowCardsAcceptedSince(current.id, new Date(now.getTime() - 3_600_000)) >= CARDS_PER_HOUR) return "stop" as const;
+      const next = store.heldFlowReceipts(current.id, 1)[0];
+      if (next === undefined) return "stop" as const;
+      const flow = store.getFlow(current.flow);
       const definition = flow === null ? null : flowDefinitionOf(flow);
-      if (flow === null || definition === null || flow.state !== "active") return "wait" as const;
+      if (flow === null || definition === null || flow.state !== "active") return "stop" as const;
       const item = readHeldItem(next.itemJson);
       const words = item === null ? { problem: "it couldn't be read back" } : flowCardText(item.title, item.description);
-      if (item === null || "problem" in words) { store.skipHeldReceipt(trigger.id, next.key, "problem" in words ? words.problem : "it couldn't be read back"); return "left" as const; }
+      if (item === null || "problem" in words) { store.skipHeldReceipt(current.id, next.key, "problem" in words ? words.problem : "it couldn't be read back"); return "left" as const; }
+      // One failing run is one fix, held or not: a card another trigger in this project already made for it wins.
+      const filed = next.key.startsWith("checks:") ? checksCardOf(store, flow.repo, next.key) : null;
+      if (filed !== null) { store.skipHeldReceipt(current.id, next.key, `already a card in ${filed}`); return "left" as const; }
       const card = store.addFlowCard({ flow: flow.id, title: words.title, description: words.description, stage: startZone(config, definition), by: item.by, byKind: "automation", source: item.source }, now);
-      if (!store.acceptHeldReceipt(trigger.id, next.key, card, now)) throw new Error("a held delivery changed while its card was made");
+      if (!store.acceptHeldReceipt(current.id, next.key, card, now)) throw new Error("a held delivery changed while its card was made");
       return "added" as const;
     });
-    if (made === "wait") return added;
-    if (made === "added") added++;
+    if (step === "stop") return added;
+    if (step === "added") added++;
   }
+}
+
+/**
+ * v126: a delivery refused before it could be read (too large, a body that wouldn't read): it proves nothing, so it
+ * counts toward its address's minute like any unproven delivery. The answer to give instead when that count is over.
+ */
+export function hookRefusedUnread(store: Store, token: string, now: Date): HookAnswer | null {
+  const trigger = /^[A-Za-z0-9_-]{20,64}$/.test(token) ? store.flowTriggerByHook(hookHash(token)) : null;
+  const count = countUnproven(store, trigger?.hookHash ?? UNKNOWN_ADDRESS, now);
+  return count.over ? { status: 429, said: "Too many. Try again later.", retryAfter: count.retryAfterSeconds } : null;
 }
 
 /** v126: a delivery received before, answered for what it was — never as a card that isn't there. */

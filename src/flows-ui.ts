@@ -27,14 +27,15 @@ import { readFlowSecrets } from "./flow-secrets.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
 
-/** v126: where a turned-away delivery can be sent again from: its sender's own delivery log, where it keeps one. */
+/** v126: what happens to deliveries turned away (refused with 503), as far as each sender is known to say: nothing
+ * here claims a loss that a sender's own retries may still make good. */
 function resendWords(config: TriggerConfig): string {
-  if (config.kind === "github") return "Resend them from GitHub: the repository's Settings → Webhooks → this webhook → Recent Deliveries → Redeliver.";
-  if (config.kind === "linear") return "Resend them from Linear's webhook settings, if it lists them; otherwise they are lost.";
+  if (config.kind === "github") return "GitHub doesn't retry on its own: resend them from the repository's Settings → Webhooks → this webhook → Recent Deliveries → Redeliver.";
+  if (config.kind === "linear") return "Linear may retry a refused delivery; any it doesn't resend can't be recovered here.";
   const sender = config.kind === "webhook" ? senderOf(config) : "none";
-  return sender === "sentry" ? "Sentry doesn't resend: those deliveries are lost. New alerts for the same issues still arrive."
-    : sender === "vercel" ? "Vercel doesn't resend: those deliveries are lost."
-    : "Resend them from the sender's delivery log, if it keeps one; otherwise they are lost.";
+  return sender === "vercel" ? "Vercel retries refused deliveries for up to a day, so some may still arrive; any it gives up on are lost."
+    : sender === "sentry" ? "Sentry may retry a refused delivery; any it doesn't resend are lost, though new alerts for the same issues still arrive."
+    : "The sender may retry, or keep a delivery log to resend from; any it doesn't resend are lost.";
 }
 
 /** v126: what a webhook trigger's row says about how its deliveries are proved. */

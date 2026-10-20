@@ -5,14 +5,16 @@
  * when the hour has room, oldest first; an unsigned one is turned away. Beyond 200 held, deliveries are turned away and
  * counted on the trigger until a person clears it.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createServer } from "node:http";
 import { createHmac } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { flowFromSteps } from "./flows.js";
-import { addFlowTriggerTo, drainHeldDeliveries, receiveFlowHook, runFlowTriggers, setUpFlowHook, type TriggerIo } from "./flow-triggers.js";
+import { addFlowTriggerTo, drainHeldDeliveries, receiveFlowHook, runFlowTriggers, saveSigningSecret, setUpFlowHook, type TriggerIo } from "./flow-triggers.js";
+import { flowHook } from "./server/remote-hooks.js";
 import { CARDS_PER_HOUR, HELD_AT_MOST, UNPROVEN_PER_MINUTE } from "./webhook-limits.js";
 
 const T0 = new Date("2026-10-19T12:00:00.000Z");
@@ -27,7 +29,7 @@ beforeEach(() => {
   store = openStore(file);
   flow = store.createFlow({ repo: REPO, name: "Intake", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, T0);
 });
-afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const cards = (s: Store = store) => Number(s.handle.prepare("SELECT COUNT(*) AS n FROM flow_card WHERE flow = ?").get(flow)?.["n"]);
 const receipts = (id: number) => Number(store.handle.prepare("SELECT COUNT(*) AS n FROM flow_trigger_event WHERE trigger = ?").get(id)?.["n"]);
@@ -148,4 +150,144 @@ test("beyond 200 held, a delivery is turned away, written nowhere but the trigge
   expect(store.getFlowTrigger(hook.id)).toMatchObject({ droppedCount: 2, droppedSince: at(2).toISOString() });
   store.clearFlowDeliveriesDropped(hook.id);
   expect(store.getFlowTrigger(hook.id)).toMatchObject({ droppedCount: 0, droppedSince: null });
+});
+
+/** Everything a delivery could change, except the named columns: rows of the trigger, receipts, cards and card events. */
+function everything(id: number, except: string[] = []): unknown {
+  const trigger = { ...store.handle.prepare("SELECT * FROM flow_trigger WHERE id = ?").get(id) } as Record<string, unknown>;
+  for (const column of except) delete trigger[column];
+  return { trigger, receipts: store.handle.prepare("SELECT * FROM flow_trigger_event WHERE trigger = ? ORDER BY key").all(id),
+    cards: store.handle.prepare("SELECT * FROM flow_card WHERE flow = ? ORDER BY id").all(flow), events: store.handle.prepare("SELECT COUNT(*) AS n FROM flow_event").get() };
+}
+
+describe("what a rejection writes", () => {
+  test("a delivery turned away beyond 200 held changes the trigger's turned-away count and nothing else", () => {
+    const hook = signedHook();
+    for (let i = 0; i < CARDS_PER_HOUR; i++) hook.send(`card ${i}`, at(0));
+    for (let i = 0; i < HELD_AT_MOST; i++) hook.send(`held ${i}`, at(1));
+    // The "too many" note is due again (as if written two hours ago): even so, a turned-away delivery writes no note.
+    store.handle.prepare("UPDATE flow_trigger SET limit_noted_at = ? WHERE id = ?").run(at(-120).toISOString(), hook.id);
+    const before = everything(hook.id, ["dropped_count", "dropped_since"]);
+    expect(hook.send("turned away", at(2)).status).toBe(503);
+    expect(everything(hook.id, ["dropped_count", "dropped_since"])).toEqual(before);
+  });
+
+  test("an unsigned delivery over the hour's limit writes nothing at all", () => {
+    const hook = unsignedHook();
+    for (let i = 0; i < CARDS_PER_HOUR; i++) hook.send(`card ${i}`, at(i * 1.5));
+    const before = everything(hook.id);
+    expect(hook.send("one too many", at(50)).status).toBe(429);
+    expect(everything(hook.id)).toEqual(before);
+  });
+
+  test("a signed Linear delivery that is too old counts as unproven, and past the minute's limit gets 429", () => {
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir);
+    if (!made.ok) throw new Error(made.message);
+    const secret = "l".repeat(32);
+    saveSigningSecret(store, store.getFlowTrigger(made.id)!, secret, T0, dir);
+    const token = made.reveal!.path.slice("/hooks/flow/".length);
+    const stale = JSON.stringify({ type: "Issue", action: "create", webhookTimestamp: at(-30).getTime(), data: {} });
+    const send = () => receiveFlowHook(store, token, { headers: { "linear-signature": [createHmac("sha256", secret).update(stale).digest("hex")] }, body: Buffer.from(stale) }, dir, T0);
+    for (let i = 0; i < UNPROVEN_PER_MINUTE; i++) expect(send()).toEqual({ status: 401, said: "Too old." });
+    expect(send().status).toBe(429);
+  });
+});
+
+describe("draining, against everything else at once", () => {
+  /** Thirty cards in the first half hour and `held` more held; an hour on, one slot frees for each minute. */
+  function full(held: number) {
+    const hook = signedHook();
+    for (let i = 0; i < CARDS_PER_HOUR; i++) hook.send(`card ${i}`, at(i));
+    for (let i = 0; i < held; i++) hook.send(`held ${i}`, at(31 + i / 10));
+    return hook;
+  }
+  /** Run `meanwhile` (another handle's work) just as the drain begins its next write. */
+  function beforeNextWrite(meanwhile: () => void) {
+    const original = store.transact.bind(store);
+    vi.spyOn(store, "transact").mockImplementationOnce(body => { meanwhile(); return original(body); });
+  }
+
+  test("a delivery taking the last slot just before the drain's write: the drain makes nothing past 30 an hour", () => {
+    const hook = full(2);
+    const other = openStore(file);
+    try {
+      beforeNextWrite(() => { expect(hook.send("fresh from B", at(60.5), other)).toEqual({ status: 202, said: "Added 1 card." }); });
+      expect(drainHeldDeliveries(store, store.getFlowTrigger(hook.id)!, at(60.5))).toBe(0);
+      expect(store.flowCardsAcceptedSince(hook.id, at(0.5))).toBe(CARDS_PER_HOUR);
+    } finally { other.close(); }
+  });
+
+  test("a trigger paused just before the drain's write drains nothing, whatever the drain was handed", () => {
+    const hook = full(2);
+    const snapshot = store.getFlowTrigger(hook.id)!;
+    const other = openStore(file);
+    try {
+      beforeNextWrite(() => other.updateFlowTrigger(hook.id, { state: "paused" }, at(60)));
+      expect(drainHeldDeliveries(store, snapshot, at(70))).toBe(0);
+      expect(store.heldFlowReceiptCount(hook.id)).toBe(2);
+    } finally { other.close(); }
+  });
+
+  test("two drains at once make each held delivery exactly once", () => {
+    const hook = full(5);
+    const other = openStore(file);
+    try {
+      beforeNextWrite(() => { drainHeldDeliveries(other, other.getFlowTrigger(hook.id)!, at(65)); });
+      drainHeldDeliveries(store, store.getFlowTrigger(hook.id)!, at(65));
+      expect(cards()).toBe(CARDS_PER_HOUR + 5);
+      expect(store.heldFlowReceiptCount(hook.id)).toBe(0);
+      expect(store.handle.prepare("SELECT COUNT(DISTINCT title) AS n FROM flow_card WHERE flow = ? AND title LIKE 'held %'").get(flow)?.["n"]).toBe(5);
+    } finally { other.close(); }
+  });
+
+  test("a card whose receipt can't move to accepted is rolled back, and the next drain makes it once", () => {
+    const hook = full(1);
+    vi.spyOn(store, "acceptHeldReceipt").mockReturnValueOnce(false);
+    expect(() => drainHeldDeliveries(store, store.getFlowTrigger(hook.id)!, at(61))).toThrow(/changed while its card was made/);
+    expect(cards()).toBe(CARDS_PER_HOUR);
+    expect(drainHeldDeliveries(store, store.getFlowTrigger(hook.id)!, at(61))).toBe(1);
+    expect(cards()).toBe(CARDS_PER_HOUR + 1);
+  });
+
+  test("one failing run is one fix, held or not: two GitHub triggers holding the same commit make one card", () => {
+    const run = (id: number) => {
+      const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "checks", delivery: "webhook", from: "anyone" }, "alex", T0, dir);
+      if (!made.ok) throw new Error(made.message);
+      store.recordFlowReceipt(made.id, "checks:abc123", "held", null, JSON.stringify({ title: "CI failed on abc123", description: null, by: "GitHub", source: { kind: "github", label: `Run ${id}`, url: null } }), at(1));
+      return made.id;
+    };
+    const first = run(1), second = run(2);
+    expect(drainHeldDeliveries(store, store.getFlowTrigger(first)!, at(2))).toBe(1);
+    expect(drainHeldDeliveries(store, store.getFlowTrigger(second)!, at(2))).toBe(0);
+    expect(store.flowReceipt(second, "checks:abc123")).toMatchObject({ state: "skipped", note: "already a card in “Intake”" });
+    expect(cards()).toBe(1);
+  });
+});
+
+test("a held item keeps where it came from only once it is safe and bounded: a link's query is dropped", () => {
+  const hook = signedHook();
+  for (let i = 0; i < CARDS_PER_HOUR; i++) hook.send(`card ${i}`, at(i));
+  expect(hook.send("held one", at(31)).status).toBe(202);
+  const held = store.heldFlowReceipts(hook.id, 1)[0]!;
+  expect(held.itemJson.length).toBeLessThan(12_000);
+  expect(JSON.parse(held.itemJson)).toMatchObject({ title: "held one", by: "Webhook", source: { label: "Webhook", url: null } });
+});
+
+describe("over HTTP", () => {
+  test("past the minute's limit, the answer carries Retry-After", async () => {
+    const hook = signedHook();
+    const server = createServer((request, response) => { void flowHook({ store, clock: () => T0, options: { configDir: dir } }, request, response, new URL(request.url ?? "/", "http://localhost")); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const forged = () => fetch(`http://127.0.0.1:${port}/hooks/flow/${hook.token}`, { method: "POST", headers: { "x-hub-signature-256": `sha256=${"0".repeat(64)}` }, body: "{}" });
+      for (let i = 0; i < UNPROVEN_PER_MINUTE; i++) expect((await forged()).status).toBe(401);
+      const over = await forged();
+      expect(over.status).toBe(429);
+      expect(Number(over.headers.get("retry-after"))).toBeGreaterThan(0);
+      // A body too large to read counts the same way.
+      const big = await fetch(`http://127.0.0.1:${port}/hooks/flow/${hook.token}`, { method: "POST", body: "x".repeat(1_000_001) });
+      expect(big.status).toBe(429);
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
 });

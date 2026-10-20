@@ -4,7 +4,7 @@ import { adapterPolicy } from "./route-policy.js";
  * relay may expose. Each is declared in the route table's edge stage and answers before the console's sign-in.
  */
 import type { IncomingMessage,ServerResponse } from "node:http";
-import { flowFormPage,FORM_PATH,HOOK_PATH,receiveFlowForm,receiveFlowHook } from "../flow-triggers.js";
+import { flowFormPage,FORM_PATH,HOOK_PATH,hookRefusedUnread,receiveFlowForm,receiveFlowHook } from "../flow-triggers.js";
 import type { Store } from "../store.js";
 import { keepPushedUpdate,loadBotToken,pushedByTelegram,telegramHookSecret } from "../telegram.js";
 
@@ -56,7 +56,9 @@ export async function flowHook(ctx: RemoteHookContext, request: IncomingMessage,
   if (url.pathname.startsWith(FORM_PATH)) return flowForm(ctx, request, response, url);
   if (options.configDir === undefined || !url.pathname.startsWith(HOOK_PATH)) return reply(404, "No such address.");
   if (request.method !== "POST") return reply(405, "Send a POST.");
-  if (Number(request.headers["content-length"] ?? 0) > 1_000_000) return reply(413, "Too large.");
+  // Refused before it is read (v126): it still counts toward its address's minute, as anything unproven does.
+  const refused = (status: number, said: string) => { const over = hookRefusedUnread(store, url.pathname.slice(HOOK_PATH.length), clock()); return over === null ? reply(status, said) : reply(over.status, over.said, over.retryAfter); };
+  if (Number(request.headers["content-length"] ?? 0) > 1_000_000) return refused(413, "Too large.");
   const chunks: Buffer[] = [];
   try {
     await new Promise<void>((resolve, reject) => {
@@ -65,7 +67,7 @@ export async function flowHook(ctx: RemoteHookContext, request: IncomingMessage,
       request.on("end", resolve);
       request.on("error", reject);
     });
-  } catch (error) { return reply(error instanceof Error && error.message === "too-large" ? 413 : 400, "Couldn't read that."); }
+  } catch (error) { return refused(error instanceof Error && error.message === "too-large" ? 413 : 400, "Couldn't read that."); }
   try {
     const answer = receiveFlowHook(store, url.pathname.slice(HOOK_PATH.length), { headers: request.headersDistinct, body: Buffer.concat(chunks) }, options.configDir, clock());
     return reply(answer.status, answer.said, answer.retryAfter);
