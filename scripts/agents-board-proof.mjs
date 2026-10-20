@@ -362,7 +362,14 @@ let seeded;
   await page.waitForSelector('[data-agent-group-section]');
   const overflow = await page.evaluate(() => document.scrollingElement.scrollWidth - window.innerWidth);
   check('phone: the board is a list with no sideways overflow', overflow <= 0, `overflow ${overflow}px`);
-  const small = await page.$$eval('[data-agents-board] a, [data-agents-board] button', nodes => nodes.filter(node => { const box = node.getBoundingClientRect(); return box.width > 0 && box.height < 44; }).map(node => `${node.textContent?.trim().slice(0, 30)} ${Math.round(node.getBoundingClientRect().height)}px`));
+  // A target's touch area: its box, or the larger area its ::after hit-area extends to (the timeline bars do this on a
+  // phone: a 20px bar with 12px above and below to touch).
+  const small = await page.$$eval('[data-agents-board] a, [data-agents-board] button', nodes => nodes.map(node => {
+    const box = node.getBoundingClientRect();
+    const after = getComputedStyle(node, '::after');
+    const reach = after.content !== 'none' && after.position === 'absolute' ? Math.max(box.height, box.height - parseFloat(after.top || '0') - parseFloat(after.bottom || '0')) : box.height;
+    return { node, width: box.width, reach };
+  }).filter(one => one.width > 0 && one.reach < 44).map(one => `${one.node.textContent?.trim().slice(0, 30)} ${Math.round(one.reach)}px`));
   check('phone: every row is a 44px target', small.length === 0, small.join('; ') || 'all ≥ 44px');
   await shot(page, 'phone-1-board', 'Phone 390px: the Agents board as a list, grouped by state (synthetic)');
 
