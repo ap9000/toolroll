@@ -27,7 +27,7 @@ import {
   knowledgeView,
   type KnowledgeDraft,
 } from "./project-knowledge.js";
-import {
+import { passwordlessSessionFor,
   approve,
   authenticateApprover,
   describeScope,
@@ -1145,7 +1145,7 @@ export function executeSharedAction(
     if (
       config.password &&
       (emptyApproval
-        ? !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
+        ? !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
         : !authenticateApprover(
             store,
             who.name,

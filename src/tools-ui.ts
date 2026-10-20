@@ -1,6 +1,6 @@
 /** Settings → Tools: one project's MCP servers, in plain words. Secrets are
  * entered here and nowhere else, and never shown again. */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { brandMarkHtml, TILE_PHONE } from "./brand-mark.js";
 import { signedIn } from "./oauth-run-token.js";
 import { credentialModeOf, toolCommandLine, toolStanding, type FoundTool, type ProjectTool, type ToolSpec } from "./project-tools.js";
@@ -37,7 +37,7 @@ export function toolsProjectPicker(projects: readonly string[], chosen: string, 
 /** Choosing another project marks every form on the page as stale before it reloads, so a tap racing the reload is refused. */
 export const TOOLS_PROJECT_SCRIPT = `(function(){var s=document.querySelector('select[data-tools-project]');if(!s)return;s.addEventListener('change',function(){document.querySelectorAll('input[name=shown]').forEach(function(i){i.value=s.value;});});})();`;
 
-const password = html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`;
+const password = html`${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}`;
 
 type Base = { repo: string; shown: string };
 

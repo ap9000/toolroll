@@ -49,7 +49,7 @@ import { redirect,respond,SAFETY,taskHref } from "./http.js";
 import { html, type Html } from "../html.js";
 import { type Who } from "./session.js";
 export function createFlowsHandlers(runtime: ServerRuntime) {
-  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, flowRooms, identify, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
+  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, flowRooms, identify, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
 
   // ---- reads ---------------------------------------------------------------
 
@@ -684,7 +684,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     // A webhook's credentials change only on this secure panel, behind the password — never in chat (v126): a secret
     // pasted (Linear's, Sentry's, Vercel's), one made and shown once with a new address, or who signs its deliveries.
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: verb === "secret" ? "Enter your Toolroll password to save a secret." : "Enter your Toolroll password to change how this webhook is proved." });
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: verb === "secret" ? "Enter your Toolroll password to save a secret." : "Enter your Toolroll password to change how this webhook is proved." });
     if (verb === "setup") {
       const made = setUpFlowHook(store, trigger, now, dir);
       return made.ok ? settle(made.said, { reveal: made.reveal }) : answer(409, { ok: false, said: made.message });

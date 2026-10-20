@@ -1,6 +1,6 @@
 # Passwordless mode — plan
 
-Status: v3, 2026-10-20 — Codex rounds 1–2 folded in (§ Review). Branch `passwordless`.
+Status: built, 2026-10-20 — plan reviewed (Codex rounds 1–6); implementation awaiting review. Branch `passwordless`.
 
 ## What
 
@@ -178,3 +178,23 @@ list (using a machine token is unchanged; minting one is a credential act).
 
 Recorded as an explicit exemption with its reason (above): `up` registering its own worker is unchanged by
 Passwordless and must keep working unattended; every other worker registration stays typed-only.
+
+## Built (2026-10-20)
+
+- `src/passwordless.ts` (the ledger setting, fail-closed read); `/settings/passwordless` (on: typed password; off: one
+  click); a Settings tile.
+- `scope.ts`: the session reading in `proveAccountNow` (method `session`), `cli-login` for the CLI's remembered login
+  under Passwordless (marked per command through an AsyncLocalStorage, never process-wide — the console runs inside
+  `up`'s process), `proveCredential` / `credentialProof`, `passwordlessSessionFor` for the two prechecks;
+  `addApprover`'s voucher is a credential act.
+- `serve.ts`: `live()` also proves the session is still saved; the workspace and request carry the rendering flag.
+- Credential acts on `authenticateCredential` (console) / `credentialApprover` (CLI), each conditional written as two
+  direct calls so the B2 audit sees both; the audit now also watches the credential helpers, and every new site is
+  pinned as reviewed.
+- Forms: `reauth()` (server) / `<Reauth>` (React) around every ordinary re-authentication field; the Live terminal's
+  Start and the deprecated /code page's request form follow the flag too. Credential, sign-in, new-password and secret
+  fields are untouched.
+- No CLI command toggles Passwordless (the console's switch is the one road); the CLI follows it.
+- Tests: `passwordless.test.ts` (the reading, credential refusal, CLI login, fail-closed, detached work),
+  `serve.passwordless.test.ts` (switch, an ordinary step-up, forms, a credential act, a session ended elsewhere),
+  `passwordless-credentials.test.ts` (the closed list, statically).

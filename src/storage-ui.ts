@@ -6,7 +6,7 @@
  */
 import { homedir } from "node:os";
 import { basename } from "node:path";
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { previewDigest, whyWords, type CheckoutItem, type CheckoutPlan } from "./checkout-cleanup.js";
 import { CLEANUP_CHOICES, bytesWords } from "./storage.js";
 import { sweepDetails, sweepWords, type SweepRecord } from "./storage-sweep.js";
@@ -79,7 +79,7 @@ function landedHtml(landed: LandedSummary): Html {
 
 function item(one: CheckoutItem): Html {
   const discard = one.why === "has changes"
-    ? html`<details class="discard"><summary>Discard</summary>${postForm("/settings/storage/discard", html`<p class="meta">Throws away this checkout and its uncommitted changes. Its branch stays.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit" class="danger">Discard changes</button>`, { hidden: { path: one.path } })}</details>`
+    ? html`<details class="discard"><summary>Discard</summary>${postForm("/settings/storage/discard", html`<p class="meta">Throws away this checkout and its uncommitted changes. Its branch stays.</p>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button type="submit" class="danger">Discard changes</button>`, { hidden: { path: one.path } })}</details>`
     : "";
   // The task it was for, then where it is (the home folder as ~), then why it stays.
   const home = homedir();
@@ -94,7 +94,7 @@ export function storageHtml(view: StorageView, notice: { said?: string | null; p
   const facts = [plural(plan.count, "checkout"), `${plan.waitingReview} waiting for review`, `${plan.withChanges} kept for their changes`].join(" · ");
   const frees = plan.go.length === 0 ? "Nothing to clean up now." : `Cleaning up now frees about ${bytesWords(plan.freeBytes)}.`;
   const remove = plan.go.length === 0 ? "" :
-    postForm("/settings/storage/clean", html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Remove ${plural(plan.go.length, "checkout")}</button>`,
+    postForm("/settings/storage/clean", html`${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button type="submit">Remove ${plural(plan.go.length, "checkout")}</button>`,
       { attrs: { class: "remove" }, hidden: { preview: previewDigest(plan) } });
   const preview = html`<details class="clean-up" data-clean-up${notice.problem?.startsWith("Enter your Toolroll password to clean") ? html` open` : ""}><summary>Clean up</summary><div class="preview">${
     plan.go.length === 0 ? html`<p>Nothing to remove now.</p>` :
@@ -103,5 +103,5 @@ export function storageHtml(view: StorageView, notice: { said?: string | null; p
     remove}</div></details>`;
   const options = CLEANUP_CHOICES.map(one => html`<option value="${one.value}"${one.value === plan.cleanup ? html` selected` : ""}>${one.label}</option>`);
   return html`<section class="storage">${note}<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${bytesWords(plan.totalBytes)}</h2><p class="meta">${facts}</p><p data-clean-bytes="${plan.freeBytes}">${frees}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${view.landed === undefined ? "" : landedHtml(view.landed)}${preview}</div><h2>Automatic cleanup</h2>${
-    postForm("/settings/storage", html`<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label><p class="meta">Its branch stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept. When a task's work is already in main, Toolroll marks it complete and removes its checkout and local branches.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button>`, { attrs: { class: "setting" } })}</section>`;
+    postForm("/settings/storage", html`<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label><p class="meta">Its branch stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept. When a task's work is already in main, Toolroll marks it complete and removes its checkout and local branches.</p>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button type="submit">Save</button>`, { attrs: { class: "setting" } })}</section>`;
 }

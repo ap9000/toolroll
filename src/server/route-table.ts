@@ -357,6 +357,10 @@ post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operato
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
 post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
+// Passwordless (docs/plans/passwordless.md): an operator's installation setting. Turning it on takes a typed password
+// (the handler proves it as a credential act); turning it off is one click, so the row itself is not a step-up.
+get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ...operator("An instance operator sets Passwordless.", "/settings") });
+post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
 post("pages", "ledger.checkpoint", "/ledger/checkpoint", operator("An instance operator makes ledger checkpoints.", "/ledger"));
 const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {
   policy: operator("An instance operator sets the policy.", "/settings/policy"),

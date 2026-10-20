@@ -1,4 +1,4 @@
-import { freshFacts,type FreshFacts,proveAccountNow,ssoNowAvailable } from "../scope.js";
+import { credentialProof, freshFacts, proveAccountNow, ssoNowAvailable, type FreshFacts } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -158,7 +158,8 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     confirm: (request, session, typed) => {
       const who = identify(request, false);
       if (who === null || who.via !== "cookie" || who.name !== session.name || who.session.generation !== session.generation) return false;
-      return freshFacts.run(runtime.freshFactsOf(request, who), () => proveAccountNow(store, who.name, typed).ok);
+      // Connecting an outside app is a credential act: never a session (Passwordless) or a remembered password.
+      return freshFacts.run(runtime.freshFactsOf(request, who), () => { const proved = proveAccountNow(store, who.name, typed); return proved.ok && credentialProof(proved.method); });
     },
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
     admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),

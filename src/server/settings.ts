@@ -1,3 +1,4 @@
+import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
@@ -40,7 +41,7 @@ import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
 import { refuse,screen } from "./chrome.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,signInSpent,startedHere } from "./http.js";
-import { html, htmlString, joinHtml, postForm, type Html } from "../html.js";
+import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
 import { browserCaller,type Who } from "./session.js";
 /** settings handlers, moved without changing their route bodies. */
 import { DEFAULT_ACCENT,normalHex } from "../accent-colors.js";
@@ -135,7 +136,7 @@ import { latestReleaseFor,leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAV
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, deletedRepos, recordSignIn, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, recordSignIn, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
 
   // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
   async function spendPage(ctx: HandlerContext): Promise<void> {
@@ -461,6 +462,38 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const body = ssoSettingsHtml({ settings, redirect: origin === null ? null : `${origin}${SSO_CALLBACK}`, projects, linked: settings !== null && store.ssoIdentitiesOf(who.name).some(one => one.issuer.replace(/\/+$/, "") === settings.issuer) },
       { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
     return sendScreen(response, 200, screen("Sign-in", html`<p><a href="/settings">Settings</a></p><h1>Sign-in</h1>${body}`, { chrome: chromeFor(project, "settings") }));
+  }
+  /** Passwordless (docs/plans/passwordless.md): the switch, and the trade in plain words. */
+  async function passwordlessPage(ctx: HandlerContext): Promise<void> {
+    const { url, response, project } = ctx;
+    browserCaller(ctx.who);
+    const setting = passwordlessSetting(store);
+    const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
+    const note = problem ? html`<p class="problem" role="alert">${problem}</p>` : said ? html`<p role="status">${said}</p>` : "";
+    const since = setting.at === null ? "" : html` <span class="meta">(${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"})</span>`;
+    const control = setting.on
+      ? postForm("/settings/passwordless", html`<button class="secondary">Turn Passwordless off</button>`, { hidden: { action: "off" } })
+      : postForm("/settings/passwordless", html`<label>Your password<input type="password" name="password" autocomplete="current-password" required></label><button>Turn Passwordless on</button>`, { attrs: { class: "card approve-form" }, hidden: { action: "on" } });
+    return sendScreen(response, 200, screen("Passwordless", html`<p><a href="/settings">Settings</a></p><h1>Passwordless</h1>${note}\
+<p>When it's on, signing in is the only password: approvals, settings, budgets, signing a mode and starting a terminal no longer ask again — in the browser, on the phone, and in this computer's <code>toolroll</code> command (through its remembered login).</p>\
+<p class="meta">${PASSWORDLESS_TRADE}</p>\
+<p><strong>Passwordless is ${setting.on ? "on" : "off"}.</strong>${since}</p>${control}`, { chrome: chromeFor(project, "settings") }));
+  }
+  async function passwordlessSave(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.passwordless);
+    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/passwordless?${key}=${encodeURIComponent(words)}`);
+    const action = body.get("action");
+    if (action === "off") {
+      setPasswordless(store, false, who.name, now);
+      return back("said", "Passwordless is off. Step-ups ask for your password again.");
+    }
+    if (action !== "on") return back("problem", "Choose on or off.");
+    // Turning it on is a credential act: a password typed now (or a one-use provider re-check), never a session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to turn Passwordless on.");
+    setPasswordless(store, true, who.name, now);
+    return back("said", "Passwordless is on. Signing in is the only password now.");
   }
   async function knowledgePage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -851,7 +884,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const found = await providerFor(before.issuer);
       return found.ok ? back("said", `${before.label} answers: it's ready for people to sign in.`) : back("problem", found.said);
     }
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change sign-in.");
+    // Sign-in methods and the identity provider are the login itself: a credential act, a password typed now.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change sign-in.");
     if (action === "remove") {
       removeSsoSettings(options.configDir);
       runtime.ssoProvider = null;
@@ -1414,7 +1448,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const nonceKey = `project-instructions:${project}`;
       if (step === "preview") {
         const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-        return sendScreen(response, 200, screen("Review agent instructions", html`<h1>Review agent instructions</h1><p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`, { chrome: chromeFor(project, "settings") }));
+        return sendScreen(response, 200, screen("Review agent instructions", html`<h1>Review agent instructions</h1><p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`, { chrome: chromeFor(project, "settings") }));
       }
       if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This instruction preview expired. Review it again.", "/control");
       if (!authenticateApprover(who, body.get("token") ?? "").ok) return refuse(response, who, 403, "Your operator credential is required.", "/control");
@@ -1448,7 +1482,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if(!credentials || !state.bindings(credentials.installation).some(one=>state.live(one))) return show("Pair your Slack account first.",409);
       savePrimary(dir,"slack");return redirect(response,"/settings/slack");
     }
-    if(!authenticateApprover(who, body.get("password")??"").ok) return show("Enter your Toolroll password to change Slack access.",403);
+    // Connecting or pairing opens a way to act from Slack: a credential act. Unpairing or disconnecting only closes one.
+    if(!(action==="connect"||action==="pair" ? authenticateCredential(who, body.get("password")??"") : authenticateApprover(who, body.get("password")??"")).ok) return show("Enter your Toolroll password to change Slack access.",403);
     const generation=store.accountOf(who.name)!.generation;
     if(action==="connect") {
       try {
@@ -1530,6 +1565,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const show = (problem: string, status = 400) => sendScreen(response, status, screen("Telegram", telegramSettingsHtml(store, botId, who.name, { problem }), { chrome: chromeFor(projectOf(who, request) ?? null, "settings") }));
     if (body.getAll("password").length > 1) return show("Submit one value for each field.");
     if (botId === null) return show("Connect the Telegram bot first.", 409);
+    // Pairing a phone is a credential act (a typed password, always); unpairing only closes a way in.
+    if (op === "unpair" && authenticateApprover(who, body.get("password") ?? "").ok) { store.unpairTelegram(botId, who.name, now); return redirect(response, "/settings/telegram"); }
     const pairingIdentity = authenticateAccount(store, who.name, body.get("password") ?? "");
     if (!pairingIdentity.ok || pairingIdentity.role !== "approver" || pairingIdentity.generation !== who.session.generation) return show("Enter your Toolroll password to change your phone pairing.", 403);
     if (op === "unpair") {
@@ -1554,7 +1591,7 @@ ${postForm("/settings/chat-approval/save", html`\
       if (!credentials || !state.bindings(credentials.installation).some(one => state.live(one))) return show("Pair your Teams account first.", 409);
       savePrimary(dir, "teams"); return redirect(response, "/settings/teams");
     }
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return show("Enter your Toolroll password to change Teams access.", 403);
+    if (!(action === "connect" || action === "pair" ? authenticateCredential(who, body.get("password") ?? "") : authenticateApprover(who, body.get("password") ?? "")).ok) return show("Enter your Toolroll password to change Teams access.", 403);
     const generation = store.accountOf(who.name)!.generation;
     if (action === "connect") {
       try {
@@ -1593,7 +1630,7 @@ ${postForm("/settings/chat-approval/save", html`\
       if(!credentials || !state.bindings(credentials.installation).some(one=>state.live(one))) return show("Pair your Discord account first.",409);
       savePrimary(dir,"discord");return redirect(response,"/settings/discord");
     }
-    if(!authenticateApprover(who, body.get("password")??"").ok) return show("Enter your Toolroll password to change Discord access.",403);
+    if(!(action==="connect"||action==="pair" ? authenticateCredential(who, body.get("password")??"") : authenticateApprover(who, body.get("password")??"")).ok) return show("Enter your Toolroll password to change Discord access.",403);
     const generation=store.accountOf(who.name)!.generation;
     if(action==="connect") {
       try {
@@ -1895,7 +1932,8 @@ ${modeWords(terms)
       return refuse(response, who, 409, "the terms moved while you were reading — read them again", "/mode");
     }
     const token = body.get("token") ?? "";
-    if (!authenticateApprover(who, token).ok) {
+    // A mode that lets a chat app approve opens a way to act: a credential act. Any other mode is an ordinary one.
+    if (!(body.get("chat-approve") === "1" ? authenticateCredential(who, token) : authenticateApprover(who, token)).ok) {
       return refuse(response, who, 403, "signing a mode takes your password, typed again", "/mode");
     }
     store.signMode(
@@ -2071,6 +2109,8 @@ ${modeWords(terms)
     "settings.backups": backupsPage,
     "settings.data": dataPage,
     "settings.sign-in": signInPage,
+    "settings.passwordless": passwordlessPage,
+    "settings.passwordless-send": passwordlessSave,
     "settings.lead": leadPage,
     "settings.teams": teamsPage,
     "settings.discord": discordPage,

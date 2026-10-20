@@ -13,7 +13,7 @@ rowVisible
 } from "../project.js";
 import {
 authenticateAccount,
-authenticateApprover as checkApproverPassword
+authenticateApprover as checkApproverPassword, credentialProof
 } from "../scope.js";
 import { SourceBudget } from "../sign-in-guard.js";
 import {
@@ -52,6 +52,11 @@ export function createSharedGuards(runtime: GuardsRuntime) {
    * scope.ts proveAccountNow / freshnessFor, reading the request's live facts). Standing (an approver, with access to
    * the project) is checked either way.
    */
+  /** A credential act (docs/plans/passwordless.md): only a password typed now (or a one-use provider re-check) proves it. */
+  function authenticateCredential(who: Who, token: string, repo?: string | null): ReturnType<typeof checkApproverPassword> {
+    const proved = authenticateApprover(who, token, repo);
+    return !proved.ok || credentialProof(proved.method) ? proved : { ok: false, reason: "not-an-approver" };
+  }
   function authenticateApprover(who: Who, token: string, repo?: string | null): ReturnType<typeof checkApproverPassword> {
     // Re-entering a password never upgrades a machine credential into a browser ceremony.
     if (who.via !== "cookie") return { ok: false, reason: "not-an-approver" };
@@ -355,5 +360,5 @@ export function createSharedGuards(runtime: GuardsRuntime) {
   function runVisible(run: Run): boolean {
     return visible(taskRepoOf(run.taskRef));
   }
-  return { authenticateApprover, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
+  return { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
 }

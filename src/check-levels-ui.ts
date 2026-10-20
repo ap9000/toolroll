@@ -2,7 +2,7 @@
  * words. One choice (Quick, Full, Off) and the quick command beside the full
  * one. Every change takes the password and lands in the ledger; approving a
  * command restates exactly what will run, unattended, before the yes. */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { CHECK_LEVELS, CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, type CheckLevel } from "./check-levels.js";
 import type { VerifyCommand } from "./store.js";
 import { BATCH_HINT } from "./batch-policy.js";
@@ -28,7 +28,7 @@ export type CheckSettingsView = {
 
 export function checkSettingsHtml(view: CheckSettingsView): Html {
   const post = (act: string, body: Html, attrs: Record<string, string>) => postForm("/settings/checks", body, { attrs, hidden: { repo: view.repo, act } });
-  const password = html`<label>Password<input type="password" name="password" autocomplete="current-password" required></label>`;
+  const password = html`${reauth(html`<label>Password<input type="password" name="password" autocomplete="current-password" required></label>`)}`;
   const notes = [
     view.said === null ? "" : html`<p class="notice" role="status">${view.said}</p>`,
     view.problem === null ? "" : html`<p class="problem" role="alert">${view.problem}</p>`,

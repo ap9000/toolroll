@@ -2,7 +2,7 @@ import { steerControlsFor } from "../steer-controls.js";
 import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
 import { instanceHttpAnswer } from "../console-instance.js";
 import { handlersOf } from './handler-registry.js';
-import { html, joinHtml, postForm, type Html } from "../html.js";
+import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
 import { createHmac,randomBytes } from "node:crypto";
 import { existsSync,opendirSync,readdirSync,realpathSync } from "node:fs";
@@ -54,7 +54,7 @@ import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { clock, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, projectOf, lookupSession } = runtime;
+  const { clock, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -524,7 +524,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         html`<p class="meta" id="fleet-region-stamp"></p>`,
         html`<h2>Register a worker</h2>`,
         postForm("/fleet/runner/register", html`<label>Name<input type="text" name="name" placeholder="builder-2" maxlength="60" required></label><label>Capacity<input type="text" name="capacity" inputmode="numeric" value="1" aria-label="capacity"></label><label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label><button type="submit">Register — its token is shown once</button>`, { attrs: { class: "card" } }),
-        html`<details class="arm-danger"><summary>Retire a worker</summary>${postForm("/fleet/runner/retire", html`<label>Which worker<input type="text" name="name" placeholder="builder-1" required></label><label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label><button type="submit" class="danger">Retire it</button>`, { attrs: { class: "card" } })}</details>`,
+        html`<details class="arm-danger"><summary>Retire a worker</summary>${postForm("/fleet/runner/retire", html`<label>Which worker<input type="text" name="name" placeholder="builder-1" required></label>${reauth(html`<label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label>`)}<button type="submit" class="danger">Retire it</button>`, { attrs: { class: "card" } })}</details>`,
       ], "\n"),
       // The password fields make this screen sensitive: sendScreen strips
       // the chrome additions and keeps the reorder poller — the named
@@ -715,7 +715,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const body = readForm(posted, CONSOLE_FORMS.runnerRegister);
     if (who.via !== "cookie") return refuse(response, who, 403, "runner registration is a browser surface");
     const token = body.get("token") ?? "";
-    if (!authenticateApprover(who, token).ok) {
+    // A worker credential is minted here: a credential act, a password typed now even with Passwordless on.
+    if (!authenticateCredential(who, token).ok) {
       return refuse(response, who, 403, "registering a worker takes your password, typed again", "/fleet");
     }
     const name = (body.get("name") ?? "").trim();
@@ -824,7 +825,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // (finding 22/33) — the record is consumed from the RETURNED live
     // session, synchronously, before the first await.
     const password = body.get("token") ?? "";
-    if (password === "" || !authenticateApprover(who, password).ok) {
+    if (!authenticateApprover(who, password).ok) {
       return projectsScreen(response, who, "cloning takes your password, typed again", 403);
     }
     const cookieId = /(?:^|;\s*)standing-orders_session=([0-9a-f]{64})/.exec(request.headers.cookie ?? "")?.[1];

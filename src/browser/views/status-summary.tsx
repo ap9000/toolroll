@@ -4,7 +4,7 @@
  * amber icon and one action on its own row; red belongs to Failed alone. The
  * exact technical reasons sit behind More. */
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
-import { PostForm } from "../ui/index.js";
+import { PostForm, Reauth } from "../ui/index.js";
 import { AlertTriangle, Check, ChevronRight, Circle, CircleDot, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { STATUS_MORE, type DetailMark, type HeadlineTone, type StatusDetail, type TaskStatus } from "../../task-status.js";
@@ -116,7 +116,7 @@ export function ConfirmStoppedForm({ form, csrf, label = "Confirm it stopped" }:
     {form.checked === true && <label className="flex min-h-11 items-center gap-2 text-sm phone:w-full">
       <input type="checkbox" name="checked" value="yes" required className="size-4" />Nothing from build #{form.run} is running
     </label>}
-    <Input type="password" name="token" autoComplete="current-password" required aria-label="Your password" placeholder="Your password" className="h-9 w-44 phone:h-11 phone:w-full" />
+    <Reauth><Input type="password" name="token" autoComplete="current-password" required aria-label="Your password" placeholder="Your password" className="h-9 w-44 phone:h-11 phone:w-full" /></Reauth>
     <Button type="submit" variant="attention" className="phone:w-full">{label}</Button>
   </PostForm>;
 }

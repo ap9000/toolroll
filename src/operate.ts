@@ -283,7 +283,7 @@ import {
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
 import { baseStandingWords, freshBaseFor, taskBaseOf } from "./task-base.js";
@@ -1946,7 +1946,7 @@ async function runnerCommand(
     if (acting === null) {
       return fail(write, json, "runner register", "usage", "`runner register <name> --repo <path> --as <you> --token <t>` — minting runner authority is an operator act", EXIT.usage);
     }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
+    const authenticated = credentialApprover(store, acting.name, acting.token);
     if (!authenticated.ok) {
       return fail(write, json, "runner register", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
     }
@@ -2074,7 +2074,7 @@ async function runnerCommand(
     if (acting === null) {
       return fail(write, json, "runner bind", "usage", "`runner bind <name> --repo <path> --as <you> --token <t>` — binding repositories is an operator act", EXIT.usage);
     }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
+    const authenticated = credentialApprover(store, acting.name, acting.token);
     if (!authenticated.ok) {
       return fail(write, json, "runner bind", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
     }
@@ -2176,7 +2176,7 @@ async function coordinatorCommand(
     if (acting === null) {
       return fail(write, json, "coordinator mint", "usage", "`coordinator mint <name> --repo <path> --as <you> --token <t>` — minting filing authority is an operator act", EXIT.usage);
     }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
+    const authenticated = credentialApprover(store, acting.name, acting.token);
     if (!authenticated.ok) {
       return fail(write, json, "coordinator mint", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
     }
@@ -5276,7 +5276,8 @@ async function peopleCommand(
   if (acting === null) {
     return fail(write, json, `people ${action}`, "usage", `\`toolroll people ${action} … --as <you> --token <t>\``, EXIT.usage);
   }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
+  // Inviting and widening access are credential acts; revoking only narrows.
+  const authenticated = (action === "revoke" ? authenticateApprover(store, acting.name, acting.token) : credentialApprover(store, acting.name, acting.token));
   if (!authenticated.ok) {
     return fail(write, json, `people ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, acting.name), EXIT.refused);
   }
@@ -5342,7 +5343,8 @@ async function chatApprovalCommand(positional: readonly string[], flags: Map<str
   if (!["show", "on", "off"].includes(action)) return fail(write, json, "chat-approval", "usage", "Use chat-approval show | on | off [--repo <path>] [--full-access] [--cap-usd <n>] [--yes].", EXIT.usage);
   const acting = await askCredentials(flags, context);
   if (acting === null) return fail(write, json, command, "unauthenticated", "Approving from chat is your own setting: pass --as <you> --token <your password> (or sign in once with toolroll up).", EXIT.refused);
-  const authed = authenticateApprover(store, acting.name, acting.token);
+  // Turning approving from chat on (or changing its limits) is a credential act; showing or turning it off is not.
+  const authed = (action === "on" ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
   if (!authed.ok) return fail(write, json, command, "unauthenticated", "That name and password aren't an approver's. Nothing was changed.", EXIT.refused);
   const given = text(flags, "repo");
   const scope = given === undefined ? ALL_PROJECTS : canonicalProject(given) ?? resolve(given);
@@ -5408,7 +5410,8 @@ async function modeCommand(
   if (acting === null) {
     return fail(write, json, "mode", "usage", "signing or revoking a mode takes `--as <you> --token <t>`", EXIT.usage);
   }
-  const authed = authenticateApprover(store, acting.name, acting.token);
+  // Signing a mode that lets a chat app approve is a credential act; any other mode signing or revoking is ordinary.
+  const authed = (flag(flags, "chat-approve") ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
   if (!authed.ok) {
     return fail(write, json, "mode", authed.reason, "that is not an active approver, or the token does not match", EXIT.refused);
   }
@@ -8662,7 +8665,7 @@ async function bridgeCommand(
       return fail(write, json, `bridge ${action}`, "usage", "`--as <you> --token <your password>` — pairing hands your authority to a chat, so it takes your credential", EXIT.usage);
     }
     const { name: asWho, token } = acting;
-    const authenticated = authenticateApprover(store, asWho, token);
+    const authenticated = (action === "pair" ? credentialApprover(store, asWho, token) : authenticateApprover(store, asWho, token));
     if (!authenticated.ok) {
       return fail(write, json, `bridge ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, asWho), EXIT.refused);
     }
@@ -10595,7 +10598,7 @@ async function leadCommand(positional: readonly string[], flags: Map<string, str
   for (const name of flags.keys()) if (!["as", "token", "revoke", "db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a lead token option.`, EXIT.usage);
   if (currentActor()?.lead === true) return fail(write, json, command, "refused", "A lead cannot mint lead tokens. The person it acts for runs this with their password.", EXIT.refused);
   const acting = await askCredentials(flags, context);
-  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  const verified = acting === null ? null : (flags.has("revoke") ? authenticateApprover(store, acting.name, acting.token) : credentialApprover(store, acting.name, acting.token));
   if (acting === null || verified === null || !verified.ok) {
     return fail(write, json, command, "unauthenticated", "A lead token is minted behind your password: pass --as and --token (or use the remembered login).", EXIT.refused);
   }
@@ -11583,6 +11586,8 @@ function credentialsFrom(
     if (remembered !== null && (name === undefined || name === remembered.name)) {
       name = remembered.name;
       token = remembered.password;
+      // This command proves with the remembered login: under Passwordless that reads as "cli-login", never as typed.
+      rememberedLogin.enterWith({ name, token });
     }
   }
   return { name, token };
@@ -11607,6 +11612,13 @@ async function askCredentials(
  * which scope.ts's authenticateAccount takes as that person (a viewer for a read token) and never checks as a
  * password; these add the token's own project limit.
  */
+/** A credential act from the CLI (docs/plans/passwordless.md §5): a password typed for this command; with Passwordless on,
+ * never the remembered login. */
+function credentialApprover(store: Store, by: string, token: string, repo?: string | null): ReturnType<typeof passwordApprover> {
+  const proved = authenticateApprover(store, by, token, repo);
+  return !proved.ok || credentialProof(proved.method) ? proved : { ok: false, reason: "not-an-approver" };
+}
+
 function authenticateApprover(store: Store, by: string, token: string, repo?: string | null): ReturnType<typeof passwordApprover> {
   const remote = activeRemote();
   if (remote !== null && repo !== undefined && !remote.allows(repo)) return { ok: false, reason: "not-an-approver" };

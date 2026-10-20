@@ -1,6 +1,6 @@
 /** Everyday console pages: home, inbox, board, work, projects, fleet and the queue. */
 import { originNote, type TaskOrigin } from "../task-source.js";
-import { type Html,html,type HtmlValue,htmlString,joinHtml,postForm,replaceMarkup } from "../html.js";
+import { type Html, html, type HtmlValue, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BoardCard } from "../board.js";
 import { type BrowserLimits,type BrowserProjectRow,type BrowserProjectsView,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
@@ -1323,7 +1323,7 @@ export function projectsPage(
                     onboard.record[1].large
                       ? html`<label class="row"><input type="checkbox" name="big-ok" value="1"> this is a large repository (or its size is unknown) — clone it anyway</label>`
                       : null,
-                    html`<label>Your password, typed again <input type="password" name="token" autocomplete="current-password"></label>`,
+                    html`${reauth(html`<label>Your password, typed again <input type="password" name="token" autocomplete="current-password"></label>`)}`,
                     html`<div class="sticky-actions"><button type="submit">Clone and open</button></div>`,
                   ], "\n"), { hidden: { nonce: onboard.record[0] } }),
                   html`</div>`,
@@ -1790,7 +1790,7 @@ export function nextPage(chrome: Chrome, data: {
           // page and chat sign under, before the password — runtime limits one
           // tap away, never in the way.
           agentsCeremonyHtml(data.route)
-        }${scope === null ? null : runtimeDetailsHtml(scope)}<label>Your password, typed again — a signed-in session alone cannot agree to work<input type="password" name="token" autocomplete="current-password"></label><div class="sticky-actions"><button type="submit">Approve this scope</button></div>`,
+        }${scope === null ? null : runtimeDetailsHtml(scope)}${reauth(html`<label>Your password, typed again — a signed-in session alone cannot agree to work<input type="password" name="token" autocomplete="current-password"></label>`)}<div class="sticky-actions"><button type="submit">Approve this scope</button></div>`,
         { attrs: { class: "card approve-form" }, returnTo: "next", hidden: { nonce: data.nonce, digest: data.approvalDigest ?? item.approval.digest } },
       )}<p class="meta"><a href="${taskHref(item.approval.taskId)}">open the full task</a> to edit the scope first</p>`;
   } else if (item.kind === "requeue") {

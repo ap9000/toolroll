@@ -1,6 +1,6 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
 import { ACP_AGENTS, isAcpProfile } from "../acp-agents.js";
-import { type Html,html,htmlString,joinHtml,postForm,replaceMarkup } from "../html.js";
+import { type Html, html, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { closedQuestionReason, closedQuestionWords } from "../decision.js";
 import { type RunActivity } from "../activity-line.js";
 import { type AgentChoice } from "../agentconfig.js";
@@ -455,7 +455,7 @@ export function approvalSheetHtml(input: {
       who.length === 0 ? "" : html`<p class="approval-who">${who.join(" · ")}</p>`,
       consent,
       html`<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">`,
-      html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${passwordNote}"></label>`,
+      html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${passwordNote}"></label>`)}`,
       input.freshSince == null ? html`<p class="approval-password-note" id="${passwordNote}">Your password signs this approval.</p>`
         : html`<p class="approval-password-note" id="${passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
       html`<button type="submit" data-primary-action>${submit}</button></div>`,
@@ -841,6 +841,8 @@ export function approvalProofWords(proof: { method: string; at: string } | null 
   if (proof == null) return "";
   if (proof.method === "fresh-password") return ` (password remembered from ${whenText(proof.at)})`;
   if (proof.method === "fresh-sso") return ` (sign-in remembered from ${whenText(proof.at)})`;
+  if (proof.method === "session") return " (passwordless: your signed-in session)";
+  if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
   return "";
 }
 const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -1060,7 +1062,7 @@ export function resumeCeremonyPage(chrome: Chrome, data: {
     data.gate === null ? "" : html`<p class="row"><strong>Before work starts:</strong> ${data.gate.summary} — ${data.gate.detail}</p>`,
     html`</div>`,
     postForm(`${taskHref(data.taskId)}/resume`, joinHtml([
-      html`<label>Confirm with your password<input type="password" name="token" autocomplete="current-password"></label>`,
+      html`${reauth(html`<label>Confirm with your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
       html`<button type="submit">Resume task</button>`,
     ], "\n"), { attrs: { class: "card resume-form" }, returnTo: data.returnTo, hidden: { nonce: data.nonceValue, run: control.run } }),
     back,
@@ -1248,7 +1250,7 @@ export function planRevisionLedgerHtml(ledger: PlanRevisionLedgerView | null | u
           : joinHtml([
             postForm(`${taskHref(taskId)}/accept-revision`, joinHtml([
               pendingRevision.authorityKind === "authority-change"
-                ? html`<input type="password" name="token" placeholder="approval password" required autocomplete="current-password">`
+                ? html`${reauth(html`<input type="password" name="token" placeholder="approval password" required autocomplete="current-password">`)}`
                 : "",
               html`<button type="submit">${pendingRevision.authorityKind === "authority-change" ? html`Approve changes &amp; continue` : html`Use revised plan &amp; continue`}</button>`,
             ]), { attrs: { class: "inline" }, hidden: { "revision-id": pendingRevision.id } }),
@@ -2466,7 +2468,7 @@ export function taskBodyParts(data: {
     return joinHtml([
       html`<div class="card"><p><strong>External work</strong> <span class="meta">${link} · ${state}</span></p>`,
       reopenable
-        ? postForm(`${taskHref(task.id)}/reopen`, html`<input type="password" name="token" placeholder="your password" aria-label="your password" autocomplete="current-password"><button type="submit">Reopen — the approved scope stands</button>`, { attrs: { class: "row" } })
+        ? postForm(`${taskHref(task.id)}/reopen`, html`${reauth(html`<input type="password" name="token" placeholder="your password" aria-label="your password" autocomplete="current-password">`)}<button type="submit">Reopen — the approved scope stands</button>`, { attrs: { class: "row" } })
         : "",
       html`</div>`,
     ]);

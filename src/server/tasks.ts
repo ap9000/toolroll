@@ -61,7 +61,7 @@ parseResultTab,
 resultReturnTarget
 } from "../result-review.js";
 import { isAlive as runnerAlive } from "../runner.js";
-import {
+import { passwordlessSessionFor,
 acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
@@ -2373,7 +2373,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         }
         // An empty password stands for an explicit identity-provider re-check not yet spent, or (cockpit B2) a password
         // remembered on this session; approve() decides whether these terms may stand on a remembered one.
-        if (token === "" && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
+        if (token === "" && !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
           return approvalProblem("approval requires your password, typed again", 400);
         }
         const scopeRow = store.getScope(taskId);

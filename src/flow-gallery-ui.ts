@@ -7,7 +7,7 @@
 import { brandMarkHtml } from "./brand-mark.js";
 import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, sendsAlready, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
 import { choiceTargets, type FlowDefinition, type FlowStage } from "./flows.js";
-import { html, joinHtml, postForm, type Html } from "./html.js";
+import { html, joinHtml, postForm, type Html, reauth } from "./html.js";
 
 export const GALLERY_CSS = `.gallery{max-width:1120px;min-width:0}.gallery h2{margin:28px 0 10px;font-size:.9375rem}.gallery h2:first-of-type{margin-top:8px}` +
   `.gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}` +
@@ -101,7 +101,7 @@ export function galleryUseHtml(input: {
     if (tool.state === "connected" || tool.state === "taken" || input.csrf === "") return html`<div class="gallery-connect" data-tool="${tool.id}" data-state="${String(tool.state)}">${head}</div>`;
     const how = tool.id === "figma-desktop" ? "Open the Figma desktop app and turn on its Dev Mode MCP server in Preferences." : `You sign in on ${tool.label}, then come back here.`;
     return html`<div class="gallery-connect" data-tool="${tool.id}" data-state="open">${head}${postForm("/settings/tools/connect",
-      html`<p class="meta">${how}</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button name="service" value="${tool.id}">Connect ${tool.label}</button>`,
+      html`<p class="meta">${how}</p>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button name="service" value="${tool.id}">Connect ${tool.label}</button>`,
       { hidden: { repo: input.repo, shown: input.repo, template: template.id } })}</div>`;
   };
   const toolsBlock = tools.length === 0 ? "" : html`<section class="gallery-tools-use" aria-label="Tools">${tools.map(connect)}</section>`;

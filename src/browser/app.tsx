@@ -7,7 +7,7 @@ import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-w
 import {
   Alert, Artifact, ArtifactContent, Badge, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
-  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, PostForm } from "./ui/index.js";
+  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, Passwordless, PostForm } from "./ui/index.js";
 import {
   carryDraft, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft, rejectDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -906,7 +906,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
-  return <FormToken.Provider value={workspace.csrf}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
     <div className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
@@ -984,7 +984,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
         {workspace.result && <Artifact data-workspace-result={workspace.result.runId}><ArtifactContent><GuardedHtml key={workspace.result.runId} html={workspace.result.html} immutable /></ArtifactContent></Artifact>}
       </div> : home !== null ? <WorkPanel workspace={workspace} home={home} /> : <Crew workspace={workspace} />}
     </aside>}
-  </div></FormToken.Provider>;
+  </div></Passwordless.Provider></FormToken.Provider>;
 }
 
 // The cross-fade between pages is a nicety: when the browser skips it (the next

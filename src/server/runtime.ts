@@ -136,6 +136,8 @@ export interface ServerRuntime {
   settingsUpdates: (actor: string, csrf: string) => BrowserUpdates | null;
   phoneSetup: (who: Who) => BrowserPhoneCard | undefined;
   authenticateApprover: (who: Who, token: string, repo?: string | null) => ReturnType<typeof checkApproverPassword>;
+  /** A credential act (passwordless.md's closed list): a password typed now, never a session or a remembered one. */
+  authenticateCredential: (who: Who, token: string, repo?: string | null) => ReturnType<typeof checkApproverPassword>;
   projectOf: (who: Who, request: IncomingMessage) => string | null | undefined;
   bustBadge: () => void;
   revisionDestination: (child: string, back: string) => string;

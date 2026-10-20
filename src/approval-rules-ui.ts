@@ -4,7 +4,7 @@
  * the identity provider); everyone else reads them. Every change is in the
  * ledger, before → after.
  */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import type { ApprovalRules } from "./approval-policy.js";
 
 
@@ -44,5 +44,5 @@ export function approvalRulesHtml(view: ApprovalRulesView, notice: { said?: stri
     radio("none", "Nothing protected", html`One approval is enough.`)}${
     radio("project", "The whole project", html`Every task needs two different people to approve the same scope.`)}${
     radio("paths", "Only these paths", html`Tasks that touch them, or don't say what they touch, need two people.`)}<div class="paths"><label>Protected paths, one per line<textarea name="paths" spellcheck="false" placeholder="infra/**&#10;migrations/**">${view.rules.protectedPaths.join("\n")}</textarea></label></div>${
-    few}</fieldset><div class="step-up"><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label></div><button type="submit">Save rules</button>`, { hidden: { repo: view.repo } })}</section>`;
+    few}</fieldset><div class="step-up">${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}</div><button type="submit">Save rules</button>`, { hidden: { repo: view.repo } })}</section>`;
 }
