@@ -174,7 +174,7 @@ export class LiveConnection {
   private readonly proofs = new Set<() => void>();
   private readonly timer: NodeJS.Timeout;
   private closed = false;
-  private refusedProof = false;
+  private refusing = false;
   constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number } = {}) {
     this.stream = new LiveStream(response, options.limitBytes, () => this.close());
     this.timer = setInterval(() => this.keepAlive(), options.keepAliveMs ?? KEEP_ALIVE_MS);
@@ -190,9 +190,13 @@ export class LiveConnection {
   get open(): boolean { return !this.closed && this.stream.open; }
   /** An event for one room: its data says which. */
   send(room: string, event: string, data: Record<string, unknown> = {}): void { this.stream.send(event, { room, ...data }); }
-  /** A room's proof failed (a sign-out, a revoked or narrowed account): if the page ends up with no rooms, it is told
-   * the stream `ended` and stops, rather than reconnecting at once into a request that can't sign in. */
-  refused(): void { this.refusedProof = true; }
+  /** A room leaves because its proof failed (a sign-out, a revoked or narrowed account): if that departure ends the
+   * connection, the page is told the stream `ended` and stops, rather than reconnecting at once into a request that
+   * can't sign in. Any other close — the page going, a later shutdown, an overflow — says nothing of it. */
+  refuse(leave: () => void): void {
+    this.refusing = true;
+    try { leave(); } finally { this.refusing = false; }
+  }
   /** Run when the connection ends; returns the undo for a room that leaves first. */
   onClose(leave: () => void): () => void { this.leaves.add(leave); return () => { this.leaves.delete(leave); }; }
   close(): void {
@@ -202,7 +206,7 @@ export class LiveConnection {
     for (const leave of [...this.leaves]) leave();
     this.leaves.clear();
     this.proofs.clear();
-    if (this.refusedProof && this.stream.open) { this.response.end("event: ended\ndata: {}\n\n"); return; }
+    if (this.refusing && this.stream.open) { this.response.end("event: ended\ndata: {}\n\n"); return; }
     if (!this.response.writableEnded) this.response.end();
   }
   /** Rooms joined and not yet left. */
@@ -282,9 +286,8 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     try { valid = viewer.valid(); } catch { /* A failed proof releases only this room. */ }
     if (!valid || event === "gone") {
       // A failed proof may send only the generic departure, never the pending room data.
-      if (!valid) viewer.connection.refused();
       try { viewer.connection.send(viewer.room, "gone"); }
-      finally { leave(key, viewer); }
+      finally { if (valid) leave(key, viewer); else viewer.connection.refuse(() => leave(key, viewer)); }
       return false;
     }
     if (event !== undefined) viewer.connection.send(viewer.room, event, data);

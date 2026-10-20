@@ -291,10 +291,11 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     `function mine(e){var d=e.detail;if(d&&(d.room==="workspace"||d.room===null))heard(d.event);}` +
     `if(document.getElementById("standing-orders-workspace")){(window.__soLiveRooms=window.__soLiveRooms||[]).push("workspace");addEventListener("so:live",mine);}` +
     `else if(document.documentElement.dataset.live==="1"){addEventListener("so:live",mine);}` +
-    `else if(typeof EventSource!=="undefined"){var es=new EventSource("/live?room=workspace");` +
+    // Refused (signed out, access lost): stop instead of reconnecting at once into a request that can't sign in, and
+    // listen again in 30 s, as the page's own stream does (browser/live.ts RETRY_MS).
+    `else if(typeof EventSource!=="undefined"){var listen=function(){var es=new EventSource("/live?room=workspace");` +
     `es.addEventListener("change",function(){heard("change");});es.addEventListener("reload",function(){heard("reload");});` +
-    // Refused (signed out, access lost): stop instead of reconnecting into a request that can't sign in.
-    `es.addEventListener("ended",function(){es.close();});` +
+    `es.addEventListener("ended",function(){es.close();setTimeout(listen,30000);});};listen();` +
     `document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh();});}` +
     `})();`
   );

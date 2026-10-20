@@ -376,6 +376,10 @@ describe("one connection per page", () => {
       // A page that goes by itself is never told the stream ended.
       peer.end();
       expect(peer.sent.some(one => one.startsWith("event: ended"))).toBe(false);
+      // Nor is one whose earlier room was refused, when its still-valid connection later closes for another reason.
+      both.close();
+      expect(shared.writableEnded).toBe(true);
+      expect(shared.sent.some(one => one.startsWith("event: ended"))).toBe(false);
     } finally { tasks.close(); flows.close(); }
   });
 
