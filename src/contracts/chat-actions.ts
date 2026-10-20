@@ -45,6 +45,7 @@ export const chatActionRequestSchemas = {
   flow_create: z.strictObject({ repo: words, name: words, definition: nested, trigger: nested.optional() }),
   flow_starter: z.strictObject({ repo: words, starter: words }),
   // Lead fan-out (docs/plans/lead-fan-out.md): N tasks under one brief, one yes.
+  sweep_cancel_rest: z.strictObject({ sweep: id }),
   sweep_file: z.strictObject({ repo: words, title: words, brief: words, items: z.array(z.strictObject({ title: words, item: words })).min(2).max(20),
     acceptance: z.array(z.unknown()).min(1), maxParallel: z.number().int().min(1).max(8) }),
   flow_edit: z.strictObject({ flow: id, name: words.optional(), definition: nested.optional() }),

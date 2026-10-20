@@ -28,6 +28,8 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   tool_remove: { repo: "/work/app", name: "shop" },
   flow_create: { repo: "/work/app", name: "Fixes", definition: { steps: [{ kind: "task", title: "Build" }] } },
   flow_starter: { repo: "/work/app", starter: "ci-fix" },
+  sweep_file: { repo: "/work/app", title: "Bug sweep", brief: "Reproduce first.", items: [{ title: "a", item: "one" }, { title: "b", item: "two" }], acceptance: [{ id: "c1", statement: "s", evidence: ["check"] }], maxParallel: 2 },
+  sweep_cancel_rest: { sweep: 1 },
   flow_edit: { flow: 3, name: "Fixes" },
   flow_card_add: { flow: 3, title: "Footer year", description: null },
   flow_card_move: { card: 12, zone: "review" },

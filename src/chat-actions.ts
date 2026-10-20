@@ -1,7 +1,7 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
 import { fileTaskProposal } from "./proposal.js";
-import { VERDICT_RULE } from "./lead-sweep.js";
+import { sweepTable, VERDICT_RULE } from "./lead-sweep.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -122,6 +122,8 @@ export const CHAT_ACTIONS = {
   // Lead fan-out (docs/plans/lead-fan-out.md): files N tasks under one brief and approves each one's scope — the
   // person's ceremony (protected, with the password), N ordinary approvals of exactly the scopes shown.
   sweep_file: { label: "Start sweep", protected: true, password: true },
+  // Stops every item of a sweep not yet ready; finished results stay. An ordinary act, like cancelling a task.
+  sweep_cancel_rest: { label: "Cancel the rest", protected: false, password: false },
   flow_edit: { label: "Save flow", protected: false, password: false },
   flow_card_add: { label: "Add card", protected: false, password: false },
   flow_card_move: { label: "Move card", protected: false, password: false },
@@ -320,7 +322,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation === "sweep_file"
+    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -331,7 +333,8 @@ export function prepareSharedAction(
   const questionFlow = questionTarget === null ? null : store.getFlow(store.getFlowCard(questionTarget.card)?.flow ?? -1);
   if (operation === "subagent_answer" && (questionTarget === null || questionFlow === null)) throw Error("That question isn't open any more.");
   const repo =
-    flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
+    operation === "sweep_cancel_rest" ? store.getSweep(integer(input, "sweep"))?.repo
+      : flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
   if (!repo) throw Error("Choose an available project.");
   requireActor(store, who, repo);
   const request = structuredClone(input),
@@ -580,6 +583,15 @@ export function prepareSharedAction(
       title = `Answer ${subagentOf === null ? "the subagent" : nameOf(subagentOf)}`;
       terms.push(question.question, `Your answer: ${[choice?.label, said].filter(Boolean).join(" — ")}`);
     }
+  } else if (operation === "sweep_cancel_rest") {
+    // Exactly the items open now: if any settles or starts in between, the card is stale and a fresh one is needed.
+    const table = sweepTable(store, integer(input, "sweep"), now, who.repos);
+    if (table === null || table.repo !== repo) throw Error("That sweep isn't one of yours.");
+    const open = table.rows.filter(row => row.state === "working" || row.state === "checking" || row.state === "needs-decision");
+    if (open.length === 0) throw Error("Nothing in that sweep is still running.");
+    state = { open: open.map(row => row.task) };
+    title = `Cancel the rest of ${table.title}`;
+    terms.push(`Stops ${open.length} unfinished item${open.length === 1 ? "" : "s"}: ${open.map(row => row.label).join(", ")}.`, "Finished results stay.");
   } else if (operation === "sweep_file") {
     // Everything the person approves is on this screen: the shared rules, every item, the one success test, the
     // limit. Confirming files exactly these and approves exactly these scopes; anything changed is a new card.
@@ -1247,6 +1259,14 @@ export function executeSharedAction(
       else if (payload.operation.startsWith("flow_")) {
         const done = runFlowAction(store, payload, actor, who.repos, options.root, now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
+      }
+      else if (payload.operation === "sweep_cancel_rest") {
+        let cancelled = 0;
+        for (const task of (payload.state["open"] as string[])) {
+          const result = withActor({ account: who.name, lead: false }, () => store.cancelTask(task, now));
+          if (result.ok) cancelled += 1;
+        }
+        return { ok: true as const, taskId: null, said: `Cancelled ${cancelled} unfinished item${cancelled === 1 ? "" : "s"}. Finished results stay.`, href: `/sweeps/${Number(req["sweep"])}` };
       }
       else if (payload.operation === "sweep_file") {
         const done = fileSweep(store, who, id, payload, options.review?.password ?? "", now);

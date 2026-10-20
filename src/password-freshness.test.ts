@@ -347,7 +347,8 @@ describe("where freshness may be honoured", () => {
   });
 
   test("an allowlisted act opts in only at its own call sites; a re-check is spent in one place, refunded around approvals", () => {
-    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 2 });
+    // Lead sweeps: each child's approval is the ordinary standard approval (chat-actions.ts fileSweep), the same freshness class.
+    expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 3, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 2 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
     expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 2, "src/server/tasks.ts": 1 });
     // Refunds only where one transaction holds every effect: never console-wide (a refused answer proves nothing).
@@ -828,6 +829,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>approved:spendingOnlyOnSuccess(_,_)@11": 1,
+    // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
+    "src/chat-actions.ts#fileSweep@26": 1,
   },
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {

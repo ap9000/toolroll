@@ -1,3 +1,4 @@
+import { sweepLine, sweepTable } from "./lead-sweep.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
 import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
@@ -1477,6 +1478,28 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human review in the secure confirmation screen", executed: false } };
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : "That sweep couldn't be drafted." };
+      }
+    },
+  },
+  get_sweep: {
+    description: "A sweep's table as facts: each item's state, its verdict (fixed, not reproducible, blocked, done, or none yet) and its result, plus the one-line count. Read this, don't poll each task.",
+    handle: (ctx, args) => {
+      const table = sweepTable(ctx.store, Number(args["sweep"]), ctx.now, ctx.who.repos, ctx.evidenceRoot);
+      if (table === null) return { ok: false, message: "No such sweep in your projects." };
+      return { ok: true, body: { sweep: table.id, title: table.title, line: sweepLine(table), table: `/sweeps/${table.id}`, maxParallel: table.maxParallel,
+        items: table.rows.map(row => ({ item: row.ordinal + 1, label: row.label, task: row.task, state: row.state, detail: row.detail.slice(0, 300),
+          verdict: row.verdict?.verdict ?? null, why: row.verdict?.why ?? null, result: row.result })) } };
+    },
+  },
+  propose_sweep_cancel: {
+    description: "Cancel every item of a sweep that isn't ready yet (finished results stay); one confirmation. To steer, cancel or retry ONE item, use that task's own actions.",
+    handle: (ctx, args) => {
+      try {
+        const action = prepareSharedAction(ctx.store, ctx.who, "sweep_cancel_rest", { sweep: Number(args["sweep"]) }, ctx.evidenceRoot, ctx.now);
+        const id = ctx.draft("action", { ...action });
+        return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human confirmation", executed: false } };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That couldn't be drafted." };
       }
     },
   },

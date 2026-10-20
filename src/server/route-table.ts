@@ -357,6 +357,10 @@ post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operato
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
 post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
+// Lead sweeps (docs/plans/lead-fan-out.md): the table, and cancelling what isn't ready. The handler shows a sweep only in
+// a project the reader can see, and acts only for an approver.
+get("tasks", "sweep.page", "^\\/sweeps\\/[1-9][0-9]{0,9}$", { ...free, limited: "unscoped", sample: "/sweeps/1" });
+post("tasks", "sweep.cancel-rest", "^\\/sweeps\\/[1-9][0-9]{0,9}\\/cancel-rest$", { limited: "unscoped", sample: "/sweeps/1/cancel-rest", ...approver("An approver cancels a sweep's work.", "/chat") });
 // Passwordless (docs/plans/passwordless.md): an operator's installation setting. Turning it on takes a typed password
 // (the handler proves it as a credential act); turning it off is one click, so the row itself is not a step-up.
 get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ...operator("An instance operator sets Passwordless.", "/settings") });

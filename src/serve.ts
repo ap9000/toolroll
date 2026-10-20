@@ -151,6 +151,7 @@ import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { passwordlessOn } from './passwordless.js';
+import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
@@ -1941,7 +1942,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations,
+    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

@@ -13,6 +13,9 @@ import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { fileTaskProposal } from "./proposal.js";
 import { prepareSharedAction, mintSharedActionReview, type ChatAction } from "./chat-actions.js";
 import { confirmLeadProposal } from "./lead-doors.js";
+import { register } from "./runner.js";
+import { acquire } from "./claim.js";
+import { sweepLine, sweepTable } from "./lead-sweep.js";
 
 describe("lead sweeps", () => {
   let root: string,
@@ -210,5 +213,23 @@ describe("lead sweeps", () => {
   test("a sweep is 2 to 20 items, and 1 to 8 at once", () => {
     expect(() => prepareSharedAction(store, who, "sweep_file", { repo, title: "t", brief: "b", items: [ITEMS[0]], acceptance: ACCEPTANCE, maxParallel: 2 }, root, now)).toThrow(/items|2 to 20/);
     expect(() => prepareSharedAction(store, who, "sweep_file", { repo, title: "t", brief: "b", items: ITEMS, acceptance: ACCEPTANCE, maxParallel: 9 }, root, now)).toThrow(/maxParallel|1 to 8/);
+  });
+
+  test("end to end: a 4-item sweep at 2 at once — the limit holds, the table reads it, cancel-the-rest stops what's open", () => {
+    register(store, { name: "w1", host: "h", capacity: 9, repos: [repo], now, newToken: () => "tok-w1" });
+    const items = [...ITEMS, { title: "Lost reply", item: "The latest reply is gone after a restart." }];
+    const done = confirm(sweepCard({ items, maxParallel: 2 }), true);
+    expect(done).toMatchObject({ ok: true });
+    const sweep = Number(store.handle.prepare("SELECT id FROM lead_sweep ORDER BY id DESC LIMIT 1").get()!["id"]);
+    const refs = store.sweepTasks(sweep).map(child => store.refFor("built-in", child.rootTask).id);
+    expect(acquire(store, refs[0]!, "w1", { token: "tok-w1", now }).ok).toBe(true);
+    expect(acquire(store, refs[1]!, "w1", { token: "tok-w1", now }).ok).toBe(true);
+    expect(acquire(store, refs[2]!, "w1", { token: "tok-w1", now })).toMatchObject({ ok: false, reason: "sweep-limit", limit: 2 });
+    const table = sweepTable(store, sweep, now, [repo], root)!;
+    expect(table.rows.map(row => row.label)).toEqual(items.map(one => one.title));
+    expect(sweepLine(table)).toMatch(/^0 of 4 settled/);
+    // The lead reads it as facts, and drafts "cancel the rest" as one card.
+    const cancel = prepareSharedAction(store, who, "sweep_cancel_rest", { sweep }, root, now);
+    expect(cancel.terms.join("\n")).toMatch(/Stops 4 unfinished items/);
   });
 });
