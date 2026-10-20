@@ -394,3 +394,28 @@ test("an identity of the full 120 characters is a key, whatever its sender's pre
   expect(send("m".repeat(120), { id: long, title: "Long id" })).toEqual({ status: 202, said: "Added 1 card." });
   expect(store.flowReceipt(made.id, `v3:standard:id:${long}`)?.state).toBe("accepted");
 });
+
+test("an unsigned sender's own id that looks like a key is never a key: the delivery keys on its bytes", () => {
+  const hook = unsignedHook();
+  const planted = ["ghp", "Q".repeat(36)].join("_");
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook" }, "alex", T0, dir);
+  if (!made.ok) throw new Error(made.message);
+  void hook;
+  const token = made.reveal!.path.slice("/hooks/flow/".length);
+  for (const name of ["x-request-id", "x-delivery-id", "idempotency-key"]) {
+    const body = JSON.stringify({ title: `Via ${name}` });
+    expect(receiveFlowHook(store, token, { headers: { [name]: [planted] }, body: Buffer.from(body) }, dir, at(1)).status).toBe(202);
+  }
+  const keys = store.handle.prepare("SELECT key FROM flow_trigger_event WHERE trigger = ?").all(made.id).map(row => String(row["key"]));
+  expect(keys).toHaveLength(3);
+  for (const key of keys) expect(key).toMatch(/^hook:[0-9a-f]{64}$/);
+  expect(JSON.stringify(store.handle.prepare("SELECT source_json FROM flow_card").all())).not.toContain(planted);
+});
+
+test("a flow's name never reaches a sender, quotes and all", () => {
+  const hook = signedHook();
+  const body = JSON.stringify({ title: "Failing run" });
+  const key = `v3:github-style:body:${createHash("sha256").update(body).digest("hex")}`;
+  store.recordFlowTriggerEvent(hook.id, key, null, "Run 7: already a card in ““Launch” Acquisition Triage”", T0);
+  expect(hook.send("Failing run")).toEqual({ status: 202, said: "Already received; it wasn't added: Run 7: already on a card." });
+});

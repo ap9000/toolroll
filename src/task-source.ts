@@ -38,7 +38,8 @@ export function hostOf(url: string | null): string | null {
 
 /** How a snapshot's delivery was proved, in words: "signed by Sentry", or "unsigned". */
 export function provedWords(snapshot: TaskSourceSnapshot): string {
-  return snapshot.verified === "none" ? "unsigned" : `signed by ${SENDER_WORDS[snapshot.verified as WebhookSender] ?? snapshot.verified}`;
+  const by = snapshot.verified === "github" ? "GitHub" : snapshot.verified === "linear" ? "Linear" : SENDER_WORDS[snapshot.verified as WebhookSender] ?? snapshot.verified;
+  return snapshot.verified === "none" ? "unsigned" : `signed by ${by}`;
 }
 
 /**

@@ -1076,8 +1076,12 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     // A signed delivery id is outside words too: one that isn't a usable identity (padded, hidden characters, too long,
     // or looking like a key) is never a key; the delivery is received under its bytes, and made into nothing.
     const signedId = proven.signedId === null ? null : identityOf(proven.signedId);
+    // An unsigned sender's own id is outside words too: judged as sent, and when it isn't a usable identity (padded,
+    // hidden characters, too long, looking like a key) the delivery keys on its bytes instead, as when there is none.
+    const saidId = header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key");
+    const headerId = saidId === "" ? null : identityOf(saidId);
     const deliveryKey = sender === "none"
-      ? `hook:${(header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || bodyHash).slice(0, 120)}`
+      ? `hook:${headerId?.ok === true ? headerId.id : bodyHash}`
       : signedId?.ok === true ? `v3:${sender}:wid:${signedId.id}` : `v3:${sender}:body:${bodyHash}`;
     if (signedId?.ok === false) items = [{ key: deliveryKey, skip: `its delivery id: ${signedId.why}`, label: "Webhook", at: null }];
     // Not for this flow: received under the delivery's own key, so it never uses up the identity of what it names.
@@ -1103,10 +1107,15 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
   // (A webhook's identities were judged by its reader, raw, before its key was made: only GitHub's and Linear's here.)
   const deliveryBytes = createHash("sha256").update(delivery.body).digest("hex");
   if (config.kind !== "webhook") items = items.map(item => {
-    const judged = identityOf(item.key.slice(item.key.indexOf(":") + 1));
-    if (judged.ok) return item;
+    const identity = item.key.slice(item.key.indexOf(":") + 1);
+    const judged = identityOf(identity);
     // A fixed label: nothing of the refused identity is kept, not even in the words the panel shows.
-    return { key: `v3:${config.kind}:body:${deliveryBytes}`, skip: judged.why, label: "A delivery", at: null };
+    if (!judged.ok) return { key: `v3:${config.kind}:body:${deliveryBytes}`, skip: judged.why, label: "A delivery", at: null };
+    if ("skip" in item) return item;
+    // A signed GitHub or Linear delivery says, at its receipt, who proved it and what it names (v126) — a polled item
+    // never does, so the two stay apart; nothing is inferred later from today's settings.
+    const url = safeLink(item.source.url, config.kind === "github" ? [{ host: "github.com", subdomains: false }] : [{ host: "linear.app", subdomains: false }]);
+    return { ...item, source: { ...item.source, url, verified: config.kind, external: { id: judged.id, url }, receipt: item.key } };
   });
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Webhook";
   return written(() => {
@@ -1149,7 +1158,8 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
       : makeCard(store, trigger, config, item, by, now));
     const said = outcomeWords(results, false);
     note(said);
-    return { status: 202, said: publicWords(said) };
+    // The sender's answer is made from public reasons, not edited out of the panel's words.
+    return { status: 202, said: outcomeWords(results.map(one => ({ ...one, note: publicReason(one.note) })), false) };
   });
 }
 
@@ -1232,13 +1242,15 @@ export function hookRefusedUnread(store: Store, token: string, now: Date): HookA
 /** v126: a delivery received before, answered for what it was — never as a card that isn't there. */
 function repeatAnswer(before: FlowReceipt): HookAnswer {
   return { status: 202, said: before.state === "accepted" ? "Already received." : before.state === "held" ? "Already received; waiting for room."
-    : before.state === "skipped" ? publicWords(`Already received; it wasn't added${before.note === null ? "" : `: ${before.note}`}.`) : "Already received." };
+    : before.state === "skipped" ? `Already received; it wasn't added${before.note === null ? "" : `: ${publicReason(before.note)}`}.` : "Already received." };
 }
 
-/** What a delivery's sender is told (v126): why its own item was left out, but never this installation's flows or cards
- * — those words stay on the signed-in panel. */
-function publicWords(said: string): string {
-  return said.replace(/already a card in “[^”]*”/g, "already on a card");
+/** Why an item was left out, as its sender is told (v126): reasons about what it sent, but never this installation's
+ * flows or cards — a reason that names one is said without it. The full words stay on the signed-in panel. */
+function publicReason(note: string | null): string | null {
+  if (note === null) return null;
+  const at = note.indexOf("already a card in");
+  return at === -1 ? note : `${note.slice(0, at)}already on a card`;
 }
 
 /**
