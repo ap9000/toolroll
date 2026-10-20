@@ -4,10 +4,14 @@
  * someone must do, and whether this person has seen it — and never stored as one. Looking clears only `done`: a failure,
  * an approval or a result to accept stays until it is dealt with. The words and colours of each state live here only.
  */
-import { agentFacts, agentGroupOf, type AgentFacts } from "./agents-board.js";
+import { agentFactsFor, agentGroupOf, type AgentFacts } from "./agents-board.js";
 import { stuckSince } from "./agent-board.js";
+import { flowDefinitionOf } from "./flow-engine.js";
 import type { Store } from "./store.js";
 import { runActivityOf } from "./task-activity.js";
+import { workStateRows } from "./work-index.js";
+import { assignmentChecksForRun } from "./assignment.js";
+import type { WorkSummaryAccess } from "./work-summary.js";
 
 /** What an attempt is doing. */
 export type Activity = "queued" | "waiting" | "running" | "stuck" | "pausing" | "paused" | "stopping" | "stopped" | "finished";
@@ -60,85 +64,86 @@ export function rollUp(counts: StateCounts): { state: DisplayState; counts: Stat
   return { state: DISPLAY_STATES.find(state => state !== "idle" && counts[state] > 0) ?? "idle", counts };
 }
 
-/** The four facts of one build attempt, from what the Agents board reads (agents-board.ts). */
+/** The four facts of one build attempt, from what the Agents board reads (agents-board.ts): its own record only — a
+ * stopped or cancelled attempt is not a failure, a parked one is a decision only while its task is open, and one being
+ * repaired is at work, not stuck. */
 export function factsOfAttempt(facts: AgentFacts, activityAt: string | null, paused: boolean, now: Date): StateFacts {
-  const { group } = agentGroupOf(facts, activityAt, now);
-  const outcome: Outcome = facts.outcome === null ? "none" : facts.outcome === "built" ? "built" : facts.outcome === "no-change" ? "no-change" : "failed";
+  const settled = facts.taskState === "done" || facts.taskState === "cancelled";
   if (facts.outcome === null) {
-    const stuck = facts.turn === "busy" && stuckSince({ state: "busy", stateAt: facts.stateAt ?? facts.startedAt, transcriptAt: facts.transcriptAt ?? facts.startedAt, toolAt: facts.toolAt }, activityAt, now) !== null;
-    // An open run asking, crashed or blocked is the board's "needs you": an obligation, not a mood.
-    return { activity: paused ? "paused" : stuck ? "stuck" : "running", outcome, obligation: group === "needs-you", unread: false };
+    const { group } = agentGroupOf(facts, activityAt, now);
+    const stuck = !facts.repairing && facts.turn === "busy"
+      && stuckSince({ state: "busy", stateAt: facts.stateAt ?? facts.startedAt, transcriptAt: facts.transcriptAt ?? facts.startedAt, toolAt: facts.toolAt }, activityAt, now) !== null;
+    // An open run asking, crashed or blocked is an obligation (the board's "needs you"), whatever else it is doing.
+    return { activity: paused ? "paused" : stuck ? "stuck" : "running", outcome: "none", obligation: group === "needs-you", unread: false };
   }
-  // A finished attempt the board places under "needs you" (parked, failed on an unsettled task) carries an
-  // obligation only when it is a decision; a plain failure is a failure, which leads by its own rule.
-  const obligation = facts.outcome === "parked";
-  return { activity: "finished", outcome, obligation, unread: !(facts.seen || facts.legacy) };
+  const unread = !(facts.seen || facts.legacy);
+  if (facts.outcome === "built" || facts.outcome === "no-change") return { activity: "finished", outcome: facts.outcome, obligation: false, unread };
+  if (facts.outcome === "interrupted" || facts.outcome === "refused") return { activity: "stopped", outcome: "none", obligation: false, unread };
+  if (facts.outcome === "parked") return { activity: "finished", outcome: "none", obligation: !settled, unread };
+  // A failure on a task since settled (done another way, or cancelled) no longer leads.
+  return { activity: "finished", outcome: settled ? "none" : "failed", obligation: false, unread };
 }
 
-/** A project's states for one person: complete counts from their own queries (never the board's capped rows), in the
- * projects they may see. Tasks count once (their current version); obligations count each; attempts count each. */
-export type ProjectState = { repo: string; state: DisplayState; counts: StateCounts };
+/** A family's display state from the Tasks list's own classification (work-index.ts): failures that lead, what waits
+ * on a person (a result to accept included), work running, work waiting its turn; a complete result is news only
+ * until this person has seen it. */
+const FAILED_CODES = new Set(["failed", "vanished-run", "result-needs-attention"]);
+const WAITING_CODES = new Set(["queued", "planning-ready", "scouting-ready", "updating", "retry-scheduled", "waiting-dependency", "worker-at-capacity"]);
 
-export function projectStates(store: Store, access: { repos: readonly string[] | null }, account: string, now: Date): ProjectState[] {
-  const admitted = access.repos;
-  const inScope = (repo: string | null) => repo !== null && (admitted === null || admitted.includes(repo));
-  const counts = new Map<string, StateCounts>();
-  const bump = (repo: string | null, state: DisplayState, by = 1) => {
-    if (!inScope(repo) || by === 0) return;
-    const current = counts.get(repo!) ?? { ...NO_COUNTS };
-    current[state] += by;
-    counts.set(repo!, current);
+export type ProjectState = { repo: string | null; state: DisplayState; counts: StateCounts };
+
+/** A project's states for one person: complete counts over every task family they may see (never a page or the board's
+ * rows), each family once (its current version), plus flow cards waiting for a person's decision, plus attempts paused
+ * or gone quiet. Every visible project is present, idle when nothing is counted. */
+export function projectStates(store: Store, access: WorkSummaryAccess, account: string, now: Date, root?: string, flowRepos?: readonly string[]): ProjectState[] {
+  const counts = new Map<string | null, StateCounts>();
+  const bump = (repo: string | null, state: DisplayState) => {
+    const current = counts.get(repo) ?? { ...NO_COUNTS };
+    current[state] += 1;
+    counts.set(repo, current);
   };
-  const all = (sql: string, ...params: unknown[]) => store.handle.prepare(sql).all(...params);
+  for (const repo of access.repos ?? store.listProjects().map(one => one.path)) counts.set(repo, { ...NO_COUNTS });
 
-  // Obligations: open decisions, scopes waiting for approval, open agent questions, cancelled blockers of queued work.
-  for (const row of all(`SELECT tr.repo, COUNT(*) AS n FROM decision d JOIN run r ON r.id = d.run JOIN task_ref tr ON tr.id = r.task_ref
-      WHERE d.state IN ('open','expired') GROUP BY tr.repo`)) bump(row["repo"] as string | null, "needs-you", Number(row["n"]));
-  for (const row of all(`SELECT tr.repo, COUNT(*) AS n FROM task_scope s JOIN task t ON t.id = s.task_id
-      JOIN task_ref tr ON tr.backend = 'built-in' AND tr.external_id = t.id
-      WHERE t.state IN ('queued','running') AND (s.approved_at IS NULL OR s.approved_by IS NULL OR s.approved_digest IS NULL OR s.approved_digest != s.digest)
-      GROUP BY tr.repo`)) bump(row["repo"] as string | null, "needs-you", Number(row["n"]));
-  for (const row of all(`SELECT tr.repo, COUNT(*) AS n FROM agent_question q JOIN run r ON r.id = q.run JOIN task_ref tr ON tr.id = q.task_ref
-      WHERE q.closed_at IS NULL AND r.outcome IS NULL AND q.attempt_key = r.attempt_key GROUP BY tr.repo`)) bump(row["repo"] as string | null, "needs-you", Number(row["n"]));
-  for (const row of all(`SELECT tr.repo, COUNT(DISTINCT e.blocker) AS n FROM task_edge e
-      JOIN task b ON b.id = e.blocker AND b.state = 'cancelled' JOIN task d ON d.id = e.blocked AND d.state = 'queued'
-      JOIN task_ref tr ON tr.backend = 'built-in' AND tr.external_id = e.blocked GROUP BY tr.repo`)) bump(row["repo"] as string | null, "needs-you", Number(row["n"]));
+  const live = workStateRows(store, now, access);
+  const runs = [...new Set(live.flatMap(row => row.liveRun ?? row.unfinished ?? []))];
+  const paused = new Set(runs.length === 0 ? [] : store.handle.prepare(`SELECT run FROM run_pause WHERE run IN (SELECT value FROM json_each(?))
+      AND paused_at IS NOT NULL AND resumed_at IS NULL AND ended_at IS NULL`).all(JSON.stringify(runs)).map(row => Number(row["run"])));
+  // Complete results that are news to this person: recorded since seeing was (a keyed attempt), and not yet seen. One read.
+  const completed = JSON.stringify(live.flatMap(row => row.code === "complete" && row.resultRun !== null ? [row.resultRun] : []));
+  const unseen = new Set(store.handle.prepare(`SELECT r.id FROM run r WHERE r.id IN (SELECT value FROM json_each(?)) AND r.attempt_key IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM agent_seen s WHERE s.account = ? AND s.run = r.id)`).all(completed, account).map(row => Number(row["id"])));
 
-  // Failures that lead: a failed task, or one with an unresolved incident, that nothing is working on now.
-  for (const row of all(`SELECT tr.repo, COUNT(*) AS n FROM task t JOIN task_ref tr ON tr.backend = 'built-in' AND tr.external_id = t.id
-      WHERE (t.state = 'failed' OR EXISTS (SELECT 1 FROM incident i JOIN run r ON r.id = i.run WHERE r.task_ref = tr.id AND i.resolved_at IS NULL))
-        AND NOT EXISTS (SELECT 1 FROM run r WHERE r.task_ref = tr.id AND r.outcome IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM task_ref c WHERE c.backend = tr.backend AND c.revision_of = tr.external_id)
-      GROUP BY tr.repo`)) bump(row["repo"] as string | null, "failed", Number(row["n"]));
-
-  // Attempts running now, every role: stuck, paused or working, from each open run's own facts.
-  const paused = new Set(all(`SELECT run FROM run_pause WHERE paused_at IS NOT NULL AND resumed_at IS NULL AND ended_at IS NULL`).map(row => Number(row["run"])));
-  const openBuilds = new Map(agentFacts(store, now, access, account).filter(one => one.outcome === null).map(one => [one.runId, one]));
-  for (const row of all(`SELECT r.id, r.role, r.runner, r.started_at, tr.repo FROM run r JOIN task_ref tr ON tr.id = r.task_ref
-      WHERE r.outcome IS NULL AND r.role IN ('planner','builder','scout','reviewer','repair')`)) {
-    const id = Number(row["id"]), repo = row["repo"] as string | null;
-    if (paused.has(id)) { bump(repo, "paused"); continue; }
-    const build = openBuilds.get(id);
-    if (build === undefined) { bump(repo, "working"); continue; }
-    const at = runActivityOf(store, { id, runner: String(row["runner"]), startedAt: String(row["started_at"]) }, now).at;
-    const facts = factsOfAttempt(build, at, false, now);
-    // An open build asking or blocked is already counted as an obligation (its question); the attempt itself works on.
-    bump(repo, facts.activity === "stuck" ? "stuck" : "working");
+  for (const row of live) {
+    if (FAILED_CODES.has(row.code)) { bump(row.repo, "failed"); continue; }
+    // A result waiting to be checked whose project checks failed is a failure, as its task's headline says (task-status.ts).
+    if (row.code === "ready-to-check" && row.resultRun !== null && assignmentChecksForRun(store, root, row.resultRun, now).status === "failed") { bump(row.repo, "failed"); continue; }
+    // Someone's lead took it on: it waits on nobody, and is at work.
+    if (row.personNeed && !row.leadClaim) { bump(row.repo, "needs-you"); continue; }
+    const run = row.liveRun ?? row.unfinished;
+    if (row.code === "running" || row.code === "stopping" || row.leadClaim) {
+      if (run !== null && paused.has(run)) { bump(row.repo, "paused"); continue; }
+      const facts = run === null ? null : agentFactsFor(store, run, { repos: null }, account);
+      if (facts !== null && facts.outcome === null) {
+        const at = runActivityOf(store, { id: facts.runId, runner: facts.runner, startedAt: facts.startedAt }, now).at;
+        bump(row.repo, displayStateOf(factsOfAttempt(facts, at, false, now)) === "stuck" ? "stuck" : "working");
+      } else bump(row.repo, "working");
+      continue;
+    }
+    if (WAITING_CODES.has(row.code)) { bump(row.repo, "waiting"); continue; }
+    // Complete: news to this person until they have seen its result (an attempt from before seeing was recorded never is).
+    if (row.code === "complete" && row.resultRun !== null && unseen.has(row.resultRun)) { bump(row.repo, "done"); continue; }
+    if (!counts.has(row.repo)) counts.set(row.repo, { ...NO_COUNTS });
   }
 
-  // Work waiting its turn: approved, queued, nothing running.
-  for (const row of all(`SELECT tr.repo, COUNT(*) AS n FROM task t JOIN task_ref tr ON tr.backend = 'built-in' AND tr.external_id = t.id
-      JOIN task_scope s ON s.task_id = t.id
-      WHERE t.state = 'queued' AND s.approved_digest IS NOT NULL AND s.approved_digest = s.digest
-        AND NOT EXISTS (SELECT 1 FROM run r WHERE r.task_ref = tr.id AND r.outcome IS NULL)
-      GROUP BY tr.repo`)) bump(row["repo"] as string | null, "waiting", Number(row["n"]));
-
-  // Finished well and not yet seen by this person: each task's newest build, from the board's own candidates.
-  for (const facts of agentFacts(store, now, access, account)) {
-    if (facts.outcome === null) continue;
-    const state = displayStateOf(factsOfAttempt(facts, null, false, now));
-    if (state === "done") bump(facts.repo, "done");
+  // Flow cards waiting at a person's decision (an approval or a choice), in the flows this person may see.
+  const repos = flowRepos ?? (access.repos ?? store.listProjects().map(one => one.path));
+  for (const flow of store.listFlows(repos)) {
+    const definition = flowDefinitionOf(flow);
+    if (definition === null) continue;
+    const deciding = new Set(definition.stages.filter(one => one.kind === "approval" || one.kind === "choose").map(one => one.id));
+    for (const card of store.flowCards(flow.id, false)) if (card.state === "active" && deciding.has(card.stage)) bump(flow.repo, "needs-you");
   }
 
-  return [...counts.entries()].map(([repo, value]) => ({ repo, ...rollUp(value) })).sort((a, b) => a.repo.localeCompare(b.repo));
+  return [...counts.entries()].map(([repo, value]) => ({ repo, ...rollUp(value) }))
+    .sort((a, b) => (a.repo ?? "").localeCompare(b.repo ?? ""));
 }

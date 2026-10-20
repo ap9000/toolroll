@@ -481,6 +481,20 @@ export function workCountsByProject(store: Store, now: Date, access: WorkSummary
     .map(row => ({ repo: s(row, 'repo'), totals: counts(row), queued: n(row, 'queued'), doneRecently: n(row, 'done_recently') }));
 }
 
+/** One row per task family the person may see (the Tasks list's own projection: current version, admission, unplaced
+ * work and the ceiling as the list applies them), with what the cockpit's states read (agent-state.ts): its code, whether
+ * it waits on a person, whether a lead took it on, and its live, unfinished and result runs. Every family, no page. */
+export type WorkStateRow = { repo: string | null; rootId: string; code: string; needs: boolean; personNeed: boolean; leadClaim: boolean;
+  liveRun: number | null; unfinished: number | null; resultRun: number | null };
+export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
+  const projection = registerValidators(store);
+  return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id FROM ranked`)
+    .all(parameters(now, access, {}, custodyReadings(store)))
+    .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
+      leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
+      resultRun: row['result_id'] == null ? null : n(row, 'result_id') }));
+}
+
 /** Families whose headline is Ready for review, newest first: the Tasks
  * list's own rows, so a completed family (root or any revision), a failed
  * check and a superseded version never count. */

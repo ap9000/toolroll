@@ -1,20 +1,23 @@
 /**
- * One set of agent states (docs/plans/agents-cockpit.md §1): the display state from four separate facts, the roll-up,
- * and a project's complete counts for one person — obligations without a run, attempts of every role, failures that
- * stay until dealt with, unseen good finishes that looking clears, and only the projects that person may see.
+ * One set of agent states (docs/plans/agents-cockpit.md §1): the display state from four separate facts, one attempt's
+ * own record read without guessing, and a project's complete counts for one person over the Tasks list's own families
+ * — a result to accept stays until accepted, a failed check is a failure, a flow decision waits on a person, nothing is
+ * capped, unplaced work is its own row, and an empty project is idle.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { displayStateOf, NO_COUNTS, projectStates, rollUp, type StateFacts } from "./agent-state.js";
-import { attemptKeyOf, markAgentSeen, recordAgentTurn, STUCK_AFTER_MS } from "./agent-board.js";
-import { propose } from "./scope.js";
-import { BUILT_IN, openStore, type Store } from "./store.js";
-
-const T0 = new Date("2026-10-19T12:00:00.000Z");
-const at = (ms: number) => new Date(T0.getTime() + ms);
-const SHOP = "/projects/shop", OPS = "/projects/ops";
+import { displayStateOf, factsOfAttempt, NO_COUNTS, projectStates, rollUp, type StateFacts } from "./agent-state.js";
+import type { AgentFacts } from "./agents-board.js";
+import { markAgentSeen } from "./agent-board.js";
+import { addApprover, approve, propose } from "./scope.js";
+import { register } from "./runner.js";
+import { storeEvidence } from "./evidence.js";
+import { sealVerificationReceipt } from "./verification-evidence.js";
+import { flowFromSteps } from "./flows.js";
+import { openStore, type Store } from "./store.js";
 
 describe("the display state", () => {
   const facts = (over: Partial<StateFacts>): StateFacts => ({ activity: "finished", outcome: "built", obligation: false, unread: false, ...over });
@@ -22,7 +25,6 @@ describe("the display state", () => {
     [{ obligation: true, activity: "running" }, "needs-you"],
     [{ obligation: true, outcome: "failed" }, "needs-you"],
     [{ outcome: "failed" }, "failed"],
-    [{ outcome: "failed", unread: false }, "failed"],
     [{ outcome: "checks-failed" }, "failed"],
     [{ outcome: "failed", newerRunning: true }, "idle"],
     [{ activity: "stuck", outcome: "none" }, "stuck"],
@@ -40,7 +42,7 @@ describe("the display state", () => {
     expect(displayStateOf(facts(over as Partial<StateFacts>))).toBe(state);
   });
 
-  test("looking clears only a good finish: a failure, an obligation and a checks failure stay", () => {
+  test("looking clears only a good finish", () => {
     for (const unread of [true, false]) {
       expect(displayStateOf(facts({ outcome: "failed", unread }))).toBe("failed");
       expect(displayStateOf(facts({ outcome: "checks-failed", unread }))).toBe("failed");
@@ -50,7 +52,7 @@ describe("the display state", () => {
     expect(displayStateOf(facts({ outcome: "built", unread: false }))).toBe("idle");
   });
 
-  test("the roll-up takes the strongest state present, in order, and nothing counted is idle", () => {
+  test("the roll-up takes the strongest state present, and nothing counted is idle", () => {
     expect(rollUp({ ...NO_COUNTS })).toEqual({ state: "idle", counts: NO_COUNTS });
     expect(rollUp({ ...NO_COUNTS, working: 3, done: 1 }).state).toBe("working");
     expect(rollUp({ ...NO_COUNTS, working: 3, failed: 1 }).state).toBe("failed");
@@ -59,77 +61,118 @@ describe("the display state", () => {
   });
 });
 
-describe("a project's counts", () => {
-  let store: Store, dir: string;
-  beforeEach(() => { store = openStore(":memory:"); dir = mkdtempSync(join(tmpdir(), "so-state-")); });
+describe("one attempt's own record", () => {
+  const T = new Date("2026-10-19T12:00:00.000Z");
+  const attempt = (over: Partial<AgentFacts>): AgentFacts => ({
+    runId: 1, taskRef: 1, taskId: "t", title: "t", repo: "/r", provider: "claude", runner: "b", outcome: null, reason: null,
+    startedAt: T.toISOString(), finishedAt: null, legacy: false, taskState: "running", turn: "busy", stateAt: T.toISOString(), transcriptAt: T.toISOString(),
+    stuckAt: null, said: null, saidNote: null, saidAt: null, diffFiles: null, toolKind: null, toolAt: null, phase: null, questionNote: null,
+    repairing: false, question: null, seen: false, ...over });
+  const later = new Date(T.getTime() + 60 * 60_000);
+  const state = (over: Partial<AgentFacts>, now = later) => displayStateOf(factsOfAttempt(attempt(over), null, false, now));
+
+  test("a stopped or refused attempt is not a failure; a failure on a settled task no longer leads", () => {
+    expect(state({ outcome: "interrupted", taskState: "queued" })).toBe("idle");
+    expect(state({ outcome: "refused", taskState: "queued" })).toBe("idle");
+    expect(state({ outcome: "failed", taskState: "failed" })).toBe("failed");
+    expect(state({ outcome: "failed", taskState: "cancelled" })).toBe("idle");
+    expect(state({ outcome: "failed", taskState: "done" })).toBe("idle");
+  });
+
+  test("a parked attempt is a decision only while its task is open", () => {
+    expect(state({ outcome: "parked", taskState: "queued" })).toBe("needs-you");
+    expect(state({ outcome: "parked", taskState: "cancelled" })).toBe("idle");
+  });
+
+  test("a quiet build being repaired is at work, not stuck; a quiet one alone is stuck; a crashed or asking one needs a person", () => {
+    expect(state({ repairing: true })).toBe("working");
+    expect(state({})).toBe("stuck");
+    expect(state({}, new Date(T.getTime() + 30_000))).toBe("working");
+    expect(state({ turn: "crashed" })).toBe("needs-you");
+    expect(state({ question: { id: 1, key: "q", text: "?" } })).toBe("needs-you");
+  });
+});
+
+describe("a project's counts, over the Tasks list's own families", () => {
+  const NOW = new Date();
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  let dir: string, REPO: string, OTHER: string, HEAD: string, root: string, password: string, store: Store;
+  const access = (repos: string[] | null, unplaced: boolean) => ({ principal: "operator" as const, repos, ...(unplaced ? { includeUnplaced: true } : {}) });
+  const of = (account = "sam", repos: string[] | null = [REPO, OTHER], unplaced = false) =>
+    Object.fromEntries(projectStates(store, access(repos, unplaced), account, NOW, root).map(one => [one.repo ?? "(unplaced)", one]));
+
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "so-states-")));
+    REPO = join(dir, "shop"); OTHER = join(dir, "ops");
+    for (const repo of [REPO, OTHER]) { mkdirSync(repo); git(repo, "init", "-q", "-b", "main"); writeFileSync(join(repo, "a.txt"), "1\n"); git(repo, "add", "."); git(repo, "commit", "-q", "-m", "1"); }
+    HEAD = git(REPO, "rev-parse", "HEAD");
+    root = join(dir, "evidence");
+    store = openStore(join(dir, "orders.db"));
+    register(store, { name: "builder-1", host: "test", capacity: 4, repos: [REPO, OTHER], now: NOW, newToken: () => "tok" });
+    for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", NOW);
+    const sam = addApprover(store, "sam", NOW);
+    if (!sam.ok) throw new Error("approver");
+    password = sam.token;
+    for (const repo of [REPO, OTHER]) store.setVerifyCommand({ repo, command: "npm test", timeoutMs: 60_000, approvedBy: "sam" }, new Date(NOW.getTime() - 60_000));
+  });
   afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
-  const task = (id: string, repo = SHOP) => {
-    store.createTask({ id, title: id }, T0);
-    const ref = store.refFor(BUILT_IN, id).id;
-    store.placeTask(ref, repo);
-    return ref;
-  };
-  const start = (ref: number, lease: string, role: "builder" = "builder") =>
-    store.startRun({ taskRef: ref, leaseId: lease, runner: "builder-1", branch: `b-${lease}`, worktree: dir, provider: "claude", now: T0, route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, ...(role === "builder" ? {} : {}) });
-  const acceptance = [{ id: "c1", statement: "It works.", evidence: ["manual-review" as const], how: null }];
-  // Read well past the stuck line, so a build quiet since it started is stuck and one active just now is not.
-  const NOW = at(STUCK_AFTER_MS + 10 * 60_000);
-  const counts = (account = "alex", repos: string[] | null = null) => Object.fromEntries(projectStates(store, { repos }, account, NOW).map(one => [one.repo, one]));
+  /** A finished build, approved and stopped, its evidence saved; its project check as given. */
+  function built(id: string, check: "not-run" | "failed" = "not-run", repo = REPO): number {
+    store.createTask({ id, title: id }, NOW);
+    const ref = store.refFor("built-in", id).id;
+    store.placeTask(ref, repo, {}, NOW);
+    const proposed = propose(store, { taskId: id, goal: id, touches: ["src/"], acceptance: [{ id: "c1", statement: id, how: null, evidence: ["changed-path"] }], now: NOW });
+    if (!approve(store, id, "sam", NOW, proposed.digest, password).ok) throw new Error("approve");
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route");
+    const wt = join(dir, `wt-${id}`); mkdirSync(wt);
+    const run = store.startRun({ taskRef: ref, leaseId: `l-${id}`, runner: "builder-1", branch: `toolroll/${id}`, worktree: wt, route: authority.stamp, now: NOW });
+    store.stampRun(run, { scopeDigest: store.getScope(id)!.digest, baseRevision: "1".repeat(40) });
+    store.recordOutcomeFacts(run, { headRevision: HEAD, handoff: `${id}.` });
+    store.raw().prepare("UPDATE run SET provider_started_at = ? WHERE id = ?").run(NOW.toISOString(), run);
+    store.finishRun(run, { outcome: "built", committed: true, now: NOW });
+    store.setTaskState(id, "done", NOW);
+    store.saveProofVerdict(run, "attested", [], NOW, [{ id: "c1", statement: id, requiredEvidence: ["changed-path"], state: "pass", detail: [], answered: [{ kind: "changed-path", ref: "src/app.ts" }], review: null }] as never, "attested");
+    storeEvidence(store, root, run, "terminal-diff", "diff.patch", Buffer.from(`diff --git a/x b/x\n`), "git diff (exit 0)", NOW, { captureStatus: "ok" });
+    if (check === "failed") {
+      // The project's approved check ran on this result and failed: its log, and the sealed receipt the result reads.
+      storeEvidence(store, root, run, "check-log", "check.txt", Buffer.from("1 failed"), "npm test", NOW, { captureStatus: "ok" });
+      sealVerificationReceipt(store, root, run, HEAD, store.liveVerifyCommand(repo)!, { configured: true, ran: true, exitCode: 1 }, NOW);
+    } else store.recordRunCheck(run, { status: "not-run", exitCode: null, suites: [] }, NOW);
+    store.raw().prepare("INSERT INTO run_process (run, pid, host, process_group, observed_at, exited_at) VALUES (?, NULL, ?, 0, ?, ?)").run(run, hostname(), NOW.toISOString(), NOW.toISOString());
+    return run;
+  }
 
-  test("an approval with no run yet, a question, a failure, work running and stuck, work waiting, and an unseen finish each count", () => {
-    // A plan waiting for approval, with no run of any kind yet.
-    task("approve-me");
-    propose(store, { taskId: "approve-me", goal: "Round refunds", outOfScope: null, touches: [], acceptance, now: T0 });
-    // A failed task nothing is working on.
-    task("broke");
-    store.setTaskState("broke", "failed", T0);
-    // A build running, and one gone quiet past the stuck line.
-    const running = task("running");
-    const live = start(running, "l-run");
-    recordAgentTurn(store, { run: live, attemptKey: attemptKeyOf(store, live)!, state: "busy", at: new Date(NOW.getTime() - 30_000) });
-    const quiet = task("quiet");
-    const silent = start(quiet, "l-quiet");
-    recordAgentTurn(store, { run: silent, attemptKey: attemptKeyOf(store, silent)!, state: "busy", at: T0 });
-    // The running build asks a question: an obligation of its own, while the attempt works on.
-    store.handle.prepare("INSERT INTO agent_question (run, task_ref, attempt_key, key, question, asked_at) VALUES (?, ?, ?, 'q1', 'Which currency?', ?)")
-      .run(live, running, attemptKeyOf(store, live)!, T0.toISOString());
-    // Approved and queued, nothing running.
-    task("queued");
-    propose(store, { taskId: "queued", goal: "Queue", outOfScope: null, touches: [], acceptance, now: T0 });
-    store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest WHERE task_id = 'queued'").run(T0.toISOString());
-    // Finished well, not yet seen.
-    const finished = task("finished");
-    const done = start(finished, "l-done");
-    store.finishRun(done, { outcome: "built", now: at(10_000) });
-
-    const shop = counts()[SHOP]!;
-    expect(shop.counts).toMatchObject({ "needs-you": 2, failed: 1, working: 1, stuck: 1, waiting: 1, done: 1 });
-    expect(shop.state).toBe("needs-you");
-
-    // Looking at the finish clears it — for that person only.
-    markAgentSeen(store, "alex", done, at(20_000));
-    expect(counts("alex")[SHOP]!.counts.done).toBe(0);
-    expect(counts("sam")[SHOP]!.counts.done).toBe(1);
-    // Looking never clears the failure.
-    expect(counts("alex")[SHOP]!.counts.failed).toBe(1);
+  test("a result to accept stays needs-you after it is looked at; a failed check is a failure", () => {
+    const ready = built("ready");
+    built("checks-broke", "failed");
+    expect(of()[REPO]!.counts).toMatchObject({ "needs-you": 1, failed: 1, done: 0 });
+    markAgentSeen(store, "sam", ready, NOW);
+    expect(of()[REPO]!.counts).toMatchObject({ "needs-you": 1, failed: 1 });
   });
 
-  test("a failure no longer leads once a newer version is filed or an attempt is working on it", () => {
-    const ref = task("broke");
-    store.setTaskState("broke", "failed", T0);
-    expect(counts()[SHOP]!.counts.failed).toBe(1);
-    start(ref, "l-retry");
-    expect(counts()[SHOP]!.counts).toMatchObject({ failed: 0, working: 1 });
+  test("a flow card waiting at a person's decision counts; an empty visible project is idle; unplaced work is its own row", () => {
+    const flow = store.createFlow({ repo: REPO, name: "Triage", by: "sam", definitionJson: JSON.stringify(flowFromSteps([{ title: "Decide", kind: "approval" }], null)) }, NOW);
+    const start = (JSON.parse(store.getFlow(flow)!.definitionJson) as { start: string }).start;
+    store.addFlowCard({ flow, title: "Refund?", description: null, stage: start, by: "sam", byKind: "person" }, NOW);
+    const states = of();
+    expect(states[REPO]!.counts["needs-you"]).toBe(1);
+    expect(states[OTHER]).toEqual({ repo: OTHER, state: "idle", counts: NO_COUNTS });
+    // A task with no project yet: counted where the Tasks list counts it (for an operator who includes unplaced work).
+    store.createTask({ id: "nowhere", title: "Somewhere" }, NOW);
+    store.refFor("built-in", "nowhere");
+    expect(of("sam", [REPO, OTHER], true)["(unplaced)"]?.counts["needs-you"]).toBe(1);
+    expect(of("sam", [REPO, OTHER], false)["(unplaced)"]).toBeUndefined();
   });
 
-  test("only the projects a person may see are counted, and an empty project is idle", () => {
-    task("shop-broke", SHOP);
-    store.setTaskState("shop-broke", "failed", T0);
-    task("ops-broke", OPS);
-    store.setTaskState("ops-broke", "failed", T0);
-    expect(Object.keys(counts("alex", null)).sort()).toEqual([OPS, SHOP]);
-    expect(Object.keys(counts("sam", [SHOP]))).toEqual([SHOP]);
-    expect(projectStates(store, { repos: [] }, "sam", T0)).toEqual([]);
+  test("nothing is capped: every family counts, and only the projects a person may see", () => {
+    for (let i = 0; i < 85; i++) {
+      store.createTask({ id: `broke-${i}`, title: `broke ${i}` }, NOW);
+      store.placeTask(store.refFor("built-in", `broke-${i}`).id, OTHER, {}, NOW);
+      store.setTaskState(`broke-${i}`, "failed", NOW);
+    }
+    expect(of()[OTHER]!.counts.failed).toBe(85);
+    expect(Object.keys(of("sam", [REPO]))).toEqual([REPO]);
   });
 });
