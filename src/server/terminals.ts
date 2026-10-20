@@ -21,6 +21,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { readForm, CONSOLE_FORMS } from "../contracts/console-api.js";
 import { html, htmlString } from "../html.js";
+import { openTerminalLedger } from "../terminal-catalog.js";
 import { loadPtySpawn, MAX_FRAME_BYTES, TerminalHost, MAX_VIEWERS, parseTerminalFrame, TERMINAL_PROGRAMS, TerminalError, type TerminalProgram, type TerminalSummary, type TerminalViewer } from "../live-terminal.js";
 import type { LiveBus } from "../live-bus.js";
 import { logEvent } from "../log.js";
@@ -64,7 +65,8 @@ export function terminalHostFor(store: Store, options: Pick<ServeOptions, "termi
   if (options.localRunner === undefined || database === null || database === "") return { host: null, problem: "Terminals run on the computer that runs your agents. Open Toolroll there." };
   const spawn = loadPtySpawn();
   if (spawn === null) return { host: null, problem: "This install has no terminal support (the optional @lydell/node-pty package didn't load). Reinstall Toolroll to add it." };
-  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees") }), problem: null };
+  const ledger = openTerminalLedger(store.raw());
+  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), ...(ledger === null ? {} : { ledger }) }), problem: null };
 }
 
 type Operator = Who & { via: "cookie" };
@@ -137,10 +139,22 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       if (stopped !== null) return json(ctx, 403, { ok: false, error: stopped });
     }
     if (!runtime.authenticateApprover(who, body.get("password") ?? "").ok) return json(ctx, 403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
+    // The same session, still an operator of the same generation, and the project still theirs: asked right before the
+    // program starts (after the slow worktree work) and again once it has.
+    const stillAllowed = (): string | null => {
+      const again = rereadBrowser(runtime, ctx.request, who);
+      if (again === null || operatorOf(again) === null) return "Your access changed. Sign in again.";
+      return projectAllowed(who.name, repo) && runtime.consoleProjects().includes(repo) ? null : "That project is no longer available to your account.";
+    };
     try {
-      const terminal = await deps.host!.start({ name: who.name, generation: who.session.generation }, repo, program as TerminalProgram);
-      // Access is checked again after the asynchronous start: a revoked operator's terminal is closed at once.
-      if (operatorOf(runtime.identify(ctx.request, false)) === null) { void deps.host!.close(terminal.id); return json(ctx, 403, { ok: false, error: "Your access changed. Sign in again." }); }
+      const terminal = await deps.host!.start({ name: who.name, generation: who.session.generation }, repo, program as TerminalProgram, undefined, stillAllowed);
+      const after = stillAllowed();
+      if (after !== null) {
+        // Nothing of it stays: the program is swept, then its worktree removed (a sweep that can't prove itself keeps it).
+        await deps.host!.close(terminal.id);
+        await deps.host!.remove(terminal.id).catch(() => {});
+        return json(ctx, 403, { ok: false, error: after });
+      }
       record("start", who.name, terminal);
       return json(ctx, 200, { ok: true, id: terminal.id });
     } catch (error) {
@@ -204,7 +218,8 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const expected = deps.publicOrigin !== null && host === deps.publicOrigin.host ? deps.publicOrigin.origin : `${transport.https ? "https" : "http"}://${host}`;
     if (request.headers.origin !== expected) { refuseUpgrade(socket, 403, "A terminal opens only from this console's own page."); return true; }
     if (request.headers.authorization !== undefined) { refuseUpgrade(socket, 403, "Terminals open with a browser sign-in only."); return true; }
-    const who = operatorOf(runtime.identify(request, true));
+    // Read without touching: a session ended elsewhere is never written back by being seen (round 2, finding 1).
+    const who = operatorOf(runtime.identify(request, false));
     if (who === null || rereadBrowser(runtime, request, who) === null) { refuseUpgrade(socket, 401, "Sign in as an installation-wide operator."); return true; }
     const terminal = deps.host?.get(id) ?? null;
     if (!owned(who, terminal) || !projectAllowed(who.name, terminal.repo)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
@@ -262,7 +277,8 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       const size = Buffer.byteLength(frame.d);
       if (size > budget) return shut(1008, "typing faster than a terminal reads");
       budget -= size;
-      host.input(terminal.id, frame.d);
+      // The program isn't reading: nothing more is queued for it until it does (round 2, finding 5).
+      if (!host.input(terminal.id, frame.d)) ws.send(JSON.stringify({ t: "input-full" }));
     });
     ws.on("close", () => { closed = true; detach?.(); reprovers.delete(reprove); sockets.delete(ws); });
     ws.on("error", () => shut(1011, "socket error"));
@@ -295,7 +311,11 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       for (const ws of sockets) ws.terminate();
       sockets.clear();
       wss.close();
-      await deps.host?.stop();
+      const stopped = await deps.host?.stop();
+      if (stopped !== undefined && !stopped.clean) {
+        logEvent("error", "terminal.shutdown-uncertain", {});
+        throw new Error("A live terminal's processes could not be proved stopped. Check for them before replacing Toolroll.");
+      }
     },
   };
 }

@@ -134,3 +134,30 @@ transcript reader for sessions started outside Toolroll.
    shell gives each job its own group), SIGHUPs all of it, and SIGKILLs whatever from that snapshot is still the same
    process after the grace. If anything outlives that, the terminal's cleanup is `uncertain` and Remove refuses to delete
    the worktree. Console shutdown stops admission, terminates every socket and awaits every close (bounded).
+
+## Review — round 2 (Codex on fb5c709c, NO-GO, 8 findings), and what changed
+
+1. **A signed-out session could come back.** A touch (`persist(session, true)`) upserted the row, so a cached copy
+   re-created a session ended elsewhere. Now a touch only updates a kept session: if its row is gone the cached copy is
+   dropped and the request isn't signed in by it (console-wide fix, `session.ts`/`guards.ts`). The upgrade reads the
+   session without touching, and `/term/state` polls are no-touch.
+2. **Natural exit left jobs behind.** A program that ends on its own is swept like a closed terminal window.
+3. **Children started during close escaped.** Every sweep step re-reads the process table. Membership is: the leader's
+   descendants; processes whose controlling terminal is this pty and that started before it ended; everything noted
+   while it ran (every 5 s, by pid + start time); and — because macOS detaches the terminal from every process when the
+   leader exits — this user's orphans (parent init) started during its life whose working directory is inside its
+   worktree. Plus all their descendants.
+4. **An unreadable process table counted as clean.** `ps`/`lsof` failure is now `uncertain`, never clean.
+5. **Rate limit didn't bound memory.** Input is refused (and the page told "not reading input") once 1 MiB is queued
+   unread for the program, measured from node-pty's write queue (pinned version; an unrecognised shape is unmeasurable
+   = refused; a test pins the shape).
+6. **Shutdown claimed success.** Every sweep is bounded; `stop()` returns `{ clean }`, and the server's close reports
+   an error when any terminal couldn't be proved stopped. Remove requires an affirmative clean sweep.
+7. **Updates ignored terminals.** A small catalog beside the database (`<db>.terminals.sqlite`, like the coding
+   workspace's) holds a row per starting/running terminal: the updater counts rows of a live console as active work,
+   and its gate (a trigger) refuses new starts while it owns admission.
+8. **Access lost during start.** The browser session, operator standing and project are re-proved right before spawn
+   and again after; a failure starts nothing, or sweeps and removes what started.
+
+Stated limit: a process that detaches from the terminal, is reparented, AND leaves the worktree before it was noted is
+not found — no worse than closing any terminal window on macOS.

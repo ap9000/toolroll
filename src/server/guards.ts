@@ -338,6 +338,8 @@ export function createSharedGuards(runtime: GuardsRuntime) {
         return null;
       }
       if (touch) { session.lastSeen = now; runtime.sessions.persist(session, true); }
+      // A touch that found the session ended elsewhere dropped it: this request is not signed in by it.
+      if (touch && !runtime.sessions.holds(session)) return null;
       return session;
     }
     return null;

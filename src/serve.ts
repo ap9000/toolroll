@@ -732,7 +732,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Passive polls authenticate without extending the browser session.
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
-    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname)));
+    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'));
     const refuseBudget = (admitted: Admission): boolean => {
       if (admitted.ok) return false;
       request.resume();
@@ -1742,7 +1742,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), bounded(terminalClosing.close?.()), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
+    void Promise.all([closeCoding(), terminalClosing.close?.(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
     });

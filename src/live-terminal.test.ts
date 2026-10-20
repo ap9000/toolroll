@@ -7,7 +7,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadPtySpawn, parseTerminalFrame, Scrollback, TerminalHost, type PtySpawn, type TerminalControl } from "./live-terminal.js";
+import { readFileSync } from "node:fs";
+import { fakePid } from "../test/fake-pid.js";
+import { createRequire } from "node:module";
+import { loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, Scrollback, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 
 const ALEX = { name: "alex", generation: 1 };
 let spawn: PtySpawn | null = null;
@@ -125,6 +128,106 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     await expect(host.start(ALEX, repo, "shell")).rejects.toThrow(/won't run git in this project: .*core\.pager/);
     expect(host.list("alex")).toHaveLength(0);
     expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
+  });
+
+  const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+  test("a program that ends on its own takes its jobs with it, so its worktree can go (round 2, finding 2)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const { seen, viewer } = watcher();
+    host.attach(started.id, viewer);
+    host.input(started.id, "set +H; (trap '' HUP; exec sleep 60) & echo child=$! ; sleep 0.3; exit\n");
+    await until(() => /child=\d+/.test(seen.out));
+    const child = Number(/child=(\d+)/.exec(seen.out)![1]);
+    await until(() => host.get(started.id)!.cleanup !== null);
+    expect(host.get(started.id)).toMatchObject({ cleanup: "clean", endedBy: null });
+    expect(gone(child)).toBe(true);
+    await host.remove(started.id);
+  });
+
+  test("a child started during the close is caught too (round 2, finding 3)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const late = join(dir, "late.txt");
+    const { seen, viewer } = watcher();
+    host.attach(started.id, viewer);
+    host.input(started.id, `(trap 'sleep 61 & echo $! > ${late}' HUP; while :; do sleep 0.1; done) & echo armed\n`);
+    await until(() => seen.out.includes("armed"));
+    await host.close(started.id);
+    await until(() => { try { return readFileSync(late, "utf8").trim() !== ""; } catch { return false; } });
+    expect(gone(Number(readFileSync(late, "utf8")))).toBe(true);
+    expect(host.get(started.id)).toMatchObject({ cleanup: "clean" });
+  });
+
+  test("an unreadable process table is uncertain, never clean: the worktree stays and stop says so (round 2, findings 4 and 6)", async () => {
+    let readable = true;
+    const blind = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "blind"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "" }), processes: () => readable ? undefined as never : null });
+    // The table reads normally until the close, then fails.
+    const real = await import("./live-terminal.js");
+    (blind as unknown as { processes: () => unknown }).processes = () => readable ? real.readProcessTable() : null;
+    const started = await blind.start(ALEX, repo, "shell");
+    readable = false;
+    expect(await blind.stop()).toEqual({ clean: false });
+    expect(blind.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    await expect(blind.remove(started.id)).rejects.toThrow(/may still be running/);
+    expect(existsSync(started.worktree)).toBe(true);
+  });
+
+  test("typing into a program that doesn't read stops at the cap (round 2, finding 5)", async () => {
+    const deaf = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "deaf"), closeGraceMs: 200, programs: { shell: { file: "/bin/sleep", args: ["30"] } }, env: () => ({ PATH: "" }) });
+    try {
+      const started = await deaf.start(ALEX, repo, "shell");
+      const chunk = "x".repeat(60_000);
+      let refused = false;
+      for (let n = 0; n < 40 && !refused; n += 1) refused = !deaf.input(started.id, chunk);
+      expect(refused).toBe(true);
+    } finally { await deaf.stop(); }
+  });
+
+  test("the pinned pty's write queue is measurable (an upgrade that hides it fails here, and input is refused)", () => {
+    const native = (createRequire(import.meta.url)("@lydell/node-pty") as typeof import("@lydell/node-pty")).spawn("/bin/sleep", ["5"], { cols: 80, rows: 24, env: { PATH: "" } });
+    try {
+      expect(pendingInputOf(native)).toBe(0);
+      expect(pendingInputOf({})).toBe(Infinity);
+      expect(MAX_PENDING_INPUT).toBe(1024 * 1024);
+    } finally { native.kill(); }
+  });
+
+  test("a start is reserved first, refused while an update owns admission, and released after its sweep (round 2, finding 7)", async () => {
+    const calls: string[] = [];
+    let paused = true;
+    const ledger: TerminalLedger = { reserve: id => { if (paused) throw new Error("Toolroll is updating."); calls.push(`reserve:${id.length}`); }, running: () => { calls.push("running"); }, release: (_id, cleanup) => { calls.push(`release:${cleanup}`); } };
+    const led = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "led"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "" }), ledger });
+    await expect(led.start(ALEX, repo, "shell")).rejects.toThrow(/updating/);
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
+    paused = false;
+    const started = await led.start(ALEX, repo, "shell");
+    await led.close(started.id);
+    expect(calls).toEqual(["reserve:32", "running", "release:clean"]);
+  });
+
+  test("an access check that fails right before spawn starts nothing (round 2, finding 8)", async () => {
+    await expect(host.start(ALEX, repo, "shell", undefined, () => "That project is no longer available to your account.")).rejects.toThrow(/no longer available/);
+    expect(host.list("alex")).toHaveLength(0);
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
+    expect(execFileSync("git", ["-C", repo, "branch", "--list", "toolroll/live-*"]).toString().trim()).toBe("");
+  });
+
+  test("membership: noted by start time, the leader only while it runs, its terminal only before it ended", () => {
+    const [P0, P1, P2, P3, P4, P5] = [0, 1, 2, 3, 4, 5].map(fakePid) as [number, number, number, number, number, number];
+    const table = new Map([
+      [P0, { ppid: 1, uid: 0, tty: "ttys009", started: "Tue Oct 20 10:00:00 2026" }],
+      [P1, { ppid: P0, uid: 0, tty: "??", started: "Tue Oct 20 10:00:01 2026" }],
+      [P2, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 10:00:02 2026" }],
+      [P3, { ppid: 1, uid: 0, tty: "ttys009", started: "Tue Oct 20 11:00:00 2026" }],
+      [P4, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 12:00:00 2026" }],
+      [P5, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 10:10:00 2026" }],
+    ]);
+    const ended = Date.parse("Tue Oct 20 10:30:00 2026");
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }).keys()].sort()).toEqual([P0, P1, P2]);
+    expect([...membersOf(table, { leader: P4, tty: null, known: new Map([[P2, "a different start"]]), exitedAt: null }).keys()]).toEqual([P4]);
+    // A resident of its worktree (found by working directory) counts, with its descendants.
+    expect([...membersOf(table, { leader: P4, tty: null, known: new Map(), exitedAt: ended }, new Set([P5])).keys()]).toEqual([P5]);
   });
 
   test("remove drops an ended session and its worktree, keeps the branch", async () => {

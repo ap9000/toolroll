@@ -12,12 +12,13 @@ import "./terminal.css";
 type Program = "claude" | "codex" | "shell";
 type Session = { id: string; repo: string; project: string; program: Program; branch: string; startedAt: string; endedAt: string | null; exit: { code: number | null; signal: number | null } | null };
 type State = { available: boolean; problem: string | null; sessions: Session[]; projects: { path: string; name: string }[]; programs: Program[] };
-type Link = "connecting" | "live" | "ended" | "behind" | "signed-out" | "gone" | "offline";
+type Link = "connecting" | "live" | "ended" | "behind" | "signed-out" | "gone" | "offline" | "busy";
 
 const PROGRAM_WORDS: Record<Program, string> = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
 const LINK_WORDS: Record<Link, string> = {
   connecting: "Connecting…", live: "Live", ended: "Ended", behind: "Catching up…",
   "signed-out": "Signed out — sign in again to keep typing", gone: "This terminal is gone", offline: "Reconnecting…",
+  busy: "Not reading input — what you type waits",
 };
 
 const boot = document.getElementById("so-term-boot");
@@ -55,7 +56,7 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
     term.loadAddon(fit);
     term.open(box.current!);
     let socket: WebSocket | null = null;
-    let stopped = false, ended = false, retry = 0, timer: number | undefined;
+    let stopped = false, ended = false, retry = 0, timer: number | undefined, busyTimer: number | undefined;
     const send = (frame: object) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame)); };
     const input = (data: string) => send({ t: "in", d: data });
     keys(input);
@@ -77,6 +78,7 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
         try { control = JSON.parse(event.data) as typeof control; } catch { return; }
         if (control.t === "hello") { retry = 0; ended = control.ended === true; onLink(ended ? "ended" : "live"); if (!ended) refit(); }
         else if (control.t === "exit") { ended = true; onLink("ended"); }
+        else if (control.t === "input-full") { onLink("busy"); window.clearTimeout(busyTimer); busyTimer = window.setTimeout(() => { if (!ended) onLink("live"); }, 2500); }
       };
       ws.onclose = event => {
         if (socket === ws) socket = null;
@@ -99,6 +101,7 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
     return () => {
       stopped = true;
       window.clearTimeout(timer);
+      window.clearTimeout(busyTimer);
       observer.disconnect();
       viewport?.removeEventListener("resize", refit);
       typed.dispose();

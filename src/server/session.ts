@@ -139,6 +139,9 @@ export class PersistentSessions extends Map<string, Session> {
   persist(session: Session, seen = false): void {
     const id = this.ids.get(session);
     if (id === undefined || (seen && Date.now() - (this.savedAt.get(session) ?? 0) < 60_000)) return;
+    // Being seen only updates a kept session: one ended elsewhere (another process, Sessions) is never written back by
+    // its cached copy — it is dropped here instead (live terminals review, round 2 finding 1).
+    if (seen && this.db.webSession(PersistentSessions.hash(id)) === null) { super.delete(id); return; }
     this.savedAt.set(session, Date.now());
     this.db.saveWebSession({ idHash: PersistentSessions.hash(id), account: session.name, csrf: session.csrf, role: session.role, generation: session.generation, createdAt: session.createdAt,
       lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null });

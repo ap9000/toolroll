@@ -50,6 +50,7 @@ button, select, input { font: inherit; color: inherit; }
 .term-link { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
 .term-link--live { color: var(--t-blue); }
 .term-link--signed-out, .term-link--gone { color: var(--t-red); }
+.term-link--busy { color: var(--t-text); }
 
 .term-screen { flex: 1; min-height: 0; padding: 6px 4px 4px 8px; background: var(--t-ground); }
 .term-screen .xterm { height: 100%; }

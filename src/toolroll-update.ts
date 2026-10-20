@@ -33,6 +33,7 @@ import { createRequire } from "node:module";
 import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type LingeringRun, type UpdateWaiting } from "./desktop-update.js";
 import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate, updateAdmissionPaused, updateGateOwned } from "./desktop-update-gate.js";
 import { processMayBeAlive } from "./process-liveness.js";
+import { removeTerminalUpdateGate } from "./terminal-catalog.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
@@ -814,11 +815,11 @@ function gate(j: RuntimeUpdateJournal): void {
  * its own (its backup dropped it), so the catalog's is lifted on its own. */
 function ungate(j: RuntimeUpdateJournal): void {
   const db = new (sqlite().DatabaseSync)(j.databaseFile);
-  try { db.exec("PRAGMA busy_timeout=5000"); if (updateGateOwned(db, j.id)) removeUpdateGate(db, j.id); else removeCodingUpdateGate(db, j.id); } finally { db.close(); }
+  try { db.exec("PRAGMA busy_timeout=5000"); if (updateGateOwned(db, j.id)) removeUpdateGate(db, j.id); else { removeCodingUpdateGate(db, j.id); removeTerminalUpdateGate(db, j.id); } } finally { db.close(); }
 }
 function ungateCoding(j: RuntimeUpdateJournal): void {
   const db = new (sqlite().DatabaseSync)(j.databaseFile);
-  try { db.exec("PRAGMA busy_timeout=5000"); removeCodingUpdateGate(db, j.id); } finally { db.close(); }
+  try { db.exec("PRAGMA busy_timeout=5000"); removeCodingUpdateGate(db, j.id); removeTerminalUpdateGate(db, j.id); } finally { db.close(); }
 }
 
 /** A foreground `toolroll up` holds a live watch lease; the runtime or database under it must not be replaced.
