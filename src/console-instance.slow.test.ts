@@ -56,17 +56,22 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
     expect(fence).toContain(run);
   });
 
-  test("whatever sits at the run folder's path is fenced (a dangling link too); a folder holding a repository is left to the project", () => {
+  test("whatever sits at the run folder's path is fenced by that path itself: a dangling link, a resolvable link, a folder holding a repository", () => {
     const shared = join(dir, "shared");
     mkdirSync(shared, { mode: 0o700 });
     const databaseFile = join(shared, "state.db");
     store = openStore(databaseFile);
     const run = instanceRunDir(databaseFile);
+    const fenceNow = () => agentFence({ databaseFile, worktree: null, home: join(dir, "home") });
     symlinkSync(join(dir, "nowhere"), run);
-    expect(agentFence({ databaseFile, worktree: null, home: join(dir, "home") })).toContain(run);
+    expect(fenceNow()).toContain(run);
+    rmSync(run);
+    mkdirSync(join(dir, "elsewhere"));
+    symlinkSync(join(dir, "elsewhere"), run);
+    expect(fenceNow()).toEqual(expect.arrayContaining([run, join(dir, "elsewhere")]));
     rmSync(run);
     mkdirSync(join(run, ".git"), { recursive: true });
-    expect(agentFence({ databaseFile, worktree: null, home: join(dir, "home") })).not.toContain(run);
+    expect(fenceNow()).toContain(run);
     expect(runDirProblem(run)).toContain("holds a repository");
   });
 

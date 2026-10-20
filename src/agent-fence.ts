@@ -122,6 +122,8 @@ export function trustedWorktreeBinding(repository: string, worktree: string, poo
  */
 export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; binding?: WorktreeBinding | null; runFolders?: RunFolders }): string[] {
   const fence = new Set<string>();
+  /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
+  let runFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -132,14 +134,14 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // build may add, rename or remove anything in it while a console listens there. It is made (owner-only) before any
     // build starts if it isn't there yet, so a build can never be the one to create it — and the fence always has a
     // real folder to cover (a Linux bind needs one).
-    // Whatever is at that path is fenced — a folder, a file, a dangling link — so no build can replace it; when nothing
-    // is there it is made first. If it can't be made, the path is fenced anyway: a sandbox that can't cover a missing
-    // path refuses to launch rather than run unfenced. One that holds a repository is a project, never fenced here
-    // (and the console refuses to use it).
-    const runFolder = join(state, INSTANCE_DIR);
-    const present = (): boolean => { try { lstatSync(runFolder); return true; } catch { return false; } };
+    // Whatever is at that path is fenced, always — a folder, a file, a link (the path itself, never only where a link
+    // points), a folder holding anything at all — so no build can replace it; when nothing is there it is made first.
+    // If it can't be made, the path is fenced anyway: a sandbox that can't cover a missing path refuses to launch
+    // rather than run unfenced. The name is Toolroll's own; nothing else belongs there.
+    runFolder = join(state, INSTANCE_DIR);
+    const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
-    if (!existsSync(join(runFolder, ".git"))) fence.add(runFolder);
+    fence.add(runFolder);
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not
@@ -169,11 +171,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].map(real));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].map(real))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
