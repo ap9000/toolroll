@@ -308,7 +308,7 @@ export async function pushPass(
   for (const pair of pairs) {
     // Renew and re-fence immediately before the network (finding 12).
     if (!store.renewPushClaim(pair.id, owner, pair.claimGeneration, PUSH_CLAIM_TTL_MS, clock())) continue;
-    const fenced = store.pushSendFence(pair.id, owner, pair.claimGeneration);
+    const fenced = store.pushSendFence(pair.id, owner, pair.claimGeneration, clock());
     if (fenced === null) continue; // resolved, retired, rotated, or lost — nothing to send
     const subscription = fenced.subscriptionRow;
 

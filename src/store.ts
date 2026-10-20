@@ -21508,6 +21508,7 @@ export class Store {
   }
 
   telegramDeliveryProblem(...args: Parameters<ChatMessages["deliveryProblem"]>): ReturnType<ChatMessages["deliveryProblem"]> { return this.telegramChat().deliveryProblem(...args); }
+  telegramWatchFence(...args: Parameters<ChatMessages["watchFence"]>): ReturnType<ChatMessages["watchFence"]> { return this.telegramChat().watchFence(...args); }
 
 
   recordTelegramMessage(...args: Parameters<ChatMessages["recordMessage"]>): ReturnType<ChatMessages["recordMessage"]> { return this.telegramChat().recordMessage(...args); }
@@ -22155,7 +22156,7 @@ export class Store {
    * the subscription live under its enrolled generation, the notification
    * unresolved and still stamped. Null = do not transmit.
    */
-  pushSendFence(id: number, owner: string, generation: number): (PushPair & { subscriptionRow: PushSubscription; notificationRow: Notification }) | null {
+  pushSendFence(id: number, owner: string, generation: number, now: Date = new Date()): (PushPair & { subscriptionRow: PushSubscription; notificationRow: Notification }) | null {
     const pair = this.db
       .prepare(
         `SELECT * FROM push_delivery
@@ -22173,7 +22174,20 @@ export class Store {
       .prepare("SELECT * FROM notification WHERE id = ? AND resolved_at IS NULL AND (push_class IS NOT NULL OR kind = 'check-progress')")
       .get(Number(pair["notification"]));
     if (notification === undefined) return null;
-    return { ...readPushPair(pair), subscriptionRow: readPushSubscription(subscription), notificationRow: readNotification(notification) };
+    // The watch, again at the last moment (cockpit §3): a person who opened the agent since the claim holds the ping
+    // (back to pending, no attempt spent) or, for news they have now seen, retires it.
+    const row = readNotification(notification), approverName = String(subscription["approver"]);
+    const watched = watchedPing(this, row, approverName, now);
+    if (watched === "skip") {
+      this.db.prepare("UPDATE push_delivery SET state = 'retired', last_error = 'seen', claim_owner = NULL WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND claim_generation = ?").run(id, owner, generation);
+      return null;
+    }
+    if (watched !== "send") {
+      this.db.prepare(`UPDATE push_delivery SET state = 'pending', claim_owner = NULL, claim_expires_at = NULL, next_attempt_at = ?
+        WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND claim_generation = ?`).run(watched.hold, id, owner, generation);
+      return null;
+    }
+    return { ...readPushPair(pair), subscriptionRow: readPushSubscription(subscription), notificationRow: row };
   }
 
   /** Settle a pair, conditionally on owner + generation (finding 25). */

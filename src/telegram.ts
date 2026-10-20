@@ -62,6 +62,9 @@ import { askOf, parseTelegramUpdate, pickOf, readTelegramButtonData, readTelegra
 
 /** Read the enrolled project list on demand. No callback means no task data,
  * never an implicit all-database ceiling. Shared by pass and embedded follower. */
+/** A delivery its person began watching after it was claimed: held or settled at the final fence (cockpit §3). */
+const WATCHED_SINCE_CLAIM = "Held: its person is watching this agent now";
+
 export type TelegramReadProjects = () => Promise<readonly string[]>;
 
 /** The environment name — and therefore the name the builder strips from agents (both names; see names.ts). */
@@ -826,6 +829,8 @@ async function deliverOutboxTo(
     const blocked: { row: TelegramDelivery; error: string }[] = [];
     const preflight = (await readAccess()) ?? channelProblem();
     for (const row of group) {
+      // Watched since the claim (cockpit §3): held for later or settled quietly, never sent now, never a failure.
+      if (preflight === null && store.telegramWatchFence(row, binding, owner, clock()) !== "send") continue;
       const problem = preflight ?? store.telegramDeliveryProblem(row, binding, owner, projects, clock(), [...rows.map(one => one.id), row.id]);
       if (problem === null) rows.push(row);
       else blocked.push({ row, error: problem });
@@ -843,6 +848,9 @@ async function deliverOutboxTo(
       for (const row of rows) {
         const problem = store.telegramDeliveryProblem(row, binding, owner, projects, clock(), ids);
         if (problem !== null) return problem;
+        // The watch, at the last moment before the network: a held row's claim is released (its finalize is then a
+        // no-op), so nothing is spent on it.
+        if (store.telegramWatchFence(row, binding, owner, clock()) !== "send") return WATCHED_SINCE_CLAIM;
       }
       return null;
     };

@@ -11,6 +11,7 @@ import {
   channelAccess,
   type ChatDeliveryOptions,
   planRoomMessages,
+  heldForWatch,
 } from "./chat-delivery.js";
 /** Slack is a transport for the same saved assistant and confirmation doors. */
 import {
@@ -540,6 +541,8 @@ export async function deliverSlackPart(
       unfurl_links: false,
       unfurl_media: false,
     };
+    // The watch, at the last moment before the network (cockpit §3).
+    if (heldForWatch(state, store, row.id, event, binding.approver, content, now)) return true;
     const answer = target
       ? await options.api("chat.update", { ...args, ts: target })
       : await options.api("chat.postMessage", {

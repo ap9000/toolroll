@@ -51,8 +51,6 @@ export const QUESTIONS_PER_ATTEMPT = 10;
 export const QUESTION_PAGE_EVERY_MS = 5 * 60_000;
 /** The board's one note on a run whose agent asked past the caps (set once). */
 export const QUESTIONS_OVERFLOW_NOTE = "The agent asked more questions than the board takes; see its transcript.";
-/** Notification kinds held while the person watches the run, and re-checked when the watch lapses. */
-export const WATCHED_KINDS: ReadonlySet<string> = new Set(["agent-question", "run-finished", "build-failed"]);
 
 export const AGENT_BOARD_SCHEMA = `
 CREATE TABLE IF NOT EXISTS agent_turn (
@@ -484,17 +482,37 @@ export function watchingAgent(store: Store, account: string, run: number, at: Da
   return watchingAgentUntil(store, account, run, at) !== null;
 }
 
+/** Kinds no watch ever holds: a security alert and the evening digest reach people as they are (store.pingAllowed). */
+const NEVER_HELD: ReadonlySet<string> = new Set(["secret-detected", "security-release", "evening-digest"]);
+/** Kinds that are news only until the finished run is seen: a ping about one already opened is not sent at all. */
+const SEEN_SETTLES: ReadonlySet<string> = new Set(["run-finished", "build-failed"]);
+
 /**
- * A watched ping, decided when its delivery is claimed (every chat, phone and browser asks here, after the
- * permanent rules in store.pingAllowed): held until the watch lapses while this person has the run open; then
- * skipped when they have already seen the finished run (an answered question is resolved, so never claimed);
- * otherwise sent. Anything that is not a watched kind about a run is sent.
+ * A notification's subject (cockpit §3, R11): the run it is about — its own, or for a ping about a task the task's
+ * live build — so any ping, not only the agent's own kinds, can be held while its person watches that agent. Null:
+ * about nothing a person watches. Its version is the notification's own identity (its dedupe key), so a newer fact
+ * about the same subject is a new ping.
  */
-export function watchedPing(store: Store, row: { kind: string; run: number | null }, account: string, now: Date): { hold: string } | "skip" | "send" {
-  if (row.run === null || !WATCHED_KINDS.has(row.kind)) return "send";
-  const until = watchingAgentUntil(store, account, row.run, now);
+export function attentionSubjectOf(store: Store, row: { kind: string; run: number | null; taskRef?: number | null }): { run: number } | null {
+  if (NEVER_HELD.has(row.kind)) return null;
+  if (row.run !== null) return { run: row.run };
+  if (row.taskRef === undefined || row.taskRef === null) return null;
+  const live = store.handle.prepare("SELECT id FROM run WHERE task_ref = ? AND role = 'builder' AND outcome IS NULL ORDER BY id DESC LIMIT 1").get(row.taskRef);
+  return live === undefined ? null : { run: Number(live["id"]) };
+}
+
+/**
+ * A watched ping (cockpit §3, R11), decided when its delivery is claimed AND again at every channel's final send
+ * fence, after the permanent rules in store.pingAllowed: held until the watch lapses while this person has its
+ * subject's agent open; then skipped when it was news about a finished run they have since seen; otherwise sent.
+ * A ping about nothing anyone watches is sent. (A delivery already handed to the network can't be recalled.)
+ */
+export function watchedPing(store: Store, row: { kind: string; run: number | null; taskRef?: number | null }, account: string, now: Date): { hold: string } | "skip" | "send" {
+  const subject = attentionSubjectOf(store, row);
+  if (subject === null) return "send";
+  const until = watchingAgentUntil(store, account, subject.run, now);
   if (until !== null) return { hold: until };
-  if (row.kind === "agent-question") return "send";
+  if (!SEEN_SETTLES.has(row.kind) || row.run === null) return "send";
   const seen = store.handle.prepare("SELECT 1 AS hit FROM agent_seen WHERE account = ? AND run = ?").get(account, boardRunOf(store, row.run));
   return seen === undefined ? "send" : "skip";
 }

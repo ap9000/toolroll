@@ -909,6 +909,27 @@ export class ChatMessages extends ChatCore {
     return null;
   }
 
+  /**
+   * The watch at the final fence (cockpit §3, R11): right before the network, a person who has since opened the
+   * agent this ping is about holds it — the claim is released with the watch's end as its next attempt, no attempt
+   * spent — and news about a finished run they have now seen settles quietly. "send": nothing changed.
+   */
+  watchFence(row: TelegramDelivery, binding: TelegramBinding, owner: string, now: Date): "send" | "held" | "skipped" {
+    const current = this.db.prepare("SELECT * FROM notification WHERE id = ?").get(row.id);
+    if (current === undefined) return "send";
+    const decided = watchedPing(this.store, readNotification(current), binding.approver, now);
+    if (decided === "send") return "send";
+    const where = "WHERE notification = ? AND destination = ? AND claim_owner = ? AND claim_generation = ? AND delivered_at IS NULL";
+    if (decided === "skip") {
+      this.db.prepare(`UPDATE notification_delivery SET receipt = '${TELEGRAM_SKIPPED_QUIET}', claim_owner = NULL, claim_expires_at = NULL ${where}`)
+        .run(row.id, row.destination, owner, row.claimGeneration);
+      return "skipped";
+    }
+    this.db.prepare(`UPDATE notification_delivery SET next_attempt_at = ?, claim_owner = NULL, claim_expires_at = NULL ${where}`)
+      .run(decided.hold, row.id, row.destination, owner, row.claimGeneration);
+    return "held";
+  }
+
   claimHeld(row: TelegramDelivery, owner: string, now: Date): boolean {
     return this.db.prepare(`SELECT 1 FROM notification_delivery WHERE notification = ? AND destination = ?
       AND claim_owner = ? AND claim_generation = ? AND claim_expires_at > ? AND delivered_at IS NULL`)

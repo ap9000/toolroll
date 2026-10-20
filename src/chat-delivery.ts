@@ -53,6 +53,19 @@ import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
 import { watchedPing } from "./agent-board.js";
+/**
+ * The watch at a chat app's final fence (cockpit §3, R11), right before the network: a notice about an agent its
+ * person has open now waits, as a held part, until the watch ends; then it is delivered as usual. The subject is the
+ * part's own run, or its task's live build. True: held, so nothing is sent now.
+ */
+export function heldForWatch(state: ChatState, store: Store, part: number, event: { kind: string }, approver: string, content: ChatContent, now: Date): boolean {
+  if (event.kind !== "notice") return false;
+  const taskRef = content.task ? store.lookupRef(content.task)?.id ?? null : null;
+  const decided = watchedPing(store, { kind: "notice", run: content.run ?? null, taskRef }, approver, now);
+  if (decided === "send" || decided === "skip") return false;
+  state.holdPart(part, decided.hold);
+  return true;
+}
 export const chatObject = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
