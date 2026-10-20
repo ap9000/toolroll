@@ -717,7 +717,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       return redirect(response, chatReturnWithLatest(back));
     }
     // A re-check is spent only if the whole confirmation commits (the proposal's own transaction included).
-    const outcome = spendingOnlyOnSuccess(() => confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) }), result => !result.ok);
+    const outcome = spendingOnlyOnSuccess(() => confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) }), result => !result.ok || ("already" in result && result.already === true));
     if (cardJson) {
       if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
       return cardAnswer(200, true, outcome.said, outcome.taskId);
@@ -861,13 +861,6 @@ export function createChatHandlers(runtime: ServerRuntime) {
     }
     // The password, typed again, on EVERY message (v2 ruling 2): chat is
     // spend, and a seven-day cookie is not a spend credential.
-    const password = body.get("token") ?? "";
-    // Typed now, or (cockpit B2) a password or explicit provider re-check given on this session, on a direct local
-    // request, within its window. An ordinary provider sign-in never starts that window.
-    const proved = withFreshness("chat-send", () => authenticateApprover(who, password)).ok;
-    if (!proved) {
-      return redirect(response, `/chat?said=${encodeURIComponent("chat spends — your password, typed again, with every message")}`);
-    }
     const message = (body.get("message") ?? "").trim();
     if (message === "" || message.length > 2_000) {
       return redirect(response, `/chat?said=${encodeURIComponent("a message is 1 to 2000 characters")}`);
@@ -898,19 +891,30 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const disallowed = store.agentPolicyRefusal(enabled.config.provider, enabled.config.model);
     if (disallowed !== null) return redirect(response, `/chat?said=${encodeURIComponent(disallowed)}`);
     const reserved = worstCaseForPrice(enabled.price, Buffer.byteLength(composed.body, "utf8"));
-    const opened = store.openChatTurn(
-      {
-        approver: who.name,
-        credentialKey: enabled.credentialKey,
-        provider: enabled.config.provider,
-        model: enabled.config.model,
-        reservedMicrousd: reserved,
-        dailyTurns: enabled.config.dailyTurns,
-        weeklyCeilingMicrousd: enabled.config.weeklyCeilingMicrousd,
-        deadlineMs: TURN_WALL_CLOCK_MS + 10_000,
-      },
-      now,
-    );
+    // The password comes last, right where the turn opens: every refusal above leaves an explicit re-check unspent,
+    // and a turn that doesn't open (a cap, a budget) puts it back.
+    const password = body.get("token") ?? "";
+    const opened = spendingOnlyOnSuccess(() => {
+      // Typed now, or (cockpit B2) a password or explicit provider re-check given on this session, on a direct local
+      // request, within its window. An ordinary provider sign-in never starts that window.
+      if (!withFreshness("chat-send", () => authenticateApprover(who, password)).ok) return null;
+      return store.openChatTurn(
+        {
+          approver: who.name,
+          credentialKey: enabled.credentialKey,
+          provider: enabled.config.provider,
+          model: enabled.config.model,
+          reservedMicrousd: reserved,
+          dailyTurns: enabled.config.dailyTurns,
+          weeklyCeilingMicrousd: enabled.config.weeklyCeilingMicrousd,
+          deadlineMs: TURN_WALL_CLOCK_MS + 10_000,
+        },
+        now,
+      );
+    }, result => result === null || !result.ok);
+    if (opened === null) {
+      return redirect(response, `/chat?said=${encodeURIComponent("chat spends — your password, typed again, with every message")}`);
+    }
     if (!opened.ok) {
       const said =
         opened.reason === "latched"

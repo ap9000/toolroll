@@ -1007,6 +1007,22 @@ function savedActionContext(
   requireActor(store, who, payload.repo, payload.operation);
   return payload;
 }
+/** An action's terms alone, without whose proposal it was (actor, generation, ceiling). */
+const termsStampOf = (action: Pick<SharedAction, "operation" | "request" | "repo" | "state" | "terms">): string =>
+  hash({ operation: action.operation, request: action.request, repo: action.repo, state: action.state, terms: action.terms });
+/**
+ * Whether the live action is the saved one: the exact stamp; or, for a scope approval already holding another
+ * approver's yes on these exact terms (awaiting the second), the same terms — each reviewer's own nonce and authority
+ * are still bound to them individually.
+ */
+function sameSharedAction(store: Store, who: VerifiedApprover, live: SharedAction, saved: SharedAction): boolean {
+  if (live.stamp === saved.stamp) return true;
+  if (saved.operation !== "scope_approve" || termsStampOf(live) !== termsStampOf(saved)) return false;
+  const task = typeof saved.request["task"] === "string" ? saved.request["task"] : null;
+  const scope = task === null ? null : store.getScope(task);
+  if (scope === null) return false;
+  return store.handle.prepare("SELECT 1 FROM scope_approval_vote WHERE task_id = ? AND digest = ? AND approver <> ? LIMIT 1").get(task, scope.digest, who.name) !== undefined;
+}
 export function mintSharedActionReview(
   store: Store,
   who: VerifiedApprover,
@@ -1023,7 +1039,7 @@ export function mintSharedActionReview(
     root,
     now,
   );
-  if (live.stamp !== payload.stamp)
+  if (!sameSharedAction(store, who, live, payload))
     throw Error("This action changed. Ask for a fresh proposal.");
   const nonce = randomBytes(24).toString("hex");
   if (
@@ -1060,7 +1076,7 @@ export function executeSharedAction(
   now: Date,
   options: SharedActionOptions,
 ):
-  | { ok: true; said: string; taskId: string | null; href?: string; awaiting?: true }
+  | { ok: true; said: string; taskId: string | null; href?: string; awaiting?: true; already?: true }
   | { ok: false; reason: "needs-confirm" | "stale" | "refused"; said: string } {
   const refuse = (
     reason: "needs-confirm" | "stale" | "refused",
@@ -1083,7 +1099,7 @@ export function executeSharedAction(
       options.root,
       now,
     );
-    if (live.stamp !== saved.stamp)
+    if (!sameSharedAction(store, who, live, saved))
       return refuse("stale", "This action changed. Ask for a fresh proposal.");
   } catch (error) {
     return refuse(
@@ -1093,6 +1109,8 @@ export function executeSharedAction(
         : "This action is no longer available.",
     );
   }
+  // The review nonce was minted against the saved proposal's stamp: it is checked against that, whoever reviews.
+  const savedStamp = payload.stamp;
   payload = live;
   const config = CHAT_ACTIONS[live.operation],
     req = live.request;
@@ -1113,7 +1131,7 @@ export function executeSharedAction(
         who.name,
         "chat-action",
         id,
-        payload.stamp,
+        savedStamp,
         now,
       )
     )
@@ -1253,7 +1271,7 @@ export function executeSharedAction(
         if (!result.ok) {
           // A first yes on protected work is kept, with how its person was proved: committed, never rolled back.
           // The card stays open (`awaiting`) for the second approver; the same person again changes nothing.
-          if (result.reason === "second-approver") return { ok: true as const, taskId, awaiting: true as const, said: gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }) };
+          if (result.reason === "second-approver") return { ok: true as const, taskId, awaiting: true as const, ...(result.already ? { already: true as const } : {}), said: gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }) };
           // v102: the project's approval rules speak for themselves.
           if (result.reason === "requester" || result.reason === "person-required") throw Error(gateWords({ verdict: "refuse", reason: result.reason }));
           if (result.reason === "policy") throw Error(result.message);
@@ -1317,7 +1335,7 @@ export function executeSharedAction(
                               ? "Saved project knowledge restored."
                               : "Project knowledge saved.";
       return { ok: true as const, taskId, said };
-    }), result => !result.ok);
+    }), result => !result.ok || ("already" in result && result.already === true));
   } catch (error) {
     return refuse(
       "refused",

@@ -36,7 +36,7 @@ import { applyChatTaskAction } from "./chat-task-actions.js";
 export type ProposalKind = LeadProposal["kind"];
 
 export type DoorOutcome =
-  | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string; awaiting?: true }
+  | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string; awaiting?: true; already?: true }
   | { ok: false; kind: ProposalKind | null; reason: DoorRefusal; said: string };
 
 export type DoorRefusal =

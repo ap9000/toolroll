@@ -1406,6 +1406,8 @@ export function approve(
     const proved = () => store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
       outcome: authenticated.method, source: "work", detail: approvalProofDetail(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest) });
     if (gate.verdict === "vote") {
+      // The same person again adds nothing: no new vote, no proof row (and the approval roads refund a re-check).
+      if (gate.already) return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: true };
       store.recordApprovalVote(taskId, scope.digest, by, now);
       proved();
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };

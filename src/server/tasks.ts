@@ -2396,7 +2396,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         }
         // A re-check is spent only if this yes is kept (sealed, or a protected-work vote recorded).
         const approved = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => approveScope(store, taskId, who.name, now, scopeRow.digest, token)),
-          result => !result.ok && result.reason !== "second-approver");
+          result => !result.ok && !(result.reason === "second-approver" && !result.already));
         if (!approved.ok) {
           // v102: a first yes on protected work is recorded, not refused — the page says who else is needed.
           if (approved.reason === "second-approver") return approvalProblem(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }), 200);

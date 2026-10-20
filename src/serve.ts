@@ -353,14 +353,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
     return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
-  /** Rows changed on the console's database connection so far (SQLite's total_changes()): a write witness. */
-  const totalChanges = (): number => Number(store.handle.prepare("SELECT total_changes() AS n").get()?.["n"] ?? 0);
   /** Whether a finished console act was refused, as its answer says: an error status, or a redirect naming a problem. */
   const actRefused = (response: ServerResponse): boolean => {
     if (response.statusCode >= 400) return true;
-    const location = String(response.getHeader("location") ?? "");
-    return /[?&](problem|error)=/.test(location) || /[?&]said=[^&#]*(refused|stale|failed|invalid|mac-only)/.test(location);
+    return /[?&](problem|error)=/.test(String(response.getHeader("location") ?? ""));
   };
+  /** Rows changed on the console's database connection so far (SQLite's total_changes()): a write witness. */
+  const totalChanges = (): number => Number(store.handle.prepare("SELECT total_changes() AS n").get()?.["n"] ?? 0);
   /**
    * Cockpit B2: a request's password-freshness facts — the one place they are made (scope.ts honours them). Every
    * reader looks at the session as it is at the moment of the act, never a snapshot taken before the body arrived:
@@ -851,10 +850,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const entry = { at: clock().toISOString(), actor: who.name, ...target, source: "request" as const, ...(who.via === "bearer" && who.token !== undefined ? { detail: `API token: ${who.token}` } : {}) };
       store.recordAction({ ...entry, outcome: "requested" });
       try {
-        // Cockpit B2: an explicit re-check (sso-now) is spent only by an act that happened. It is put back only when
-        // the console refused the act (an error status, or a redirect naming a problem or a refusal) AND the act changed
-        // nothing at all: any row written on this connection meanwhile (even one later rolled back, or another
-        // request's) keeps it spent, so a refund can never let one re-check prove two acts.
+        // Cockpit B2: an explicit re-check (sso-now) is spent unless BOTH say the act didn't happen: the console refused
+        // it (an error status, or a redirect naming a problem), AND no row changed on this connection meanwhile (even
+        // one later rolled back, or another request's). Either alone keeps it spent: a refund never follows a change,
+        // and never an answer that merely reads like a refusal. Acts known exactly (approvals, chat actions) refund
+        // by their own outcome instead.
         const changesBefore = totalChanges();
         await spendingOnlyIfDone(() => projectAuthority.run({ actor: who.name, repo: target.repo }, execute), () => actRefused(response) && totalChanges() === changesBefore);
         const createdTask = requestContext.getStore()?.createdTask;
