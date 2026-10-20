@@ -8,7 +8,10 @@ import { DEFAULT_MAX_DEPTH } from "./scan.js";
 export const HELP = `toolroll — a control plane for unattended coding agents
 
 Usage
-  toolroll [path...]        report what is in flight
+  toolroll                  in a repository: start Toolroll for it, or open the one already running
+                                   (under an agent or with --json: only says what it would do)
+  toolroll scan [path...]   report what is in flight (also bare \`toolroll\` outside a repository)
+  toolroll [path...]        the same report for the paths given
   toolroll pulls            report what is waiting on a person
   toolroll graph            report which work graph is already here
   toolroll repos            list connected repositories, and how to adjust

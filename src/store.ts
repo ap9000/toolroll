@@ -122,6 +122,7 @@ import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
+import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
@@ -4909,6 +4910,8 @@ function initializeStore(db: Database, file: string): Store {
   }
   db.exec(TASK_SOURCE_SCHEMA);
   db.exec(PLAN_AUTO_SCHEMA);
+  // Cockpit B1: the running console's instance record (one row; a new table, additive only, no version bump).
+  db.exec(CONSOLE_INSTANCE_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);

@@ -1,5 +1,6 @@
 import { steerControlsFor } from "../steer-controls.js";
 import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
+import { instanceHttpAnswer } from "../console-instance.js";
 import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
@@ -944,6 +945,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         who.via === "cookie" ? (path: string) => projectCheckLevel(store, path).level : undefined),
     );
   }
+  async function instanceEdge(ctx: EdgeContext): Promise<void> {
+    const { request, response, url } = ctx;
+    const secret = options.instanceSecret?.() ?? null;
+    if (secret === null) return respond(response, 404, "application/json; charset=utf-8", JSON.stringify({ error: "not-up" }));
+    // Bound to what THIS console saw as the receiving end of this very connection — never the Host header.
+    const answer = instanceHttpAnswer(secret, url.searchParams.getAll("c").length === 1 ? url.searchParams.get("c") : null, { address: request.socket.localAddress, port: request.socket.localPort });
+    response.setHeader("Cache-Control", "no-store");
+    return respond(response, answer.status, "application/json; charset=utf-8", answer.body);
+  }
+
   async function healthzEdge(ctx: EdgeContext): Promise<void> {
     const { response, method } = ctx;
     return healthz(store, response, method === 'HEAD');
@@ -1009,6 +1020,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.onboard-confirm": onboardConfirm,
   }, {
     "edge.healthz": healthzEdge,
+    "edge.instance": instanceEdge,
     "edge.browser-asset": browserAsset,
     "edge.workspace-style": workspaceStyle,
     "edge.install-asset": installAsset,

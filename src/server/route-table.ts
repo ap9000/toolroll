@@ -148,6 +148,9 @@ const LARGE_FORM = 1024 * 1024;
 // ---- edge: answered before the console's sign-in ---------------------------------------------------------------
 // Ordered exactly as the server checks them: health and webhooks before the Host check, the rest after it.
 edge("pages", "edge.healthz", "GET,HEAD", "/healthz", { host: "before" });
+// Cockpit B1: the running console proves itself to this installation's CLI (a fresh challenge, answered with the
+// instance secret and the address this connection was received on). It reveals nothing and changes nothing.
+edge("pages", "edge.instance", "GET", "/__instance");
 edge("remote", "edge.telegram-hook", "POST", "/hooks/telegram", { callers: ["service"], host: "before", proof: "adapter" });
 edge("remote", "edge.flow-form", "GET,HEAD", "^\\/hooks\\/form\\/[^/]+$", { project: "flow", sample: "/hooks/form/abc", host: "before", proof: "adapter" });
 edge("remote", "edge.flow-form-send", "POST", "^\\/hooks\\/form\\/[^/]+$", { project: "flow", sample: "/hooks/form/abc", host: "before", proof: "adapter" });
