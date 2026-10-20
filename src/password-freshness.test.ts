@@ -135,8 +135,10 @@ describe("an explicit identity-provider re-check", () => {
  */
 /** Every production module the compiler or runtime could load from src: TS and JS in all their module flavours. */
 const MODULE = /\.(?:[cm]?tsx?|[cm]?jsx?)$/;
+/** Exactly what tsconfig.json leaves out (`*.test.ts`, `*.test.tsx`) and declarations: everything else is read. */
+const audited = (name: string): boolean => MODULE.test(name) && !/\.test\.tsx?$/.test(name) && !/\.d\.[cm]?ts$/.test(name);
 const productionSources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(one => one.isDirectory() ? productionSources(join(dir, one.name))
-  : MODULE.test(one.name) && !/\.test\.[cm]?[jt]sx?$/.test(one.name) && !/\.d\.[cm]?ts$/.test(one.name) ? [join(dir, one.name)] : []);
+  : audited(one.name) ? [join(dir, one.name)] : []);
 const langOf = (path: string): "ts" | "tsx" | "js" | "jsx" => /x$/.test(path) ? (/\.[cm]?jsx$/.test(path) ? "jsx" : "tsx") : /\.[cm]?js$/.test(path) ? "js" : "ts";
 type Hits = Record<string, Record<string, number>>;
 const FACT_NAMES = new Set(["passwordAt", "ssoReauthAt", "ssoNowAt", "freshFloor"]);
@@ -371,6 +373,12 @@ describe("where freshness may be honoured", () => {
  * key computed at run time, like "fr" + "esh", is outside what reading the source can see.)
  */
 const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
+  "FreshFacts": {
+    "src/scope.ts": 2,
+    "src/serve.ts": 3,
+    "src/server/remote.ts": 3,
+    "src/server/runtime.ts": 3
+  },
   "authenticateAccount": {
     "src/operate.ts": 3,
     "src/principal.ts": 3,
@@ -467,10 +475,18 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/token-notices.ts": 2,
     "src/worktree.ts": 13
   },
+  "freshFacts": {
+    "src/scope.ts": 4,
+    "src/serve.ts": 6,
+    "src/server/remote.ts": 4
+  },
   "freshFloor": {
     "src/serve.ts": 1,
     "src/server/session.ts": 1,
     "src/server/settings.ts": 1
+  },
+  "freshScope": {
+    "src/scope.ts": 3
   },
   "freshnessFor": {
     "src/chat-actions.ts": 3,
@@ -496,6 +512,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts": 1,
     "src/server/chat.ts": 4,
     "src/server/tasks.ts": 3
+  },
+  "ssoNow": {
+    "src/scope.ts": 3,
+    "src/serve.ts": 1
   },
   "ssoNowAt": {
     "src/serve.ts": 5,
@@ -527,7 +547,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
 };
 describe("the tripwire", () => {
   const sources = productionSources;
-  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES]);
+  // The freshness facts' own carrier and its readers too: any helper that reads them (an SSO re-check's time, a window's
+  // start) names one of these.
+  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES, "freshFacts", "FreshFacts", "ssoNow", "freshScope"]);
   const mentions = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
     const hits: Record<string, Record<string, number>> = {};
     for (const { path, text } of files) {
@@ -541,8 +563,8 @@ describe("the tripwire", () => {
         if (name !== null && WATCH.has(name)) (hits[name] ??= {})[path] = (hits[name]![path] ?? 0) + 1;
       });
     }
-    const out: Record<string, Record<string, number>> = { fresh: hits["fresh"] ?? {} };
-    for (const [name, files] of Object.entries(hits)) if (name !== "fresh" && name !== "sso") out[name] = files;
+    const out: Record<string, Record<string, number>> = {};
+    for (const [name, files] of Object.entries(hits)) if (name !== "sso") out[name] = files;
     return out;
   };
 
@@ -567,7 +589,12 @@ describe("the tripwire", () => {
     const probe = mentions([{ path: "probe.ts", text: "export const p = (confirmIt: () => unknown) => Reflect.apply(withFreshness, undefined, ['chat-send', confirmIt]);" }]);
     expect(probe["withFreshness"]).toEqual({ "probe.ts": 1 });
     expect(mentions([{ path: "helper.mts", text: "export const isConfirmed = (value: { fresh: boolean }) => value.fresh;" }])["fresh"]).toEqual({ "helper.mts": 2 });
-    for (const name of ["a.ts", "a.tsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.cjs", "a.jsx"]) expect(MODULE.test(name), name).toBe(true);
+    for (const name of ["a.ts", "a.tsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.cjs", "a.jsx", "a.test.mts", "a.test.cts", "a.test.js"]) expect(audited(name), name).toBe(true);
+    for (const name of ["a.test.ts", "a.test.tsx", "a.d.ts", "a.d.mts", "a.md"]) expect(audited(name), name).toBe(false);
+    // A helper that reads an SSO re-check's time through the facts names their carrier and reader.
+    const reader = mentions([{ path: "reader.ts", text: "export const recent = () => { const at = freshFacts.getStore()?.ssoNow(); return at !== null && at !== undefined && Date.now() - at < 300000; };" }]);
+    expect(reader["freshFacts"]).toEqual({ "reader.ts": 1 });
+    expect(reader["ssoNow"]).toEqual({ "reader.ts": 1 });
   });
 
   test("every mention in the production source is the reviewed one", () => {
