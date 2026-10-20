@@ -1,4 +1,4 @@
-# The light cockpit (v3)
+# The light cockpit (v4)
 
 Alex, 2026-10-19, after comparing herdr-gpui: "copy the states and adjust for anything missing — do the quick start and
 then 3 and 4 — we need the direct steer / terminal view option for every agent that's running if possible."
@@ -172,7 +172,21 @@ It is never a pty and never types into the agent.
     - a stale socket;
     - a socket in a directory another user can write is refused;
     - a port taken by another process doesn't matter.
-- Admission uses the existing project-admission path, its registry lock and ceilings.
+- **The socket carries no authority [r3-N19].** Build agents run under the operator's own user, so filesystem access
+  can't tell the operator from an agent. The socket is therefore **discovery only**:
+  - it answers one request, `hello`, with the console's pid, build, database path and listening port — nothing
+    secret, nothing an agent can't already learn — and refuses every other verb;
+  - it changes nothing: no admission, no session, no token, no sign-in;
+  - the CLI never trusts what it says on its own. It opens the database itself (the existing path, behind the agent
+    fence) and checks the socket's answer against the record `up` writes there under owner authority (pid alive,
+    build, port). The URL it prints or opens comes from that database record, never from the socket. A replaced or
+    impostor socket can only make the attach refuse (with the restart command), never send a person to another
+    listener;
+  - test: a native-sandbox build contacts the socket directly (bypassing the CLI's "under an agent" check), including
+    with a custom database directory, and gets only the `hello` facts; any other verb is refused and nothing in the
+    database changes; an impostor socket whose answer disagrees with the database record is refused.
+- Admission uses the existing project-admission path, its registry lock and ceilings, from the CLI's own opened
+  database (never through the socket).
 - An incompatible build refuses with the command to restart.
 - The two-action target excludes first-time identity, project admission and provider sign-in, which stay as they are.
 
@@ -280,12 +294,21 @@ whether it can be built.
   1. cancels pending permission requests;
   2. consumes final updates and the original prompt's terminal response;
   3. resets only turn-local state;
-  4. **proves process safety for this continuation [r2-N17]**: the agent's tool processes from that turn must be
-     gone, proved by the native containment's own accounting for the run, not a snapshot of current ancestry (which
-     misses escaped or re-parented children). That is the cgroup or job-object membership on Linux and Windows, and
-     the sandbox's process-group witness on macOS. Unknown or failed proof refuses the continuation: the note falls
-     back to the mailbox, and the composer says the agent will read it at its next check. A real test has a tool
-     process that outlives a cancellation answer, and the continuation must be refused;
+  4. **proves process safety for this continuation [r2-N17, r3-N17]**: the agent's tool processes from that turn
+     must be gone, proved by the native containment's own **membership accounting**, never a snapshot of ancestry
+     (which misses escaped or re-parented children):
+     - **Baseline.** When the agent reports ready, before the first prompt, the runner records the run container's
+       members (cgroup `cgroup.procs` on Linux; the job object's process list on Windows) as `(pid, start time)`
+       pairs: the agent and its own long-lived helpers.
+     - **Proof.** After the cancelled turn's terminal response, every member of the container must be in the
+       baseline (same pid **and** start time, so a reused pid never passes). Any other member — a tool still running,
+       escaped or re-parented — fails the proof. Whole-container emptiness is not required (the agent stays).
+     - **macOS and observed runners** have no membership accounting (process groups don't capture escaped children):
+       there, cancel-and-continue is **not offered**, and the agent is mailbox-only, said plainly.
+     - Unknown or failed proof refuses the continuation: the note falls back to the mailbox, and the composer says the
+       agent will read it at its next check. A real test (Linux cgroup, Windows job object) has a tool process that
+       outlives a cancellation answer, and the continuation must be refused; a reused pid with another start time
+       must fail the proof;
   5. sends the next `session/prompt` on the **same session**, pinned to the negotiated protocol version.
 - Races are handled: cancellation racing a normal completion, duplicate responses, late updates, disconnects, and Stop.
 - **Admission.** Admission stays as it is: no conformance bump invalidates working agents. **Cancel-and-continue** is a
@@ -303,16 +326,24 @@ whether it can be built.
   - The console writes a one-use launcher script, 0700, into its own private directory: a fixed template with the
     checkout path as its only value. The path is proved canonical beforehand and passed as a single-quoted shell word
     with any quote escaped.
-  - It opens that script with `execFile("open", ["-a", "Terminal", script])`, a fixed argv.
-  - Terminal runs the script in a **new window under Terminal's own environment**, whether Terminal is already
-    running or not. The new shell inherits Terminal's environment, never the console process's, so no service secret
-    reaches it. The script also clears the known Toolroll variables.
-  - The script `cd`s to the checkout, then `exec`s the chosen shell. It deletes itself first.
+  - **An explicit environment at every hop [r3-R13].** `open(1)` passes the caller's environment to an app it
+    launches, and a script cleared from inside is cleared too late, so:
+    1. the console runs `osascript` with `execFile` and an **explicit environment** — `PATH=/usr/bin:/bin:/usr/sbin:/sbin`,
+       `HOME`, `USER`, `LOGNAME`, `LANG` only (the existing allowlist mechanism, exec.ts) — and a fixed argv; a
+       Terminal it starts inherits only that;
+    2. `osascript` tells Terminal to `do script` a fixed line: `exec /usr/bin/env -i HOME=… USER=… LOGNAME=… SHELL=…
+       TERM=xterm-256color LANG=… PATH=<the login default> /bin/sh <launcher>` — so the new window's shell starts from
+       that allowlist whatever Terminal's own environment is (already running or not);
+    3. the launcher (0700, one use) deletes itself, `cd`s to the checkout, and `exec`s the chosen shell.
+  - The boundary that remains is stated: the chosen shell then reads the user's own startup files (or, for the plain
+    shell, only `/etc/zshenv`), which may set variables of their own; nothing from the console or Terminal does.
   - It is offered only when the console and that attempt's runner are on this machine.
   - It needs operator authority and a password typed now (never freshness).
 - **Path.** The checkout path comes from trusted run and lease records. It is re-proved canonical, owned by the local
   runner, and still bound to that attempt immediately before launch; a stale or reassigned path is refused.
-- **Environment.** The launch environment is scrubbed of service secrets.
+- **Environment.** The launch environment is the allowlist above at each hop, never the console's scrubbed: a
+  sentinel secret placed in the console's environment (and in Terminal's own, by starting Terminal first from a shell
+  that has it) is absent from the new window's `env`.
 - **Consent first.** Before the password field, the console says: "This opens your own terminal, outside Toolroll's
   sandbox, in files an agent wrote. Your shell's startup scripts and prompt tools (git status in the prompt, direnv,
   .envrc) can run code from those files." It offers two shells:
@@ -323,7 +354,10 @@ whether it can be built.
   - the script is written from the template, with a path that holds quotes and spaces;
   - the argv is fixed;
   - the script removes itself;
-  - a manual check on a machine with Terminal closed and with it open, recorded in the PR.
+  - the `osascript` call's environment is exactly the allowlist (asserted on the spawn), and the `do script` line is
+    the fixed `env -i` form;
+  - a sentinel-secret check on a real Mac with Terminal closed and with it already running (that Terminal started
+    with the sentinel in its environment): `env` in the new window has neither, recorded in the PR.
 - **Out of scope:** Linux and Windows (offered later), and an in-browser terminal.
 
 ## Tests, per phase
