@@ -172,6 +172,27 @@ describe("the opened agent's conversation", () => {
     localStorage.removeItem("toolroll.agent.view");
   });
 
+  test("the terminal view keeps the project's command consent: a run that hid commands shows no command or output, and says so", async () => {
+    localStorage.setItem("toolroll.agent.view", "terminal");
+    let reads = 0;
+    // The recorder kept no command text for a base-tier run: its steps arrive without targets or output.
+    vi.stubGlobal("fetch", vi.fn(async () => reads++ > 0 ? answer({ records: [], nextOffset: 200, gen: "records:1:2", final: false, notes: [], older: 0 }) : answer({ nextOffset: 200, gen: "records:1:2", final: false, older: 0, notes: [], records: [
+      { k: "open", at: at(0), detail: "base" },
+      { k: "step", at: at(1), id: "s1", kind: "command" },
+      { k: "done", at: at(2), id: "s1", ok: true },
+      { k: "cut", at: at(3) },
+    ] })));
+    await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view: board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })) })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    const terminal = host.querySelector("[data-terminal]")!;
+    expect(terminal).not.toBeNull();
+    expect(terminal.querySelector("[data-terminal-step]")?.textContent).not.toContain("$");
+    expect(terminal.querySelector("[data-terminal-output]")).toBeNull();
+    expect(terminal.querySelector("[data-terminal-marker]")).not.toBeNull();
+    expect(host.querySelector('[data-conversation-detail="base"]')?.textContent).toContain("Commands were hidden for this run.");
+    localStorage.removeItem("toolroll.agent.view");
+  });
+
   test("steps show their target and how they ended, a failed command opens to its output, and notes sit in time order with their standing", async () => {
     const fetched: string[] = [];
     const notes = [
