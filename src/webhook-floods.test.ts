@@ -291,3 +291,76 @@ describe("over HTTP", () => {
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });
+
+describe("GitHub and Linear deliveries under the same rules", () => {
+  function github() {
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir);
+    if (!made.ok) throw new Error(made.message);
+    const token = made.reveal!.path.slice("/hooks/flow/".length), secret = made.reveal!.secret!;
+    const send = (number: number, url: string, now = T0) => {
+      const body = JSON.stringify({ action: "opened", repository: { full_name: "acme/shop" }, sender: { login: "sam" },
+        issue: { number, title: `Issue ${number}`, body: "", html_url: url, user: { login: "sam" }, author_association: "OWNER", labels: [], created_at: now.toISOString(), updated_at: now.toISOString() } });
+      return receiveFlowHook(store, token, { headers: { "x-github-event": ["issues"], "x-hub-signature-256": [`sha256=${createHmac("sha256", secret).update(body).digest("hex")}`] }, body: Buffer.from(body) }, dir, now);
+    };
+    return { id: made.id, send };
+  }
+
+  test("a held GitHub issue keeps its link without the query a token could ride in", () => {
+    const hook = github();
+    for (let i = 1; i <= CARDS_PER_HOUR; i++) expect(hook.send(i, `https://github.com/acme/shop/issues/${i}`, at(i)).status).toBe(202);
+    const token = ["ghp", "Q".repeat(36)].join("_");
+    expect(hook.send(99, `https://github.com/acme/shop/issues/99?access_token=${token}#frag`, at(40))).toEqual({ status: 202, said: "Held: it will be added when there's room." });
+    const held = store.heldFlowReceipts(hook.id, 1)[0]!;
+    expect(held.itemJson).not.toContain(token);
+    expect(JSON.parse(held.itemJson)).toMatchObject({ source: { kind: "github", label: "GitHub issue #99", url: "https://github.com/acme/shop/issues/99" } });
+  });
+
+  test("a Linear identifier that is too long, or looks like a key, is never a key: received under the bytes, made into nothing", () => {
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir);
+    if (!made.ok) throw new Error(made.message);
+    const secret = "l".repeat(32);
+    saveSigningSecret(store, store.getFlowTrigger(made.id)!, secret, T0, dir);
+    const token = made.reveal!.path.slice("/hooks/flow/".length);
+    const send = (identifier: string) => {
+      const body = JSON.stringify({ type: "Issue", action: "create", webhookTimestamp: T0.getTime(), data: { identifier, title: "Refunds", team: { key: "ENG" }, url: "https://linear.app/acme/issue/ENG-1" } });
+      return receiveFlowHook(store, token, { headers: { "linear-signature": [createHmac("sha256", secret).update(body).digest("hex")] }, body: Buffer.from(body) }, dir, T0);
+    };
+    const planted = ["ghp", "Q".repeat(36)].join("_");
+    expect(send(`ENG-${"9".repeat(300)}`)).toMatchObject({ status: 202, said: expect.stringContaining("Left out 1 item") });
+    expect(send(planted)).toMatchObject({ status: 202, said: expect.stringContaining("Left out 1 item") });
+    const keys = store.handle.prepare("SELECT key FROM flow_trigger_event WHERE trigger = ?").all(made.id).map(row => String(row["key"]));
+    expect(keys).toHaveLength(2);
+    for (const key of keys) { expect(key).toMatch(/^v3:linear:body:[0-9a-f]{64}$/); expect(key).not.toContain(planted); }
+    expect(cards()).toBe(0);
+  });
+});
+
+test("the largest card-sized item, escaped at every character, is held, not refused for its size", () => {
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "github-style", titleField: "t", bodyField: "d", idField: "id", urlField: "u" }, "alex", T0, dir);
+  if (!made.ok) throw new Error(made.message);
+  const secret = (() => { const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir); if (!setUp.ok) throw new Error(setUp.message); return setUp.reveal!.secret!; })();
+  const token = made.reveal!.path.slice("/hooks/flow/".length);
+  const send = (payload: unknown, now: Date) => { const body = JSON.stringify(payload); return receiveFlowHook(store, token, { headers: { "x-hub-signature-256": [`sha256=${createHmac("sha256", secret).update(body).digest("hex")}`] }, body: Buffer.from(body) }, dir, now); };
+  for (let i = 0; i < CARDS_PER_HOUR; i++) send({ id: `n${i}`, t: `card ${i}` }, at(i));
+  // A title and details that JSON doubles at every character, and a link near its 2,000-character limit, kept twice.
+  // Lone surrogates: JSON writes each as a six-character escape.
+  const heavy = { id: "heavy", t: '"'.repeat(150), d: "\ud800".repeat(3900), u: `https://status.example/${"a".repeat(1950)}` };
+  expect(send(heavy, at(31))).toEqual({ status: 202, said: "Held: it will be added when there's room." });
+  const held = store.heldFlowReceipts(made.id, 1)[0]!;
+  expect(held.itemJson.length).toBeGreaterThan(12_000);
+});
+
+test("over HTTP, one body too large is 413 with a fresh count, and only past the minute's limit 429", async () => {
+  const hook = signedHook();
+  const server = createServer((request, response) => { void flowHook({ store, clock: () => T0, options: { configDir: dir } }, request, response, new URL(request.url ?? "/", "http://localhost")); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const big = () => fetch(`http://127.0.0.1:${port}/hooks/flow/${hook.token}`, { method: "POST", body: "x".repeat(1_000_001) });
+    expect((await big()).status).toBe(413);
+    for (let i = 1; i < UNPROVEN_PER_MINUTE; i++) expect((await big()).status).toBe(413);
+    const over = await big();
+    expect(over.status).toBe(429);
+    expect(Number(over.headers.get("retry-after"))).toBeGreaterThan(0);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});

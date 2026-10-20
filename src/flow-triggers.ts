@@ -1097,6 +1097,16 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
     }
   }
   if (items.length === 0) return { status: 202, said: "Nothing for this flow." };
+  // Every key is outside words until judged (v126): a GitHub or Linear identifier, like any identity, that is too long,
+  // carries hidden characters or looks like a key is never a key — the delivery is received under its bytes instead,
+  // and made into nothing.
+  const deliveryBytes = createHash("sha256").update(delivery.body).digest("hex");
+  items = items.map(item => {
+    const words = item.key.slice(item.key.indexOf(":") + 1);
+    const judged = identityOf(words);
+    if (item.key.length <= 200 && judged.ok) return item;
+    return { key: `v3:${config.kind}:body:${deliveryBytes}`, skip: `its identity: ${judged.ok ? "its identity isn't usable" : judged.why}`, label: "label" in item ? item.label : item.source.label.slice(0, 120), at: null };
+  });
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Webhook";
   return written(() => {
     // Received before (v126): said for what it was, never as a card that isn't there.
@@ -1145,8 +1155,10 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
 /** v126: a held delivery, kept whole until there's room for its card: its words (already screened), where it came from
  * and who sent it. */
 type HeldItem = { title: string; description: string | null; source: FlowCardSource; by: string };
-/** A held item's whole size, at most: its words fit a card, so anything near this is not a card's item. */
-const HELD_ITEM_BYTES = 12_000;
+/** A held item's whole size, at most, as saved: room for the largest card-sized item there can be (a 200-character
+ * title and 4,000-character details, a label and two 2,000-character links) with every character escaped six-fold in
+ * JSON, so no item a card could hold is ever refused for its size. */
+const HELD_ITEM_BYTES = 6 * (200 + 4_000 + 120 + 2 * 2_000 + 400) + 2_000;
 
 /** Where a held delivery came from, made safe to keep: a bounded label and kind with nothing that looks like a key, a
  * link made safe (https, no user information, query or fragment), a screened identity. Null when it can't be. */
