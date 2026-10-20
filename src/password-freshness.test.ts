@@ -360,11 +360,10 @@ describe("where freshness may be honoured", () => {
 });
 
 /**
- * THE TRIPWIRE (the audit's backstop, Codex B2 r8): however a value flows, an authorization that skips the prover has
- * to read a `fresh` somewhere, in a file that handles SSO or authentication, and a hidden prover call has to name its
- * function. So every mention — as a name, a member, a key, a string or a template literal — of `fresh` in any file
- * that mentions `sso` or an authentication function, and of each authentication function and freshness fact in any
- * file, is counted and pinned. A new mention, however it is spelled, fails here until a person reviews it. (Only a
+ * THE TRIPWIRE (the audit's backstop, Codex B2 r8/r9): however a value flows — through any file, any helper — an
+ * authorization that skips the prover has to read a `fresh` somewhere, and a hidden prover call has to name its
+ * function. So every mention — as a name, a member, a key, a string or a template literal — of `fresh`, and of each
+ * authentication function and freshness fact, in EVERY production file, is counted and pinned. A new mention, however it is spelled, fails here until a person reviews it. (Only a
  * key computed at run time, like "fr" + "esh", is outside what reading the source can see.)
  */
 const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
@@ -404,8 +403,47 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts": 1
   },
   "fresh": {
+    "src/acp-check.ts": 5,
+    "src/acp-client.ts": 3,
+    "src/backup.ts": 2,
+    "src/browser-workspace.ts": 2,
+    "src/browser/app.tsx": 3,
+    "src/browser/chime.ts": 4,
+    "src/browser/live-task.tsx": 1,
+    "src/browser/team-chat.tsx": 5,
+    "src/browser/views/flow-view.tsx": 2,
+    "src/budget-alerts.ts": 2,
+    "src/chat-decide.ts": 11,
+    "src/chat-flow.ts": 2,
+    "src/checkout-cleanup.ts": 5,
+    "src/discord-chat.ts": 3,
+    "src/evidence-pack.ts": 1,
+    "src/flow-engine.ts": 12,
+    "src/flow-pull-request.ts": 2,
+    "src/flow-send.ts": 11,
+    "src/flow-steps.ts": 5,
+    "src/flow-triggers.ts": 3,
+    "src/flow-unattended.ts": 5,
+    "src/landed-cleanup.ts": 8,
+    "src/ledger-view.ts": 8,
     "src/mcp-oauth.ts": 2,
+    "src/model-catalog.ts": 2,
+    "src/models-cli.ts": 3,
+    "src/models-ui.ts": 5,
+    "src/oidc.ts": 2,
     "src/operate.ts": 2,
+    "src/orphan-sweep.ts": 5,
+    "src/peek-cli.ts": 2,
+    "src/process-tree.ts": 7,
+    "src/provider-auth.ts": 1,
+    "src/provider-connection.ts": 4,
+    "src/push.ts": 4,
+    "src/release-cli.ts": 1,
+    "src/release-gate.ts": 11,
+    "src/release.ts": 2,
+    "src/restart-certification.ts": 4,
+    "src/run-closeout.ts": 4,
+    "src/runner.ts": 3,
     "src/scope.ts": 4,
     "src/serve.ts": 11,
     "src/server/chat.ts": 3,
@@ -415,7 +453,15 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/runtime.ts": 2,
     "src/server/settings.ts": 1,
     "src/server/task-views.ts": 3,
-    "src/server/tasks.ts": 11
+    "src/server/tasks.ts": 11,
+    "src/shared-deps.ts": 9,
+    "src/slack-chat.ts": 3,
+    "src/store.ts": 10,
+    "src/telegram-flow.ts": 3,
+    "src/telegram-lead.ts": 2,
+    "src/telegram.ts": 3,
+    "src/token-notices.ts": 2,
+    "src/worktree.ts": 13
   },
   "freshFloor": {
     "src/serve.ts": 1,
@@ -479,8 +525,7 @@ describe("the tripwire", () => {
         if (name !== null && WATCH.has(name)) (hits[name] ??= {})[path] = (hits[name]![path] ?? 0) + 1;
       });
     }
-    const auth = new Set(Object.entries(hits).filter(([name]) => name !== "fresh").flatMap(([, files]) => Object.keys(files)));
-    const out: Record<string, Record<string, number>> = { fresh: Object.fromEntries(Object.entries(hits["fresh"] ?? {}).filter(([file]) => auth.has(file))) };
+    const out: Record<string, Record<string, number>> = { fresh: hits["fresh"] ?? {} };
     for (const [name, files] of Object.entries(hits)) if (name !== "fresh" && name !== "sso") out[name] = files;
     return out;
   };
@@ -492,6 +537,14 @@ describe("the tripwire", () => {
     for (const text of ["const o = { ...{ check: authenticateApprover } }; return o;", "return authenticateApprover.call(null, ctx, token);", "const pick = token ? authenticateApprover : null; return pick;"]) {
       expect(probe(text)["authenticateApprover"]?.["probe.ts"], text).toBeGreaterThan(0);
     }
+  });
+
+  test("a helper in a file that names nothing about sign-in still trips it, as soon as it reads a fresh", () => {
+    const files = [
+      { path: "helper.ts", text: "export function isConfirmed(value: { fresh: boolean } | null | undefined): boolean { return value?.fresh === true; }" },
+      { path: "caller.ts", text: "import { isConfirmed } from './helper.js'; export const c = (typed: string, session: { sso: never }) => !typed && isConfirmed(session.sso);" },
+    ];
+    expect(mentions(files)["fresh"]).toEqual({ "helper.ts": 2 });
   });
 
   test("every mention in the production source is the reviewed one", () => {
