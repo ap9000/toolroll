@@ -133,13 +133,13 @@ test("Clear takes the turned-away count off for good", async () => {
   expect(row(dropped).querySelector("[data-trigger-dropped]")).toBeNull();
 });
 
-test("on a phone: a long trigger title and a wrong secret are handled the same way", async () => {
+test.each([false, true])("a long trigger title and a wrong secret are handled the same way (phone=%s)", async phone => {
   const sentry = add({ sender: "sentry", title: "T".repeat(120) });
   vi.stubGlobal("fetch", vi.fn(async (_path: string, init: { body: URLSearchParams }) => {
     const saved = saveSigningSecret(store, store.getFlowTrigger(sentry)!, init.body.get("secret") ?? "", T0, dir);
     return { ok: saved.ok, json: async () => saved.ok ? { ok: true, said: saved.said } : { ok: false, said: saved.message } };
   }));
-  await open(true);
+  await open(phone);
   expect(row(sentry).textContent).toContain("Sentry");
   const box = row(sentry).querySelector("[data-trigger-signing]")!;
   const type = (input: HTMLInputElement, value: string) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); };
