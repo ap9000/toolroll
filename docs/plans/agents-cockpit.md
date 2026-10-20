@@ -278,6 +278,12 @@ The chrome shows "Password remembered · 12 min · Forget".
 
 ## Phase C — Codex continuation [R4, R5]
 
+**DROPPED 2026-10-20 (Alex: "drop the codex continuation thing if it's not gonna work on Mac").** Continuation needs
+native containment to prove a stopped Codex fully gone, which only Linux cgroups give; macOS stays mailbox-only. The
+untested build loop (branch `codex-continuation-wip`) and the rollout reader and fake Codex it alone used are removed.
+Live steering on macOS comes from Live terminals instead (docs/plans/live-terminal.md). The design below is kept as
+the record of what was learned (C0 measured SIGINT as a clean boundary on codex-cli 0.156.1).
+
 The goal is a note reaching a running Codex build at a real turn boundary. v2 specifies the contract; its spike decides
 whether it can be built.
 
