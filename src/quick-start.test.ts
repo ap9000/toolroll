@@ -5,10 +5,11 @@
  * or opens: it says what it would do. Outside a repository it is not this command (the scan runs as before).
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { capturedEnvelope } from "./envelope.js";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { join } from "node:path";
-import { INSTANCE_PATH, INSTANCE_SOCKET, instanceHttpAnswer, openInstanceSocket, recordInstance } from "./console-instance.js";
+import { INSTANCE_PATH, instanceHttpAnswer, instanceSocketPath, openInstanceSocket, recordInstance } from "./console-instance.js";
 import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
 import { openStore } from "./store.js";
 
@@ -33,10 +34,10 @@ async function liveConsole(): Promise<number> {
   });
   await new Promise<void>(resolve => http.listen(0, "127.0.0.1", () => resolve()));
   const port = (http.address() as { port: number }).port;
+  const socket = await openInstanceSocket(instanceSocketPath(databaseFile), { pid: process.pid, build: BUILD, database: databaseFile, port }, () => secret);
+  if (!socket.ok) throw new Error(socket.problem);
   secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
   store.close();
-  const socket = await openInstanceSocket(join(state, INSTANCE_SOCKET), { pid: process.pid, build: BUILD, database: databaseFile, port }, secret);
-  if (!socket.ok) throw new Error(socket.problem);
   closers.push(() => new Promise<void>(resolve => { http.close(() => resolve()); http.closeAllConnections(); }), () => socket.close());
   return port;
 }
@@ -97,12 +98,16 @@ test("something that can't prove it is the console is refused with the restart; 
 
 test("under an agent, or with --json, nothing starts, is added or opens: it says what it would do", async () => {
   const quiet = seams({ underAgent: true });
+  expect(existsSync(databaseFile)).toBe(false);
   expect(await runQuickStart([], quiet.write, quiet.value)).toBe(0);
   expect(quiet.did).toEqual([]);
   expect(quiet.out).toEqual([`Would start Toolroll for ${repo} (toolroll up).`]);
+  expect(existsSync(databaseFile)).toBe(false);
   const port = await liveConsole();
   const json = seams();
   expect(await runQuickStart(["--json"], json.write, json.value)).toBe(0);
   expect(json.did).toEqual([]);
-  expect(JSON.parse(json.out[0]!)).toEqual({ ok: true, command: "toolroll", repo, would: "add-and-open", url: `http://127.0.0.1:${port}`, dryRun: true });
+  expect(JSON.parse(json.out[0]!)).toMatchObject({ envelopeVersion: expect.any(Number), ok: true, command: "toolroll", repo, would: "add-and-open", url: `http://127.0.0.1:${port}`, dryRun: true });
+  // The envelope is the CLI's own (it reaches -o), and the preview changed nothing: no database where there was none.
+  expect(capturedEnvelope()).toBe(json.out[0]);
 });

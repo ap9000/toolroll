@@ -120,7 +120,7 @@ import {
   type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
-import { clearInstance, INSTANCE_SOCKET, openInstanceSocket, recordInstance } from "./console-instance.js";
+import { clearInstance, instanceSocketPath, openInstanceSocket, recordInstance } from "./console-instance.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
@@ -8428,10 +8428,15 @@ async function upCommand(
   // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
   // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
   // isn't offered; the console runs either way.
-  instanceSecret = recordInstance(store, { pid: process.pid, port: console_.port, build: packageVersion() }, clock());
-  const instanceSocket = await openInstanceSocket(join(dirname(context.databaseFile), INSTANCE_SOCKET),
-    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, instanceSecret);
-  if (!instanceSocket.ok) progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
+  // The socket is taken FIRST: only the console that owns it publishes a record. A second console on the same database
+  // (another port) never replaces the first one's record; it runs, but isn't attached to.
+  let mintedSecret: string | null = null;
+  const instanceSocket = await openInstanceSocket(instanceSocketPath(context.databaseFile),
+    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
+  if (instanceSocket.ok) {
+    mintedSecret = recordInstance(store, { pid: process.pid, port: console_.port, build: packageVersion() }, clock());
+    instanceSecret = mintedSecret;
+  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
   if (fatal === null) {
     if (json) {
       write(
@@ -8497,7 +8502,7 @@ async function upCommand(
   process.removeListener("SIGTERM", stop);
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
   if (instanceSocket.ok) instanceSocket.close();
-  clearInstance(store, instanceSecret);
+  if (mintedSecret !== null) clearInstance(store, mintedSecret);
   await new Promise<void>(done => console_.server.close(() => done()));
 
   if (fatal !== null) {

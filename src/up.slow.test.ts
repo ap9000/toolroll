@@ -17,7 +17,7 @@ import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, authenticateApprover } from "./scope.js";
 import { addRepos, loadProjectRegistry, updateRepos } from "./repos.js";
-import { INSTANCE_SOCKET, proveLiveConsole, readInstance } from "./console-instance.js";
+import { instanceSocketPath, proveLiveConsole, readInstance } from "./console-instance.js";
 import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
 
@@ -99,7 +99,7 @@ describe("toolroll up", () => {
     expect(await proof).toEqual({ ok: true, url: `http://127.0.0.1:${PORT + 21}`, port: PORT + 21, pid: process.pid, build: packageVersion() });
     const store = openStore(db);
     try { expect(readInstance(store)).toBeNull(); } finally { store.close(); }
-    expect(existsSync(join(base, INSTANCE_SOCKET))).toBe(false);
+    expect(existsSync(instanceSocketPath(db))).toBe(false);
   });
 
   test("second start: adopts the existing login and reuses the retired worker name", async () => {

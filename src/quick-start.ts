@@ -11,7 +11,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import { proveLiveConsole, type AttachProof, type AttachSeams } from "./console-instance.js";
 import { underAgent } from "./prompt.js";
-import { openStore } from "./store.js";
+import { envelopeJson } from "./envelope.js";
+import { openStoreReadOnly } from "./store.js";
 
 export type QuickStartSeams = {
   databaseFile: string;
@@ -39,10 +40,14 @@ const EXIT = { ok: 0, refused: 3 } as const;
 export const isBareInvocation = (argv: readonly string[]): boolean => argv.every(one => one === "--json");
 
 async function prove(seams: QuickStartSeams): Promise<AttachProof> {
-  // No database yet: nothing has ever run here (and a dry run creates nothing).
-  if (!existsSync(seams.databaseFile)) return { ok: false, state: "none", message: "no console is running" };
-  const store = openStore(seams.databaseFile);
+  // Read only, never created or migrated, never cleaned up: proving changes nothing. No database (or one this build
+  // can't read as it is) means no console of this build is running on it.
+  const none = { ok: false, state: "none", message: "no console is running" } as const;
+  if (!existsSync(seams.databaseFile)) return none;
+  const store = openStoreReadOnly(seams.databaseFile);
+  if (store === null) return none;
   try { return await proveLiveConsole(seams.databaseFile, store, seams.build, seams.attach ?? {}); }
+  catch { return none; }
   finally { store.close(); }
 }
 
@@ -63,7 +68,7 @@ export async function runQuickStart(argv: readonly string[], write: (line: strin
     const words = would === "start" ? `Would start Toolroll for ${repo} (toolroll up).`
       : would === "refuse" ? `Would refuse: ${(proof as { message: string }).message}.`
       : `Would ${would === "add-and-open" ? `add ${repo} and ` : ""}open the running console at ${(proof as { url: string }).url}.`;
-    if (json) write(JSON.stringify({ ok: would !== "refuse", command: "toolroll", repo, would, ...(proof.ok ? { url: proof.url } : { console: proof.state, message: proof.message }), dryRun: true }));
+    if (json) write(envelopeJson({ ok: would !== "refuse", command: "toolroll", repo, would, ...(proof.ok ? { url: proof.url } : { console: proof.state, message: proof.message }), dryRun: true }));
     else write(words);
     return would === "refuse" ? EXIT.refused : EXIT.ok;
   }

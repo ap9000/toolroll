@@ -6,18 +6,19 @@
  * genuine console are each refused; a live console reached directly passes.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { connect as tcpConnect, createServer as createTcpServer, createServer as createSocketServer, type Server as NetServer } from "node:net";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { askSocket, clearInstance, httpProof, INSTANCE_PATH, INSTANCE_SOCKET, instanceHttpAnswer, openInstanceSocket, proveLiveConsole, readInstance, recordInstance, socketPlaceProblem, socketProof } from "./console-instance.js";
+import { askSocket, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceSocketPath, openInstanceSocket, prepareSocketPlace, proveLiveConsole, readInstance, recordInstance, socketPlaceProblem, socketProof } from "./console-instance.js";
 import { createDecisionServer } from "./serve.js";
 import { fakePid } from "../test/fake-pid.js";
 import { openStore, type Store } from "./store.js";
 
 const BUILD = "9.9.9-test";
-let dir: string, state: string, databaseFile: string, store: Store;
+let dir: string, state: string, databaseFile: string, store: Store, socketPath: string;
 const closers: (() => Promise<void> | void)[] = [];
 beforeEach(() => {
   // A short base: a Unix socket path is limited to ~104 bytes on macOS.
@@ -25,6 +26,7 @@ beforeEach(() => {
   state = join(dir, "s");
   mkdirSync(state, { mode: 0o700 });
   databaseFile = join(state, "orders.db");
+  socketPath = instanceSocketPath(databaseFile);
   store = openStore(databaseFile);
 });
 afterEach(async () => {
@@ -55,11 +57,11 @@ async function genuine(host = "127.0.0.1") {
   const http = consoleHttp(() => secret);
   const port = await listenHttp(http, host);
   closers.push(() => closeServer(http));
-  secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
-  const socket = await openInstanceSocket(join(state, INSTANCE_SOCKET), { pid: process.pid, build: BUILD, database: databaseFile, port }, secret);
+  const socket = await openInstanceSocket(socketPath, { pid: process.pid, build: BUILD, database: databaseFile, port }, () => secret);
   if (!socket.ok) throw new Error(socket.problem);
+  secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
   closers.push(() => socket.close());
-  return { port, secret };
+  return { port, secret: secret as string };
 }
 
 const ipv6 = await (async () => { const probe = createTcpServer(); try { await listenHttp(probe, "::1"); await closeServer(probe); return true; } catch { return false; } })();
@@ -90,39 +92,58 @@ describe("the discovery socket", () => {
     const { port, secret } = await genuine();
     const before = readInstance(store);
     const c = "1".repeat(64);
-    const hello = await askSocket(join(state, INSTANCE_SOCKET), { verb: "hello", challenge: c });
+    const hello = await askSocket(socketPath, { verb: "hello", challenge: c });
     expect(hello).toEqual({ answer: { pid: process.pid, build: BUILD, database: databaseFile, port, proof: socketProof(secret, c) } });
     expect(JSON.stringify(hello)).not.toContain(secret);
     for (const asked of [{ verb: "secret" }, { verb: "sign-in", challenge: c }, { verb: "hello" }, { verb: "hello", challenge: "xyz" }]) {
-      expect(await askSocket(join(state, INSTANCE_SOCKET), asked)).toEqual({ answer: { error: "refused" } });
+      expect(await askSocket(socketPath, asked)).toEqual({ answer: { error: "refused" } });
     }
     expect(readInstance(store)).toEqual(before);
   });
 
-  test("a socket in a directory other users can write is refused, on both sides", async () => {
+  test("the socket's place must be private: a directory open to others (even read-only), a writable parent, a too-long path, a non-socket", async () => {
+    prepareSocketPlace(socketPath);
+    expect(socketPlaceProblem(socketPath)).toBeNull();
+    const run = join(state, "run");
+    for (const mode of [0o755, 0o750, 0o777]) {
+      chmodSync(run, mode);
+      expect(socketPlaceProblem(socketPath)).toContain("open to other users");
+    }
+    // A console being started closes an existing directory of this user's to everyone else.
+    chmodSync(run, 0o755);
+    const opened = await openInstanceSocket(socketPath, { pid: fakePid(3), build: BUILD, database: databaseFile, port: 1 }, () => "a".repeat(64));
+    expect(opened.ok).toBe(true);
+    if (opened.ok) opened.close();
     chmodSync(state, 0o777);
     try {
-      expect(socketPlaceProblem(join(state, INSTANCE_SOCKET))).toContain("can be written by other users");
-      const opened = await openInstanceSocket(join(state, INSTANCE_SOCKET), { pid: fakePid(3), build: BUILD, database: databaseFile, port: 1 }, "a".repeat(64));
-      expect(opened.ok).toBe(false);
-      const proof = await proveLiveConsole(databaseFile, store, BUILD);
-      expect(proof).toMatchObject({ ok: false, state: "refused" });
+      expect(socketPlaceProblem(socketPath)).toContain("can be written by other users");
     } finally { chmodSync(state, 0o700); }
+    expect(socketPlaceProblem(join(run, `${"x".repeat(120)}.sock`))).toContain("too long");
     // A plain file where the socket goes is not a socket.
-    writeFileSync(join(state, INSTANCE_SOCKET), "");
-    expect(socketPlaceProblem(join(state, INSTANCE_SOCKET))).toContain("isn't a socket");
+    writeFileSync(socketPath, "");
+    expect(socketPlaceProblem(socketPath)).toContain("isn't a socket");
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
   });
 
-  test("a stale socket (nobody listening) is removed and read as no console running", async () => {
-    const path = join(state, INSTANCE_SOCKET);
-    // A listener that died without cleaning up: its socket file stays, nobody answers.
-    const dead = createSocketServer();
-    await new Promise<void>(resolve => dead.listen(path, () => resolve()));
-    (dead as unknown as { _handle: { close: () => void } | null })._handle?.close();
+  test("a stale socket (nobody listening) reads as no console running; discovery leaves it, and the next up clears it", async () => {
+    prepareSocketPlace(socketPath);
+    // A console killed outright: its socket file stays, nobody answers.
+    spawnSync(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))", socketPath]);
+    expect(lstatSync(socketPath).isSocket()).toBe(true);
     recordInstance(store, { pid: process.pid, port: 1, build: BUILD }, new Date());
-    const proof = await proveLiveConsole(databaseFile, store, BUILD);
-    expect(proof).toEqual({ ok: false, state: "none", message: "no console is running" });
-    expect(socketPlaceProblem(path)).toBeNull();
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: false, state: "none", message: "no console is running" });
+    expect(lstatSync(socketPath).isSocket()).toBe(true);
+    const next = await openInstanceSocket(socketPath, { pid: fakePid(4), build: BUILD, database: databaseFile, port: 1 }, () => "a".repeat(64));
+    expect(next.ok).toBe(true);
+    if (next.ok) next.close();
+  });
+
+  test("a second console on the same database never takes over the first one's socket or record", async () => {
+    const { port, secret } = await genuine();
+    const second = await openInstanceSocket(socketPath, { pid: fakePid(5), build: BUILD, database: databaseFile, port: port + 1 }, () => "b".repeat(64));
+    expect(second).toMatchObject({ ok: false, another: true });
+    expect(readInstance(store)?.secret).toBe(secret);
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: true, port });
   });
 });
 
@@ -146,6 +167,16 @@ describe("attaching", () => {
     expect((await fetch(`http://127.0.0.1:${port}${INSTANCE_PATH}?c=${c}&c=${c}`)).status).toBe(400);
   });
 
+  test("a malformed proof (not 64 hex characters, even of the same length in letters) is refused, never a crash", async () => {
+    const secret = recordInstance(store, { pid: process.pid, port: 1, build: BUILD }, new Date());
+    void secret;
+    prepareSocketPlace(socketPath);
+    const odd = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify({ pid: process.pid, build: BUILD, database: databaseFile, port: 1, proof: "é".repeat(64) })}\n`)));
+    await new Promise<void>(resolve => odd.listen(socketPath, () => resolve()));
+    closers.push(() => closeServer(odd));
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
+  });
+
   test("another build refuses, naming the restart", async () => {
     await genuine();
     expect(await proveLiveConsole(databaseFile, store, "1.0.0")).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining("toolroll up") });
@@ -158,8 +189,9 @@ describe("attaching", () => {
     closers.push(() => closeServer(replacement));
     const secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
     const recorded = { pid: process.pid, build: BUILD, database: databaseFile, port, proof: socketProof(secret, "3".repeat(64)) };
+    prepareSocketPlace(socketPath);
     const impostor = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify(recorded)}\n`)));
-    await new Promise<void>(resolve => impostor.listen(join(state, INSTANCE_SOCKET), () => resolve()));
+    await new Promise<void>(resolve => impostor.listen(socketPath, () => resolve()));
     closers.push(() => closeServer(impostor));
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
     // Even replaying the very challenge's answer on the socket, the replacement listener can't answer HTTP.

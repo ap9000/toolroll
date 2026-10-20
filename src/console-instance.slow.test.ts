@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { agentFence, macosFenceAvailable, macosFenced } from "./agent-fence.js";
-import { INSTANCE_SOCKET, openInstanceSocket, readInstance, recordInstance } from "./console-instance.js";
+import { instanceSocketPath, openInstanceSocket, readInstance, recordInstance } from "./console-instance.js";
 import { openStore, type Store } from "./store.js";
 
 const BUILD = "9.9.9-test";
@@ -44,10 +44,11 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
     const state = join(databaseFile, "..");
     mkdirSync(state, { recursive: true, mode: 0o700 });
     store = openStore(databaseFile);
-    const secret = recordInstance(store, { pid: process.pid, port: 4180, build: BUILD }, new Date());
-    const socketPath = join(state, INSTANCE_SOCKET);
-    const opened = await openInstanceSocket(socketPath, { pid: process.pid, build: BUILD, database: databaseFile, port: 4180 }, secret);
+    const socketPath = instanceSocketPath(databaseFile);
+    let secret = "";
+    const opened = await openInstanceSocket(socketPath, { pid: process.pid, build: BUILD, database: databaseFile, port: 4180 }, () => secret);
     if (!opened.ok) throw new Error(opened.problem);
+    secret = recordInstance(store, { pid: process.pid, port: 4180, build: BUILD }, new Date());
     close = opened.close;
     const before = readInstance(store);
     const worktree = join(dir, "wt"), home = join(dir, "home");
