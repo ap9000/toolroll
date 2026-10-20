@@ -391,6 +391,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       // A step-up: the provider checked the same person again.
       if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginPage(`That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
       who.session.sso = { at: handoff.checkedAt ?? 0 };
+      // An explicit re-check on request: the one identity-provider event that may start a freshness window (B2).
+      if (handoff.checkedAt !== null) who.session.ssoReauthAt = handoff.checkedAt;
       sessions.persist(who.session);
       recordSignIn(who.name, "confirmed", settings.label);
       return redirect(response, handoff.returnTo);

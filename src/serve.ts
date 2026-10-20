@@ -750,7 +750,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     };
     // An empty password stands for a fresh identity-provider sign-in, for this person only (v100).
     // Cockpit B2: this request's facts for password freshness — the one place they are set (scope.ts honours them).
-    const fresh: FreshFacts | null = who.via === 'cookie' ? { actor: who.name, passwordAt: who.session.passwordAt ?? null, ssoAt: who.session.sso?.at ?? null,
+    // The window's identity-provider start is an explicit re-check only (ssoReauthAt), never an ordinary sign-in.
+    const fresh: FreshFacts | null = who.via === 'cookie' ? { actor: who.name, passwordAt: who.session.passwordAt ?? null, ssoAt: who.session.ssoReauthAt ?? null,
       local: fromThisComputer(request), floor: who.session.freshFloor ?? 0, stamp: at => { if (fromThisComputer(request)) who.session.passwordAt = at; } } : null;
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });

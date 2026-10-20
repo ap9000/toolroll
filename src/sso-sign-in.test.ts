@@ -247,3 +247,19 @@ test("a step-up's provider check must be one made for it: no auth_time, or one f
     expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).toContain('data-sso-step-up="confirmed"');
   } finally { authTimeOf = now => now; }
 });
+
+test("an ordinary provider sign-in starts no remembered window; an explicit re-check does (cockpit B2)", async () => {
+  await turnOn();
+  person.groups = ["eng-leads"];
+  const cookie = cookieOf(await providerSignIn());
+  for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", new Date());
+  store.createTask({ id: "t-window", title: "window" }, new Date());
+  store.placeTask(store.refFor("built-in", "t-window").id, "/repo/main");
+  const csrf = csrfOf(await (await fetch(`${base}/tasks`, { headers: { cookie } })).text());
+  expect((await fetch(`${base}/t/t-window/scope`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual",
+    body: new URLSearchParams({ csrf, acceptance: "c1: ok | manual-review", sawDigest: "", goal: "the goal", not: "", touches: "" }) })).status).toBe(303);
+  const page = async () => (await fetch(`${base}/t/t-window`, { headers: { cookie } })).text();
+  expect(await page()).not.toContain("data-approval-fresh");
+  expect((await providerSignIn("?reauth=1&return=/t/t-window", cookie)).headers.get("location")).toBe("/t/t-window");
+  expect(await page()).toContain("data-approval-fresh");
+});

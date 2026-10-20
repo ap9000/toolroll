@@ -1146,7 +1146,8 @@ export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-
 export const FRESH_WINDOW_MS = 15 * 60_000;
 export type FreshFacts = {
   actor: string;
-  /** When a password was last verified on this session (ms), and when the provider last checked the person. */
+  /** When a password was last verified on this session (ms), and when the provider last re-checked the person on request
+   * (an explicit re-authentication — never an ordinary sign-in). */
   passwordAt: number | null; ssoAt: number | null;
   /** Straight from this computer: a loopback peer naming a loopback host, with no forwarding headers. */
   local: boolean;

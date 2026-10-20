@@ -848,8 +848,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // The password, typed again, on EVERY message (v2 ruling 2): chat is
     // spend, and a seven-day cookie is not a spend credential.
     const password = body.get("token") ?? "";
-    // Typed now, or (cockpit B2) remembered on this session from a direct local request within its window — an
-    // identity-provider check never stands in here.
+    // Typed now, or (cockpit B2) a password or explicit provider re-check given on this session, on a direct local
+    // request, within its window. An ordinary provider sign-in never starts that window.
     const proved = password === "" ? withFreshness("chat-send", () => freshnessFor(who.name)) !== null && withFreshness("chat-send", () => authenticateApprover(who, "")).ok
       : authenticateApprover(who, password).ok;
     if (!proved) {

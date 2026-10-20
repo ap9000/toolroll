@@ -50,6 +50,9 @@ export type Session = {
   sso?: { at: number };
   /** Cockpit B2: when a password was last verified on this session (in memory only: a restart forgets it). */
   passwordAt?: number;
+  /** Cockpit B2: when the identity provider last re-checked this person on request (a step-up's re-authentication).
+   * Only this, or a password, starts a freshness window; an ordinary sign-in never does. In memory only. */
+  ssoReauthAt?: number;
   /** Forget: nothing verified before this counts as fresh. */
   freshFloor?: number;
   /** v101: the browser and address it signed in from, for the person to recognise it. */
