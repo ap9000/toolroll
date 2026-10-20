@@ -15,9 +15,9 @@
  * a replayed hello, a stale record with a recycled pid, and another process now on that port.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, realpathSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Store } from "./store.js";
 
 export const CONSOLE_INSTANCE_SCHEMA = `
@@ -27,19 +27,24 @@ CREATE TABLE IF NOT EXISTS console_instance (
   pid        INTEGER NOT NULL,
   port       INTEGER NOT NULL,
   build      TEXT NOT NULL,
+  socket     TEXT NOT NULL,
   started_at TEXT NOT NULL
 );`;
 
-/** The socket's own owner-only directory beside the database, and the socket in it. */
+/**
+ * The socket's own owner-only directory beside the database's REAL file (a symlinked database resolves to the one
+ * folder every spelling shares). Each console start binds a socket of its own, under a fresh random name recorded
+ * with its secret: no console ever needs to remove — or can remove — another console's socket.
+ */
 export const INSTANCE_DIR = "run";
-export const INSTANCE_SOCKET = "console.sock";
-/** Beside the database's REAL folder (both the console and the CLI resolve it the same way), so the place check sees
- * canonical paths. */
-export function instanceSocketPath(databaseFile: string): string {
-  let folder = dirname(databaseFile);
-  try { folder = realpathSync(folder); } catch { /* not there yet: as given */ }
-  return join(folder, INSTANCE_DIR, INSTANCE_SOCKET);
+export function instanceRunDir(databaseFile: string): string {
+  let file = databaseFile;
+  try { file = realpathSync(databaseFile); } catch {
+    try { file = join(realpathSync(dirname(databaseFile)), basename(databaseFile)); } catch { /* not there yet: as given */ }
+  }
+  return join(dirname(file), INSTANCE_DIR);
 }
+const SOCKET_NAME = /^[0-9a-f]{16}\.sock$/;
 /** The longest Unix socket path the platform binds without truncating (sun_path less its NUL). */
 const SOCKET_PATH_MAX = process.platform === "darwin" ? 103 : 107;
 /** The console's own answer to a challenge over HTTP (an edge route, no sign-in: it reveals nothing). */
@@ -47,22 +52,15 @@ export const INSTANCE_PATH = "/__instance";
 const CHALLENGE = /^[0-9a-f]{32,128}$/;
 const LINE_CAP = 4096;
 
-export type InstanceRecord = { secret: string; pid: number; port: number; build: string; startedAt: string };
+export type InstanceRecord = { secret: string; pid: number; port: number; build: string; socket: string; startedAt: string };
 export type HelloFacts = { pid: number; build: string; database: string; port: number };
 
-export function recordInstance(store: Store, facts: { pid: number; port: number; build: string }, now: Date): string {
-  const secret = randomBytes(32).toString("hex");
-  store.handle.prepare("INSERT INTO console_instance (id, secret, pid, port, build, started_at) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET secret = excluded.secret, pid = excluded.pid, port = excluded.port, build = excluded.build, started_at = excluded.started_at")
-    .run(secret, facts.pid, facts.port, facts.build, now.toISOString());
-  return secret;
-}
-
 export function readInstance(store: Store): InstanceRecord | null {
-  const row = store.handle.prepare("SELECT secret, pid, port, build, started_at FROM console_instance WHERE id = 1").get();
+  const row = store.handle.prepare("SELECT secret, pid, port, build, socket, started_at FROM console_instance WHERE id = 1").get();
   if (row === undefined) return null;
-  const secret = String(row["secret"]), pid = Number(row["pid"]), port = Number(row["port"]);
-  if (!/^[0-9a-f]{64}$/.test(secret) || !Number.isSafeInteger(pid) || !Number.isInteger(port) || port < 1 || port > 65535) return null;
-  return { secret, pid, port, build: String(row["build"]), startedAt: String(row["started_at"]) };
+  const secret = String(row["secret"]), pid = Number(row["pid"]), port = Number(row["port"]), socket = String(row["socket"]);
+  if (!/^[0-9a-f]{64}$/.test(secret) || !Number.isSafeInteger(pid) || !Number.isInteger(port) || port < 1 || port > 65535 || !SOCKET_NAME.test(socket)) return null;
+  return { secret, pid, port, build: String(row["build"]), socket, startedAt: String(row["started_at"]) };
 }
 
 /** A stopping console forgets itself — only its own record, never a newer start's. */
@@ -84,33 +82,41 @@ export function instanceHttpAnswer(secret: string, challenge: string | null, loc
 }
 
 /**
- * The socket's place must be private to this user: its directory a real, canonical directory owned by this user with
- * no access for anyone else (0700), inside a directory owned by this user that nobody else can write; the path short
- * enough to bind exactly; and the socket itself (if there) a socket owned by this user. Anything else is refused
- * before connecting or binding.
+ * The run directory must be private to this user: a real, canonical directory owned by this user with no access for
+ * anyone else (0700), inside a canonical directory owned by this user that nobody else can write. Checked before any
+ * change is made, and before connecting or binding.
  */
-export function socketPlaceProblem(socketPath: string, uid = process.getuid?.() ?? -1): string | null {
-  if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX) return `${socketPath} is too long for a socket here`;
-  const dir = dirname(socketPath), parent = dirname(dir);
-  let info, above;
-  try { info = lstatSync(dir); above = lstatSync(parent); } catch { return `${dir} doesn't exist`; }
-  if (!info.isDirectory()) return `${dir} isn't a directory`;
-  try { if (realpathSync(dir) !== dir) return `${dir} isn't its own real path`; } catch { return `${dir} doesn't exist`; }
-  if (uid >= 0 && (info.uid !== uid || above.uid !== uid)) return `${dir} belongs to another user`;
-  if ((info.mode & 0o077) !== 0) return `${dir} is open to other users`;
+export function runDirProblem(dir: string, uid = process.getuid?.() ?? -1, mustExist = true): string | null {
+  const parent = dirname(dir);
+  let above;
+  try { above = lstatSync(parent); } catch { return `${parent} doesn't exist`; }
+  try { if (realpathSync(parent) !== parent) return `${parent} isn't its own real path`; } catch { return `${parent} doesn't exist`; }
+  if (!above.isDirectory()) return `${parent} isn't a directory`;
+  if (uid >= 0 && above.uid !== uid) return `${parent} belongs to another user`;
   if ((above.mode & 0o022) !== 0) return `${parent} can be written by other users`;
-  let socket;
-  try { socket = lstatSync(socketPath); } catch { return null; }
-  if (!socket.isSocket()) return `${socketPath} isn't a socket`;
-  if (uid >= 0 && socket.uid !== uid) return `${socketPath} belongs to another user`;
+  let info;
+  try { info = lstatSync(dir); } catch { return mustExist ? `${dir} doesn't exist` : null; }
+  if (!info.isDirectory()) return `${dir} isn't a directory`;
+  if (uid >= 0 && info.uid !== uid) return `${dir} belongs to another user`;
+  if ((info.mode & 0o077) !== 0) return `${dir} is open to other users — Toolroll uses it only when it is yours alone (chmod 700)`;
+  return null;
+}
+/** A socket path that binds exactly (no truncation), named as a console names its own. */
+export function socketPathProblem(path: string): string | null {
+  if (!SOCKET_NAME.test(basename(path))) return `${path} isn't a console socket`;
+  if (Buffer.byteLength(path) > SOCKET_PATH_MAX) return `${path} is too long for a socket here`;
   return null;
 }
 
-/** `up`: make the socket's directory (0700), or close an existing one of this user's to everyone else. */
-export function prepareSocketPlace(socketPath: string, uid = process.getuid?.() ?? -1): void {
-  const dir = dirname(socketPath);
-  try { mkdirSync(dir, { mode: 0o700 }); } catch { /* there already */ }
-  try { const info = lstatSync(dir); if (info.isDirectory() && (uid < 0 || info.uid === uid) && (info.mode & 0o077) !== 0) chmodSync(dir, 0o700); } catch { /* checked next */ }
+/**
+ * `up`: the run directory, made 0700 if it isn't there. An existing one is used only as it is (never chmodded): one
+ * that isn't private to this user is refused. Everything is checked before anything is created.
+ */
+export function prepareRunDir(dir: string, uid = process.getuid?.() ?? -1): string | null {
+  const before = runDirProblem(dir, uid, false);
+  if (before !== null) return before;
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") return `${dir} couldn't be made`; }
+  return runDirProblem(dir, uid, true);
 }
 
 /** Ask a socket one question; null when nobody is listening (or it said nothing usable in time). */
@@ -139,25 +145,16 @@ export function askSocket(socketPath: string, request: object, timeoutMs = 2_000
 
 /**
  * The console's discovery socket: one line in, one line out. `hello` (with a challenge) answers the public facts and
- * the socket proof; every other verb is refused. It reads nothing else and changes nothing.
+ * the socket proof; every other verb is refused. It reads nothing else and changes nothing. Bound under a fresh name
+ * no other process has, so it never clears or replaces anything; its own listener removes it on close.
  */
-export async function openInstanceSocket(socketPath: string, facts: HelloFacts, secret: () => string | null): Promise<{ ok: true; close: () => void } | { ok: false; problem: string; another?: true }> {
-  prepareSocketPlace(socketPath);
-  const problem = socketPlaceProblem(socketPath);
+export async function openInstanceSocket(databaseFile: string, facts: HelloFacts, secret: () => string | null): Promise<{ ok: true; name: string; close: () => void } | { ok: false; problem: string }> {
+  const dir = instanceRunDir(databaseFile);
+  const problem = prepareRunDir(dir);
   if (problem !== null) return { ok: false, problem };
-  // A socket left by a console that died: removed only when nobody answers on it, and only if it is still that very
-  // socket (same device and inode) — never one another console bound meanwhile.
-  try {
-    const seen = lstatSync(socketPath);
-    const asked = await askSocket(socketPath, { verb: "ping" }, 1_000);
-    if ("answer" in asked) return { ok: false, problem: `another console answers on ${socketPath}`, another: true };
-    if (asked.none === "no-answer") return { ok: false, problem: `${socketPath} is in use`, another: true };
-    const now = lstatSync(socketPath);
-    if (now.dev !== seen.dev || now.ino !== seen.ino) return { ok: false, problem: `${socketPath} changed while it was checked`, another: true };
-    unlinkSync(socketPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { ok: false, problem: `${socketPath} couldn't be cleared` };
-  }
+  const name = `${randomBytes(8).toString("hex")}.sock`, socketPath = join(dir, name);
+  const pathProblem = socketPathProblem(socketPath);
+  if (pathProblem !== null) return { ok: false, problem: pathProblem };
   const server: Server = createServer(socket => {
     let buffer = "";
     socket.setEncoding("utf8");
@@ -178,11 +175,39 @@ export async function openInstanceSocket(socketPath: string, facts: HelloFacts, 
       reply({ ...facts, proof: socketProof(key, challenge) });
     });
   });
-  // A Unix bind never replaces an existing path: one another process bound since the check refuses (EADDRINUSE).
+  // A Unix bind never replaces an existing path (EADDRINUSE).
   const listening = await new Promise<boolean>(resolve => { server.once("error", () => resolve(false)); server.listen(socketPath, () => resolve(true)); });
-  if (!listening) return { ok: false, problem: `couldn't listen on ${socketPath}`, another: true };
-  // Closing the listener removes its socket file itself (libuv): nothing here unlinks a path by name afterwards.
-  return { ok: true, close: () => { server.close(); } };
+  if (!listening) return { ok: false, problem: `couldn't listen on ${socketPath}` };
+  return { ok: true, name, close: () => { server.close(); } };
+}
+
+/** Whether a record's console is live: its socket answers a fresh challenge with the record's secret and pid. */
+export async function recordIsLive(databaseFile: string, record: InstanceRecord, ask: typeof askSocket = askSocket): Promise<boolean> {
+  const socketPath = join(instanceRunDir(databaseFile), record.socket);
+  if (socketPathProblem(socketPath) !== null) return false;
+  const challenge = randomBytes(32).toString("hex");
+  const asked = await ask(socketPath, { verb: "hello", challenge }, 1_500);
+  return "answer" in asked && asked.answer["pid"] === record.pid && same(asked.answer["proof"], socketProof(record.secret, challenge));
+}
+
+/**
+ * `up` claims the record for its socket — unless a live console already holds it (another start on the same
+ * database, by any spelling of its path). The write is a compare-and-set on the record it checked: two starts racing
+ * can't both win. Null: not claimed (this console runs, but `toolroll` won't attach to it).
+ */
+export async function claimInstance(store: Store, databaseFile: string, facts: { pid: number; port: number; build: string; socket: string }, now: Date, isLive: (record: InstanceRecord) => Promise<boolean> = record => recordIsLive(databaseFile, record)): Promise<string | null> {
+  const rawSecret = (): string | null => { const row = store.handle.prepare("SELECT secret FROM console_instance WHERE id = 1").get(); return row === undefined ? null : String(row["secret"]); };
+  const checked = rawSecret();
+  const current = readInstance(store);
+  if (current !== null && await isLive(current)) return null;
+  const secret = randomBytes(32).toString("hex");
+  return store.transact(() => {
+    // Exactly the record that was checked (or none): anything else is another start's newer claim.
+    if (rawSecret() !== checked) return null;
+    store.handle.prepare("INSERT INTO console_instance (id, secret, pid, port, build, socket, started_at) VALUES (1, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET secret = excluded.secret, pid = excluded.pid, port = excluded.port, build = excluded.build, socket = excluded.socket, started_at = excluded.started_at")
+      .run(secret, facts.pid, facts.port, facts.build, facts.socket, now.toISOString());
+    return secret;
+  });
 }
 
 export type AttachProof =
@@ -203,23 +228,25 @@ export type AttachSeams = {
  */
 export async function proveLiveConsole(databaseFile: string, store: Store, build: string, seams: AttachSeams = {}): Promise<AttachProof> {
   const restart = "stop it and run `toolroll up` again";
-  const socketPath = instanceSocketPath(databaseFile);
-  // No socket (or not even its directory): nothing is running here.
-  const exists = (() => { try { lstatSync(socketPath); return true; } catch { return false; } })();
-  if (!exists) return { ok: false, state: "none", message: "no console is running" };
-  const problem = socketPlaceProblem(socketPath);
-  if (problem !== null) return { ok: false, state: "refused", message: `the console's socket can't be trusted: ${problem}` };
+  // No record: nothing is running here (a console that couldn't claim one isn't offered).
   const record = readInstance(store);
+  if (record === null) return { ok: false, state: "none", message: "no console is running" };
+  const dir = instanceRunDir(databaseFile);
+  const problem = runDirProblem(dir) ?? socketPathProblem(join(dir, record.socket));
+  if (problem !== null) return { ok: false, state: "refused", message: `the console's socket can't be trusted: ${problem}` };
+  const socketPath = join(dir, record.socket);
+  try {
+    const socket = lstatSync(socketPath);
+    if (!socket.isSocket() || (process.getuid !== undefined && socket.uid !== process.getuid())) return { ok: false, state: "refused", message: `the console's socket can't be trusted: ${socketPath} isn't this user's socket` };
+  } catch { return { ok: false, state: "none", message: "no console is running" }; }
   const challenge = seams.challenge ?? (() => randomBytes(32).toString("hex"));
   const first = challenge();
   const asked = await (seams.ask ?? askSocket)(socketPath, { verb: "hello", challenge: first });
   if ("none" in asked) {
-    // Stale: nobody is listening, so nothing is running. Discovery never removes it (a reader changes nothing); the
-    // next `up` clears it, checking it is still that same socket.
+    // Stale (a console that died): nobody is listening, so nothing is running. Discovery removes nothing.
     if (asked.none === "no-listener") return { ok: false, state: "none", message: "no console is running" };
     return { ok: false, state: "refused", message: `the console's socket didn't answer — ${restart}` };
   }
-  if (record === null) return { ok: false, state: "refused", message: `something answers on the console's socket, but no console is recorded — ${restart}` };
   const hello = asked.answer;
   if (hello["build"] !== record.build || hello["build"] !== build) {
     return { ok: false, state: "refused", message: `the running console is a different build (${String(hello["build"] ?? "unknown")}, this is ${build}) — ${restart}` };

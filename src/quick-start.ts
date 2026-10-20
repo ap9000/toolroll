@@ -12,7 +12,8 @@ import { existsSync, realpathSync } from "node:fs";
 import { proveLiveConsole, type AttachProof, type AttachSeams } from "./console-instance.js";
 import { underAgent } from "./prompt.js";
 import { envelopeJson } from "./envelope.js";
-import { openStoreReadOnly } from "./store.js";
+import { createRequire } from "node:module";
+import { openStoreReadOnly, SCHEMA_VERSION } from "./store.js";
 
 export type QuickStartSeams = {
   databaseFile: string;
@@ -39,15 +40,32 @@ const EXIT = { ok: 0, refused: 3 } as const;
 /** Whether argv is a bare `toolroll` (nothing, or only --json). */
 export const isBareInvocation = (argv: readonly string[]): boolean => argv.every(one => one === "--json");
 
+/** The database's schema version, read without changing anything; null when it can't be read. */
+function schemaOf(file: string): number | null {
+  try {
+    // Loaded only here, as the store loads it: the CLI's other commands never pay for (or warn about) it.
+    const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+    const db = new DatabaseSync(file, { readOnly: true });
+    try { const row = db.prepare("SELECT version FROM schema_version").get(); return row === undefined ? null : Number(row["version"]); }
+    finally { db.close(); }
+  } catch { return null; }
+}
+
 async function prove(seams: QuickStartSeams): Promise<AttachProof> {
-  // Read only, never created or migrated, never cleaned up: proving changes nothing. No database (or one this build
-  // can't read as it is) means no console of this build is running on it.
+  // Read only, never created or migrated, never cleaned up: proving changes nothing. "None" only when nothing of this
+  // build can be running on it (no database yet, or one older than this build, which `up` brings up to date); a
+  // database that can't be read, is mid-upgrade or is newer than this build can't be checked, so it is refused.
   const none = { ok: false, state: "none", message: "no console is running" } as const;
+  const unverifiable = (why: string) => ({ ok: false, state: "refused", message: `${why}, so a running console can't be checked — run \`toolroll up\` to see what's wrong` } as const);
   if (!existsSync(seams.databaseFile)) return none;
+  const version = schemaOf(seams.databaseFile);
+  if (version === null || !Number.isSafeInteger(version)) return unverifiable("Toolroll's database can't be read");
+  if (version > 0 && version < SCHEMA_VERSION) return none;
+  if (version !== SCHEMA_VERSION) return unverifiable(version < 0 ? "Toolroll's database is being upgraded" : "Toolroll's database is from a newer build");
   const store = openStoreReadOnly(seams.databaseFile);
-  if (store === null) return none;
+  if (store === null) return unverifiable("Toolroll's database can't be read");
   try { return await proveLiveConsole(seams.databaseFile, store, seams.build, seams.attach ?? {}); }
-  catch { return none; }
+  catch { return unverifiable("the running console couldn't be checked"); }
   finally { store.close(); }
 }
 

@@ -1,24 +1,25 @@
 /**
  * The running console, proved live (docs/plans/agents-cockpit.md B1): the discovery socket answers only `hello`; the
  * CLI attaches only when the live console answers fresh challenges on BOTH channels with the secret the database
- * holds, bound to the address it dialed. A stale socket, a socket in a directory others can write, a replayed hello,
- * a stale record with a recycled pid and a replacement listener, another build, and an IPv4-to-IPv6 relay to the
- * genuine console are each refused; a live console reached directly passes.
+ * holds, bound to the address it dialed. Each start binds its own socket (a fresh name in the record), so nothing
+ * ever removes another console's; a second start on the same database (by any path spelling) never takes the record
+ * from a live first one. A run folder open to others, a stale socket, a replayed hello, a stale record with a recycled
+ * pid and a replacement listener, another build, a malformed proof and an IPv4-to-IPv6 relay are each refused or read
+ * as nothing running; a live console reached directly passes.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { connect as tcpConnect, createServer as createTcpServer, createServer as createSocketServer, type Server as NetServer } from "node:net";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { askSocket, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceSocketPath, openInstanceSocket, prepareSocketPlace, proveLiveConsole, readInstance, recordInstance, socketPlaceProblem, socketProof } from "./console-instance.js";
+import { askSocket, claimInstance, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceRunDir, openInstanceSocket, prepareRunDir, proveLiveConsole, readInstance, runDirProblem, socketPathProblem, socketProof } from "./console-instance.js";
 import { createDecisionServer } from "./serve.js";
-import { fakePid } from "../test/fake-pid.js";
 import { openStore, type Store } from "./store.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const BUILD = "9.9.9-test";
-let dir: string, state: string, databaseFile: string, store: Store, socketPath: string;
+let dir: string, state: string, databaseFile: string, store: Store, run: string;
 const closers: (() => Promise<void> | void)[] = [];
 beforeEach(() => {
   // A short base: a Unix socket path is limited to ~104 bytes on macOS.
@@ -26,8 +27,8 @@ beforeEach(() => {
   state = join(dir, "s");
   mkdirSync(state, { mode: 0o700 });
   databaseFile = join(state, "orders.db");
-  socketPath = instanceSocketPath(databaseFile);
   store = openStore(databaseFile);
+  run = instanceRunDir(databaseFile);
 });
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close();
@@ -35,11 +36,16 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const listenHttp = (server: HttpServer | NetServer, host: string, port = 0) => new Promise<number>((resolve, reject) => {
-  server.once("error", reject);
-  server.listen(port, host, () => { const address = server.address(); resolve(typeof address === "object" && address !== null ? address.port : 0); });
-});
-const closeServer = (server: HttpServer | NetServer) => new Promise<void>(resolve => { server.close(() => resolve()); (server as HttpServer).closeAllConnections?.(); });
+function listen(server: HttpServer | NetServer, host: string, port = 0): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => { const address = server.address(); resolve(typeof address === "object" && address !== null ? address.port : 0); });
+  });
+}
+function closeServer(server: HttpServer | NetServer): Promise<void> {
+  return new Promise<void>(resolve => { server.close(() => resolve()); (server as HttpServer).closeAllConnections?.(); });
+}
+const ipv6 = await (async () => { const probe = createTcpServer(); try { await listen(probe, "::1"); await closeServer(probe); return true; } catch { return false; } })();
 /** A stand-in console HTTP listener answering with the instance secret, bound to its own receiving end. */
 function consoleHttp(secret: () => string | null): HttpServer {
   return createHttpServer((request, response) => {
@@ -51,20 +57,18 @@ function consoleHttp(secret: () => string | null): HttpServer {
     response.end(answer.body);
   });
 }
-/** A genuine console: a record, its HTTP listener on 127.0.0.1, and its discovery socket. */
-async function genuine(host = "127.0.0.1") {
+/** A console start: its HTTP listener, its own socket, then its claim on the record. */
+async function start(host = "127.0.0.1", database = databaseFile, pid = process.pid) {
   let secret: string | null = null;
   const http = consoleHttp(() => secret);
-  const port = await listenHttp(http, host);
+  const port = await listen(http, host);
   closers.push(() => closeServer(http));
-  const socket = await openInstanceSocket(socketPath, { pid: process.pid, build: BUILD, database: databaseFile, port }, () => secret);
+  const socket = await openInstanceSocket(database, { pid, build: BUILD, database, port }, () => secret);
   if (!socket.ok) throw new Error(socket.problem);
-  secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
   closers.push(() => socket.close());
-  return { port, secret: secret as string };
+  secret = await claimInstance(store, database, { pid, port, build: BUILD, socket: socket.name }, new Date());
+  return { port, secret, name: socket.name };
 }
-
-const ipv6 = await (async () => { const probe = createTcpServer(); try { await listenHttp(probe, "::1"); await closeServer(probe); return true; } catch { return false; } })();
 
 describe("the proofs", () => {
   test("each channel's answer binds its own word, the challenge and (over HTTP) the receiving address and port", () => {
@@ -77,144 +81,157 @@ describe("the proofs", () => {
     expect(JSON.parse(instanceHttpAnswer(secret, c, { address: "127.0.0.1", port: 4180 }).body)).toEqual({ proof: httpProof(secret, c, "127.0.0.1", 4180) });
   });
 
-  test("a stopping console forgets only its own record", () => {
-    const first = recordInstance(store, { pid: fakePid(1), port: 4180, build: BUILD }, new Date());
-    const second = recordInstance(store, { pid: fakePid(2), port: 4181, build: BUILD }, new Date());
-    clearInstance(store, first);
+  test("a stopping console forgets only its own record", async () => {
+    const first = await claimInstance(store, databaseFile, { pid: fakePid(1), port: 4180, build: BUILD, socket: "0000000000000001.sock" }, new Date(), async () => false);
+    const second = await claimInstance(store, databaseFile, { pid: fakePid(2), port: 4181, build: BUILD, socket: "0000000000000002.sock" }, new Date(), async () => false);
+    clearInstance(store, first!);
     expect(readInstance(store)?.pid).toBe(fakePid(2));
-    clearInstance(store, second);
+    clearInstance(store, second!);
     expect(readInstance(store)).toBeNull();
   });
 });
 
 describe("the discovery socket", () => {
   test("answers hello with public facts and the socket proof; refuses every other verb; changes nothing", async () => {
-    const { port, secret } = await genuine();
+    const { port, secret, name } = await start();
     const before = readInstance(store);
     const c = "1".repeat(64);
-    const hello = await askSocket(socketPath, { verb: "hello", challenge: c });
-    expect(hello).toEqual({ answer: { pid: process.pid, build: BUILD, database: databaseFile, port, proof: socketProof(secret, c) } });
-    expect(JSON.stringify(hello)).not.toContain(secret);
+    const hello = await askSocket(join(run, name), { verb: "hello", challenge: c });
+    expect(hello).toEqual({ answer: { pid: process.pid, build: BUILD, database: databaseFile, port, proof: socketProof(secret!, c) } });
+    expect(JSON.stringify(hello)).not.toContain(secret!);
     for (const asked of [{ verb: "secret" }, { verb: "sign-in", challenge: c }, { verb: "hello" }, { verb: "hello", challenge: "xyz" }]) {
-      expect(await askSocket(socketPath, asked)).toEqual({ answer: { error: "refused" } });
+      expect(await askSocket(join(run, name), asked)).toEqual({ answer: { error: "refused" } });
     }
     expect(readInstance(store)).toEqual(before);
   });
 
-  test("the socket's place must be private: a directory open to others (even read-only), a writable parent, a too-long path, a non-socket", async () => {
-    prepareSocketPlace(socketPath);
-    expect(socketPlaceProblem(socketPath)).toBeNull();
-    const run = join(state, "run");
+  test("the run folder must be private, and is never changed to make it so: checked before anything is made", async () => {
+    expect(prepareRunDir(run)).toBeNull();
+    expect(lstatSync(run).mode & 0o777).toBe(0o700);
     for (const mode of [0o755, 0o750, 0o777]) {
       chmodSync(run, mode);
-      expect(socketPlaceProblem(socketPath)).toContain("open to other users");
+      expect(runDirProblem(run)).toContain("open to other users");
+      // A console starting refuses it as it is — it never chmods a folder.
+      expect(await openInstanceSocket(databaseFile, { pid: fakePid(3), build: BUILD, database: databaseFile, port: 1 }, () => null)).toMatchObject({ ok: false });
+      expect(lstatSync(run).mode & 0o777).toBe(mode);
     }
-    // A console being started closes an existing directory of this user's to everyone else.
-    chmodSync(run, 0o755);
-    const opened = await openInstanceSocket(socketPath, { pid: fakePid(3), build: BUILD, database: databaseFile, port: 1 }, () => "a".repeat(64));
-    expect(opened.ok).toBe(true);
-    if (opened.ok) opened.close();
+    chmodSync(run, 0o700);
+    // A parent others can write: refused before the run folder is even made.
+    rmSync(run, { recursive: true });
     chmodSync(state, 0o777);
     try {
-      expect(socketPlaceProblem(socketPath)).toContain("can be written by other users");
+      expect(prepareRunDir(run)).toContain("can be written by other users");
+      expect(() => lstatSync(run)).toThrow();
     } finally { chmodSync(state, 0o700); }
-    expect(socketPlaceProblem(join(run, `${"x".repeat(120)}.sock`))).toContain("too long");
-    // A plain file where the socket goes is not a socket.
-    writeFileSync(socketPath, "");
-    expect(socketPlaceProblem(socketPath)).toContain("isn't a socket");
+    expect(socketPathProblem(join(run, "0123456789abcdef.sock"))).toBeNull();
+    expect(socketPathProblem(join(run, "other.sock"))).toContain("isn't a console socket");
+    expect(socketPathProblem(join(`/tmp/${"x".repeat(120)}`, "0123456789abcdef.sock"))).toContain("too long");
+  });
+
+  test("a stale socket (nobody listening) is nothing running and is left alone; a socket that isn't a socket is refused", async () => {
+    const { name } = await start();
+    await closers.pop()!();
+    // A console killed outright leaves its socket file; nobody answers.
+    spawnSync(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))", join(run, name)]);
+    expect(lstatSync(join(run, name)).isSocket()).toBe(true);
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: false, state: "none", message: "no console is running" });
+    expect(lstatSync(join(run, name)).isSocket()).toBe(true);
+    rmSync(join(run, name));
+    writeFileSync(join(run, name), "");
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
   });
 
-  test("a stale socket (nobody listening) reads as no console running; discovery leaves it, and the next up clears it", async () => {
-    prepareSocketPlace(socketPath);
-    // A console killed outright: its socket file stays, nobody answers.
-    spawnSync(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))", socketPath]);
-    expect(lstatSync(socketPath).isSocket()).toBe(true);
-    recordInstance(store, { pid: process.pid, port: 1, build: BUILD }, new Date());
-    expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: false, state: "none", message: "no console is running" });
-    expect(lstatSync(socketPath).isSocket()).toBe(true);
-    const next = await openInstanceSocket(socketPath, { pid: fakePid(4), build: BUILD, database: databaseFile, port: 1 }, () => "a".repeat(64));
-    expect(next.ok).toBe(true);
-    if (next.ok) next.close();
+  test("each start binds its own socket; a second start on the same database (even by another spelling) never takes a live first one's record", async () => {
+    const first = await start();
+    const alias = join(dir, "alias");
+    mkdirSync(alias, { mode: 0o700 });
+    symlinkSync(databaseFile, join(alias, "state.db"));
+    expect(instanceRunDir(join(alias, "state.db"))).toBe(run);
+    const second = await start("127.0.0.1", join(alias, "state.db"), fakePid(5));
+    expect(second.secret).toBeNull();
+    expect(second.name).not.toBe(first.name);
+    expect(readdirSync(run).sort()).toEqual([first.name, second.name].sort());
+    expect(readInstance(store)?.secret).toBe(first.secret);
+    expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: true, port: first.port });
   });
 
-  test("a second console on the same database never takes over the first one's socket or record", async () => {
-    const { port, secret } = await genuine();
-    const second = await openInstanceSocket(socketPath, { pid: fakePid(5), build: BUILD, database: databaseFile, port: port + 1 }, () => "b".repeat(64));
-    expect(second).toMatchObject({ ok: false, another: true });
-    expect(readInstance(store)?.secret).toBe(secret);
-    expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: true, port });
+  test("two starts racing for a free record: exactly one claims it", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    // Both see the same (dead) record; the slow one checks liveness while the fast one claims.
+    await claimInstance(store, databaseFile, { pid: fakePid(8), port: 3, build: BUILD, socket: "0000000000000008.sock" }, new Date(), async () => false);
+    const slow = claimInstance(store, databaseFile, { pid: fakePid(6), port: 1, build: BUILD, socket: "0000000000000006.sock" }, new Date(), async () => { await gate; return false; });
+    const fast = await claimInstance(store, databaseFile, { pid: fakePid(7), port: 2, build: BUILD, socket: "0000000000000007.sock" }, new Date(), async () => false);
+    release();
+    expect(fast).not.toBeNull();
+    expect(await slow).toBeNull();
+    expect(readInstance(store)?.pid).toBe(fakePid(7));
   });
 });
 
 describe("attaching", () => {
   test("a live console reached directly passes both proofs", async () => {
-    const { port } = await genuine();
+    const { port } = await start();
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: true, url: `http://127.0.0.1:${port}`, port, pid: process.pid, build: BUILD });
   });
 
   test("the real console answers the HTTP challenge on its instance route, and only an up console does", async () => {
     let secret: string | null = null;
     const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/main", instanceSecret: () => secret });
-    const port = await listenHttp(server, "127.0.0.1");
+    const port = await listen(server, "127.0.0.1");
     closers.push(() => closeServer(server));
     const c = "2".repeat(64);
     expect((await fetch(`http://127.0.0.1:${port}${INSTANCE_PATH}?c=${c}`)).status).toBe(404);
-    secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
+    secret = "b".repeat(64);
     const answer = await fetch(`http://127.0.0.1:${port}${INSTANCE_PATH}?c=${c}`);
     expect(await answer.json()).toEqual({ proof: httpProof(secret, c, "127.0.0.1", port) });
-    // Never from the Host header: a client naming another host gets an answer bound to where it really arrived.
     expect((await fetch(`http://127.0.0.1:${port}${INSTANCE_PATH}?c=${c}&c=${c}`)).status).toBe(400);
   });
 
+  test("another build refuses, naming the restart", async () => {
+    await start();
+    expect(await proveLiveConsole(databaseFile, store, "1.0.0")).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining("toolroll up") });
+  });
+
   test("a malformed proof (not 64 hex characters, even of the same length in letters) is refused, never a crash", async () => {
-    const secret = recordInstance(store, { pid: process.pid, port: 1, build: BUILD }, new Date());
-    void secret;
-    prepareSocketPlace(socketPath);
+    expect(prepareRunDir(run)).toBeNull();
+    const name = "00000000000000aa.sock";
+    await claimInstance(store, databaseFile, { pid: process.pid, port: 1, build: BUILD, socket: name }, new Date(), async () => false);
     const odd = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify({ pid: process.pid, build: BUILD, database: databaseFile, port: 1, proof: "é".repeat(64) })}\n`)));
-    await new Promise<void>(resolve => odd.listen(socketPath, () => resolve()));
+    await new Promise<void>(resolve => odd.listen(join(run, name), () => resolve()));
     closers.push(() => closeServer(odd));
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
   });
 
-  test("another build refuses, naming the restart", async () => {
-    await genuine();
-    expect(await proveLiveConsole(databaseFile, store, "1.0.0")).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining("toolroll up") });
-  });
-
   test("a stale record with a replayed hello, a recycled pid and a replacement listener on the recorded port is refused", async () => {
-    // The old console's record and one hello it once gave.
     const replacement = createHttpServer((_request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ proof: "f".repeat(64) })); });
-    const port = await listenHttp(replacement, "127.0.0.1");
+    const port = await listen(replacement, "127.0.0.1");
     closers.push(() => closeServer(replacement));
-    const secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
+    expect(prepareRunDir(run)).toBeNull();
+    const name = "00000000000000bb.sock";
+    const secret = (await claimInstance(store, databaseFile, { pid: process.pid, port, build: BUILD, socket: name }, new Date(), async () => false))!;
     const recorded = { pid: process.pid, build: BUILD, database: databaseFile, port, proof: socketProof(secret, "3".repeat(64)) };
-    prepareSocketPlace(socketPath);
     const impostor = createSocketServer(socket => socket.on("data", () => socket.end(`${JSON.stringify(recorded)}\n`)));
-    await new Promise<void>(resolve => impostor.listen(socketPath, () => resolve()));
+    await new Promise<void>(resolve => impostor.listen(join(run, name), () => resolve()));
     closers.push(() => closeServer(impostor));
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
-    // Even replaying the very challenge's answer on the socket, the replacement listener can't answer HTTP.
     expect(await proveLiveConsole(databaseFile, store, BUILD, { challenge: () => "3".repeat(64) })).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining(`127.0.0.1:${port}`) });
   });
 
   test.skipIf(!ipv6)("a genuine console reached through an IPv4-to-IPv6 relay is refused on both-channel verification", async () => {
-    // The real console listens on [::1]:P; an agent listens on 127.0.0.1:P and forwards every byte to it.
-    const { port, secret } = await genuine("::1");
+    const { port, secret } = await start("::1");
     const piped: { destroy: () => void }[] = [];
     const relay = createTcpServer(inbound => { const outbound = tcpConnect(port, "::1"); piped.push(inbound, outbound); inbound.pipe(outbound).pipe(inbound); inbound.on("error", () => outbound.destroy()); outbound.on("error", () => inbound.destroy()); });
-    await listenHttp(relay, "127.0.0.1", port);
+    await listen(relay, "127.0.0.1", port);
     closers.push(() => { for (const one of piped) one.destroy(); return closeServer(relay); });
     const started = Date.now();
-    // The relay works (it reaches the real console), and the socket proof is genuine — yet the answer is bound to ::1.
     const relayed = await fetch(`http://127.0.0.1:${port}${INSTANCE_PATH}?c=${"4".repeat(64)}`, { headers: { connection: "close" } });
-    expect(await relayed.json()).toEqual({ proof: httpProof(secret, "4".repeat(64), "::1", port) });
+    expect(await relayed.json()).toEqual({ proof: httpProof(secret!, "4".repeat(64), "::1", port) });
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining(`127.0.0.1:${port}`) });
-    // Refused on the answer's binding, not by waiting out a timeout.
     expect(Date.now() - started).toBeLessThan(2_500);
   });
 
-  test("with no record and no socket, nothing is running", async () => {
+  test("with no record, nothing is running", async () => {
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: false, state: "none", message: "no console is running" });
   });
 });

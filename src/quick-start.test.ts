@@ -5,13 +5,13 @@
  * or opens: it says what it would do. Outside a repository it is not this command (the scan runs as before).
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { capturedEnvelope } from "./envelope.js";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { join } from "node:path";
-import { INSTANCE_PATH, instanceHttpAnswer, instanceSocketPath, openInstanceSocket, recordInstance } from "./console-instance.js";
+import { claimInstance, INSTANCE_PATH, instanceHttpAnswer, openInstanceSocket } from "./console-instance.js";
 import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
-import { openStore } from "./store.js";
+import { openStore, SCHEMA_VERSION } from "./store.js";
 
 const BUILD = "9.9.9-test";
 let dir: string, state: string, databaseFile: string, repo: string;
@@ -34,9 +34,9 @@ async function liveConsole(): Promise<number> {
   });
   await new Promise<void>(resolve => http.listen(0, "127.0.0.1", () => resolve()));
   const port = (http.address() as { port: number }).port;
-  const socket = await openInstanceSocket(instanceSocketPath(databaseFile), { pid: process.pid, build: BUILD, database: databaseFile, port }, () => secret);
+  const socket = await openInstanceSocket(databaseFile, { pid: process.pid, build: BUILD, database: databaseFile, port }, () => secret);
   if (!socket.ok) throw new Error(socket.problem);
-  secret = recordInstance(store, { pid: process.pid, port, build: BUILD }, new Date());
+  secret = await claimInstance(store, databaseFile, { pid: process.pid, port, build: BUILD, socket: socket.name }, new Date());
   store.close();
   closers.push(() => new Promise<void>(resolve => { http.close(() => resolve()); http.closeAllConnections(); }), () => socket.close());
   return port;
@@ -110,4 +110,25 @@ test("under an agent, or with --json, nothing starts, is added or opens: it says
   expect(JSON.parse(json.out[0]!)).toMatchObject({ envelopeVersion: expect.any(Number), ok: true, command: "toolroll", repo, would: "add-and-open", url: `http://127.0.0.1:${port}`, dryRun: true });
   // The envelope is the CLI's own (it reaches -o), and the preview changed nothing: no database where there was none.
   expect(capturedEnvelope()).toBe(json.out[0]);
+});
+
+test("a database that can't be checked is refused, never read as nothing running; an older one is (up brings it up to date)", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  openStore(databaseFile).close();
+  const setVersion = (version: number) => { const db = new DatabaseSync(databaseFile); db.prepare("UPDATE schema_version SET version = ?").run(version); db.close(); };
+  setVersion(SCHEMA_VERSION + 1);
+  const newer = seams();
+  expect(await runQuickStart([], newer.write, newer.value)).toBe(3);
+  expect(newer.did).toEqual([]);
+  setVersion(-SCHEMA_VERSION);
+  const migrating = seams();
+  expect(await runQuickStart([], migrating.write, migrating.value)).toBe(3);
+  setVersion(SCHEMA_VERSION - 1);
+  const older = seams();
+  expect(await runQuickStart([], older.write, older.value)).toBe(0);
+  expect(older.did).toEqual(["up"]);
+  writeFileSync(databaseFile, "not a database");
+  const broken = seams();
+  expect(await runQuickStart([], broken.write, broken.value)).toBe(3);
+  expect(broken.did).toEqual([]);
 });

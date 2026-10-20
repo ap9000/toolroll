@@ -120,7 +120,7 @@ import {
   type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
-import { clearInstance, instanceSocketPath, openInstanceSocket, recordInstance } from "./console-instance.js";
+import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
@@ -8431,11 +8431,12 @@ async function upCommand(
   // The socket is taken FIRST: only the console that owns it publishes a record. A second console on the same database
   // (another port) never replaces the first one's record; it runs, but isn't attached to.
   let mintedSecret: string | null = null;
-  const instanceSocket = await openInstanceSocket(instanceSocketPath(context.databaseFile),
+  const instanceSocket = await openInstanceSocket(context.databaseFile,
     { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
   if (instanceSocket.ok) {
-    mintedSecret = recordInstance(store, { pid: process.pid, port: console_.port, build: packageVersion() }, clock());
+    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
     instanceSecret = mintedSecret;
+    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
   } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
   if (fatal === null) {
     if (json) {
