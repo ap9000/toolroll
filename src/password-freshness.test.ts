@@ -358,3 +358,144 @@ describe("where freshness may be honoured", () => {
     expect(using(/SSO_NOW_MS|FRESH_WINDOW_MS/)).toEqual(["src/scope.ts", "src/serve.ts"]);
   });
 });
+
+/**
+ * THE TRIPWIRE (the audit's backstop, Codex B2 r8): however a value flows, an authorization that skips the prover has
+ * to read a `fresh` somewhere, in a file that handles SSO or authentication, and a hidden prover call has to name its
+ * function. So every mention — as a name, a member, a key, a string or a template literal — of `fresh` in any file
+ * that mentions `sso` or an authentication function, and of each authentication function and freshness fact in any
+ * file, is counted and pinned. A new mention, however it is spelled, fails here until a person reviews it. (Only a
+ * key computed at run time, like "fr" + "esh", is outside what reading the source can see.)
+ */
+const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
+  "authenticateAccount": {
+    "src/operate.ts": 3,
+    "src/principal.ts": 3,
+    "src/scope.ts": 2,
+    "src/server/guards.ts": 3,
+    "src/server/people-tokens.ts": 4,
+    "src/server/settings.ts": 4,
+    "src/tokens-cli.ts": 3
+  },
+  "authenticateApprover": {
+    "src/chat-actions.ts": 3,
+    "src/control-setup.ts": 3,
+    "src/desktop-host.ts": 7,
+    "src/operate.ts": 60,
+    "src/pull-request-flow.ts": 3,
+    "src/scope.ts": 3,
+    "src/serve.ts": 5,
+    "src/server/chat.ts": 7,
+    "src/server/flows.ts": 5,
+    "src/server/guards.ts": 4,
+    "src/server/pages.ts": 5,
+    "src/server/people-tokens.ts": 7,
+    "src/server/runtime.ts": 2,
+    "src/server/settings.ts": 24,
+    "src/server/tasks.ts": 8,
+    "src/task-outcome-cli.ts": 3
+  },
+  "checkApproverPassword": {
+    "src/server/guards.ts": 3,
+    "src/server/runtime.ts": 2
+  },
+  "consumeSsoNow": {
+    "src/scope.ts": 2,
+    "src/serve.ts": 1
+  },
+  "fresh": {
+    "src/mcp-oauth.ts": 2,
+    "src/operate.ts": 2,
+    "src/scope.ts": 4,
+    "src/serve.ts": 11,
+    "src/server/chat.ts": 3,
+    "src/server/remote.ts": 1,
+    "src/server/render-people.ts": 2,
+    "src/server/request-context.ts": 1,
+    "src/server/runtime.ts": 2,
+    "src/server/settings.ts": 1,
+    "src/server/task-views.ts": 3,
+    "src/server/tasks.ts": 11
+  },
+  "freshFloor": {
+    "src/serve.ts": 1,
+    "src/server/session.ts": 1,
+    "src/server/settings.ts": 1
+  },
+  "freshnessFor": {
+    "src/chat-actions.ts": 3,
+    "src/scope.ts": 2,
+    "src/server/chat.ts": 3,
+    "src/server/task-views.ts": 3,
+    "src/server/tasks.ts": 3
+  },
+  "passwordAt": {
+    "src/scope.ts": 2,
+    "src/serve.ts": 4,
+    "src/server/people-tokens.ts": 2,
+    "src/server/session.ts": 1,
+    "src/server/settings.ts": 1
+  },
+  "proveAccountNow": {
+    "src/scope.ts": 2,
+    "src/server/people-tokens.ts": 3,
+    "src/server/remote.ts": 3
+  },
+  "ssoNowAt": {
+    "src/serve.ts": 5,
+    "src/server/people-tokens.ts": 1,
+    "src/server/session.ts": 1,
+    "src/server/settings.ts": 1
+  },
+  "ssoNowAvailable": {
+    "src/chat-actions.ts": 3,
+    "src/scope.ts": 2,
+    "src/serve.ts": 3,
+    "src/server/remote.ts": 3,
+    "src/server/tasks.ts": 3
+  },
+  "ssoReauthAt": {
+    "src/scope.ts": 2,
+    "src/serve.ts": 2,
+    "src/server/people-tokens.ts": 1,
+    "src/server/session.ts": 1,
+    "src/server/settings.ts": 1
+  }
+};
+describe("the tripwire", () => {
+  const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(one => one.isDirectory() ? sources(join(dir, one.name))
+    : /\.tsx?$/.test(one.name) && !/\.test\.tsx?$/.test(one.name) && !one.name.endsWith(".d.ts") ? [join(dir, one.name)] : []);
+  const WATCH = new Set(["fresh", "sso", ...Object.keys(TRIPWIRE_PINS).filter(name => name !== "fresh")]);
+  const mentions = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
+    const hits: Record<string, Record<string, number>> = {};
+    for (const { path, text } of files) {
+      const parsed = parseSync(path, text, { lang: path.endsWith(".tsx") ? "tsx" : "ts" });
+      expect(parsed.errors, path).toEqual([]);
+      each(parsed.program, one => {
+        const name = one.type === "Identifier" ? one["name"] as string
+          : one.type === "Literal" && typeof one["value"] === "string" ? one["value"] as string
+          : one.type === "TemplateLiteral" && (one["quasis"] as Node[]).length === 1 ? String(((one["quasis"] as Node[])[0]!["value"] as { cooked: string }).cooked)
+          : null;
+        if (name !== null && WATCH.has(name)) (hits[name] ??= {})[path] = (hits[name]![path] ?? 0) + 1;
+      });
+    }
+    const auth = new Set(Object.entries(hits).filter(([name]) => name !== "fresh").flatMap(([, files]) => Object.keys(files)));
+    const out: Record<string, Record<string, number>> = { fresh: Object.fromEntries(Object.entries(hits["fresh"] ?? {}).filter(([file]) => auth.has(file))) };
+    for (const [name, files] of Object.entries(hits)) if (name !== "fresh" && name !== "sso") out[name] = files;
+    return out;
+  };
+
+  test("catches every spelling Codex found, by the mention alone", () => {
+    const probe = (text: string) => mentions([{ path: "probe.ts", text: `export function probe(token: string, ok: unknown, session: { sso: never }, ctx: { sso: never }) { ${text} }` }]);
+    for (const text of ["const { fresh } = { ...session.sso }; if (!token && fresh) return ok;", "const [{ fresh }] = [...[ctx.sso]]; return fresh;", "return ({ ...ctx.sso }).fresh;",
+      "return ctx.sso[`fresh`];", "return (ctx.sso as Record<string, unknown>)['fresh'];", "const s = ctx.sso ?? {}; return (s as { fresh: boolean }).fresh;"]) expect(probe(text)["fresh"]?.["probe.ts"], text).toBeGreaterThan(0);
+    for (const text of ["const o = { ...{ check: authenticateApprover } }; return o;", "return authenticateApprover.call(null, ctx, token);", "const pick = token ? authenticateApprover : null; return pick;"]) {
+      expect(probe(text)["authenticateApprover"]?.["probe.ts"], text).toBeGreaterThan(0);
+    }
+  });
+
+  test("every mention in the production source is the reviewed one", () => {
+    const files = sources("src").map(path => ({ path, text: readFileSync(path, "utf8") }));
+    expect(mentions(files)).toEqual(TRIPWIRE_PINS);
+  });
+});
