@@ -87,6 +87,16 @@ class LiveHub {
     for (const name of EVENTS) source.addEventListener(name, event => deliver(name, (event as MessageEvent<string>).data));
     // The server's stream fell behind and ended: every part reads again; the browser reconnects.
     source.addEventListener("reload", () => deliver("reload", "{}"));
+    // Every room refused this page (it was signed out, or lost its access): stop, rather than let the browser reconnect at
+    // once into a request that can't sign in; try once more in a while, as after an error answer.
+    source.addEventListener("ended", () => {
+      if (this.source !== source) return;
+      source.close();
+      this.source = null;
+      this.url = "";
+      deliver("lost", "{}");
+      window.setTimeout(() => this.reconcile(), RETRY_MS);
+    });
     source.addEventListener("error", () => {
       if (source.readyState !== EventSource.CLOSED || this.source !== source) return;
       this.source = null;

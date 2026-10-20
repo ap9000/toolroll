@@ -179,8 +179,8 @@ describe("/api/team carries the token's whole principal", () => {
       text += decoder.decode(chunk.value, { stream: true });
     }
     controller.abort();
-    // The only frame after the change is the generic departure, then the stream ends: no cursor, no keep-alive.
-    expect(text).toBe(`event: gone\ndata: ${JSON.stringify({ room: `team?conversation=${conversationId}` })}\n\n`);
+    // The only frames after the change are the generic departure and the stream's end: no cursor, no keep-alive.
+    expect(text).toBe(`event: gone\ndata: ${JSON.stringify({ room: `team?conversation=${conversationId}` })}\n\nevent: ended\ndata: {}\n\n`);
   });
 });
 

@@ -293,6 +293,8 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     `else if(document.documentElement.dataset.live==="1"){addEventListener("so:live",mine);}` +
     `else if(typeof EventSource!=="undefined"){var es=new EventSource("/live?room=workspace");` +
     `es.addEventListener("change",function(){heard("change");});es.addEventListener("reload",function(){heard("reload");});` +
+    // Refused (signed out, access lost): stop instead of reconnecting into a request that can't sign in.
+    `es.addEventListener("ended",function(){es.close();});` +
     `document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh();});}` +
     `})();`
   );

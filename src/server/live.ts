@@ -137,7 +137,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   function admitted(viewer: ChatViewer, thread?: number): boolean {
     let valid = false;
     try { valid = viewer.valid(thread); } catch { /* Failed proof stops this room. */ }
-    if (!valid) { viewer.connection.send(viewer.room, "gone"); viewer.leave(); }
+    if (!valid) { viewer.connection.refused(); viewer.connection.send(viewer.room, "gone"); viewer.leave(); }
     return valid;
   }
 

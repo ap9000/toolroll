@@ -189,7 +189,7 @@ describe("the task room on the bus", () => {
     // Robin's projects narrow (itself a write): the stream ends at once, not at the next poll.
     expect(store.setAccountProjects("robin", [repoA], "alex", new Date())).toEqual({ ok: true });
     await robinOn.until(all => all.some(one => one.event === "gone"), 2_000);
-    expect(robinOn.events.at(-1)!.event).toBe("gone");
+    expect(robinOn.events.slice(-2).map(one => one.event)).toEqual(["gone", "ended"]);
     robinOn.close(); alexOn.close();
   });
 

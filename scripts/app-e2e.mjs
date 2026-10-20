@@ -1520,7 +1520,7 @@ await journey("rosa", SCRIPTED, "A subagent's routine: added on its page for wee
   const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${mate}`)[0]?.desk_flow;
   if (!desk) throw new Error("Rosa has no desk");
   await Promise.all([page.waitForNavigation(), routine.locator('button:has-text("Run now")').click()]);
-  const answer = await until("Rosa's answer to reach her manager", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex'")[0] ?? null, { timeoutMs: 300_000, everyMs: 3000 });
+  const answer = await until("Rosa's answer to reach her manager", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND subject LIKE 'Rosa · %'")[0] ?? null, { timeoutMs: 300_000, everyMs: 3000 });
   if (!/^Rosa · Support: Look up order 2201/.test(answer.subject) || !/2201|lamp|refund/i.test(answer.body)) throw new Error(`the answer: ${answer.subject} — ${answer.body}`);
   const card = (await flowView(desk)).cards[0];
   if (card?.stage !== "done") throw new Error(`the routine's card is in ${card?.stage}`);
@@ -1655,8 +1655,9 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     for (const file of [w.db, `${w.db}-wal`].filter(existsSync)) if (readFileSync(file).includes(first.OAUTH_REFRESH_TOKEN)) throw new Error(`the sign-in reached ${file}`);
     // Two minutes left on it: the worker renews it, and the tool works with the new one.
     await until("the worker to renew the sign-in", async () => stand.grants.some(one => one.grant_type === "refresh_token" && one.refresh_token === first.OAUTH_REFRESH_TOKEN) ? true : null, { timeoutMs: 90_000, everyMs: 1000 });
-    const renewed = JSON.parse(readFileSync(secrets, "utf8"));
-    if (renewed.OAUTH_ACCESS_TOKEN === first.OAUTH_ACCESS_TOKEN) throw new Error("the renewed sign-in wasn't kept");
+    // The provider answers before the worker saves what it got: wait for the save, not just the exchange.
+    await until("the renewed sign-in to be kept", async () => JSON.parse(readFileSync(secrets, "utf8")).OAUTH_ACCESS_TOKEN !== first.OAUTH_ACCESS_TOKEN ? true : null, { timeoutMs: 30_000, everyMs: 500 })
+      .catch(() => { throw new Error("the renewed sign-in wasn't kept"); });
     stand.live.delete(first.OAUTH_ACCESS_TOKEN);
     await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
     await Promise.all([page.waitForNavigation(), page.locator('#tool-stripe button:has-text("Test")').click()]);
@@ -1688,8 +1689,14 @@ await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on i
     await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && !url.pathname.startsWith("/login"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
     await priya.waitForSelector("[data-workspace-shell]");
     if (rows("SELECT role FROM approver WHERE name = 'priya'")[0]?.role !== "approver") throw new Error("priya didn't get an operator account from the eng-leads group");
-    // A step-up is that sign-in: no password field, and adding a tool goes through.
+    // A step-up is that sign-in: no password field. The sign-in itself never counts as checked now (B2); one explicit
+    // re-check with the provider does, for the next step-up, and adding a tool goes through.
     await priya.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
+    await priya.evaluate(() => document.querySelectorAll("details").forEach(one => { if (one.querySelector('select[name="catalog"]')) one.open = true; }));
+    const recheck = priya.locator('form:has(select[name="catalog"]) [data-sso-step-up="confirm"]');
+    if ((await recheck.count()) !== 1 || (await priya.locator('form:has(select[name="catalog"]) input[type="password"]').count()) !== 0) throw new Error("the step-up doesn't offer priya the provider's check");
+    await Promise.all([priya.waitForURL(/127\.0\.0\.1:\d+\/authorize/), recheck.click()]);
+    await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && url.pathname.startsWith("/settings/tools"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
     await priya.evaluate(() => document.querySelectorAll("details").forEach(one => { if (one.querySelector('select[name="catalog"]')) one.open = true; }));
     if ((await priya.locator('form:has(select[name="catalog"]) [data-sso-step-up="confirmed"]').count()) !== 1 || (await priya.locator('form:has(select[name="catalog"]) input[type="password"]').count()) !== 0) throw new Error("the step-up still asks priya for a password");
     await priya.selectOption('select[name="catalog"]', "chrome-devtools");
