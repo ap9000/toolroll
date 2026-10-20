@@ -456,8 +456,12 @@ quarantine (`quarantineMailboxes`). Only the final segment's handoff can be read
   tightened mid-launch refuses (`stale-approval`) and never runs with the old permissions.
 - **Watermark [r2-new 2].** Before each launch the gateway reads the rollout, if one exists, and records its byte size
   and last turn id. A segment's turn must start past those bytes, under a new id. Timestamps play no part.
+  Only a launch that starts a **new** session uses the fresh watermark. A resumed session whose rollout can't be
+  found, read, or parsed whole as this thread's record is **not continued**: an unreadable history is never treated as
+  an empty one (c1-r3).
 - **Usage [r2 c1-7].** Only totals before the turn's end count. With no total before the start, the baseline is zero
-  only when no earlier turn exists; otherwise the turn is unmeasured. The fake reports cumulative usage, as Codex does.
+  only when no earlier turn exists; otherwise the turn is unmeasured. A total that runs backwards at any point inside
+  the turn makes it unmeasured (c1-r3). The fake reports cumulative usage, as Codex does.
 - **Handoff identity [r2-new 3].** `quarantineMailboxes` is not used. Before each continuation segment, each of the
   three named handoff files (`done`, `mailbox`, `proposal`) that exists is unlinked, and an lstat must then report
   ENOENT. If any remains, the loop ends with reason `handoff` and launches nothing; the existing file is then the

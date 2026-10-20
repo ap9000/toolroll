@@ -117,11 +117,14 @@ export type RolloutWatermark = { bytes: number; lastTurn: string | null };
 
 export const FRESH_WATERMARK: RolloutWatermark = Object.freeze({ bytes: 0, lastTurn: null });
 
-/** The watermark of a rollout's current text (null text: the session has no rollout yet). */
-export function watermarkOf(text: string | null, threadId: string): RolloutWatermark {
-  if (text === null) return FRESH_WATERMARK;
+/**
+ * The watermark of a resumed session's rollout text, or null when that text is not a whole, readable record of this
+ * thread (c1-r3): an unreadable history is never mistaken for a fresh one, and the caller refuses to continue. A
+ * session with no rollout at all is FRESH_WATERMARK, and only a launch that starts a NEW session may use it.
+ */
+export function watermarkOf(text: string, threadId: string): RolloutWatermark | null {
   const parsed = rowsOf(text);
-  if (parsed === null || parsed.length === 0 || parsed[0]!.type !== "session_meta" || parsed[0]!.payload["id"] !== threadId) return { bytes: Buffer.byteLength(text), lastTurn: null };
+  if (parsed === null || parsed.length === 0 || parsed[0]!.type !== "session_meta" || parsed[0]!.payload["id"] !== threadId) return null;
   let lastTurn: string | null = null;
   for (const row of parsed) if (eventOf(row) === "task_started" && typeof row.payload["turn_id"] === "string") lastTurn = row.payload["turn_id"];
   return { bytes: Buffer.byteLength(text), lastTurn };
@@ -187,7 +190,10 @@ export function lastTurnOf(text: string, threadId: string, watermark: RolloutWat
     const kind = eventOf(row);
     if (kind === "token_count" && ends === 0) {
       const totals = totalsOf(row.payload);
-      if (totals === null) measured = false; else after = totals;
+      // A running total never runs backwards (c1-r3): one that does makes the whole turn unmeasured.
+      const last = after ?? before;
+      if (totals === null || (last !== null && (totals.in < last.in || totals.out < last.out))) measured = false;
+      else after = totals;
     } else if (kind === "task_complete" || kind === "turn_aborted") {
       ends += 1;
       if (row.payload["turn_id"] !== turnId) return { boundary: "none", turnId, usage: null };

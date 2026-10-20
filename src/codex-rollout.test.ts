@@ -30,14 +30,21 @@ describe("the last turn of a rollout", () => {
   test("a resumed turn counts only its own tokens; a completed turn is a boundary too", () => {
     const earlier = text(meta(), started("t1", -60_000), tokens(300, 10, -59_000), aborted("t1", -58_000));
     const rows = earlier + text(started("t2", 1000), tokens(420, 14, 2000), complete("t2", 3000));
-    expect(lastTurnOf(rows, THREAD, watermarkOf(earlier, THREAD))).toEqual({ boundary: "completed", turnId: "t2", usage: { tokensIn: 120, tokensOut: 4 } });
+    expect(lastTurnOf(rows, THREAD, watermarkOf(earlier, THREAD)!)).toEqual({ boundary: "completed", turnId: "t2", usage: { tokensIn: 120, tokensOut: 4 } });
   });
 
   test("a launch that appended no new turn never borrows the previous turn's boundary or tokens (c1-r2 new 2)", () => {
     const earlier = text(meta(), started("t1", -1500), tokens(100, 5, -1000), aborted("t1", -500));
-    expect(lastTurnOf(earlier, THREAD, watermarkOf(earlier, THREAD))).toEqual({ boundary: "none", turnId: null, usage: null });
+    expect(lastTurnOf(earlier, THREAD, watermarkOf(earlier, THREAD)!)).toEqual({ boundary: "none", turnId: null, usage: null });
     // Even a turn whose start sits past the bytes, if it repeats the last id, is not new.
-    expect(lastTurnOf(earlier + text(started("t1", 0), aborted("t1", 100)), THREAD, watermarkOf(earlier, THREAD)).boundary).toBe("none");
+    expect(lastTurnOf(earlier + text(started("t1", 0), aborted("t1", 100)), THREAD, watermarkOf(earlier, THREAD)!).boundary).toBe("none");
+  });
+
+  test("a history that is not a whole record of this thread gives no watermark, never a fresh one (c1-r3)", () => {
+    expect(watermarkOf("{broken\n", THREAD)).toBeNull();
+    expect(watermarkOf(text(meta("01a159b8-0000-76c1-81e3-a904d98fc2f9"), started("t1", 0)), THREAD)).toBeNull();
+    expect(watermarkOf("", THREAD)).toBeNull();
+    expect(watermarkOf(text(meta(), started("t1", 0)), THREAD)).toEqual({ bytes: Buffer.byteLength(text(meta(), started("t1", 0))), lastTurn: "t1" });
   });
 
   test("an unended turn, another reason, an end naming another turn, or two ends are no boundary", () => {
@@ -59,9 +66,11 @@ describe("the last turn of a rollout", () => {
     expect(lastTurnOf(text(meta(), tokens(500, 5, -500), started("t1", 100), tokens(400, 6, 150), aborted("t1", 200)), THREAD, FRESH).usage).toBeNull();
     // A total written after the end is not this turn's.
     expect(lastTurnOf(text(meta(), started("t1", 100), tokens(100, 5, 150), aborted("t1", 200), tokens(900, 50, 300)), THREAD, FRESH).usage).toEqual({ tokensIn: 100, tokensOut: 5 });
+    // A total that runs backwards inside the turn, even if it ends above the baseline (c1-r3).
+    expect(lastTurnOf(text(meta(), tokens(300, 10, -100), started("t1", 100), tokens(600, 30, 150), tokens(400, 20, 160), aborted("t1", 200)), THREAD, FRESH).usage).toBeNull();
     // An earlier turn with no total: the baseline is unknown, so the turn is unmeasured.
     const earlier = text(meta(), started("t0", -5000), complete("t0", -4000));
-    expect(lastTurnOf(earlier + text(started("t1", 100), tokens(100, 5, 150), complete("t1", 200)), THREAD, watermarkOf(earlier, THREAD)).usage).toBeNull();
+    expect(lastTurnOf(earlier + text(started("t1", 100), tokens(100, 5, 150), complete("t1", 200)), THREAD, watermarkOf(earlier, THREAD)!).usage).toBeNull();
   });
 });
 
