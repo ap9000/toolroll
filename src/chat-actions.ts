@@ -1,6 +1,7 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
 import { fileTaskProposal } from "./proposal.js";
+import { heuristicSizing } from "./task-sizing.js";
 import { cancelSweepRest, sweepOpen, sweepTable, VERDICT_RULE, type SweepOpenItem } from "./lead-sweep.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
@@ -1416,8 +1417,12 @@ export function executeSharedAction(
  */
 /** One child as filing makes it (the shared brief, its item, the verdict rule; the shared acceptance; built directly). */
 function fileSweepChild(store: Store, who: VerifiedApprover, repo: string, brief: string, one: { title: string; item: string }, acceptance: unknown, now: Date) {
+  const goal = `${brief}\n\nThis item:\n${one.item}\n\n${VERDICT_RULE}`;
   return fileTaskProposal(store, {
-    title: one.title, repo, goal: `${brief}\n\nThis item:\n${one.item}\n\n${VERDICT_RULE}`, acceptance, planning: "skip",
+    title: one.title, repo, goal, acceptance, planning: "skip",
+    // Sized now, by the same heuristic filing would use: no background classifier is started — the card's dry run must
+    // leave nothing running after its rollback, and the approved scope must be the one shown (Codex sweep r2).
+    sizing: heuristicSizing({ title: one.title, goal, outOfScope: null }),
     filedVia: "mate", filedBy: { name: who.name, kind: "person" as const }, proposedVia: "mate", admittedRepos: [...who.repos],
   }, now);
 }
@@ -1430,7 +1435,11 @@ function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string;
   if (!authority.ok) throw Error(authority.problem);
   const words = describeScope(scope).filter(line => !/^\s*(reference|approved)\s/.test(line)).map(line => line.trim());
   const runtime = `Agent permissions and limits: ${runtimeTerms(authority.profile)} ${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`.trim();
-  return { fingerprint: hash({ words, runtime, authMode: authority.authMode }), runtime, words };
+  // The fingerprint covers the scope's every field, not only what is rendered (a profile setting no sentence names, such
+  // as an agent's idle timeout, still makes the card stale): its exact terms with only identity left out.
+  const { taskId: _task, digest: _digest, approvedDigest: _approved, approvedBy: _by, approvedAt: _at, proposedAt: _proposed, approvalBasis: _basis,
+    modeDigest: _mode, approvedProfile: _approvedProfile, approvedProfileJson: _approvedProfileJson, approvedChainJson: _approvedChain, ...terms } = scope as unknown as Record<string, unknown>;
+  return { fingerprint: hash({ words, runtime, authMode: authority.authMode, profile: authority.profile, terms }), runtime, words };
 }
 
 /** Every child as filing would make it, found in a savepoint that is always rolled back: prepare never writes. */

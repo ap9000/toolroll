@@ -87,3 +87,16 @@ test("cancel-the-rest acts on each row's ACTIVE task (a revision after one), nev
   expect(store.getTask("router-v2")?.state).toBe("cancelled");
   expect(store.getTask("router")?.state).toBe("done");
 });
+
+test("a goal rewritten in between makes the form stale too (Codex sweep r2)", async () => {
+  const { propose } = await import("./scope.js");
+  propose(store, { taskId: "cache", goal: "Fix the cache TTL.", now: T0 });
+  const cookie = await login();
+  const page = await (await fetch(`${base}/sweeps/${sweep}`, { headers: { cookie } })).text();
+  const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
+  const snapshot = /name="snapshot" value="([0-9a-f]{64})"/.exec(page)![1]!;
+  propose(store, { taskId: "cache", goal: "Rewrite the whole cache layer.", now: T0 });
+  const response = await fetch(`${base}/sweeps/${sweep}/cancel-rest`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, snapshot, confirm: "yes" }), redirect: "manual" });
+  expect(decodeURIComponent(response.headers.get("location") ?? "")).toMatch(/changed while you were reading/);
+  expect(store.getTask("cache")?.state).not.toBe("cancelled");
+});

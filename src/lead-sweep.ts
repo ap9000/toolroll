@@ -86,12 +86,14 @@ export function sweepLine(table: SweepTable): string {
 export const SWEEP_OPEN: ReadonlySet<SweepRow["state"]> = new Set(["working", "checking", "needs-decision"]);
 
 /** One open item exactly as it stands now: its active task, state, attempt (a running build to stop) and last change. */
-export type SweepOpenItem = { label: string; task: string; state: string; run: number | null; at: string | null };
+export type SweepOpenItem = { label: string; task: string; state: string; run: number | null; at: string | null; scope: string | null };
 
 /** Exactly what "cancel the rest" would act on now; any change makes a card or a form for it stale. */
 export function sweepOpen(store: Store, table: SweepTable, now: Date): SweepOpenItem[] {
   return table.rows.filter(row => SWEEP_OPEN.has(row.state)).map(row => ({
     label: row.label, task: row.active, state: row.state, run: chatTaskRun(store, row.active, "stop", now), at: store.getTask(row.active)?.updatedAt ?? null,
+    // The scope's identity too: a goal rewritten in between makes a card or form for it stale (Codex sweep r2).
+    scope: store.getScope(row.active)?.digest ?? null,
   }));
 }
 
