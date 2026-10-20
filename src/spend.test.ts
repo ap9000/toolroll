@@ -173,7 +173,7 @@ test("an automatic repair counts as its source's filer; a task's chat as the tas
   store.handle.prepare(`INSERT INTO mate_turn (approver, session, thread, credential_key, state, created_at, deadline_at, reserved_microusd, settled_microusd) VALUES ('sam', ?, ?, 'k', 'answered', ?, ?, 1, 700000)`)
     .run(session, thread, NOW.toISOString(), NOW.toISOString());
   const flow = store.createFlow({ repo: "/repo/desk", name: "Inbox", definitionJson: "{}", by: "alex" }, NOW);
-  const card = store.addFlowCard({ flow, title: "A note", description: null, stage: "sort", by: "alex" }, NOW);
+  const card = store.addFlowCard({ flow, title: "A note", description: null, stage: "sort", by: "alex", byKind: "person" }, NOW);
   store.handle.prepare(`INSERT INTO flow_step_run (card, entry, stage, kind, state, started_at, decision_json) VALUES (?, 1, 'sort', 'sort', 'passed', ?, ?)`)
     .run(card, NOW.toISOString(), JSON.stringify({ model: "jev", cost: 0.0042 }));
   const month = monthOf(NOW);

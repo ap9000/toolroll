@@ -392,7 +392,9 @@ export type BrowserFlowCard = {
   waiting: string | null; task: { id: string; href: string } | null; createdBy: string; updatedAt: string;
   canDecide: boolean; outputs: { stage: string; title: string; text: string }[]; history: { text: string; at: string }[];
   /** Where a trigger found it: a GitHub or Linear issue, another flow's card, a button, a schedule. */
-  source: { kind: string; label: string; url: string | null } | null;
+  /** `proved` and `host` (v126): how an outside event's delivery was proved ("signed by Sentry", "unsigned") and its
+   * link's host, always shown beside the link. */
+  source: { kind: string; label: string; url: string | null; proved?: string; host?: string | null; shown?: string | null } | null;
   /** Who is responsible for it, who follows it, and whether the viewer does. */
   owner: string | null; watchers: string[]; watching: boolean;
   /** Owned by the viewer, followed by them, or waiting on their decision. */
@@ -428,8 +430,14 @@ export type BrowserFlowTrigger = {
   /** Where the status points a person (a plane review's long waits: Needs you). */
   statusLink: BrowserLink | null;
   button: { label: string; questions: string[] } | null;
-  /** A webhook trigger: whether it can prove deliveries yet (Linear needs its signing secret pasted). */
-  hook: { ready: boolean; needsSecret: boolean } | null;
+  /** A webhook trigger: whether it can prove deliveries yet (Linear, Sentry and Vercel need their signing secret pasted).
+   * v126: a webhook's sender (who signs it; "none" is the address alone), whether Toolroll makes its secret, and a
+   * warning in words when anyone could add cards (unsigned) or any project could (a Sentry or Vercel webhook unscoped). */
+  hook: { ready: boolean; needsSecret: boolean; sender: string | null; makesSecret: boolean; warning: string | null; readerNote: string | null;
+    /** v126: deliveries turned away because too many were already held, until a person clears it, and how to resend them. */
+    dropped: { count: number; since: string; resend: string } | null;
+    /** v126: the Sentry or Vercel project (and Vercel team) it takes deliveries from; null: any the secret covers. */
+    scope: { project: string | null; team: string | null } | null } | null;
   checkable: boolean;
   /** A button shared as a public form (its link works). */
   shared: boolean;

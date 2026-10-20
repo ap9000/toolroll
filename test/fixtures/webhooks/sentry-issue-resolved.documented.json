@@ -1,0 +1,1 @@
+{"action":"resolved","installation":{"uuid":"7a485448-a9e2-4c85-8a3c-4f44175783c9"},"data":{"issue":{"id":"1170820243","title":"RangeError: Invalid time value","web_url":"https://acme.sentry.io/issues/1170820243/","project":{"id":"1","slug":"web"}}},"actor":{"type":"user","id":"1","name":"Sam"}}

@@ -223,7 +223,7 @@ describe("the lead builds and runs a flow", () => {
     expect(lead("propose_action", { operation: "flow_create", repo: "r1" })).toMatchObject({ ok: false });
     expect(JSON.stringify(lead("get_actions", {}))).not.toContain("flow_");
     // Cards have people too: the lead comments and takes a card on, each a card the operator confirms.
-    const target = store.addFlowCard({ flow, title: "Login is slow", description: null, stage: "inbox", by: "operator" }, now);
+    const target = store.addFlowCard({ flow, title: "Login is slow", description: null, stage: "inbox", by: "operator", byKind: "person" }, now);
     const comment = proposalOf(lead("propose_flow", { operation: "comment", card: target, note: "Profiling shows the session lookup." }));
     expect(sharedActionPayload(store.getLeadProposal(comment)!.payload)!.terms).toEqual(["Profiling shows the session lookup.", "Its owner and followers hear about it."]);
     expect(confirm(comment)).toMatchObject({ ok: true, said: "Comment added.", href: `/flows/${flow}?card=${target}` });
@@ -259,8 +259,8 @@ describe("the lead builds and runs a flow", () => {
     const flow = store.listFlows([repo])[0]!;
     expect(lead("get_flows", { flow: flow.id })).toMatchObject({ ok: true, body: { steps: [{ id: "build" }, { id: "send-me-the-result", kind: "send", next: "What next?" },
       { id: "what-next", kind: "choose", options: [{ choice: 1, label: "Ship it", goesTo: "Ship" }, { choice: 2, label: "Ignore", goesTo: "end" }], ifReplied: "Build" }, { id: "ship" }, { id: "done" }] } });
-    const one = store.addFlowCard({ flow: flow.id, title: "Checkout rounding", description: "Off by a cent", stage: "what-next", by: "operator" }, now);
-    const two = store.addFlowCard({ flow: flow.id, title: "Header spacing", description: null, stage: "what-next", by: "operator" }, now);
+    const one = store.addFlowCard({ flow: flow.id, title: "Checkout rounding", description: "Off by a cent", stage: "what-next", by: "operator", byKind: "person" }, now);
+    const two = store.addFlowCard({ flow: flow.id, title: "Header spacing", description: null, stage: "what-next", by: "operator", byKind: "person" }, now);
     advanceFlows(store, repo, now, { evidenceRoot: root });
     expect(lead("get_flows", { flow: flow.id })).toMatchObject({ ok: true, body: { cards: [{ card: two, needsYou: true }, { card: one, needsYou: true, waiting: "Waiting for you to choose (operation choose: choice by number, or note to reply)" }] } });
     // A choice waiting on you counts as needing you.

@@ -69,6 +69,8 @@ export const TEXT_LIMITS = {
   triggerState: 40,
   triggerWebhookTitle: 120,
   triggerWebhookField: 80,
+  /** v126: a Sentry or Vercel project (or Vercel team) a signed webhook is scoped to. */
+  triggerWebhookScope: 120,
   triggerFolder: 100,
   triggerSender: 300,
   triggerSubject: 100,

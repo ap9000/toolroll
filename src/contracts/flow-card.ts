@@ -34,6 +34,9 @@ export const flowCardSchema = z.strictObject({
   outputs: cardOutputsSchema.shape.outputs,
   attached: cardOutputsSchema.shape.attached,
   createdBy: z.string(),
+  /** v126: whether a person or an automation (a delivery, a poll, a schedule, a public form) made it. Decided where it
+   * was made, never read from its label: filing passes it on as the requester's kind. */
+  createdKind: z.enum(["person", "automation"]),
   createdAt: z.string(),
   updatedAt: z.string(),
   owner: z.string().nullable(),

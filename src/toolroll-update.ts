@@ -36,7 +36,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
-import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS } from "./store.js";
+import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
@@ -389,6 +389,8 @@ function addedColumns(...versions: Readonly<Record<string, Readonly<Record<strin
   }
   return rules;
 }
+/** Rules on tables that later gained declared columns (addedColumns merges into these instead of replacing them). */
+const EARLIER_RULES: Record<string, HistoryRule> = { flow_trigger: { fromRoutines: "trigger" } };
 const HISTORY_RULES: Record<string, HistoryRule> = {
   ...Object.fromEntries(Object.entries(CHAT_MOVES).map(([table, moved]) => [table, { moved }])),
   action_ledger: { appendOnly: true }, ledger_seal: { appendOnly: true }, ledger_checkpoint: { appendOnly: true },
@@ -417,7 +419,10 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v121: live steering's columns and a run's attempt key read none, and no sends, the same way.
   // v122: a project's recorded remote reads none the same way.
   // v123: a plan authorization's basis reads the operating mode, and a trigger firing reads not on time and no script ran.
-  ...addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS),
+  // v126: a receipt's state, acceptance time and held item, a trigger's credential generation and turned-away count,
+  // and who made a card read none, 0, or none. A table with an earlier rule (flow_trigger's v115 move) keeps it too.
+  ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS))
+    .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };
 /** The tables a migration may remove whole (v115's removed features). */
 export const RETIRED_TABLES: readonly string[] = Object.freeze(Object.keys(HISTORY_RULES).filter(name => HISTORY_RULES[name]!.retired));

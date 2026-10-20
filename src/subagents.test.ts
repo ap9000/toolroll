@@ -29,8 +29,8 @@ beforeEach(() => {
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 test("a subagent decides only a zone it staffs", () => {
-  const theirs = store.addFlowCard({ flow, title: "Refund $30 for order 51", description: null, stage: "maya-decides", by: "alex" }, T0);
-  const ours = store.addFlowCard({ flow, title: "Refund $400 for order 52", description: null, stage: "owner-decides", by: "alex" }, T0);
+  const theirs = store.addFlowCard({ flow, title: "Refund $30 for order 51", description: null, stage: "maya-decides", by: "alex", byKind: "person" }, T0);
+  const ours = store.addFlowCard({ flow, title: "Refund $400 for order 52", description: null, stage: "owner-decides", by: "alex", byKind: "person" }, T0);
   expect(decideFlowCard(store, { card: ours, decision: "approve", note: null, actor: "Maya (AI)", repos: ["/r"], subagent: "maya" }, T0)).toMatchObject({ ok: false });
   expect(decideFlowCard(store, { card: theirs, decision: "approve", note: null, actor: "Leo (AI)", repos: ["/r"], subagent: "leo" }, T0)).toMatchObject({ ok: false });
   expect(decideFlowCard(store, { card: theirs, decision: "approve", note: "Within my $50 limit.", actor: "Maya (AI)", repos: ["/r"], subagent: "maya" }, T0)).toMatchObject({ ok: true });
@@ -61,7 +61,7 @@ test("a turn must be one of the zone's own choices, and a refusal names its path
 });
 
 test("only the person asked answers a subagent's question, once", () => {
-  const card = store.addFlowCard({ flow, title: "Refund $200 for order 54", description: null, stage: "refunded", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Refund $200 for order 54", description: null, stage: "refunded", by: "alex", byKind: "person" }, T0);
   const mate = store.subagentByHandle("/r", "maya")!;
   const id = store.openSubagentQuestion({ subagent: mate.id, card, entry: 1, question: "Refund all $200?", options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, T0)!;
   expect(answerSubagentQuestion(store, id, { choice: "o1", text: null, by: "sam", via: "web" }, T0)).toMatchObject({ ok: false });

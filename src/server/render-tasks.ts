@@ -44,6 +44,7 @@ import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard,type CompletionReceiptView,criterionMatrixHtml,type EvidenceLinkMap,evidenceWords,homePhaseWords,incidentWords,needsCheck,pullRequestCardHtml,reasonWords,receiptStatusOf,repairChainHtml,reportItemsHtml,reviewRetryPanel,runNoun,runOutcomeBadge,semanticCoverageHtml,type TaskPullRequest,terminalDiffCard,verificationExplanation,verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
+import { linkWords, originNote, type TaskOrigin } from "../task-source.js";
 
 /** What the task and approval views show about a drafted plan's contract
  * (contract handoff, task 1). A problem is a named problem, never a blank. */
@@ -225,6 +226,27 @@ const fragmentString = (fragment: Html | ""): string => fragment === "" ? "" : h
  * Presentation only: the same hidden fields, nonce, digest and password
  * post to the same route, and the task page and chat card share it.
  */
+/** v126: a task's origin as a line of words (the identity line). */
+function originWords(origin: TaskOrigin): string {
+  const flow = origin.flow === null ? null : origin.flow === "hidden" ? "from a flow" : origin.flow === "removed" ? "from a flow (removed)" : `from flow “${origin.flow.name}”`;
+  const source = origin.source === null ? null : `${origin.source.label} (${origin.source.proved})`;
+  return [flow, source].filter(one => one !== null).join(" · ");
+}
+
+/** v126: a task's origin as a fact: the flow, linked for those who may open it, and the outside event, linked to where
+ * it lives, with that link's host always shown. */
+function originParts(origin: TaskOrigin): BrowserTaskFact["parts"] {
+  const parts: BrowserTaskFact["parts"] = [];
+  if (origin.flow !== null) parts.push(origin.flow === "hidden" ? "A flow" : origin.flow === "removed" ? "A flow (removed)" : { label: `Flow “${origin.flow.name}”`, href: origin.flow.href });
+  if (origin.source !== null) {
+    if (parts.length > 0) parts.push(" · ");
+    // The link shows where it goes (host and path), beside what it is.
+    parts.push(origin.source.label, ` (${origin.source.proved})`);
+    if (origin.source.url !== null) parts.push(" · ", { label: linkWords(origin.source.url), href: origin.source.url });
+  }
+  return parts;
+}
+
 export function approvalSheetHtml(input: {
   surface: "task" | "chat";
   action: string;
@@ -241,6 +263,8 @@ export function approvalSheetHtml(input: {
   repairChain: RepairChainRow | null;
   route: RouteView | null | undefined;
   coordinator: { label: string; filedAgo: string | null } | null;
+  /** v126: where the work came from: an outside event's one line of context (never a term the approval agrees to). */
+  origin?: TaskOrigin | null;
   deliverable: "branch" | "report";
   editHref: string;
   notNowHref: string;
@@ -416,6 +440,7 @@ export function approvalSheetHtml(input: {
       sentence === null ? "" : html`<p class="approval-revision">${sentence}</p>`,
       input.coordinator === null ? "" : html`<p class="approval-note">An agent filed this: <span class="mono">${input.coordinator.label}</span>${input.coordinator.filedAgo === null ? "" : html`, ${input.coordinator.filedAgo}`}. Nothing runs until you approve, and approving runs its request.</p>`,
       input.deliverable === "report" ? html`<p class="approval-note">Read-only: it reports back and changes nothing in the repository.</p>` : "",
+      originNote(input.origin) === null ? "" : html`<p class="approval-note" data-approval-origin>${originNote(input.origin)!}</p>`,
       html`<dl class="approval-rows">`,
       row("Goal", html`<p class="approval-goal">${goalShown}</p>`),
       row("Changes", changes),
@@ -1392,6 +1417,8 @@ export function taskBodyParts(data: {
   /** Immutable filing provenance (v12) — the approver sees which door
    * filed this (console, cli, intake, template:<name>) at the yes. */
   filedVia?: string | null;
+  /** v126: where the work came from — the flow and the outside event — in words; null for everything else. */
+  origin?: TaskOrigin | null;
   /** Coordinator provenance when an agent filed this; null otherwise. */
   coordinator?: { label: string; filedAgo: string | null } | null;
   holds: Hold[];
@@ -1980,6 +2007,7 @@ export function taskBodyParts(data: {
           repairChain: data.repairChain ?? null,
           route: data.route,
           coordinator: data.coordinator ?? null,
+          origin: data.origin ?? null,
           deliverable: data.deliverable ?? "branch",
           editHref: data.csrf !== "" && data.planSha != null && data.planDocument !== null ? "#plan-edit" : "#scope",
           notNowHref: "/work",
@@ -2360,9 +2388,11 @@ export function taskBodyParts(data: {
       data.repo === null ? "" : ` · ${projectName(data.repo)}`}${
         data.coordinator !== null && data.coordinator !== undefined
           ? html` · filed by <span class="mono">${data.coordinator.label}</span>${data.coordinator.filedAgo === null ? "" : ` ${data.coordinator.filedAgo}`}`
-          : data.filedVia === null || data.filedVia === undefined
-            ? ""
-            : ` · filed via ${data.filedVia}`
+          : data.origin != null
+            ? ` · ${originWords(data.origin)}`
+            : data.filedVia === null || data.filedVia === undefined
+              ? ""
+              : ` · filed via ${data.filedVia}`
       }${data.deliverable === "report" ? html` · <span class="badge">Scout</span>` : ""}</p>`;
   // A pull request that can be merged (or opened) owns the one primary action; the result stays in its section.
   const pullRequestActs = data.csrf !== "" && (data.pullRequest?.view?.canMerge === true || (data.pullRequest?.view == null && data.pullRequest?.offer != null));
@@ -2620,7 +2650,9 @@ export function taskBodyParts(data: {
   review.push({ label: "Publishes as", parts: [publishesAs] });
   const about: BrowserTaskFact[] = [];
   const filedFact = facts.find(one => one.label === "Filed by");
-  about.push(filedFact ?? { label: "Filed by", parts: [filedBy ?? (data.filedVia == null ? "Not recorded" : `via ${data.filedVia}`)] });
+  about.push(filedFact ?? { label: "Filed by", parts: [filedBy ?? (data.origin != null ? "An automation" : data.filedVia == null ? "Not recorded" : `via ${data.filedVia}`)] });
+  // v126: where it came from — the flow (linked only for those who can see it) and the outside event, with its host.
+  if (data.origin != null) about.push({ label: "From", parts: originParts(data.origin) });
   about.push({ label: "Filed", parts: [{ at: rootFiled }] });
   about.push({ label: "Updated", parts: [{ at: task.updatedAt }] });
   for (const label of ["Audit", "This attempt", "Task total"]) {

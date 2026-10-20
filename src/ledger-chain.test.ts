@@ -271,7 +271,7 @@ test("subagent tool calls, their decisions and undos are in the ledger, as the s
   const repo = "/repo/a";
   const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: "alex", by: "alex" }, T0);
   const flow = store.createFlow({ repo, name: "Support", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: "alex" }, T0);
-  const card = store.addFlowCard({ flow, title: "Refund it", description: null, stage: "inbox", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Refund it", description: null, stage: "inbox", by: "alex", byKind: "person" }, T0);
   const call = store.addSubagentCall({ subagent: mate, card, entry: 1, tool: "shop", action: "refund_order", input: { order: "54" }, rule: "ask", why: "Over the limit.", state: "asked" }, T0);
   expect(store.moveSubagentCall(call, ["asked"], { state: "approved", decidedBy: "alex" }, new Date(T0.getTime() + 1000))).toBe(true);
   expect(store.moveSubagentCall(call, ["approved"], { state: "done", result: "refunded" }, new Date(T0.getTime() + 2000))).toBe(true);

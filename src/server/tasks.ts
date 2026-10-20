@@ -1,3 +1,4 @@
+import { originOf } from "../task-source.js";
 import { ACP_AGENTS, isAcpProvider } from "../acp-agents.js";
 import { handlersOf } from './handler-registry.js';
 import { closedQuestionWords } from "../decision.js";
@@ -325,6 +326,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         approvalDigest,
         deliverable: ref?.deliverable ?? "branch",
         route,
+        origin: originOf(store, item.approval.taskId, repo => store.accountCanAccess(who.name, repo)),
         csrf, nonce, remaining: remaining.length, skipped: [...skipped], now,
       }));
     }

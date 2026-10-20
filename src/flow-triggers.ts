@@ -38,6 +38,9 @@ import type { Runner } from "./backend.js";
 import { scanForSecrets } from "./evidence.js";
 import { flowCardText, flowDefinitionOf, type FlowAct } from "./flow-engine.js";
 import { FlowContractError, type FlowDefinition } from "./flows.js";
+import { identityOf, looksSecret, readDelivery, safeLink } from "./webhook-readers.js";
+import { CARDS_PER_HOUR, countUnproven, HELD_AT_MOST, UNKNOWN_ADDRESS } from "./webhook-limits.js";
+import { makesSecret, makeSecret, proveDelivery, secretShapeOk, SENDER_WORDS, WEBHOOK_SENDERS, type DistinctHeaders, type SigningSender, type WebhookSender } from "./webhook-signing.js";
 import { parseContract, type ContractResult } from "./contracts/contract.js";
 import { FLOW_ALIASES, FLOW_TRIGGER_KINDS, SECRETS_MAX, triggerConfigSchema, triggerInputSchema, type ChatApp, type FlowTriggerKind, type TriggerConfig, type TriggerInput } from "./contracts/flow.js";
 import { describeSchedule, fileStandingOrder, firstFireAt, nextFireAt, parseSchedule, StandingOrderRefused, WEEKDAYS, type StandingOrder } from "./flow-schedule.js";
@@ -47,7 +50,7 @@ import type { CodeResult } from "./flow-code.js";
 import { readFlowSecrets } from "./flow-secrets.js";
 import { prepareUnattendedCandidates, grantSignsScriptOf, scriptProvenanceOf, scriptRanDigestOf } from "./flow-unattended.js";
 import { tmpdir } from "node:os";
-import type { FlowCardSource, FlowRow, FlowTriggerRow, Store } from "./store.js";
+import type { FlowCardSource, FlowReceipt, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
 import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
 
@@ -199,7 +202,24 @@ export function validateTriggerConfig(raw: unknown, context: { store: Store; flo
       return { kind: "flow", flow: flow.id, when: stage.id, zone };
     }
     case "webhook":
-      return { kind: "webhook", title: said(input.title) ?? "Webhook", titleField: said(input.titleField), bodyField: said(input.bodyField), zone };
+    {
+      // v126: Sentry and Vercel deliveries are read by their own readers, scoped by project (and Vercel's by team); the
+      // others pick their fields from the JSON by dot-paths. A setting that the sender doesn't read is refused, not kept.
+      const sender = input.sender ?? "none";
+      const provider = sender === "sentry" || sender === "vercel";
+      const project = said(input.project), team = said(input.team), idField = said(input.idField), urlField = said(input.urlField);
+      const titleField = said(input.titleField), bodyField = said(input.bodyField);
+      if (provider) {
+        for (const [path, value] of [["titleField", titleField], ["bodyField", bodyField], ["idField", idField], ["urlField", urlField]] as const) {
+          if (value !== null) refuse(path, `${SENDER_WORDS[sender]} deliveries are read by Toolroll's own ${SENDER_WORDS[sender]} reader; leave it out`);
+        }
+      } else if (project !== null) refuse("project", "only a Sentry or Vercel webhook is scoped to a project");
+      if (team !== null && sender !== "vercel") refuse("team", "only a Vercel webhook is scoped to a team");
+      for (const [path, value] of [["titleField", titleField], ["bodyField", bodyField], ["idField", idField], ["urlField", urlField]] as const) {
+        if (value !== null && !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(value)) refuse(path, "a dot-path like data.issue.id");
+      }
+      return { kind: "webhook", title: said(input.title) ?? "Webhook", titleField, bodyField, sender, project, team, idField, urlField, zone };
+    }
     case "plane-review": {
       const at = said(input.at) ?? "07:30";
       const clock = /^(\d{1,2}):(\d{2})$/.exec(at);
@@ -258,7 +278,7 @@ export function describeTrigger(config: TriggerConfig, store: Store): string {
       const zone = flow === null ? null : flowDefinitionOf(flow)?.stages.find(one => one.id === config.when)?.title ?? null;
       return `Cards reaching ${zone ?? "the end"} in ${flow?.name ?? "another flow"}`;
     }
-    case "webhook": return "Anything posted to its webhook address";
+    case "webhook": return webhookWords(config);
     case "chat": return `Every new message in a ${CHAT_APP_NAMES[config.app]} channel; replies in a card's thread join its discussion`;
     case "plane-review": {
       const schedule = parseSchedule(config.schedule);
@@ -283,7 +303,7 @@ export function triggerHeadline(config: TriggerConfig, store: Store): { name: st
       const flow = store.getFlow(config.flow);
       return { name: `From ${flow?.name ?? "another flow"}`, detail: `When a card reaches ${flow === null ? "the end" : flowDefinitionOf(flow)?.stages.find(one => one.id === config.when)?.title ?? "the end"}` };
     }
-    case "webhook": return { name: "Webhook", detail: "Anything posted to its address" };
+    case "webhook": return { name: senderOf(config) === "sentry" ? "Sentry" : senderOf(config) === "vercel" ? "Vercel" : "Webhook", detail: webhookWords(config) };
     case "chat": return { name: `${CHAT_APP_NAMES[config.app]} channel`, detail: "Each message is a card" };
     case "plane-review": {
       const schedule = parseSchedule(config.schedule);
@@ -303,7 +323,7 @@ export function triggerConfigOf(trigger: FlowTriggerRow): TriggerConfig | null {
 /** What a saved trigger leaves out, it had as these (every release has saved them whole; a hand-made row may not). */
 const SAVED_DEFAULTS: Partial<Record<FlowTriggerKind, Record<string, unknown>>> = {
   button: { questions: ["What needs doing?", "Details"] }, schedule: { description: null }, github: { label: null, branch: null, from: "team", delivery: "poll" },
-  linear: { team: null, state: null, label: null, delivery: "poll" }, webhook: { title: "Webhook", titleField: null, bodyField: null }, email: { folder: "INBOX", sender: null, subject: null },
+  linear: { team: null, state: null, label: null, delivery: "poll" }, webhook: { title: "Webhook", titleField: null, bodyField: null, sender: "none", project: null, team: null, idField: null, urlField: null }, email: { folder: "INBOX", sender: null, subject: null },
 };
 
 /** A saved trigger's config (`configJson`, which carries no version) read by its one schema, what it leaves out filled. */
@@ -313,6 +333,17 @@ export function readTriggerConfig(raw: unknown): ContractResult<TriggerConfig> {
   return parseContract(triggerConfigSchema, body);
 }
 
+/** v126: what a webhook trigger takes, in words: what its sender sends it, or anything posted when it's unsigned. */
+function webhookWords(config: Extract<TriggerConfig, { kind: "webhook" }>): string {
+  const sender = senderOf(config);
+  const scope = config.project == null ? "" : ` from ${config.project}`;
+  return sender === "sentry" ? `Sentry issue alerts and new issues${scope}` : sender === "vercel" ? `Failed Vercel deployments${scope}`
+    : sender === "none" ? "Anything posted to its webhook address" : `Requests signed ${sender === "standard" ? "the Standard Webhooks way" : "GitHub-style"} to its webhook address`;
+}
+
+/** v126: who signs a webhook trigger's deliveries; one saved before senders were chosen is unsigned. */
+export const senderOf = (config: Extract<TriggerConfig, { kind: "webhook" }>): WebhookSender => config.sender ?? "none";
+
 /** Whether this trigger takes deliveries at a secret address rather than being checked. */
 export function takesDeliveries(config: TriggerConfig): boolean {
   return config.kind === "webhook" || ((config.kind === "github" || config.kind === "linear") && config.delivery === "webhook");
@@ -321,21 +352,34 @@ export function takesDeliveries(config: TriggerConfig): boolean {
 // ------------------------------------------------------ secrets on disk
 
 const hookHash = (token: string) => createHash("sha256").update(token).digest("hex");
-/** A webhook's signing secret: kept by Toolroll (tool-secret-store.ts) as `flow-hook.<trigger>`, in a file of that name before. */
-const hookSecret = (trigger: number) => ({ name: `flow-hook.${trigger}`, file: ["flow-hooks", `${trigger}.json`] });
+/**
+ * A webhook's signing secret: kept by Toolroll (tool-secret-store.ts) as `flow-hook.<trigger>`, in a file of that name
+ * before. v126: each secret has its own address, named by an id made for the one change that writes it, so no two
+ * changes ever write the same place; the trigger points at it (flow_trigger.hook_credential) only once it is whole.
+ * "legacy" is the address every secret saved before v126 has, so those keep authenticating with nothing moved; ""
+ * (or an id that isn't one) has no address at all.
+ */
+const hookSecret = (trigger: number, credential: string) => credential === "legacy"
+  ? { name: `flow-hook.${trigger}`, file: ["flow-hooks", `${trigger}.json`] }
+  : /^[0-9a-f]{32}$/.test(credential) ? { name: `flow-hook.${trigger}.${credential}`, file: ["flow-hooks", `${trigger}.${credential}.json`] } : null;
 
-/** A webhook's signing secret (GitHub: made here; Linear: pasted from Linear). In the keychain (or an owner-only file where there's none), never a column. */
-export function saveHookSecret(dir: string, trigger: number, secret: string): void {
-  const held = hookSecret(trigger);
+/** A webhook's signing secret (made here, or pasted from its sender). In the keychain (or an owner-only file where there's none), never a column. */
+export function saveHookSecret(dir: string, trigger: number, secret: string, credential = "legacy"): void {
+  const held = hookSecret(trigger, credential);
+  if (held === null) throw new Error("not a credential id");
   writeHeldSecret(dir, held.name, held.file, `${JSON.stringify({ secret })}\n`);
 }
-export function readHookSecret(dir: string, trigger: number): string | null {
-  const held = hookSecret(trigger);
+/** Exactly this credential's secret, or null: never another's. */
+export function readHookSecret(dir: string, trigger: number, credential = "legacy"): string | null {
+  const held = hookSecret(trigger, credential);
+  if (held === null) return null;
   try { const parsed = JSON.parse(readHeldSecret(dir, held.name, held.file) ?? "null") as { secret?: unknown } | null; return typeof parsed?.secret === "string" && parsed.secret !== "" ? parsed.secret : null; } catch { return null; }
 }
-function dropHookSecret(dir: string, trigger: number): void {
-  const held = hookSecret(trigger);
-  try { writeHeldSecret(dir, held.name, held.file, null); } catch { /* the trigger is gone; an orphan is never read */ }
+/** Cleanup only: a secret no trigger points at is never read, whether or not its file is gone. */
+function dropHookSecret(dir: string, trigger: number, credential: string): void {
+  const held = hookSecret(trigger, credential);
+  if (held === null) return;
+  try { writeHeldSecret(dir, held.name, held.file, null); } catch { /* never read: nothing points at it */ }
 }
 
 const LINEAR = { name: "linear-key", file: ["linear-key"] };
@@ -378,13 +422,15 @@ export type TriggerReveal = { path: string; address: string | null; secret: stri
 export type TriggerMade = { ok: true; id: number; said: string; reveal: TriggerReveal | null } | { ok: false; message: string };
 
 /** Add a trigger to a flow. A webhook trigger's address (and GitHub's signing secret) is returned once and never stored readable. */
-export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null): TriggerMade {
+export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean } = {}): TriggerMade {
   const definition = flowDefinitionOf(flow);
   if (definition === null || flow.state !== "active") return { ok: false, message: "This flow can't take triggers right now." };
   let config: TriggerConfig;
   try { config = validateTriggerConfig(raw, { store, flow, definition, actor }); } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That trigger isn't valid." }; }
   if (takesDeliveries(config) && dir === null) return { ok: false, message: "Webhook addresses are set up on the console." };
-  const token = takesDeliveries(config) ? randomBytes(24).toString("base64url") : null;
+  // v126: a webhook made where no one is shown its address (the gallery, an import) is made with none: its first
+  // set-up or New address makes one and shows it. A webhook made on its panel is shown its address now.
+  const token = takesDeliveries(config) && (options.shown !== false || config.kind !== "webhook") ? randomBytes(24).toString("base64url") : null;
   const schedule = config.kind === "schedule" || config.kind === "plane-review" ? parseSchedule(config.schedule) : null;
   const id = store.addFlowTrigger({
     // The table's kinds were fixed before plane reviews: one is kept as the daily schedule it is.
@@ -397,6 +443,8 @@ export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, acto
   }, now);
   let secret: string | null = null;
   if (config.kind === "github" && config.delivery === "webhook") { secret = randomBytes(24).toString("hex"); saveHookSecret(dir!, id, secret); }
+  // v126: a webhook starts with no secret at all (not the legacy address): it is set up on its panel, never here.
+  if (config.kind === "webhook") store.swapFlowHookCredential(id, { credential: "legacy", configJson: JSON.stringify(config), hookHash: token === null ? null : hookHash(token) }, { credential: "" }, null, now);
   const reveal = token === null ? null : { path: `${HOOK_PATH}${token}`, address: dir === null || readHooksBase(dir) === null ? null : `${readHooksBase(dir)}${HOOK_PATH}${token}`, secret };
   return { ok: true, id, said: token === null ? "Trigger added." : "Trigger added. Copy its address now; it isn't shown again.", reveal };
 }
@@ -406,9 +454,17 @@ export function renewFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
   const config = triggerConfigOf(trigger);
   if (config === null || !takesDeliveries(config) || trigger.state === "removed") return { ok: false, message: "That trigger has no webhook address." };
   const token = randomBytes(24).toString("base64url");
-  store.updateFlowTrigger(trigger.id, { hookHash: hookHash(token) }, now);
   let secret: string | null = null;
-  if (config.kind === "github") { secret = randomBytes(24).toString("hex"); saveHookSecret(dir, trigger.id, secret); }
+  // GitHub's own trigger gets a new secret with its new address (as it always has); a webhook keeps its secret. Either
+  // way the address moves in one conditional write with the secret it is proven by, from the pair read here: a renewal
+  // that fails (or loses to another) leaves the working address and its secret exactly as they were.
+  if (config.kind === "github") {
+    secret = randomBytes(24).toString("hex");
+    const saved = nextHookCredential(store, trigger, secret, null, now, dir, hookHash(token));
+    if (!saved.ok) return saved;
+  } else if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson, hookHash: trigger.hookHash }, { credential: trigger.hookCredential, hookHash: hookHash(token) }, null, now)) {
+    return { ok: false, message: "That trigger changed meanwhile. Open it again." };
+  }
   const base = readHooksBase(dir);
   return { ok: true, id: trigger.id, said: "New address made; the old one no longer works. Copy it now; it isn't shown again.", reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } };
 }
@@ -425,7 +481,7 @@ export function setFlowTriggerOn(store: Store, trigger: FlowTriggerRow, on: bool
 
 export function removeFlowTrigger(store: Store, trigger: FlowTriggerRow, now: Date, dir: string | null, by?: string): void {
   store.updateFlowTrigger(trigger.id, { state: "removed", hookHash: null }, now, by);
-  if (dir !== null) dropHookSecret(dir, trigger.id);
+  if (dir !== null) dropHookSecret(dir, trigger.id, trigger.hookCredential);
 }
 
 /** Checked by the worker's pass (rather than pushed, fired on a schedule or followed). */
@@ -452,7 +508,7 @@ function checksCardOf(store: Store, repo: string, key: string): string | null {
 }
 
 /** One outside thing into one card, at most once per trigger (a failing run, once per project). Keys and control characters never reach a card. */
-function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, item: Incoming, by: string, now: Date): { made: Made; note: string | null; card: number | null } {
+function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, item: Incoming, by: string, now: Date, byKind: "person" | "automation" = "automation"): { made: Made; note: string | null; card: number | null } {
   const flow = store.getFlow(trigger.flow);
   const definition = flow === null ? null : flowDefinitionOf(flow);
   if (flow === null || definition === null || flow.state !== "active") return { made: "skipped", note: "the flow isn't active", card: null };
@@ -473,7 +529,7 @@ function makeCard(store: Store, trigger: FlowTriggerRow, config: TriggerConfig, 
       store.recordFlowTriggerEvent(trigger.id, item.key, null, note, now);
       return { made: "skipped" as const, note: `${item.source.label}: ${note}`, card: null };
     }
-    const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: startZone(config, definition), by, source: item.source }, now);
+    const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: startZone(config, definition), by, byKind, source: item.source }, now);
     store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, null, item.onTime === true, item.ranScript ?? null);
     return { made: "added" as const, note: null, card };
   });
@@ -501,7 +557,7 @@ function fileOrderCard(store: Store, trigger: FlowTriggerRow, config: Extract<Tr
         store.recordFlowTriggerEvent(trigger.id, item.key, null, fired.note, now);
         return { made: "skipped" as const, note: fired.note, card: null };
       }
-      const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: zone, by: "Schedule", source: item.source }, now);
+      const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: zone, by: "Schedule", byKind: "automation", source: item.source }, now);
       store.updateFlowCard(card, { task: fired.taskId, primaryTask: fired.taskId, waiting: "Filed as a task" }, now);
       // The firing keeps its task: one-at-a-time and the weekly limit count it however the card moves later.
       store.recordFlowTriggerEvent(trigger.id, item.key, card, null, now, fired.taskId);
@@ -527,7 +583,8 @@ function outcomeWords(results: { made: Made; note: string | null }[], more: bool
 export function addTriggerCard(store: Store, trigger: FlowTriggerRow, item: Incoming, by: string, now: Date): { made: Made; note: string | null; card: number | null } {
   const config = triggerConfigOf(trigger);
   if (config === null || trigger.state !== "active") return { made: "skipped", note: "the trigger isn't active", card: null };
-  return makeCard(store, trigger, config, item, by, now);
+  // A channel's message is the app's word for who sent it, not a signed-in account: automation (v126).
+  return makeCard(store, trigger, config, item, by, now, "automation");
 }
 
 /** Press a button trigger: the first answer is the card's title, the rest its details. */
@@ -537,7 +594,7 @@ export function pressFlowButton(store: Store, trigger: FlowTriggerRow, answers: 
   const said = config.questions.map((_question, index) => typeof answers[index] === "string" ? (answers[index] as string).trim() : "");
   if (said[0] === "") return { ok: false, message: `Answer “${config.questions[0]}”.` };
   const details = config.questions.slice(1).map((question, index) => said[index + 1] === "" ? null : `${question}\n${said[index + 1]}`).filter(one => one !== null).join("\n\n");
-  const result = makeCard(store, trigger, config, { key: `press:${now.toISOString()}:${randomUUID().slice(0, 8)}`, title: said[0]!, description: details === "" ? null : details, source: { kind: "button", label: config.label, url: null } }, actor, now);
+  const result = makeCard(store, trigger, config, { key: `press:${now.toISOString()}:${randomUUID().slice(0, 8)}`, title: said[0]!, description: details === "" ? null : details, source: { kind: "button", label: config.label, url: null } }, actor, now, "person");
   if (result.made !== "added") return { ok: false, message: result.note ?? "That didn't make a card." };
   store.setFlowCardWatcher(result.card!, actor, true, now);
   store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: `Pressed by ${actor}.` }, now);
@@ -562,6 +619,8 @@ export async function runFlowTriggers(store: Store, repo: string, now: Date, io:
     const config = triggerConfigOf(trigger);
     if (config === null) continue;
     try {
+      // v126: deliveries held over the hourly limit become their cards as the hour makes room.
+      if (takesDeliveries(config)) pass.added += drainHeldDeliveries(store, trigger, now);
       if (config.kind === "schedule" && config.script !== undefined && trigger.nextAt !== null && Date.parse(trigger.nextAt) <= now.getTime()) {
         const fired = await fireScript(store, trigger, config, now, io, true);
         pass.added += fired.added;
@@ -764,12 +823,15 @@ async function checkTrigger(store: Store, trigger: FlowTriggerRow, config: Extra
     return { ok: false, said: fetched.problem, added: 0 };
   }
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Email";
-  const due = fetched.items.slice(0, CARDS_PER_CHECK);
+  // Known items are left out before the batch is taken (v126): a page of things already received can't keep the unseen
+  // ones behind it waiting.
+  const fresh = fetched.items.filter(item => !store.flowTriggerSaw(trigger.id, item.key));
+  const due = fresh.slice(0, CARDS_PER_CHECK);
   const results = due.map(item => "skip" in item
     ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}`, card: null } : { made: "seen" as Made, note: null, card: null })
     : makeCard(store, trigger, config, item, by, now));
   // A mailbox says itself whether more is waiting; its cursor is already just past what it read.
-  const more = fetched.more ?? fetched.items.length > CARDS_PER_CHECK;
+  const more = fetched.more ?? fresh.length > CARDS_PER_CHECK;
   // The cursor moves past what was handled, never past what is still waiting.
   const cursor = fetched.more !== undefined ? fetched.cursor ?? trigger.cursor : more ? due.at(-1)?.at ?? trigger.cursor : fetched.cursor ?? trigger.cursor;
   const said = results.length === 0 && fetched.said !== undefined ? fetched.said : outcomeWords(results, more);
@@ -919,34 +981,82 @@ async function fetchLinear(config: Extract<TriggerConfig, { kind: "linear" }>, t
 
 // ------------------------------------------------------------ deliveries
 
-export type HookDelivery = { headers: Record<string, string | string[] | undefined>; body: Buffer };
-export type HookAnswer = { status: number; said: string };
+/** v126: headers as Node's `headersDistinct` gives them, one value per line they arrived on, so a security header sent
+ * twice is seen twice (Node's `headers` joins repeated custom headers with commas). */
+export type HookDelivery = { headers: DistinctHeaders; body: Buffer };
+/** `retryAfter` (seconds): a 429's Retry-After. */
+export type HookAnswer = { status: number; said: string; retryAfter?: number };
 
-const header = (delivery: HookDelivery, name: string) => { const value = delivery.headers[name]; return Array.isArray(value) ? value[0] ?? "" : value ?? ""; };
+/** A header that only describes the delivery (not a security header): its first value. */
+const header = (delivery: HookDelivery, name: string) => delivery.headers[name]?.[0] ?? "";
 function sameHex(expected: string, given: string): boolean {
   const a = Buffer.from(expected, "utf8"), b = Buffer.from(given, "utf8");
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** How a webhook trigger's deliveries are proven, before anything in them is read: its sender's signature over the raw
+ * bytes with the current generation's secret. Null when proven (or unsigned); otherwise the refusal, which writes nothing. */
+function proveHook(trigger: FlowTriggerRow, config: TriggerConfig, delivery: HookDelivery, dir: string, now: Date): { signedId: string | null } | HookAnswer {
+  if (config.kind === "github") {
+    const secret = readHookSecret(dir, trigger.id, trigger.hookCredential);
+    if (secret === null) return { status: 401, said: "Signature doesn't match." };
+    const proof = proveDelivery("github-style", secret, delivery.headers, delivery.body, now);
+    return proof.ok ? { signedId: null } : { status: 401, said: proof.said };
+  }
+  if (config.kind === "linear") {
+    const secret = readHookSecret(dir, trigger.id, trigger.hookCredential);
+    if (secret === null) return { status: 401, said: "Paste Linear's signing secret on the flow's Triggers panel first." };
+    const sent = delivery.headers["linear-signature"] ?? [];
+    if (sent.length !== 1) return { status: 401, said: sent.length === 0 ? "The linear-signature header is missing." : "The linear-signature header was sent more than once." };
+    return sameHex(createHmac("sha256", secret).update(delivery.body).digest("hex"), sent[0]!.trim().toLowerCase()) ? { signedId: null } : { status: 401, said: "Signature doesn't match." };
+  }
+  const sender = config.kind === "webhook" ? senderOf(config) : "none";
+  if (sender === "none") return { signedId: null };
+  const secret = readHookSecret(dir, trigger.id, trigger.hookCredential);
+  if (secret === null) return { status: 401, said: `This webhook isn't set up yet: set up ${SENDER_WORDS[sender]} signing on the flow's Triggers panel first.` };
+  const proof = proveDelivery(sender, secret, delivery.headers, delivery.body, now);
+  return proof.ok ? { signedId: proof.signedId } : { status: 401, said: proof.said };
+}
+
 /** A webhook delivery at a trigger's secret address: prove it, read it, make at most the cards it names. Nothing runs here. */
 export function receiveFlowHook(store: Store, token: string, delivery: HookDelivery, dir: string, now: Date): HookAnswer {
-  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return { status: 404, said: "No such address." };
+  // v126 floods (webhook-limits.ts): what doesn't prove itself is counted per address, and past the minute's limit is
+  // answered 429 and does nothing. A delivery that proves itself is never refused by this count.
+  const unproven = (address: string, answer: HookAnswer): HookAnswer => {
+    const count = countUnproven(store, address, now);
+    return count.over ? { status: 429, said: "Too many. Try again later.", retryAfter: count.retryAfterSeconds } : answer;
+  };
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return unproven(UNKNOWN_ADDRESS, { status: 404, said: "No such address." });
   const trigger = store.flowTriggerByHook(hookHash(token));
   const config = trigger === null ? null : triggerConfigOf(trigger);
-  if (trigger === null || config === null || !takesDeliveries(config)) return { status: 404, said: "No such address." };
+  if (trigger === null || config === null || !takesDeliveries(config)) return unproven(UNKNOWN_ADDRESS, { status: 404, said: "No such address." });
   if (!adapterPolicy({ caller: "service", capability: "none" }, undefined, source => source === "flow" && store.getFlow(trigger.flow) !== null).ok) return { status: 403, said: "No access to this flow." };
-  if (delivery.body.length > HOOK_BYTES) return { status: 413, said: "Too large." };
+  const address = trigger.hookHash ?? UNKNOWN_ADDRESS;
+  // An unsigned webhook has nothing to prove: every delivery to it counts (and it is lossy under a flood, by design).
+  const unsigned = config.kind === "webhook" && senderOf(config) === "none";
+  if (unsigned) { const counted = unproven(address, { status: 0, said: "" }); if (counted.status === 429) return counted; }
+  if (delivery.body.length > HOOK_BYTES) return unsigned ? { status: 413, said: "Too large." } : unproven(address, { status: 413, said: "Too large." });
+  // Proven over the raw bytes before anything in them is read; a refusal writes nothing, not even the last outcome.
+  const proven = proveHook(trigger, config, delivery, dir, now);
+  if ("status" in proven) return unsigned ? proven : unproven(address, proven);
   const note = (said: string) => { store.updateFlowTrigger(trigger.id, { lastAt: now.toISOString(), lastOutcome: said }, now); };
+  // Every write a delivery makes is bound to the trigger as it was proven against (v126): its secret, settings, address
+  // and state, read again in the same transaction. A change that landed meanwhile (a new secret, another sender, a new
+  // address, a pause) means this delivery writes nothing at all.
+  const written = (write: () => HookAnswer): HookAnswer => store.transact(() => {
+    const current = store.getFlowTrigger(trigger.id);
+    if (current === null || current.state !== "active" || current.hookCredential !== trigger.hookCredential || current.configJson !== trigger.configJson || current.hookHash !== trigger.hookHash) {
+      return { status: 409, said: "This webhook changed while the delivery was read. Send it again." };
+    }
+    return write();
+  });
   let payload: unknown;
   try { payload = JSON.parse(delivery.body.toString("utf8")); } catch { return { status: 400, said: "Send JSON." }; }
   let items: Found[] = [];
   if (config.kind === "github") {
-    const secret = readHookSecret(dir, trigger.id);
-    const signature = header(delivery, "x-hub-signature-256");
-    if (secret === null || !sameHex(`sha256=${createHmac("sha256", secret).update(delivery.body).digest("hex")}`, signature)) return { status: 401, said: "Signature doesn't match." };
     const event = header(delivery, "x-github-event"), body = readGithubEvent(payload), action = body.action ?? "";
     const repository = body.repository?.full_name ?? "";
-    if (event === "ping") { note("GitHub connected."); return { status: 200, said: "Connected." }; }
+    if (event === "ping") return written(() => { note("GitHub connected."); return { status: 200, said: "Connected." }; });
     if (repository.toLowerCase() !== config.repo.toLowerCase()) return { status: 202, said: "Not this repository." };
     // A label trigger takes the moment its label is added (or an issue opened with it); a plain one takes new issues.
     const labeledNow = action === "labeled" && config.label !== null && (body.label?.name ?? "").toLowerCase() === config.label.toLowerCase();
@@ -955,54 +1065,333 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
       : config.watch === "checks" && event === "workflow_run" && action === "completed" ? githubRunItem(config, body.workflow_run) : null;
     items = found === null ? [] : [found];
   } else if (config.kind === "linear") {
-    const secret = readHookSecret(dir, trigger.id);
-    if (secret === null) return { status: 401, said: "Paste Linear's signing secret on the flow's Triggers panel first." };
-    if (!sameHex(createHmac("sha256", secret).update(delivery.body).digest("hex"), header(delivery, "linear-signature"))) return { status: 401, said: "Signature doesn't match." };
     const body = readLinearEvent(payload), sent = Number(body.webhookTimestamp);
-    if (!Number.isFinite(sent) || Math.abs(now.getTime() - sent) > 5 * 60_000) return { status: 401, said: "Too old." };
+    // Signed but stale: as unproven as no signature at all, so it counts toward the address's minute.
+    if (!Number.isFinite(sent) || Math.abs(now.getTime() - sent) > 5 * 60_000) return unproven(address, { status: 401, said: "Too old." });
     if (body.type !== "Issue" || !["create", "update"].includes(body.action ?? "")) return { status: 202, said: "Ignored." };
     // A state trigger fires when the issue arrives in that state, not on every later edit there.
     const moved = body.action === "create" || body.updatedFrom?.stateId !== undefined || config.state === null;
     const found = moved ? linearItem(config, body.data) : null;
     items = found === null ? [] : [found];
   } else if (config.kind === "webhook") {
-    // Any JSON, kept as sent: the trigger's own paths are picked from it, and it is shown whole when they find no text.
+    // v126: read by its sender's reader (webhook-readers.ts): Sentry's and Vercel's check shape, action and scope before
+    // an identity is claimed; the others pick their fields by dot-paths.
     const body = readWebhookPayload(payload);
-    const record = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-    const pick = (path: string | null) => path === null ? null : path.split(".").reduce<unknown>((node, part) => record(node)[part], body);
-    const title = pick(config.titleField ?? "title") ?? pick("summary") ?? pick("message");
-    const bodyText = pick(config.bodyField ?? "description") ?? pick("body") ?? pick("text");
-    const id = header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key") || createHash("sha256").update(delivery.body).digest("hex");
-    items = [{ key: `hook:${id.slice(0, 120)}`, at: null, title: typeof title === "string" && title.trim() !== "" ? title : config.title,
-      description: `From a webhook:\n\n${typeof bodyText === "string" ? bodyText : JSON.stringify(body, null, 2)}`.slice(0, 4000),
-      source: { kind: "webhook", label: "Webhook", url: null } }];
+    const sender = senderOf(config);
+    const read = readDelivery(body, { sender, title: config.title, titleField: config.titleField, bodyField: config.bodyField, idField: config.idField ?? null, urlField: config.urlField ?? null, project: config.project ?? null, team: config.team ?? null });
+    // A delivery's own key: an unsigned webhook's is what the sender says (as before); a signed one's only what its
+    // signature covers — Standard Webhooks' signed id, or the raw bytes. Keys carry the sender, so nothing unsigned
+    // stands for anything signed.
+    const bodyHash = createHash("sha256").update(delivery.body).digest("hex");
+    // A signed delivery id is outside words too: one that isn't a usable identity (padded, hidden characters, too long,
+    // or looking like a key) is never a key; the delivery is received under its bytes, and made into nothing.
+    const signedId = proven.signedId === null ? null : identityOf(proven.signedId);
+    // An unsigned sender's own id is outside words too: judged as sent, and when it isn't a usable identity (padded,
+    // hidden characters, too long, looking like a key) the delivery keys on its bytes instead, as when there is none.
+    const saidId = header(delivery, "x-request-id") || header(delivery, "x-delivery-id") || header(delivery, "idempotency-key");
+    const headerId = saidId === "" ? null : identityOf(saidId);
+    const deliveryKey = sender === "none"
+      ? `hook:${headerId?.ok === true ? headerId.id : bodyHash}`
+      : signedId?.ok === true ? `v3:${sender}:wid:${signedId.id}` : `v3:${sender}:body:${bodyHash}`;
+    if (signedId?.ok === false) items = [{ key: deliveryKey, skip: `its delivery id: ${signedId.why}`, label: "Webhook", at: null }];
+    // Not for this flow: received under the delivery's own key, so it never uses up the identity of what it names.
+    else if (read.kind === "ignored") return written(() => {
+      const before = store.flowReceipt(trigger.id, deliveryKey);
+      if (before !== null) return repeatAnswer(before);
+      store.recordFlowReceipt(trigger.id, deliveryKey, "ignored", read.why, null, now);
+      return { status: 202, said: `Ignored: ${read.why}.` };
+    });
+    else if (read.kind === "skip") items = [{ key: deliveryKey, skip: read.why, label: "Webhook", at: null }];
+    else {
+      // The outside thing's identity, when it has one, groups its deliveries: one card per issue or deployment.
+      const key = read.identity === null ? deliveryKey : `v3:${sender}:id:${read.identity}`;
+      items = [{ key, at: null, title: read.title, description: read.description,
+        source: { kind: sender === "sentry" || sender === "vercel" ? sender : "webhook", label: read.label, url: read.url,
+          verified: sender, external: { id: read.identity, url: read.url }, receipt: key } }];
+    }
   }
   if (items.length === 0) return { status: 202, said: "Nothing for this flow." };
+  // Every key is outside words until judged (v126): a GitHub or Linear identifier, like any identity, that is too long,
+  // carries hidden characters or looks like a key is never a key — the delivery is received under its bytes instead,
+  // and made into nothing.
+  // (A webhook's identities were judged by its reader, raw, before its key was made: only GitHub's and Linear's here.)
+  const deliveryBytes = createHash("sha256").update(delivery.body).digest("hex");
+  if (config.kind !== "webhook") items = items.map(item => {
+    const identity = item.key.slice(item.key.indexOf(":") + 1);
+    const judged = identityOf(identity);
+    // A fixed label: nothing of the refused identity is kept, not even in the words the panel shows.
+    if (!judged.ok) return { key: `v3:${config.kind}:body:${deliveryBytes}`, skip: judged.why, label: "A delivery", at: null };
+    if ("skip" in item) return item;
+    // A signed GitHub or Linear delivery says, at its receipt, who proved it and what it names (v126) — a polled item
+    // never does, so the two stay apart; nothing is inferred later from today's settings.
+    const url = safeLink(item.source.url, config.kind === "github" ? [{ host: "github.com", subdomains: false }] : [{ host: "linear.app", subdomains: false }]);
+    return { ...item, source: { ...item.source, url, verified: config.kind, external: { id: judged.id, url }, receipt: item.key } };
+  });
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Webhook";
-  const results = items.slice(0, CARDS_PER_CHECK).map(item => "skip" in item
-    ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}` } : { made: "seen" as Made, note: null })
-    : makeCard(store, trigger, config, item, by, now));
-  const said = outcomeWords(results, false);
-  note(said);
-  return { status: 202, said };
+  return written(() => {
+    // Received before (v126): said for what it was, never as a card that isn't there.
+    const first = items[0]!;
+    const before = items.length === 1 ? store.flowReceipt(trigger.id, first.key) : null;
+    if (before !== null) return repeatAnswer(before);
+    // The hourly card limit (v126), decided in this same transaction, counted when each card was made: a signed delivery
+    // over it is held whole and made into its card when there's room; an unsigned one is turned away.
+    const making = items.filter((item): item is Incoming & { at: string | null } => !("skip" in item));
+    if (making.length > 0 && store.flowCardsAcceptedSince(trigger.id, new Date(now.getTime() - 3_600_000)) >= CARDS_PER_HOUR) {
+      // Rejections are decided before anything is written: an unsigned one writes nothing at all.
+      if (unsigned) return { status: 429, said: "Too many in the last hour. Try again later.", retryAfter: 3600 };
+      if (store.heldFlowReceiptCount(trigger.id) >= HELD_AT_MOST) {
+        // Turned away, written nowhere but the trigger's lasting count.
+        store.noteFlowDeliveryDropped(trigger.id, now);
+        return { status: 503, said: "Too many waiting already. Resend it later from the sender's delivery log." };
+      }
+      const item = making[0]!;
+      // Screened and bounded whole before it is kept — its words as a card's are, and where it came from (label, link,
+      // identity) as a delivery's are: a held item is never something a card couldn't hold.
+      const words = flowCardText(item.title, item.description);
+      const source = heldSourceOf(item.source, item.key);
+      const problem = "problem" in words ? (words.problem.startsWith("That looks like a key") ? "it looked like it held a key or password" : words.problem) : source === null ? "where it came from couldn't be kept safely" : null;
+      if (problem !== null || "problem" in words || source === null) {
+        store.recordFlowTriggerEvent(trigger.id, item.key, null, problem, now);
+        return { status: 202, said: `No new cards. Left out 1 item: ${problem}.` };
+      }
+      const held = JSON.stringify({ title: words.title, description: words.description, source, by } satisfies HeldItem);
+      if (held.length > HELD_ITEM_BYTES) {
+        store.recordFlowTriggerEvent(trigger.id, item.key, null, "too large to hold", now);
+        return { status: 202, said: "No new cards. Left out 1 item: too large to hold." };
+      }
+      store.recordFlowReceipt(trigger.id, item.key, "held", null, held, now);
+      if (store.claimFlowLimitNote(trigger.id, now)) note("Too many in the last hour: new deliveries are held until there's room.");
+      return { status: 202, said: "Held: it will be added when there's room." };
+    }
+    const results = items.slice(0, CARDS_PER_CHECK).map(item => "skip" in item
+      ? (store.recordFlowTriggerEvent(trigger.id, item.key, null, item.skip, now) ? { made: "skipped" as Made, note: `${item.label}: ${item.skip}` } : { made: "seen" as Made, note: null })
+      : makeCard(store, trigger, config, item, by, now));
+    const said = outcomeWords(results, false);
+    note(said);
+    // The sender's answer is made from public reasons, not edited out of the panel's words.
+    return { status: 202, said: outcomeWords(results.map(one => ({ ...one, note: publicReason(one.note) })), false) };
+  });
 }
 
-/** Save Linear's signing secret for a Linear webhook trigger (pasted on the secure panel, never in chat). */
-export function saveLinearSigningSecret(trigger: FlowTriggerRow, secret: string, dir: string): { ok: true } | { ok: false; message: string } {
-  const config = triggerConfigOf(trigger);
-  if (config?.kind !== "linear" || config.delivery !== "webhook") return { ok: false, message: "That trigger doesn't take Linear webhooks." };
-  const clean = secret.trim();
-  if (!/^[A-Za-z0-9_-]{16,200}$/.test(clean)) return { ok: false, message: "Paste the signing secret exactly as Linear shows it." };
-  saveHookSecret(dir, trigger.id, clean);
+/** v126: a held delivery, kept whole until there's room for its card: its words (already screened), where it came from
+ * and who sent it. */
+type HeldItem = { title: string; description: string | null; source: FlowCardSource; by: string };
+/** A held item's whole size, at most, as saved: room for the largest card-sized item there can be (a 200-character
+ * title and 4,000-character details, a label and two 2,000-character links) with every character escaped six-fold in
+ * JSON, so no item a card could hold is ever refused for its size. */
+const HELD_ITEM_BYTES = 6 * (200 + 4_000 + 120 + 2 * 2_000 + 400) + 2_000;
+
+/** Where a held delivery came from, made safe to keep: a bounded label and kind with nothing that looks like a key, a
+ * link made safe (https, no user information, query or fragment), a screened identity. Null when it can't be. */
+function heldSourceOf(source: FlowCardSource, key: string): FlowCardSource | null {
+  const label = source.label.slice(0, 120), kind = source.kind.slice(0, 40);
+  if (looksSecret(label) || looksSecret(kind)) return null;
+  const id = source.external?.id == null ? null : identityOf(source.external.id);
+  if (id !== null && !id.ok) return null;
+  const url = safeLink(source.url, null);
+  return { kind, label, url,
+    ...(source.verified === undefined ? {} : { verified: source.verified.slice(0, 20) }),
+    ...(source.external === undefined ? {} : { external: { id: id?.ok === true ? id.id : null, url: safeLink(source.external.url, null) } }),
+    ...(source.receipt === undefined ? {} : { receipt: key.slice(0, 200) }) };
+}
+
+function readHeldItem(json: string): HeldItem | null {
+  try {
+    const raw = JSON.parse(json) as Record<string, unknown>;
+    const source = raw["source"] as FlowCardSource | undefined;
+    if (typeof raw["title"] !== "string" || (raw["description"] !== null && typeof raw["description"] !== "string") || typeof raw["by"] !== "string" || typeof source?.label !== "string" || typeof source.kind !== "string") return null;
+    return { title: raw["title"], description: raw["description"] as string | null, source, by: raw["by"] };
+  } catch { return null; }
+}
+
+/**
+ * v126: make a trigger's held deliveries into their cards while the last hour has room, oldest first. Each card in its
+ * own write transaction, which reads everything it acts on under the write lock: the trigger (still active, still
+ * taking deliveries), the hour's room, the oldest held receipt, the flow; then the same guards intake has (a failing
+ * run already owned by another card in the project is left out). The card and the receipt's move to accepted land
+ * together, or neither does.
+ */
+export function drainHeldDeliveries(store: Store, trigger: FlowTriggerRow, now: Date): number {
+  let added = 0;
+  for (;;) {
+    const step = store.transact(() => {
+      const current = store.getFlowTrigger(trigger.id);
+      const config = current === null ? null : triggerConfigOf(current);
+      if (current === null || config === null || current.state !== "active" || !takesDeliveries(config)) return "stop" as const;
+      if (store.flowCardsAcceptedSince(current.id, new Date(now.getTime() - 3_600_000)) >= CARDS_PER_HOUR) return "stop" as const;
+      const next = store.heldFlowReceipts(current.id, 1)[0];
+      if (next === undefined) return "stop" as const;
+      const flow = store.getFlow(current.flow);
+      const definition = flow === null ? null : flowDefinitionOf(flow);
+      if (flow === null || definition === null || flow.state !== "active") return "stop" as const;
+      const item = readHeldItem(next.itemJson);
+      const words = item === null ? { problem: "it couldn't be read back" } : flowCardText(item.title, item.description);
+      if (item === null || "problem" in words) { store.skipHeldReceipt(current.id, next.key, "problem" in words ? words.problem : "it couldn't be read back"); return "left" as const; }
+      // One failing run is one fix, held or not: a card another trigger in this project already made for it wins.
+      const filed = next.key.startsWith("checks:") ? checksCardOf(store, flow.repo, next.key) : null;
+      if (filed !== null) { store.skipHeldReceipt(current.id, next.key, `already a card in ${filed}`); return "left" as const; }
+      const card = store.addFlowCard({ flow: flow.id, title: words.title, description: words.description, stage: startZone(config, definition), by: item.by, byKind: "automation", source: item.source }, now);
+      if (!store.acceptHeldReceipt(current.id, next.key, card, now)) throw new Error("a held delivery changed while its card was made");
+      return "added" as const;
+    });
+    if (step === "stop") return added;
+    if (step === "added") added++;
+  }
+}
+
+/**
+ * v126: a delivery refused before it could be read (too large, a body that wouldn't read): it proves nothing, so it
+ * counts toward its address's minute like any unproven delivery. The answer to give instead when that count is over.
+ */
+export function hookRefusedUnread(store: Store, token: string, now: Date): HookAnswer | null {
+  const trigger = /^[A-Za-z0-9_-]{20,64}$/.test(token) ? store.flowTriggerByHook(hookHash(token)) : null;
+  const count = countUnproven(store, trigger?.hookHash ?? UNKNOWN_ADDRESS, now);
+  return count.over ? { status: 429, said: "Too many. Try again later.", retryAfter: count.retryAfterSeconds } : null;
+}
+
+/** v126: a delivery received before, answered for what it was — never as a card that isn't there. */
+function repeatAnswer(before: FlowReceipt): HookAnswer {
+  return { status: 202, said: before.state === "accepted" ? "Already received." : before.state === "held" ? "Already received; waiting for room."
+    : before.state === "skipped" ? `Already received; it wasn't added${before.note === null ? "" : `: ${publicReason(before.note)}`}.` : "Already received." };
+}
+
+/** Why an item was left out, as its sender is told (v126): reasons about what it sent, but never this installation's
+ * flows or cards — a reason that names one is said without it. The full words stay on the signed-in panel. */
+function publicReason(note: string | null): string | null {
+  if (note === null) return null;
+  const at = note.indexOf("already a card in");
+  return at === -1 ? note : `${note.slice(0, at)}already on a card`;
+}
+
+/**
+ * v126: a webhook's credentials change. A new secret is written whole at an address of its own (an id made for this
+ * change alone, so a change racing it never writes there), and only then does the trigger point at it — only from the
+ * secret and settings read here, so of two changes at once exactly one lands. No secret means "": nothing is ever
+ * adopted from a place an unfinished change may have left something. The loser removes only what it wrote; the winner
+ * removes the secret it replaced, as cleanup only (nothing points at it any more).
+ */
+function nextHookCredential(store: Store, trigger: FlowTriggerRow, secret: string | null, configJson: string | null, now: Date, dir: string, hookHash?: string): { ok: true } | { ok: false; message: string } {
+  const credential = secret === null ? "" : randomBytes(16).toString("hex");
+  if (secret !== null) {
+    try { saveHookSecret(dir, trigger.id, secret, credential); } catch (error) { return { ok: false, message: error instanceof SecretStoreError ? error.message : "The secret couldn't be saved." }; }
+  }
+  if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson, hookHash: trigger.hookHash }, { credential, ...(hookHash === undefined ? {} : { hookHash }) }, configJson, now)) {
+    dropHookSecret(dir, trigger.id, credential);
+    return { ok: false, message: "That trigger changed meanwhile. Open it again." };
+  }
+  dropHookSecret(dir, trigger.id, trigger.hookCredential);
   return { ok: true };
 }
 
-/** Whether a webhook trigger can prove its deliveries: GitHub always (its secret is made here), Linear once its secret is pasted. */
+/** A signing secret pasted on the secure panel behind the password, never in chat: Linear's, or a signed webhook's
+ * sender's (Sentry's or Vercel's own, or a Standard or GitHub-style one made elsewhere). */
+export function saveSigningSecret(store: Store, trigger: FlowTriggerRow, secret: string, now: Date, dir: string): { ok: true; said: string } | { ok: false; message: string } {
+  const config = triggerConfigOf(trigger);
+  const clean = secret.trim();
+  if (config?.kind === "linear" && config.delivery === "webhook") {
+    if (!/^[A-Za-z0-9_-]{16,200}$/.test(clean)) return { ok: false, message: "Paste the signing secret exactly as Linear shows it." };
+    const saved = nextHookCredential(store, trigger, clean, null, now, dir);
+    return saved.ok ? { ok: true, said: "Signing secret saved. Linear's deliveries can be proved now." } : saved;
+  }
+  if (config?.kind !== "webhook" || senderOf(config) === "none") return { ok: false, message: "That trigger doesn't take a signing secret. Choose who signs its deliveries first." };
+  const sender = senderOf(config) as SigningSender;
+  if (!secretShapeOk(sender, clean)) return { ok: false, message: SECRET_SHAPE_WORDS[sender] };
+  const saved = nextHookCredential(store, trigger, clean, null, now, dir);
+  return saved.ok ? { ok: true, said: `Signing secret saved. ${SENDER_WORDS[sender]} deliveries can be proved now; any earlier secret no longer works.` } : saved;
+}
+
+const SECRET_SHAPE_WORDS: Record<SigningSender, string> = {
+  sentry: "Paste the Client Secret exactly as Sentry shows it on the integration (letters and digits, 32 to 128 of them).",
+  vercel: "Paste the secret exactly as Vercel shows it (16 to 200 letters and digits).",
+  standard: "Paste the secret exactly as the sender shows it: whsec_ followed by its key.",
+  "github-style": "Paste the secret exactly as the sender shows it (16 to 200 characters, no spaces).",
+};
+
+/**
+ * v126: a new secret for a webhook whose sender Toolroll makes secrets for (Standard Webhooks, GitHub-style), shown once.
+ * Its address stays as it is (New address is its own action). Sentry's and Vercel's secrets are theirs, pasted instead.
+ * The only place such a secret is made: creating a trigger (from the panel, the gallery or an import) never does.
+ */
+export function setUpFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, dir: string): TriggerMade {
+  const config = triggerConfigOf(trigger);
+  if (config?.kind !== "webhook" || trigger.state === "removed") return { ok: false, message: "Only a webhook trigger is set up here." };
+  const sender = senderOf(config);
+  if (sender === "none" || !makesSecret(sender)) return { ok: false, message: sender === "none" ? "An unsigned webhook has no secret. Choose who signs its deliveries first." : `${SENDER_WORDS[sender]} makes its own secret: paste it here instead.` };
+  const secret = makeSecret(sender);
+  // A webhook with no address yet (made by the gallery or an import, where no one was shown one) gets its address with
+  // its secret, both shown together once. One that has an address keeps it — a replaced secret, a set-up after its
+  // sender changed — because the sender already has it.
+  const first = trigger.hookHash === null;
+  const token = first ? randomBytes(24).toString("base64url") : null;
+  const saved = nextHookCredential(store, trigger, secret, null, now, dir, token === null ? undefined : hookHash(token));
+  if (!saved.ok) return saved;
+  const base = readHooksBase(dir);
+  return first
+    ? { ok: true, id: trigger.id, said: `Set up. Copy the address and the secret now; neither is shown again. Give both to whatever sends ${SENDER_WORDS[sender]} deliveries here.`,
+      reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } }
+    : { ok: true, id: trigger.id, said: `New secret made; any earlier one no longer works. Copy it now; it isn't shown again. The address stays as it is.`,
+      reveal: { path: "", address: null, secret } };
+}
+
+/**
+ * v126: change who signs a webhook's deliveries, in place: the trigger keeps its id, address and what it has received
+ * (keys carry the sender, so nothing received unsigned stands for anything signed). Its credentials move to the next
+ * generation with no secret: it isn't ready until it is set up again. Settings the new sender doesn't read are left out.
+ */
+export function changeFlowHookSender(store: Store, trigger: FlowTriggerRow, sender: unknown, actor: string, now: Date, dir: string): { ok: true; said: string } | { ok: false; message: string } {
+  const config = triggerConfigOf(trigger);
+  const flow = store.getFlow(trigger.flow);
+  const definition = flow === null ? null : flowDefinitionOf(flow);
+  if (config?.kind !== "webhook" || flow === null || definition === null || trigger.state === "removed") return { ok: false, message: "Only a webhook trigger's sender can change." };
+  if (typeof sender !== "string" || !(WEBHOOK_SENDERS as readonly string[]).includes(sender)) return { ok: false, message: "Choose who signs its deliveries." };
+  const next = sender as WebhookSender;
+  if (next === senderOf(config)) return { ok: true, said: "Nothing changed." };
+  const provider = next === "sentry" || next === "vercel";
+  const keep = (value: string | null | undefined) => value ?? undefined;
+  let changed: TriggerConfig;
+  try {
+    changed = validateTriggerConfig({ kind: "webhook", title: config.title, sender: next, zone: keep(config.zone),
+      ...(provider ? { project: keep(config.project), ...(next === "vercel" ? { team: keep(config.team) } : {}) }
+        : { titleField: keep(config.titleField), bodyField: keep(config.bodyField), idField: keep(config.idField), urlField: keep(config.urlField) }) }, { store, flow, definition, actor });
+  } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That sender can't be used here." }; }
+  const moved = nextHookCredential(store, trigger, null, JSON.stringify(changed), now, dir);
+  if (!moved.ok) return moved;
+  return { ok: true, said: next === "none" ? "Now unsigned: anyone with its address can add cards."
+    : makesSecret(next) ? `Now signed by ${SENDER_WORDS[next]}. Set it up (its address and secret are shown together) before deliveries are taken: until then they are refused.`
+    : `Now signed by ${SENDER_WORDS[next]}. Paste ${SENDER_WORDS[next]}'s secret before deliveries are taken: until then they are refused.` };
+}
+
+/**
+ * v126: which project (and, for Vercel, team) a Sentry or Vercel webhook takes deliveries from, set in place: the
+ * trigger keeps its id, address, secret and history; blank takes any project the secret covers. Only from the settings
+ * read here, so a change racing it doesn't land on top of it.
+ */
+export function setFlowHookScope(store: Store, trigger: FlowTriggerRow, scope: { project: unknown; team: unknown }, actor: string, now: Date): { ok: true; said: string } | { ok: false; message: string } {
+  const config = triggerConfigOf(trigger);
+  const flow = store.getFlow(trigger.flow);
+  const definition = flow === null ? null : flowDefinitionOf(flow);
+  if (config?.kind !== "webhook" || flow === null || definition === null || trigger.state === "removed") return { ok: false, message: "Only a webhook trigger is scoped here." };
+  const sender = senderOf(config);
+  if (sender !== "sentry" && sender !== "vercel") return { ok: false, message: "Only a Sentry or Vercel webhook is scoped to a project." };
+  const words = (value: unknown) => typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  let changed: TriggerConfig;
+  try {
+    changed = validateTriggerConfig({ kind: "webhook", title: config.title, sender, zone: config.zone ?? undefined, project: words(scope.project), ...(sender === "vercel" ? { team: words(scope.team) } : {}) }, { store, flow, definition, actor });
+  } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That scope can't be used." }; }
+  if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson, hookHash: trigger.hookHash }, { credential: trigger.hookCredential }, JSON.stringify(changed), now)) {
+    return { ok: false, message: "That trigger changed meanwhile. Open it again." };
+  }
+  const project = changed.kind === "webhook" ? changed.project ?? null : null;
+  return { ok: true, said: project === null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards.` : `Only deliveries from ${project} add cards now.` };
+}
+
+/** Whether a webhook trigger can prove its deliveries: an unsigned webhook always (its address is all it has), the others
+ * once the current generation's secret is saved. */
 export function hookReady(trigger: FlowTriggerRow, dir: string | null): boolean {
   const config = triggerConfigOf(trigger);
   if (config === null || !takesDeliveries(config)) return false;
-  if (config.kind === "webhook") return true;
-  return dir !== null && readHookSecret(dir, trigger.id) !== null;
+  if (config.kind === "webhook" && senderOf(config) === "none") return true;
+  return dir !== null && readHookSecret(dir, trigger.id, trigger.hookCredential) !== null;
 }
 
 // ------------------------------------------------------ public forms (v84)

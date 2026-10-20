@@ -39,7 +39,7 @@ function seed(file: string): Seeded {
     s.recordLeadAsk({ turn: Number(turn), thread: thread.id, question: "Which order?", options: ["2201", "2202"] }, NOW);
 
     const flow = s.createFlow({ repo: "/r", name: "Support", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }), by: "alex" }, NOW);
-    const card = s.addFlowCard({ flow, title: "Refund for order 2201", description: null, stage: "inbox", by: "alex" }, NOW);
+    const card = s.addFlowCard({ flow, title: "Refund for order 2201", description: null, stage: "inbox", by: "alex", byKind: "person" }, NOW);
     const subagent = s.createSubagent({ repo: "/r", handle: "rosa", soul: SOUL, model: null, manager: "alex", by: "alex" }, NOW);
     s.saveSubagentSoul(subagent, SOUL_V2, "alex", NOW);
     s.addSubagentEvent({ subagent, card, entry: 1, kind: "handled", said: "Rosa drafted the reply.", by: "Rosa (AI)" }, NOW);
@@ -108,8 +108,8 @@ describe("v117: the mate's tables become the lead's, and teammates the lead's su
     old.close();
 
     store = openStore(file);
-    expect(SCHEMA_VERSION).toBe(125);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(125);
+    expect(SCHEMA_VERSION).toBe(126);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(126);
     // Each subagent keeps its name, personality and rules, and its history; its own kinds now say subagent.
     const rosa = store.getSubagent(seeded.subagent)!;
     expect(rosa).toMatchObject({ handle: "rosa", soul: SOUL_V2, version: 2, state: "active", manager: "alex" });
@@ -174,7 +174,7 @@ describe("v117: the mate's tables become the lead's, and teammates the lead's su
     db.close();
     expect(before).toHaveLength(1);
     store = openStore(file);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(125);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()!["version"]).toBe(126);
     const after = store.handle.prepare("PRAGMA foreign_key_check").all();
     expect(after).toMatchObject([{ table: "subagent_event", parent: "subagent" }]);
     expect(after.map(orphanKey)).toEqual(before);

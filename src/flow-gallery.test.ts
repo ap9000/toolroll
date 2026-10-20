@@ -199,7 +199,7 @@ describe("flow gallery", () => {
       expect(store.flowTriggers(byName("Nightly real-model journeys").id).map(one => JSON.parse(one.configJson))).toEqual([expect.objectContaining({ kind: "schedule", schedule: expect.stringMatching(/^weekdays:03:00(@.+)?$/), title: "Nightly journeys" })]);
       expect(store.flowScript(repo, "nightly-journeys")).toMatchObject({ body: "npm run journeys -- --real-models", timeoutMinutes: 60 });
       expect(store.flowTriggers(byName("Morning plane review").id).map(one => JSON.parse(one.configJson))).toEqual([expect.objectContaining({ kind: "plane-review", schedule: expect.stringMatching(/^daily:23:00/) })]);
-      expect(store.flowTriggers(byName("Error to fix").id).map(one => JSON.parse(one.configJson))).toEqual([expect.objectContaining({ kind: "webhook", titleField: "data.issue.title" })]);
+      expect(store.flowTriggers(byName("Error to fix").id).map(one => JSON.parse(one.configJson))).toEqual([expect.objectContaining({ kind: "webhook", sender: "sentry", titleField: null })]);
 
       // Answers changed after the preview are previewed again, not made.
       const page = await get(`/flows/new/fix-ci?repo=${encodeURIComponent(repo)}`);

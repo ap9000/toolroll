@@ -73,7 +73,7 @@ function seed(): { password: string; apiToken: string; hashes: string[] } {
   const thread = store.openLeadThread("alex", "ceiling", NOW).thread;
   store.appendLeadMessage({ thread: thread.id, turn: null, role: "operator", text: `use ${PLANTED.slack} and ${PLANTED.openai}` }, NOW);
   const flow = store.createFlow({ repo: REPO, name: "Support", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }) }, NOW);
-  store.addFlowCard({ flow, title: "Customer email", description: `bot ${PLANTED.telegram}`, stage: "inbox", by: "alex" }, NOW);
+  store.addFlowCard({ flow, title: "Customer email", description: `bot ${PLANTED.telegram}`, stage: "inbox", by: "alex", byKind: "person" }, NOW);
   const mate = store.createSubagent({ repo: REPO, handle: "maya", soul: "Helps with refunds.", model: null, manager: "alex", by: "alex" }, NOW);
   store.addSubagentMemory({ subagent: mate, text: `aws ${PLANTED.aws}, stripe ${PLANTED.stripe}`, source: "person", by: "alex" }, NOW);
   // Secrets kept in files beside the database.

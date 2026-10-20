@@ -1,3 +1,4 @@
+import { originOf } from "../task-source.js";
 import { taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
 import { html,joinHtml,type Html } from "../html.js";
@@ -407,6 +408,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         repairChain: completion !== null ? null : runtime.store.repairChainForDraft(taskId),
         repo: ref?.repo ?? null,
         filedVia: runtime.store.filedViaOf(taskId),
+        // v126: where the work came from (a flow, an outside event), from what was kept when it was filed.
+        origin: (() => { const repos = runtime.workAccess().repos; return originOf(runtime.store, taskId, repo => repos === null || repos.includes(repo)); })(),
         coordinator: (() => {
           const who = runtime.store.coordinatorProvenanceOf(taskId);
           if (who === null) return null;
@@ -618,6 +621,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               deliverable: view.deliverable ?? "branch",
               revision: view.revision ?? null,
               coordinator: view.coordinator ?? null,
+              origin: view.origin ?? null,
               repairChain: view.repairChain ?? null,
             },
       decisions: (view?.decisions ?? runtime.store.decisionsForTask(ref.id))

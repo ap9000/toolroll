@@ -1,4 +1,5 @@
 /** Everyday console pages: home, inbox, board, work, projects, fleet and the queue. */
+import { originNote, type TaskOrigin } from "../task-source.js";
 import { type Html,html,type HtmlValue,htmlString,joinHtml,postForm,replaceMarkup } from "../html.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BoardCard } from "../board.js";
@@ -1738,6 +1739,8 @@ export function nextPage(chrome: Chrome, data: {
   deliverable?: "branch" | "report";
   /** v48: the agents the yes freezes — the one block every ceremony shows. */
   route: RouteView | null;
+  /** v126: where the work came from (an outside event's line of context, never a term agreed to). */
+  origin?: TaskOrigin | null;
   csrf: string;
   nonce: string;
   remaining: number;
@@ -1780,7 +1783,7 @@ export function nextPage(chrome: Chrome, data: {
         `${taskHref(item.approval.taskId)}/approve`,
         html`<p><strong>Approve exactly this:</strong></p>${
           data.deliverable === "report" ? html`<p class="meta"><span class="badge">Scout</span> a read-only session investigates this goal and delivers a report — no branch, nothing changes in the repository</p>` : null
-        }${scope === null || scope.profileState !== "unresolved" ? null : profileWords(scope)}<p class="meta">Goal</p><p class="recap" style="margin-top:0">${scope?.goal ?? item.approval.goal}</p><p class="meta">Not this</p><p class="recap" style="margin-top:0">${scope?.outOfScope == null ? html`<em>no exclusions</em>` : scope.outOfScope}</p><p class="meta">Touches · ${scope === null || scope.touches.length === 0 ? "anything" : joinHtml(scope.touches, ", ")}</p>${
+        }${scope === null || scope.profileState !== "unresolved" ? null : profileWords(scope)}${originNote(data.origin) === null ? null : html`<p class="meta" data-approval-origin>${originNote(data.origin)!}</p>`}<p class="meta">Goal</p><p class="recap" style="margin-top:0">${scope?.goal ?? item.approval.goal}</p><p class="meta">Not this</p><p class="recap" style="margin-top:0">${scope?.outOfScope == null ? html`<em>no exclusions</em>` : scope.outOfScope}</p><p class="meta">Touches · ${scope === null || scope.touches.length === 0 ? "anything" : joinHtml(scope.touches, ", ")}</p>${
           scope === null ? null : acceptanceCeremonyHtml(scope.acceptance)
         }${
           // The AGENTS the yes freezes (v48): the same concise block the task

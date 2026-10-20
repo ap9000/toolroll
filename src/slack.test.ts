@@ -1052,7 +1052,7 @@ describe("Slack shared chat", () => {
       { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
       { id: "post", title: "Post it", kind: "notify", message: "{{stage.draft}}" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: "Charged twice", stage: "check", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: "Charged twice", stage: "check", by: "alex", byKind: "person" }, now);
     store.updateFlowCard(card, { outputs: { draft: "Hi Priya,\nwe refunded it." } }, now);
     advanceFlows(store, repo, now);
     await planSlackNotifications(options);
@@ -1107,7 +1107,7 @@ describe("Slack shared chat", () => {
       { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Later", goesTo: "Later" }, { label: "Ignore", goesTo: "end" }] },
       { id: "ship", title: "Ship", kind: "inbox" }, { id: "later", title: "Later", kind: "inbox" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "tell", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "tell", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     advanceFlows(store, repo, now);
     expect(store.getFlowCard(card)!.stage).toBe("choose");
@@ -1144,7 +1144,7 @@ describe("Slack shared chat", () => {
       await processSlackEvent(options);
       await drain();
     };
-    const second = store.addFlowCard({ flow, title: "Header spacing", description: "Cramped on phones", stage: "choose", by: "alex" }, now);
+    const second = store.addFlowCard({ flow, title: "Header spacing", description: "Cramped on phones", stage: "choose", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     await planSlackNotifications(options);
     await drain();
@@ -1152,7 +1152,7 @@ describe("Slack shared chat", () => {
     expect(store.getFlowCard(second)).toMatchObject({ stage: "build", note: "Use 16px." });
 
     // Chosen in the console instead: the Slack buttons and the notice's thread are spent too, and nothing more is asked.
-    const third = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex" }, now);
+    const third = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     await planSlackNotifications(options);
     await drain();
@@ -1174,7 +1174,7 @@ describe("Slack shared chat", () => {
     const flow = store.createFlow({ repo, name: "Support", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, now);
     const mate = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     const ask = (title: string) => {
-      const card = store.addFlowCard({ flow, title, description: null, stage: "inbox", by: "alex" }, now);
+      const card = store.addFlowCard({ flow, title, description: null, stage: "inbox", by: "alex", byKind: "person" }, now);
       const id = store.openSubagentQuestion({ subagent: mate, card, entry: 1, question: `Refund all of ${title}?`, options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, now)!;
       notifyPeople(store, store.getFlowCard(card)!, ["alex"], null, { key: `teammate-q:${id}`, attention: true, subject: `Maya · Support asks about “${title}”`, body: "Over my $50 limit." }, now);
       return id;

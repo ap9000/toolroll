@@ -35,7 +35,7 @@ export function flowTaskFixture(store: Store, now: Date, repo = "/repo/flow-card
     { id: "review", title: "Review", kind: "approval" },
     { id: "empty", title: "Waiting", kind: "inbox" },
   ], null)) }, now);
-  const card = store.addFlowCard({ flow, title: "Fix checkout rounding", description: "Synthetic fixture for live flow cards.", stage: "build", by: "alex" }, now);
+  const card = store.addFlowCard({ flow, title: "Fix checkout rounding", description: "Synthetic fixture for live flow cards.", stage: "build", by: "alex", byKind: "person" }, now);
   store.updateFlowCard(card, { task: id, primaryTask: id, waiting: "Filed as a task" }, now);
   const finish = (state: "done" | "failed" = "done") => {
     store.recordOutcomeFacts(run, { headRevision: "b".repeat(40), handoff: "Checkout totals now round correctly." });

@@ -18,7 +18,7 @@ import { assignFlowCard,commentOnFlowCard,watchFlowCard } from "../flow-people.j
 import { saveScript } from "../flow-scripts.js";
 import { chooseFlowCard } from "../flow-send.js";
 import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlowImport,type FlowImportPlan } from "../flow-share.js";
-import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveLinearSigningSecret,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
+import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveSigningSecret,setUpFlowHook,changeFlowHookSender,setFlowHookScope,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
@@ -647,7 +647,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     return cancelled.ok ? settle(cancelled.said) : answer(409, { ok: false, said: cancelled.message });
   };
 
-  type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "share" | "unshare";
+  type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "setup" | "sender" | "scope" | "share" | "unshare" | "dropped";
   const triggerAct = (verb: TriggerVerb) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who } = ctx;
     const change = openFlowChange(ctx);
@@ -662,6 +662,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       return shared.ok ? settle(shared.said, { reveal: shared.reveal }) : answer(409, { ok: false, said: shared.message });
     }
     if (verb === "unshare") { stopSharingFlowButton(store, trigger, now); return settle("The form link no longer works."); }
+    // v126: a person has seen that deliveries were turned away (the banner stays until then).
+    if (verb === "dropped") { store.clearFlowDeliveriesDropped(trigger.id); return settle("Cleared."); }
     if (verb === "press") {
       let answers: unknown;
       try { answers = JSON.parse(body.get("answers") ?? "[]"); } catch { answers = []; }
@@ -680,10 +682,23 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       const renewed = renewFlowHook(store, trigger, now, dir);
       return renewed.ok ? settle(renewed.said, { reveal: renewed.reveal }) : answer(409, { ok: false, said: renewed.message });
     }
-    // Linear's signing secret, pasted on this secure panel behind the password — never in chat.
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "Enter your Toolroll password to save a secret." });
-    const saved = saveLinearSigningSecret(trigger, body.get("secret") ?? "", dir);
-    return saved.ok ? settle("Signing secret saved. Linear's deliveries can be proved now.") : answer(400, { ok: false, said: saved.message });
+    // A webhook's credentials change only on this secure panel, behind the password — never in chat (v126): a secret
+    // pasted (Linear's, Sentry's, Vercel's), one made and shown once with a new address, or who signs its deliveries.
+    if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: verb === "secret" ? "Enter your Toolroll password to save a secret." : "Enter your Toolroll password to change how this webhook is proved." });
+    if (verb === "setup") {
+      const made = setUpFlowHook(store, trigger, now, dir);
+      return made.ok ? settle(made.said, { reveal: made.reveal }) : answer(409, { ok: false, said: made.message });
+    }
+    if (verb === "scope") {
+      const scoped = setFlowHookScope(store, trigger, { project: body.get("project"), team: body.get("team") }, who.name, now);
+      return scoped.ok ? settle(scoped.said) : answer(400, { ok: false, said: scoped.message });
+    }
+    if (verb === "sender") {
+      const changed = changeFlowHookSender(store, trigger, body.get("sender"), who.name, now, dir);
+      return changed.ok ? settle(changed.said) : answer(400, { ok: false, said: changed.message });
+    }
+    const saved = saveSigningSecret(store, trigger, body.get("secret") ?? "", now, dir);
+    return saved.ok ? settle(saved.said) : answer(400, { ok: false, said: saved.message });
   };
 
   // ---- workflow recipes: changes ---------------------------------------------
@@ -821,6 +836,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flow.trigger.press": triggerAct("press"),
     "flow.trigger.renew": triggerAct("renew"),
     "flow.trigger.secret": triggerAct("secret"),
+    "flow.trigger.setup": triggerAct("setup"),
+    "flow.trigger.sender": triggerAct("sender"),
+    "flow.trigger.scope": triggerAct("scope"),
+    "flow.trigger.dropped": triggerAct("dropped"),
     "flow.trigger.share": triggerAct("share"),
     "flow.trigger.unshare": triggerAct("unshare"),
     "recipes.prepare-send": recipeAct("prepare"),

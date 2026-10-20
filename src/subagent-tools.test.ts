@@ -75,7 +75,7 @@ function turns(...answers: Record<string, unknown>[]): TurnRunner & { prompts: s
 }
 const io = (subagent: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, subagent });
 const made = () => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown> }) : [];
-const cardFor = (title: string) => store.addFlowCard({ flow, title, description: "From priya@example.com", stage: "maya", by: "alex" }, T0);
+const cardFor = (title: string) => store.addFlowCard({ flow, title, description: "From priya@example.com", stage: "maya", by: "alex", byKind: "person" }, T0);
 
 test("reading is free and the rest asks first, until its manager says otherwise; a limit holds in code", () => {
   const grant = store.subagentGrant(mate.id, "shop")!;

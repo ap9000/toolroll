@@ -1308,14 +1308,14 @@ function seedDemoFlows(store: Store, folder: string, now: Date): void {
     ["Parcel arrived crushed", "The box was crushed and two glasses inside are broken.", "Delivery problem", 0.91, "delivery", "Soon: the customer is waiting on it", true, 120],
     ["Where is my order and why was I billed?", "It hasn't arrived and there's a charge I don't recognise.", "Delivery problem", 0.58, "by-hand", "Soon: the customer is waiting on it", false, 45],
   ] as const) {
-    const card = store.addFlowCard({ flow: desk, title, description, stage: "sort", by: "Support form" }, at(minutes));
+    const card = store.addFlowCard({ flow: desk, title, description, stage: "sort", by: "Support form", byKind: "automation" }, at(minutes));
     const confident = sure >= 0.8;
     step(card, "sort", "sort", at(minutes - 1), confident ? `${answer}, ${Math.round(sure * 100)}% sure.` : `Not sure: ${Math.round(sure * 100)}% ${answer}.`, `${confident ? `${answer}, ${Math.round(sure * 100)}% sure.` : `Not sure: ${Math.round(sure * 100)}% ${answer}.`} How urgent is it? ${urgency.split(":")[0]}.`, { decisionJson: sorted(answer, sure, to, urgency, refund) });
     move(card, to, at(minutes - 1));
   }
   const replies = store.createFlow({ repo, name: "Customer replies", definitionJson: template("email-replies"), by: "demo" }, at(200));
   const drafted = (title: string, description: string, draft: string, minutes: number) => {
-    const card = store.addFlowCard({ flow: replies, title, description, stage: "write", by: "Contact form" }, at(minutes));
+    const card = store.addFlowCard({ flow: replies, title, description, stage: "write", by: "Contact form", byKind: "automation" }, at(minutes));
     step(card, "write", "draft", at(minutes - 1), `Drafted ${draft.split(/\s+/).length} words.`, draft, { log: `Claude (sonnet) · 4.2 s\n\n${draft}` });
     move(card, "check", at(minutes - 1));
     return card;

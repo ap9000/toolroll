@@ -73,7 +73,7 @@ const shotRows = () => store.listNotifications("all").filter(one => one.kind ===
 function flowSend(id: string, shots = THREE): void {
   result(id, shots);
   const flow = store.createFlow({ repo: ALPHA, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "build", title: "Build", kind: "task" }, { id: "tell", title: "Send me the result", kind: "send" }], null)) }, now);
-  const card = store.addFlowCard({ flow, title: "Is the site current?", description: null, stage: "build", by: "alex" }, now);
+  const card = store.addFlowCard({ flow, title: "Is the site current?", description: null, stage: "build", by: "alex", byKind: "person" }, now);
   store.updateFlowCard(card, { primaryTask: id, outputs: { build: "Checked every page." } }, now);
   store.moveFlowCard(card, { to: "tell", outcome: "ok", actor: "flow", task: id }, now);
   advanceFlows(store, ALPHA, now, { evidenceRoot: root });

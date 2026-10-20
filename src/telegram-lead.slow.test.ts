@@ -429,7 +429,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     const flow = store.createFlow({ repo, name: "Support", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "inbox", stages: [{ id: "inbox", title: "Inbox", kind: "inbox", zone: {}, next: null, onFail: null }] }) }, now);
     const mate = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     const ask = (title: string) => {
-      const card = store.addFlowCard({ flow, title, description: null, stage: "inbox", by: "alex" }, now);
+      const card = store.addFlowCard({ flow, title, description: null, stage: "inbox", by: "alex", byKind: "person" }, now);
       const id = store.openSubagentQuestion({ subagent: mate, card, entry: 1, question: `Refund all of ${title}?`, options: [{ id: "o1", label: "Yes" }, { id: "o2", label: "Half" }], askedOf: "alex" }, now)!;
       notifyPeople(store, store.getFlowCard(card)!, ["alex"], null, { key: `teammate-q:${id}`, attention: true, subject: `Maya · Support asks about “${title}”`, body: "Over my $50 limit." }, now);
       return id;

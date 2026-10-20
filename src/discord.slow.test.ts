@@ -1096,7 +1096,7 @@ test("a flow decision in Discord: the draft with Approve / Edit / Send back, Edi
     { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
     { id: "post", title: "Post it", kind: "notify", message: "{{stage.draft}}" },
   ], null)) }, now);
-  const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex" }, now);
+  const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex", byKind: "person" }, now);
   store.updateFlowCard(card, { outputs: { draft: "Hi Priya,\nwe refunded it." } }, now);
   advanceFlows(store, repo, now);
   await planDiscordNotifications(options);
@@ -1142,7 +1142,7 @@ test("a flow choice in Discord: the flow's own options as buttons, a reply to th
   const buttonsOf = (call: { body: Record<string, unknown> }) => ((call.body.components as Array<{ components: Button[] }>)[0]?.components ?? []);
   const choicePart = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
   const notePart = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1").get()!.message);
-  const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
+  const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex", byKind: "person" }, now);
   advanceFlows(store, repo, now);
   await planDiscordNotifications(options);
   await drain();
@@ -1162,7 +1162,7 @@ test("a flow choice in Discord: the flow's own options as buttons, a reply to th
   expect(sentText()).toContain("already made");
   expect(store.getFlowCard(first)).toMatchObject({ stage: "build", note: "Round half-even instead." });
 
-  const second = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex" }, now);
+  const second = store.addFlowCard({ flow, title: "Old banner", description: "Remove the 2025 banner", stage: "choose", by: "alex", byKind: "person" }, now);
   advanceFlows(store, repo, now);
   await planDiscordNotifications(options);
   await drain();

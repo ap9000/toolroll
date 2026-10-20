@@ -1,4 +1,5 @@
 /** The conversation: chat and lead pages, proposal cards and the task chat. */
+import type { TaskOrigin } from "../task-source.js";
 import { assignmentSummaryHtml } from "../assignment-ui.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BrowserActionCard } from "../browser-workspace.js";
@@ -93,6 +94,8 @@ export type TaskChatFocus = {
     deliverable: "branch" | "report";
     revision: RevisionView | null;
     coordinator: { label: string; filedAgo: string | null } | null;
+    /** v126: where the work came from (an outside event's line of context). */
+    origin?: TaskOrigin | null;
     /** The repair chain row when this task is a machine-drafted repair. */
     repairChain: RepairChainRow | null;
   } | null;
@@ -156,6 +159,7 @@ export function taskChatApproval(focus: TaskChatFocus, csrf: string): Html {
       repairChain: approval.repairChain,
       route: focus.route,
       coordinator: approval.coordinator,
+      origin: approval.origin ?? null,
       deliverable: approval.deliverable,
       // Edit plan opens the task page's sheet with its fields open for editing.
       editHref: `${taskHref(focus.id)}?edit=plan#plan-editor`,

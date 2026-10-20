@@ -81,7 +81,7 @@ function research(id: string, items: typeof ITEMS, summary = "Three products gro
 function cardAfterResearch(task: string, next: "send" | "choose" = "send", summary = "Three products group long settings well; each pattern below fits our Settings page."): { flow: number; card: number } {
   const step = next === "send" ? { id: "tell", title: "Send me the result", kind: "send" } : { id: "tell", title: "Your pick", kind: "choose", options: [{ label: "Implement", goesTo: "end" }, { label: "Ignore", goesTo: "end" }] };
   const flow = store.createFlow({ repo: ALPHA, name: "UI inspiration", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "find", title: "Find UI inspiration", kind: "report" }, step], null)) }, now);
-  const card = store.addFlowCard({ flow, title: "Settings", description: null, stage: "find", by: "alex" }, now);
+  const card = store.addFlowCard({ flow, title: "Settings", description: null, stage: "find", by: "alex", byKind: "person" }, now);
   store.updateFlowCard(card, { outputs: { find: summary } }, now);
   store.moveFlowCard(card, { to: "tell", outcome: "ok", actor: "flow", task }, now);
   advanceFlows(store, ALPHA, now, { evidenceRoot: root });

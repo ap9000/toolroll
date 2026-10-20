@@ -197,7 +197,7 @@ describe("in the store", () => {
     store.setOrgPolicy(policy({ tools: ["github"] }), "alex", T0);
     expect(offeredTools(store, mate)).toEqual([]);
     const flow = store.createFlow({ repo: REPO, name: "Desk", definitionJson: "{}", by: "alex" }, T0);
-    const card = store.addFlowCard({ flow, title: "Where is order 1044?", description: null, stage: "maya", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Where is order 1044?", description: null, stage: "maya", by: "alex", byKind: "person" }, T0);
     const id = store.addSubagentCall({ subagent: mate.id, card, entry: 1, tool: "shop", action: "lookup_order", input: { order: "1044" }, rule: "free", why: "to answer", state: "approved" }, T0);
     const made = await makeCall(store, store.subagentCall(id)!, REPO, { callTool: async () => { throw new Error("a disallowed tool is never called"); } }, T0);
     expect(made).toMatchObject({ state: "refused", result: "The organisation policy doesn't allow the tool shop. An instance operator can change it in Settings → Policy." });
@@ -230,7 +230,7 @@ describe("flow steps", () => {
     const flow = store.createFlow({ repo: REPO, name: "Inbox", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
       { title: "Inbox", kind: "inbox" }, { title: "Reply", kind: "draft", instructions: "Write a short reply." },
     ], null)) }, T0);
-    const card = store.addFlowCard({ flow, title: "A refund question", description: null, stage: "reply", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "A refund question", description: null, stage: "reply", by: "alex", byKind: "person" }, T0);
     store.setOrgPolicy(policy({ providers: ["codex"] }), "alex", T0);
     expect(await runFlowSteps(store, REPO, T0, io())).toMatchObject({ ran: 0 });
     expect(store.getFlowCard(card)!.waiting).toBe("The organisation policy doesn't allow Claude. An instance operator can change it in Settings → Policy.");
@@ -238,7 +238,7 @@ describe("flow steps", () => {
     const sorting = store.createFlow({ repo: REPO, name: "Triage", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
       { title: "Inbox", kind: "inbox" }, { title: "Sort", kind: "sort", question: "Is it urgent?", answers: [{ answer: "Urgent", means: "needs a reply today", goesTo: "Inbox" }, { answer: "Later", means: "can wait", goesTo: "Inbox" }] },
     ], null)) }, T0);
-    const sorted = store.addFlowCard({ flow: sorting, title: "Site is down", description: null, stage: "sort", by: "alex" }, T0);
+    const sorted = store.addFlowCard({ flow: sorting, title: "Site is down", description: null, stage: "sort", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, REPO, T0, io());
     expect(store.getFlowCard(sorted)!.waiting).toBe("The organisation policy doesn't allow OpenRouter. An instance operator can change it in Settings → Policy.");
     // A tool step calls one of the project's tools.
@@ -246,7 +246,7 @@ describe("flow steps", () => {
     const calling = store.createFlow({ repo: REPO, name: "Refunds", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
       { title: "Inbox", kind: "inbox" }, { title: "Look up", kind: "tool", server: "shop", tool: "lookup_order", args: { order: "{{card.title}}" } },
     ], null)) }, T0);
-    const called = store.addFlowCard({ flow: calling, title: "1044", description: null, stage: "look-up", by: "alex" }, T0);
+    const called = store.addFlowCard({ flow: calling, title: "1044", description: null, stage: "look-up", by: "alex", byKind: "person" }, T0);
     store.setOrgPolicy(policy({ tools: ["github"] }), "alex", T0);
     await runFlowSteps(store, REPO, T0, { ...io(), callTool: async () => { throw new Error("a disallowed tool is never called"); } });
     expect(store.getFlowCard(called)!.waiting).toBe("The organisation policy doesn't allow the tool shop. An instance operator can change it in Settings → Policy.");

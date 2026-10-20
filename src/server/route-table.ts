@@ -324,6 +324,13 @@ post("flows", "flow.trigger.check", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/
 post("flows", "flow.trigger.press", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/press$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/press" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.renew", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/renew$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/renew" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.secret", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/secret$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/secret" , ...EDIT_FLOWS });
+// v126: a signed webhook's set-up (a new address, and a secret made here shown once) and who signs it: behind the password.
+post("flows", "flow.trigger.setup", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/setup$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/setup" , ...EDIT_FLOWS });
+// v126: clear a webhook's turned-away count once it has been seen.
+post("flows", "flow.trigger.dropped", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/dropped$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/dropped" , ...EDIT_FLOWS });
+// v126: which project a Sentry or Vercel webhook takes deliveries from: behind the password, as its secret is.
+post("flows", "flow.trigger.scope", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/scope$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/scope" , ...EDIT_FLOWS });
+post("flows", "flow.trigger.sender", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/sender$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/sender" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.share", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/share$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/share" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.unshare", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/unshare$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/unshare" , ...EDIT_FLOWS });
 post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operator("An instance operator sets budgets.", "/spend") });

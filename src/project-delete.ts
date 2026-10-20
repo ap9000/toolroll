@@ -287,7 +287,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   const mirrors = json(list(db, `SELECT local_task_id FROM external_mirror WHERE ${IN("local_task_id")}`, K));
   del("external_intent", IN("mirror"), mirrors);
   del("external_mirror", IN("local_task_id"), mirrors);
-  for (const [table, column] of [["scope_approval_vote", "task_id"], ["scope_author", "task_id"], ["plan_authorization", "task_id"], ["tool_seal", "task"], ["mcp_idempotency", "task_id"], ["coordinator_event", "task_id"], ["workflow_preview", "task_id"]] as const) del(table, IN(column), K);
+  for (const [table, column] of [["scope_approval_vote", "task_id"], ["scope_author", "task_id"], ["plan_authorization", "task_id"], ["tool_seal", "task"], ["mcp_idempotency", "task_id"], ["coordinator_event", "task_id"], ["workflow_preview", "task_id"], ["task_source", "task_id"]] as const) del(table, IN(column), K);
   del("workflow_preview", "repo = ?", repo);
   del("coding_handoff_scope", `id IN (SELECT id FROM coding_handoff WHERE json_extract(payload, '$.repo') = ?)`, repo);
   del("coding_handoff", "json_extract(payload, '$.repo') = ?", repo);

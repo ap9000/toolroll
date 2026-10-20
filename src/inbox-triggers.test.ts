@@ -98,7 +98,7 @@ describe("an email trigger", () => {
   test("a reply to the sender stays in their thread; to anyone else it's a new email", async () => {
     mailServer();
     const flow = replies();
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: "From: Priya <priya@example.com>\n\nCharged twice.", stage: "send", by: "Email",
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: "From: Priya <priya@example.com>\n\nCharged twice.", stage: "send", by: "Email", byKind: "automation",
       source: { kind: "email", label: "Email from priya@example.com", url: null, mail: { id: "<m1@example.com>", references: ["<m0@example.com>"], subject: "Refund for order 42?", from: "priya@example.com" } } }, T0);
     store.updateFlowCard(card, { outputs: { write: "Hi Priya, we've refunded it." } }, T0);
     const stage = flowDefinitionOf(store.getFlow(flow)!)!.stages.find(one => one.id === "send")!;

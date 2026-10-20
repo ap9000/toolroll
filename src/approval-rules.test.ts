@@ -155,7 +155,7 @@ test("on a protected project no mode or subagent stands in for two people", asyn
   const flow = store.createFlow({ repo: REPO, name: "Refunds", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "maya-decides", stages: [
     stage("maya-decides", "approval", { subagent: "maya", toOwner: true, next: "done", onFail: "done" }), stage("done", "inbox")] }) }, now);
   store.createSubagent({ repo: REPO, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
-  const card = store.addFlowCard({ flow, title: "Refund $30", description: null, stage: "maya-decides", by: "alex" }, now);
+  const card = store.addFlowCard({ flow, title: "Refund $30", description: null, stage: "maya-decides", by: "alex", byKind: "person" }, now);
   expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "Maya (AI)", repos: [REPO], subagent: "maya" }, now)).toEqual({ ok: false, message: "This project is protected: a person decides here." });
   expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "alex", repos: [REPO] }, now)).toMatchObject({ ok: true });
 });
