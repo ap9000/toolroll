@@ -6,6 +6,8 @@ import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agen
 import { usageChipOf } from './limits-ui.js';
 /** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
 const RAIL_TASKS = 6;
+/** Any header a proxy adds: a request carrying one is never "from this computer" (password freshness, one-time links). */
+const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
 /** Asks a project names for the chime (its count is complete beyond them). */
 const ASKS_PER_PROJECT = 100;
 import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
@@ -141,8 +143,7 @@ import { isAlive as runnerAlive } from "./runner.js";
 import {
 FRESH_WINDOW_MS,
 freshFacts,
-ssoCheckedNow,
-freshIdentitySignIn,
+ssoNowAvailable,
 type FreshFacts
 } from "./scope.js";
 import { instrumentRequest } from "./server-telemetry.js";
@@ -341,13 +342,33 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     signInLinks.set(linkKey(code), { account, expires: Date.now() + SIGN_IN_LINK_MS });
     return `${SIGN_IN_LINK_PATH}${code}`;
   }
-  /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no forwarding proxy. */
+  /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no sign of a proxy —
+   * any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …) disqualifies the request. */
   const fromThisComputer = (request: IncomingMessage): boolean => {
     const peer = request.socket.remoteAddress ?? "";
-    const loopback = LOOPBACK_PEERS.has(peer);
-    return loopback && request.headers["x-forwarded-for"] === undefined && request.headers["forwarded"] === undefined
-      && /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
+    if (!LOOPBACK_PEERS.has(peer)) return false;
+    for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
+    return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
+  /**
+   * Cockpit B2: a request's password-freshness facts — the one place they are made (scope.ts honours them). Every
+   * reader looks at the session as it is at the moment of the act, never a snapshot taken before the body arrived:
+   * still signed in here, under the account's current credential generation, after any Forget.
+   */
+  function freshFactsOf(request: IncomingMessage, who: Who | null, allowlisted = false): FreshFacts | null {
+    if (who?.via !== 'cookie') return null;
+    const session = who.session, local = fromThisComputer(request);
+    const live = () => {
+      const account = store.accountOf(who.name);
+      return sessions.holds(session) && account !== null && account.revokedAt === null && account.generation === session.generation;
+    };
+    return { actor: who.name, local, allowlisted, live,
+      passwordAt: () => session.passwordAt ?? null, ssoReauthAt: () => session.ssoReauthAt ?? null,
+      ssoNow: () => session.ssoNowAt ?? null, consumeSsoNow: () => { delete session.ssoNowAt; },
+      floor: () => session.freshFloor ?? 0,
+      // Only a direct local request may start a password window (a typed password elsewhere proves now, nothing more).
+      stamp: at => { if (local && live()) session.passwordAt = at; } };
+  }
   async function providerFor(issuer: string): Promise<{ ok: true; provider: OidcProvider } | { ok: false; said: string }> {
     if (ssoProvider !== null && ssoProvider.issuer === issuer && Date.now() - ssoProvider.at < 10 * 60_000) return { ok: true, provider: ssoProvider.provider };
     const found = await discoverOidc(issuer, options.ssoFetch ?? fetch);
@@ -717,7 +738,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     if (who?.via === "bearer" && refuseBudget(admitBearer(request, who))) return;
     const passwordProof = who?.via === 'cookie' ? { name: who.name, generation: who.session.generation } : null;
-    if (edgeRoute?.domain === 'people') return provenPasswordAccount.run(passwordProof, () => dispatchEdge(edgeRoute, { url, who, request, response, method }));
+    const fresh = freshFactsOf(request, who, matchedRoute?.freshness === 'allowlist');
+    if (edgeRoute?.domain === 'people') return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => dispatchEdge(edgeRoute, { url, who, request, response, method })));
 
 
     if (who === null) {
@@ -742,18 +764,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Every signed-in page shares the workspace shell; pages showing a one-time secret opt out (forceSensitive).
       browser: who.via === 'cookie',
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
-      sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider", fresh: ssoCheckedNow(who.session.sso.at) } : undefined,
+      // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
+      sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider",
+        get fresh() { return freshFacts.getStore() != null && ssoNowAvailable(who.name); } } : undefined,
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
       workspaceRequest: url.searchParams.get('request'),
     };
-    // An empty password stands for a fresh identity-provider sign-in, for this person only (v100).
-    // Cockpit B2: this request's facts for password freshness — the one place they are set (scope.ts honours them).
-    // The window's identity-provider start is an explicit re-check only (ssoReauthAt), never an ordinary sign-in.
-    const fresh: FreshFacts | null = who.via === 'cookie' ? { actor: who.name, passwordAt: who.session.passwordAt ?? null, ssoAt: who.session.ssoReauthAt ?? null,
-      local: fromThisComputer(request), floor: who.session.freshFloor ?? 0, stamp: at => { if (fromThisComputer(request)) who.session.passwordAt = at; } } : null;
-    if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
+    if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
@@ -819,7 +838,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         store.recordAction({ ...entry, at: clock().toISOString(), outcome: "error" });
         throw error;
       }
-    }))));
+    })));
     return respond(response, 405, "text/plain; charset=utf-8", "no such method here");
   }
 
@@ -1353,9 +1372,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // Cockpit B2: the remembered password's chip, only where it could be used (a direct local request).
         ...(() => {
           const facts = freshFacts.getStore();
-          if (sensitive || facts == null || !facts.local) return {};
-          const at = facts.passwordAt;
-          if (at === null || at <= facts.floor) return {};
+          if (sensitive || facts == null || !facts.local || !facts.live()) return {};
+          const at = facts.passwordAt();
+          if (at === null || at <= facts.floor()) return {};
           const left = FRESH_WINDOW_MS - (Date.now() - at);
           return left <= 0 ? {} : { fresh: { minutes: Math.max(1, Math.ceil(left / 60_000)), forget: '/session/forget-password' } };
         })(),
@@ -1821,6 +1840,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get signInLinks(): ServerRuntime['signInLinks'] { return signInLinks; },
     get linkKey(): ServerRuntime['linkKey'] { return linkKey; },
     get fromThisComputer(): ServerRuntime['fromThisComputer'] { return fromThisComputer; },
+    get freshFactsOf(): ServerRuntime['freshFactsOf'] { return freshFactsOf; },
     get passwordAllowed(): ServerRuntime['passwordAllowed'] { return passwordAllowed; },
     get arrival(): ServerRuntime['arrival'] { return arrival; },
     get cookieSecure(): ServerRuntime['cookieSecure'] { return cookieSecure; },
@@ -1863,6 +1883,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   const remoteRuntime: RemoteRuntime = {
     get identify() { return identify; },
+    get freshFactsOf() { return freshFactsOf; },
     get store() { return store; },
     get admitPasswordSource() { return admitPasswordSource; },
     get admitBearer() { return admitBearer; },

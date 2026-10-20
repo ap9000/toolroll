@@ -1,3 +1,4 @@
+import type { FreshFacts } from '../scope.js';
 import type { FlowRooms } from '../flow-live.js';
 import type { IntegrationMonitor } from '../integrations.js';
 import type { OidcSettings } from '../oidc.js';
@@ -157,6 +158,8 @@ export interface ServerRuntime {
   signInLinks: Map<string, { account: string; expires: number; }>;
   linkKey: (code: string) => string;
   fromThisComputer: (request: IncomingMessage) => boolean;
+  /** Cockpit B2: the request's live password-freshness facts (null off a browser session). */
+  freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
   passwordAllowed: (name: string) => boolean;
   arrival: (request: IncomingMessage) => { agent: string | null; address: string; };
   cookieSecure: "" | "; Secure";

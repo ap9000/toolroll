@@ -294,7 +294,8 @@ post("settings", "provider.resume", "^\\/providers\\/[a-z]+\\/resume$", { sample
 post("settings", "settings.updates-dismiss", "/settings/updates/dismiss");
 post("settings", "settings.updates-checks", "/settings/updates/checks");
 // Cockpit B2: Forget ends this session's remembered password now.
-post("settings", "session.forget-password", "/session/forget-password");
+// Forget is about the caller's own session only: anyone signed in with a browser may use it (a viewer, a project-limited person).
+post("settings", "session.forget-password", "/session/forget-password", { ...free, limited: "self", viewer: true, callers: ["cookie"] });
 const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
 post("tasks", "code.start", "/code/start", CODING_ACT);
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
@@ -440,7 +441,9 @@ const LEAD_WORDS: Record<string, string> = { identity: "An approver names their 
 for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`, approver(LEAD_WORDS[one]!, "/settings/lead"));
 post("chat", "chat.config", "/chat/config", { scope: "step-up" });
 for (const one of ["mint", "follow", "end", "stop"]) post("chat", `chat.mate-${one}`, `/chat/mate/${one}`, { callers: ["cookie"], ...(one === "mint" ? { scope: "step-up" as const } : {}) });
-for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}` });
+// Confirming a proposal may approve a scope (scope_approve): that one act takes the same standard-approval freshness as
+// /t/:id/approve (chat-actions.ts scopes it); every other operation it confirms still needs a password typed now.
+for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}`, ...(one === "confirm" ? { freshness: "allowlist" as const } : {}) });
 for (const one of ["confirm", "dismiss"]) post("chat", `coordinator.proposal.${one}`, `^\\/proposals\\/${ID}\\/${one}$`, { sample: `/proposals/1/${one}` });
 post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist" });
 post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up", sample: `/chat/file/${"a".repeat(32)}` });

@@ -22,6 +22,7 @@ const COOKIE_ONLY_POSTS = [
   'chat.send', 'chat.file', 'chat.ack-send',
   // Cockpit E: Show in Finder reveals a proved checkout — a person's act in their own browser.
   'run.act.reveal',
+  'session.forget-password',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

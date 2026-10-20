@@ -36,8 +36,9 @@ export function joinDeadPage(): Html {
 /**
  * v100: for someone signed in with the identity provider, every step-up
  * password field (autocomplete="current-password"; a secret like a bot token
- * is never one) becomes that sign-in: confirmed, when the provider checked
- * them in the last ten minutes, or a link to be checked again, then back here.
+ * is never one) becomes that sign-in: confirmed, when an explicit re-check
+ * made on request awaits its one step-up (cockpit B2), or a link to be
+ * checked again, then back here. An ordinary sign-in never confirms.
  */
 export function ssoStepUps(page: Html, sso: { label: string; fresh: boolean }, returnTo: string): Html {
   const stepUp = (attributes: string) => /\btype="password"/.test(attributes) && /\bautocomplete="current-password"/.test(attributes);

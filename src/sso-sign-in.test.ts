@@ -129,33 +129,36 @@ test("a person signs in with the provider: an account from their groups, set aga
     ["priya", "signed in", "Okta"], ["unknown account", "sign-in refused", "no matching group"]]));
 });
 
-test("a step-up is the provider's check from moments ago; later, a link to be checked again", async () => {
+test("a step-up is an explicit re-check made on request, spent by the one step-up it proves; an ordinary sign-in never is (cockpit B2)", async () => {
   await turnOn();
   person.groups = ["eng-leads"];
   const cookie = cookieOf(await providerSignIn());
+  // Signed in with the provider moments ago — but a sign-in proves nothing more: the page asks for a re-check.
   const tools = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
-  expect(tools).toContain('data-sso-step-up="confirmed"');
+  expect(tools).toContain('href="/login/sso?reauth=1&amp;return=%2Fsettings%2Ftools">Confirm with Okta</a>');
   expect(tools).not.toMatch(/type="password"[^>]*autocomplete="current-password"/);
   // Still a password page as written (cockpit §2, R14): sensitive, so no sidebar states ride along.
   expect(workspaceOf(tools)).toMatchObject({ sensitive: true });
   expect(workspaceOf(tools).projectStates).toBeUndefined();
-  const add = (csrf: string) => fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, repo: "/repo/main", shown: "/repo/main", action: "add-catalog", catalog: "playwright", password: "" }) });
-  expect((await add(csrfOf(tools))).headers.get("location")).toContain("said=");
-  // Eleven minutes on: the page asks to confirm with the provider, and an empty password no longer does.
-  const later = Date.now() + 11 * 60_000;
-  vi.spyOn(Date, "now").mockReturnValue(later);
-  const stale = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
-  expect(stale).toContain('href="/login/sso?reauth=1&amp;return=%2Fsettings%2Ftools">Confirm with Okta</a>');
-  const refused = await fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf: csrfOf(stale), repo: "/repo/main", shown: "/repo/main", action: "add-catalog", catalog: "shadcn", password: "" }) });
-  expect(decodeURIComponent(refused.headers.get("location") ?? "")).toContain("problem=");
-  // Confirming with the provider makes it fresh again, and says so on the record.
-  vi.restoreAllMocks();
+  const add = (csrf: string, catalog: string) => fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, repo: "/repo/main", shown: "/repo/main", action: "add-catalog", catalog, password: "" }) });
+  expect(decodeURIComponent((await add(csrfOf(tools), "shadcn")).headers.get("location") ?? "")).toContain("problem=");
+  // Confirming with the provider: the page says so, on the record, and ONE step-up stands on it.
   expect((await providerSignIn("?reauth=1&return=/settings/tools", cookie)).headers.get("location")).toBe("/settings/tools");
-  expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).toContain('data-sso-step-up="confirmed"');
   expect(store.actionLedger({ repos: null, source: "sign-in", limit: 1 })[0]).toMatchObject({ actor: "priya", action: "confirmed", outcome: "Okta" });
+  const confirmed = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
+  expect(confirmed).toContain('data-sso-step-up="confirmed"');
+  expect((await add(csrfOf(confirmed), "playwright")).headers.get("location")).toContain("said=");
+  // Spent: the next step-up asks again, and an empty password does nothing.
+  const after = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
+  expect(after).toContain("Confirm with Okta</a>");
+  expect(decodeURIComponent((await add(csrfOf(after), "shadcn")).headers.get("location") ?? "")).toContain("problem=");
+  // An unspent re-check lasts five minutes.
+  expect((await providerSignIn("?reauth=1&return=/settings/tools", cookie)).headers.get("location")).toBe("/settings/tools");
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000);
+  expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).toContain("Confirm with Okta</a>");
 });
 
-test("someone who signs in only with the provider approves a task on a fresh sign-in, and not on a stale one", async () => {
+test("someone who signs in only with the provider approves a task on an explicit re-check, and not on the sign-in alone", async () => {
   await turnOn();
   person.groups = ["eng-leads"];
   const cookie = cookieOf(await providerSignIn());
@@ -168,17 +171,16 @@ test("someone who signs in only with the provider approves a task on a fresh sig
   const digest = store.getScope("t-sso")?.digest ?? "";
   const page = async () => (await fetch(`${base}/t/t-sso`, { headers: { cookie } })).text();
   const nonceOf = (html: string) => /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? "";
-  // Sixteen minutes on — past the provider check that counts as now (ten) and past a remembered one (fifteen, for an
-  // allowlisted approval: cockpit B2) — an empty password approves nothing.
-  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16 * 60_000);
+  // Signed in moments ago: an empty password approves nothing.
   expect((await post("/t/t-sso/approve", { nonce: nonceOf(await page()), digest, token: "" })).status).toBe(400);
   expect(store.getScope("t-sso")?.approvedBy ?? null).toBeNull();
-  vi.restoreAllMocks();
-  // Fresh: the form says the provider confirmed it, and the approval is priya's.
+  // Re-checked: the form says the provider confirmed it, and the approval is priya's, proved by that re-check.
+  expect((await providerSignIn("?reauth=1&return=/t/t-sso", cookie)).headers.get("location")).toBe("/t/t-sso");
   const html = await page();
   expect(html).toContain('data-sso-step-up="confirmed"');
   expect((await post("/t/t-sso/approve", { nonce: nonceOf(html), digest, token: "" })).status).toBe(303);
   expect(store.getScope("t-sso")?.approvedBy).toBe("priya");
+  expect(store.handle.prepare("SELECT outcome FROM action_ledger WHERE task_id = 't-sso' AND action = 'approval proved'").get()?.["outcome"]).toBe("sso-now");
 });
 
 test("passwords for instance operators only: others are sent to the provider; an existing account can be linked", async () => {
@@ -236,7 +238,7 @@ test("a step-up's provider check must be one made for it: no auth_time, or one f
   authTimeOf = () => undefined;
   try {
     const cookie = cookieOf(await providerSignIn());
-    // Signed in, but not fresh: a step-up page asks to confirm with the provider rather than taking it as confirmed.
+    // Signed in, never fresh: a step-up page asks to confirm with the provider rather than taking it as confirmed.
     expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).not.toContain('data-sso-step-up="confirmed"');
     const missing = await providerSignIn("?reauth=1&return=/settings/tools", cookie);
     expect(missing.status).toBe(400);

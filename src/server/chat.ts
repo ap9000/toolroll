@@ -1,4 +1,4 @@
-import { freshnessFor, withFreshness } from "../scope.js";
+import { withFreshness } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -850,8 +850,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const password = body.get("token") ?? "";
     // Typed now, or (cockpit B2) a password or explicit provider re-check given on this session, on a direct local
     // request, within its window. An ordinary provider sign-in never starts that window.
-    const proved = password === "" ? withFreshness("chat-send", () => freshnessFor(who.name)) !== null && withFreshness("chat-send", () => authenticateApprover(who, "")).ok
-      : authenticateApprover(who, password).ok;
+    const proved = withFreshness("chat-send", () => authenticateApprover(who, password)).ok;
     if (!proved) {
       return redirect(response, `/chat?said=${encodeURIComponent("chat spends — your password, typed again, with every message")}`);
     }

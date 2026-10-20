@@ -53,6 +53,8 @@ export type Session = {
   /** Cockpit B2: when the identity provider last re-checked this person on request (a step-up's re-authentication).
    * Only this, or a password, starts a freshness window; an ordinary sign-in never does. In memory only. */
   ssoReauthAt?: number;
+  /** Cockpit B2: an explicit provider re-check not yet spent: stands in for ONE step-up (consumed by it). In memory only. */
+  ssoNowAt?: number;
   /** Forget: nothing verified before this counts as fresh. */
   freshFloor?: number;
   /** v101: the browser and address it signed in from, for the person to recognise it. */
@@ -154,6 +156,8 @@ export class PersistentSessions extends Map<string, Session> {
     for (const id of [...this.keys()]) if (PersistentSessions.hash(id) === idHash) super.delete(id);
     this.db.dropWebSession(idHash);
   }
+  /** Whether this exact session is still signed in here (not signed out, ended from Sessions, expired or replaced). */
+  holds(session: Session): boolean { const id = this.ids.get(session); return id !== undefined && super.get(id) === session; }
   hashOf(session: Session): string | null { const id = this.ids.get(session); return id === undefined ? null : PersistentSessions.hash(id); }
 }
 

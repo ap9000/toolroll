@@ -55,7 +55,7 @@ const LIMITED_ACCESS = {
   'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal.confirm': 'proposal', 'chat.proposal.dismiss': 'proposal',
   'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
   'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act.add-tests': 'resource', 'run.act.checks': 'resource', 'run.act.comment': 'resource',
-  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.reveal': 'resource', 'run.act.revise': 'resource',
+  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.reveal': 'resource', 'run.act.revise': 'resource', 'session.forget-password': 'self',
 } satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
 
 describe("the route table", () => {
@@ -102,7 +102,7 @@ describe("the route table", () => {
     for (const route of ROUTES.filter(one => one.limited !== "deny")) expect(route.stage, route.id).toBe("console");
     for (const route of ROUTES.filter(one => one.needsProject)) expect([route.stage, route.method], route.id).toEqual(["console", "GET"]);
     for (const route of ROUTES.filter(one => one.viewer)) expect([route.method, route.callers.includes("cookie")], route.id).toEqual(["POST", true]);
-    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["projects.select", "session.editor-links"]);
+    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["session.forget-password", "projects.select", "session.editor-links"]);
     // Each limited kind names how its object is found.
     for (const route of ROUTES.filter(one => one.limited === "self")) expect(["coding", "session"], route.id).toContain(route.project);
     expect(ids(ROUTES.filter(one => one.limited === "proposal"))).toEqual(ids(ROUTES.filter(one => one.project === "proposal")));

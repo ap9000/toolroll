@@ -640,7 +640,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function forgetPassword(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.forgetPassword);
-    if (who.via === "cookie") { who.session.freshFloor = Date.now(); delete who.session.passwordAt; }
+    if (who.via === "cookie") { who.session.freshFloor = Date.now(); delete who.session.passwordAt; delete who.session.ssoReauthAt; delete who.session.ssoNowAt; }
     return redirect(response, safeReturn(body.get("return") ?? "/"));
   }
   async function updatesDismiss(ctx: HandlerContext): Promise<void> {

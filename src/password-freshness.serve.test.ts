@@ -69,6 +69,12 @@ test("a forwarded request, an expired window and Forget each take a password typ
   const forwarded = await filed("t-forwarded");
   expect([400, 409]).toContain((await post("/t/t-forwarded/approve", { nonce: forwarded.nonce, digest: forwarded.digest, token: "" }, { "x-forwarded-for": "203.0.113.9" })).status);
   expect(store.getScope("t-forwarded")?.approvedBy ?? null).toBeNull();
+  // Any sign of a proxy disqualifies, not only X-Forwarded-For.
+  for (const header of [{ "x-forwarded-proto": "https" }, { "x-real-ip": "203.0.113.9" }, { "x-forwarded-host": "toolroll.example" }, { via: "1.1 proxy" }]) {
+    const one = await filed(`t-proxy-${Object.keys(header)[0]}`);
+    expect([400, 409]).toContain((await post(`/t/t-proxy-${Object.keys(header)[0]}/approve`, { nonce: one.nonce, digest: one.digest, token: "" }, header)).status);
+    expect(store.getScope(`t-proxy-${Object.keys(header)[0]}`)?.approvedBy ?? null).toBeNull();
+  }
   const later = await filed("t-later");
   // Sixteen minutes on (a form drawn then, so its own nonce is current): no remembered password, and no approval.
   const sixteen = Date.now() + 16 * 60_000;
@@ -99,4 +105,29 @@ test("a plan an agent wrote, and every other step-up, still take a password type
   // A never route: an empty password field does nothing, however fresh.
   const retention = await post("/settings/retention", { password: "" });
   expect(retention.headers.get("location") ?? "").toContain("problem=");
+});
+
+test("a sign-in through a proxy starts no window, and Forget works for a project-limited person", async () => {
+  const answer = await fetch(`${base}/login`, { method: "POST", headers: { "x-forwarded-proto": "https" }, body: new URLSearchParams({ name: "alex", token: password }), redirect: "manual" });
+  const cookie = cookieOf(answer);
+  const page = await (await fetch(`${base}/agents`, { headers: { cookie } })).text();
+  expect(page).not.toMatch(/"fresh":\{"minutes"/);
+  // A project-limited approver reaches Forget (their own session only).
+  const robin = addApprover(store, "robin", new Date(), { name: "alex", token: password });
+  if (!robin.ok) throw new Error("robin");
+  expect(store.setAccountProjects("robin", ["/repo/main"], "alex", new Date()).ok).toBe(true);
+  const robinCookie = cookieOf(await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "robin", token: robin.token }), redirect: "manual" }));
+  const robinCsrf = csrfOf(await (await fetch(`${base}/chat`, { headers: { cookie: robinCookie } })).text());
+  const forgot = await fetch(`${base}/session/forget-password`, { method: "POST", headers: { cookie: robinCookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf: robinCsrf, return: "/chat" }) });
+  expect(forgot.status).toBe(303);
+});
+
+test("a protected-work vote records how its person was proved, bound to the digest they said yes to", async () => {
+  const { post, filed } = await signedIn();
+  const plan = await filed("t-vote");
+  vi.spyOn(store, "approvalGate").mockReturnValue({ verdict: "vote", have: 1, need: 2, already: false, protectedWork: true } as never);
+  await post("/t/t-vote/approve", { nonce: plan.nonce, digest: plan.digest, token: password });
+  const row = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = 't-vote' AND action = ?").get(APPROVAL_PROOF);
+  expect(row?.["outcome"]).toBe("password-now");
+  expect(String(row?.["detail"])).toContain(`digest ${plan.digest}`);
 });

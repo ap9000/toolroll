@@ -25,20 +25,22 @@ import { logEvent } from "../log.js";
 import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAuthorizeUrl,verifyIdToken } from "../oidc.js";
 import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
-import { hashPassword } from "../scope.js";
+import { hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 
-/** Clock skew allowed between the provider and this server when reading auth_time. */
+/** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
+ * running ahead). auth_time is in whole seconds, so a check made in the visit's own second is floored below startedAt:
+ * the one allowance backward is that rounding, never a check made before the visit began. */
 const AUTH_TIME_SKEW_MS = 60_000;
 /** When the provider checked the person, in ms, if its auth_time is a check made for this visit: present, no earlier
- * than the visit began (less skew), and not in the future beyond the skew. Null otherwise. */
+ * than the second the visit began, and not in the future beyond the skew. Null otherwise. */
 export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {
   if (authTime === null || !Number.isFinite(authTime)) return null;
   const at = authTime * 1000;
-  if (at < startedAt - AUTH_TIME_SKEW_MS || at > now + AUTH_TIME_SKEW_MS) return null;
-  return Math.min(at, now);
+  if (at < Math.floor(startedAt / 1000) * 1000 || at > now + AUTH_TIME_SKEW_MS) return null;
+  return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
   const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
@@ -209,10 +211,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       if (name === "" || name.length > 60) return back("problem", "Name the token, in 60 characters or fewer.");
       if (!(TOKEN_DAYS as readonly number[]).includes(days)) return back("problem", "Choose when it expires.");
       if (access === "act" && who.role !== "approver") return back("problem", "A viewer's token can only read.");
-      // A token is a credential: made with the person's password (or their identity provider's check from moments ago), counted once.
+      // A token is a credential: made with the person's password typed now (or an explicit identity-provider re-check,
+      // spent by it), counted once. Never a remembered password: this act is outside every freshness allowlist.
       const typed = body.get("password") ?? "";
       const confirmed = who.role === "approver" ? authenticateApprover(who, typed).ok
-        : typed === "" ? requestContext.getStore()?.sso?.fresh === true : authenticateAccount(store, who.name, typed).ok;
+        : who.via === "cookie" && proveAccountNow(store, who.name, typed).ok;
       if (!confirmed) return back("problem", "Enter your Toolroll password to make a token.");
       const minted = mintApiToken();
       const expiresAt = new Date(now.getTime() + days * 86_400_000).toISOString();
@@ -391,8 +394,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       // A step-up: the provider checked the same person again.
       if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginPage(`That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
       who.session.sso = { at: handoff.checkedAt ?? 0 };
-      // An explicit re-check on request: the one identity-provider event that may start a freshness window (B2).
-      if (handoff.checkedAt !== null) who.session.ssoReauthAt = handoff.checkedAt;
+      // An explicit re-check on request: the one identity-provider event that stands in for a password typed now (for ONE
+      // step-up, spent by it) and may start a freshness window (B2). Kept in memory only: a restart forgets it.
+      if (handoff.checkedAt !== null) { who.session.ssoReauthAt = handoff.checkedAt; who.session.ssoNowAt = handoff.checkedAt; }
       sessions.persist(who.session);
       recordSignIn(who.name, "confirmed", settings.label);
       return redirect(response, handoff.returnTo);
@@ -457,7 +461,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       lastSeen: Date.now(),
       project: defaultProject,
       projectRevision: 1,
-      passwordAt: Date.now(),
+      // A password typed on this computer starts this session's freshness window (cockpit B2); from anywhere else, never.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/");
@@ -509,8 +514,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       lastSeen: Date.now(),
       project: defaultProject,
       projectRevision: 1,
-      // A password typed to sign in is a verified entry: it starts this session's freshness window (cockpit B2).
-      passwordAt: Date.now(),
+      // A password typed to sign in on this computer starts this session's freshness window (cockpit B2); from anywhere
+      // else (a phone, a proxy) it signs in and proves nothing more.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
     response.setHeader(
       "Set-Cookie",

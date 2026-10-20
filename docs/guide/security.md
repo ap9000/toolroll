@@ -43,18 +43,20 @@ Auth0, Keycloak or anything else that speaks OpenID Connect.
 
 The client secret is kept in `sign-in.json` beside the database (`0600`),
 never in the database. People who sign in with the provider have no
-password here: an approval or any other step-up is confirmed by their
-provider sign-in in the last ten minutes, or by a **Confirm with …** link
-that asks the provider to check them again. An existing account can be
+password here: an approval or any other step-up is confirmed with a
+**Confirm with …** link that asks the provider to check them again. That
+re-check counts for one step-up, within five minutes; signing in with the
+provider never counts as one. An existing account can be
 linked to the provider from the Sign-in page. Every sign-in, account made,
 access change and settings change is in the action ledger.
 
 ## Your password, remembered for a while
 
 On this computer (a direct connection to `localhost`, never through a proxy or
-another address), a password you typed — to sign in, or for any step-up — is
-remembered for **15 minutes** for two everyday acts only: approving a plan
-whose terms are standard permissions with one approver, and sending a chat
+another address, with no forwarding headers of any kind), a password you
+typed — to sign in, or for any step-up — is remembered for **15 minutes** for
+two everyday acts only: approving a plan whose terms are standard permissions
+with one approver (from the task page or a chat proposal), and sending a chat
 message. Leave the password box empty and it's used. (Replying to an agent's
 question, steering, pausing and stopping never ask for a password.) The window starts only from a password you typed (or the identity
 provider checking you again), is never extended by using it, and ends at sign

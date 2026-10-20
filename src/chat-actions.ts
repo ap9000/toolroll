@@ -33,6 +33,9 @@ import {
   describeScope,
   scopeAuthorityOf,
   type ExecutionProfile,
+  freshnessFor,
+  ssoNowAvailable,
+  withFreshness,
 } from "./scope.js";
 import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
 import { readAuthModeStrict } from "./keys.js";
@@ -1117,14 +1120,19 @@ export function executeSharedAction(
         "needs-confirm",
         "This confirmation expired or was already used. Open the review again.",
       );
+    // A scope approval proves its person inside approve() (one transaction with the seal, under the same freshness
+    // rule as the task page); here an empty field is only looked at, never spent (an explicit re-check is one-use).
+    const emptyApproval = payload.operation === "scope_approve" && options.review.password === "";
     if (
       config.password &&
-      !authenticateApprover(
-        store,
-        who.name,
-        options.review.password,
-        payload.repo,
-      ).ok
+      (emptyApproval
+        ? !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
+        : !authenticateApprover(
+            store,
+            who.name,
+            options.review.password,
+            payload.repo,
+          ).ok)
     )
       return refuse(
         "needs-confirm",
@@ -1231,14 +1239,15 @@ export function executeSharedAction(
         );
       else if (payload.operation === "scope_approve") {
         const scope = store.getScope(task!)!;
-        const result = approve(
+        // Cockpit B2: classified by the act, not the road — the same standard-approval freshness as /t/:id/approve.
+        const result = withFreshness("approve-standard", () => approve(
           store,
           task!,
           actor,
           now,
           scope.digest,
           options.review!.password,
-        );
+        ));
         if (!result.ok) {
           // v102: the project's approval rules speak for themselves.
           if (result.reason === "second-approver") throw Error(gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }));

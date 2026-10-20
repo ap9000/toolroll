@@ -67,7 +67,7 @@ acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
 approve as approveScope,
-freshnessFor, hasFreshIdentitySignIn, withFreshness,
+freshnessFor, ssoNowAvailable, withFreshness,
 modeFilingCoverage,PLACEHOLDER_RUBRIC,
 proposeGuarded,
 type UnattendedPermissionMode
@@ -2372,9 +2372,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (!consumeApprovalNonce(nonce, who.name, taskId, digest)) {
           return approvalProblem("that approval form is stale — read it again", 409);
         }
-        // An empty password stands for an identity-provider check moments ago, or (cockpit B2) a password remembered on
-        // this session; approve() decides whether these terms may stand on a remembered one.
-        if (token === "" && !hasFreshIdentitySignIn(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
+        // An empty password stands for an explicit identity-provider re-check not yet spent, or (cockpit B2) a password
+        // remembered on this session; approve() decides whether these terms may stand on a remembered one.
+        if (token === "" && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
           return approvalProblem("approval requires your password, typed again", 400);
         }
         const scopeRow = store.getScope(taskId);

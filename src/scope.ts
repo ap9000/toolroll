@@ -1124,51 +1124,83 @@ export function authenticateAccount(
  * approval, chat-action review, the console's own ceremonies). A typed
  * password is always checked, and nothing else stands in.
  */
-export const freshIdentitySignIn = new AsyncLocalStorage<{ actor: string | null }>();
-export const hasFreshIdentitySignIn = (by: string): boolean => freshIdentitySignIn.getStore()?.actor === by;
-
 /**
- * PASSWORD FRESHNESS (docs/plans/agents-cockpit.md B2). An allowlisted everyday act — and only one — may stand on a
- * password (or an identity-provider re-check) given on this same session in the last fifteen minutes, instead of a
- * password typed now, when the request comes straight from this computer. The console sets the request's facts
- * (`freshFacts`); an allowlisted act opts in with `withFreshness`; `authenticateApprover` is the one place it is
- * honoured. The window starts only from a verified password entry or an explicit re-check, is never extended by use,
- * and ends at sign-out, a session or credential change, or Forget (`floor`).
+ * PASSWORD FRESHNESS (docs/plans/agents-cockpit.md B2), and the one place an empty password field is ever honoured.
+ *
+ * - An identity-provider re-check made **on request** (a step-up's re-authentication, never an ordinary sign-in) stands
+ *   in for one password typed now, for ONE step-up of any kind, within five minutes: it is consumed by the act it
+ *   proves (`sso-now`). Never reused across acts.
+ * - A password verified on this session, or that explicit re-check, stands in for fifteen minutes — but only inside an
+ *   allowlisted act (`withFreshness`), only for this person, only on a direct local request (`fresh-password`,
+ *   `fresh-sso`). Never extended by use.
+ * Every fact is read at the moment of the act (`FreshFacts` are live readers, not a snapshot), so a sign-out, a session
+ * revoked or rotated, a credential change or Forget made while a request was in flight is seen by it.
  */
 export type FreshOp = "approve-standard" | "chat-send" | "reply-question";
-/** An identity-provider check this recent stands in for a password typed now, for any step-up (v100). */
-export const SSO_NOW_MS = 10 * 60_000;
-/** Whether the provider checked this person recently enough to count as now: the one reading of SSO freshness. */
-export function ssoCheckedNow(ssoAt: number | null | undefined, now = Date.now()): boolean {
-  return ssoAt != null && ssoAt > 0 && now - ssoAt < SSO_NOW_MS && ssoAt <= now + 60_000;
-}
 export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso";
 export const FRESH_WINDOW_MS = 15 * 60_000;
+/** How long an explicit provider re-check stands in for one password typed now. */
+export const SSO_NOW_MS = 5 * 60_000;
 export type FreshFacts = {
   actor: string;
-  /** When a password was last verified on this session (ms), and when the provider last re-checked the person on request
-   * (an explicit re-authentication — never an ordinary sign-in). */
-  passwordAt: number | null; ssoAt: number | null;
-  /** Straight from this computer: a loopback peer naming a loopback host, with no forwarding headers. */
+  /** Straight from this computer: a loopback peer naming a loopback host, with no forwarding headers of any kind. */
   local: boolean;
+  /** The request's route is on the freshness allowlist (route-table.ts `freshness: "allowlist"`): the table decides. */
+  allowlisted: boolean;
+  /** The session is still signed in, under the account's current credential generation, not revoked. */
+  live: () => boolean;
+  /** When a password was last verified on this session; when the provider last re-checked on request (window start);
+   * and an unconsumed re-check for one step-up. */
+  passwordAt: () => number | null;
+  ssoReauthAt: () => number | null;
+  ssoNow: () => number | null;
+  consumeSsoNow: () => void;
   /** Nothing before this counts (Forget). */
-  floor: number;
-  /** Record a verified password entry on this session. */
+  floor: () => number;
+  /** Record a verified password entry on this session (the console decides whether this request may start one). */
   stamp: (at: number) => void;
 };
 export const freshFacts = new AsyncLocalStorage<FreshFacts | null>();
 const freshScope = new AsyncLocalStorage<FreshOp>();
 /** Run an allowlisted act: within it, a fresh password or re-check may stand in for one typed now. */
 export function withFreshness<T>(op: FreshOp, act: () => T): T { return freshScope.run(op, act); }
-/** The freshness this act may stand on now, or null: only inside an allowlisted act, for this person, on a direct
- * local request, within the window, after any Forget. */
-export function freshnessFor(by: string, now = Date.now()): { method: "fresh-password" | "fresh-sso"; at: number } | null {
+const within = (at: number | null, floor: number, spanMs: number, now: number): at is number =>
+  at !== null && at > 0 && at > floor && at <= now + 60_000 && now - at < spanMs;
+/** The freshness this act may stand on now, or null: only inside an allowlisted act on an allowlisted route, for this
+ * person, on a direct local request, on a live session, within the window, after any Forget. `preview` asks it from a
+ * page (a GET) about the allowlisted act its form posts to — for words only, never to authorise. */
+export function freshnessFor(by: string, now = Date.now(), preview = false): { method: "fresh-password" | "fresh-sso"; at: number } | null {
   const op = freshScope.getStore(), facts = freshFacts.getStore();
-  if (op === undefined || facts == null || facts.actor !== by || !facts.local) return null;
-  const within = (at: number | null): at is number => at !== null && at > facts.floor && at <= now + 60_000 && now - at < FRESH_WINDOW_MS;
-  if (within(facts.passwordAt)) return { method: "fresh-password", at: facts.passwordAt };
-  if (within(facts.ssoAt)) return { method: "fresh-sso", at: facts.ssoAt };
+  if (op === undefined || facts == null || facts.actor !== by || !(facts.allowlisted || preview) || !facts.local || !facts.live()) return null;
+  const floor = facts.floor(), password = facts.passwordAt(), sso = facts.ssoReauthAt();
+  if (within(password, floor, FRESH_WINDOW_MS, now)) return { method: "fresh-password", at: password };
+  if (within(sso, floor, FRESH_WINDOW_MS, now)) return { method: "fresh-sso", at: sso };
   return null;
+}
+/** Whether an explicit provider re-check is waiting to stand in for one step-up (the page says "Confirmed with …"). */
+export function ssoNowAvailable(by: string, now = Date.now()): boolean {
+  const facts = freshFacts.getStore();
+  return facts != null && facts.actor === by && facts.live() && within(facts.ssoNow(), facts.floor(), SSO_NOW_MS, now);
+}
+
+/**
+ * Proof that this person is here now, for any account step-up (an approver's or not): a password typed now, or an
+ * explicit provider re-check (consumed). The core of every console step-up; `authenticateApprover` adds standing.
+ */
+export function proveAccountNow(store: Store, by: string, token: string): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
+  const now = Date.now();
+  const facts = freshFacts.getStore();
+  if (facts != null && facts.actor === by && !facts.live()) return { ok: false, reason: "not-an-approver" };
+  // An empty password is never checked as a password (and never counts toward a lockout).
+  if (token === "") {
+    if (ssoNowAvailable(by, now)) { const at = facts!.ssoNow()!; facts!.consumeSsoNow(); return { ok: true, method: "sso-now", at }; }
+    const fresh = freshnessFor(by, now);
+    return fresh === null ? { ok: false, reason: "not-an-approver" } : { ok: true, method: fresh.method, at: fresh.at };
+  }
+  const account = authenticateAccount(store, by, token);
+  if (!account.ok) return { ok: false, reason: account.reason === "no-approvers" ? "no-approvers" : "not-an-approver" };
+  if (facts != null && facts.actor === by) facts.stamp(now);
+  return { ok: true, method: "password-now", at: now };
 }
 
 export function authenticateApprover(
@@ -1177,23 +1209,10 @@ export function authenticateApprover(
   token: string,
   repo?: string | null,
 ): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
-  const now = Date.now();
-  const proved = (method: AuthMethod, at: number) => { const standing = approverStanding(store, by, repo); return standing.ok ? { ok: true as const, method, at } : standing; };
-  // An empty password is never checked as a password (and never counts toward a lockout): it stands for an
-  // identity-provider check moments ago, or — inside an allowlisted act only — a fresh one.
-  if (token === "") {
-    if (hasFreshIdentitySignIn(by)) return proved("sso-now", freshFacts.getStore()?.ssoAt ?? now);
-    const fresh = freshnessFor(by, now);
-    return fresh === null ? { ok: false, reason: "not-an-approver" } : proved(fresh.method, fresh.at);
-  }
-  const account = authenticateAccount(store, by, token);
-  if (!account.ok) {
-    return { ok: false, reason: account.reason === "no-approvers" ? "no-approvers" : "not-an-approver" };
-  }
-  // A verified password entry starts this session's window (the console decides whether this request may).
-  const facts = freshFacts.getStore();
-  if (facts != null && facts.actor === by) facts.stamp(now);
-  return proved("password-now", now);
+  const proved = proveAccountNow(store, by, token);
+  if (!proved.ok) return proved;
+  const standing = approverStanding(store, by, repo);
+  return standing.ok ? proved : standing;
 }
 
 /**
@@ -1351,8 +1370,13 @@ export function approve(
     if ((authenticated.method === "fresh-password" || authenticated.method === "fresh-sso") && !freshlyApprovable(store, taskId, scope, gate.verdict === "seal" && !gate.protectedWork)) {
       return { ok: false as const, reason: "password-now" as const };
     }
+    // How the person was proved, beside every yes they give (a vote kept for protected work, or the seal): a password
+    // typed now, a re-check now, or a remembered one — with when, the credential generation and the exact digest.
+    const proved = () => store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
+      outcome: authenticated.method, source: "work", detail: approvalProofDetail(authenticated.at, store.accountOf(by)?.generation ?? 0, scope.digest) });
     if (gate.verdict === "vote") {
       store.recordApprovalVote(taskId, scope.digest, by, now);
+      proved();
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };
     }
     if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now);
@@ -1365,16 +1389,25 @@ export function approve(
     if (!sealed) return { ok: false as const, reason: "changed" as const };
     const approved = store.getScope(taskId);
     if (approved === null) return { ok: false as const, reason: "no-scope" as const };
-    // How the person was proved, beside the seal (cockpit B2): a password typed now, a re-check now, or a remembered
-    // one — with when, and the credential generation it stood on.
-    store.recordAction({ at: now.toISOString(), actor: by, repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: APPROVAL_PROOF,
-      outcome: authenticated.method, source: "work", detail: `${new Date(authenticated.at).toISOString()} · generation ${store.accountOf(by)?.generation ?? 0}` });
+    proved();
     return { ok: true as const, scope: approved };
   });
 }
 
 /** The ledger act that records how an approval's person was proved (password-now, sso-now, fresh-password, fresh-sso). */
 export const APPROVAL_PROOF = "approval proved";
+/** The proof row's detail: when the person was proved, the generation, and the exact digest they said yes to. */
+export const approvalProofDetail = (at: number, generation: number, digest: string): string => `${new Date(at).toISOString()} · generation ${generation} · digest ${digest}`;
+/** The proof of THIS approval: the approver's own row for these exact bytes (never another approval's words). */
+export function approvalProofOf(store: Store, taskId: string, by: string, digest: string): { method: string; at: string } | null {
+  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? ORDER BY id DESC LIMIT 50").all(taskId, APPROVAL_PROOF, by);
+  for (const row of rows) {
+    const parts = typeof row["detail"] === "string" ? row["detail"].split(" · ") : [];
+    if (parts.length !== 3 || parts[2] !== `digest ${digest}` || Number.isNaN(Date.parse(parts[0]!))) continue;
+    return { method: String(row["outcome"]), at: parts[0]! };
+  }
+  return null;
+}
 
 /** Whether a remembered password may approve these terms: one approver (no protected work), standard permissions
  * (never escalated), and not filed by a coordinator, a lead or a scout (those keep their own password ceremony). */

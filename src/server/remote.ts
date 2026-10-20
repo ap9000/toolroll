@@ -1,4 +1,4 @@
-import { ssoCheckedNow } from "../scope.js";
+import { freshFacts,type FreshFacts,proveAccountNow,ssoNowAvailable } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -11,7 +11,6 @@ import {
 rowVisible
 } from "../project.js";
 import { RequestBudget,SourceAdmission,type Admission } from "../request-budget.js";
-import { authenticateAccount } from "../scope.js";
 import { createSessionRunner } from '../session-remote.js';
 import {
 type Store
@@ -47,6 +46,7 @@ export interface RemoteRuntime {
   hookContext: RemoteHookContext;
   teamsSourceBudget: SourceAdmission;
   teamsTenantBudget: SourceAdmission;
+  freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
   const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
@@ -142,8 +142,9 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     session: request => {
       const who = identify(request, false);
       if (who === null || who.via !== "cookie") return null;
-      return { name: who.name, role: who.role, csrf: who.session.csrf,
-        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider", fresh: ssoCheckedNow(who.session.sso.at) } };
+      return { name: who.name, role: who.role, csrf: who.session.csrf, generation: who.session.generation,
+        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider",
+          fresh: freshFacts.run(runtime.freshFactsOf(request, who), () => ssoNowAvailable(who.name)) } };
     },
     sameSite: request => {
       const origin = request.headers.origin, referer = request.headers.referer;
@@ -152,7 +153,13 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     },
     // The step-up for a credential: the person's password, or (empty) a fresh identity-provider check. What they may
     // grant (their role, their projects) is checked beside it.
-    confirm: (session, typed) => typed === "" ? session.sso?.fresh === true : authenticateAccount(store, session.name, typed).ok,
+    // Proved on this request's live session at the moment of consent (signed in here still, same generation), through
+    // the one account step-up: a password typed now, or an explicit re-check (spent). Never a remembered password.
+    confirm: (request, session, typed) => {
+      const who = identify(request, false);
+      if (who === null || who.via !== "cookie" || who.name !== session.name || who.session.generation !== session.generation) return false;
+      return freshFacts.run(runtime.freshFactsOf(request, who), () => proveAccountNow(store, who.name, typed).ok);
+    },
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
     admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),
   });
