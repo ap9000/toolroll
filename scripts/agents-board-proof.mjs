@@ -299,6 +299,14 @@ let seeded;
     movedNow === 'done' && await page.evaluate(() => window.__samePage) === 'agent-view' && await page.$(`[data-agent-detail="${seeded.asking.run}"]`) !== null,
     `working rows before ${before}; the agent's row now in ${movedNow}`);
   await shot(page, 'desktop-3-agent-live', 'Desktop 1440px: the opened agent (question, long transcript, Reply) while the board updates beside it (synthetic)');
+  // The terminal view of the same records (cockpit §5): dense lines, the failed command's output tail, then back.
+  await page.click('[data-conversation-view] button:has-text("Terminal")');
+  await page.waitForSelector('[data-terminal]');
+  await page.waitForTimeout(400);
+  check('desktop: the terminal view shows the same records as dense lines, a failed command with its output tail', (await page.textContent('[data-terminal]') ?? '').includes('$ npm test')
+    && await page.$('[data-terminal] [data-terminal-output]') !== null && await page.getAttribute('[data-conversation-view] button:has-text("Terminal")', 'aria-pressed') === 'true');
+  await shot(page, 'desktop-3t-terminal', 'Desktop 1440px: the same agent in the terminal view (synthetic)');
+  await page.click('[data-conversation-view] button:has-text("Conversation")');
 
   // Reply.
   await page.fill('#agent-composer', 'Keep it until the marketing pages link to the new button, then remove it.');
