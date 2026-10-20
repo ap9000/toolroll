@@ -1,6 +1,7 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
 import { fileTaskProposal } from "./proposal.js";
+import { VERDICT_RULE } from "./lead-sweep.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -592,10 +593,17 @@ export function prepareSharedAction(
     state = {};
     const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
     title = `Start a sweep in ${project}: ${sweepTitle}`;
+    // Every word each child's scope will hold is shown here (the security review: nothing approved off-screen): its
+    // goal is the shared rules, then its item, then the verdict line; its success test is the shared acceptance.
+    const acceptance = Array.isArray(input["acceptance"]) ? input["acceptance"] as Record<string, unknown>[] : [];
+    if (acceptance.length === 0) throw Error("A sweep needs a success test every item shares.");
+    const tests = acceptance.map((one, index) => `Success test ${index + 1}${typeof one["id"] === "string" ? ` (${one["id"]})` : ""}: ${String(one["statement"] ?? "")}${Array.isArray(one["evidence"]) ? ` — shown by ${(one["evidence"] as unknown[]).map(String).join(", ")}` : ""}`);
     terms.push(
-      `${cleaned.length} tasks, each in its own worktree on its own branch, at most ${maxParallel} running at once.`,
+      `${cleaned.length} tasks, each in its own worktree on its own branch, at most ${maxParallel} running at once, built directly (no separate planning step).`,
       `Shared rules for every item: ${brief}`,
       ...cleaned.map(one => `Item ${one.index + 1} — ${one.title}: ${one.item}`),
+      `Each item's goal is the shared rules, then its own item, then: ${VERDICT_RULE}`,
+      ...tests.map(line => `Every item — ${line}`),
       "Confirming files all of them and approves each one's scope exactly as shown. An item that needs a second person, or that the project's rules keep from its requester, is filed and waits for its own approval.",
       "Each ends with a verdict (fixed, not reproducible, blocked or done) and the sweep's table shows them as they land.",
     );
@@ -1393,7 +1401,7 @@ function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payloa
   const filed: { id: string; title: string }[] = [];
   for (const [index, one] of items.entries()) {
     const made = fileTaskProposal(store, {
-      title: one.title, repo: payload.repo, goal: `${brief}\n\nThis item:\n${one.item}`, acceptance: req["acceptance"], planning: "skip",
+      title: one.title, repo: payload.repo, goal: `${brief}\n\nThis item:\n${one.item}\n\n${VERDICT_RULE}`, acceptance: req["acceptance"], planning: "skip",
       filedVia: "mate", filedBy: { name: who.name, kind: "person" as const }, proposedVia: "mate", admittedRepos: [...who.repos],
     }, now);
     if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) couldn't be filed: ${made.message}. Nothing was filed.`);

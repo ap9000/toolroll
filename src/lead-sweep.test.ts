@@ -173,6 +173,9 @@ describe("lead sweeps", () => {
     expect(saved.title).toContain("Discord bug sweep");
     expect(saved.terms.join("\n")).toContain("Item 2 — Cache TTL: Opus gets the 5-minute cache.");
     expect(saved.terms.join("\n")).toContain("at most 2 running at once");
+    // Nothing approved off-screen: the success test and the verdict line are on the card.
+    expect(saved.terms.join("\n")).toContain("Success test 1 (c1): Fixed with proof, or shown not reproducible. — shown by check");
+    expect(saved.terms.join("\n")).toContain("Start your handoff's conclusion with one line");
     expect(confirm(id)).toMatchObject({ ok: false, reason: "needs-confirm" });
     expect(store.sweepOfProposal(id)).toBeNull();
     const done = confirm(id, true);
