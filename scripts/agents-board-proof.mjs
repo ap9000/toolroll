@@ -81,6 +81,8 @@ function startAgent(id, title, repo, startedMinutesAgo) {
   const run = store.startRun({ taskRef: ref, leaseId: claim.claim.leaseId, runner: 'mac-studio', branch: `toolroll/${id}`, worktree: join(repo, `.wt-${id}`),
     now: ago(startedMinutesAgo), provider: 'claude', model: 'sonnet',
     route: { routeDigest: routeDigestOf(route), phase: 'build', provider: legOf(route, 'build').provider, model: legOf(route, 'build').model, chosen: legOf(route, 'build').chosen } });
+  // A real build opens its steering mailbox as its agent starts (builder.ts): the board's composer reads that.
+  store.markSteerFolderOpened(run, now());
   store.setRunPhase(run, 'agent-running');
   store.setTaskState(id, 'running', ago(startedMinutesAgo));
   return { id, ref, run, key: attemptKeyOf(store, run), lease: claim.claim.leaseId, route, worktree: join(repo, `.wt-${id}`) };
@@ -269,7 +271,7 @@ let seeded;
   await until(page, () => (document.querySelector('[data-agent-transcript]')?.textContent ?? '').includes('Asking before I remove it'));
   check('desktop: the conversation shows steps with their file or command, a failed command with its output, and the note it read', await page.$('[data-step-status="failed"] ') !== null
     && (await page.textContent('[data-agent-transcript]') ?? '').includes('npm test -- src/login') && (await page.textContent('[data-agent-transcript]') ?? '').includes('src/login/LoginForm.tsx')
-    && await page.$('[data-conversation-note]') !== null && (await page.textContent('[data-conversation-note] [data-note-standing]') ?? '').startsWith('Read by the agent at'));
+    && await page.$('[data-conversation-note]') !== null && (await page.textContent('[data-conversation-note] [data-note-standing]') ?? '').startsWith('Picked up at'));
   {
     // Open the failed command's output, then put the conversation back as it was.
     const failed = await page.$('[data-step-status="failed"]');

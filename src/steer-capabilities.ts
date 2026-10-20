@@ -73,5 +73,7 @@ export function steerCapabilityOf(store: Store, runId: number, now: Date): Steer
   const state = store.handle.prepare("SELECT phase, steer_opened_at FROM run WHERE id = ?").get(run.id);
   const starting = state !== undefined && state["phase"] == null && state["steer_opened_at"] == null && store.currentLiveLease(run.taskRef, now) === run.leaseId;
   if (starting) return { send: "mailbox", pause: false, stop: stopOf("Stop"), words: "It reads notes when it starts working." };
+  // Never given a mailbox (steering off for it), or past it.
+  if (state?.["steer_opened_at"] == null) return { send: null, pause: false, stop: stopOf("Stop"), words: "It doesn't read notes; anything you send waits for the next attempt." };
   return { send: null, pause: false, stop: stopOf("Stop"), words: "It has stopped reading notes; anything you send now waits for the next attempt." };
 }

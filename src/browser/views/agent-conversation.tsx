@@ -332,7 +332,7 @@ export function ConversationPane({ url, live }: { url: string | null; live: bool
       <h3 className="sr-only">{view === "terminal" ? "Terminal" : "Conversation"}</h3>
       <div role="group" aria-label="How to show it" className="flex gap-1" data-conversation-view={view}>
         {(["conversation", "terminal"] as const).map(one => <button key={one} type="button" aria-pressed={view === one} onClick={() => choose(one)}
-          className={cn("rounded-md px-2 py-0.5 text-caption phone:min-h-11", view === one ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}>
+          className={cn("rounded-md border px-2 py-0.5 text-caption shadow-none phone:min-h-11", view === one ? "border-border bg-foreground/[0.07] font-medium text-foreground" : "border-transparent bg-transparent text-muted-foreground hover:text-foreground")}>
           {one === "terminal" ? "Terminal" : "Conversation"}</button>)}
       </div>
     </div>

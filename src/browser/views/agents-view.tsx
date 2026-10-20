@@ -167,7 +167,7 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const pauseAndSend = detail.controls?.pause != null && detail.controls.pause.state === null ? detail.controls.pause : null;
   return <PostForm action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"}
     onSubmit={() => { if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}
-    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:sticky desk:bottom-0 desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
       : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} />
         {pauseAndSend !== null && <input type="hidden" name="request" value={pauseAndSend.requests[1]} />}</>}
@@ -205,8 +205,11 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       <ConversationPane url={detail.transcript} live={detail.live} />
       <ChangesPane detail={detail} />
     </div>
-    {detail.canAct && detail.controls != null && <SteerControls controls={detail.controls} back="agents" />}
-    <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
+    {/* One footer, pinned on a desk: what the agent takes and its controls, then the composer (never one over the other). */}
+    <div className="flex flex-col desk:sticky desk:bottom-0 desk:bg-card phone:shrink-0" data-agent-footer>
+      {detail.canAct && detail.controls != null && <SteerControls controls={detail.controls} back="agents" />}
+      <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
+    </div>
   </section>;
 }
 
