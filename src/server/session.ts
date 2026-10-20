@@ -24,6 +24,9 @@ export const SIGN_IN_LINK_MS = 10 * 60_000;
 /** A cookie idles out after half a day and dies outright after a week. */
 export const SESSION_IDLE_MS = 12 * 60 * 60_000;
 export const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60_000;
+/** A session's lifetime, the one reading: within its idle and absolute limits (sign-in lookup and every act use it). */
+export const sessionWithinLifetime = (session: { lastSeen: number; createdAt: number }, now: number): boolean =>
+  now - session.lastSeen <= SESSION_IDLE_MS && now - session.createdAt <= SESSION_ABSOLUTE_MS;
 /** An approval nonce is a rendered form, not a standing right — it ages out fast. */
 export const NONCE_TTL_MS = 15 * 60_000;
 export const NONCE_CAP = 500;

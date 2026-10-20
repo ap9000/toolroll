@@ -24,7 +24,7 @@ import type { RouteDeclaration } from './route-table.js';
 import { requestContext } from "./request-context.js";
 import { refuse } from "./chrome.js";
 import { matchTaskPath } from "./http.js";
-import { PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_COOKIE,SESSION_IDLE_MS,type Session,type Who } from "./session.js";
+import { PersistentSessions,SESSION_COOKIE,sessionWithinLifetime,type Session,type Who } from "./session.js";
 /** Shared browser, credential and project guards. Runtime access is lazy to preserve server initialization order. */
 export interface GuardsRuntime {
   store: Store;
@@ -329,7 +329,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     if (found === null) { const loaded = runtime.sessions.load(candidate); if (loaded !== null) found = [candidate, loaded]; }
     for (const [id, session] of found === null ? [] : [found]) {
       const now = Date.now();
-      if (now - session.lastSeen > SESSION_IDLE_MS || now - session.createdAt > SESSION_ABSOLUTE_MS) {
+      if (!sessionWithinLifetime(session, now)) {
         runtime.sessions.delete(id);
         return null;
       }

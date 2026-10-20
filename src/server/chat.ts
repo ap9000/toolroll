@@ -1,4 +1,4 @@
-import { withFreshness } from "../scope.js";
+import { freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -60,7 +60,7 @@ import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
 import { html,htmlString,postForm } from "../html.js";
 import { requestContext } from "./request-context.js";
-import { refuse,screen,type Screen } from "./chrome.js";
+import { refuse,screen,whenTime,type Screen } from "./chrome.js";
 import { chatResultHref,chatReturnWithLatest,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
 import { chatAckPage,chatPage,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
 import { type ProjectPeek } from "./render-pages.js";
@@ -406,7 +406,20 @@ export function createChatHandlers(runtime: ServerRuntime) {
       const review=mintSharedActionReview(store,principal,id,evidenceRoot,clock()),action=review.payload;
       const terms=action.terms.map(term=>html`<p style="white-space:pre-wrap;overflow-wrap:anywhere">${term}</p>`);
       const evidenceLink=action.operation==='result_accept'?html`<a href="/r/${Number(action.request['run'])}">Inspect this result</a>`:'';
-      const content=html`<section class="shared-action"><h1>${action.title}</h1>${evidenceLink}${terms}${postForm(`/chat/proposal/${id}/confirm`,html`<label class="arm"><input type="checkbox" name="confirm" value="yes" required>I confirm this exact action</label>${CHAT_ACTIONS[action.operation].password?html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`:''}<button>${CHAT_ACTIONS[action.operation].label}</button>`,{returnTo:'/chat',hidden:{nonce:review.nonce}})}</section>`;
+      // Cockpit B2: approving standard work may stand on a password remembered on this session, exactly as on the task
+      // page (the same rule approve() applies when the form comes back); the field then may be left empty.
+      const freshSince=(()=>{
+        const task=typeof action.request['task']==='string'?action.request['task']:null;
+        if(action.operation!=='scope_approve'||task===null)return null;
+        const scope=store.getScope(task),fresh=withFreshness('approve-standard',()=>freshnessFor(who.name,Date.now(),true));
+        if(scope===null||fresh===null)return null;
+        const gate=store.approvalGate(task,who.name,'person');
+        return freshlyApprovable(store,task,scope,gate.verdict==='seal'&&!gate.protectedWork)?new Date(fresh.at):null;
+      })();
+      const passwordField=!CHAT_ACTIONS[action.operation].password?'':freshSince===null
+        ?html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`
+        :html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label><p class="approval-password-note" data-approval-fresh>Your password from ${whenTime(freshSince.toISOString())} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`;
+      const content=html`<section class="shared-action"><h1>${action.title}</h1>${evidenceLink}${terms}${postForm(`/chat/proposal/${id}/confirm`,html`<label class="arm"><input type="checkbox" name="confirm" value="yes" required>I confirm this exact action</label>${passwordField}<button>${CHAT_ACTIONS[action.operation].label}</button>`,{returnTo:'/chat',hidden:{nonce:review.nonce}})}</section>`;
       return sendScreen(response,200,screen('Review action',content,{chrome:chromeFor(action.repo,'chat')}));
     }catch(error){return refuse(response,who,409,error instanceof Error?error.message:'This action could not be reviewed.','/chat');}
   }

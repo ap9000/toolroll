@@ -360,7 +360,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
     // Bounded: anyone may start a sign-in, so the oldest waiting ones give way.
     while (ssoVisits.size >= 1000) ssoVisits.delete(ssoVisits.keys().next().value!);
-    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000, startedAt: Date.now() });
+    const asker = intent === "sign-in" || who?.via !== "cookie" ? null : sessions.hashOf(who.session);
+    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000, startedAt: Date.now(),
+      session: asker === null || who?.via !== "cookie" ? null : { hash: asker, generation: who.session.generation } });
     response.writeHead(302, { location: oidcAuthorizeUrl(found.provider, settings, visit, redirectUri, intent === "reauth"), "cache-control": "no-store", "referrer-policy": "no-referrer",
       "set-cookie": `${SIGN_IN_COOKIE}=${visit.state}; Path=${SSO_CALLBACK}; Max-Age=900; HttpOnly; SameSite=Lax${origin.startsWith("https:") ? "; Secure" : ""}` });
     response.end();
@@ -384,6 +386,10 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const identity = { issuer: handoff.issuer, subject: claims.sub, email: claims.email, label: settings.label };
     if (handoff.intent === "link" || handoff.intent === "reauth") {
       if (who?.via !== "cookie") return redirect(response, loginHref(handoff.returnTo));
+      // Only the session that asked: same kept session, same credential generation.
+      if (handoff.session === null || sessions.hashOf(who.session) !== handoff.session.hash || who.session.generation !== handoff.session.generation) {
+        return page(response, 403, loginPage(`That ${settings.label} check was started by another sign-in. Start it again from this page.`, handoff.returnTo, ssoOffer()));
+      }
       if (handoff.intent === "link") {
         const linked = store.linkSsoIdentity(who.name, identity, clock());
         if (!linked.ok) return redirect(response, `/settings/sign-in?problem=${encodeURIComponent(`That ${settings.label} account signs in as someone else here.`)}`);
@@ -668,7 +674,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const key = randomBytes(24).toString("base64url");
     for (const [one, value] of ssoHandoffs) if (value.expires < Date.now()) ssoHandoffs.delete(one);
     while (ssoHandoffs.size >= 1000) ssoHandoffs.delete(ssoHandoffs.keys().next().value!);
-    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000, checkedAt });
+    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000, checkedAt, session: held.session });
     const to = `/login/sso/finish?h=${key}`;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
       // The hand-off key is this browser's alone, like the visit's state: its cookie rides to /login/sso/finish.

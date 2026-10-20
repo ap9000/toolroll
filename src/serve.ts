@@ -162,7 +162,7 @@ import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
-import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
+import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
@@ -323,8 +323,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** That source as every per-source budget counts it: a native IPv6 caller by its /64 (source-key.ts). */
   function joinSourceOf(request: IncomingMessage): string { return sourceKey(forwardedSourceOf(request)); }
   const signInBudget = new SourceBudget();
-  const ssoVisits = new Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number }>();
-  const ssoHandoffs = new Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null }>();
+  // A re-check or a link is the session that started it: its kept hash and credential generation ride the visit and the
+  // hand-off, and finish refuses any other session (a sign-out and a new sign-in in between never inherit it).
+  const ssoVisits = new Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number; session: { hash: string; generation: number } | null }>();
+  const ssoHandoffs = new Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null; session: { hash: string; generation: number } | null }>();
   let ssoProvider: { issuer: string; provider: OidcProvider; at: number } | null = null;
   const ssoSettings = () => readSsoSettings(options.configDir);
   const ssoOffer = () => { const settings = ssoSettings(); return settings === null ? null : { label: settings.label, operatorsOnly: settings.passwords === "operators" }; };
@@ -358,13 +360,22 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function freshFactsOf(request: IncomingMessage, who: Who | null, allowlisted = false): FreshFacts | null {
     if (who?.via !== 'cookie') return null;
     const session = who.session, local = fromThisComputer(request);
+    // The same validity lookupSession applies, read again at the act: held here, within its idle and absolute
+    // lifetimes, under the account's current credential generation, not revoked.
     const live = () => {
-      const account = store.accountOf(who.name);
-      return sessions.holds(session) && account !== null && account.revokedAt === null && account.generation === session.generation;
+      const now = Date.now(), account = store.accountOf(who.name);
+      return sessions.holds(session) && sessionWithinLifetime(session, now)
+        && account !== null && account.revokedAt === null && account.generation === session.generation;
     };
     return { actor: who.name, local, allowlisted, live,
       passwordAt: () => session.passwordAt ?? null, ssoReauthAt: () => session.ssoReauthAt ?? null,
-      ssoNow: () => session.ssoNowAt ?? null, consumeSsoNow: () => { delete session.ssoNowAt; },
+      ssoNow: () => session.ssoNowAt ?? null,
+      consumeSsoNow: () => {
+        const was = session.ssoNowAt;
+        delete session.ssoNowAt;
+        // A refund puts back only what this spend took, and only if nothing newer arrived (Forget still floors it).
+        return () => { if (was !== undefined && session.ssoNowAt === undefined) session.ssoNowAt = was; };
+      },
       floor: () => session.freshFloor ?? 0,
       // Only a direct local request may start a password window (a typed password elsewhere proves now, nothing more).
       stamp: at => { if (local && live()) session.passwordAt = at; } };

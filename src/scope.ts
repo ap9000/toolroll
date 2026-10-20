@@ -1154,13 +1154,27 @@ export type FreshFacts = {
   passwordAt: () => number | null;
   ssoReauthAt: () => number | null;
   ssoNow: () => number | null;
-  consumeSsoNow: () => void;
+  /** Spend the re-check; the answer puts it back (a refund) when the act it proved doesn't happen. */
+  consumeSsoNow: () => () => void;
   /** Nothing before this counts (Forget). */
   floor: () => number;
   /** Record a verified password entry on this session (the console decides whether this request may start one). */
   stamp: (at: number) => void;
 };
 export const freshFacts = new AsyncLocalStorage<FreshFacts | null>();
+const refunds = new AsyncLocalStorage<(() => void)[]>();
+/**
+ * Run an act a re-check may prove, spending the re-check only if the act happens: when it throws (a rolled-back
+ * transaction) or `failed` says it was refused, every re-check it spent is put back. Synchronous acts only.
+ */
+export function spendingOnlyOnSuccess<T>(act: () => T, failed: (result: T) => boolean): T {
+  const spent: (() => void)[] = [];
+  let result: T;
+  try { result = refunds.run(spent, act); }
+  catch (error) { for (const refund of spent) refund(); throw error; }
+  if (failed(result)) for (const refund of spent) refund();
+  return result;
+}
 const freshScope = new AsyncLocalStorage<FreshOp>();
 /** Run an allowlisted act: within it, a fresh password or re-check may stand in for one typed now. */
 export function withFreshness<T>(op: FreshOp, act: () => T): T { return freshScope.run(op, act); }
@@ -1193,7 +1207,12 @@ export function proveAccountNow(store: Store, by: string, token: string): { ok: 
   if (facts != null && facts.actor === by && !facts.live()) return { ok: false, reason: "not-an-approver" };
   // An empty password is never checked as a password (and never counts toward a lockout).
   if (token === "") {
-    if (ssoNowAvailable(by, now)) { const at = facts!.ssoNow()!; facts!.consumeSsoNow(); return { ok: true, method: "sso-now", at }; }
+    if (ssoNowAvailable(by, now)) {
+      const at = facts!.ssoNow()!;
+      const refund = facts!.consumeSsoNow();
+      refunds.getStore()?.push(refund);
+      return { ok: true, method: "sso-now", at };
+    }
     const fresh = freshnessFor(by, now);
     return fresh === null ? { ok: false, reason: "not-an-approver" } : { ok: true, method: fresh.method, at: fresh.at };
   }

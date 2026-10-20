@@ -158,6 +158,25 @@ test("a step-up is an explicit re-check made on request, spent by the one step-u
   expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).toContain("Confirm with Okta</a>");
 });
 
+test("a re-check belongs to the session that started it: finished from another sign-in, it is refused and freshens nothing", async () => {
+  await turnOn();
+  person.groups = ["eng-leads"];
+  const first = cookieOf(await providerSignIn());
+  // The first session starts a re-check, and the provider answers it…
+  const start = await fetch(`${base}/login/sso?reauth=1&return=/settings/tools`, { headers: { cookie: first }, redirect: "manual" });
+  const go = new URL(start.headers.get("location")!);
+  lastNonce = go.searchParams.get("nonce")!;
+  const back = await fetch(`${base}/login/sso/callback?code=the-code&state=${go.searchParams.get("state")}`, { headers: { cookie: cookieOf(start) }, redirect: "manual" });
+  const finish = /content="0;url=([^"]+)"/.exec(await back.text())![1]!.replace(/&amp;/g, "&");
+  const handoff = back.headers.getSetCookie().map(one => one.split(";")[0]!).find(one => /^so-sign-in=.+/.test(one))!;
+  // …but by then this browser holds another sign-in.
+  const second = cookieOf(await providerSignIn());
+  const finished = await fetch(`${base}${finish}`, { headers: { cookie: [handoff, second].join("; ") }, redirect: "manual" });
+  expect(finished.status).toBe(403);
+  expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie: second } })).text()).not.toContain('data-sso-step-up="confirmed"');
+  expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie: first } })).text()).not.toContain('data-sso-step-up="confirmed"');
+});
+
 test("someone who signs in only with the provider approves a task on an explicit re-check, and not on the sign-in alone", async () => {
   await turnOn();
   person.groups = ["eng-leads"];

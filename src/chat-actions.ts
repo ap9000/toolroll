@@ -34,6 +34,7 @@ import {
   scopeAuthorityOf,
   type ExecutionProfile,
   freshnessFor,
+  spendingOnlyOnSuccess,
   ssoNowAvailable,
   withFreshness,
 } from "./scope.js";
@@ -1140,7 +1141,8 @@ export function executeSharedAction(
       );
   }
   try {
-    return store.savepoint(() => {
+    // A re-check (sso-now) is spent only if the action happens: a refusal or a rolled-back savepoint puts it back.
+    return spendingOnlyOnSuccess(() => store.savepoint(() => {
       const task = typeof req["task"] === "string" ? req["task"] : null,
         repo = payload.repo,
         actor = who.name;
@@ -1249,8 +1251,9 @@ export function executeSharedAction(
           options.review!.password,
         ));
         if (!result.ok) {
+          // A first yes on protected work is kept, with how its person was proved: committed, never rolled back.
+          if (result.reason === "second-approver") return { ok: true as const, taskId, said: gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }) };
           // v102: the project's approval rules speak for themselves.
-          if (result.reason === "second-approver") throw Error(gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }));
           if (result.reason === "requester" || result.reason === "person-required") throw Error(gateWords({ verdict: "refuse", reason: result.reason }));
           if (result.reason === "policy") throw Error(result.message);
           throw Error(`Approval refused: ${result.reason}.`);
@@ -1313,7 +1316,7 @@ export function executeSharedAction(
                               ? "Saved project knowledge restored."
                               : "Project knowledge saved.";
       return { ok: true as const, taskId, said };
-    });
+    }), result => !result.ok);
   } catch (error) {
     return refuse(
       "refused",
