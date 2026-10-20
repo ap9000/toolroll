@@ -22,6 +22,8 @@ const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 let dir: string, store: Store, server: Server, base: string, password: string;
 /** Who the provider says signs in next, and their groups. */
 let person = { sub: "00u-priya", email: "priya@acme.com", groups: ["eng"] };
+/** When the provider says it checked the person (auth_time): now by default; a test may say a stale time, or none. */
+let authTimeOf: (now: number) => number | undefined = now => now;
 let lastNonce = "";
 
 const provider = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -34,7 +36,7 @@ const provider = (async (input: string | URL | Request, init?: RequestInit) => {
     if (form.get("code") !== "the-code" || form.get("client_secret") !== "shh" || !form.get("code_verifier")) return json({ error: "invalid_grant" }, 400);
     const now = Math.floor(new Date().getTime() / 1000); // the provider's own clock
     const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    const data = `${part({ alg: "RS256", kid: "k1" })}.${part({ iss: ISSUER, aud: "so-app", sub: person.sub, email: person.email, groups: person.groups, nonce: lastNonce, iat: now, exp: now + 600, auth_time: now })}`;
+    const data = `${part({ alg: "RS256", kid: "k1" })}.${part({ iss: ISSUER, aud: "so-app", sub: person.sub, email: person.email, groups: person.groups, nonce: lastNonce, iat: now, exp: now + 600, ...(authTimeOf(now) === undefined ? {} : { auth_time: authTimeOf(now) }) })}`;
     return json({ id_token: `${data}.${sign("sha256", Buffer.from(data), keys.privateKey).toString("base64url")}` });
   }
   return json({}, 404);
@@ -218,4 +220,29 @@ test("only step-up password fields become the provider's check; a secret field s
     '<input type="hidden" name="token" value=""><span class="sso-step-up" data-sso-step-up="confirmed">Confirmed with Okta</span>' +
     '<label>Token from @BotFather<input type="password" name="token" autocomplete="off"></label>');
   expect(htmlString(ssoStepUps(page, { label: "Okta", fresh: false }, "/t/a?b=1"))).toContain('href="/login/sso?reauth=1&amp;return=%2Ft%2Fa%3Fb%3D1">Confirm with Okta</a>');
+});
+
+test("a step-up's provider check must be one made for it: no auth_time, or one from before the request, is refused; a sign-in without one is never fresh", async () => {
+  const { sameVisitCheck } = await import("./server/people-tokens.js");
+  const started = Date.parse("2026-10-20T10:00:00.000Z");
+  expect(sameVisitCheck(null, started, started + 5_000)).toBeNull();
+  expect(sameVisitCheck((started - 3_600_000) / 1000, started, started + 5_000)).toBeNull();
+  expect(sameVisitCheck((started + 600_000) / 1000, started, started + 5_000)).toBeNull();
+  expect(sameVisitCheck((started + 2_000) / 1000, started, started + 5_000)).toBe(started + 2_000);
+  // Through the console: a reauth whose token carries no auth_time is refused, and one from long ago too.
+  await turnOn();
+  person.groups = ["eng-leads"];
+  authTimeOf = () => undefined;
+  try {
+    const cookie = cookieOf(await providerSignIn());
+    // Signed in, but not fresh: a step-up page asks to confirm with the provider rather than taking it as confirmed.
+    expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).not.toContain('data-sso-step-up="confirmed"');
+    const missing = await providerSignIn("?reauth=1&return=/settings/tools", cookie);
+    expect(missing.status).toBe(400);
+    authTimeOf = now => now - 7_200;
+    expect((await providerSignIn("?reauth=1&return=/settings/tools", cookie)).status).toBe(400);
+    authTimeOf = now => now;
+    expect((await providerSignIn("?reauth=1&return=/settings/tools", cookie)).headers.get("location")).toBe("/settings/tools");
+    expect(await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text()).toContain('data-sso-step-up="confirmed"');
+  } finally { authTimeOf = now => now; }
 });

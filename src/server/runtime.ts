@@ -160,8 +160,8 @@ export interface ServerRuntime {
   passwordAllowed: (name: string) => boolean;
   arrival: (request: IncomingMessage) => { agent: string | null; address: string; };
   cookieSecure: "" | "; Secure";
-  ssoVisits: Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; }>;
-  ssoHandoffs: Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; }>;
+  ssoVisits: Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number; }>;
+  ssoHandoffs: Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null; }>;
   joinSourceOf: (request: IncomingMessage) => string;
   signInBudget: SourceBudget;
   signInActor: (name: string | null) => string;

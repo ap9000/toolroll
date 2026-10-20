@@ -318,8 +318,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** That source as every per-source budget counts it: a native IPv6 caller by its /64 (source-key.ts). */
   function joinSourceOf(request: IncomingMessage): string { return sourceKey(forwardedSourceOf(request)); }
   const signInBudget = new SourceBudget();
-  const ssoVisits = new Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number }>();
-  const ssoHandoffs = new Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number }>();
+  const ssoVisits = new Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number }>();
+  const ssoHandoffs = new Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null }>();
   let ssoProvider: { issuer: string; provider: OidcProvider; at: number } | null = null;
   const ssoSettings = () => readSsoSettings(options.configDir);
   const ssoOffer = () => { const settings = ssoSettings(); return settings === null ? null : { label: settings.label, operatorsOnly: settings.passwords === "operators" }; };

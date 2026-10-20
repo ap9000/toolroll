@@ -29,6 +29,17 @@ import { hashPassword } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+
+/** Clock skew allowed between the provider and this server when reading auth_time. */
+const AUTH_TIME_SKEW_MS = 60_000;
+/** When the provider checked the person, in ms, if its auth_time is a check made for this visit: present, no earlier
+ * than the visit began (less skew), and not in the future beyond the skew. Null otherwise. */
+export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {
+  if (authTime === null || !Number.isFinite(authTime)) return null;
+  const at = authTime * 1000;
+  if (at < startedAt - AUTH_TIME_SKEW_MS || at > now + AUTH_TIME_SKEW_MS) return null;
+  return Math.min(at, now);
+}
 export function createPeopleHandlers(runtime: ServerRuntime) {
   const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
@@ -346,7 +357,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
     // Bounded: anyone may start a sign-in, so the oldest waiting ones give way.
     while (ssoVisits.size >= 1000) ssoVisits.delete(ssoVisits.keys().next().value!);
-    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000 });
+    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000, startedAt: Date.now() });
     response.writeHead(302, { location: oidcAuthorizeUrl(found.provider, settings, visit, redirectUri, intent === "reauth"), "cache-control": "no-store", "referrer-policy": "no-referrer",
       "set-cookie": `${SIGN_IN_COOKIE}=${visit.state}; Path=${SSO_CALLBACK}; Max-Age=900; HttpOnly; SameSite=Lax${origin.startsWith("https:") ? "; Secure" : ""}` });
     response.end();
@@ -373,13 +384,13 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       if (handoff.intent === "link") {
         const linked = store.linkSsoIdentity(who.name, identity, clock());
         if (!linked.ok) return redirect(response, `/settings/sign-in?problem=${encodeURIComponent(`That ${settings.label} account signs in as someone else here.`)}`);
-        who.session.sso = { at: Date.now() };
+        who.session.sso = { at: handoff.checkedAt ?? 0 };
         sessions.persist(who.session);
         return redirect(response, `/settings/sign-in?said=${encodeURIComponent(`This account signs in with ${settings.label} now.`)}`);
       }
       // A step-up: the provider checked the same person again.
       if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginPage(`That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
-      who.session.sso = { at: Date.now() };
+      who.session.sso = { at: handoff.checkedAt ?? 0 };
       sessions.persist(who.session);
       recordSignIn(who.name, "confirmed", settings.label);
       return redirect(response, handoff.returnTo);
@@ -395,7 +406,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1, sso: { at: Date.now() } });
+      project: defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
     response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
     return redirect(response, handoff.returnTo);
@@ -638,12 +649,15 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return page(response, 403, loginPage("This sign-in is not allowed."));
     const verified = await verifyIdToken(token.idToken, held.provider, settings, held.visit.nonce, clock(), fetcher);
     if (!verified.ok) { logEvent("warn", "sso.refused", { reason: verified.said }); return back(verified.said); }
-    // A step-up must be a check made just now, not a remembered one.
-    if (held.intent === "reauth" && verified.claims.authTime !== null && Date.now() / 1000 - verified.claims.authTime > 300) return back(`${settings.label} didn't check you again. Try once more.`);
+    // When the provider checked the person (its auth_time), proved against this visit (cockpit B2, N18): no earlier than
+    // this visit began, and not in the future beyond a minute of clock skew. A step-up must carry one that holds — a
+    // check made for this request, never a remembered one; any other sign-in without one signs in, but is never fresh.
+    const checkedAt = sameVisitCheck(verified.claims.authTime, held.startedAt, Date.now());
+    if (held.intent === "reauth" && checkedAt === null) return back(`${settings.label} didn't check you again. Try once more.`);
     const key = randomBytes(24).toString("base64url");
     for (const [one, value] of ssoHandoffs) if (value.expires < Date.now()) ssoHandoffs.delete(one);
     while (ssoHandoffs.size >= 1000) ssoHandoffs.delete(ssoHandoffs.keys().next().value!);
-    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000 });
+    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000, checkedAt });
     const to = `/login/sso/finish?h=${key}`;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
       // The hand-off key is this browser's alone, like the visit's state: its cookie rides to /login/sso/finish.
