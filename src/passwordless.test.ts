@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 import { openStore, type Store } from "./store.js";
 import { addApprover, credentialProof, freshFacts, proveAccountNow, proveCredential, rememberedLogin, type FreshFacts } from "./scope.js";
 import { passwordlessOn, passwordlessSetting, setPasswordless } from "./passwordless.js";
+import { withRemote } from "./remote-run.js";
 
 const T0 = new Date("2026-10-20T10:00:00.000Z");
 
@@ -138,5 +139,16 @@ describe("round 1 of the implementation review", () => {
     const first = { login: { name: "alex", token: password } as { name: string; token: string } | null };
     rememberedLogin.run(first, () => expect(proveAccountNow(store, "alex", password).method).toBe("cli-login"));
     rememberedLogin.run({ login: null }, () => expect(proveAccountNow(store, "alex", password)).toMatchObject({ ok: true, method: "password-now" }));
+  });
+});
+
+describe("round 2 of the implementation review", () => {
+  test("a remote run's API token never proves a credential act (it can't mint a webhook address or anything else)", () => {
+    const { store } = setup();
+    const run = { account: "alex", scope: "act" as const, tokenName: "ci", source: "api" as const, secret: "remote-run-secret-0123456789", allows: () => true, lens: null, noteTask: () => {}, files: {} };
+    withRemote(run, () => {
+      expect(proveAccountNow(store, "alex", run.secret)).toMatchObject({ ok: true, method: "remote-token" });
+      expect(proveCredential(store, "alex", run.secret).ok).toBe(false);
+    });
   });
 });

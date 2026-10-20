@@ -1141,7 +1141,9 @@ export function authenticateAccount(
  */
 export type FreshOp = "approve-standard" | "chat-send" | "reply-question";
 /** "session": Passwordless is on and this is the person's own live browser session (docs/plans/passwordless.md). */
-export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso" | "session" | "cli-login";
+/** "remote-token" / "lead-token": a machine credential stood in for the person (a remote run's API token, a lead's
+ * token) — fine for ordinary acts it is allowed, never for a credential act (it would mint a way in with no password). */
+export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso" | "session" | "cli-login" | "remote-token" | "lead-token";
 
 /**
  * The local CLI's remembered login, marked for the one command that read it (operate.ts credentialsFrom): with
@@ -1238,6 +1240,9 @@ export function proveAccountNow(store: Store, by: string, token: string, options
   }
   const account = authenticateAccount(store, by, token);
   if (!account.ok) return { ok: false, reason: account.reason === "no-approvers" ? "no-approvers" : "not-an-approver" };
+  // A machine credential named the person (authenticateAccount takes it as them): say so, never "a password typed now".
+  if (activeRemote() !== null) return { ok: true, method: "remote-token", at: now };
+  if (currentActor()?.lead === true && parseLeadToken(token) !== null) return { ok: true, method: "lead-token", at: now };
   const remembered = rememberedLogin.getStore()?.login;
   if (remembered != null && remembered.name === by && remembered.token === token && passwordlessOn(store)) return { ok: true, method: "cli-login", at: now };
   if (facts != null && facts.actor === by) facts.stamp(now);

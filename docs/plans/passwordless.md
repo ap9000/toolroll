@@ -212,3 +212,9 @@ Passwordless and must keep working unattended; every other worker registration s
 3. **Medium — the remembered-login mark wasn't command-scoped** → each CLI command runs with its own holder
    (`rememberedLogin.run({ login: null }, …)` in `runOperate`); `credentialsFrom` fills only that holder.
 - Also: ordinary `StepUp`s in the flow view (the Linear key, signing "runs on its own") follow Passwordless.
+
+## Implementation review — round 2 (Codex: 2 CLOSED, 1 OPEN)
+
+1. **A remote run's API token could add a webhook trigger** (remote `flows trigger add` proved as `password-now`) →
+   `proveAccountNow` now records a machine credential as itself: `remote-token` inside a remote run, `lead-token` for a
+   lead's token. `credentialProof` accepts neither, so no machine credential can do any credential act on any path.
