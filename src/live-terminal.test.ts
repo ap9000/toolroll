@@ -244,6 +244,21 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(existsSync(started.worktree)).toBe(false);
   });
 
+  test("a process seen in the worktree must exit, not just leave the folder, before removal (round 4)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    // It starts in the worktree, then moves out while it keeps running.
+    const mover = spawnChild("/bin/sh", ["-c", "sleep 0.8; cd /; exec sleep 30"], { cwd: started.worktree, stdio: "ignore" });
+    try {
+      await until(() => mover.pid !== undefined);
+      await host.close(started.id);
+      expect(host.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      await expect(host.remove(started.id)).rejects.toThrow(/may still be running/);
+    } finally { mover.kill("SIGKILL"); }
+    await until(() => gone(mover.pid!));
+    await host.remove(started.id);
+  });
+
   test("an unreadable list of who works in the worktree is uncertain", async () => {
     const unsure = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "unsure"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } },
       env: () => ({ PATH: process.env["PATH"] ?? "" }), residents: () => null });

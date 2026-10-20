@@ -180,3 +180,13 @@ not found — no worse than closing any terminal window on macOS.
   console lives, until the terminal is removed.
 - Background security check: a start also refuses on the main database's own update pause, so an update that began
   before the terminal catalog existed still fails closed (687226e3).
+
+## Review — round 4 (Codex confirmation on 0fadb8ea): 5 of 6 CLOSED, no session-path regression, 1 new High
+
+- **New High (Remove after a resident moved out).** The sweep now records every process found working in the worktree
+  by pid and start time; Remove requires each to have *exited* (not merely changed directory), plus no current
+  resident.
+- **3 (children escaping close)** is the stated limit, now narrowed: a child created during the close is caught by the
+  next 100 ms scan while it is a descendant, has this terminal, or works in the worktree (then it blocks removal until
+  it exits). Only one that detaches from the terminal, is reparented, AND leaves the worktree within one scan is not
+  seen — macOS has no containment to prove otherwise (Linux cgroups would; not in this slice).

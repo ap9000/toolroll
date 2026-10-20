@@ -154,6 +154,7 @@ type Session = TerminalSummary & {
   startedMs: number;
   /** The sweep proved its own processes gone, and only someone else's work in the worktree kept it from "clean". */
   residentsOnly: boolean;
+  residentsSeen: Map<number, string>;
   cols: number;
   rows: number;
   scrollback: Scrollback;
@@ -314,7 +315,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, cols, rows, scrollback: new Scrollback(this.options.scrollbackBytes), viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, scrollback: new Scrollback(this.options.scrollbackBytes), viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -464,7 +465,12 @@ export class TerminalHost {
       if (cleanup === "clean") {
         const table = this.processes();
         const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal);
-        if (residents === null || residents.size > 0) { cleanup = "uncertain"; session.residentsOnly = residents !== null; }
+        if (residents === null || residents.size > 0) {
+          cleanup = "uncertain";
+          session.residentsOnly = residents !== null;
+          // Who was there, by pid and start time: removal waits for each to exit, not merely to leave the folder.
+          for (const pid of residents ?? []) { const row = table!.get(pid); if (row !== undefined) session.residentsSeen.set(pid, row.started); }
+        }
       }
       session.cleanup = readable && leaderGone() ? cleanup : "uncertain";
       if (session.endedAt === null) session.endedAt = this.clock().toISOString();
@@ -486,6 +492,9 @@ export class TerminalHost {
     const table = this.processes();
     const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal);
     if (residents === null || residents.size > 0) throw busy;
+    // Each process seen working in it when the sweep ended must have exited (the same pid with the same start time is
+    // the same process, wherever it now works).
+    if ([...session.residentsSeen].some(([pid, started]) => table!.get(pid)?.started === started)) throw busy;
     this.sessions.delete(id);
     this.ledger.forget(id);
     for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit?.code ?? null, signal: session.exit?.signal ?? null }); } catch { /* gone */ } }
