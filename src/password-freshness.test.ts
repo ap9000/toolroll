@@ -234,6 +234,15 @@ function audit(files: { path: string; text: string }[]): Hits {
           const imported = keyName(one["imported"] as Node), local = keyName(one["local"] as Node);
           if (calls.has(imported)) learn(calls, local, calls.get(imported)!);
         }
+        // A watched function (or an SSO object) stored under a key in an object or class: that key now names it
+        // (`{ check: rawCheck }` makes `passwordChecks.check(...)` a call of it).
+        if ((one.type === "Property" || one.type === "PropertyDefinition") && one["computed"] !== true) {
+          const value = lastName(unwrap(one["value"] as Node)), key = keyName(one["key"] as Node);
+          if (value !== null && key !== "" && unwrap(one["value"] as Node)?.type !== "CallExpression") {
+            if (calls.has(value)) learn(calls, key, calls.get(value)!);
+            if (sso.has(value)) learn(sso, key, "sso");
+          }
+        }
         bindings(one, () => {});
       });
     } while (changed);
@@ -854,7 +863,8 @@ describe("the tripwire", () => {
         if (isFunction) {
           count.n += 1;
           const own = named(one["id"] as Node);
-          const label = `${own ?? owner ?? "<anonymous>"}@${count.n}`;
+          // Both the owner and the function's own name, when it has each: renaming or rehoming either is a new place.
+          const label = `${[owner, own].filter(part => part !== null).join(":") || "<anonymous>"}@${count.n}`;
           const inner = { n: 0 };
           for (const [key, value] of Object.entries(one)) if (key !== "type") walk(value, [...where, label], null, inner);
           return;
@@ -932,6 +942,13 @@ describe("the tripwire", () => {
     const split = places([{ path: "remote.ts", text: "const auxiliary = { session: (request: never) => { const fresh = request; return fresh; } }; export function create() { return { session: (request: never) => auxiliary.session(request) }; }" }]);
     expect(split).not.toEqual(original);
     expect(Object.keys(split["fresh"] ?? {})).toEqual(["remote.ts#auxiliary.session@1"]);
+    // A watched function kept under an object's key and called through it is a call of that function.
+    const keyed = audit([{ path: "keyed.ts", text: "import { authenticateAccount as rawCheck } from './scope.js'; const passwordChecks = { check: rawCheck }; export const f = (store: never, name: string, token: string) => passwordChecks.check(store, name, token);" }]);
+    expect(keyed["authenticateAccount()"]).toEqual({ "keyed.ts": 1 });
+    // A named function rehomed under another object keeps a different identity (owner and own name both count).
+    const home = places([{ path: "g.ts", text: "export function create() { function identify(x: never) { const fresh = x; return fresh; } return identify; }" }]);
+    const rehomed = places([{ path: "g.ts", text: "const auxiliary = { check: function identify(x: never) { const fresh = x; return fresh; } }; export function create() { const identify = auxiliary.check; return identify; }" }]);
+    expect(rehomed).not.toEqual(home);
     // The wrappers that check a password are watched by name.
     expect(mentions([{ path: "w.ts", text: "export const w = (store: never, by: string, p: string) => verifyApproverByPassword(store, by, p, []);" }])["verifyApproverByPassword"]).toEqual({ "w.ts": 1 });
     const roads = mentions([{ path: "roads.ts", text: "export const a = (store: never, n: string, p: string) => { const h = store.approverHash(n); scrypt(p, 'salt', 64, () => {}); return db.prepare(`SELECT credential_hash FROM approver WHERE name = ${n}`); };" }]);
