@@ -1,6 +1,6 @@
 # Passwordless mode — plan
 
-Status: draft v1, 2026-10-20. Branch `passwordless` (from `live-terminal-main`, PR #205).
+Status: v2, 2026-10-20 — Codex round 1 NO-GO (5 findings) folded in (§ Review). Branch `passwordless`.
 
 ## What
 
@@ -25,8 +25,11 @@ absolute), sign-out, and "end this session" on the Sessions page are the protect
   doesn't let a mode, a schedule, the lead or an API token decide.
 - **Machine callers**: API tokens, OAuth, the MCP gateway, chat bridges (Telegram/Slack/…) and the remote CLI keep their
   own rules; step-up routes stay browser-only. Passwordless is about the person at a browser.
-- **Your own credentials**: changing your password, adding or removing a sign-in method, and turning Passwordless
-  *on* still take the current password — they are the login itself. Turning it *off* is one click.
+- **Credential acts** still take a typed password (or a one-use identity-provider re-check, `sso-now`), because each
+  creates or widens a way in. The closed list: changing your password; sign-in methods and identity-provider (SSO)
+  settings; creating an API token; OAuth consent (connecting an outside app); pairing a chat (Telegram, Slack, Teams,
+  Discord); turning on approving from chat or changing its limits; turning Passwordless **on**. Turning it **off**
+  is one click.
 
 ## How
 
@@ -36,30 +39,44 @@ absolute), sign-out, and "end this session" on the Sessions page are the protect
 when. Settings → Sign-in shows it with the trade in plain words. Turning it on: operator, password, a ledger line;
 off: one click, a ledger line. The People and Sessions pages say "Passwordless is on" so it's never invisible.
 
-### 2. One place in the code
+### 2. One place in the code, and the paths that bypass it today
 
-Every step-up already ends in `proveAccountNow(store, by, token)` (`scope.ts`), through `authenticateApprover`. Today an
-empty password is honoured only by the B2 freshness rules. Passwordless adds one more reading there, and nowhere else:
+Every step-up should end in `proveAccountNow(store, by, token)` (`scope.ts`). Passwordless adds one reading there:
 
 - `token === ""`, Passwordless is on (read live, at the act), and the request carries **browser session facts**
-  (`freshFacts`) for this same person whose `live()` holds (the session still saved, same credential generation, not
-  revoked) → `{ ok: true, method: "session" }`.
-- No session facts (a CLI, a token, a chat bridge, a background job) → unchanged: a password is required.
-- A typed password is still checked as a password when one is sent.
+  (`freshFacts`) for this same person whose `live()` holds → `{ ok: true, method: "session" }`.
+- `live()` is made strict for everyone (it matters to B2 freshness too): the session must still be **saved in the
+  database** at the act (`sessions.stillSaved`), not only held in this process's memory, plus the existing generation
+  and revocation checks — so a session ended from another process mid-request no longer counts.
+- No session facts → unchanged: a password is required.
 
-`method: "session"` is recorded wherever the method is recorded today (approvals, the ledger), so every act shows it
-was approved without a password while Passwordless was on.
+Paths that don't reach the prover today, fixed in this slice:
+- **Reject-empty-first** handlers (task approval `tasks.ts`, chat card approval `chat-actions.ts`) stop rejecting an
+  empty password themselves and delegate to the prover (inside their existing transaction).
+- **Direct `authenticateAccount` callers** (chat-approval settings, chat pairing in `settings.ts`) are credential acts
+  (list above): they move to `proveCredential` (below), keeping their standing and generation checks.
 
-The routes that change the login itself (password change, sign-in methods, the Passwordless toggle) refuse
-`method: "session"` explicitly.
+**Credential acts** call `proveCredential(store, by, token)`: the prover, but refusing `method: "session"` (and B2's
+remembered-password methods). Every route in the closed list uses it; a static test enumerates them, and fails if a
+listed route calls `authenticateApprover`/`proveAccountNow` directly or if `authenticateAccount` is called anywhere
+else outside sign-in.
+
+**Background work never inherits a session.** Detached work started during a request (the lead's turn in
+`server/chat.ts`, and any other `void`-started task found by the audit) runs with `freshFacts` cleared, so it can't
+carry the request's session into an act. A test starts detached work inside a request and proves its acts see no
+facts.
+
+`method: "session"` is recorded wherever the method is recorded today, so every act shows it was approved without a
+password while Passwordless was on.
 
 ### 3. The forms
 
-Password fields are rendered in ~35 places (server pages and React views). They move to **one helper**,
-`ceremonyPassword()`, that renders the field as today, or, with Passwordless on, nothing but a quiet line ("No password
-needed — Passwordless is on"). The forms keep posting `password` (empty), so the server path is the same one. The
-login form and the credential forms keep their fields regardless. A static test: no `type="password"` outside the
-helper and the credential forms.
+Re-authentication fields (the ceremony's "your password" field — not API keys, secrets, or the login form) are rendered
+in ~35 places. They move to **one helper**, `ceremonyPassword()`, which renders the field as today or, with
+Passwordless on, nothing at all. Forms keep posting `password` (empty). Each form's own submit rules stop requiring it
+too (e.g. the Live terminal's Start button, which is disabled until a password is typed). Credential-act forms keep
+their field regardless. A static test: no re-authentication field (`name="password"` in a ceremony form) outside the
+helper and the credential forms; secret and key inputs are untouched.
 
 ### 4. The freshness audit
 
@@ -75,10 +92,24 @@ gains one rule: `method: "session"` is produced in exactly one place and refused
 - On, but: a revoked/rotated/ended session, a viewer, a project-limited account outside its projects, an API token, the
   CLI, a chat bridge — all refused exactly as today.
 - On: protected work still needs a second person; a lead-proposed scope is still never mode-sealed.
-- On: password change and the Passwordless toggle still require the password; turning off is one click.
+- On: every credential act (the closed list) still requires a typed password; turning off is one click.
+- A session ended from another process while a request is in flight: the act is refused (on and off).
+- Detached work started inside a request sees no session facts.
+- The Live terminal's Start works with no password typed.
 - Forms: with Passwordless on, no ceremony renders a password field; the login form still does.
 
 ## Not in this slice
 
 Passwordless for the local CLI (it has no session; it keeps asking), per-project or per-person passwordless, a
 "this computer only" variant, and removing the password from sign-in itself.
+
+## Review — round 1 (Codex, NO-GO, 5 findings), and what changed
+
+1. **`live()` trusted memory** → it now proves the saved session at the act (all modes), with a cross-process test.
+2. **Credential exceptions unspecified** (API tokens, OAuth consent would have gone passwordless) → a closed list of
+   credential acts on `proveCredential`, which refuses session and remembered-password proof; statically enumerated.
+3. **Paths that bypass the prover** → reject-empty-first handlers delegate to it; direct `authenticateAccount` callers
+   (chat approval, pairing) become credential acts.
+4. **Background inherits facts** → cleared when detaching, with a test.
+5. **Forms** → submit rules updated too; the static ban is narrowed to re-authentication fields; no repeated helper
+   text.
