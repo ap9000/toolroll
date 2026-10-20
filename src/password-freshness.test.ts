@@ -374,187 +374,403 @@ describe("where freshness may be honoured", () => {
  */
 const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "FreshFacts": {
-    "src/scope.ts": 2,
-    "src/serve.ts": 3,
-    "src/server/remote.ts": 3,
-    "src/server/runtime.ts": 3
+    "src/scope.ts#<module>": 2,
+    "src/serve.ts#<module>": 2,
+    "src/serve.ts#createDecisionServer>freshFactsOf": 1,
+    "src/server/remote.ts#<module>": 3,
+    "src/server/runtime.ts#<module>": 3
+  },
+  "approverHash": {
+    "src/store.ts#<module>": 1
   },
   "authenticateAccount": {
-    "src/operate.ts": 3,
-    "src/principal.ts": 3,
-    "src/scope.ts": 2,
-    "src/server/guards.ts": 3,
-    "src/server/people-tokens.ts": 4,
-    "src/server/settings.ts": 4,
-    "src/tokens-cli.ts": 3
+    "src/operate.ts#<module>": 2,
+    "src/operate.ts#noteActingPerson": 1,
+    "src/principal.ts#<module>": 2,
+    "src/principal.ts#verifyApproverByPassword": 1,
+    "src/scope.ts#authenticateAccount": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/server/guards.ts#<module>": 2,
+    "src/server/guards.ts#createSharedGuards>identify": 1,
+    "src/server/people-tokens.ts#<module>": 2,
+    "src/server/people-tokens.ts#createPeopleHandlers>loginSend": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>signupSend": 1,
+    "src/server/settings.ts#<module>": 2,
+    "src/server/settings.ts#createSettingsHandlers>chatApprovalAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>telegramPairAct><anonymous>": 1,
+    "src/tokens-cli.ts#<module>": 2,
+    "src/tokens-cli.ts#runTokensCommand": 1
   },
   "authenticateApprover": {
-    "src/chat-actions.ts": 3,
-    "src/control-setup.ts": 3,
-    "src/desktop-host.ts": 7,
-    "src/operate.ts": 60,
-    "src/pull-request-flow.ts": 3,
-    "src/scope.ts": 3,
-    "src/serve.ts": 5,
-    "src/server/chat.ts": 7,
-    "src/server/flows.ts": 5,
-    "src/server/guards.ts": 4,
-    "src/server/pages.ts": 5,
-    "src/server/people-tokens.ts": 7,
-    "src/server/runtime.ts": 2,
-    "src/server/settings.ts": 24,
-    "src/server/tasks.ts": 8,
-    "src/task-outcome-cli.ts": 3
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction": 1,
+    "src/control-setup.ts#<module>": 2,
+    "src/control-setup.ts#approveSetup><anonymous>": 1,
+    "src/desktop-host.ts#<module>": 2,
+    "src/desktop-host.ts#desktopMain": 2,
+    "src/desktop-host.ts#pairDesktopLogin": 3,
+    "src/operate.ts#<module>": 1,
+    "src/operate.ts#acceptTaskProof": 1,
+    "src/operate.ts#authenticateApprover": 1,
+    "src/operate.ts#bridgeCommand": 1,
+    "src/operate.ts#budgetCommand": 1,
+    "src/operate.ts#chatApprovalCommand": 1,
+    "src/operate.ts#configCommand": 3,
+    "src/operate.ts#continueTask": 1,
+    "src/operate.ts#coordinatorCommand": 2,
+    "src/operate.ts#decideCommand": 1,
+    "src/operate.ts#dispatch": 2,
+    "src/operate.ts#incidentCommand": 1,
+    "src/operate.ts#intakeCommand": 1,
+    "src/operate.ts#leadCommand": 1,
+    "src/operate.ts#ledgerCommand": 1,
+    "src/operate.ts#modeCommand": 1,
+    "src/operate.ts#notificationsCommand": 1,
+    "src/operate.ts#onboardLogin": 1,
+    "src/operate.ts#pauseTask": 1,
+    "src/operate.ts#peopleCommand": 1,
+    "src/operate.ts#planTaskCommand": 1,
+    "src/operate.ts#policyCommand": 1,
+    "src/operate.ts#projectChecksCommand": 1,
+    "src/operate.ts#projectConcurrencyCommand": 1,
+    "src/operate.ts#projectDeleteCommand": 1,
+    "src/operate.ts#projectDemoCommand": 1,
+    "src/operate.ts#projectRulesCommand": 1,
+    "src/operate.ts#publishCommand": 5,
+    "src/operate.ts#regateTaskCommand": 1,
+    "src/operate.ts#repairTaskCommand": 2,
+    "src/operate.ts#requeueTask": 1,
+    "src/operate.ts#resolveUpApprover": 3,
+    "src/operate.ts#resumeTaskCommand": 1,
+    "src/operate.ts#retentionCommand": 1,
+    "src/operate.ts#reviewSwitchCommand": 1,
+    "src/operate.ts#reviewTaskCommand": 1,
+    "src/operate.ts#routeTaskCommand>authenticate": 1,
+    "src/operate.ts#runCommand": 1,
+    "src/operate.ts#runnerCommand": 4,
+    "src/operate.ts#scopeTask": 1,
+    "src/operate.ts#setupCommand": 1,
+    "src/operate.ts#steerTask": 1,
+    "src/operate.ts#stopTaskCommand": 1,
+    "src/operate.ts#storageCommand>operator": 1,
+    "src/operate.ts#verifyCommand": 2,
+    "src/pull-request-flow.ts#<module>": 2,
+    "src/pull-request-flow.ts#mergeAsPerson": 1,
+    "src/scope.ts#addApprover><anonymous>": 1,
+    "src/scope.ts#approve><anonymous>": 1,
+    "src/scope.ts#authenticateApprover": 1,
+    "src/serve.ts#createDecisionServer": 3,
+    "src/serve.ts#createDecisionServer>authenticateApprover": 2,
+    "src/server/chat.ts#createChatHandlers": 2,
+    "src/server/chat.ts#createChatHandlers>chatAckSend": 1,
+    "src/server/chat.ts#createChatHandlers>chatConfig": 1,
+    "src/server/chat.ts#createChatHandlers>chatFile": 1,
+    "src/server/chat.ts#createChatHandlers>chatSend><anonymous>><anonymous>": 1,
+    "src/server/chat.ts#createChatHandlers>pushSubscribe": 1,
+    "src/server/flows.ts#createFlowsHandlers": 2,
+    "src/server/flows.ts#createFlowsHandlers>flowAct><anonymous>": 2,
+    "src/server/flows.ts#createFlowsHandlers>triggerAct><anonymous>": 1,
+    "src/server/guards.ts#<module>": 1,
+    "src/server/guards.ts#createSharedGuards": 2,
+    "src/server/guards.ts#createSharedGuards>authenticateApprover": 1,
+    "src/server/pages.ts#createPagesHandlers": 2,
+    "src/server/pages.ts#createPagesHandlers>fleetRegister": 1,
+    "src/server/pages.ts#createPagesHandlers>fleetRetire": 1,
+    "src/server/pages.ts#createPagesHandlers>onboardConfirm": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers": 2,
+    "src/server/people-tokens.ts#createPeopleHandlers>peopleInvite": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>peopleInviteRevoke": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>peopleProjects": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>peopleRevoke": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>sessionsSend": 1,
+    "src/server/runtime.ts#<module>": 2,
+    "src/server/settings.ts#createSettingsHandlers": 2,
+    "src/server/settings.ts#createSettingsHandlers>approvalSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>backupsSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>checksSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>controlAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>dataExport": 1,
+    "src/server/settings.ts#createSettingsHandlers>discordAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>modeAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>monitoringSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>policySave": 1,
+    "src/server/settings.ts#createSettingsHandlers>projectDelete": 1,
+    "src/server/settings.ts#createSettingsHandlers>projectLiveView": 1,
+    "src/server/settings.ts#createSettingsHandlers>pullRequestsSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>requestLimitsSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>retentionSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>signInSave": 1,
+    "src/server/settings.ts#createSettingsHandlers>slackAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>spendBudget": 1,
+    "src/server/settings.ts#createSettingsHandlers>storageAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>teamsAct><anonymous>": 1,
+    "src/server/settings.ts#createSettingsHandlers>toolsChange": 1,
+    "src/server/settings.ts#createSettingsHandlers>toolsConnect": 1,
+    "src/server/settings.ts#createSettingsHandlers>updatesAct><anonymous>": 1,
+    "src/server/tasks.ts#createTasksHandlers": 2,
+    "src/server/tasks.ts#createTasksHandlers>codeAct><anonymous>": 2,
+    "src/server/tasks.ts#createTasksHandlers>taskConfirmStopped": 1,
+    "src/server/tasks.ts#createTasksHandlers>taskMutation": 3,
+    "src/task-outcome-cli.ts#<module>": 2,
+    "src/task-outcome-cli.ts#runTaskMergeCommand": 1
   },
   "checkApproverPassword": {
-    "src/server/guards.ts": 3,
-    "src/server/runtime.ts": 2
+    "src/server/guards.ts#<module>": 1,
+    "src/server/guards.ts#createSharedGuards>authenticateApprover": 2,
+    "src/server/runtime.ts#<module>": 2
   },
   "consumeSsoNow": {
-    "src/scope.ts": 2,
-    "src/serve.ts": 1
+    "src/scope.ts#<module>": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf": 1
   },
   "credentialHash": {
-    "src/runner.ts": 1,
-    "src/scope.ts": 1,
-    "src/server/people-tokens.ts": 1,
-    "src/store.ts": 12
+    "src/runner.ts#authenticate": 1,
+    "src/scope.ts#authenticateAccount": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>joinSend": 1,
+    "src/store.ts#accountOf": 2,
+    "src/store.ts#bootstrapApproverIfNone": 1,
+    "src/store.ts#bootstrapApproverIfNone><anonymous>": 1,
+    "src/store.ts#consumeInviteAndCreateAccount": 1,
+    "src/store.ts#consumeInviteAndCreateAccount><anonymous>": 1,
+    "src/store.ts#getRunner": 2,
+    "src/store.ts#saveApprover": 1,
+    "src/store.ts#saveApprover><anonymous>><anonymous>": 1,
+    "src/store.ts#saveRunner": 1,
+    "src/store.ts#saveRunner><anonymous>><anonymous>": 1
+  },
+  "credential_hash": {
+    "src/export.ts#<module>": 2,
+    "src/process-recovery-anchor.ts#<module>": 1,
+    "src/store-baseline.ts#<module>": 1,
+    "src/store.ts#<module>": 1,
+    "src/store.ts#accountOf": 2,
+    "src/store.ts#approverHash": 2,
+    "src/store.ts#bootstrapApproverIfNone><anonymous>": 1,
+    "src/store.ts#consumeInviteAndCreateAccount><anonymous>": 1,
+    "src/store.ts#getRunner": 1,
+    "src/store.ts#mergeCredentialsForV118": 1,
+    "src/store.ts#saveApprover><anonymous>><anonymous>": 1,
+    "src/store.ts#saveRunner><anonymous>><anonymous>": 1,
+    "src/store.ts#signInWithSso><anonymous>": 1
   },
   "fresh": {
-    "src/acp-check.ts": 5,
-    "src/acp-client.ts": 3,
-    "src/backup.ts": 2,
-    "src/browser-workspace.ts": 2,
-    "src/browser/app.tsx": 3,
-    "src/browser/chime.ts": 4,
-    "src/browser/live-task.tsx": 1,
-    "src/browser/team-chat.tsx": 5,
-    "src/browser/views/flow-view.tsx": 2,
-    "src/budget-alerts.ts": 2,
-    "src/chat-decide.ts": 11,
-    "src/chat-flow.ts": 2,
-    "src/checkout-cleanup.ts": 5,
-    "src/discord-chat.ts": 3,
-    "src/evidence-pack.ts": 1,
-    "src/flow-engine.ts": 12,
-    "src/flow-pull-request.ts": 2,
-    "src/flow-send.ts": 11,
-    "src/flow-steps.ts": 5,
-    "src/flow-triggers.ts": 3,
-    "src/flow-unattended.ts": 5,
-    "src/landed-cleanup.ts": 8,
-    "src/ledger-view.ts": 8,
-    "src/mcp-oauth.ts": 2,
-    "src/model-catalog.ts": 2,
-    "src/models-cli.ts": 3,
-    "src/models-ui.ts": 5,
-    "src/oidc.ts": 2,
-    "src/operate.ts": 2,
-    "src/orphan-sweep.ts": 5,
-    "src/peek-cli.ts": 2,
-    "src/process-tree.ts": 7,
-    "src/provider-auth.ts": 1,
-    "src/provider-connection.ts": 4,
-    "src/push.ts": 4,
-    "src/release-cli.ts": 1,
-    "src/release-gate.ts": 11,
-    "src/release.ts": 2,
-    "src/restart-certification.ts": 4,
-    "src/run-closeout.ts": 4,
-    "src/runner.ts": 3,
-    "src/scope.ts": 4,
-    "src/serve.ts": 11,
-    "src/server/chat.ts": 3,
-    "src/server/remote.ts": 1,
-    "src/server/render-people.ts": 2,
-    "src/server/request-context.ts": 1,
-    "src/server/runtime.ts": 2,
-    "src/server/settings.ts": 1,
-    "src/server/task-views.ts": 3,
-    "src/server/tasks.ts": 11,
-    "src/shared-deps.ts": 9,
-    "src/slack-chat.ts": 3,
-    "src/store.ts": 10,
-    "src/telegram-flow.ts": 3,
-    "src/telegram-lead.ts": 2,
-    "src/telegram.ts": 3,
-    "src/token-notices.ts": 2,
-    "src/worktree.ts": 13
+    "src/acp-check.ts#settleChecks": 4,
+    "src/acp-check.ts#settleChecks>newLeaseId": 1,
+    "src/acp-client.ts#exactField": 3,
+    "src/backup.ts#runningNow": 2,
+    "src/browser-workspace.ts#<module>": 2,
+    "src/browser/app.tsx#Navigation": 3,
+    "src/browser/chime.ts#createChime>see": 2,
+    "src/browser/chime.ts#createChime>see><anonymous>><anonymous>": 2,
+    "src/browser/live-task.tsx#ActivityLine": 1,
+    "src/browser/team-chat.tsx#<module>": 1,
+    "src/browser/team-chat.tsx#TeamChat><anonymous>": 1,
+    "src/browser/team-chat.tsx#TeamChat><anonymous>><anonymous>": 1,
+    "src/browser/team-chat.tsx#TeamChat>send": 1,
+    "src/browser/team-chat.tsx#restore": 1,
+    "src/browser/views/flow-view.tsx#StepUp": 1,
+    "src/browser/views/flow-view.tsx#stepUpReady": 1,
+    "src/budget-alerts.ts#budgetAlertPass": 2,
+    "src/chat-decide.ts#decideOffer": 5,
+    "src/chat-decide.ts#staleWhy": 6,
+    "src/chat-flow.ts#answerChatFlowPrompt><anonymous>": 2,
+    "src/checkout-cleanup.ts#cleanCheckouts>wanted": 3,
+    "src/checkout-cleanup.ts#slimKeptCheckouts>wanted": 2,
+    "src/discord-chat.ts#deliverDiscordPart": 3,
+    "src/evidence-pack.ts#ledgerExportChunks": 1,
+    "src/flow-engine.ts#workStage><anonymous>": 12,
+    "src/flow-pull-request.ts#pullRequestStep": 2,
+    "src/flow-send.ts#chooseStep": 3,
+    "src/flow-send.ts#keep": 5,
+    "src/flow-send.ts#sendStep": 3,
+    "src/flow-steps.ts#claimStep><anonymous>": 5,
+    "src/flow-triggers.ts#checkTrigger": 3,
+    "src/flow-unattended.ts#nodeModuleGraphOf": 3,
+    "src/flow-unattended.ts#scriptProvenanceOf": 2,
+    "src/landed-cleanup.ts#reconcileLanded": 4,
+    "src/landed-cleanup.ts#removeCheckout>wanted": 4,
+    "src/ledger-view.ts#ledgerBody": 7,
+    "src/ledger-view.ts#ledgerBody><anonymous>": 1,
+    "src/mcp-oauth.ts#<module>": 1,
+    "src/mcp-oauth.ts#createOAuthHttp>consentHtml": 1,
+    "src/model-catalog.ts#recordCatalog><anonymous>": 2,
+    "src/models-cli.ts#runModelsCommand": 3,
+    "src/models-ui.ts#<module>": 1,
+    "src/models-ui.ts#modelsHtml": 4,
+    "src/oidc.ts#providerKeys": 2,
+    "src/operate.ts#daemonCommand": 2,
+    "src/orphan-sweep.ts#sweepOrphans": 5,
+    "src/peek-cli.ts#advanceTail": 2,
+    "src/process-tree.ts#remember": 4,
+    "src/process-tree.ts#stopProcessTree": 3,
+    "src/provider-auth.ts#startSignInProbes": 1,
+    "src/provider-connection.ts#<module>": 1,
+    "src/provider-connection.ts#createConnectionChecker><anonymous>": 2,
+    "src/provider-connection.ts#createConnectionChecker><anonymous>><anonymous>": 1,
+    "src/push.ts#loadOrCreateVapidKeys": 4,
+    "src/release-cli.ts#runReleaseCommand": 1,
+    "src/release-gate.ts#releaseGate": 11,
+    "src/release.ts#<module>": 1,
+    "src/release.ts#runRelease": 1,
+    "src/restart-certification.ts#verifyRestartRecovery": 4,
+    "src/run-closeout.ts#closeOutCheckouts": 4,
+    "src/runner.ts#recoverDead><anonymous>": 3,
+    "src/scope.ts#proveAccountNow": 4,
+    "src/serve.ts#createDecisionServer>checkLocalAgents": 1,
+    "src/serve.ts#createDecisionServer>checkLocalAgents><anonymous>": 1,
+    "src/serve.ts#createDecisionServer>connectionCheck": 2,
+    "src/serve.ts#createDecisionServer>handle": 4,
+    "src/serve.ts#createDecisionServer>sendScreen": 2,
+    "src/serve.ts#createDecisionServer>sendScreen><anonymous>": 1,
+    "src/server/chat.ts#createChatHandlers>sharedActionReview><anonymous>": 3,
+    "src/server/remote.ts#createRemoteHandlers>session": 1,
+    "src/server/render-people.ts#ssoStepUps": 1,
+    "src/server/render-people.ts#ssoStepUps>swap": 1,
+    "src/server/request-context.ts#<module>": 1,
+    "src/server/runtime.ts#<module>": 2,
+    "src/server/settings.ts#createSettingsHandlers>modelsView": 1,
+    "src/server/task-views.ts#createTaskViews>taskViewData><anonymous>": 3,
+    "src/server/tasks.ts#createTasksHandlers>peekFragment><anonymous>": 11,
+    "src/shared-deps.ts#pruneUnusedShared": 7,
+    "src/shared-deps.ts#pruneUnusedShared>finish": 2,
+    "src/slack-chat.ts#deliverSlackPart": 3,
+    "src/store.ts#initializeStore": 3,
+    "src/store.ts#ledgerChain": 1,
+    "src/store.ts#ledgerChain>recent": 2,
+    "src/store.ts#recordApprovalVote": 2,
+    "src/store.ts#seedPushPairs": 2,
+    "src/telegram-flow.ts#applyFlowReply": 3,
+    "src/telegram-lead.ts#applyProposalTap": 2,
+    "src/telegram.ts#applyCallback": 3,
+    "src/token-notices.ts#tokenNoticePass": 2,
+    "src/worktree.ts#discardChanges": 4,
+    "src/worktree.ts#freshen": 4,
+    "src/worktree.ts#leaseNow": 4,
+    "src/worktree.ts#prune": 1
   },
   "freshFacts": {
-    "src/scope.ts": 4,
-    "src/serve.ts": 6,
-    "src/server/remote.ts": 4
+    "src/scope.ts#<module>": 1,
+    "src/scope.ts#freshnessFor": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/scope.ts#ssoNowAvailable": 1,
+    "src/serve.ts#<module>": 2,
+    "src/serve.ts#createDecisionServer>handle": 2,
+    "src/serve.ts#createDecisionServer>handle>fresh": 1,
+    "src/serve.ts#createDecisionServer>sendScreen><anonymous>": 1,
+    "src/server/remote.ts#<module>": 2,
+    "src/server/remote.ts#createRemoteHandlers>confirm": 1,
+    "src/server/remote.ts#createRemoteHandlers>session": 1
   },
   "freshFloor": {
-    "src/serve.ts": 1,
-    "src/server/session.ts": 1,
-    "src/server/settings.ts": 1
+    "src/serve.ts#createDecisionServer>freshFactsOf>floor": 1,
+    "src/server/session.ts#<module>": 1,
+    "src/server/settings.ts#createSettingsHandlers>forgetPassword": 1
   },
   "freshScope": {
-    "src/scope.ts": 3
+    "src/scope.ts#<module>": 1,
+    "src/scope.ts#freshnessFor": 1,
+    "src/scope.ts#withFreshness": 1
   },
   "freshnessFor": {
-    "src/chat-actions.ts": 3,
-    "src/scope.ts": 2,
-    "src/server/chat.ts": 3,
-    "src/server/task-views.ts": 3,
-    "src/server/tasks.ts": 3
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction><anonymous>": 1,
+    "src/scope.ts#freshnessFor": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/server/chat.ts#<module>": 2,
+    "src/server/chat.ts#createChatHandlers>sharedActionReview><anonymous>><anonymous>": 1,
+    "src/server/task-views.ts#<module>": 2,
+    "src/server/task-views.ts#createTaskViews>taskViewData><anonymous>><anonymous>": 1,
+    "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers>taskMutation><anonymous>": 1
   },
   "passwordAt": {
-    "src/scope.ts": 2,
-    "src/serve.ts": 4,
-    "src/server/people-tokens.ts": 2,
-    "src/server/session.ts": 1,
-    "src/server/settings.ts": 1
+    "src/scope.ts#<module>": 1,
+    "src/scope.ts#freshnessFor": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf>passwordAt": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf>stamp": 1,
+    "src/serve.ts#createDecisionServer>sendScreen><anonymous>": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>loginSend": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>signupSend": 1,
+    "src/server/session.ts#<module>": 1,
+    "src/server/settings.ts#createSettingsHandlers>forgetPassword": 1
   },
   "proveAccountNow": {
-    "src/scope.ts": 2,
-    "src/server/people-tokens.ts": 3,
-    "src/server/remote.ts": 3
+    "src/scope.ts#authenticateApprover": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/server/people-tokens.ts#<module>": 2,
+    "src/server/people-tokens.ts#createPeopleHandlers>sessionsSend": 1,
+    "src/server/remote.ts#<module>": 2,
+    "src/server/remote.ts#createRemoteHandlers>confirm><anonymous>": 1
   },
   "scryptSync": {
-    "src/scope.ts": 4
+    "src/scope.ts#<module>": 2,
+    "src/scope.ts#hashPassword": 1,
+    "src/scope.ts#verifyCredential": 1
   },
   "spendingOnlyOnSuccess": {
-    "src/chat-actions.ts": 3,
-    "src/scope.ts": 1,
-    "src/server/chat.ts": 4,
-    "src/server/tasks.ts": 3
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction": 1,
+    "src/scope.ts#spendingOnlyOnSuccess": 1,
+    "src/server/chat.ts#<module>": 2,
+    "src/server/chat.ts#createChatHandlers>chatProposalAct><anonymous>": 1,
+    "src/server/chat.ts#createChatHandlers>chatSend": 1,
+    "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers>taskMutation": 1
   },
   "ssoNow": {
-    "src/scope.ts": 3,
-    "src/serve.ts": 1
+    "src/scope.ts#<module>": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/scope.ts#ssoNowAvailable": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf": 1
   },
   "ssoNowAt": {
-    "src/serve.ts": 5,
-    "src/server/people-tokens.ts": 1,
-    "src/server/session.ts": 1,
-    "src/server/settings.ts": 1
+    "src/serve.ts#createDecisionServer>freshFactsOf>consumeSsoNow": 2,
+    "src/serve.ts#createDecisionServer>freshFactsOf>consumeSsoNow><anonymous>": 2,
+    "src/serve.ts#createDecisionServer>freshFactsOf>ssoNow": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>ssoFinish": 1,
+    "src/server/session.ts#<module>": 1,
+    "src/server/settings.ts#createSettingsHandlers>forgetPassword": 1
   },
   "ssoNowAvailable": {
-    "src/chat-actions.ts": 3,
-    "src/scope.ts": 2,
-    "src/serve.ts": 3,
-    "src/server/remote.ts": 3,
-    "src/server/tasks.ts": 3
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction": 1,
+    "src/scope.ts#proveAccountNow": 1,
+    "src/scope.ts#ssoNowAvailable": 1,
+    "src/serve.ts#<module>": 2,
+    "src/serve.ts#createDecisionServer>handle>fresh": 1,
+    "src/server/remote.ts#<module>": 2,
+    "src/server/remote.ts#createRemoteHandlers>session><anonymous>": 1,
+    "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers>taskMutation": 1
   },
   "ssoReauthAt": {
-    "src/scope.ts": 2,
-    "src/serve.ts": 2,
-    "src/server/people-tokens.ts": 1,
-    "src/server/session.ts": 1,
-    "src/server/settings.ts": 1
+    "src/scope.ts#<module>": 1,
+    "src/scope.ts#freshnessFor": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf": 1,
+    "src/serve.ts#createDecisionServer>freshFactsOf>ssoReauthAt": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers>ssoFinish": 1,
+    "src/server/session.ts#<module>": 1,
+    "src/server/settings.ts#createSettingsHandlers>forgetPassword": 1
   },
   "verifyCredential": {
-    "src/scope.ts": 3
+    "src/scope.ts#authenticateAccount": 2,
+    "src/scope.ts#verifyCredential": 1
   },
   "withFreshness": {
-    "src/chat-actions.ts": 4,
-    "src/scope.ts": 1,
-    "src/server/chat.ts": 4,
-    "src/server/task-views.ts": 3,
-    "src/server/tasks.ts": 4
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction": 1,
+    "src/chat-actions.ts#executeSharedAction>act><anonymous>": 1,
+    "src/scope.ts#withFreshness": 1,
+    "src/server/chat.ts#<module>": 2,
+    "src/server/chat.ts#createChatHandlers>chatSend><anonymous>": 1,
+    "src/server/chat.ts#createChatHandlers>sharedActionReview><anonymous>": 1,
+    "src/server/task-views.ts#<module>": 2,
+    "src/server/task-views.ts#createTaskViews>taskViewData><anonymous>": 1,
+    "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers>taskMutation": 1,
+    "src/server/tasks.ts#createTasksHandlers>taskMutation><anonymous>": 1
   }
 };
 describe("the tripwire", () => {
@@ -562,22 +778,62 @@ describe("the tripwire", () => {
   // The freshness facts' own carrier and its readers too: any helper that reads them (an SSO re-check's time, a window's
   // start) names one of these.
   // And the password primitives beneath every prover: a check made outside proveAccountNow names one of these.
-  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES, "freshFacts", "FreshFacts", "ssoNow", "freshScope", "verifyCredential", "credentialHash", "scryptSync"]);
-  const mentions = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
-    const hits: Record<string, Record<string, number>> = {};
+  // And every road to a stored password: the store's own reader, both scrypt forms, and any SQL naming the column.
+  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES, "freshFacts", "FreshFacts", "ssoNow", "freshScope", "verifyCredential", "credentialHash",
+    "scryptSync", "scrypt", "approverHash"]);
+  /** The watched name a node mentions: an identifier, a string or a one-piece template; any string naming the stored
+   * password column counts as `credential_hash`. */
+  const mentionOf = (one: Node): string | null => {
+    const name = one.type === "Identifier" ? one["name"] as string
+      : one.type === "Literal" && typeof one["value"] === "string" ? one["value"] as string
+      : one.type === "TemplateLiteral" ? ((one["quasis"] as Node[]).map(quasi => (quasi["value"] as { cooked: string | null }).cooked ?? "").join(""))
+      : null;
+    if (name === null) return null;
+    if (one.type !== "Identifier" && /credential_hash/i.test(name)) return "credential_hash";
+    return WATCH.has(name) && !(one.type === "TemplateLiteral" && (one["quasis"] as Node[]).length !== 1) ? name : null;
+  };
+  /** Every mention, with the function it sits in (`file#function`, nested as `outer>inner`; `file#<module>` at top). */
+  const placed = (files: { path: string; text: string }[]): { name: string; file: string; where: string }[] => {
+    const found: { name: string; file: string; where: string }[] = [];
+    const named = (node: Node | undefined): string | null => node === undefined || node === null ? null
+      : node.type === "Identifier" ? node["name"] as string
+      : node.type === "Literal" ? String(node["value"])
+      : node.type === "MemberExpression" ? named(node["property"] as Node)
+      : node.type === "PrivateIdentifier" ? `#${String(node["name"])}` : null;
     for (const { path, text } of files) {
       const parsed = parseSync(path, text, { lang: langOf(path) });
       expect(parsed.errors, path).toEqual([]);
-      each(parsed.program, one => {
-        const name = one.type === "Identifier" ? one["name"] as string
-          : one.type === "Literal" && typeof one["value"] === "string" ? one["value"] as string
-          : one.type === "TemplateLiteral" && (one["quasis"] as Node[]).length === 1 ? String(((one["quasis"] as Node[])[0]!["value"] as { cooked: string }).cooked)
-          : null;
-        if (name !== null && WATCH.has(name)) (hits[name] ??= {})[path] = (hits[name]![path] ?? 0) + 1;
-      });
+      const walk = (node: unknown, where: string[], label: string | null): void => {
+        if (node === null || typeof node !== "object") return;
+        if (Array.isArray(node)) { for (const one of node) walk(one, where, label); return; }
+        const one = node as Node;
+        const mention = mentionOf(one);
+        if (mention !== null) found.push({ name: mention, file: path, where: where.length === 0 ? "<module>" : where.join(">") });
+        const isFunction = ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(one.type ?? "");
+        const inner = isFunction ? [...where, named(one["id"] as Node) ?? label ?? "<anonymous>"] : where;
+        for (const [key, value] of Object.entries(one)) {
+          if (key === "type") continue;
+          // The name a function gets from where it is written: a variable, a property, a method, an assignment.
+          const childLabel = one.type === "VariableDeclarator" && key === "init" ? named(one["id"] as Node)
+            : (one.type === "Property" || one.type === "MethodDefinition" || one.type === "PropertyDefinition") && key === "value" ? named(one["key"] as Node)
+            : one.type === "AssignmentExpression" && key === "right" ? named(one["left"] as Node)
+            : null;
+          walk(value, inner, childLabel);
+        }
+      };
+      walk(parsed.program, [], null);
     }
+    return found.filter(one => one.name !== "sso");
+  };
+  const mentions = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
     const out: Record<string, Record<string, number>> = {};
-    for (const [name, files] of Object.entries(hits)) if (name !== "sso") out[name] = files;
+    for (const { name, file } of placed(files)) (out[name] ??= {})[file] = (out[name]![file] ?? 0) + 1;
+    return out;
+  };
+  /** Pinned by place: a mention moved to another function (even in the same file) is a new place, reviewed. */
+  const places = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
+    const out: Record<string, Record<string, number>> = {};
+    for (const { name, file, where } of placed(files)) { const key = `${file}#${where}`; (out[name] ??= {})[key] = (out[name]![key] ?? 0) + 1; }
     return out;
   };
 
@@ -614,8 +870,20 @@ describe("the tripwire", () => {
     expect(direct["credentialHash"]).toEqual({ "direct.ts": 2 });
   });
 
-  test("every mention in the production source is the reviewed one", () => {
+  test("a check moved into a new helper in the same file, or another road to the stored password, is a new place", () => {
+    const before = places([{ path: "scope.ts", text: "export function ssoNowAvailable(by: string) { return check(by); } function check(by: string) { return freshFacts.getStore()?.ssoNow() !== null; }" }]);
+    const moved = places([{ path: "scope.ts", text: "export function ssoNowAvailable(by: string) { return check(by); } function check(by: string) { return helper(by); } export function helper(by: string) { return freshFacts.getStore()?.ssoNow() !== null; }" }]);
+    expect(moved).not.toEqual(before);
+    expect(moved["ssoNow"]).toEqual({ "scope.ts#helper": 1 });
+    const roads = mentions([{ path: "roads.ts", text: "export const a = (store: never, n: string, p: string) => { const h = store.approverHash(n); scrypt(p, 'salt', 64, () => {}); return db.prepare(`SELECT credential_hash FROM approver WHERE name = ${n}`); };" }]);
+    expect(roads["approverHash"]).toEqual({ "roads.ts": 1 });
+    expect(roads["scrypt"]).toEqual({ "roads.ts": 1 });
+    expect(roads["credential_hash"]).toEqual({ "roads.ts": 1 });
+  });
+
+  test("every mention in the production source is the reviewed one, in the function it sits in", () => {
     const files = sources("src").map(path => ({ path, text: readFileSync(path, "utf8") }));
-    expect(mentions(files)).toEqual(TRIPWIRE_PINS);
+    const actual = places(files);
+    expect(actual).toEqual(TRIPWIRE_PINS);
   });
 });
