@@ -346,6 +346,7 @@ describe("composer receipts and reach (cockpit §4, round 2)", () => {
     // The same request again, with edited words (a restored form): the store answers with the first note, so nothing clears.
     const again = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the replica", key: "draft-two-0002", return: "agents" });
     expect(again).not.toContain("sent=");
+    expect(again).toContain("said=pause-note-stale");
   });
 
   test("a running review has its composer on the task page; the timeline opens every role in the agent view", async () => {

@@ -186,10 +186,10 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
       </Button>}
     </div>
     {retrying && <RetryForm action={retry.action} csrf={csrf} note={retry.note ?? failure?.suggestion} />}
-    {pause !== null && steering && <PauseSteerForm pause={pause} onCancel={() => setSteering(false)} />}
+    {pause !== null && steering && <PauseSteerForm key={pause.run} pause={pause} onCancel={() => setSteering(false)} />}
     {/* The running attempt: what it takes, said plainly, and a note box when it takes notes (Pause and steer sits above). */}
     {/* A note written for an attempt that ended before it went: shown, with a way to send it to the next one. */}
-    {csrf !== "" && (view.steerRecent?.length ?? 0) > 0 && <UnsentNote runs={view.steerRecent!.filter(run => run !== view.steering?.steer?.run && run !== pause?.run)} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />}
+    {csrf !== "" && (view.steerRecent?.length ?? 0) > 0 && <UnsentNote key={view.steerRecent!.join(",")} runs={view.steerRecent!.filter(run => run !== view.steering?.steer?.run && run !== pause?.run)} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />}
     {view.steering != null && csrf !== "" && <div id="steering" className="flex flex-col gap-1 border-t border-border pt-3" data-task-steering>
       <p className="text-caption text-muted-foreground" data-agent-capability>{view.steering.controls.words}</p>
       {view.steering.steer !== null && <SteerNote key={view.steering.steer.run} steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}

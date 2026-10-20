@@ -2527,6 +2527,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const storedId = "note" in asked && typeof asked.note === "number" ? asked.note : null;
         const stored = storedId === null ? null : store.handle.prepare("SELECT note FROM task_steer WHERE id = ?").get(storedId)?.["note"];
         const sent = note !== "" && /^[A-Za-z0-9-]{8,64}$/.test(keyRaw) && typeof stored === "string" && stored.trim() === note ? keyRaw : null;
+        // A note that rode along but is not the one this request stored (a reused form): said plainly, the draft kept.
+        if (note !== "" && (typeof stored !== "string" || stored.trim() !== note)) {
+          if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=pause-note-stale`);
+          return taskScreen(response, who, taskId, "that form was already used, so your note was not sent — it is still in the box; send it again", 409);
+        }
         if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=${body.get("mode") === "resume" ? "resuming" : note === "" ? "pausing" : "pausing-with-note"}${sent === null ? "" : `&sent=${sent}`}`);
         const pauseFlow = returnedFlow(back);
         if (pauseFlow !== null) return redirect(response, `/flows/${pauseFlow.flow}?card=${pauseFlow.card}${sent === null ? "" : `&sent=${sent}`}`);

@@ -431,6 +431,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     stopping: { tone: "info", text: "Stopping. The work so far is kept." },
     pausing: { tone: "info", text: "Pausing. It stops at the end of its current step." },
     "pausing-with-note": { tone: "info", text: "Pausing. Your note goes to it as soon as it stops." },
+    "pause-note-stale": { tone: "error", text: "That form was already used, so your note was not sent. It is still in the box — send it again." },
     resuming: { tone: "info", text: "Resuming. It carries on where it stopped." },
   };
 
