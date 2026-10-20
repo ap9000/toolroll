@@ -215,7 +215,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       // spent by it), counted once. Never a remembered password: this act is outside every freshness allowlist.
       const typed = body.get("password") ?? "";
       // Passwordless never covers it (docs/plans/passwordless.md: a credential act).
-      const viewerProof = who.role === "approver" || who.via !== "cookie" ? null : proveAccountNow(store, who.name, typed);
+      const viewerProof = who.role === "approver" || who.via !== "cookie" ? null : proveAccountNow(store, who.name, typed, { credential: true });
       const confirmed = who.role === "approver" ? authenticateCredential(who, typed).ok
         : viewerProof !== null && viewerProof.ok && credentialProof(viewerProof.method);
       if (!confirmed) return back("problem", "Enter your Toolroll password to make a token.");

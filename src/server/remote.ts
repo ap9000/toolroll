@@ -159,7 +159,7 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       const who = identify(request, false);
       if (who === null || who.via !== "cookie" || who.name !== session.name || who.session.generation !== session.generation) return false;
       // Connecting an outside app is a credential act: never a session (Passwordless) or a remembered password.
-      return freshFacts.run(runtime.freshFactsOf(request, who), () => { const proved = proveAccountNow(store, who.name, typed); return proved.ok && credentialProof(proved.method); });
+      return freshFacts.run(runtime.freshFactsOf(request, who), () => { const proved = proveAccountNow(store, who.name, typed, { credential: true }); return proved.ok && credentialProof(proved.method); });
     },
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
     admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),

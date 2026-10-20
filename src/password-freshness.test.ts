@@ -354,10 +354,10 @@ describe("where freshness may be honoured", () => {
     expect(hits["spendingOnlyIfDone()"]).toBeUndefined();
     // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
-    expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 1 });
+    expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 57, "src/pull-request-flow.ts": 1,
-      "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/guards.ts": 1, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
+      "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -537,7 +537,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
     "src/operate.ts#credentialApprover@126": 1,
     "src/scope.ts#proveCredential@42": 1,
-    "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@70><anonymous>@1": 1,
   },
   "checkApproverPassword": {
@@ -545,7 +544,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/guards.ts#createSharedGuards@1>authenticateApprover@2": 2,
     "src/server/runtime.ts#<module>": 3,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
-    "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,
+    "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 2,
   },
   "consumeSsoNow": {
     "src/scope.ts#<module>": 1,
@@ -613,7 +612,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#keep@12": 5,
     "src/flow-send.ts#sendStep@14": 3,
     "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 5,
-    "src/flow-triggers.ts#checkTrigger@49": 3,
+    "src/flow-triggers.ts#checkTrigger@50": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@26": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
@@ -835,7 +834,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1": 3,
     "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@278": 2,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
-    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/pages.ts#createPagesHandlers@1": 2,
@@ -852,6 +851,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>teamsAct@71><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@72><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@83><anonymous>@1": 1,
+    // Passwordless review round 1: reviewed new sites.
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -866,6 +867,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   proveCredential: {
     "src/scope.ts#addApprover@32>store.transact(_)@1": 1,
     "src/scope.ts#proveCredential@42": 1,
+    // Passwordless review round 1: reviewed new sites.
+    "src/flows-cli.ts#<module>": 2,
+    "src/flows-cli.ts#runFlowsCommand@3": 1,
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,

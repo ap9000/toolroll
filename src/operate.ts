@@ -939,7 +939,8 @@ export async function runOperate(
   write: Write,
   options: OperateOptions = {},
 ): Promise<number> {
-  return withPasswordSource(CLI_PASSWORD_SOURCE, () => runOperateLocal(command, argv, write, options));
+  // Each command gets its own remembered-login holder (Passwordless: "cli-login" is this command's, never the next one's).
+  return withPasswordSource(CLI_PASSWORD_SOURCE, () => rememberedLogin.run({ login: null }, () => runOperateLocal(command, argv, write, options)));
 }
 
 async function runOperateLocal(
@@ -11587,7 +11588,8 @@ function credentialsFrom(
       name = remembered.name;
       token = remembered.password;
       // This command proves with the remembered login: under Passwordless that reads as "cli-login", never as typed.
-      rememberedLogin.enterWith({ name, token });
+      const holder = rememberedLogin.getStore();
+      if (holder !== undefined) holder.login = { name, token };
     }
   }
   return { name, token };

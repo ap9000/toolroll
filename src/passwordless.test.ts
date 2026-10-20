@@ -94,7 +94,7 @@ describe("the CLI's remembered login", () => {
   test("on: an act proved with it records 'cli-login', and no credential act accepts it", () => {
     const { store, password } = setup();
     setPasswordless(store, true, "alex", T0);
-    rememberedLogin.run({ name: "alex", token: password }, () => {
+    rememberedLogin.run({ login: { name: "alex", token: password } }, () => {
       expect(proveAccountNow(store, "alex", password)).toMatchObject({ ok: true, method: "cli-login" });
       expect(proveCredential(store, "alex", password).ok).toBe(false);
     });
@@ -102,7 +102,7 @@ describe("the CLI's remembered login", () => {
 
   test("off: exactly today's behaviour (a remembered password reads as a password)", () => {
     const { store, password } = setup();
-    rememberedLogin.run({ name: "alex", token: password }, () => {
+    rememberedLogin.run({ login: { name: "alex", token: password } }, () => {
       expect(proveAccountNow(store, "alex", password)).toMatchObject({ ok: true, method: "password-now" });
       expect(proveCredential(store, "alex", password).ok).toBe(true);
     });
@@ -111,8 +111,32 @@ describe("the CLI's remembered login", () => {
   test("a password typed for this command is never mistaken for the remembered one", () => {
     const { store, password } = setup();
     setPasswordless(store, true, "alex", T0);
-    rememberedLogin.run({ name: "alex", token: "an-old-remembered-password" }, () => {
+    rememberedLogin.run({ login: { name: "alex", token: "an-old-remembered-password" } }, () => {
       expect(proveCredential(store, "alex", password)).toMatchObject({ ok: true, method: "password-now" });
     });
+  });
+});
+
+describe("round 1 of the implementation review", () => {
+  test("a credential act takes a fresh identity-provider re-check under Passwordless (the session never stands in)", () => {
+    const { store } = setup();
+    setPasswordless(store, true, "alex", T0);
+    let spent = false;
+    const withSso: FreshFacts = { ...facts(), ssoNow: () => (spent ? null : Date.now()), consumeSsoNow: () => { spent = true; return () => { spent = false; }; } };
+    expect(freshFacts.run(withSso, () => proveCredential(store, "alex", ""))).toMatchObject({ ok: true, method: "sso-now" });
+    expect(spent).toBe(true);
+    // An ordinary act still takes the session and leaves the re-check unspent.
+    let spent2 = false;
+    const again: FreshFacts = { ...facts(), ssoNow: () => (spent2 ? null : Date.now()), consumeSsoNow: () => { spent2 = true; return () => {}; } };
+    expect(freshFacts.run(again, () => proveAccountNow(store, "alex", ""))).toMatchObject({ ok: true, method: "session" });
+    expect(spent2).toBe(false);
+  });
+
+  test("the remembered-login mark belongs to one command's holder: a fresh holder has none", () => {
+    const { store, password } = setup();
+    setPasswordless(store, true, "alex", T0);
+    const first = { login: { name: "alex", token: password } as { name: string; token: string } | null };
+    rememberedLogin.run(first, () => expect(proveAccountNow(store, "alex", password).method).toBe("cli-login"));
+    rememberedLogin.run({ login: null }, () => expect(proveAccountNow(store, "alex", password)).toMatchObject({ ok: true, method: "password-now" }));
   });
 });

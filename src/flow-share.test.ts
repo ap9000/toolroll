@@ -176,8 +176,8 @@ describe("what never leaves", () => {
     const row = store.getFlow(flow)!;
     setFlowSecret(here, repo, "CRM_KEY", "planted-crm-secret-value-9f2c");
     expect(saveHooksBase(here, "https://hooks.planted-host.example").ok).toBe(true);
-    const hook = addFlowTriggerTo(store, row, { kind: "webhook", title: "Sentry error" }, "priya", NOW, here);
-    const signed = addFlowTriggerTo(store, row, { kind: "github", watch: "pulls", delivery: "webhook" }, "priya", NOW, here);
+    const hook = addFlowTriggerTo(store, row, { kind: "webhook", title: "Sentry error" }, "priya", NOW, here, { ingress: "proved" });
+    const signed = addFlowTriggerTo(store, row, { kind: "github", watch: "pulls", delivery: "webhook" }, "priya", NOW, here, { ingress: "proved" });
     if (!hook.ok || !signed.ok) throw new Error("triggers");
     const hookHash = store.getFlowTrigger(hook.id)!.hookHash!;
     // A channel someone connected from Slack, and a card with its history.

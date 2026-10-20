@@ -36,7 +36,7 @@ afterEach(async () => {
 });
 
 const add = (settings: Record<string, unknown>) => {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", ...settings }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", ...settings }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   return made.id;
 };

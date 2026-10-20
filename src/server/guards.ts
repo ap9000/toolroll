@@ -54,7 +54,8 @@ export function createSharedGuards(runtime: GuardsRuntime) {
    */
   /** A credential act (docs/plans/passwordless.md): only a password typed now (or a one-use provider re-check) proves it. */
   function authenticateCredential(who: Who, token: string, repo?: string | null): ReturnType<typeof checkApproverPassword> {
-    const proved = authenticateApprover(who, token, repo);
+    if (who.via !== "cookie") return { ok: false, reason: "not-an-approver" };
+    const proved = checkApproverPassword(runtime.store, who.name, token, repo, { credential: true });
     return !proved.ok || credentialProof(proved.method) ? proved : { ok: false, reason: "not-an-approver" };
   }
   function authenticateApprover(who: Who, token: string, repo?: string | null): ReturnType<typeof checkApproverPassword> {

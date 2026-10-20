@@ -345,6 +345,13 @@ function webhookWords(config: Extract<TriggerConfig, { kind: "webhook" }>): stri
 export const senderOf = (config: Extract<TriggerConfig, { kind: "webhook" }>): WebhookSender => config.sender ?? "none";
 
 /** Whether this trigger takes deliveries at a secret address rather than being checked. */
+/** Whether a raw trigger the caller is about to add would take deliveries (an address): read leniently, before validation. */
+export function rawTakesDeliveries(raw: unknown): boolean {
+  if (raw === null || typeof raw !== "object") return false;
+  const one = raw as Record<string, unknown>;
+  return one["kind"] === "webhook" || ((one["kind"] === "github" || one["kind"] === "linear") && one["delivery"] === "webhook");
+}
+
 export function takesDeliveries(config: TriggerConfig): boolean {
   return config.kind === "webhook" || ((config.kind === "github" || config.kind === "linear") && config.delivery === "webhook");
 }
@@ -422,15 +429,21 @@ export type TriggerReveal = { path: string; address: string | null; secret: stri
 export type TriggerMade = { ok: true; id: number; said: string; reveal: TriggerReveal | null } | { ok: false; message: string };
 
 /** Add a trigger to a flow. A webhook trigger's address (and GitHub's signing secret) is returned once and never stored readable. */
-export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean } = {}): TriggerMade {
+/**
+ * `ingress: "proved"`: the caller proved a password typed now (a credential act, docs/plans/passwordless.md) — only then
+ * may a trigger that takes deliveries be made with an address. Without it a webhook is made with none (its panel's
+ * set-up, which asks for the password, makes one), and GitHub/Linear webhook delivery is refused.
+ */
+export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean; ingress?: "proved" } = {}): TriggerMade {
   const definition = flowDefinitionOf(flow);
   if (definition === null || flow.state !== "active") return { ok: false, message: "This flow can't take triggers right now." };
   let config: TriggerConfig;
   try { config = validateTriggerConfig(raw, { store, flow, definition, actor }); } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That trigger isn't valid." }; }
   if (takesDeliveries(config) && dir === null) return { ok: false, message: "Webhook addresses are set up on the console." };
+  if (takesDeliveries(config) && config.kind !== "webhook" && options.ingress !== "proved") return { ok: false, message: "Webhook delivery is set up on the flow's trigger panel, with your password." };
   // v126: a webhook made where no one is shown its address (the gallery, an import) is made with none: its first
   // set-up or New address makes one and shows it. A webhook made on its panel is shown its address now.
-  const token = takesDeliveries(config) && (options.shown !== false || config.kind !== "webhook") ? randomBytes(24).toString("base64url") : null;
+  const token = takesDeliveries(config) && options.ingress === "proved" && (options.shown !== false || config.kind !== "webhook") ? randomBytes(24).toString("base64url") : null;
   const schedule = config.kind === "schedule" || config.kind === "plane-review" ? parseSchedule(config.schedule) : null;
   const id = store.addFlowTrigger({
     // The table's kinds were fixed before plane reviews: one is kept as the daily schedule it is.

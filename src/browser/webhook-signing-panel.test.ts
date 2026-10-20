@@ -48,7 +48,7 @@ test.each([
   { sender: "sentry", settings: { project: "web" }, first: "c0ffee".repeat(10) + "abcd", next: "beef".repeat(16), header: "sentry-hook-signature", algorithm: "sha256" },
   { sender: "vercel", settings: { project: "prj_1", team: "team_1" }, first: "VercelSecret0123456789", next: "VercelRotated987654321", header: "x-vercel-signature", algorithm: "sha1" },
 ])("a ready $sender webhook's secret is replaced through the panel, and the old one then proves nothing", async ({ sender, settings, first, next, header, algorithm }) => {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender, ...settings }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender, ...settings }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const id = made.id, token = made.reveal!.path.slice("/hooks/flow/".length);
   if (!saveSigningSecret(store, store.getFlowTrigger(id)!, first, T0, dir).ok) throw new Error("first secret");
@@ -86,7 +86,7 @@ test.each([
 });
 
 test("a Vercel webhook's project is set through the Signing box, behind the password", async () => {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "vercel" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "vercel" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const id = made.id;
   const posted: { path: string; fields: Record<string, string> }[] = [];

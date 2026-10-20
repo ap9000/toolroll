@@ -34,7 +34,7 @@ afterEach(() => { vi.restoreAllMocks(); store.close(); rmSync(dir, { recursive: 
 const cards = (s: Store = store) => Number(s.handle.prepare("SELECT COUNT(*) AS n FROM flow_card WHERE flow = ?").get(flow)?.["n"]);
 const receipts = (id: number) => Number(store.handle.prepare("SELECT COUNT(*) AS n FROM flow_trigger_event WHERE trigger = ?").get(id)?.["n"]);
 function signedHook(s: Store = store) {
-  const made = addFlowTriggerTo(s, s.getFlow(flow)!, { kind: "webhook", sender: "github-style" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(s, s.getFlow(flow)!, { kind: "webhook", sender: "github-style" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(s, s.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
@@ -47,7 +47,7 @@ function signedHook(s: Store = store) {
   return { id: made.id, token, send, forged: (now = T0) => receiveFlowHook(s, token, { headers: { "x-hub-signature-256": [`sha256=${"0".repeat(64)}`] }, body: Buffer.from("{}") }, dir, now) };
 }
 function unsignedHook() {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const token = made.reveal!.path.slice("/hooks/flow/".length);
   return { id: made.id, send: (title: string, now = T0) => receiveFlowHook(store, token, { headers: {}, body: Buffer.from(JSON.stringify({ title })) }, dir, now) };
@@ -182,7 +182,7 @@ describe("what a rejection writes", () => {
   });
 
   test("a signed Linear delivery that is too old counts as unproven, and past the minute's limit gets 429", () => {
-    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir);
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir, { ingress: "proved" });
     if (!made.ok) throw new Error(made.message);
     const secret = "l".repeat(32);
     saveSigningSecret(store, store.getFlowTrigger(made.id)!, secret, T0, dir);
@@ -252,7 +252,7 @@ describe("draining, against everything else at once", () => {
 
   test("one failing run is one fix, held or not: two GitHub triggers holding the same commit make one card", () => {
     const run = (id: number) => {
-      const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "checks", delivery: "webhook", from: "anyone" }, "alex", T0, dir);
+      const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "checks", delivery: "webhook", from: "anyone" }, "alex", T0, dir, { ingress: "proved" });
       if (!made.ok) throw new Error(made.message);
       store.recordFlowReceipt(made.id, "checks:abc123", "held", null, JSON.stringify({ title: "CI failed on abc123", description: null, by: "GitHub", source: { kind: "github", label: `Run ${id}`, url: null } }), at(1));
       return made.id;
@@ -295,7 +295,7 @@ describe("over HTTP", () => {
 
 describe("GitHub and Linear deliveries under the same rules", () => {
   function github() {
-    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir);
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir, { ingress: "proved" });
     if (!made.ok) throw new Error(made.message);
     const token = made.reveal!.path.slice("/hooks/flow/".length), secret = made.reveal!.secret!;
     const send = (number: number, url: string, now = T0) => {
@@ -317,7 +317,7 @@ describe("GitHub and Linear deliveries under the same rules", () => {
   });
 
   test("a Linear identifier that is too long, or looks like a key, is never a key: received under the bytes, made into nothing", () => {
-    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir);
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir, { ingress: "proved" });
     if (!made.ok) throw new Error(made.message);
     const secret = "l".repeat(32);
     saveSigningSecret(store, store.getFlowTrigger(made.id)!, secret, T0, dir);
@@ -340,7 +340,7 @@ describe("GitHub and Linear deliveries under the same rules", () => {
 });
 
 test("the largest card-sized item, escaped at every character, is held, not refused for its size", () => {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "github-style", titleField: "t", bodyField: "d", idField: "id", urlField: "u" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "github-style", titleField: "t", bodyField: "d", idField: "id", urlField: "u" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
@@ -382,7 +382,7 @@ test("a sender is told why its item was left out, never this installation's flow
 });
 
 test("an identity of the full 120 characters is a key, whatever its sender's prefix", () => {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", idField: "id" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", idField: "id" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
@@ -400,7 +400,7 @@ test("an identity of the full 120 characters is a key, whatever its sender's pre
 test("an unsigned sender's own id that looks like a key is never a key: the delivery keys on its bytes", () => {
   const hook = unsignedHook();
   const planted = ["ghp", "Q".repeat(36)].join("_");
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   void hook;
   const token = made.reveal!.path.slice("/hooks/flow/".length);

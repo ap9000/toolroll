@@ -198,3 +198,17 @@ Passwordless and must keep working unattended; every other worker registration s
 - Tests: `passwordless.test.ts` (the reading, credential refusal, CLI login, fail-closed, detached work),
   `serve.passwordless.test.ts` (switch, an ordinary step-up, forms, a credential act, a session ended elsewhere),
   `passwordless-credentials.test.ts` (the closed list, statically).
+
+## Implementation review — round 1 (Codex on 7c98de82: NO-GO, 1 High + 2 Medium), and what changed
+
+1. **High — webhook addresses made without a credential** (adding a delivery trigger, in the console and the CLI;
+   `share` and `renew`) — pre-existing, now closed at the source: `addFlowTriggerTo` mints an address only with
+   `ingress: "proved"`; the console and CLI add paths prove a typed password first for a delivery trigger; `share`
+   (a public form link) and `renew` (a new address) are credential acts. Anything else (gallery, import, chat) makes a
+   webhook with no address (its panel's set-up asks for the password) and refuses GitHub/Linear webhook delivery. The
+   flow view asks for the password inline for these (credential `StepUp`, a `CredentialAction` for share/renew).
+2. **Medium — Passwordless pre-empted a fresh identity-provider re-check** → credential proofs pass
+   `{ credential: true }` and never take the session road, so `sso-now` is reached and spent.
+3. **Medium — the remembered-login mark wasn't command-scoped** → each CLI command runs with its own holder
+   (`rememberedLogin.run({ login: null }, …)` in `runOperate`); `credentialsFrom` fills only that holder.
+- Also: ordinary `StepUp`s in the flow view (the Linear key, signing "runs on its own") follow Passwordless.

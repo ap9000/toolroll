@@ -104,7 +104,7 @@ describe("through a trigger", () => {
 
   const SECRET = "c0ffee".repeat(10) + "abcd";
   function hook(settingsGiven: Record<string, unknown>) {
-    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", ...settingsGiven }, "alex", T0, dir);
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", ...settingsGiven }, "alex", T0, dir, { ingress: "proved" });
     if (!made.ok) throw new Error(made.message);
     const trigger = store.getFlowTrigger(made.id)!;
     if (settingsGiven["sender"] === "sentry" || settingsGiven["sender"] === "vercel") { if (!saveSigningSecret(store, trigger, SECRET, T0, dir).ok) throw new Error("secret"); }

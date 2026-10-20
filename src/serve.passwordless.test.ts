@@ -14,6 +14,7 @@ import { createDecisionServer } from "./serve.js";
 import { passwordlessOn } from "./passwordless.js";
 import { PersistentSessions } from "./server/session.js";
 import { T0 } from "../test/serve-kit.js";
+import { flowFromSteps } from "./flows.js";
 
 let home: string, store: Store, server: Server, base: string, password: string;
 
@@ -23,7 +24,7 @@ beforeEach(async () => {
   const added = addApprover(store, "alex", T0);
   if (!added.ok) throw new Error("bootstrap failed");
   password = added.token;
-  server = createDecisionServer({ store, evidenceRoot: home, repos: [home], terminalHost: null } as Parameters<typeof createDecisionServer>[0]);
+  server = createDecisionServer({ store, evidenceRoot: home, repos: [home], terminalHost: null, configDir: home } as Parameters<typeof createDecisionServer>[0]);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (typeof address !== "object" || address === null) throw new Error("no address");
@@ -93,4 +94,19 @@ test("a session ended from another process no longer signs anyone in, even with 
   store.dropWebSession(PersistentSessions.hash(/=([0-9a-f]{64})/.exec(cookie)![1]!));
   const response = await post(cookie, "/settings/retention", { csrf });
   expect(response.location).not.toMatch(/said=Nothing changed/);
+});
+
+test("with it on, adding a webhook trigger (an address) still takes a typed password; a schedule doesn't", async () => {
+  const flow = store.createFlow({ repo: home, name: "Inbound", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "triage", title: "Triage", kind: "task", instructions: "Look." }], null)) }, T0);
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  await post(cookie, "/settings/passwordless", { csrf, action: "on", password });
+  const add = async (trigger: object, extra: Record<string, string> = {}) => {
+    const response = await fetch(`${base}/flows/${flow}/triggers`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf, trigger: JSON.stringify(trigger), ...extra }) });
+    return { status: response.status, body: await response.json() as { ok: boolean } };
+  };
+  expect(await add({ kind: "webhook" })).toMatchObject({ status: 403, body: { ok: false } });
+  expect(store.flowTriggers(flow).filter(one => one.kind === "webhook")).toHaveLength(0);
+  expect(await add({ kind: "webhook" }, { password })).toMatchObject({ body: { ok: true } });
+  expect(await add({ kind: "schedule", schedule: "daily 09:00", title: "Standup" })).toMatchObject({ body: { ok: true } });
 });

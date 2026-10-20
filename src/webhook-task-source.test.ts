@@ -40,7 +40,7 @@ afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); 
 /** A flow whose start is a build zone with these instructions, fed by a Sentry webhook; one alert delivered. */
 function filedFromSentry(instructions: string, sender: "sentry" | "none" = "sentry") {
   const flow = store.createFlow({ repo: REPO, name: "Error to fix", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Fix it", kind: "task", instructions }], null)) }, T0);
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   if (sender === "sentry" && !saveSigningSecret(store, store.getFlowTrigger(made.id)!, SECRET, T0, dir).ok) throw new Error("secret");
   const token = made.reveal!.path.slice("/hooks/flow/".length);
@@ -147,12 +147,12 @@ describe("what each agent is actually given", () => {
 
 test("signed GitHub and Linear deliveries keep where they came from too; a polled item never claims proof", () => {
   const flow = store.createFlow({ repo: REPO, name: "Issues", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Fix it", kind: "task", instructions: "Fix: {{card.title}}" }], null)) }, T0);
-  const github = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir);
+  const github = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir, { ingress: "proved" });
   if (!github.ok) throw new Error(github.message);
   const issue = JSON.stringify({ action: "opened", repository: { full_name: "acme/shop" }, sender: { login: "sam" },
     issue: { number: 12, title: "Refunds round wrong", body: "", html_url: "https://github.com/acme/shop/issues/12?x=1", user: { login: "sam" }, author_association: "OWNER", labels: [], created_at: T0.toISOString(), updated_at: T0.toISOString() } });
   expect(receiveFlowHook(store, github.reveal!.path.slice("/hooks/flow/".length), { headers: { "x-github-event": ["issues"], "x-hub-signature-256": [`sha256=${createHmac("sha256", github.reveal!.secret!).update(issue).digest("hex")}`] }, body: Buffer.from(issue) }, dir, T0).status).toBe(202);
-  const linear = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir);
+  const linear = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir, { ingress: "proved" });
   if (!linear.ok) throw new Error(linear.message);
   saveSigningSecret(store, store.getFlowTrigger(linear.id)!, "l".repeat(32), T0, dir);
   const created = JSON.stringify({ type: "Issue", action: "create", webhookTimestamp: T0.getTime(), data: { identifier: "ENG-7", title: "Export fails", team: { key: "ENG" }, url: "https://linear.app/acme/issue/ENG-7" } });
@@ -169,7 +169,7 @@ test("signed GitHub and Linear deliveries keep where they came from too; a polle
 
 test("a snapshot that can't be written leaves nothing filed, and the next pass files once", () => {
   const flow = store.createFlow({ repo: REPO, name: "Error to fix", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Fix it", kind: "task", instructions: "Fix: {{card.title}}" }], null)) }, T0);
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   saveSigningSecret(store, store.getFlowTrigger(made.id)!, SECRET, T0, dir);
   receiveFlowHook(store, made.reveal!.path.slice("/hooks/flow/".length), { headers: { "sentry-hook-signature": [createHmac("sha256", SECRET).update(ALERT).digest("hex")] }, body: ALERT }, dir, T0);
@@ -195,7 +195,7 @@ test("words come from what was kept: changing the webhook's sender later doesn't
 
 test("the longest reference there can be, with zone words that fill the goal, still files, attached whole", () => {
   const flow = store.createFlow({ repo: REPO, name: "Incidents", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Fix it", kind: "task", instructions: "W".repeat(FLOW_GOAL_LIMIT) }], null)) }, T0);
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", idField: "id", urlField: "url" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", idField: "id", urlField: "url" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
