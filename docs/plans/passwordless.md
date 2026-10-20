@@ -112,6 +112,12 @@ returns the token's person first). The CLI **already** falls back to it wherever
   register` and **`runner bind`** (widens a worker's projects); **`bridge telegram pair`** and any other chat pairing;
   **`chat-approval on`** (and changing its limits); signing a mode with chat approval; a flow trigger's
   setup/secret/sender/scope; `passwordless on`. A static test enumerates them.
+- **Explicitly exempt: `toolroll up`'s own worker.** `up` signs in with the remembered login and registers *this
+  computer's own* worker at startup (`registerRunnerIfIdle`) — today, with Passwordless off, exactly the same. It is how
+  the console starts, including an unattended service restart that nobody can type into, and it creates no way in for
+  anyone or anything else: the worker it registers is the one `up` itself runs. Passwordless doesn't change it, and it
+  is not on the typed-only list (that would make turning Passwordless on break startup). Registering any *other*
+  worker (`runner register`, `/fleet/runner/register`) stays typed-only.
 - Passwordless off → exactly today's CLI behaviour.
 - The remote CLI (API tokens over HTTP) is unchanged.
 
@@ -167,3 +173,8 @@ remembered login through `credentialsFrom`; Passwordless only routes stray `--to
 
 `coordinator mint` and `lead token` mint machine authority through `askCredentials` → added to the CLI credential
 list (using a machine token is unchanged; minting one is a credential act).
+
+## Review — round 6 (Codex on §5: `toolroll up` registers a worker through the remembered login)
+
+Recorded as an explicit exemption with its reason (above): `up` registering its own worker is unchanged by
+Passwordless and must keep working unattended; every other worker registration stays typed-only.
