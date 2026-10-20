@@ -46,7 +46,8 @@ function hookView(trigger: FlowTriggerRow, config: TriggerConfig, dir: string | 
   if (config.kind !== "webhook") return { ready, needsSecret: config.kind === "linear", sender: null, makesSecret: false, warning: null, readerNote: null, dropped, scope: null };
   const sender = senderOf(config);
   // What it needs first, first: an unset secret refuses everything, so that is said before any narrowing.
-  const warning = sender === "none" ? "Unsigned: anyone with its address can add cards. Choose who signs its deliveries to close that."
+  const warning = trigger.hookHash === null && (sender === "none" || ready) ? "No address yet: choose New address to make one and give it to the sender."
+    : sender === "none" ? "Unsigned: anyone with its address can add cards. Choose who signs its deliveries to close that."
     : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted (with New address for the address to give it)` : "it is set up"}.`
     : (sender === "sentry" || sender === "vercel") && config.project == null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards. Name the project to narrow it.`
     : null;

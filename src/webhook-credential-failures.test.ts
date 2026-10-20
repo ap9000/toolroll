@@ -54,7 +54,7 @@ function signed() {
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, trigger(made.id), T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
-  return { id: made.id, token: tokenOf(setUp.reveal!.path), secret: setUp.reveal!.secret! };
+  return { id: made.id, token: tokenOf(made.reveal!.path), secret: setUp.reveal!.secret! };
 }
 
 test("a replaced secret that can't be removed is still never read again", () => {
@@ -107,4 +107,18 @@ test("two renewals from the same reading: exactly one lands, and the address it 
     else expect(post(tokenOf(a.reveal!.path), secret, '{"title":"renewed"}')).toMatchObject({ status: 202 });
     expect(post(hook.token, secret, '{"title":"old address"}')).toEqual({ status: 404, said: "No such address." });
   }
+});
+
+test("a sender changed while removing the old secret fails: the old secret is never read again", async () => {
+  const { changeFlowHookSender } = await import("./flow-triggers.js");
+  const hook = signed();
+  const old = trigger(hook.id).hookCredential;
+  failing.mode = "drop";
+  expect(changeFlowHookSender(store, trigger(hook.id), "standard", "alex", T0, dir)).toMatchObject({ ok: true });
+  failing.mode = "ok";
+  expect(readHookSecret(dir, hook.id, old)).toBe(hook.secret);
+  expect(trigger(hook.id).hookCredential).toBe("");
+  // Back to the old sender: the leftover secret still proves nothing until a new one is made.
+  expect(changeFlowHookSender(store, trigger(hook.id), "github-style", "alex", T0, dir)).toMatchObject({ ok: true });
+  expect(post(hook.token, hook.secret, '{"title":"leftover"}').status).toBe(401);
 });

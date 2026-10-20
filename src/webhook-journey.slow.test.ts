@@ -18,6 +18,8 @@ import { advanceFlows } from "./flow-engine.js";
 import { GALLERY, useGalleryTemplate } from "./flow-gallery.js";
 import { flowHook } from "./server/remote-hooks.js";
 import { scopeApprovedForDispatch } from "./dispatch.js";
+import { register } from "./runner.js";
+import { acquireIfReady } from "./claim.js";
 
 const T0 = new Date();
 let base: string, repo: string, store: Store, servers: Server[] = [];
@@ -88,11 +90,64 @@ test("from the gallery to a task waiting for a person, over HTTP; and no refusal
   advanceFlows(store, repo, new Date());
   const card = store.lastFlowTriggerCard(trigger.id)!;
   const task = store.getFlowCard(card)!.task!;
-  expect(scopeApprovedForDispatch(store, store.lookupRef(task)!.id, new Date())).toBe(false);
+  const ref = store.lookupRef(task)!;
+  expect(scopeApprovedForDispatch(store, ref.id, new Date())).toBe(false);
+  // A worker's claim is refused: the claim re-proves the approval in its own write.
+  register(store, { name: "builder", host: "test", capacity: 1, repos: [repo], now: new Date(), newToken: () => "builder-token" });
+  expect(acquireIfReady(store, ref.id, "builder", { token: "builder-token", now: new Date(), ttlMs: 3_600_000, dispatchRole: "builder" })).toMatchObject({ ok: false });
   // The task page, as served: waiting for approval, filed by the automation, saying where it came from.
   const taskPage = await page(`/t/${task}`);
   expect(taskPage).toContain("Round refunds to the cent");
   expect(taskPage).toContain("Webhook (signed by Standard Webhooks)");
   expect(taskPage).toContain("Webhook to build");
   expect(taskPage).toMatch(/[Aa]pprove/);
+
+  // A person approves it with the password, through the console; only then may a worker claim it.
+  const scope = store.getScope(task)!;
+  const nonce = /name="nonce" value="([^"]+)"/.exec(taskPage)?.[1];
+  const digest = /name="digest" value="([^"]+)"/.exec(taskPage)?.[1];
+  expect(nonce && digest).toBeTruthy();
+  const approved = await post(`/t/${task}/approve`, { token: alex.token, nonce: nonce!, digest: digest! });
+  expect(approved.status).toBeLessThan(400);
+  expect(store.getScope(task)!.approvedDigest).toBe(scope.digest);
+  expect(acquireIfReady(store, ref.id, "builder", { token: "builder-token", now: new Date(), ttlMs: 3_600_000, dispatchRole: "builder" })).toMatchObject({ ok: true });
+});
+
+test("Vercel over HTTP, set up and scoped through the console's routes: only the project's failed deployments add cards", async () => {
+  const alex = addApprover(store, "alex", T0);
+  if (!alex.ok) throw new Error("bootstrap");
+  const used = useGalleryTemplate(store, GALLERY.find(one => one.id === "failed-deploy")!, repo, {}, { by: "alex", now: T0, dir: base });
+  if (!used.ok) throw new Error(used.said);
+  const trigger = store.flowTriggers(used.flow).find(one => one.kind === "webhook")!;
+  const consoleUrl = await listen(createDecisionServer({ store, evidenceRoot: join(base, "evidence"), clock: () => new Date(), repos: [repo], configDir: base }));
+  const hooksUrl = await listen(createServer((request, response) => { void flowHook({ store, clock: () => new Date(), options: { configDir: base } }, request, response, new URL(request.url ?? "/", "http://localhost")); }));
+  const login = await fetch(`${consoleUrl}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alex.token }), redirect: "manual" });
+  const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0]!;
+  const post = async (path: string, fields: Record<string, string>) => {
+    const csrf = /"csrf":"([0-9a-f]{64})"/.exec(await (await fetch(`${consoleUrl}/flows?format=workspace`, { headers: { cookie } })).text())?.[1]
+      ?? /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(`${consoleUrl}/flows`, { headers: { cookie } })).text())?.[1];
+    return fetch(`${consoleUrl}${path}`, { method: "POST", headers: { cookie, origin: consoleUrl, accept: "application/json" }, body: new URLSearchParams({ ...fields, csrf: csrf! }) });
+  };
+  const at = (verb: string) => `/flows/${used.flow}/triggers/${trigger.id}/${verb}`;
+  // Made from the gallery: no address, no secret. New address makes one; until the secret is pasted, every delivery is refused.
+  const renewed = await (await post(at("renew"), {})).json() as { reveal: { path: string } };
+  const address = `${hooksUrl}${renewed.reveal.path}`;
+  const secret = "VercelSecret0123456789";
+  const failed = (project: string, type = "deployment.error") => {
+    const body = JSON.stringify({ type, payload: { project: { id: project }, team: { id: "team_1" }, deployment: { id: `dpl_${project}_${type}`, name: "shop" }, links: { deployment: "https://vercel.com/acme/shop/x" } } });
+    return fetch(address, { method: "POST", headers: { "x-vercel-signature": createHmac("sha1", secret).update(body).digest("hex") }, body });
+  };
+  const outcome = () => store.getFlowTrigger(trigger.id)!.lastOutcome;
+  const before = outcome();
+  expect((await failed("prj_1")).status).toBe(401);
+  expect(outcome()).toBe(before);
+  // The secret and the project, each behind the password: a wrong one changes nothing.
+  expect((await post(at("secret"), { secret, password: "wrong" })).status).toBe(403);
+  expect((await post(at("secret"), { secret, password: alex.token })).status).toBe(200);
+  expect((await post(at("scope"), { project: "prj_1", team: "", password: "wrong" })).status).toBe(403);
+  expect(store.getFlowTrigger(trigger.id)!.configJson).not.toContain("prj_1");
+  expect((await post(at("scope"), { project: "prj_1", team: "", password: alex.token })).status).toBe(200);
+  expect(await (await failed("prj_1", "deployment.succeeded")).json()).toEqual({ said: "Ignored: not a failed deployment." });
+  expect(await (await failed("prj_2")).json()).toEqual({ said: "Ignored: from another Vercel project." });
+  expect(await (await failed("prj_1")).json()).toEqual({ said: "Added 1 card." });
 });

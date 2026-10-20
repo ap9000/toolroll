@@ -422,13 +422,15 @@ export type TriggerReveal = { path: string; address: string | null; secret: stri
 export type TriggerMade = { ok: true; id: number; said: string; reveal: TriggerReveal | null } | { ok: false; message: string };
 
 /** Add a trigger to a flow. A webhook trigger's address (and GitHub's signing secret) is returned once and never stored readable. */
-export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null): TriggerMade {
+export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean } = {}): TriggerMade {
   const definition = flowDefinitionOf(flow);
   if (definition === null || flow.state !== "active") return { ok: false, message: "This flow can't take triggers right now." };
   let config: TriggerConfig;
   try { config = validateTriggerConfig(raw, { store, flow, definition, actor }); } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That trigger isn't valid." }; }
   if (takesDeliveries(config) && dir === null) return { ok: false, message: "Webhook addresses are set up on the console." };
-  const token = takesDeliveries(config) ? randomBytes(24).toString("base64url") : null;
+  // v126: a webhook made where no one is shown its address (the gallery, an import) is made with none: its first
+  // set-up or New address makes one and shows it. A webhook made on its panel is shown its address now.
+  const token = takesDeliveries(config) && (options.shown !== false || config.kind !== "webhook") ? randomBytes(24).toString("base64url") : null;
   const schedule = config.kind === "schedule" || config.kind === "plane-review" ? parseSchedule(config.schedule) : null;
   const id = store.addFlowTrigger({
     // The table's kinds were fixed before plane reviews: one is kept as the daily schedule it is.
@@ -1316,10 +1318,10 @@ export function setUpFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
   const sender = senderOf(config);
   if (sender === "none" || !makesSecret(sender)) return { ok: false, message: sender === "none" ? "An unsigned webhook has no secret. Choose who signs its deliveries first." : `${SENDER_WORDS[sender]} makes its own secret: paste it here instead.` };
   const secret = makeSecret(sender);
-  // Set up for the first time (no secret yet): the address is made with it, and both are shown together once — the
-  // sender needs both, and an address made earlier (by the gallery, an import) was shown to no one. Replacing a secret
-  // keeps the address the sender already has.
-  const first = trigger.hookCredential === "";
+  // A webhook with no address yet (made by the gallery or an import, where no one was shown one) gets its address with
+  // its secret, both shown together once. One that has an address keeps it — a replaced secret, a set-up after its
+  // sender changed — because the sender already has it.
+  const first = trigger.hookHash === null;
   const token = first ? randomBytes(24).toString("base64url") : null;
   const saved = nextHookCredential(store, trigger, secret, null, now, dir, token === null ? undefined : hookHash(token));
   if (!saved.ok) return saved;

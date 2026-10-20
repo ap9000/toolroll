@@ -142,10 +142,9 @@ describe("through a trigger", () => {
   });
 
   test("generic: a configured identity groups deliveries; a missing one makes nothing and says why when it comes again", () => {
-    const { id } = hook({ sender: "standard", idField: "incident.id", urlField: "incident.url", titleField: "incident.name" });
+    const { id, token } = hook({ sender: "standard", idField: "incident.id", urlField: "incident.url", titleField: "incident.name" });
     const key = setUpFlowHook(store, store.getFlowTrigger(id)!, T0, dir);
     if (!key.ok) throw new Error(key.message);
-    const token = key.reveal!.path.slice("/hooks/flow/".length);
     const secret = Buffer.from(key.reveal!.secret!.slice("whsec_".length), "base64");
     const send = (messageId: string, payload: unknown) => {
       const body = JSON.stringify(payload), stamp = String(Math.floor(T0.getTime() / 1000));

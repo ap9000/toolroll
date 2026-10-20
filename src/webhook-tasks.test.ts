@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { scopeApprovedForDispatch } from "./dispatch.js";
+import { register } from "./runner.js";
+import { acquireIfReady } from "./claim.js";
 import { advanceFlows } from "./flow-engine.js";
 import { GALLERY, useGalleryTemplate } from "./flow-gallery.js";
 import { addFlowTriggerTo, hookReady, receiveFlowHook, renewFlowHook, setUpFlowHook, triggerConfigOf } from "./flow-triggers.js";
@@ -99,4 +101,7 @@ test("a webhook's card waits for a person even when the same flow is signed to r
   expect(store.getFlowCard(card)!.waiting).toBe("Filed as a task");
   expect(store.scopeSealed(task)).toBe(false);
   expect(scopeApprovedForDispatch(store, store.lookupRef(task)!.id, new Date(T0.getTime() + HOUR))).toBe(false);
+  // A worker's claim is refused, though the same flow's schedule may run on its own.
+  register(store, { name: "builder", host: "test", capacity: 1, repos: [repo], now: T0, newToken: () => "builder-token" });
+  expect(acquireIfReady(store, store.lookupRef(task)!.id, "builder", { token: "builder-token", now: new Date(T0.getTime() + HOUR), ttlMs: HOUR, dispatchRole: "builder" })).toMatchObject({ ok: false });
 });

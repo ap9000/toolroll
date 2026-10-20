@@ -202,7 +202,7 @@ test("the longest reference there can be, with zone words that fill the goal, st
   const key = Buffer.from(setUp.reveal!.secret!.slice("whsec_".length), "base64");
   const url = `https://status.example/${"p".repeat(1975)}`;
   const body = JSON.stringify({ id: "I".repeat(120), url, title: "Outage" }), stamp = String(Math.floor(T0.getTime() / 1000));
-  receiveFlowHook(store, setUp.reveal!.path.slice("/hooks/flow/".length), { headers: { "webhook-id": ["m1"], "webhook-timestamp": [stamp], "webhook-signature": [`v1,${createHmac("sha256", key).update(`m1.${stamp}.${body}`).digest("base64")}`] }, body: Buffer.from(body) }, dir, T0);
+  receiveFlowHook(store, made.reveal!.path.slice("/hooks/flow/".length), { headers: { "webhook-id": ["m1"], "webhook-timestamp": [stamp], "webhook-signature": [`v1,${createHmac("sha256", key).update(`m1.${stamp}.${body}`).digest("base64")}`] }, body: Buffer.from(body) }, dir, T0);
   advanceFlows(store, REPO, T0);
   const task = store.getFlowCard(store.lastFlowTriggerCard(made.id)!)!.task!;
   const goal = store.getScope(task)!.goal;

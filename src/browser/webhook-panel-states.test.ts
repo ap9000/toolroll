@@ -132,3 +132,20 @@ test("Clear takes the turned-away count off for good", async () => {
   expect(store.getFlowTrigger(dropped)).toMatchObject({ droppedCount: 0, droppedSince: null });
   expect(row(dropped).querySelector("[data-trigger-dropped]")).toBeNull();
 });
+
+test("on a phone: a long trigger title and a wrong secret are handled the same way", async () => {
+  const sentry = add({ sender: "sentry", title: "T".repeat(120) });
+  vi.stubGlobal("fetch", vi.fn(async (_path: string, init: { body: URLSearchParams }) => {
+    const saved = saveSigningSecret(store, store.getFlowTrigger(sentry)!, init.body.get("secret") ?? "", T0, dir);
+    return { ok: saved.ok, json: async () => saved.ok ? { ok: true, said: saved.said } : { ok: false, said: saved.message } };
+  }));
+  await open(true);
+  expect(row(sentry).textContent).toContain("Sentry");
+  const box = row(sentry).querySelector("[data-trigger-signing]")!;
+  const type = (input: HTMLInputElement, value: string) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); };
+  await act(async () => type(box.querySelector<HTMLInputElement>("[data-trigger-secret]")!, "not a secret"));
+  await act(async () => type(box.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, "correct horse"));
+  await act(async () => [...box.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Save secret")!.click());
+  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  expect(store.getFlowTrigger(sentry)!.hookCredential).toBe("");
+});

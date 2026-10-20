@@ -464,7 +464,7 @@ export function importFlow(store: Store, plan: FlowImportPlan, actor: string, no
     }
     const id = store.createFlow({ repo: plan.repo, name: plan.name, definitionJson: JSON.stringify(plan.definition), by: actor }, now);
     for (const trigger of plan.triggers) {
-      const made = addFlowTriggerTo(store, store.getFlow(id)!, trigger, actor, now, dir);
+      const made = addFlowTriggerTo(store, store.getFlow(id)!, trigger, actor, now, dir, { shown: false });
       if (!made.ok) throw new FlowFileError(`A ${String(trigger["kind"])} trigger: ${made.message}`);
       store.updateFlowTrigger(made.id, { state: "paused" }, now);
     }

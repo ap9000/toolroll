@@ -689,7 +689,8 @@ export function useGalleryTemplate(store: Store, template: GalleryTemplate, repo
       const id = store.createFlow({ repo, name, definitionJson: JSON.stringify(built.definition), by: input.by }, input.now);
       const made = store.getFlow(id)!;
       for (const trigger of built.triggers) {
-        const added = addFlowTriggerTo(store, made, { ...trigger, zone: trigger["zone"] ?? flowDefinitionOf(made)!.start }, input.by, input.now, input.dir);
+        // No one is shown the gallery's addresses: a webhook is made with none until its panel makes one (v126).
+        const added = addFlowTriggerTo(store, made, { ...trigger, zone: trigger["zone"] ?? flowDefinitionOf(made)!.start }, input.by, input.now, input.dir, { shown: false });
         if (!added.ok) throw new Error(added.message);
         if (added.reveal !== null) hook = true;
       }

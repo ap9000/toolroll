@@ -38,8 +38,8 @@ function signedHook(s: Store = store) {
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(s, s.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
-  // Set up for the first time: the address and the secret, shown together.
-  const token = setUp.reveal!.path.slice("/hooks/flow/".length), secret = setUp.reveal!.secret!;
+  // Made on its panel, it was shown its address then; setting it up keeps that address.
+  const token = made.reveal!.path.slice("/hooks/flow/".length), secret = setUp.reveal!.secret!;
   const send = (title: string, now = T0, into: Store = s) => {
     const body = JSON.stringify({ title });
     return receiveFlowHook(into, token, { headers: { "x-hub-signature-256": [`sha256=${createHmac("sha256", secret).update(body).digest("hex")}`] }, body: Buffer.from(body) }, dir, now);
@@ -344,7 +344,7 @@ test("the largest card-sized item, escaped at every character, is held, not refu
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
-  const secret = setUp.reveal!.secret!, token = setUp.reveal!.path.slice("/hooks/flow/".length);
+  const secret = setUp.reveal!.secret!, token = made.reveal!.path.slice("/hooks/flow/".length);
   const send = (payload: unknown, now: Date) => { const body = JSON.stringify(payload); return receiveFlowHook(store, token, { headers: { "x-hub-signature-256": [`sha256=${createHmac("sha256", secret).update(body).digest("hex")}`] }, body: Buffer.from(body) }, dir, now); };
   for (let i = 0; i < CARDS_PER_HOUR; i++) send({ id: `n${i}`, t: `card ${i}` }, at(i));
   // A title and details that JSON doubles at every character, and a link near its 2,000-character limit, kept twice.
@@ -386,7 +386,7 @@ test("an identity of the full 120 characters is a key, whatever its sender's pre
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
-  const token = setUp.reveal!.path.slice("/hooks/flow/".length);
+  const token = made.reveal!.path.slice("/hooks/flow/".length);
   const key = Buffer.from(setUp.reveal!.secret!.slice("whsec_".length), "base64");
   const send = (messageId: string, payload: unknown) => {
     const body = JSON.stringify(payload), stamp = String(Math.floor(T0.getTime() / 1000));

@@ -55,7 +55,7 @@ const receipts = (id: number) => Number(store.handle.prepare("SELECT COUNT(*) AS
 const made = <T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> => { if (!result.ok) throw new Error(JSON.stringify(result)); return result as Extract<T, { ok: true }>; };
 
 describe("provisioning", () => {
-  test("creating a signed webhook makes no secret and points at none; setting it up shows a fresh address and the secret together, once", () => {
+  test("creating a signed webhook on its panel shows its address and makes no secret; setting it up shows the secret once and keeps the address", () => {
     const { id, token, secret } = add({ sender: "standard", title: "Request" });
     expect(secret).toBeNull();
     expect(trigger(id).hookCredential).toBe("");
@@ -66,12 +66,11 @@ describe("provisioning", () => {
     expect(trigger(id).lastOutcome).toBeNull();
 
     const setUp = made(setUpFlowHook(store, trigger(id), T0, dir));
-    expect(setUp.reveal).toMatchObject({ path: expect.stringMatching(/^\/hooks\/flow\/.+/), secret: expect.stringMatching(/^whsec_/) });
+    expect(setUp.reveal).toMatchObject({ path: "", address: null, secret: expect.stringMatching(/^whsec_/) });
     const key = setUp.reveal!.secret!;
     expect(hookReady(trigger(id), dir)).toBe(true);
-    // The address made at creation was shown to no one with a secret: the one shown now replaces it.
-    expect(deliver(token, '{"title":"x"}', standard(key, "m0", '{"title":"x"}')).status).toBe(404);
-    const fresh = tokenOf(setUp.reveal!.path);
+    // The address shown when it was made is the one the sender already has: it stays.
+    const fresh = token;
     expect(deliver(fresh, '{"title":"Checkout broke"}')).toEqual({ status: 401, said: "The webhook-id header is missing." });
     expect(deliver(fresh, '{"title":"Checkout broke"}', standard("whsec_" + Buffer.alloc(32, 7).toString("base64"), "m1", '{"title":"Checkout broke"}'))).toEqual({ status: 401, said: "Signature doesn't match." });
     expect(receipts(id)).toBe(0);
@@ -173,9 +172,8 @@ describe("credentials under races and crashes", () => {
   });
 
   test("a delivery proved against a secret that changes before it writes writes nothing", () => {
-    const { id } = add({ sender: "github-style" });
-    const setUp = made(setUpFlowHook(store, trigger(id), T0, dir));
-    const old = setUp.reveal!.secret!, token = tokenOf(setUp.reveal!.path);
+    const { id, token } = add({ sender: "github-style" });
+    const old = made(setUpFlowHook(store, trigger(id), T0, dir)).reveal!.secret!;
     // The receiver reads the trigger; before it writes, another process changes who signs it — and removing the old
     // secret fails, so the receiver can still prove the delivery against it. Only the binding stops the write.
     const lookup = store.flowTriggerByHook.bind(store);
@@ -205,8 +203,9 @@ describe("changing who signs it", () => {
     expect(hookReady(trigger(id), dir)).toBe(false);
     expect(deliver(token, '{"title":"After"}')).toMatchObject({ status: 401 });
     const setUp = made(setUpFlowHook(store, trigger(id), T0, dir));
-    // Set up again under its new sender: a fresh address and secret, shown together. The same bytes, now signed, are a new delivery.
-    expect(deliver(tokenOf(setUp.reveal!.path), body, githubStyle(setUp.reveal!.secret!, body))).toEqual({ status: 202, said: "Added 1 card." });
+    // Set up again under its new sender: the same address (the sender has it), a new secret. The same bytes, now signed, are a new delivery.
+    expect(setUp.reveal!.path).toBe("");
+    expect(deliver(token, body, githubStyle(setUp.reveal!.secret!, body))).toEqual({ status: 202, said: "Added 1 card." });
 
     made(changeFlowHookSender(store, trigger(id), "none", "alex", T0, dir));
     expect(hookReady(trigger(id), dir)).toBe(true);
@@ -315,9 +314,8 @@ describe("over HTTP", () => {
   });
 
   test("a signature header sent on two lines is refused, though one of them is right", async () => {
-    const { id } = add({ sender: "standard" });
-    const setUp = made(setUpFlowHook(store, trigger(id), T0, dir));
-    const key = setUp.reveal!.secret!, token = tokenOf(setUp.reveal!.path);
+    const { id, token } = add({ sender: "standard" });
+    const key = made(setUpFlowHook(store, trigger(id), T0, dir)).reveal!.secret!;
     const body = '{"title":"Two lines"}';
     const good = standard(key, "m9", body);
     const lines = [`webhook-id: ${good["webhook-id"]}`, `webhook-timestamp: ${good["webhook-timestamp"]}`];
@@ -358,6 +356,6 @@ test("an unsigned webhook with an identity field switched to signed: the signed 
   made(changeFlowHookSender(store, trigger(id), "github-style", "alex", T0, dir));
   const setUp = made(setUpFlowHook(store, trigger(id), T0, dir));
   // The same incident, now signed: its key carries its sender, so the unsigned receipt neither vouches for nor blocks it.
-  expect(deliver(tokenOf(setUp.reveal!.path), body, githubStyle(setUp.reveal!.secret!, body))).toEqual({ status: 202, said: "Added 1 card." });
+  expect(deliver(token, body, githubStyle(setUp.reveal!.secret!, body))).toEqual({ status: 202, said: "Added 1 card." });
   expect(store.flowReceipt(id, "v3:github-style:id:INC-7")?.state).toBe("accepted");
 });
