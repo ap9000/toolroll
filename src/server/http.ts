@@ -296,7 +296,9 @@ export function goOutside(response: ServerResponse, to: string, words: string, b
 }
 
 export function redirect(response: ServerResponse, to: string): void {
-  response.writeHead(303, { ...SAFETY, Location: to });
+  // Set as a header (not only in writeHead) so the answer can be read back after: a refused act's redirect names it.
+  response.setHeader("Location", to);
+  response.writeHead(303, { ...SAFETY });
   response.end();
 }
 

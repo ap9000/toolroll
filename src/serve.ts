@@ -143,6 +143,7 @@ import { isAlive as runnerAlive } from "./runner.js";
 import {
 FRESH_WINDOW_MS,
 freshFacts,
+spendingOnlyIfDone,
 ssoNowAvailable,
 type FreshFacts
 } from "./scope.js";
@@ -352,6 +353,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
     return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
+  /** Whether a finished console act was refused, as its answer says: an error status, or a redirect naming a problem. */
+  const actRefused = (response: ServerResponse): boolean => {
+    if (response.statusCode >= 400) return true;
+    const location = String(response.getHeader("location") ?? "");
+    return /[?&](problem|error)=/.test(location) || /[?&]said=[^&#]*(refused|stale|failed|invalid|mac-only)/.test(location);
+  };
   /**
    * Cockpit B2: a request's password-freshness facts — the one place they are made (scope.ts honours them). Every
    * reader looks at the session as it is at the moment of the act, never a snapshot taken before the body arrived:
@@ -373,8 +380,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       consumeSsoNow: () => {
         const was = session.ssoNowAt;
         delete session.ssoNowAt;
-        // A refund puts back only what this spend took, and only if nothing newer arrived (Forget still floors it).
-        return () => { if (was !== undefined && session.ssoNowAt === undefined) session.ssoNowAt = was; };
+        // A refund puts back only what this spend took, once, and only if nothing newer arrived (Forget still floors it).
+        let refunded = false;
+        return () => { if (refunded) return; refunded = true; if (was !== undefined && session.ssoNowAt === undefined) session.ssoNowAt = was; };
       },
       floor: () => session.freshFloor ?? 0,
       // Only a direct local request may start a password window (a typed password elsewhere proves now, nothing more).
@@ -841,7 +849,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const entry = { at: clock().toISOString(), actor: who.name, ...target, source: "request" as const, ...(who.via === "bearer" && who.token !== undefined ? { detail: `API token: ${who.token}` } : {}) };
       store.recordAction({ ...entry, outcome: "requested" });
       try {
-        await projectAuthority.run({ actor: who.name, repo: target.repo }, execute);
+        // Cockpit B2: an explicit re-check (sso-now) is spent only by an act that happened. A step-up the console
+        // refused — an error status, or a redirect that names a problem or a refusal — puts it back.
+        await spendingOnlyIfDone(() => projectAuthority.run({ actor: who.name, repo: target.repo }, execute), () => actRefused(response));
         const createdTask = requestContext.getStore()?.createdTask;
         const placement = createdTask === undefined ? null : store.lookupRef(createdTask);
         store.recordAction({ ...entry, ...(placement === null ? {} : { repo: placement.repo, taskId: placement.externalId }), at: clock().toISOString(), outcome: response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "refused" : "accepted" });

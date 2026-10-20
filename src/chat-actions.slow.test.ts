@@ -508,8 +508,11 @@ describe("shared chat action lifecycle", () => {
     propose(store, { now, taskId: id, goal: "Protected work needs two." });
     const gate = vi.spyOn(store, "approvalGate").mockReturnValue({ verdict: "vote", have: 1, need: 2, already: false });
     try {
-      const outcome = confirm(proposal("scope_approve", { task: id }), true);
+      const action = proposal("scope_approve", { task: id });
+      const outcome = confirm(action, true);
       expect(outcome).toMatchObject({ ok: true });
+      // The card stays open for the second approver.
+      expect(store.getLeadProposal(action)?.state).toBe("pending");
       const digest = store.getScope(id)!.digest;
       expect(store.getScope(id)?.approvedDigest).toBeNull();
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM scope_approval_vote WHERE task_id = ? AND digest = ?").get(id, digest)?.["n"]).toBe(1);

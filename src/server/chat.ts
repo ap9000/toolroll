@@ -1,4 +1,4 @@
-import { freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
+import { freshlyApprovable, freshnessFor, spendingOnlyOnSuccess, withFreshness } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -716,7 +716,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
       if (!dismissed) noteLead(who.session.csrf, null, "that proposal was already acted on");
       return redirect(response, chatReturnWithLatest(back));
     }
-    const outcome = confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) });
+    // A re-check is spent only if the whole confirmation commits (the proposal's own transaction included).
+    const outcome = spendingOnlyOnSuccess(() => confirmLeadProposal(store, principal, id, now, { chatProvider: teamChatProvider, confirm: body.get("confirm") === "yes", via: "web", evidenceRoot, ...(body.has("nonce") ? {actionReview:{nonce:body.get("nonce")??"",password:body.get("token")??""}} : {}) }), result => !result.ok);
     if (cardJson) {
       if (!outcome.ok) return cardAnswer(outcome.reason === "standing" ? 403 : outcome.reason === "not-yours" ? 404 : 409, false, outcome.said);
       return cardAnswer(200, true, outcome.said, outcome.taskId);

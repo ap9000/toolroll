@@ -1173,6 +1173,18 @@ export function spendingOnlyOnSuccess<T>(act: () => T, failed: (result: T) => bo
   try { result = refunds.run(spent, act); }
   catch (error) { for (const refund of spent) refund(); throw error; }
   if (failed(result)) for (const refund of spent) refund();
+  // Succeeded here, but an enclosing act (an outer transaction, the request itself) may still fail: it owns them now.
+  else refunds.getStore()?.push(...spent);
+  return result;
+}
+/** The same, for a whole asynchronous act (a console request): its outcome decides only once it has finished. */
+export async function spendingOnlyIfDone<T>(act: () => Promise<T>, failed: (result: T | undefined, error: unknown) => boolean): Promise<T> {
+  const spent: (() => void)[] = [];
+  let result: T | undefined;
+  try { result = await refunds.run(spent, act); }
+  catch (error) { for (const refund of spent) refund(); throw error; }
+  if (failed(result, null)) for (const refund of spent) refund();
+  else refunds.getStore()?.push(...spent);
   return result;
 }
 const freshScope = new AsyncLocalStorage<FreshOp>();

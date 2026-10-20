@@ -36,7 +36,7 @@ import { applyChatTaskAction } from "./chat-task-actions.js";
 export type ProposalKind = LeadProposal["kind"];
 
 export type DoorOutcome =
-  | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string }
+  | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string; awaiting?: true }
   | { ok: false; kind: ProposalKind | null; reason: DoorRefusal; said: string };
 
 export type DoorRefusal =
@@ -214,6 +214,12 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       : executeProposal(store, who, proposal.kind, proposal.payload, now, { ...options, deferSignal: defer });
     if (!outcome.ok && outcome.reason === "needs-confirm") {
       store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
+      return outcome;
+    }
+    // A first yes on protected work is kept, and the card stays pending for the second approver.
+    if (outcome.ok && outcome.awaiting === true) {
+      store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
+      if (shared) store.handle.prepare('INSERT INTO team_event(lead,conversation,kind,actor,created_at) VALUES(?,?,?,?,?)').run(shared['lead'],shared['id'],'proposal-changed',who.name,now.toISOString());
       return outcome;
     }
     // The recorded outcome names the surface that confirmed — the audit a

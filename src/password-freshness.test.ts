@@ -101,6 +101,9 @@ describe("an explicit identity-provider re-check", () => {
       expect(state.ssoNow).toBe(at);
       expect(() => spendingOnlyOnSuccess(() => { proveAccountNow(NO_STORE, "alex", ""); throw new Error("rolled back"); }, () => false)).toThrow("rolled back");
       expect(state.ssoNow).toBe(at);
+      // An inner act that succeeded inside an outer one that then fails (its transaction rolled back): put back.
+      expect(() => spendingOnlyOnSuccess(() => { spendingOnlyOnSuccess(() => proveAccountNow(NO_STORE, "alex", ""), result => !result.ok); throw new Error("outer rolled back"); }, () => false)).toThrow("outer rolled back");
+      expect(state.ssoNow).toBe(at);
       expect(spendingOnlyOnSuccess(() => proveAccountNow(NO_STORE, "alex", ""), result => !result.ok).ok).toBe(true);
       expect(state.ssoNow).toBeNull();
     });
@@ -132,8 +135,14 @@ describe("an explicit identity-provider re-check", () => {
  */
 type Hits = Record<string, Record<string, number>>;
 const FACT_NAMES = new Set(["passwordAt", "ssoReauthAt", "ssoNowAt", "freshFloor"]);
-const WATCHED_CALLS = new Set(["authenticateAccount", "proveAccountNow", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess"]);
+const WATCHED_CALLS = new Set(["authenticateAccount", "authenticateApprover", "checkApproverPassword", "proveAccountNow", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone"]);
 type Node = { type?: string; [key: string]: unknown };
+const each = (node: unknown, visit: (one: Node) => void): void => {
+  if (node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) { for (const one of node) each(one, visit); return; }
+  visit(node as Node);
+  for (const [key, value] of Object.entries(node as Node)) if (key !== "type") each(value, visit);
+};
 function audit(files: { path: string; text: string }[]): Hits {
   const hits: Hits = {};
   const add = (kind: string, file: string) => { (hits[kind] ??= {})[file] = (hits[kind]![file] ?? 0) + 1; };
@@ -142,44 +151,62 @@ function audit(files: { path: string; text: string }[]): Hits {
     if (member["computed"] === true) return property.type === "Literal" && typeof property["value"] === "string" ? property["value"] as string : null;
     return typeof property["name"] === "string" ? property["name"] as string : null;
   };
+  /** The name an expression ends in, through optional chains, parentheses and type-only wrappers (as, satisfies, !). */
   const lastName = (node: Node | null | undefined): string | null => node == null ? null
     : node.type === "Identifier" ? node["name"] as string
     : node.type === "MemberExpression" ? keyOf(node)
-    : node.type === "ChainExpression" || node.type === "ParenthesizedExpression" || node.type === "TSNonNullExpression" ? lastName(node["expression"] as Node)
+    : ["ChainExpression", "ParenthesizedExpression", "TSNonNullExpression", "TSAsExpression", "TSSatisfiesExpression", "TSTypeAssertion"].includes(node.type ?? "") ? lastName(node["expression"] as Node)
     : null;
-  const patternKeys = (pattern: Node): string[] => ((pattern["properties"] as Node[] | undefined) ?? []).map(one => { const key = one["key"] as Node | undefined; return key === undefined ? "" : String(key["name"] ?? key["value"] ?? ""); });
+  const keyName = (key: Node | undefined): string => key === undefined ? "" : String(key["name"] ?? key["value"] ?? "");
   for (const { path, text } of files) {
     const parsed = parseSync(path, text, { lang: path.endsWith(".tsx") ? "tsx" : "ts" });
     if (parsed.errors.length > 0) { add("unparsed", path); continue; }
-    // Aliases of an SSO object in this file (`const s = ctx.sso`): their `fresh` is the same read.
-    const aliases = new Set(["sso"]);
-    const collect = (node: unknown): void => {
-      if (node === null || typeof node !== "object") return;
-      if (Array.isArray(node)) { for (const one of node) collect(one); return; }
-      const one = node as Node;
-      if (one.type === "VariableDeclarator" && (one["id"] as Node).type === "Identifier" && lastName(one["init"] as Node) === "sso") aliases.add((one["id"] as Node)["name"] as string);
-      for (const [key, value] of Object.entries(one)) if (key !== "type") collect(value);
-    };
-    collect(parsed.program);
-    const ssoLike = (node: Node | null | undefined) => { const name = lastName(node); return name !== null && aliases.has(name); };
-    const walk = (node: unknown): void => {
-      if (node === null || typeof node !== "object") return;
-      if (Array.isArray(node)) { for (const one of node) walk(one); return; }
-      const one = node as Node;
+    // Local names for an SSO object and for each watched function, closed under aliasing (`const a = ctx.sso`,
+    // `const b = a`, `const { sso: c } = ctx`, `import { authenticateAccount as check }`, `const check2 = check`).
+    const sso = new Set(["sso"]);
+    const calls = new Map<string, string>([...WATCHED_CALLS].map(name => [name, name]));
+    for (let changed = true; changed;) {
+      changed = false;
+      const learn = (set: Set<string> | Map<string, string>, local: string, original: string) => {
+        if (set instanceof Set) { if (!set.has(local)) { set.add(local); changed = true; } }
+        else if (!set.has(local)) { set.set(local, original); changed = true; }
+      };
+      each(parsed.program, one => {
+        if (one.type === "ImportSpecifier") {
+          const imported = keyName(one["imported"] as Node), local = keyName(one["local"] as Node);
+          if (calls.has(imported)) learn(calls, local, calls.get(imported)!);
+        }
+        const bind = (target: Node, source: Node | null | undefined) => {
+          if (target.type === "Identifier") {
+            const from = lastName(source);
+            if (from !== null && sso.has(from)) learn(sso, target["name"] as string, "sso");
+            if (from !== null && calls.has(from) && source?.type !== "CallExpression") learn(calls, target["name"] as string, calls.get(from)!);
+          }
+          if (target.type === "ObjectPattern") for (const property of target["properties"] as Node[]) {
+            const key = keyName(property["key"] as Node), value = property["value"] as Node | undefined;
+            const name = value?.type === "Identifier" ? value["name"] as string : value?.type === "AssignmentPattern" ? keyName(value["left"] as Node) : null;
+            if (name !== null && key === "sso") learn(sso, name, "sso");
+            if (name !== null && calls.has(key)) learn(calls, name, calls.get(key)!);
+          }
+        };
+        if (one.type === "VariableDeclarator") bind(one["id"] as Node, one["init"] as Node);
+        if (one.type === "AssignmentExpression") bind(one["left"] as Node, one["right"] as Node);
+      });
+    }
+    const ssoLike = (node: Node | null | undefined) => { const name = lastName(node); return name !== null && sso.has(name); };
+    each(parsed.program, one => {
       if (one.type === "MemberExpression") {
         const name = keyOf(one);
         if (name === "fresh" && ssoLike(one["object"] as Node)) add("sso.fresh", path);
         if (name !== null && FACT_NAMES.has(name)) add(`.${name}`, path);
       }
       if (one.type === "VariableDeclarator" && (one["id"] as Node).type === "ObjectPattern") {
-        const keys = patternKeys(one["id"] as Node);
+        const keys = ((one["id"] as Node)["properties"] as Node[]).map(property => keyName(property["key"] as Node));
         if (keys.includes("fresh") && ssoLike(one["init"] as Node)) add("sso.fresh", path);
         for (const key of keys) if (FACT_NAMES.has(key)) add(`{${key}}`, path);
       }
-      if (one.type === "CallExpression") { const name = lastName(one["callee"] as Node); if (name !== null && WATCHED_CALLS.has(name)) add(`${name}()`, path); }
-      for (const [key, value] of Object.entries(one)) if (key !== "type") walk(value);
-    };
-    walk(parsed.program);
+      if (one.type === "CallExpression") { const name = lastName(one["callee"] as Node); if (name !== null && calls.has(name)) add(`${calls.get(name)}()`, path); }
+    });
   }
   return hits;
 }
@@ -198,10 +225,17 @@ describe("where freshness may be honoured", () => {
       "const { fresh } = who.session.sso; if (fresh) return ok;",
       "const t = session.ssoNowAt; const { passwordAt } = session;",
       "void (facts.consumeSsoNow)(); proveAccountNow(store, who, '');",
+      "const s = ctx.sso; const again = s; if (!token && again.fresh) return ok;",
+      "const { sso: mine } = ctx.session; if (!token && (mine as { fresh: boolean }).fresh) return ok;",
+      "if (!token && (ctx.sso as { fresh: boolean }).fresh) return ok;",
+      "const check = authenticateAccount; const again2 = check; again2(store, 'alex', token);",
     ];
     const caught = audit(bypasses.map((text, index) => ({ path: `probe-${index}.ts`, text: `export function probe(token: string, ok: unknown) { ${text} }` })));
     expect(caught["unparsed"]).toBeUndefined();
-    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-2.ts"]);
+    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-2.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts"]);
+    expect(caught["authenticateAccount()"]).toEqual({ "probe-8.ts": 1 });
+    // A renamed import is the same function.
+    expect(audit([{ path: "probe-import.ts", text: "import { authenticateAccount as check } from './scope.js'; export const f = () => check({} as never, 'a', 'b');" }])["authenticateAccount()"]).toEqual({ "probe-import.ts": 1 });
     expect(caught[".ssoNowAt"]).toEqual({ "probe-3.ts": 1 });
     expect(caught["{passwordAt}"]).toEqual({ "probe-3.ts": 1 });
     expect(caught["consumeSsoNow()"]).toEqual({ "probe-4.ts": 1 });
@@ -244,7 +278,15 @@ describe("where freshness may be honoured", () => {
   test("an allowlisted act opts in only at its own call sites; a re-check is spent in one place, refunded around approvals", () => {
     expect(hits["withFreshness()"]).toEqual({ "src/chat-actions.ts": 2, "src/server/chat.ts": 2, "src/server/task-views.ts": 1, "src/server/tasks.ts": 2 });
     expect(hits["consumeSsoNow()"]).toEqual({ "src/scope.ts": 1 });
-    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/tasks.ts": 1 });
+    expect(hits["spendingOnlyOnSuccess()"]).toEqual({ "src/chat-actions.ts": 1, "src/server/chat.ts": 1, "src/server/tasks.ts": 1 });
+    // Every console act (POST) is a refund scope: a refused step-up keeps its re-check.
+    expect(hits["spendingOnlyIfDone()"]).toEqual({ "src/serve.ts": 1 });
+    // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
+    // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
+    expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 1 });
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 59, "src/pull-request-flow.ts": 1,
+      "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 3, "src/server/pages.ts": 3, "src/server/people-tokens.ts": 5, "src/server/settings.ts": 22,
+      "src/server/tasks.ts": 6, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/remote.ts"]);
     expect((files.find(one => one.path === "src/serve.ts")!.text.match(/function freshFactsOf\(/g) ?? []).length).toBe(1);
   });

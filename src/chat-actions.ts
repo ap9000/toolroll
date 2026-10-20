@@ -1060,7 +1060,7 @@ export function executeSharedAction(
   now: Date,
   options: SharedActionOptions,
 ):
-  | { ok: true; said: string; taskId: string | null; href?: string }
+  | { ok: true; said: string; taskId: string | null; href?: string; awaiting?: true }
   | { ok: false; reason: "needs-confirm" | "stale" | "refused"; said: string } {
   const refuse = (
     reason: "needs-confirm" | "stale" | "refused",
@@ -1252,7 +1252,8 @@ export function executeSharedAction(
         ));
         if (!result.ok) {
           // A first yes on protected work is kept, with how its person was proved: committed, never rolled back.
-          if (result.reason === "second-approver") return { ok: true as const, taskId, said: gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }) };
+          // The card stays open (`awaiting`) for the second approver; the same person again changes nothing.
+          if (result.reason === "second-approver") return { ok: true as const, taskId, awaiting: true as const, said: gateWords({ verdict: "vote", have: result.have, need: 2, already: result.already }) };
           // v102: the project's approval rules speak for themselves.
           if (result.reason === "requester" || result.reason === "person-required") throw Error(gateWords({ verdict: "refuse", reason: result.reason }));
           if (result.reason === "policy") throw Error(result.message);
