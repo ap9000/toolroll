@@ -444,6 +444,25 @@ quarantine (`quarantineMailboxes`). Only the final segment's handoff can be read
 - A real contained run (Linux cgroup2) is an opt-in slow test that skips without cgroup2 and the real CLI. Running it
   spends Codex quota.
 
+**v3 amendments (answers Codex c1-r2).**
+- **Linux only [r2-new 1].** On Windows the owned child is the Job Object's PowerShell helper, and Node's Windows
+  "SIGINT" terminates its target, so there is no cooperative interrupt. Continuation requires **cgroup2**, and Windows
+  stays mailbox-only until a cooperative mechanism is proved.
+- **Rollout path [r2 c1-4].** `findRollout` refuses a sessions root that is not its own realpath. Each year, month and
+  day folder must lstat as a real directory, and the file must lstat as a file. The read is O_NOFOLLOW. The fence
+  denies the realpath root, so no component below it can be swapped.
+- **Policy [r2 c1-5].** At build entry the builder records `profileDigestOf(runPolicy(effective.profile).profile)`,
+  the profile the launch is actually built with. The gate requires `runPolicy` to return the same digest, so a ceiling
+  tightened mid-launch refuses (`stale-approval`) and never runs with the old permissions.
+- **Watermark [r2-new 2].** Before each launch the gateway reads the rollout, if one exists, and records its byte size
+  and last turn id. A segment's turn must start past those bytes, under a new id. Timestamps play no part.
+- **Usage [r2 c1-7].** Only totals before the turn's end count. With no total before the start, the baseline is zero
+  only when no earlier turn exists; otherwise the turn is unmeasured. The fake reports cumulative usage, as Codex does.
+- **Handoff identity [r2-new 3].** `quarantineMailboxes` is not used. Before each continuation segment, each of the
+  three named handoff files (`done`, `mailbox`, `proposal`) that exists is unlinked, and an lstat must then report
+  ENOENT. If any remains, the loop ends with reason `handoff` and launches nothing; the existing file is then the
+  final segment's own. The steering folder, status file, progress and rubric are untouched.
+
 ## Phase D — ACP multi-turn [R6, R7] — deferred (decided 2026-10-20)
 
 Cancel-and-continue for agents other than Claude is **not built in this arc**. Review showed a cancelled turn's work

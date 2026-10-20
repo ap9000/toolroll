@@ -13,17 +13,14 @@
  * regular file under the size cap, and every line must parse. Anything
  * else is "no boundary", never a guess.
  */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** A rollout bigger than this is not read (the reader would hold it whole). */
 export const ROLLOUT_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Codex thread ids are UUIDs (v7 in 0.156). */
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-/** Clock skew allowed between the segment's spawn stamp and the rollout's own timestamps. */
-const SKEW_MS = 2_000;
 
 export type TurnBoundary = "completed" | "interrupted" | "none";
 
@@ -48,6 +45,10 @@ const dayDir = (sessions: string, day: Date) => join(sessions, String(day.getFul
  */
 export function findRollout(sessions: string, threadId: string, from: Date, to: Date): string | null {
   if (!THREAD_ID.test(threadId)) return null;
+  // No redirected component anywhere (c1-r2 c1-4): the root is its own realpath and a real directory, and so is each
+  // year, month and day folder below it. The fence denies the agent the root, so nothing below it can be swapped.
+  try { if (realpathSync(sessions) !== sessions || !lstatSync(sessions).isDirectory()) return null; } catch { return null; }
+  const plainDir = (path: string) => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
   const suffix = `-${threadId}.jsonl`;
   const found: string[] = [];
   const day = new Date(from.getFullYear(), from.getMonth(), from.getDate() - 1);
@@ -55,11 +56,10 @@ export function findRollout(sessions: string, threadId: string, from: Date, to: 
   // Bounded: a session older than ~a year is not continued.
   for (let n = 0; day <= last && n < 400; n += 1, day.setDate(day.getDate() + 1)) {
     const dir = dayDir(sessions, day);
+    const month = dirname(dir);
+    if (!plainDir(dirname(month)) || !plainDir(month) || !plainDir(dir)) continue;
     let names: string[];
-    try {
-      if (!lstatSync(dir).isDirectory()) continue;
-      names = readdirSync(dir);
-    } catch { continue; }
+    try { names = readdirSync(dir); } catch { continue; }
     for (const name of names) {
       if (!name.startsWith("rollout-") || !name.endsWith(suffix)) continue;
       const path = join(dir, name);
@@ -110,52 +110,82 @@ function totalsOf(payload: Record<string, unknown>): Totals | null {
 }
 
 /**
- * How the LAST turn in this rollout ended, when that turn started at or
- * after `sinceMs` in thread `threadId`. The turn is the last
- * `task_started`; its end is a `task_complete` or a `turn_aborted` with
- * reason `interrupted` naming the same turn id. Anything after the end but
- * another turn's start is ignored; any malformed line, a wrong thread, an
- * end naming another turn, or two ends make the answer "none".
+ * Where the rollout stood before a segment launched (c1-r2 new 2): its size in bytes and its last turn's id. Only a
+ * turn whose `task_started` was appended past this point, with another id, can be the segment's own.
  */
-export function lastTurnOf(text: string, threadId: string, sinceMs: number): RolloutTurn {
+export type RolloutWatermark = { bytes: number; lastTurn: string | null };
+
+export const FRESH_WATERMARK: RolloutWatermark = Object.freeze({ bytes: 0, lastTurn: null });
+
+/** The watermark of a rollout's current text (null text: the session has no rollout yet). */
+export function watermarkOf(text: string | null, threadId: string): RolloutWatermark {
+  if (text === null) return FRESH_WATERMARK;
+  const parsed = rowsOf(text);
+  if (parsed === null || parsed.length === 0 || parsed[0]!.type !== "session_meta" || parsed[0]!.payload["id"] !== threadId) return { bytes: Buffer.byteLength(text), lastTurn: null };
+  let lastTurn: string | null = null;
+  for (const row of parsed) if (eventOf(row) === "task_started" && typeof row.payload["turn_id"] === "string") lastTurn = row.payload["turn_id"];
+  return { bytes: Buffer.byteLength(text), lastTurn };
+}
+
+type Row = { type: string; payload: Record<string, unknown>; offset: number };
+
+/** Every line as a record with its byte offset, or null when any line is malformed. */
+function rowsOf(text: string): Row[] | null {
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  if (lines.length === 0) return NO_TURN;
-  type Row = { type: string; payload: Record<string, unknown>; at: number };
   const rows: Row[] = [];
+  let offset = 0;
   for (const line of lines) {
     let parsed: unknown;
-    try { parsed = JSON.parse(line); } catch { return NO_TURN; }
+    try { parsed = JSON.parse(line); } catch { return null; }
     const row = record(parsed);
     const payload = record(row?.["payload"]);
-    if (row === null || typeof row["type"] !== "string" || payload === null) return NO_TURN;
-    const at = typeof row["timestamp"] === "string" ? Date.parse(row["timestamp"]) : NaN;
-    rows.push({ type: row["type"], payload, at });
+    if (row === null || typeof row["type"] !== "string" || payload === null) return null;
+    rows.push({ type: row["type"], payload, offset });
+    offset += Buffer.byteLength(line) + 1;
   }
+  return rows;
+}
+
+const eventOf = (row: Row) => row.type === "event_msg" ? String(row.payload["type"] ?? "") : "";
+
+/**
+ * How the LAST turn in this rollout ended, when that turn is the segment's own: its `task_started` lies past the
+ * pre-launch watermark and names a new turn id, in thread `threadId`. Its end is a `task_complete`, or a
+ * `turn_aborted` with reason `interrupted`, naming the same turn id. A malformed line, a wrong thread, an end naming
+ * another turn, or two ends make the answer "none".
+ *
+ * Tokens (c1-r2 c1-7): the running total at the turn's end minus the last total before its start. Only totals before
+ * the end count. With no total before the start, the baseline is zero only when no earlier turn exists; otherwise the
+ * turn is unmeasured. A missing or backwards total is unmeasured too.
+ */
+export function lastTurnOf(text: string, threadId: string, watermark: RolloutWatermark): RolloutTurn {
+  const rows = rowsOf(text);
+  if (rows === null || rows.length === 0) return NO_TURN;
   const meta = rows[0]!;
   if (meta.type !== "session_meta" || meta.payload["id"] !== threadId) return NO_TURN;
-  const event = (row: Row) => row.type === "event_msg" ? String(row.payload["type"] ?? "") : "";
   let start = -1;
-  for (let i = rows.length - 1; i >= 0; i -= 1) if (event(rows[i]!) === "task_started") { start = i; break; }
+  for (let i = rows.length - 1; i >= 0; i -= 1) if (eventOf(rows[i]!) === "task_started") { start = i; break; }
   if (start < 0) return NO_TURN;
   const begun = rows[start]!;
   const turnId = typeof begun.payload["turn_id"] === "string" ? begun.payload["turn_id"] : null;
-  if (turnId === null || !Number.isFinite(begun.at) || begun.at < sinceMs - SKEW_MS) return NO_TURN;
-  let before: Totals = { in: 0, out: 0 };
+  if (turnId === null || begun.offset < watermark.bytes || turnId === watermark.lastTurn) return NO_TURN;
+  let before: Totals | null = null;
+  let earlierTurn = false;
   for (let i = start - 1; i >= 0; i -= 1) {
-    if (event(rows[i]!) !== "token_count") continue;
-    const totals = totalsOf(rows[i]!.payload);
-    if (totals === null) return { boundary: "none", turnId, usage: null };
-    before = totals;
-    break;
+    const kind = eventOf(rows[i]!);
+    if (kind === "task_started") earlierTurn = true;
+    if (kind !== "token_count" || before !== null) continue;
+    before = totalsOf(rows[i]!.payload) ?? { in: -1, out: -1 };
   }
+  if (before === null && !earlierTurn) before = { in: 0, out: 0 };
   let boundary: TurnBoundary = "none";
   let ends = 0;
   let after: Totals | null = null;
-  let measured = true;
+  let measured = before !== null && before.in >= 0;
   for (const row of rows.slice(start + 1)) {
-    const kind = event(row);
-    if (kind === "token_count") {
+    const kind = eventOf(row);
+    if (kind === "token_count" && ends === 0) {
       const totals = totalsOf(row.payload);
       if (totals === null) measured = false; else after = totals;
     } else if (kind === "task_complete" || kind === "turn_aborted") {
@@ -165,7 +195,7 @@ export function lastTurnOf(text: string, threadId: string, sinceMs: number): Rol
     }
   }
   if (ends !== 1) boundary = "none";
-  const usage = measured && after !== null && after.in >= before.in && after.out >= before.out
+  const usage = measured && before !== null && after !== null && after.in >= before.in && after.out >= before.out
     ? { tokensIn: after.in - before.in, tokensOut: after.out - before.out }
     : null;
   return { boundary, turnId, usage };

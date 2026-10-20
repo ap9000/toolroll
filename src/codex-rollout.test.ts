@@ -8,10 +8,10 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findRollout, lastTurnOf, readRollout } from "./codex-rollout.js";
+import { findRollout, lastTurnOf, readRollout, watermarkOf } from "./codex-rollout.js";
 
 const THREAD = "01a159b8-a7d7-76c1-81e3-a904d98fc2f9";
-const SPAWN = Date.parse("2026-10-20T14:30:36.000Z");
+const SPAWN = Date.parse("2026-10-20T14:30:36.000Z"); // record timestamps only; identity is the watermark
 const at = (ms: number) => new Date(SPAWN + ms).toISOString();
 const meta = (id = THREAD) => ({ timestamp: at(0), type: "session_meta", payload: { id, session_id: id } });
 const started = (turn: string, ms: number) => ({ timestamp: at(ms), type: "event_msg", payload: { type: "task_started", turn_id: turn } });
@@ -21,37 +21,47 @@ const complete = (turn: string, ms: number) => ({ timestamp: at(ms), type: "even
 const text = (...rows: unknown[]) => rows.map(row => JSON.stringify(row)).join("\n") + "\n";
 
 describe("the last turn of a rollout", () => {
-  test("an interrupted turn after the spawn is a boundary, with its own tokens", () => {
-    const turn = lastTurnOf(text(meta(), started("t1", 500), tokens(100, 5, 2000), tokens(250, 9, 4000), aborted("t1", 5000)), THREAD, SPAWN);
+  const FRESH = { bytes: 0, lastTurn: null };
+  test("an interrupted turn past the watermark is a boundary, with its own tokens", () => {
+    const turn = lastTurnOf(text(meta(), started("t1", 500), tokens(100, 5, 2000), tokens(250, 9, 4000), aborted("t1", 5000)), THREAD, FRESH);
     expect(turn).toEqual({ boundary: "interrupted", turnId: "t1", usage: { tokensIn: 250, tokensOut: 9 } });
   });
 
   test("a resumed turn counts only its own tokens; a completed turn is a boundary too", () => {
-    const rows = text(meta(), started("t1", -60_000), tokens(300, 10, -59_000), aborted("t1", -58_000), started("t2", 1000), tokens(420, 14, 2000), complete("t2", 3000));
-    expect(lastTurnOf(rows, THREAD, SPAWN)).toEqual({ boundary: "completed", turnId: "t2", usage: { tokensIn: 120, tokensOut: 4 } });
+    const earlier = text(meta(), started("t1", -60_000), tokens(300, 10, -59_000), aborted("t1", -58_000));
+    const rows = earlier + text(started("t2", 1000), tokens(420, 14, 2000), complete("t2", 3000));
+    expect(lastTurnOf(rows, THREAD, watermarkOf(earlier, THREAD))).toEqual({ boundary: "completed", turnId: "t2", usage: { tokensIn: 120, tokensOut: 4 } });
   });
 
-  test("a turn that started before the segment's spawn is not this segment's boundary", () => {
-    expect(lastTurnOf(text(meta(), started("t1", -30_000), aborted("t1", -1000)), THREAD, SPAWN).boundary).toBe("none");
+  test("a launch that appended no new turn never borrows the previous turn's boundary or tokens (c1-r2 new 2)", () => {
+    const earlier = text(meta(), started("t1", -1500), tokens(100, 5, -1000), aborted("t1", -500));
+    expect(lastTurnOf(earlier, THREAD, watermarkOf(earlier, THREAD))).toEqual({ boundary: "none", turnId: null, usage: null });
+    // Even a turn whose start sits past the bytes, if it repeats the last id, is not new.
+    expect(lastTurnOf(earlier + text(started("t1", 0), aborted("t1", 100)), THREAD, watermarkOf(earlier, THREAD)).boundary).toBe("none");
   });
 
   test("an unended turn, another reason, an end naming another turn, or two ends are no boundary", () => {
-    expect(lastTurnOf(text(meta(), started("t1", 100)), THREAD, SPAWN).boundary).toBe("none");
-    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t1", 200, "replaced")), THREAD, SPAWN).boundary).toBe("none");
-    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t0", 200)), THREAD, SPAWN).boundary).toBe("none");
-    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t1", 200), complete("t1", 300)), THREAD, SPAWN).boundary).toBe("none");
+    expect(lastTurnOf(text(meta(), started("t1", 100)), THREAD, FRESH).boundary).toBe("none");
+    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t1", 200, "replaced")), THREAD, FRESH).boundary).toBe("none");
+    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t0", 200)), THREAD, FRESH).boundary).toBe("none");
+    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t1", 200), complete("t1", 300)), THREAD, FRESH).boundary).toBe("none");
   });
 
   test("another thread, a malformed line, or no session header is no boundary", () => {
-    expect(lastTurnOf(text(meta("01a159b8-0000-76c1-81e3-a904d98fc2f9"), started("t1", 100), aborted("t1", 200)), THREAD, SPAWN).boundary).toBe("none");
-    expect(lastTurnOf(text(meta(), started("t1", 100)) + "{not json\n" + text(aborted("t1", 200)), THREAD, SPAWN).boundary).toBe("none");
-    expect(lastTurnOf(text(started("t1", 100), aborted("t1", 200)), THREAD, SPAWN).boundary).toBe("none");
-    expect(lastTurnOf("", THREAD, SPAWN).boundary).toBe("none");
+    expect(lastTurnOf(text(meta("01a159b8-0000-76c1-81e3-a904d98fc2f9"), started("t1", 100), aborted("t1", 200)), THREAD, FRESH).boundary).toBe("none");
+    expect(lastTurnOf(text(meta(), started("t1", 100)) + "{not json\n" + text(aborted("t1", 200)), THREAD, FRESH).boundary).toBe("none");
+    expect(lastTurnOf(text(started("t1", 100), aborted("t1", 200)), THREAD, FRESH).boundary).toBe("none");
+    expect(lastTurnOf("", THREAD, FRESH).boundary).toBe("none");
   });
 
-  test("tokens are unmeasured, never guessed, when the totals are missing or run backwards", () => {
-    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t1", 200)), THREAD, SPAWN).usage).toBeNull();
-    expect(lastTurnOf(text(meta(), tokens(500, 5, -500), started("t1", 100), tokens(400, 6, 150), aborted("t1", 200)), THREAD, SPAWN).usage).toBeNull();
+  test("tokens are unmeasured, never guessed: missing, backwards, after the end, or no baseline after an earlier turn (c1-r2 c1-7)", () => {
+    expect(lastTurnOf(text(meta(), started("t1", 100), aborted("t1", 200)), THREAD, FRESH).usage).toBeNull();
+    expect(lastTurnOf(text(meta(), tokens(500, 5, -500), started("t1", 100), tokens(400, 6, 150), aborted("t1", 200)), THREAD, FRESH).usage).toBeNull();
+    // A total written after the end is not this turn's.
+    expect(lastTurnOf(text(meta(), started("t1", 100), tokens(100, 5, 150), aborted("t1", 200), tokens(900, 50, 300)), THREAD, FRESH).usage).toEqual({ tokensIn: 100, tokensOut: 5 });
+    // An earlier turn with no total: the baseline is unknown, so the turn is unmeasured.
+    const earlier = text(meta(), started("t0", -5000), complete("t0", -4000));
+    expect(lastTurnOf(earlier + text(started("t1", 100), tokens(100, 5, 150), complete("t1", 200)), THREAD, watermarkOf(earlier, THREAD)).usage).toBeNull();
   });
 });
 
@@ -89,5 +99,17 @@ describe("finding and reading a rollout", () => {
     expect(findRollout(dir, THREAD, day, day)).toBeNull();
     expect(findRollout(dir, "../../etc", day, day)).toBeNull();
     expect(readRollout(real, 4)).toBeNull();
+  });
+
+  test("a redirected year, month or day folder, or a root that is not its own realpath, is never searched (c1-r2 c1-4)", () => {
+    const outside = join(dir, "outside");
+    mkdirSync(join(outside, "10", "20"), { recursive: true });
+    writeFileSync(join(outside, "10", "20", `rollout-2026-10-20T07-30-36-${THREAD}.jsonl`), text(meta()));
+    const sessions = join(dir, "sessions");
+    mkdirSync(sessions);
+    symlinkSync(outside, join(sessions, "2026"));
+    expect(findRollout(sessions, THREAD, day, day)).toBeNull();
+    symlinkSync(sessions, join(dir, "alias"));
+    expect(findRollout(join(dir, "alias"), THREAD, day, day)).toBeNull();
   });
 });

@@ -3,7 +3,7 @@
 //
 // - stdout carries thread.started, turn.started, item.started/item.completed
 //   for each "command", and on a natural end an agent_message then
-//   turn.completed with usage. Exit 0.
+//   turn.completed with the session's cumulative usage. Exit 0.
 // - The rollout goes to $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local time>-
 //   <thread>.jsonl as Codex writes it: session_meta first, then per turn a
 //   task_started, token_count running totals, and task_complete — or, on
@@ -96,7 +96,6 @@ const spend = (input, output) => {
   totals = { input_tokens: totals.input_tokens + input, output_tokens: totals.output_tokens + output };
   record("event_msg", { type: "token_count", info: { total_token_usage: totals, last_token_usage: { input_tokens: input, output_tokens: output } } });
 };
-let turnIn = 0, turnOut = 0;
 
 process.on("SIGTERM", () => process.exit(0));
 process.on("SIGINT", () => {
@@ -111,7 +110,7 @@ async function main() {
   for (let n = 1; n <= steps; n += 1) {
     await new Promise(resolve => setTimeout(resolve, thinkMs));
     if (ended) return;
-    spend(100, 5); turnIn += 100; turnOut += 5;
+    spend(100, 5);
     const id = `item_${n}`;
     const command = `step ${n}`;
     say({ type: "item.started", item: { id, type: "command_execution", command, status: "in_progress" } });
@@ -131,7 +130,8 @@ async function main() {
   ended = true;
   say({ type: "item.completed", item: { id: "item_msg", type: "agent_message", text: "DONE" } });
   record("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: "DONE" });
-  say({ type: "turn.completed", usage: { input_tokens: turnIn, cached_input_tokens: 0, output_tokens: turnOut } });
+  // Cumulative across the session, as Codex reports it (provider.ts MONEY_CAPABILITIES: cumulative-session).
+  say({ type: "turn.completed", usage: { input_tokens: totals.input_tokens, cached_input_tokens: 0, output_tokens: totals.output_tokens } });
   process.stdout.write("", () => process.exit(0));
 }
 main();
