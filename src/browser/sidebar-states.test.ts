@@ -5,10 +5,10 @@
 import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { NO_COUNTS } from "../agent-state-words.js";
 import type { BrowserProjectState, BrowserRailTask, BrowserWorkspace } from "../browser-workspace.js";
-import { ProjectStates, projectCountWords, readProjectStates, useProjectStates } from "./app.js";
+import { ProjectStates, projectCountWords, readProjectStates, SUMMARY_REJOIN_MS, useProjectStates } from "./app.js";
 
 const task = (id: string, state: BrowserRailTask["state"], line = "Ran tests"): BrowserRailTask => ({ id, title: `Task ${id}`, href: `/t/${id}`, state, line });
 const project = (path: string | null, over: Partial<BrowserProjectState["counts"]>, top: BrowserProjectState["state"], tasks: BrowserRailTask[] = [], more = 0): BrowserProjectState =>
@@ -76,4 +76,49 @@ test("every part of the page shows one snapshot: a newer one reaches the chip an
   await act(async () => { stream.send("gone", { room: "summary" }); });
   expect([seen["chip"], seen["sheet"]]).toEqual([null, null]);
   await act(async () => { root.unmount(); });
+});
+
+test("a large snapshot fits one live frame with every count kept: tasks become more, then quiet projects fold together", async () => {
+  const { boundProjectSummary, SUMMARY_BUDGET } = await import("../browser-workspace.js");
+  const size = (value: unknown) => JSON.stringify(JSON.stringify(value)).length;
+  const total = (rows: BrowserProjectState[]) => rows.reduce((sum, one) => sum + one.counts.working + one.counts["needs-you"], 0);
+  const long = "x".repeat(200);
+  const many = Array.from({ length: 20 }, (_, p) => project(`/r/p${p}-${long}`, { working: 6 }, "working",
+    Array.from({ length: 6 }, (_, t) => ({ ...task(`t${p}-${t}`, "working", long), title: long }))));
+  const bounded = boundProjectSummary(many);
+  expect(size(bounded)).toBeLessThanOrEqual(SUMMARY_BUDGET);
+  expect(bounded).toHaveLength(20);
+  // Every task is listed or counted.
+  expect(bounded.reduce((sum, one) => sum + one.tasks.length + one.more, 0)).toBe(120);
+  expect(readProjectStates(JSON.stringify(bounded))).toEqual(bounded);
+  // Far more projects than fit: the quietest fold into one entry whose counts carry theirs.
+  const huge = Array.from({ length: 2_000 }, (_, p) => project(`/r/${p}-${"y".repeat(60)}`, p === 0 ? { "needs-you": 1 } : { working: 1 }, p === 0 ? "needs-you" : "working"));
+  const folded = boundProjectSummary(huge);
+  expect(size(folded)).toBeLessThanOrEqual(SUMMARY_BUDGET);
+  expect(total(folded)).toBe(total(huge));
+  expect(folded.at(-1)).toMatchObject({ others: true, href: "/projects" });
+  expect(folded.some(one => one.counts["needs-you"] === 1 && !one.others)).toBe(true);
+  expect(readProjectStates(JSON.stringify(folded))).toEqual(folded);
+});
+
+test("after gone, the page joins the summary room again on its own", async () => {
+  vi.useFakeTimers();
+  try {
+    FakeStream.all = [];
+    (globalThis as unknown as { EventSource: unknown }).EventSource = FakeStream;
+    const workspace = { sensitive: false, projectStates: [project("/r/shop", {}, "idle")] } as unknown as BrowserWorkspace;
+    const Part = () => { useProjectStates(workspace); return null; };
+    const root = createRoot(document.createElement("div"));
+    await act(async () => { root.render(createElement(Part)); });
+    await act(async () => { await Promise.resolve(); });
+    const live = () => FakeStream.all.filter(one => one.readyState !== FakeStream.CLOSED && one.url.includes("room=summary"));
+    expect(live()).toHaveLength(1);
+    await act(async () => { live()[0]!.send("gone", { room: "summary" }); });
+    await act(async () => { await Promise.resolve(); });
+    expect(live()).toHaveLength(0);
+    await act(async () => { vi.advanceTimersByTime(SUMMARY_REJOIN_MS); });
+    await act(async () => { await Promise.resolve(); });
+    expect(live()).toHaveLength(1);
+    await act(async () => { root.unmount(); });
+  } finally { vi.useRealTimers(); }
 });

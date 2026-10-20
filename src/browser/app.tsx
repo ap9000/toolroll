@@ -392,7 +392,8 @@ export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
   const states: BrowserProjectState[] = [];
   for (const one of parsed) {
     if (one === null || typeof one !== "object") return null;
-    const { path, name, href, state, counts, tasks, more } = one as Record<string, unknown>;
+    const { path, name, href, state, counts, tasks, more, others } = one as Record<string, unknown>;
+    if (others !== undefined && others !== true) return null;
     if (!(path === null || text(path, 4096)) || !text(name, 400) || !text(href, 8192) || !(href as string).startsWith("/")
       || !DISPLAY_STATES.includes(state as DisplayState) || counts === null || typeof counts !== "object"
       || !Array.isArray(tasks) || typeof more !== "number" || !Number.isInteger(more) || more < 0) return null;
@@ -406,11 +407,14 @@ export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
         || !DISPLAY_STATES.includes(t["state"] as DisplayState) || !text(t["line"], 2000)) return null;
       rail.push({ id: t["id"] as string, title: t["title"] as string, href: t["href"] as string, state: t["state"] as DisplayState, line: t["line"] as string });
     }
-    states.push({ path: path as string | null, name: name as string, href: href as string, state: state as DisplayState, counts: read as BrowserProjectState["counts"], tasks: rail, more });
+    states.push({ path: path as string | null, name: name as string, href: href as string, state: state as DisplayState, counts: read as BrowserProjectState["counts"], tasks: rail, more,
+      ...(others === true ? { others: true as const } : {}) });
   }
   return states;
 }
 
+/** How long a part waits after the summary room's `gone` before it joins again. */
+export const SUMMARY_REJOIN_MS = 2_000;
 /** The page's one summary snapshot, shared by every part that shows it (the rail, the phone chip, the sheet): the
  * page's own read until the summary room says more; `gone` or a lost stream clears it until the next read. */
 const summary = { states: null as BrowserProjectState[] | null, from: null as BrowserWorkspace["projectStates"] | null, listeners: new Set<() => void>() };
@@ -426,13 +430,22 @@ export function useProjectStates(workspace: BrowserWorkspace): BrowserProjectSta
   // A new page read is the newest word: it replaces whatever the room said before it.
   if (!off && summary.from !== workspace.projectStates) { summary.from = workspace.projectStates; summary.states = workspace.projectStates ?? null; }
   const [, render] = useState(0);
+  // After `gone` (the reader's scope moved, or the server said so), this part leaves the room and asks again shortly:
+  // the new join is admitted for the scope as it is now, and its first word is the snapshot for it.
+  const [away, setAway] = useState(false);
   useEffect(() => {
     const listener = () => render(n => n + 1);
     summary.listeners.add(listener);
     return () => { summary.listeners.delete(listener); };
   }, []);
-  useLiveRoom(off ? null : "summary", (event, data) => {
-    if (event === "gone" || event === "lost") { setSummary(null); return; }
+  useEffect(() => {
+    if (!away) return;
+    const back = window.setTimeout(() => setAway(false), SUMMARY_REJOIN_MS);
+    return () => window.clearTimeout(back);
+  }, [away]);
+  useLiveRoom(off || away ? null : "summary", (event, data) => {
+    if (event === "gone") { setSummary(null); setAway(true); return; }
+    if (event === "lost") { setSummary(null); return; }
     if (event !== "change") return;
     const next = readProjectStates(data["at"]);
     if (next !== null) setSummary(next);
@@ -453,13 +466,13 @@ export function ProjectStates({ states, current }: { states: BrowserProjectState
     {states.map(state => {
       const words = projectCountWords(state);
       const open = state.path !== null && state.path === current;
-      return <div key={state.path ?? "(none)"} className="so-project-state" data-project-state={state.state}>
+      return <div key={state.others ? "(others)" : state.path ?? "(none)"} className="so-project-state" data-project-state={state.state} data-project-others={state.others ? "" : undefined}>
         <a href={state.href} aria-current={open ? "true" : undefined} title={words === "" ? STATE_WORDS.idle : words}>
           <StatusGlyph kind={STATE_GLYPH[state.state]} /><span className="so-project-state-name">{state.name}</span>
           {words !== "" && <span className="so-project-state-counts">{words}</span>}
           <span className="so-sr-only">{STATE_WORDS[state.state]}</span>
         </a>
-        {(open || state.path === null) && state.tasks.length > 0 && <ul className="so-project-tasks">
+        {(open || (state.path === null && !state.others)) && state.tasks.length > 0 && <ul className="so-project-tasks">
           {state.tasks.map(task => <li key={task.id} data-rail-task={task.state}>
             <a href={task.href} title={task.title}><StatusGlyph kind={STATE_GLYPH[task.state]} /><span className="so-project-task-title">{task.title}</span>
               <span className="so-project-task-line">{task.line}</span></a>

@@ -1,7 +1,7 @@
 /** The browser consumes this contract with a type-only import. All HTML is
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
-import type { DisplayState, StateCounts } from './agent-state-words.js';
+import { DISPLAY_STATES as DISPLAY_ORDER, type DisplayState, type StateCounts } from './agent-state-words.js';
 import type { TeamSnapshot } from './team-contract.js';
 import type { RunActivity } from './activity-line.js';
 import type { BrandIconId } from './brand-icons.js';
@@ -24,7 +24,45 @@ export type BrowserProject = { name: string; path: string; href: string; knowled
  * something live, asking, failed or unread (strongest first, `more` beyond those shown). `path` null: work with no
  * project yet. */
 export type BrowserProjectState = { path: string | null; name: string; href: string; state: DisplayState; counts: StateCounts;
-  tasks: BrowserRailTask[]; more: number };
+  tasks: BrowserRailTask[]; more: number;
+  /** The projects folded together to keep a snapshot inside one live frame: their counts summed, `more` of them. */
+  others?: true };
+
+/** The most a summary snapshot may take, as the summary room sends it (JSON inside JSON), well inside one live frame. */
+export const SUMMARY_BUDGET = 24_000;
+const clip = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+/**
+ * A summary snapshot that fits one live frame, with every count kept: long words are clipped, then rail tasks become
+ * `more` (from the project listing most), then the quietest projects fold into one `others` entry with their counts
+ * summed. Nothing is dropped silently: whatever is not listed is counted.
+ */
+export function boundProjectSummary(rows: readonly BrowserProjectState[], budget = SUMMARY_BUDGET): BrowserProjectState[] {
+  const size = (value: unknown) => JSON.stringify(JSON.stringify(value)).length;
+  let out = rows.map(one => ({ ...one, name: clip(one.name, 80), tasks: one.tasks.map(task => ({ ...task, title: clip(task.title, 120), line: clip(task.line, 120) })) }));
+  while (size(out) > budget) {
+    const fullest = out.reduce((best, one, index) => one.tasks.length > (out[best]?.tasks.length ?? -1) ? index : best, -1);
+    if (fullest === -1 || out[fullest]!.tasks.length === 0) break;
+    const one = out[fullest]!;
+    out[fullest] = { ...one, tasks: one.tasks.slice(0, -1), more: one.more + 1 };
+  }
+  if (size(out) <= budget) return out;
+  // Fold the quietest projects (weakest state last in the list) into one entry until it fits.
+  const strength = (one: BrowserProjectState) => DISPLAY_ORDER.indexOf(one.state);
+  const order = out.map((one, index) => ({ one, index })).sort((a, b) => strength(b.one) - strength(a.one) || b.index - a.index);
+  const folded = new Set<number>();
+  const othersOf = (): BrowserProjectState | null => {
+    if (folded.size === 0) return null;
+    const counts = Object.fromEntries(DISPLAY_ORDER.map(key => [key, [...folded].reduce((sum, index) => sum + out[index]!.counts[key], 0)])) as StateCounts;
+    const state = DISPLAY_ORDER.find(key => key !== 'idle' && counts[key] > 0) ?? 'idle';
+    return { path: null, name: `${folded.size} more ${folded.size === 1 ? 'project' : 'projects'}`, href: '/projects', state, counts, tasks: [], more: folded.size, others: true };
+  };
+  const assemble = () => { const others = othersOf(); return [...out.filter((_, index) => !folded.has(index)), ...(others === null ? [] : [others])]; };
+  for (const { index } of order) {
+    if (size(assemble()) <= budget) break;
+    folded.add(index);
+  }
+  return assemble();
+}
 /** One task on the rail: its state, and its agent's last act when one is at work (else the state's words). */
 export type BrowserRailTask = { id: string; title: string; href: string; state: DisplayState; line: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */

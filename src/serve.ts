@@ -5,7 +5,7 @@ import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell
 import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
 /** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
 const RAIL_TASKS = 6;
-import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -37,7 +37,7 @@ import type { TeamChatProviderResolver } from './team-chat-authorization.js';
 import type { TeamResponse } from './team-contract.js';
 import { createTeamRuntime } from './team-runtime.js';
 import { type ToolsView } from "./tools-ui.js";
-import { workCountsByProject } from "./work-index.js";
+import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage } from "./work-index.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
 /**
@@ -1427,11 +1427,22 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const projects = sidebarProjects();
     const actor = requestContext.getStore()?.actor ?? '';
     const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
+    // A row that needs a person or failed says what the Tasks list says it needs (its own next step); a row at work says
+    // what its agent did last; a finished one says Done.
+    const asking = [...states.values()].flatMap(one => one.families.slice(0, RAIL_TASKS)).filter(one => one.state === 'needs-you' || one.state === 'failed').map(one => one.rootId);
+    const needWords = new Map<string, string>();
+    if (asking.length > 0) {
+      try {
+        for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(0, WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
+          needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
+      } catch { /* the rows keep their state's words */ }
+    }
     const railOf = (state: ProjectState | undefined) => {
       const families = state?.families ?? [];
       const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
         const task = store.getTask(one.rootId);
-        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: one.line ?? STATE_WORDS[one.state] }];
+        const line = one.state === 'needs-you' || one.state === 'failed' ? needWords.get(one.rootId) ?? null : one.line;
+        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
       });
       return { tasks, more: Math.max(0, families.length - RAIL_TASKS) };
     };
@@ -1441,12 +1452,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     });
     const unplaced = states.get(null);
     if (unplaced !== undefined && unplaced.state !== 'idle') rows.push({ path: null, name: 'No project', href: '/work', state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
-    return rows;
+    return boundProjectSummary(rows);
   }
   /** What one account may see now, as the summary room keys it: a narrowed ceiling or grant is a different key, so a
    * snapshot read for the wider scope never reaches it. Null: no such account. */
   const projectScopeFor = (account: string): string | null =>
-    store.accountOf(account) === null ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify({ projects: sidebarProjects().map(one => one.path), access: workAccess() }));
+    store.accountOf(account) === null ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => {
+      // Canonical: what may be seen, never the order it was last opened in.
+      const access = workAccess();
+      return JSON.stringify({ projects: sidebarProjects().map(one => one.path).sort(), access: { ...access, repos: access.repos === null ? null : [...access.repos].sort() } });
+    });
   /** One account's summary snapshot, read as that account for this exact scope (the summary room's fingerprint): null
    * when the account is gone or its scope moved. */
   const projectSummaryFor = (account: string, scope: string): string | null =>

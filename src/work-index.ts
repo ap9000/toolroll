@@ -55,7 +55,9 @@ export type WorkIndexItem = {
   lead?: string;
 };
 /** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it. */
-export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string };
+export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string;
+  /** Only these families (by root task id): the sidebar reads its rows' own words this way. */
+  roots?: readonly string[] };
 /** How the list is grouped: the Needs you rows by their ask, then building, then the rest. */
 export type WorkIndexGroup = Ask | 'building' | 'rest';
 export type WorkIndexGroupCounts = Record<WorkIndexGroup, number>;
@@ -425,7 +427,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1' : view === 'completed' ? "code='complete'" : '1';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
-    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($cursorRoot=0 OR
+    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
   ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS} FROM ranked), project_totals AS (
@@ -452,7 +454,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
-    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,

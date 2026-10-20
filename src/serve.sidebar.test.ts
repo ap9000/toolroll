@@ -187,6 +187,35 @@ describe("the sidebar's project states", () => {
     }
   });
 
+  test("reopening a project changes nothing a reader may see: the room keeps going, and its next word still comes", async () => {
+    store.upsertProject(repoA, "a", new Date(Date.now() - 60_000));
+    store.upsertProject(repoB, "b", new Date(Date.now() - 30_000));
+    const run = running("t-again", repoA);
+    const alex = await login("alex", alexToken);
+    const controller = new AbortController();
+    const reader = (await fetch(url("/live?room=summary"), { headers: { cookie: alex, accept: "text/event-stream" }, signal: controller.signal })).body!.getReader();
+    await until(reader, frame => frame.includes("event: change"));
+    // Project A opened again: first in the switcher now, the same projects.
+    store.upsertProject(repoA, "a", new Date());
+    ingestStatus(store, run, attemptKeyOf(store, run)!, { lines: [{ status: "needs-decision", key: "k", question: "Keep it?" }], nextOffset: 100 }, new Date());
+    const next = await until(reader, frame => frame.includes("event: gone") || (frame.includes("event: change") && frame.includes("needs-you\\\":1")));
+    expect(next).toContain("event: change");
+    controller.abort();
+  });
+
+  test("a row that needs a person says what it needs, in the Tasks list's own words", async () => {
+    store.createTask({ id: "t-plan", title: "Plan me" }, T0);
+    store.placeTask(store.refFor("built-in", "t-plan", "ours").id, repoA);
+    store.saveScope({ taskId: "t-plan", goal: "do it", outOfScope: null, touches: [], acceptance: [], proposedAt: T0.toISOString(), digest: "e".repeat(32),
+      approvedAt: null, approvedBy: null, approvedDigest: null });
+    const alex = await login("alex", alexToken);
+    const rail = statesOf((await page("/agents", alex)).projectStates)[repoA]!;
+    const row = rail.tasks.find(one => one.id === "t-plan");
+    expect(row).toMatchObject({ state: "needs-you" });
+    expect(row!.line).not.toBe("Needs you");
+    expect(row!.line.length).toBeGreaterThan(12);
+  });
+
   test("one summary room per page, and only for a browser session", async () => {
     const alex = await login("alex", alexToken);
     expect((await fetch(url("/live?room=summary&room=summary"), { headers: { cookie: alex } })).status).toBe(400);
