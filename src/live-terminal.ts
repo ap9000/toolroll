@@ -200,7 +200,7 @@ export type TerminalHostOptions = {
   /** The process table (tests stand a failing one in); null when it can't be read. */
   processes?: () => ProcessTable | null;
   /** Who else works in a worktree (tests stand theirs in); default worktreeResidents. */
-  residents?: (table: ProcessTable, worktreeReal: string) => Set<number> | null;
+  residents?: (table: ProcessTable, worktreeReal: string, terminalStartedMs: number) => Set<number> | null;
 };
 
 const clamp = (value: number, range: { min: number; max: number }) => Math.min(range.max, Math.max(range.min, Math.trunc(value)));
@@ -464,7 +464,7 @@ export class TerminalHost {
       // Proven members gone is not enough to free the worktree: nothing of this user may still be working in it.
       if (cleanup === "clean") {
         const table = this.processes();
-        const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal);
+        const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal, session.startedMs);
         if (residents === null || residents.size > 0) {
           cleanup = "uncertain";
           session.residentsOnly = residents !== null;
@@ -490,7 +490,7 @@ export class TerminalHost {
     if (session.cleanup !== "clean" && !session.residentsOnly) throw busy;
     // Checked again now: a shell or server may have moved into the worktree since the sweep.
     const table = this.processes();
-    const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal);
+    const residents = table === null ? null : (this.options.residents ?? worktreeResidents)(table, session.worktreeReal, session.startedMs);
     if (residents === null || residents.size > 0) throw busy;
     // Each process seen working in it when the sweep ended must have exited (the same pid with the same start time is
     // the same process, wherever it now works).
@@ -563,17 +563,24 @@ export function membersOf(table: ProcessTable, session: { leader: number; tty: s
   return found;
 }
 
-/** Each listed process's working directory (Linux: /proc; macOS: lsof). Null when they can't all be read: a timeout,
- * a signal or partial output is unreadable, never a smaller answer. A process gone in between is simply absent. */
-export function cwdsOf(pids: readonly number[]): Map<number, string> | null {
-  const cwds = new Map<number, string>();
-  if (pids.length === 0) return cwds;
+/**
+ * Each listed process's working directory (Linux: /proc; macOS: lsof), and which ones couldn't be read (a setgid
+ * helper such as ssh-agent is unreadable even to its own user). Null when the lookup itself failed: a timeout, a signal
+ * or partial output is never a smaller answer. A process gone in between is simply absent.
+ */
+export function cwdsOf(pids: readonly number[]): { cwds: Map<number, string>; unreadable: number[] } | null {
+  const cwds = new Map<number, string>(), unreadable: number[] = [];
+  if (pids.length === 0) return { cwds, unreadable };
   if (process.platform === "linux") {
     for (const pid of pids) {
       try { cwds.set(pid, readlinkSync(`/proc/${pid}/cwd`)); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EACCES" || code === "EPERM") unreadable.push(pid);
+        else if (code !== "ENOENT") return null;
+      }
     }
-    return cwds;
+    return { cwds, unreadable };
   }
   let text: string;
   try { text = execFileSync("lsof", ["-a", "-d", "cwd", "-Fpn", "-p", pids.join(",")], { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024 }); }
@@ -588,20 +595,22 @@ export function cwdsOf(pids: readonly number[]): Map<number, string> | null {
     if (line.startsWith("p")) pid = Number(line.slice(1));
     else if (line.startsWith("n") && pid !== null) cwds.set(pid, line.slice(1));
   }
-  return cwds;
+  return { cwds, unreadable };
 }
 
 /**
- * This user's processes working inside a terminal's worktree, whoever started them, other than the proven members
- * already being swept. They are never signalled (one may be the person's own shell or a server they started from
- * elsewhere); while any remains, the terminal's cleanup is uncertain and its worktree stays. Null when unreadable.
+ * This user's processes working inside a terminal's worktree, whoever started them. They are never signalled (one may
+ * be the person's own shell or a server they started from elsewhere); while any remains, the terminal's cleanup is
+ * uncertain and its worktree stays. Null when that can't be known: the lookup failed, or a process whose working
+ * directory can't be read started after the terminal did (one from before — a login's ssh-agent — can't be its own).
  */
-export function worktreeResidents(table: ProcessTable, worktreeReal: string, exclude: ReadonlySet<number> = new Set()): Set<number> | null {
+export function worktreeResidents(table: ProcessTable, worktreeReal: string, terminalStartedMs: number = 0): Set<number> | null {
   const uid = process.getuid?.() ?? -1;
-  const candidates = [...table].filter(([pid, row]) => pid !== process.pid && row.uid === uid && !exclude.has(pid)).map(([pid]) => pid);
-  const cwds = cwdsOf(candidates);
-  if (cwds === null) return null;
-  return new Set([...cwds].filter(([, cwd]) => cwd === worktreeReal || cwd.startsWith(`${worktreeReal}/`)).map(([pid]) => pid));
+  const candidates = [...table].filter(([pid, row]) => pid !== process.pid && row.uid === uid).map(([pid]) => pid);
+  const read = cwdsOf(candidates);
+  if (read === null) return null;
+  if (read.unreadable.some(pid => { const started = table.get(pid)?.started; return started === undefined || !(Date.parse(started) < terminalStartedMs - 1_000); })) return null;
+  return new Set([...read.cwds].filter(([, cwd]) => cwd === worktreeReal || cwd.startsWith(`${worktreeReal}/`)).map(([pid]) => pid));
 }
 
 /** One client frame, read strictly; null closes the socket. */
