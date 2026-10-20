@@ -414,6 +414,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts": 2,
     "src/serve.ts": 1
   },
+  "credentialHash": {
+    "src/runner.ts": 1,
+    "src/scope.ts": 1,
+    "src/server/people-tokens.ts": 1,
+    "src/store.ts": 12
+  },
   "fresh": {
     "src/acp-check.ts": 5,
     "src/acp-client.ts": 3,
@@ -507,6 +513,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts": 3,
     "src/server/remote.ts": 3
   },
+  "scryptSync": {
+    "src/scope.ts": 4
+  },
   "spendingOnlyOnSuccess": {
     "src/chat-actions.ts": 3,
     "src/scope.ts": 1,
@@ -537,6 +546,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/session.ts": 1,
     "src/server/settings.ts": 1
   },
+  "verifyCredential": {
+    "src/scope.ts": 3
+  },
   "withFreshness": {
     "src/chat-actions.ts": 4,
     "src/scope.ts": 1,
@@ -549,7 +561,8 @@ describe("the tripwire", () => {
   const sources = productionSources;
   // The freshness facts' own carrier and its readers too: any helper that reads them (an SSO re-check's time, a window's
   // start) names one of these.
-  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES, "freshFacts", "FreshFacts", "ssoNow", "freshScope"]);
+  // And the password primitives beneath every prover: a check made outside proveAccountNow names one of these.
+  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES, "freshFacts", "FreshFacts", "ssoNow", "freshScope", "verifyCredential", "credentialHash", "scryptSync"]);
   const mentions = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
     const hits: Record<string, Record<string, number>> = {};
     for (const { path, text } of files) {
@@ -595,6 +608,10 @@ describe("the tripwire", () => {
     const reader = mentions([{ path: "reader.ts", text: "export const recent = () => { const at = freshFacts.getStore()?.ssoNow(); return at !== null && at !== undefined && Date.now() - at < 300000; };" }]);
     expect(reader["freshFacts"]).toEqual({ "reader.ts": 1 });
     expect(reader["ssoNow"]).toEqual({ "reader.ts": 1 });
+    // A password checked directly, beside the prover, names the primitive (and the stored hash).
+    const direct = mentions([{ path: "direct.ts", text: "export const ok = (store: { accountOf(n: string): { credentialHash: string } | null }, name: string, password: string) => { const account = store.accountOf(name); return account !== null && verifyCredential(account.credentialHash, password); };" }]);
+    expect(direct["verifyCredential"]).toEqual({ "direct.ts": 1 });
+    expect(direct["credentialHash"]).toEqual({ "direct.ts": 2 });
   });
 
   test("every mention in the production source is the reviewed one", () => {
