@@ -138,8 +138,8 @@ export type ServeOptions = {
   connectFetch?: typeof fetch;
   /** Tests: every request sign-in with the identity provider makes (discovery, keys, tokens). */
   ssoFetch?: typeof fetch;
-  /** Cockpit E: how Finder is asked to reveal a proved checkout (tests pass their own; never a launch). */
-  revealPath?: (path: string) => void;
+  /** Cockpit E: how Finder is asked to reveal a proved checkout (tests pass their own; never a launch). True: shown. */
+  revealPath?: (path: string) => Promise<boolean> | boolean;
   chatEnv?: Record<string, string | undefined>;
   /**
    * The live peek's locality ASSERTION (live-peek v3 §3): the administrator

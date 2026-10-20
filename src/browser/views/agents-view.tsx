@@ -132,17 +132,25 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
 
 /** This running attempt's files, on this computer (cockpit E): the words first, then the path, "Copy the command"
  * (a cd to paste into your own terminal) and Show in Finder. Toolroll launches nothing in them. A phone shows the path. */
-function CheckoutActions({ checkout }: { checkout: NonNullable<BrowserAgentDetail["checkout"]> }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => { void navigator.clipboard?.writeText(checkout.cd).then(() => setCopied(true), () => setCopied(false)); };
+export function CheckoutActions({ checkout }: { checkout: NonNullable<BrowserAgentDetail["checkout"]> }) {
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
+  // A clipboard that isn't there or refuses says so: the command is shown to select by hand instead.
+  const copy = () => {
+    if (navigator.clipboard?.writeText === undefined) { setCopied("failed"); return; }
+    void navigator.clipboard.writeText(checkout.cd).then(() => setCopied("yes"), () => setCopied("failed"));
+  };
   return <section aria-label="Its files" className="flex flex-col gap-1.5" data-agent-checkout>
     <p className="text-caption font-medium text-muted-foreground">Its files</p>
     <p className="text-caption text-muted-foreground">These files were written by an agent. Your shell's startup scripts and prompt tools (git status in the prompt, direnv, .envrc) can run code from them when you open a terminal there.</p>
     <code className="block break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono" data-agent-checkout-path>{checkout.path}</code>
     <div className="flex flex-wrap gap-2 phone:hidden">
-      <Button type="button" variant="outline" size="sm" onClick={copy} data-agent-copy-cd>{copied ? "Copied" : "Copy the command"}</Button>
-      <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><Button type="submit" variant="outline" size="sm">Show in Finder</Button></PostForm>
+      <Button type="button" variant="outline" size="sm" onClick={copy} data-agent-copy-cd>{copied === "yes" ? "Copied" : "Copy the command"}</Button>
+      {checkout.reveal !== null && <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><Button type="submit" variant="outline" size="sm">Show in Finder</Button></PostForm>}
     </div>
+    {copied === "failed" && <div className="flex flex-col gap-1" role="status" data-agent-copy-failed>
+      <p className="text-caption text-danger">Couldn't copy. Select the command and copy it yourself:</p>
+      <code className="block select-all break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono">{checkout.cd}</code>
+    </div>}
   </section>;
 }
 

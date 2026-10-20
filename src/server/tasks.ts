@@ -1,6 +1,5 @@
 import { steerCapabilityOf } from "../steer-capabilities.js";
-import { localCheckoutOf } from "../checkout-proof.js";
-import { execFile } from "node:child_process";
+import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
 
 /** A form's way back to a flow card ("flow:<flow>:<card>"), read strictly: numbers only, never a path. */
 function returnedFlow(value: string | null): { flow: number; card: number } | null {
@@ -1333,9 +1332,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (store.isDemo()) return refuse(response, who, 403, "the demo authorizes nothing");
     const proof = localCheckoutOf(store, id, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
     if (!proof.ok) return redirect(response, `/agents?run=${id}&said=reveal-refused`);
-    if (process.platform !== "darwin" && options.revealPath === undefined) return redirect(response, `/agents?run=${id}&said=reveal-mac-only`);
-    (options.revealPath ?? (path => { execFile("open", ["-R", path], () => { /* Finder's answer is not ours to wait on */ }); }))(proof.path);
-    return redirect(response, `/agents?run=${id}&said=revealed`);
+    if (!canReveal(options.revealPath !== undefined)) return redirect(response, `/agents?run=${id}&said=reveal-mac-only`);
+    const shown = await (options.revealPath ?? revealInFinder)(proof.path);
+    return redirect(response, `/agents?run=${id}&said=${shown ? "revealed" : "reveal-failed"}`);
   }
   async function runNote(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now, posted } = ctx;

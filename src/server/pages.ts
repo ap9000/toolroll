@@ -1,5 +1,5 @@
 import { steerControlsFor } from "../steer-controls.js";
-import { cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
+import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
 import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
@@ -437,6 +437,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     revealed: { tone: "info", text: "Shown in Finder." },
     "reveal-refused": { tone: "error", text: "That checkout couldn't be shown: it isn't this attempt's running checkout on this computer any more." },
     "reveal-mac-only": { tone: "error", text: "Show in Finder works on a Mac. Copy the command instead." },
+    "reveal-failed": { tone: "error", text: "Finder didn't show it. The path is above; copy the command instead." },
   };
 
   // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
@@ -472,7 +473,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           checkout: (() => {
             if (!live || who.role !== "approver" || store.isDemo()) return null;
             const proof = localCheckoutOf(store, facts.runId, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
-            return proof.ok ? { path: proof.path, cd: cdCommandOf(proof.path), reveal: `/r/${facts.runId}/reveal` } : null;
+            // Show in Finder only where it can work (a Mac); elsewhere the path and the command stand alone.
+            return proof.ok ? { path: proof.path, cd: cdCommandOf(proof.path), reveal: canReveal(options.revealPath !== undefined) ? `/r/${facts.runId}/reveal` : null } : null;
           })(),
           canAct: who.role === "approver" && !store.isDemo(),
           taskHref: taskHref(facts.taskId),

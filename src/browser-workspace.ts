@@ -613,7 +613,8 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   controls?: BrowserAgentControls | null;
   /** Cockpit E: this running attempt's checkout, proved to be on this machine — the cd command to copy, and where Show
    * in Finder posts. Absent off this machine, for a viewer, or once it ends. Nothing is ever launched in it. */
-  checkout?: { path: string; cd: string; reveal: string } | null;
+  /** `reveal` is null where Finder can't be asked (not a Mac): the path and the command stand alone. */
+  checkout?: { path: string; cd: string; reveal: string | null } | null;
   /** Whether this person may reply or steer (an approver, outside the demo); a viewer sees the question but no composer. */
   canAct: boolean;
   /** The task, and once finished the run's own page (its result page when it built one). */

@@ -4,6 +4,7 @@
  * real path, a directory inside this machine's pool. Used to offer "copy the cd command" and "Show in Finder" — and
  * proved again immediately before Finder is asked to reveal it. Nothing is ever launched in it.
  */
+import { execFile } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import type { Store } from "./store.js";
 
@@ -16,13 +17,29 @@ export function localCheckoutOf(store: Store, runId: number, local: { runner?: s
   if (store.currentLiveLease(run.taskRef, now) !== run.leaseId) return { ok: false, reason: "this attempt isn't the one running now" };
   const row = store.getWorktree(run.worktree);
   if (row === null || row.taskRef !== run.taskRef) return { ok: false, reason: "the checkout isn't where the record says" };
-  if (row.runner !== local.runner) return { ok: false, reason: "this attempt runs on another computer" };
+  // The run, its worktree row and this machine all name the same runner: an inconsistent record fails closed.
+  if (run.runner !== local.runner || row.runner !== local.runner) return { ok: false, reason: "this attempt runs on another computer" };
   try {
     const real = realpathSync(run.worktree), pool = realpathSync(local.poolRoot);
-    if (real !== run.worktree || !(real === pool || real.startsWith(`${pool}/`)) || !lstatSync(real).isDirectory()) return { ok: false, reason: "the checkout isn't inside this machine's pool" };
+    // Strictly inside: the pool directory itself is never a checkout.
+    if (real !== run.worktree || !real.startsWith(`${pool}/`) || !lstatSync(real).isDirectory()) return { ok: false, reason: "the checkout isn't inside this machine's pool" };
     return { ok: true, path: real };
   } catch { return { ok: false, reason: "the checkout couldn't be found on this machine" }; }
 }
+
+/** How Finder is asked: the system's own `open` by absolute path (never found through PATH), from the root directory,
+ * with a minimal environment, one argument. Resolves true when it answered success within ten seconds. */
+export type RevealExec = (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; timeout: number }, done: (error: Error | null) => void) => void;
+export const REVEAL_COMMAND = "/usr/bin/open";
+export function revealInFinder(path: string, run: RevealExec = (file, args, options, done) => { execFile(file, [...args], options, error => done(error)); }): Promise<boolean> {
+  return new Promise(resolve => {
+    try { run(REVEAL_COMMAND, ["-R", path], { cwd: "/", env: { PATH: "/usr/bin:/bin" }, timeout: 10_000 }, error => resolve(error === null)); }
+    catch { resolve(false); }
+  });
+}
+
+/** Whether this console can ask Finder at all (a Mac, or a test's own revealer). */
+export const canReveal = (injected: boolean): boolean => injected || process.platform === "darwin";
 
 /** The command to paste into a terminal: `cd` to the path as one single-quoted shell word (a quote inside escaped). */
 export function cdCommandOf(path: string): string {
