@@ -216,12 +216,15 @@ export type LiveRooms<K, V extends LiveViewer> = {
 };
 
 /** `minIntervalMs`: a busy room says `change` at most this often — the first at once, the latest after. */
-export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; minIntervalMs?: number };
+export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; minIntervalMs?: number;
+  /** A room whose read is costly reads at most once per this window after a signal; every viewer is still re-proved
+   * the moment a signal arrives (and again at the read). */
+  readSettleMs?: number };
 
 const PRESENCE_SETTLE_MS = 150;
 
 type Room<V> = { viewers: Map<V, () => void>; last: string | null; timer: NodeJS.Timeout; settling: NodeJS.Timeout | null; retry: NodeJS.Timeout | null;
-  saidAt: number; holding: NodeJS.Timeout | null; revision: string | null };
+  saidAt: number; holding: NodeJS.Timeout | null; revision: string | null; reading: NodeJS.Timeout | null };
 
 /**
  * Rooms of open pages that hear the bus. `presence` says who else is here, as
@@ -235,6 +238,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
   const bus = options.bus ?? null;
   const safetyNetMs = options.safetyNetMs ?? SAFETY_NET_MS;
   const minIntervalMs = options.minIntervalMs ?? 0;
+  const readSettleMs = options.readSettleMs ?? 0;
   const rooms = new Map<K, Room<V>>();
   let unsubscribe: (() => void) | null = null;
 
@@ -261,6 +265,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     if (room.settling !== null) clearTimeout(room.settling);
     if (room.retry !== null) clearTimeout(room.retry);
     if (room.holding !== null) clearTimeout(room.holding);
+    if (room.reading !== null) clearTimeout(room.reading);
     rooms.delete(key);
     if (rooms.size === 0 && unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
   };
@@ -304,7 +309,14 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "change", { at: room.last, revision: room.revision });
   };
   const heard = (change: LiveChange): void => {
-    for (const [key, room] of [...rooms]) refresh(key, room, change.revision);
+    for (const [key, room] of [...rooms]) {
+      if (readSettleMs <= 0) { refresh(key, room, change.revision); continue; }
+      // Re-prove now; read once the burst settles.
+      for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer);
+      if (rooms.get(key) !== room || room.reading !== null) continue;
+      room.reading = setTimeout(() => { room.reading = null; if (rooms.get(key) === room) refresh(key, room, null); }, readSettleMs);
+      room.reading.unref();
+    }
   };
 
   return {
@@ -313,7 +325,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       if (room === undefined) {
         let last: string | null = null;
         try { last = fingerprint(key); } catch { /* the next signal or the safety net reads it */ }
-        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null };
+        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null, reading: null };
         created.timer.unref();
         room = created;
         rooms.set(key, room);

@@ -32,6 +32,7 @@ import {
 import { GUIDES, guideNamed } from "./guides.js";
 import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, isLargeRepo } from "./onboard.js";
 import { run as execRun } from "./exec.js";
+import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
 import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "./session-cli.js";
 import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
@@ -159,7 +160,7 @@ export function parseArgs(argv: readonly string[]): ParseResult {
  * exact sets instead of regex-reading source. "" is the no-verb report,
  * which answers as `scan`. */
 export const TOP_LEVEL_COMMANDS: readonly string[] = [
-  "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github",
+  "", "scan", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github",
   "link", "unlink", "update", "release", "contract", "skills list", "skills get", "skills install", "demo",
   ...SESSION_CLI_ACTIONS.map(action => `session ${action}`),
   ...TEAM_CLI_ACTIONS,
@@ -245,6 +246,8 @@ export type MainOptions = {
   onboard?: { preview?: typeof previewGithubRepo; clone?: typeof cloneGithubRepo };
   update?: UpdateCliDeps;
   release?: ReleaseCliDeps;
+  /** Tests: bare `toolroll` in a repository (quick-start.ts) — its repository, agent check, proofs and actions. */
+  quickStart?: Partial<QuickStartSeams>;
 };
 
 /**
@@ -428,6 +431,22 @@ async function dispatch(
   if (first === "graph") return runGraphCommand(rest, write);
   if (first !== undefined && OPERATE_COMMANDS.has(first)) {
     return runOperate(first, rest, write, mainOptions.operate ?? {});
+  }
+  // Cockpit B1: the scan by name, and bare `toolroll` in a repository starting (or attaching to) its console.
+  if (first === "scan") argv = rest;
+  else if (isBareInvocation(argv)) {
+    const databaseFile = mainOptions.operate?.databaseFile ?? databasePath(process.env, homedir());
+    const started = await runQuickStart(argv, write, {
+      databaseFile, cwd: process.cwd(), env: process.env, terminal: process.stdout.isTTY === true,
+      build: (await import("./monitoring.js")).packageVersion(),
+      findRepo: async cwd => { const top = await execRun("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 10_000 }); return top.code === 0 ? top.stdout.trim() : null; },
+      enrolled: async repo => { const loaded = await loadRepos(registryBeside(databaseFile)); return !("error" in loaded) && loaded.repos.includes(repo); },
+      admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
+      startUp: () => runOperate("up", [], write, mainOptions.operate ?? {}),
+      openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
+      ...mainOptions.quickStart,
+    });
+    if (started !== null) return started;
   }
 
   const parsed = parseArgs(argv);

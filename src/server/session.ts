@@ -24,6 +24,9 @@ export const SIGN_IN_LINK_MS = 10 * 60_000;
 /** A cookie idles out after half a day and dies outright after a week. */
 export const SESSION_IDLE_MS = 12 * 60 * 60_000;
 export const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60_000;
+/** A session's lifetime, the one reading: within its idle and absolute limits (sign-in lookup and every act use it). */
+export const sessionWithinLifetime = (session: { lastSeen: number; createdAt: number }, now: number): boolean =>
+  now - session.lastSeen <= SESSION_IDLE_MS && now - session.createdAt <= SESSION_ABSOLUTE_MS;
 /** An approval nonce is a rendered form, not a standing right — it ages out fast. */
 export const NONCE_TTL_MS = 15 * 60_000;
 export const NONCE_CAP = 500;
@@ -48,6 +51,15 @@ export type Session = {
   projectRevision: number;
   /** v100: signed in with the identity provider, and when it last checked them (a step-up within 10 minutes needs no password). */
   sso?: { at: number };
+  /** Cockpit B2: when a password was last verified on this session (in memory only: a restart forgets it). */
+  passwordAt?: number;
+  /** Cockpit B2: when the identity provider last re-checked this person on request (a step-up's re-authentication).
+   * Only this, or a password, starts a freshness window; an ordinary sign-in never does. In memory only. */
+  ssoReauthAt?: number;
+  /** Cockpit B2: an explicit provider re-check not yet spent: stands in for ONE step-up (consumed by it). In memory only. */
+  ssoNowAt?: number;
+  /** Forget: nothing verified before this counts as fresh. */
+  freshFloor?: number;
   /** v101: the browser and address it signed in from, for the person to recognise it. */
   agent?: string | null;
   address?: string | null;
@@ -116,21 +128,28 @@ export class PersistentSessions extends Map<string, Session> {
   override set(id: string, session: Session): this {
     super.set(id, session);
     this.ids.set(session, id);
-    this.persist(session);
+    this.savedAt.set(session, Date.now());
+    this.db.saveWebSession({ idHash: PersistentSessions.hash(id), account: session.name, csrf: session.csrf, role: session.role, generation: session.generation, createdAt: session.createdAt,
+      lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null });
     return this;
   }
   override delete(id: string): boolean {
     this.db.dropWebSession(PersistentSessions.hash(id));
     return super.delete(id);
   }
-  /** Keep a changed session (its project, its provider check); `seen` only once a minute. */
+  /**
+   * Keep a changed session (its project, its provider check); `seen` only once a minute. Only ever an update: a session
+   * ended elsewhere (another process, Sessions) is dropped here, never written back by its cached copy (live terminals
+   * review, rounds 2–3, finding 1).
+   */
   persist(session: Session, seen = false): void {
     const id = this.ids.get(session);
     if (id === undefined || (seen && Date.now() - (this.savedAt.get(session) ?? 0) < 60_000)) return;
     this.savedAt.set(session, Date.now());
-    this.db.saveWebSession({ idHash: PersistentSessions.hash(id), account: session.name, csrf: session.csrf, role: session.role, generation: session.generation, createdAt: session.createdAt,
-      lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null, agent: session.agent ?? null, address: session.address ?? null });
+    if (!this.db.updateWebSession({ idHash: PersistentSessions.hash(id), lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null })) super.delete(id);
   }
+  /** Whether this cookie's session is still saved (one ended in another process is not). */
+  stillSaved(id: string): boolean { return this.db.webSession(PersistentSessions.hash(id)) !== null; }
   /** A cookie from before a restart, if its session is still kept. */
   load(id: string): Session | null {
     const row = this.db.webSession(PersistentSessions.hash(id));
@@ -147,6 +166,8 @@ export class PersistentSessions extends Map<string, Session> {
     for (const id of [...this.keys()]) if (PersistentSessions.hash(id) === idHash) super.delete(id);
     this.db.dropWebSession(idHash);
   }
+  /** Whether this exact session is still signed in here (not signed out, ended from Sessions, expired or replaced). */
+  holds(session: Session): boolean { const id = this.ids.get(session); return id !== undefined && super.get(id) === session; }
   hashOf(session: Session): string | null { const id = this.ids.get(session); return id === undefined ? null : PersistentSessions.hash(id); }
 }
 

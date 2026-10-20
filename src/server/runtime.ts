@@ -1,3 +1,4 @@
+import type { FreshFacts } from '../scope.js';
 import type { FlowRooms } from '../flow-live.js';
 import type { IntegrationMonitor } from '../integrations.js';
 import type { OidcSettings } from '../oidc.js';
@@ -157,11 +158,13 @@ export interface ServerRuntime {
   signInLinks: Map<string, { account: string; expires: number; }>;
   linkKey: (code: string) => string;
   fromThisComputer: (request: IncomingMessage) => boolean;
+  /** Cockpit B2: the request's live password-freshness facts (null off a browser session). */
+  freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
   passwordAllowed: (name: string) => boolean;
   arrival: (request: IncomingMessage) => { agent: string | null; address: string; };
   cookieSecure: "" | "; Secure";
-  ssoVisits: Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; }>;
-  ssoHandoffs: Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; }>;
+  ssoVisits: Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number; session: { hash: string; generation: number } | null; }>;
+  ssoHandoffs: Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null; session: { hash: string; generation: number } | null; }>;
   joinSourceOf: (request: IncomingMessage) => string;
   signInBudget: SourceBudget;
   signInActor: (name: string | null) => string;

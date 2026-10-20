@@ -104,8 +104,11 @@ export function agentFactsSql(): string {
 }
 
 /** One exact build attempt, whatever its age (the opened row), in the admitted projects: a repair opens as its parent. */
+/** One attempt opened by its run: a build (a protocol repair opens as its build), or a planner, scout or reviewer —
+ * the board lists builds, but any running agent can be opened to see it and what it takes (cockpit §4). */
+const OPENED_FACTS = FACTS.replace("WHERE r.role = 'builder'", "WHERE r.role IN ('builder', 'planner', 'scout', 'reviewer')");
 export function agentFactsFor(store: Store, run: number, access: { repos: readonly string[] | null }, account: string): AgentFacts | null {
-  const row = store.handle.prepare(`${FACTS} AND r.id = (SELECT CASE WHEN role = 'repair' AND parent_run IS NOT NULL THEN parent_run ELSE id END FROM run WHERE id = $run) AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))`)
+  const row = store.handle.prepare(`${OPENED_FACTS} AND r.id = (SELECT CASE WHEN role = 'repair' AND parent_run IS NOT NULL THEN parent_run ELSE id END FROM run WHERE id = $run) AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))`)
     .get({ $account: account, $run: run, $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []) });
   return row === undefined ? null : readFacts(row);
 }
@@ -324,7 +327,8 @@ export function agentLanesOf(store: Store, now: Date, access: { repos: readonly 
       return {
         runId: Number(run["id"]), role: role === "repair" ? "builder" : role as BrowserLaneSegment["role"], agent: providerName(String(run["provider"] ?? "claude")),
         startedAt: String(run["started_at"]), endedAt: str(run, "finished_at"), outcome: str(run, "outcome"),
-        href: role === "builder" ? `/agents?run=${Number(run["id"])}` : `/r/${Number(run["id"])}`,
+        // Every role opens in the agent view (planners, scouts and reviewers too): what it is doing and what it takes.
+        href: `/agents?run=${Number(run["id"])}`,
       };
     });
     // The row's state from the task's own newest build, as the board would place it (never the board's capped list),

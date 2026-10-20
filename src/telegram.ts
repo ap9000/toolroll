@@ -62,6 +62,9 @@ import { askOf, parseTelegramUpdate, pickOf, readTelegramButtonData, readTelegra
 
 /** Read the enrolled project list on demand. No callback means no task data,
  * never an implicit all-database ceiling. Shared by pass and embedded follower. */
+/** A delivery its person began watching after it was claimed: held or settled at the final fence (cockpit §3). */
+const WATCHED_SINCE_CLAIM = "Held: its person is watching this agent now";
+
 export type TelegramReadProjects = () => Promise<readonly string[]>;
 
 /** The environment name — and therefore the name the builder strips from agents (both names; see names.ts). */
@@ -826,6 +829,8 @@ async function deliverOutboxTo(
     const blocked: { row: TelegramDelivery; error: string }[] = [];
     const preflight = (await readAccess()) ?? channelProblem();
     for (const row of group) {
+      // Watched since the claim (cockpit §3): held for later or settled quietly, never sent now, never a failure.
+      if (preflight === null && store.telegramWatchFence(row, binding, owner, clock()) !== "send") continue;
       const problem = preflight ?? store.telegramDeliveryProblem(row, binding, owner, projects, clock(), [...rows.map(one => one.id), row.id]);
       if (problem === null) rows.push(row);
       else blocked.push({ row, error: problem });
@@ -837,12 +842,25 @@ async function deliverOutboxTo(
     if (rows.length === 0) continue;
 
     const ids = rows.map(row => row.id);
-    const fence = (): string | null => {
+    // Once any part of this delivery has reached Telegram it is committed: a watch opening between its parts never
+    // releases it (that would send the parts already accepted again). Every transport call below goes through `wire`.
+    let sentAny = false;
+    const wire: TelegramTransport = async (...args) => {
+      const answer = await transport(...args);
+      if (answer.ok === true) sentAny = true;
+      return answer;
+    };
+    // `beforeSend`: the fence before a transport call also asks the watch — until something of this delivery went out;
+    // the one after a confirmed send never does, so a message Telegram accepted is recorded as delivered.
+    const fence = (beforeSend = !sentAny): string | null => {
       const channel = channelProblem();
       if (channel !== null) return channel;
       for (const row of rows) {
         const problem = store.telegramDeliveryProblem(row, binding, owner, projects, clock(), ids);
         if (problem !== null) return problem;
+        // The watch, at the last moment before the network: a held row's claim is released (its finalize is then a
+        // no-op), so nothing is spent on it.
+        if (beforeSend && store.telegramWatchFence(row, binding, owner, clock()) !== "send") return WATCHED_SINCE_CLAIM;
       }
       return null;
     };
@@ -850,7 +868,7 @@ async function deliverOutboxTo(
       // Finish every await before the synchronous fence and transport call.
       const problem = (await readAccess()) ?? fence();
       if (problem !== null) return { ok: false, error: problem };
-      const sent = await send(transport, binding.chatId, text, keyboard, entities, silent);
+      const sent = await send(wire, binding.chatId, text, keyboard, entities, silent);
       if (!sent.ok) {
         if (sent.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + sent.retryAfter * 1_000).toISOString());
         return sent;
@@ -858,7 +876,7 @@ async function deliverOutboxTo(
       if (sent.messageId === null) return { ok: false, error: "Telegram returned no confirmed message identity" };
       for (const row of messageRows) store.recordTelegramMessage(row, binding, sent.messageId, clock());
       // Keep the old message's history but never acknowledge a replaced pairing.
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? sent : { ok: false, error: after };
     };
     const imageSender = async (row: TelegramDelivery): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> => {
@@ -882,7 +900,7 @@ async function deliverOutboxTo(
       store.markResultShotsSent(row.destination, row.run, [artifact], clock());
       // No await between the access fence, file validation and upload.
       let answer: Awaited<ReturnType<TelegramTransport>>;
-      try { answer = await transport("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
+      try { answer = await wire("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
         field: "document", bytes: verified.bytes, contentType: verified.format === "png" ? "image/png" : "image/jpeg", fileName: resultImageFileName(row.taskId, row.run, artifact, verified.format),
       });
       } catch {
@@ -896,7 +914,7 @@ async function deliverOutboxTo(
         return { ok: false, error: answer.uncertain || (answer.ok && messageId == null) ? "Screenshot delivery is unconfirmed; retry may duplicate it" : "Telegram did not accept the screenshot" };
       }
       store.recordTelegramMessage(row, binding, String(messageId), clock());
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, String(messageId)) } : { ok: false, error: after };
     };
     /** Screenshots with a result (result-shots.ts): photos, several as one album, re-proved before every call. Each is
@@ -922,11 +940,11 @@ async function deliverOutboxTo(
         let answer: Awaited<ReturnType<TelegramTransport>>;
         try {
           answer = batch.length > 1
-            ? await transport("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
+            ? await wire("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
               undefined, upload(batch[0]!, "shot0"), batch.slice(1).map((one, index) => upload(one, `shot${index + 1}`)))
             : batch[0]!.photo
-              ? await transport("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
-              : await transport("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
+              ? await wire("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
+              : await wire("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
         } catch { answer = { ok: false, uncertain: true }; }
         if (!answer.ok && answer.uncertain !== true) {
           store.unmarkResultShotsSent(row.destination, plan.run, ids);
@@ -957,7 +975,7 @@ async function deliverOutboxTo(
       try { button = phoneLinkButton(phoneOrigin?.() ?? null, card.link); } catch { /* No trusted origin. */ }
       const keyboard = button === null ? [] : [button];
       if (messageId === null) return sender(card.text, keyboard, rows, card.entities);
-      const edited = await editProgress(transport, binding.chatId, messageId, card.text, keyboard, card.entities);
+      const edited = await editProgress(wire, binding.chatId, messageId, card.text, keyboard, card.entities);
       if (!edited.ok) {
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
         // Only Telegram's definitive missing/uneditable response permits a
@@ -966,7 +984,7 @@ async function deliverOutboxTo(
         return edited;
       }
       if (!onlyExisting) store.recordTelegramMessage(row, binding, messageId, clock());
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? edited : { ok: false, error: after };
     };
     /** Quiet mode: the task's one card (or its group's), created silently and then only ever edited. */
@@ -985,11 +1003,11 @@ async function deliverOutboxTo(
         return { ok: true, messageId: card.message };
       }
       if (card.message !== null) {
-        const edited = await editProgress(transport, binding.chatId, card.message, view.text, keyboard, view.entities);
+        const edited = await editProgress(wire, binding.chatId, card.message, view.text, keyboard, view.entities);
         if (edited.ok) {
           store.setChatCardMessage(card.id, card.message, shown);
           store.recordTelegramMessage(fact, binding, card.message, clock());
-          const after = (await readAccess()) ?? fence();
+          const after = (await readAccess()) ?? fence(false);
           return after === null ? edited : { ok: false, error: after };
         }
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
@@ -1051,14 +1069,14 @@ async function deliverOutboxTo(
           const problem = (await readAccess()) ?? fence();
           if (problem !== null) return { ok: false, error: problem };
           mintFor();
-          const edited = await editProgress(transport, binding.chatId, batch.message, text, keyboard);
+          const edited = await editProgress(wire, binding.chatId, batch.message, text, keyboard);
           if (edited.ok) {
             // The repaint landed: the old words' buttons retire and the new ones ride the message.
             retireDecideTokens(store, "telegram", binding.chatId, batch.message, clock());
             placeDecideTokens(store, tokens, batch.message);
             store.setChatBatchMessage(batch.id, batch.message, shown);
             store.recordTelegramMessage(fact, binding, batch.message, clock());
-            const after = (await readAccess()) ?? fence();
+            const after = (await readAccess()) ?? fence(false);
             return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, batch.message) } : { ok: false, error: after };
           }
           // A failed edit: the buttons it carried never act, and the card's old ones keep working.
@@ -1090,10 +1108,10 @@ async function deliverOutboxTo(
       if (earlier !== null) {
         const problem = (await readAccess()) ?? fence();
         if (problem !== null) return { ok: false, error: problem };
-        const edited = await editProgress(transport, binding.chatId, earlier, words, keyboard);
+        const edited = await editProgress(wire, binding.chatId, earlier, words, keyboard);
         if (edited.ok) {
           store.recordTelegramMessage(fact, binding, earlier, clock());
-          const after = (await readAccess()) ?? fence();
+          const after = (await readAccess()) ?? fence(false);
           return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, earlier) } : { ok: false, error: after };
         }
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
@@ -1117,7 +1135,7 @@ async function deliverOutboxTo(
         ? await deliverDigest(botId, binding, sender, rows, digest.lastSentAt, clock, taskId => chatTitle(store, taskId))
         : await deliverOne(store, botId, binding, sender, rows[0]!, clock, phoneOrigin, evidenceRoot, projects);
     }
-    const finalProblem = outcome.ok ? (await readAccess()) ?? fence() : null;
+    const finalProblem = outcome.ok ? (await readAccess()) ?? fence(false) : null;
     const settled = finalProblem === null ? outcome : { ok: false as const, error: finalProblem };
     // A skipped screenshot settles its row but nothing reached the phone.
     const skipped = settled.ok && settled.receipt !== null && settled.receipt.startsWith("skipped:");

@@ -1,3 +1,11 @@
+import { steerCapabilityOf } from "../steer-capabilities.js";
+import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
+
+/** A form's way back to a flow card ("flow:<flow>:<card>"), read strictly: numbers only, never a path. */
+function returnedFlow(value: string | null): { flow: number; card: number } | null {
+  const match = /^flow:([1-9][0-9]{0,9}):([1-9][0-9]{0,9})$/.exec(value ?? "");
+  return match === null ? null : { flow: Number(match[1]), card: Number(match[2]) };
+}
 import { originOf } from "../task-source.js";
 import { ACP_AGENTS, isAcpProvider } from "../acp-agents.js";
 import { handlersOf } from './handler-registry.js';
@@ -58,7 +66,7 @@ acceptanceLinesToInput,
 acceptanceToLines,
 approvalOf,
 approve as approveScope,
-hasFreshIdentitySignIn,
+freshnessFor, spendingOnlyOnSuccess, ssoNowAvailable, withFreshness,
 modeFilingCoverage,PLACEHOLDER_RUBRIC,
 proposeGuarded,
 type UnattendedPermissionMode
@@ -507,8 +515,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
     }
     const selected = selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
-    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board.
-    if (wantedId !== null && selected?.run != null) markAgentSeen(store, who.name, selected.run.id, now);
+    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board — but only
+    // once the run has finished (cockpit §3): a page shown while it was still running saw no finished version.
+    if (wantedId !== null && selected?.run != null && store.getRun(selected.run.id)?.finishedAt != null) markAgentSeen(store, who.name, selected.run.id, now);
     // A build that delivered nothing reads Failed here, and so does a failed task's delivered result: what went wrong
     // is the card and Retry the ink act. That result may still be accepted, but only in outline, as Accept anyway, with
     // a reason.
@@ -1310,6 +1319,23 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return taskMutation(response, who, act.taskId, verb, posted, now);
   };
 
+  // Cockpit E: Show in Finder — the checkout proved again right now (live, this machine's runner, inside the pool),
+  // then Finder asked to reveal it with a fixed argv. Nothing runs in it; a Mac only.
+  async function runReveal(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, posted } = ctx;
+    const asked = /^\/r\/([0-9]{1,15})\/reveal$/.exec(url.pathname);
+    if (asked === null) return noPage(who, response);
+    readForm(posted, CONSOLE_FORMS.runReveal);
+    const id = Number(asked[1]);
+    const found = store.getRun(id);
+    if (found === null || !visible(taskRepoOf(found.taskRef))) return refuse(response, who, 404, "no such run");
+    if (store.isDemo()) return refuse(response, who, 403, "the demo authorizes nothing");
+    const proof = localCheckoutOf(store, id, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
+    if (!proof.ok) return redirect(response, `/agents?run=${id}&said=reveal-refused`);
+    if (!canReveal(options.revealPath !== undefined)) return redirect(response, `/agents?run=${id}&said=reveal-mac-only`);
+    const shown = await (options.revealPath ?? revealInFinder)(proof.path);
+    return redirect(response, `/agents?run=${id}&said=${shown ? "revealed" : "reveal-failed"}`);
+  }
   async function runNote(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now, posted } = ctx;
     const noted = /^\/r\/([0-9]{1,15})\/note$/.exec(url.pathname);
@@ -1736,6 +1762,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (who.via !== "cookie") {
           return refuse(response, who, 403, "steering is a browser session's act");
         }
+        // The same gates as a pause or a stop (the route's act scope already refuses a viewer; this says why).
+        if (who.role !== "approver") return taskScreen(response, who, taskId, "your login can watch — sending an agent a note is an approver's act", 403);
+        if (store.isDemo()) return taskScreen(response, who, taskId, "the demo authorizes nothing", 403);
         // From the Agents view, the note is for the exact run on screen (live-conversation.md §6): filed only while that
         // run is still the task's live build, once per draft key. Nothing is filed on a refusal; the view keeps the draft.
         // An unsent note from an attempt that ended, sent on to the task's next attempt from that agent's page: filed
@@ -1744,24 +1773,46 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           const afterRaw = body.get("after") ?? "";
           const keyRaw = body.get("key") ?? "";
           const ended = /^[1-9][0-9]{0,14}$/.test(afterRaw) ? store.getRun(Number(afterRaw)) : null;
-          if (ended === null || ended.taskRef !== ref.id || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw) || body.has("run") || body.has("return")) {
+          const afterBack = body.get("return");
+          const afterFlow = returnedFlow(afterBack);
+          if (ended === null || ended.taskRef !== ref.id || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw) || body.has("run") || (afterBack !== null && afterBack !== "task" && afterFlow === null)) {
             return taskScreen(response, who, taskId, "that note did not say which agent it came from, so nothing was sent", 400);
           }
           // The same receipt as a send to that run: a draft already filed while it ran comes back as sent, not twice.
           const filed = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true });
+          // From the task page or a flow card: back there with the draft's key (only that draft clears), or the refusal in words.
+          if (afterBack !== null) {
+            if (filed.ok) return redirect(response, afterFlow !== null ? `/flows/${afterFlow.flow}?card=${afterFlow.card}&sent=${keyRaw}` : `${taskHref(taskId)}?sent=${keyRaw}#steering`);
+            return taskScreen(response, who, taskId, filed.reason === "task-finished" ? "this task is finished, so there's no next attempt to send it to" : filed.reason === "key-reused" ? "that form was already used — reload and send it again" : "that note will not store", 409);
+          }
           if (filed.ok) return redirect(response, `/agents?run=${ended.id}&said=steered-next&sent=${keyRaw}`);
           return redirect(response, `/agents?run=${ended.id}&said=${filed.reason === "task-finished" ? "steer-next-finished" : filed.reason === "key-reused" ? "steer-stale" : "steer-invalid"}`);
         }
         // A form that asks for a run but names none properly is refused — never quietly filed unbound.
-        if (body.get("return") === "agents" || body.has("run") || body.has("key")) {
+        if (body.get("return") === "agents" || body.get("return") === "task" || returnedFlow(body.get("return")) !== null || body.has("run") || body.has("key")) {
           const runRaw = body.get("run") ?? "";
           const keyRaw = body.get("key") ?? "";
-          if (body.get("return") !== "agents" || !/^[1-9][0-9]{0,14}$/.test(runRaw) || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw)) {
+          const flowBack = returnedFlow(body.get("return"));
+          const from = flowBack !== null ? "task" : body.get("return");
+          if ((from !== "agents" && from !== "task") || !/^[1-9][0-9]{0,14}$/.test(runRaw) || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw)) {
             return taskScreen(response, who, taskId, "that note did not say which agent it is for, so nothing was sent", 400);
           }
           const shown = store.getRun(Number(runRaw));
           if (shown === null || shown.taskRef !== ref.id) return taskScreen(response, who, taskId, "that run is not part of this task", 404);
+          // An attempt that takes no notes (a planner, a scout, a reviewer, one repairing its handoff) is never filed one:
+          // it would never read it (cockpit §4).
+          const capability = steerCapabilityOf(store, shown.id, now);
+          if (capability !== null && capability.send === null) {
+            return from === "agents" ? redirect(response, `/agents?run=${shown.id}&said=steer-no-notes`) : taskScreen(response, who, taskId, capability.words, 409);
+          }
           const bound = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw });
+          // From the task page: back to its steering card, or the refusal in words (the page keeps nothing to restore).
+          if (from === "task") {
+            // Back where it was written (the task page, or a flow card's task), with its draft's key: only that draft clears.
+            if (bound.ok) return redirect(response, flowBack !== null ? `/flows/${flowBack.flow}?card=${flowBack.card}&sent=${keyRaw}` : `${taskHref(taskId)}?sent=${keyRaw}#steering`);
+            return taskScreen(response, who, taskId, bound.reason === "attempt-ended" || bound.reason === "task-finished" ? "that attempt ended before your note, so nothing was sent — reload and send it to the current one"
+              : bound.reason === "invalid-note" ? "that note will not store" : "that form was already used — reload and send it again", 409);
+          }
           // The draft's own key comes back: only that draft is cleared from the box.
           if (bound.ok) return redirect(response, `/agents?run=${shown.id}&said=steered&sent=${keyRaw}`);
           if (bound.reason === "attempt-ended" || bound.reason === "task-finished") return redirect(response, `/agents?run=${shown.id}&said=steer-ended`);
@@ -2320,7 +2371,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (!consumeApprovalNonce(nonce, who.name, taskId, digest)) {
           return approvalProblem("that approval form is stale — read it again", 409);
         }
-        if (token === "" && !hasFreshIdentitySignIn(who.name)) {
+        // An empty password stands for an explicit identity-provider re-check not yet spent, or (cockpit B2) a password
+        // remembered on this session; approve() decides whether these terms may stand on a remembered one.
+        if (token === "" && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null) {
           return approvalProblem("approval requires your password, typed again", 400);
         }
         const scopeRow = store.getScope(taskId);
@@ -2341,7 +2394,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             return approvalProblem(`approval is blocked: ${view.problem}`, 409);
           }
         }
-        const approved = approveScope(store, taskId, who.name, now, scopeRow.digest, token);
+        // A re-check is spent only if this yes is kept (sealed, or a protected-work vote recorded).
+        const approved = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => approveScope(store, taskId, who.name, now, scopeRow.digest, token)),
+          result => !result.ok && !(result.reason === "second-approver" && !result.already));
         if (!approved.ok) {
           // v102: a first yes on protected work is recorded, not refused — the page says who else is needed.
           if (approved.reason === "second-approver") return approvalProblem(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }), 200);
@@ -2453,6 +2508,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, 409);
         }
         const back = body.get("return") ?? "";
+        // From the Agents board: back to the same agent, saying what happens now.
+        if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=stopping`);
+        const stopFlow = returnedFlow(back);
+        if (stopFlow !== null) return redirect(response, `/flows/${stopFlow.flow}?card=${stopFlow.card}`);
         return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
       }
       case "pause": {
@@ -2483,6 +2542,22 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return taskScreen(response, who, taskId, words[asked.reason] ?? asked.detail, asked.reason === "invalid-note" ? 400 : 409);
         }
         const back = body.get("return") ?? "";
+        // A note that rode along came from a composer's draft: its key comes back, so only that draft clears.
+        const keyRaw = body.get("key") ?? "";
+        // Only a note this request actually stored clears its draft: a repeated request answers with the note it stored
+        // the first time, and a draft edited since is not that note.
+        const storedId = "note" in asked && typeof asked.note === "number" ? asked.note : null;
+        const stored = storedId === null ? null : store.handle.prepare("SELECT note FROM task_steer WHERE id = ?").get(storedId)?.["note"];
+        const sent = note !== "" && /^[A-Za-z0-9-]{8,64}$/.test(keyRaw) && typeof stored === "string" && stored.trim() === note ? keyRaw : null;
+        // A note that rode along but is not the one this request stored (a reused form): said plainly, the draft kept.
+        if (note !== "" && (typeof stored !== "string" || stored.trim() !== note)) {
+          if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=pause-note-stale`);
+          return taskScreen(response, who, taskId, "that form was already used, so your note was not sent — it is still in the box; send it again", 409);
+        }
+        if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=${body.get("mode") === "resume" ? "resuming" : note === "" ? "pausing" : "pausing-with-note"}${sent === null ? "" : `&sent=${sent}`}`);
+        const pauseFlow = returnedFlow(back);
+        if (pauseFlow !== null) return redirect(response, `/flows/${pauseFlow.flow}?card=${pauseFlow.card}${sent === null ? "" : `&sent=${sent}`}`);
+        if (back === "task") return redirect(response, `${taskHref(taskId)}${sent === null ? "" : `?sent=${sent}`}#task-control`);
         return redirect(response, back === "chat" ? `${taskChatHref(taskId)}#task-control` : `${taskHref(taskId)}#task-control`);
       }
       case "resume-arm": {
@@ -2906,6 +2981,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.unblock": taskAct("unblock"),
     "task.act.repair-dependency": taskAct("repair-dependency"),
     "task.act.follow-up": taskAct("follow-up"),
+    "run.act.reveal": runReveal,
     "run.act.note": runNote,
     "run.act.comment": runComment,
     "run.act.revise": runRevise,

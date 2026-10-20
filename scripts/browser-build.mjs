@@ -13,7 +13,7 @@ await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
 const result = await build({
   absWorkingDir: root,
-  entryPoints: { workspace: "src/browser/app.tsx" },
+  entryPoints: { workspace: "src/browser/app.tsx", terminal: "src/browser/terminal-app.tsx" },
   outdir,
   bundle: true,
   format: "esm",
@@ -26,6 +26,8 @@ const result = await build({
   charset: "utf8",
   legalComments: "eof",
   metafile: true,
+  // Typefaces are the console's own pre-auth assets (pages-assets.ts), never bundled.
+  external: ["/fonts/*"],
   define: { "process.env.NODE_ENV": '"production"' },
   banner: { js: "/*! Third-party notices: /assets/THIRD_PARTY_NOTICES.txt */" },
   logLevel: "info",
