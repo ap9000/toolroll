@@ -336,6 +336,100 @@ What this means for C, if it is built:
 - **Tests:** a real-CLI interruption under containment, and crash recovery between segments (an orphaned segment is
   reconciled, never double-counted).
 
+### C1 — the build (decided 2026-10-20: Alex, "build it")
+
+**Who gets it.** A Codex **builder** run, not a review, planner, scout or child, offers "continue". This is in
+`steerCapabilityOf`, as `send: "continue"`. The words are "It stops at its next step to read your note, then carries
+on." The run stamps `continue_opened_at` when its first segment spawns, and `continue_closed_at` when the continuation
+loop ends. That predicate, `continuationRun`, is the capability, as `liveInputRun` is for Claude. Every other Codex
+attempt stays mailbox-only. On a continuation run the mailbox stays open, as the brief promises, but the tick mails no
+new notes: the continuation delivers them, so a note is never delivered twice.
+
+**The interrupt (worker side).** Filing a note writes a row, as today. The builder's 500 ms steer tick sees a pending
+note bound to its live continuation run. It sends SIGINT to the provider's **leader pid only**: the npm launcher
+forwards it, and the C0 spike measured exactly this. It does that only when **no command item is in flight**. In-flight
+means the stream showed `item.started` for a `command_execution` with no matching `item.completed`. A note filed while
+a command runs waits for the command to finish. A command starting in the gap before the signal is the one place an
+outcome can be cut. Its call id is then recorded as `unknown`, never replayed. A natural end (`turn.completed`) with a
+note still pending also continues. A new export from exec.ts, `interruptOwnedLeader(owner)`, is the only SIGINT road.
+It never sends SIGTERM, and never signals the whole group.
+
+**The boundary proof (after the segment's process exits).** The segment counts as ended at a turn boundary only when
+one of these holds:
+- (a) the stream carried `turn.completed`; or
+- (b) the session's rollout file, found by exact thread id under that launch's `CODEX_HOME/sessions`, ends its last
+  turn with `turn_aborted` with reason `interrupted`. That turn is the one whose `task_started` came after the
+  segment's spawn, and no later `task_started` follows it.
+
+The rollout read is lstat + O_NOFOLLOW, a regular file, bounded size, and a strict line parse. Anything else is **no
+boundary**: the attempt settles as today (the exit-1 path, reason "agent"), and its notes stay pending for the next
+brief.
+
+**Custody before every resume.** After the leader exits:
+1. `terminateOwnedProcesses(owner)` kills anything left in the group.
+2. Then a new `segmentCustodyFact(runId, sinceWitness)` must hold. It is the open-run variant of `stopQuiescenceFact`,
+   scoped to this segment's witness rows: no owned children; every witnessed process has a recorded exit, and
+   `processMayBeAlive` is false for it; any native container is empty.
+
+Fail it, and there is no resume: the attempt settles, with reason `continuation-custody`.
+
+**Re-checks before each continuation segment** (the repair-by-resume template):
+- stop (`applicableStopFor`);
+- the lease is still current and not `fencedMidBuild`;
+- `proveApprovedProfile` and `modeApprovalLive` are re-derived;
+- the attempt's wall clock still has time left; each segment's timeout is `min(profile timeout, remaining)`;
+- the segment count is under **4 continuations per attempt**.
+
+Any failure beats the continuation: the loop ends and normal settlement runs. `invokeAgent` adds its own checks again:
+custody, stop, containment and attestation.
+
+**Delivery.** The segment resumes with `codex exec resume <run.session_id>` through `invokeAgent()`, with the same
+approved profile, fence, tools and isolated home. Its prompt is the steer notes, fenced as in the brief, with their
+keys, plus the line "You were stopped to read these notes; any step that was running may have partly happened —
+check, do not repeat blindly." The notes are attached to the run when the segment spawns. They are delivered on the
+segment's stream receipt (`thread.started` with the same id, then `turn.started`), using the same
+`settleSteerDelivered` semantics.
+
+**Segments (v128).** The `run_segment` table holds one row per invocation:
+- `run_id`, `ordinal`, `session_id`;
+- `note_ids_json`;
+- `spawned_at`, `exited_at`, `exit_code`;
+- `boundary`: `completed`, `interrupted`, or `none`;
+- `turn_id`;
+- `unknown_calls_json`;
+- `tokens_in`, `tokens_out`, `custody`.
+
+The first segment is written too. Recovery reconciles a segment left with no `exited_at` as `exited_at=now`,
+`boundary=none`, never as a second count.
+
+**Usage.** It accumulates across segments, and `invokeAgent` gains `accumulateUsage` for build continuations. An
+interrupted segment's usage is the rollout's cumulative `total_token_usage` at its turn end minus the value before its
+`task_started`. If that isn't available, the segment is unmeasured, and the run is marked partly unmeasured: never
+guessed. Codex reports no cost, as today.
+
+**Serialisation.** The continuation loop runs between `invokeAgent` returning and `closeSteering`/
+`settleProviderOutcome`. Settlement happens once, after the loop. A note filed after `continue_closed_at` falls back to
+today's road: pending for the next brief.
+
+**CLI and words.** `task steer` accepts a continuation run as live. Lead tools, steer status and the composer read the
+new mode. The rest of D's text is unchanged: Gemini, OpenRouter and ACP stay mailbox-only.
+
+**Tests:**
+- `test/fake-codex-exec.mjs` writes a rollout and honours SIGINT with `turn_aborted`. Its scripts cover a lying
+  rollout, a missing rollout, a tool still running, and a tool that ignores SIGINT.
+- Builder tests:
+  - note → interrupt → resume → delivered;
+  - a note while a command runs waits;
+  - natural end plus a pending note continues;
+  - no boundary → settle, and the note stays pending;
+  - custody refused → no resume;
+  - stop, a lost lease, or a changed approval beat a queued continuation;
+  - the segment cap;
+  - the wall clock carried across segments;
+  - usage summed;
+  - an orphaned segment is reconciled once.
+- A migration test for v128.
+
 ## Phase D — ACP multi-turn [R6, R7] — deferred (decided 2026-10-20)
 
 Cancel-and-continue for agents other than Claude is **not built in this arc**. Review showed a cancelled turn's work
