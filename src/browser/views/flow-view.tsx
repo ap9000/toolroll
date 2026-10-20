@@ -451,7 +451,7 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>
     </div>
     {card.source !== null && <p className="text-caption text-muted-foreground font-normal">From {card.source.url === null ? card.source.label
-      : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{card.source.label}</a>}</p>}
+      : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}>{card.source.label}</a>}{card.source.proved === undefined ? null : ` (${card.source.proved})`}{card.source.host == null ? null : ` · ${card.source.host}`}</p>}
     {card.description !== null && <p className="whitespace-pre-wrap text-body">{card.description}</p>}
     {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-body">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}

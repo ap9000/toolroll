@@ -11223,9 +11223,25 @@ export class Store {
 
   /** Stamp a task as the revision it is: source task + immutable brief. */
   markRevision(taskRef: number, revisionOf: string, briefArtifact: number): void {
-    this.db
-      .prepare("UPDATE task_ref SET revision_of = ?, revision_brief_artifact = ? WHERE id = ?")
-      .run(revisionOf, briefArtifact, taskRef);
+    this.transact(() => {
+      this.db
+        .prepare("UPDATE task_ref SET revision_of = ?, revision_brief_artifact = ? WHERE id = ?")
+        .run(revisionOf, briefArtifact, taskRef);
+      // v126: a revision keeps where the work came from, copied whole from the task it revises.
+      this.db.prepare(`INSERT OR IGNORE INTO task_source (task_id, flow, card, card_entry, source_json, at)
+        SELECT r.external_id, s.flow, s.card, s.card_entry, s.source_json, s.at FROM task_ref r JOIN task_source s ON s.task_id = ? WHERE r.id = ?`).run(revisionOf, taskRef);
+    });
+  }
+
+  /** v126: where a task came from, written once in its filing's transaction (task-source.ts), never changed. */
+  recordTaskSource(taskId: string, from: { flow: number; card: number; entry: number }, sourceJson: string, now: Date): void {
+    this.db.prepare("INSERT OR IGNORE INTO task_source (task_id, flow, card, card_entry, source_json, at) VALUES (?, ?, ?, ?, ?, ?)").run(taskId, from.flow, from.card, from.entry, sourceJson, now.toISOString());
+  }
+
+  /** v126: where a task came from, as kept when it (or the task it revises) was filed; null for every other task. */
+  taskSourceOf(taskId: string): { flow: number; card: number; entry: number; sourceJson: string } | null {
+    const row = this.db.prepare("SELECT flow, card, card_entry, source_json FROM task_source WHERE task_id = ?").get(taskId);
+    return row === undefined ? null : { flow: Number(row["flow"]), card: Number(row["card"]), entry: Number(row["card_entry"]), sourceJson: String(row["source_json"]) };
   }
 
   // ---- the revision boundary: ONE field-by-field policy -------------------

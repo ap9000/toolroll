@@ -9,6 +9,7 @@ import { assignmentOf } from "./assignment.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { passOn, TEXT_LIMITS } from "./text-limits.js";
 import { deciderOf, durationWords, fillFlowText, flowGoal, flowValueLabel, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
+import { readSnapshot, referenceWords, snapshotOf } from "./task-source.js";
 import { reportFillIns, reportSummaryFor } from "./report-summary.js";
 import { fileTaskProposal } from "./proposal.js";
 import { FLOW_ACCEPTANCE, unattendedCoverageFor } from "./flow-unattended.js";
@@ -257,6 +258,9 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
         ...(grant?.terms.perAttemptBudgetMicrousd == null ? {} : { budgetMicrousd: grant.terms.perAttemptBudgetMicrousd }),
         admittedRepos: [repo],
       }, now);
+      // v126: a card an outside event's delivery made gives its task a snapshot of where it came from, in this transaction.
+      const snapshot = made.ok ? snapshotOf(fresh.source) : null;
+      if (made.ok && snapshot !== null) store.recordTaskSource(made.id, { flow: flow.id, card: fresh.id, entry: fresh.entry }, JSON.stringify(snapshot), now);
       const ranOnItsOwn = made.ok && grant !== null && sealFlowFilingUnderGrant(store, made.id, grant, fresh, now);
       if (made.ok) store.updateFlowCard(card.id, { task: made.id, ...(report || fresh.primaryTask !== null ? {} : { primaryTask: made.id }), waiting: ranOnItsOwn ? "Filed as a task, approved: this flow runs on its own" : "Filed as a task" }, now);
       return made;
@@ -325,7 +329,17 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
 const FLOW_ATTACHED_LIMIT = 128_000;
 
 export function flowGoalCuts(store: Store, taskId: string, goal: string): { label: string; text: string }[] {
-  try { return goalCuts(store, taskId, goal); } catch { return []; } // context, never a reason a build can't start
+  let cuts: { label: string; text: string }[] = [];
+  try { cuts = goalCuts(store, taskId, goal); } catch { cuts = []; } // context, never a reason a build can't start
+  // v126: where the work came from, from the task's own kept source (or the task it revises) — never from the card's
+  // current task link or zone, which move on. Given whole whenever the goal itself couldn't carry it.
+  try {
+    const kept = store.taskSourceOf(taskId);
+    const snapshot = kept === null ? null : readSnapshot(kept.sourceJson);
+    const words = snapshot === null ? "" : referenceWords(snapshot);
+    if (words !== "" && !goal.includes(words) && !cuts.some(one => one.text === words)) cuts.push({ label: flowValueLabel("card.source"), text: words });
+  } catch { /* context, never a reason a build can't start */ }
+  return cuts;
 }
 
 function goalCuts(store: Store, taskId: string, goal: string): { label: string; text: string }[] {

@@ -6,6 +6,7 @@ import { describeStandingOrder } from "./flow-schedule.js";
 import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
 import { SENDER_WORDS } from "./webhook-signing.js";
 import { READER_CAPTURED } from "./webhook-readers.js";
+import { hostOf, provedWords, snapshotOf } from "./task-source.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
@@ -186,7 +187,8 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       // (`<id>.items`, `<id>.report`) are for later zones, and its summary is shown.
       outputs: Object.entries(card.outputs).filter(([id]) => !id.includes(".") && stages.find(one => one.id === id)?.kind !== "send").map(([id, text]) => ({ stage: id, title: title(id), text })),
       history: [...moves, ...owned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
-      source: card.source,
+      // v126: an outside event's card says how it was proved and where its link goes, from what was kept at receipt.
+      source: card.source === null ? null : (() => { const snapshot = snapshotOf(card.source); return snapshot === null ? card.source : { ...card.source, proved: provedWords(snapshot), host: hostOf(card.source.url) }; })(),
       owner: card.owner, watchers, watching: watchers.includes(viewer.name),
       mine: card.owner === viewer.name || watchers.includes(viewer.name) || canDecide || choosing?.person === viewer.name,
       comments: discussion.filter(one => one.kind === "comment").map(one => ({ id: one.id, author: one.author, body: one.body, mentions: one.mentions, at: one.at })),

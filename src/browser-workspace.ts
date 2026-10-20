@@ -392,7 +392,9 @@ export type BrowserFlowCard = {
   waiting: string | null; task: { id: string; href: string } | null; createdBy: string; updatedAt: string;
   canDecide: boolean; outputs: { stage: string; title: string; text: string }[]; history: { text: string; at: string }[];
   /** Where a trigger found it: a GitHub or Linear issue, another flow's card, a button, a schedule. */
-  source: { kind: string; label: string; url: string | null } | null;
+  /** `proved` and `host` (v126): how an outside event's delivery was proved ("signed by Sentry", "unsigned") and its
+   * link's host, always shown beside the link. */
+  source: { kind: string; label: string; url: string | null; proved?: string; host?: string | null } | null;
   /** Who is responsible for it, who follows it, and whether the viewer does. */
   owner: string | null; watchers: string[]; watching: boolean;
   /** Owned by the viewer, followed by them, or waiting on their decision. */
