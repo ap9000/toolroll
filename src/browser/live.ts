@@ -40,7 +40,6 @@ export class LiveHub {
   private url = "";
   /** The rooms the open stream still holds on the server: its rooms, less each one it heard `gone` for. */
   private held = new Set<string>();
-  private stopped = false;
   /** When the open stream last heard a room refused, and the reopen waiting on it. */
   private refusedAt = 0;
   private settling: number | null = null;
@@ -70,30 +69,13 @@ export class LiveHub {
     return rooms.length === 0 ? "" : `/live?${rooms.map(room => `room=${encodeURIComponent(room)}`).join("&")}`;
   }
 
-  /** The page learned it is signed out: no stream again until it is loaded afresh (signing in reloads it). Dropping
-   * its rooms one by one would otherwise reopen the stream each time, into a request that can't sign in. */
-  stop(): void {
-    this.stopped = true;
-    this.unsettle();
-    this.source?.close();
-    this.source = null;
-    this.url = "";
-  }
-
   private unsettle(): void {
     if (this.settling !== null) window.clearTimeout(this.settling);
     this.settling = null;
   }
 
-  /** Signed in again without a reload: the rooms the page still wants open as one stream. */
-  restart(): void {
-    if (!this.stopped) return;
-    this.stopped = false;
-    this.schedule();
-  }
-
   private reconcile(): void {
-    if (this.stopped || typeof EventSource === "undefined" || typeof document === "undefined") return;
+    if (typeof EventSource === "undefined" || typeof document === "undefined") return;
     if (!this.watching) {
       this.watching = true;
       document.addEventListener("visibilitychange", () => this.reconcile());
@@ -168,10 +150,6 @@ export class LiveHub {
 
 const hub = new LiveHub();
 
-/** The page is signed out (a read answered with the sign-in page): its live stream stops until the page is loaded
- * afresh, or reconnects in place (`restartLive`). */
-export function stopLive(): void { hub.stop(); }
-export function restartLive(): void { hub.restart(); }
 
 /** Rooms a server-rendered region may ask the page's stream for (chrome.ts regionScript): it pushes the name onto
  * `window.__soLiveRooms`, before or after this module loads, and hears its events as `so:live`. */

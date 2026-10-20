@@ -54,23 +54,6 @@ test("dropping a room the server still holds reopens the stream without it, as b
   expect(FakeStream.opened[0]!.closed).toBe(true);
 });
 
-test("a page that learns it is signed out stops its stream, and dropping its rooms opens none", async () => {
-  const hub = new LiveHub();
-  const leaveSummary = hub.subscribe("summary", () => {}, true);
-  const leaveChat = hub.subscribe("chat", () => {});
-  await flush();
-  hub.stop();
-  expect(FakeStream.opened[0]!.closed).toBe(true);
-  leaveSummary();
-  await flush();
-  leaveChat();
-  await flush();
-  hub.subscribe("workspace", () => {});
-  await flush();
-  vi.advanceTimersByTime(60_000);
-  expect(FakeStream.opened).toHaveLength(1);
-});
-
 test("a room refused while others are still wanted waits for the stream's verdict: `ended` means no reopen until the retry", async () => {
   const hub = new LiveHub();
   const leaveSummary = hub.subscribe("summary", () => {}, true);

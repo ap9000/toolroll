@@ -1,5 +1,4 @@
 // @vitest-environment happy-dom
-import { restartLive } from "./live.js";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
@@ -23,8 +22,6 @@ const fixture = (): BrowserWorkspace => ({
 });
 const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
 let root: Root | null = null;
-// A test that signs the page out stops the page's one stream; the next test starts signed in.
-afterEach(() => restartLive());
 /** The page's one live stream, as the test drives it. */
 class Events extends EventTarget {
   static latest: Events | null = null;
