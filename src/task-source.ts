@@ -36,6 +36,14 @@ export function hostOf(url: string | null): string | null {
   try { return new URL(url).host; } catch { return null; }
 }
 
+/** Where a link goes, as it is shown: its host and path (no scheme), the middle elided when long, so the destination is
+ * always visible beside the label. */
+export function linkWords(url: string, max = 72): string {
+  let shown: string;
+  try { const parsed = new URL(url); shown = `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`; } catch { shown = url; }
+  return shown.length <= max ? shown : `${shown.slice(0, Math.ceil(max / 2) - 1)}…${shown.slice(shown.length - Math.floor(max / 2))}`;
+}
+
 /** How a snapshot's delivery was proved, in words: "signed by Sentry", or "unsigned". */
 export function provedWords(snapshot: TaskSourceSnapshot): string {
   const by = snapshot.verified === "github" ? "GitHub" : snapshot.verified === "linear" ? "Linear" : SENDER_WORDS[snapshot.verified as WebhookSender] ?? snapshot.verified;

@@ -315,7 +315,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
       { id: "done", title: "Done", kind: "done" },
     ],
     triggers: [{ kind: "webhook", sender: "standard", title: "Request" }],
-    does: ["Adds a webhook signed the Standard Webhooks way. Once the flow is made, open its Triggers and choose Make its secret under Signing; give the sender the address and the secret.",
+    does: ["Adds a webhook signed the Standard Webhooks way. Once the flow is made, open its Triggers and choose Set up under Signing: it shows the address and the secret together, once; give both to the sender.",
       "Each signed request becomes a card and is built as a task. The task waits for your approval, like any other.", "You review the build; what you approve opens a pull request."],
     never: NEVER_MERGES,
   },
@@ -339,7 +339,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
     ],
     // v126: signed by Sentry and read by Toolroll's Sentry reader: one card per issue, linked to it.
     triggers: [{ kind: "webhook", sender: "sentry", title: "Error" }],
-    does: ["Adds a Sentry webhook. Once the flow is made, in Sentry create an Internal Integration (Settings → Developer Settings), paste the flow's webhook address as its Webhook URL, turn on Alert Rule Action and Issue events, then paste its Client Secret under Signing on the flow's Triggers.", "One card per Sentry issue, however often it alerts, linked to the issue.", "Jev keeps errors in your code that are new or frequent, and drops noise; ones it isn't sure about wait for you.",
+    does: ["Adds a Sentry webhook. Once the flow is made, open its Triggers and choose New address; in Sentry create an Internal Integration (Settings → Developer Settings), paste that address as its Webhook URL, turn on Alert Rule Action and Issue events, then paste its Client Secret under Signing on the flow's Triggers.", "One card per Sentry issue, however often it alerts, linked to the issue.", "Jev keeps errors in your code that are new or frequent, and drops noise; ones it isn't sure about wait for you.",
       "Each kept error is researched, then fixed as a task, under your usual approvals.", "What you approve opens a pull request."],
     never: NEVER_MERGES,
   },
@@ -391,7 +391,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
     ],
     // v126: signed by Vercel and read by Toolroll's Vercel reader: failed deployments only, one card each.
     triggers: [{ kind: "webhook", sender: "vercel", title: "Failed deployment" }],
-    does: ["Adds a Vercel webhook. Once the flow is made, in Vercel (Settings → Webhooks) paste the flow's webhook address and choose Deployment Error, then paste the secret Vercel shows under Signing on the flow's Triggers. Put your Vercel project ID in Signing too, so only its deployments add cards.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
+    does: ["Adds a Vercel webhook. Once the flow is made, open its Triggers and choose New address; in Vercel (Settings → Webhooks) paste that address and choose Deployment Error, then paste the secret Vercel shows under Signing on the flow's Triggers. Put your Vercel project ID in Signing too, so only its deployments add cards.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
     never: NEVER_MERGES,
   },
   // ---------------------------------------------------------- Hear from users

@@ -54,7 +54,7 @@ function signed() {
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, trigger(made.id), T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
-  return { id: made.id, token: tokenOf(made.reveal!.path), secret: setUp.reveal!.secret! };
+  return { id: made.id, token: tokenOf(setUp.reveal!.path), secret: setUp.reveal!.secret! };
 }
 
 test("a replaced secret that can't be removed is still never read again", () => {

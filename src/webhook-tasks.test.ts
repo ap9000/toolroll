@@ -1,7 +1,8 @@
 /**
  * Signed webhooks into tasks, end to end (docs/plans/webhook-tasks.md, Tests 1): the "Webhook to build" template from
  * the gallery to a filed task that waits for a person. The store, the gallery, the receiver, the flow engine, the
- * dispatch predicate and a worker's claim are all real; only the clock is fixed.
+ * dispatch predicate are real; only the clock is fixed. The same journey over HTTP, to the task page, is in
+ * webhook-journey.slow.test.ts.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createHmac } from "node:crypto";
@@ -43,10 +44,9 @@ function fromGallery() {
 function setUp(trigger: number) {
   const secret = setUpFlowHook(store, store.getFlowTrigger(trigger)!, T0, dir);
   if (!secret.ok) throw new Error(secret.message);
-  // The gallery made the trigger's address too, but showed it to no one: a fresh one is made here, as a person would.
-  const renewed = renewFlowHook(store, store.getFlowTrigger(trigger)!, T0, dir);
-  if (!renewed.ok) throw new Error(renewed.message);
-  const token = renewed.reveal!.path.slice("/hooks/flow/".length);
+  // The gallery's address was shown to no one: setting up for the first time shows a fresh address with the secret.
+  expect(secret.reveal!.path).not.toBe("");
+  const token = secret.reveal!.path.slice("/hooks/flow/".length);
   const key = Buffer.from(secret.reveal!.secret!.slice("whsec_".length), "base64");
   return (messageId: string, payload: unknown, now = T0) => {
     const body = JSON.stringify(payload), stamp = String(Math.floor(now.getTime() / 1000));

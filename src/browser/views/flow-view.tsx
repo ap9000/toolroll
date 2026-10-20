@@ -450,8 +450,11 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       </div>
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>
     </div>
-    {card.source !== null && <p className="text-caption text-muted-foreground font-normal">From {card.source.url === null ? card.source.label
-      : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}>{card.source.label}</a>}{card.source.proved === undefined ? null : ` (${card.source.proved})`}{card.source.host == null ? null : ` · ${card.source.host}`}</p>}
+    {card.source !== null && (card.source.shown != null && card.source.url !== null
+      // v126: an outside event's card says how it was proved, and its link shows where it goes (host and path).
+      ? <p className="text-caption text-muted-foreground font-normal break-all">From {card.source.label}{card.source.proved === undefined ? null : ` (${card.source.proved})`} · <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} target="_blank" rel="noopener noreferrer">{card.source.shown}</a></p>
+      : <p className="text-caption text-muted-foreground font-normal">From {card.source.url === null ? card.source.label
+        : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}>{card.source.label}</a>}{card.source.proved === undefined ? null : ` (${card.source.proved})`}</p>)}
     {card.description !== null && <p className="whitespace-pre-wrap text-body">{card.description}</p>}
     {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-body">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
@@ -1156,7 +1159,7 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
       <StepUp view={view} password={password} setPassword={setPassword} />
       <div className="flex flex-wrap gap-1.5">
         {changing && <Button type="button" size="sm" disabled={busy || !ready} onClick={() => void go("sender", { sender })}>Change who signs it</Button>}
-        {!changing && hook.makesSecret && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("setup", {})} data-trigger-setup>{hook.ready ? "Replace secret" : "Make its secret"}</Button>}
+        {!changing && hook.makesSecret && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("setup", {})} data-trigger-setup>{hook.ready ? "Replace secret" : "Set up"}</Button>}
         {!changing && words !== undefined && <Button type="button" size="sm" disabled={busy || !ready || secret.trim() === ""} onClick={() => void go("secret", { secret })}>{hook.ready ? "Replace secret" : "Save secret"}</Button>}
         {!changing && hook.scope !== null && (project.trim() !== (hook.scope.project ?? "") || team.trim() !== (hook.scope.team ?? "")) && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("scope", { project, team })} data-trigger-save-scope>Save project</Button>}
       </div>
@@ -1758,6 +1761,14 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
   const button = pressing === null ? null : view.triggers.find(one => one.id === pressing && one.button !== null && one.state === "active") ?? null;
   const live = view.triggers.filter(one => one.state !== "removed");
   const [busy, setBusy] = useState(false);
+  // v126: what a webhook's set-up or new address shows once, on the phone too.
+  const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
+  const renew = async (trigger: BrowserFlowTrigger) => {
+    setBusy(true);
+    const result = await send(`${view.flow.href}/triggers/${trigger.id}/renew`, {}, csrf);
+    setBusy(false); apply(result);
+    if (result.reveal !== undefined) setReveal({ kind: trigger.hook?.sender ?? trigger.kind, reveal: result.reveal });
+  };
   const toggle = async (trigger: BrowserFlowTrigger) => {
     setBusy(true);
     apply(await send(`${view.flow.href}/triggers/${trigger.id}/${trigger.state === "paused" ? "resume" : "pause"}`, {}, csrf));
@@ -1788,6 +1799,7 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
     })}
     {live.length > 0 && <section className="rounded-lg border p-3" data-flow-triggers>
       <h2 className="text-title-sm">Triggers</h2>
+      {reveal !== null && <div className="mt-2"><RevealBox kind={reveal.kind} reveal={reveal.reveal} onDone={() => setReveal(null)} /></div>}
       <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-body" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
         <div className={cn("text-caption font-normal", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
         {/* v126: what a webhook needs, said here too; its secrets are managed on the full panel. */}
@@ -1798,6 +1810,10 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
           <p className="text-caption text-muted-foreground font-normal">{one.hook.dropped.resend}</p>
           {view.canEdit && <Button size="sm" variant="outline" className="min-h-11 self-start" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/triggers/${one.id}/dropped`, {}, csrf)); setBusy(false); }}>Clear</Button>}
         </div>}
+        {/* v126: the whole set-up on the phone as well: who signs it, its secret, its project, and a new address. */}
+        {view.canEdit && one.hook?.sender != null && <WebhookSigning trigger={one} view={view} csrf={csrf} apply={apply} onReveal={revealed => setReveal({ kind: one.hook?.sender ?? one.kind, reveal: revealed })} />}
+        {view.canEdit && one.hook?.sender == null && one.hook?.needsSecret === true && !one.hook.ready && <LinearSecret trigger={one} view={view} csrf={csrf} apply={apply} />}
+        {view.canEdit && one.hook != null && <Button size="sm" variant="outline" className="mt-1.5 min-h-11" disabled={busy} onClick={() => void renew(one)} data-trigger-renew>New address</Button>}
         {/* A schedule's standing order (what a routine was): its approval in view, its terms on demand, and on or off here. */}
         {one.order !== undefined && <>
           <p className="mt-1 text-caption break-words font-normal" data-trigger-approval>{one.order.at(-1)}</p>

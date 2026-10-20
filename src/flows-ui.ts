@@ -6,7 +6,7 @@ import { describeStandingOrder } from "./flow-schedule.js";
 import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
 import { SENDER_WORDS } from "./webhook-signing.js";
 import { READER_CAPTURED } from "./webhook-readers.js";
-import { hostOf, provedWords, snapshotOf } from "./task-source.js";
+import { hostOf, linkWords, provedWords, snapshotOf } from "./task-source.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
@@ -32,11 +32,11 @@ const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() 
  * here claims a loss that a sender's own retries may still make good. */
 function resendWords(config: TriggerConfig): string {
   if (config.kind === "github") return "GitHub doesn't retry on its own: resend them from the repository's Settings → Webhooks → this webhook → Recent Deliveries → Redeliver.";
-  if (config.kind === "linear") return "Linear may retry a refused delivery; any it doesn't resend can't be recovered here.";
+  if (config.kind === "linear") return "Linear may retry a refused delivery. Look in the webhook's settings in Linear for its recent deliveries; any it doesn't resend can't be recovered here.";
   const sender = config.kind === "webhook" ? senderOf(config) : "none";
-  return sender === "vercel" ? "Vercel retries refused deliveries for up to a day, so some may still arrive; any it gives up on are lost."
-    : sender === "sentry" ? "Sentry may retry a refused delivery; any it doesn't resend are lost, though new alerts for the same issues still arrive."
-    : "The sender may retry, or keep a delivery log to resend from; any it doesn't resend are lost.";
+  return sender === "vercel" ? "Vercel retries refused deliveries for up to a day, so some may still arrive. Its webhook's delivery attempts are listed in Vercel's webhook settings; any it gives up on are lost."
+    : sender === "sentry" ? "Sentry may retry a refused delivery. Your Internal Integration's Dashboard in Sentry (Developer Settings) shows its request log; any it doesn't resend are lost, though new alerts for the same issues still arrive."
+    : "The sender may retry. Look in its webhook delivery log and resend from there if it offers it; any it doesn't resend are lost.";
 }
 
 /** v126: what a webhook trigger's row says about how its deliveries are proved. */
@@ -45,14 +45,18 @@ function hookView(trigger: FlowTriggerRow, config: TriggerConfig, dir: string | 
   const dropped = trigger.droppedCount > 0 && trigger.droppedSince !== null ? { count: trigger.droppedCount, since: trigger.droppedSince, resend: resendWords(config) } : null;
   if (config.kind !== "webhook") return { ready, needsSecret: config.kind === "linear", sender: null, makesSecret: false, warning: null, readerNote: null, dropped, scope: null };
   const sender = senderOf(config);
+  // What it needs first, first: an unset secret refuses everything, so that is said before any narrowing.
   const warning = sender === "none" ? "Unsigned: anyone with its address can add cards. Choose who signs its deliveries to close that."
-    : (sender === "sentry" || sender === "vercel") && config.project === null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards. Name the project to narrow it.`
-    : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted` : "its secret is made"}.` : null;
+    : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted (with New address for the address to give it)` : "it is set up"}.`
+    : (sender === "sentry" || sender === "vercel") && config.project == null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards. Name the project to narrow it.`
+    : null;
+  // A sender that signs only the body: byte-identical requests are one delivery (§3).
+  const repeats = sender === "github-style" ? "Identical requests count once. If the sender must send the same request again and have it count, use Standard Webhooks." : null;
   // A reader written from its sender's documentation, not yet from a captured delivery, says so on its own line,
   // whatever else the row says (webhook-readers.ts).
   const readerNote = (sender === "sentry" || sender === "vercel") && !READER_CAPTURED[sender]
     ? `Reader unverified: Toolroll reads ${SENDER_WORDS[sender]} deliveries from ${SENDER_WORDS[sender]}'s documented examples; no real delivery has been checked yet.` : null;
-  return { ready, needsSecret: sender === "sentry" || sender === "vercel", sender, makesSecret: sender === "standard" || sender === "github-style", warning, readerNote, dropped,
+  return { ready, needsSecret: sender === "sentry" || sender === "vercel", sender, makesSecret: sender === "standard" || sender === "github-style", warning, readerNote: [readerNote, repeats].filter(one => one !== null).join(" ") || null, dropped,
     scope: sender === "sentry" || sender === "vercel" ? { project: config.project ?? null, team: config.team ?? null } : null };
 }
 
@@ -189,7 +193,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       outputs: Object.entries(card.outputs).filter(([id]) => !id.includes(".") && stages.find(one => one.id === id)?.kind !== "send").map(([id, text]) => ({ stage: id, title: title(id), text })),
       history: [...moves, ...owned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
       // v126: an outside event's card says how it was proved and where its link goes, from what was kept at receipt.
-      source: card.source === null ? null : (() => { const snapshot = snapshotOf(card.source); return snapshot === null ? card.source : { ...card.source, proved: provedWords(snapshot), host: hostOf(card.source.url) }; })(),
+      source: card.source === null ? null : (() => { const snapshot = snapshotOf(card.source); return snapshot === null ? card.source : { ...card.source, proved: provedWords(snapshot), host: hostOf(card.source.url), shown: card.source.url === null ? null : linkWords(card.source.url) }; })(),
       owner: card.owner, watchers, watching: watchers.includes(viewer.name),
       mine: card.owner === viewer.name || watchers.includes(viewer.name) || canDecide || choosing?.person === viewer.name,
       comments: discussion.filter(one => one.kind === "comment").map(one => ({ id: one.id, author: one.author, body: one.body, mentions: one.mentions, at: one.at })),

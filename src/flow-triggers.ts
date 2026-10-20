@@ -1316,10 +1316,19 @@ export function setUpFlowHook(store: Store, trigger: FlowTriggerRow, now: Date, 
   const sender = senderOf(config);
   if (sender === "none" || !makesSecret(sender)) return { ok: false, message: sender === "none" ? "An unsigned webhook has no secret. Choose who signs its deliveries first." : `${SENDER_WORDS[sender]} makes its own secret: paste it here instead.` };
   const secret = makeSecret(sender);
-  const saved = nextHookCredential(store, trigger, secret, null, now, dir);
+  // Set up for the first time (no secret yet): the address is made with it, and both are shown together once — the
+  // sender needs both, and an address made earlier (by the gallery, an import) was shown to no one. Replacing a secret
+  // keeps the address the sender already has.
+  const first = trigger.hookCredential === "";
+  const token = first ? randomBytes(24).toString("base64url") : null;
+  const saved = nextHookCredential(store, trigger, secret, null, now, dir, token === null ? undefined : hookHash(token));
   if (!saved.ok) return saved;
-  return { ok: true, id: trigger.id, said: `New secret made; any earlier one no longer works. Copy it now; it isn't shown again. Give it to whatever sends ${SENDER_WORDS[sender]} deliveries here.`,
-    reveal: { path: "", address: null, secret } };
+  const base = readHooksBase(dir);
+  return first
+    ? { ok: true, id: trigger.id, said: `Set up. Copy the address and the secret now; neither is shown again. Give both to whatever sends ${SENDER_WORDS[sender]} deliveries here.`,
+      reveal: { path: `${HOOK_PATH}${token}`, address: base === null ? null : `${base}${HOOK_PATH}${token}`, secret } }
+    : { ok: true, id: trigger.id, said: `New secret made; any earlier one no longer works. Copy it now; it isn't shown again. The address stays as it is.`,
+      reveal: { path: "", address: null, secret } };
 }
 
 /**
@@ -1345,7 +1354,9 @@ export function changeFlowHookSender(store: Store, trigger: FlowTriggerRow, send
   } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That sender can't be used here." }; }
   const moved = nextHookCredential(store, trigger, null, JSON.stringify(changed), now, dir);
   if (!moved.ok) return moved;
-  return { ok: true, said: next === "none" ? "Now unsigned: anyone with its address can add cards." : `Now signed by ${SENDER_WORDS[next]}. Set it up before deliveries are taken: until then they are refused.` };
+  return { ok: true, said: next === "none" ? "Now unsigned: anyone with its address can add cards."
+    : makesSecret(next) ? `Now signed by ${SENDER_WORDS[next]}. Set it up (its address and secret are shown together) before deliveries are taken: until then they are refused.`
+    : `Now signed by ${SENDER_WORDS[next]}. Paste ${SENDER_WORDS[next]}'s secret before deliveries are taken: until then they are refused.` };
 }
 
 /**

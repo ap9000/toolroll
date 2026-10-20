@@ -54,6 +54,8 @@ describe.each([false, true])("on a %s", phone => {
     const unsigned = add({ title: "Open" });
     const standard = add({ sender: "standard" });
     const sentry = add({ sender: "sentry" });
+    const unscoped = add({ sender: "sentry" });
+    saveSigningSecret(store, store.getFlowTrigger(unscoped)!, "ab".repeat(32), T0, dir);
     const ready = add({ sender: "vercel", project: "prj_1" });
     saveSigningSecret(store, store.getFlowTrigger(ready)!, "A1b2C3d4E5f6G7h8", T0, dir);
     const dropped = add({ sender: "sentry", project: "web" });
@@ -62,9 +64,11 @@ describe.each([false, true])("on a %s", phone => {
     await open(phone);
 
     expect(row(unsigned).querySelector("[data-trigger-signing-warning]")!.textContent).toContain("Unsigned: anyone with its address can add cards.");
-    expect(row(standard).querySelector("[data-trigger-signing-warning]")!.textContent).toContain("Not set up: its deliveries are refused until its secret is made.");
-    if (!phone) expect(row(standard).querySelector("[data-trigger-setup]")!.textContent).toBe("Make its secret");
-    expect(row(sentry).querySelector("[data-trigger-signing-warning]")!.textContent).toContain("Any Sentry project this secret covers can add cards.");
+    expect(row(standard).querySelector("[data-trigger-signing-warning]")!.textContent).toContain("Not set up: its deliveries are refused until it is set up.");
+    if (!phone) expect(row(standard).querySelector("[data-trigger-setup]")!.textContent).toBe("Set up");
+    // Not set up comes first: an unset secret refuses everything, whatever its scope.
+    expect(row(sentry).querySelector("[data-trigger-signing-warning]")!.textContent).toContain("Not set up: its deliveries are refused until Sentry's secret is pasted");
+    expect(row(unscoped).querySelector("[data-trigger-signing-warning]")!.textContent).toContain("Any Sentry project this secret covers can add cards.");
     expect(row(sentry).querySelector("[data-trigger-reader-note]")!.textContent).toContain("Reader unverified");
     // Ready and scoped: no warning; on a desktop the Signing box starts closed, its secret still replaceable inside.
     expect(row(ready).querySelector("[data-trigger-signing-warning]")).toBeNull();
@@ -108,8 +112,23 @@ test("a card from a signed webhook says how it was proved and where its link goe
   const card = [...document.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.startsWith("TypeError in roundTotal"))!;
   await act(async () => card.click());
   const line = [...document.querySelectorAll("p")].find(one => one.textContent?.startsWith("From Sentry issue"))!;
-  expect(line.textContent).toBe("From Sentry issue (signed by Sentry) · acme.sentry.io");
+  // The link shows where it goes — host and path, its middle elided when long — beside what it is.
+  expect(line.textContent).toMatch(/^From Sentry issue \(signed by Sentry\) · acme\.sentry\.io\/organizations\/acme\/i…e+\/$/);
   const link = line.querySelector("a")!;
   expect(link.getAttribute("href")).toBe(url);
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+test("Clear takes the turned-away count off for good", async () => {
+  const dropped = add({ sender: "sentry", project: "web" });
+  store.noteFlowDeliveryDropped(dropped, T0);
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    expect(path).toBe(`/flows/${flow}/triggers/${dropped}/dropped`);
+    store.clearFlowDeliveriesDropped(dropped);
+    return { ok: true, json: async () => ({ ok: true, said: "Cleared.", view: flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null, { dir, repos: [REPO] }) }) };
+  }));
+  await open(false);
+  await act(async () => [...row(dropped).querySelector("[data-trigger-dropped]")!.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Clear")!.click());
+  expect(store.getFlowTrigger(dropped)).toMatchObject({ droppedCount: 0, droppedSince: null });
+  expect(row(dropped).querySelector("[data-trigger-dropped]")).toBeNull();
 });

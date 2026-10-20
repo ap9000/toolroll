@@ -44,7 +44,7 @@ import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard,type CompletionReceiptView,criterionMatrixHtml,type EvidenceLinkMap,evidenceWords,homePhaseWords,incidentWords,needsCheck,pullRequestCardHtml,reasonWords,receiptStatusOf,repairChainHtml,reportItemsHtml,reviewRetryPanel,runNoun,runOutcomeBadge,semanticCoverageHtml,type TaskPullRequest,terminalDiffCard,verificationExplanation,verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
-import { originNote, type TaskOrigin } from "../task-source.js";
+import { linkWords, originNote, type TaskOrigin } from "../task-source.js";
 
 /** What the task and approval views show about a drafted plan's contract
  * (contract handoff, task 1). A problem is a named problem, never a blank. */
@@ -240,8 +240,9 @@ function originParts(origin: TaskOrigin): BrowserTaskFact["parts"] {
   if (origin.flow !== null) parts.push(origin.flow === "hidden" ? "A flow" : origin.flow === "removed" ? "A flow (removed)" : { label: `Flow “${origin.flow.name}”`, href: origin.flow.href });
   if (origin.source !== null) {
     if (parts.length > 0) parts.push(" · ");
-    parts.push(origin.source.url === null ? origin.source.label : { label: origin.source.label, href: origin.source.url }, ` (${origin.source.proved})`);
-    if (origin.source.host !== null) parts.push(` · ${origin.source.host}`);
+    // The link shows where it goes (host and path), beside what it is.
+    parts.push(origin.source.label, ` (${origin.source.proved})`);
+    if (origin.source.url !== null) parts.push(" · ", { label: linkWords(origin.source.url), href: origin.source.url });
   }
   return parts;
 }
