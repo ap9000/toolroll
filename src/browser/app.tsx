@@ -28,6 +28,7 @@ import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
 import { useLiveRoom } from "./live.js";
+import { chimeOn, createChime, setChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import "./workspace.css";
 
@@ -463,8 +464,20 @@ export function titleWithCount(title: string, count: number): string {
   const bare = title.replace(/^\(\d+\+?\) /, "");
   return count > 0 ? `(${count > 99 ? "99+" : count}) ${bare}` : bare;
 }
+/** This browser's chime setting (off until turned on here). */
+function ChimeSwitch() {
+  const [on, setOn] = useState(chimeOn);
+  return <label className="so-chime-switch"><input type="checkbox" checked={on} onChange={event => { setChime(event.target.checked); setOn(event.target.checked); }} />
+    Chime when something needs me</label>;
+}
+
 function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
-  const count = needsYouTotal(useProjectStates(workspace));
+  const states = useProjectStates(workspace);
+  const count = needsYouTotal(states);
+  // The chime hears every snapshot this page sees (it plays only when this browser turned it on).
+  const chime = useRef<ReturnType<typeof createChime> | null>(null);
+  useEffect(() => { chime.current = createChime(); return () => { chime.current?.close(); chime.current = null; }; }, []);
+  useEffect(() => { if (states !== null) chime.current?.see(states); }, [states]);
   useEffect(() => {
     document.title = titleWithCount(document.title, count);
     const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"][type="image/svg+xml"]');
@@ -538,6 +551,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
     </nav>}
     {workspace.usage && !workspace.sensitive && <a className="so-usage-chip" href={workspace.usage.href} title={workspace.usage.title}
       data-usage-chip={workspace.usage.tone} data-usage-stale={workspace.usage.stale ? "" : undefined}>{workspace.usage.text}</a>}
+    {!workspace.sensitive && workspace.projectStates !== undefined && <ChimeSwitch />}
     <FleetStatus workspace={workspace} />
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
       <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[901px]:h-11 max-[901px]:min-h-11">Sign out</ViewButton></PostForm></div>
