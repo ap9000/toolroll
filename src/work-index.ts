@@ -485,14 +485,17 @@ export function workCountsByProject(store: Store, now: Date, access: WorkSummary
  * work and the ceiling as the list applies them), with what the cockpit's states read (agent-state.ts): its code, whether
  * it waits on a person, whether a lead took it on, and its live, unfinished and result runs. Every family, no page. */
 export type WorkStateRow = { repo: string | null; rootId: string; code: string; needs: boolean; personNeed: boolean; leadClaim: boolean;
-  liveRun: number | null; unfinished: number | null; resultRun: number | null };
+  liveRun: number | null; unfinished: number | null; resultRun: number | null;
+  /** Every task_ref of the family (its versions), for counting each of its live attempts. */
+  members: number[] };
 export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
   const projection = registerValidators(store);
-  return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id FROM ranked`)
+  return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,
+      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked`)
     .all(parameters(now, access, {}, custodyReadings(store)))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
-      resultRun: row['result_id'] == null ? null : n(row, 'result_id') }));
+      resultRun: row['result_id'] == null ? null : n(row, 'result_id'), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
 }
 
 /** Families whose headline is Ready for review, newest first: the Tasks

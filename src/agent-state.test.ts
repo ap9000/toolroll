@@ -11,7 +11,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { displayStateOf, factsOfAttempt, NO_COUNTS, projectStates, rollUp, type StateFacts } from "./agent-state.js";
 import type { AgentFacts } from "./agents-board.js";
-import { markAgentSeen } from "./agent-board.js";
+import { markAgentSeen, recordAgentTurn } from "./agent-board.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { register } from "./runner.js";
 import { storeEvidence } from "./evidence.js";
@@ -91,6 +91,16 @@ describe("one attempt's own record", () => {
     expect(state({ turn: "crashed" })).toBe("needs-you");
     expect(state({ question: { id: 1, key: "q", text: "?" } })).toBe("needs-you");
   });
+
+  test("an interruption in either spelling is stopped, and a parked attempt asks only while its decision is open", () => {
+    expect(state({ outcome: "failed", reason: "interrupted", finishedAt: T.toISOString() })).toBe("idle");
+    expect(state({ outcome: "interrupted", finishedAt: T.toISOString() })).toBe("idle");
+    expect(state({ outcome: "failed", reason: "exit 1", finishedAt: T.toISOString() })).toBe("failed");
+    const parked = attempt({ outcome: "parked", finishedAt: T.toISOString(), taskState: "queued" });
+    expect(displayStateOf(factsOfAttempt(parked, null, false, later))).toBe("needs-you");
+    expect(displayStateOf(factsOfAttempt(parked, null, false, later, true))).toBe("needs-you");
+    expect(displayStateOf(factsOfAttempt(parked, null, false, later, false))).toBe("idle");
+  });
 });
 
 describe("a project's counts, over the Tasks list's own families", () => {
@@ -164,6 +174,52 @@ describe("a project's counts, over the Tasks list's own families", () => {
     store.refFor("built-in", "nowhere");
     expect(of("sam", [REPO, OTHER], true)["(unplaced)"]?.counts["needs-you"]).toBe(1);
     expect(of("sam", [REPO, OTHER], false)["(unplaced)"]).toBeUndefined();
+  });
+
+  /** An open build, approved and started, not finished. */
+  function live(id: string, repo = REPO): { ref: number; run: number } {
+    store.createTask({ id, title: id }, NOW);
+    const ref = store.refFor("built-in", id).id;
+    store.placeTask(ref, repo, {}, NOW);
+    const proposed = propose(store, { taskId: id, goal: id, touches: ["src/"], acceptance: [{ id: "c1", statement: id, how: null, evidence: ["changed-path"] }], now: NOW });
+    if (!approve(store, id, "sam", NOW, proposed.digest, password).ok) throw new Error("approve");
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route");
+    const wt = join(dir, `wt-${id}`); mkdirSync(wt);
+    const run = store.startRun({ taskRef: ref, leaseId: `l-${id}`, runner: "builder-1", branch: `toolroll/${id}`, worktree: wt, route: authority.stamp, now: NOW });
+    store.setTaskState(id, "running", NOW);
+    return { ref, run };
+  }
+
+  test("a stop not yet settled is still at work, never an ask", () => {
+    const { ref, run } = live("halting");
+    store.raw().prepare("INSERT INTO run_stop (run, task_ref, requested_by, requested_via, requested_at) VALUES (?, ?, 'sam', 'web', ?)").run(run, ref, NOW.toISOString());
+    expect(of()[REPO]!.counts).toMatchObject({ "needs-you": 0, working: 1 });
+  });
+
+  test("a recorded failed check is a failure even without its receipt; a good result with no failure is an ask", () => {
+    const run = built("recorded-broke");
+    store.raw().prepare("UPDATE run_check SET status = 'failed', exit_code = 1 WHERE run = ?").run(run);
+    built("fine");
+    expect(of()[REPO]!.counts).toMatchObject({ failed: 1, "needs-you": 1 });
+  });
+
+  test("a crashed build needs a person; each live attempt counts once", () => {
+    const crashed = live("crashed");
+    const key = String(store.raw().prepare("SELECT attempt_key FROM run WHERE id = ?").get(crashed.run)!["attempt_key"]);
+    recordAgentTurn(store, { run: crashed.run, attemptKey: key, state: "crashed", at: NOW });
+    live("busy-1"); live("busy-2", OTHER);
+    const states = of();
+    expect(states[REPO]!.counts).toMatchObject({ "needs-you": 1, working: 1 });
+    expect(states[REPO]!.state).toBe("needs-you");
+    expect(states[OTHER]!.counts.working).toBe(1);
+  });
+
+  test("flow decisions are counted without a cap", () => {
+    const flow = store.createFlow({ repo: OTHER, name: "Bulk", by: "sam", definitionJson: JSON.stringify(flowFromSteps([{ title: "Decide", kind: "approval" }], null)) }, NOW);
+    const start = (JSON.parse(store.getFlow(flow)!.definitionJson) as { start: string }).start;
+    for (let i = 0; i < 501; i++) store.addFlowCard({ flow, title: `card ${i}`, description: null, stage: start, by: "sam", byKind: "person" }, NOW);
+    expect(of()[OTHER]!.counts["needs-you"]).toBe(501);
   });
 
   test("nothing is capped: every family counts, and only the projects a person may see", () => {
