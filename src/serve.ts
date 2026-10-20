@@ -353,6 +353,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
     return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
+  /** Rows changed on the console's database connection so far (SQLite's total_changes()): a write witness. */
+  const totalChanges = (): number => Number(store.handle.prepare("SELECT total_changes() AS n").get()?.["n"] ?? 0);
   /** Whether a finished console act was refused, as its answer says: an error status, or a redirect naming a problem. */
   const actRefused = (response: ServerResponse): boolean => {
     if (response.statusCode >= 400) return true;
@@ -849,9 +851,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const entry = { at: clock().toISOString(), actor: who.name, ...target, source: "request" as const, ...(who.via === "bearer" && who.token !== undefined ? { detail: `API token: ${who.token}` } : {}) };
       store.recordAction({ ...entry, outcome: "requested" });
       try {
-        // Cockpit B2: an explicit re-check (sso-now) is spent only by an act that happened. A step-up the console
-        // refused — an error status, or a redirect that names a problem or a refusal — puts it back.
-        await spendingOnlyIfDone(() => projectAuthority.run({ actor: who.name, repo: target.repo }, execute), () => actRefused(response));
+        // Cockpit B2: an explicit re-check (sso-now) is spent only by an act that happened. It is put back only when
+        // the console refused the act (an error status, or a redirect naming a problem or a refusal) AND the act changed
+        // nothing at all: any row written on this connection meanwhile (even one later rolled back, or another
+        // request's) keeps it spent, so a refund can never let one re-check prove two acts.
+        const changesBefore = totalChanges();
+        await spendingOnlyIfDone(() => projectAuthority.run({ actor: who.name, repo: target.repo }, execute), () => actRefused(response) && totalChanges() === changesBefore);
         const createdTask = requestContext.getStore()?.createdTask;
         const placement = createdTask === undefined ? null : store.lookupRef(createdTask);
         store.recordAction({ ...entry, ...(placement === null ? {} : { repo: placement.repo, taskId: placement.externalId }), at: clock().toISOString(), outcome: response.statusCode >= 500 ? "error" : response.statusCode >= 400 ? "refused" : "accepted" });
