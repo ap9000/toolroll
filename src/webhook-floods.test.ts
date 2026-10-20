@@ -332,6 +332,9 @@ describe("GitHub and Linear deliveries under the same rules", () => {
     expect(keys).toHaveLength(2);
     for (const key of keys) { expect(key).toMatch(/^v3:linear:body:[0-9a-f]{64}$/); expect(key).not.toContain(planted); }
     expect(cards()).toBe(0);
+    // Nothing of it is kept in the words the panel shows either.
+    expect(store.getFlowTrigger(made.id)!.lastOutcome).not.toContain(planted);
+    expect(store.getFlowTrigger(made.id)!.lastOutcome).not.toContain("9".repeat(300));
   });
 });
 
@@ -374,4 +377,20 @@ test("a sender is told why its item was left out, never this installation's flow
   expect(answer).toEqual({ status: 202, said: "Already received; it wasn't added: already on a card." });
   // The panel still says which.
   expect(store.flowReceipt(hook.id, key)?.note).toBe("already a card in “Secret Project Triage”");
+});
+
+test("an identity of the full 120 characters is a key, whatever its sender's prefix", () => {
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", idField: "id" }, "alex", T0, dir);
+  if (!made.ok) throw new Error(made.message);
+  const setUp = setUpFlowHook(store, store.getFlowTrigger(made.id)!, T0, dir);
+  if (!setUp.ok) throw new Error(setUp.message);
+  const token = made.reveal!.path.slice("/hooks/flow/".length);
+  const key = Buffer.from(setUp.reveal!.secret!.slice("whsec_".length), "base64");
+  const send = (messageId: string, payload: unknown) => {
+    const body = JSON.stringify(payload), stamp = String(Math.floor(T0.getTime() / 1000));
+    return receiveFlowHook(store, token, { headers: { "webhook-id": [messageId], "webhook-timestamp": [stamp], "webhook-signature": [`v1,${createHmac("sha256", key).update(`${messageId}.${stamp}.${body}`).digest("base64")}`] }, body: Buffer.from(body) }, dir, T0);
+  };
+  const long = "I".repeat(120);
+  expect(send("m".repeat(120), { id: long, title: "Long id" })).toEqual({ status: 202, said: "Added 1 card." });
+  expect(store.flowReceipt(made.id, `v3:standard:id:${long}`)?.state).toBe("accepted");
 });

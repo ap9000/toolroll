@@ -1100,12 +1100,13 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
   // Every key is outside words until judged (v126): a GitHub or Linear identifier, like any identity, that is too long,
   // carries hidden characters or looks like a key is never a key — the delivery is received under its bytes instead,
   // and made into nothing.
+  // (A webhook's identities were judged by its reader, raw, before its key was made: only GitHub's and Linear's here.)
   const deliveryBytes = createHash("sha256").update(delivery.body).digest("hex");
-  items = items.map(item => {
-    const words = item.key.slice(item.key.indexOf(":") + 1);
-    const judged = identityOf(words);
-    if (item.key.length <= 200 && judged.ok) return item;
-    return { key: `v3:${config.kind}:body:${deliveryBytes}`, skip: `its identity: ${judged.ok ? "its identity isn't usable" : judged.why}`, label: "label" in item ? item.label : item.source.label.slice(0, 120), at: null };
+  if (config.kind !== "webhook") items = items.map(item => {
+    const judged = identityOf(item.key.slice(item.key.indexOf(":") + 1));
+    if (judged.ok) return item;
+    // A fixed label: nothing of the refused identity is kept, not even in the words the panel shows.
+    return { key: `v3:${config.kind}:body:${deliveryBytes}`, skip: judged.why, label: "A delivery", at: null };
   });
   const by = config.kind === "github" ? "GitHub" : config.kind === "linear" ? "Linear" : "Webhook";
   return written(() => {
