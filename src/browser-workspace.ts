@@ -435,7 +435,9 @@ export type BrowserFlowTrigger = {
    * warning in words when anyone could add cards (unsigned) or any project could (a Sentry or Vercel webhook unscoped). */
   hook: { ready: boolean; needsSecret: boolean; sender: string | null; makesSecret: boolean; warning: string | null; readerNote: string | null;
     /** v126: deliveries turned away because too many were already held, until a person clears it, and how to resend them. */
-    dropped: { count: number; since: string; resend: string } | null } | null;
+    dropped: { count: number; since: string; resend: string } | null;
+    /** v126: the Sentry or Vercel project (and Vercel team) it takes deliveries from; null: any the secret covers. */
+    scope: { project: string | null; team: string | null } | null } | null;
   checkable: boolean;
   /** A button shared as a public form (its link works). */
   shared: boolean;

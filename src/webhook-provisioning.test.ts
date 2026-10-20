@@ -17,7 +17,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStore, V126_ADDED_COLUMNS, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { flowFromSteps } from "./flows.js";
-import { addFlowTriggerTo, changeFlowHookSender, hookReady, readHookSecret, receiveFlowHook, renewFlowHook, saveHookSecret, saveSigningSecret, setUpFlowHook, triggerConfigOf } from "./flow-triggers.js";
+import { addFlowTriggerTo, changeFlowHookSender, hookReady, readHookSecret, receiveFlowHook, renewFlowHook, saveHookSecret, saveSigningSecret, setFlowHookScope, setUpFlowHook, triggerConfigOf } from "./flow-triggers.js";
 import { exportFlow, importFlow, parseFlowFile, planFlowImport } from "./flow-share.js";
 import { flowView } from "./flows-ui.js";
 import { standardKey } from "./webhook-signing.js";
@@ -325,4 +325,23 @@ describe("over HTTP", () => {
     const once = await raw(`/hooks/flow/${token}`, [...lines, `webhook-signature: ${good["webhook-signature"]}`], body);
     expect(once.status).toBe(202);
   });
+});
+
+test("a Vercel webhook is scoped to its project in place: same secret and address, and another project's deployment is then ignored", () => {
+  const secret = "VercelSecret0123456789";
+  const { id, token } = add({ sender: "vercel" });
+  made(saveSigningSecret(store, trigger(id), secret, T0, dir));
+  const credential = trigger(id).hookCredential;
+  const failed = (project: string) => {
+    const body = JSON.stringify({ type: "deployment.error", payload: { project: { id: project }, team: { id: "team_1" }, deployment: { id: `dpl_${project}`, name: "shop" }, links: { deployment: "https://vercel.com/acme/shop/x" } } });
+    return deliver(token, body, { "x-vercel-signature": createHmac("sha1", secret).update(body).digest("hex") });
+  };
+  expect(setFlowHookScope(store, trigger(id), { project: "prj_1", team: "team_1" }, "alex", T0)).toEqual({ ok: true, said: "Only deliveries from prj_1 add cards now." });
+  expect(trigger(id).hookCredential).toBe(credential);
+  expect(triggerConfigOf(trigger(id))).toMatchObject({ sender: "vercel", project: "prj_1", team: "team_1" });
+  expect(failed("prj_2")).toEqual({ status: 202, said: "Ignored: from another Vercel project." });
+  expect(failed("prj_1")).toEqual({ status: 202, said: "Added 1 card." });
+  // Blank again takes any project; a Standard webhook has no project to scope.
+  expect(setFlowHookScope(store, trigger(id), { project: "", team: "" }, "alex", T0)).toMatchObject({ ok: true, said: expect.stringContaining("Any Vercel project") });
+  expect(setFlowHookScope(store, trigger(add({ sender: "standard" }).id), { project: "x", team: null }, "alex", T0)).toMatchObject({ ok: false });
 });

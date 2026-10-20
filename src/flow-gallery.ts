@@ -391,7 +391,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
     ],
     // v126: signed by Vercel and read by Toolroll's Vercel reader: failed deployments only, one card each.
     triggers: [{ kind: "webhook", sender: "vercel", title: "Failed deployment" }],
-    does: ["Adds a Vercel webhook. Once the flow is made, in Vercel (Settings → Webhooks) paste the flow's webhook address and choose Deployment Error, then paste the secret Vercel shows under Signing on the flow's Triggers. Name your Vercel project there to take only its deployments.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
+    does: ["Adds a Vercel webhook. Once the flow is made, in Vercel (Settings → Webhooks) paste the flow's webhook address and choose Deployment Error, then paste the secret Vercel shows under Signing on the flow's Triggers. Put your Vercel project ID in Signing too, so only its deployments add cards.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
     never: NEVER_MERGES,
   },
   // ---------------------------------------------------------- Hear from users

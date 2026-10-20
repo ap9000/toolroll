@@ -1120,6 +1120,8 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
   const current = hook.sender ?? "none";
   const [sender, setSender] = useState(current);
   const [secret, setSecret] = useState("");
+  const [project, setProject] = useState(hook.scope?.project ?? "");
+  const [team, setTeam] = useState(hook.scope?.team ?? "");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const go = async (path: string, fields: Record<string, string>) => {
@@ -1142,6 +1144,12 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
           {SENDER_CHOICES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </Field>
+      {!changing && hook.scope !== null && <Field label={current === "vercel" ? "Vercel project ID" : "Sentry project"} hint={current === "vercel" ? "Only this project's deployments add cards (prj_…, from the project's Settings). Blank takes any project the secret covers." : "Only this project's issues add cards (its slug or number). Blank takes any project the integration sees."}>
+        <Input value={project} onChange={event => setProject(event.target.value)} data-trigger-project />
+      </Field>}
+      {!changing && current === "vercel" && <Field label="Vercel team ID" hint="Only deliveries from this team (team_…). Blank takes any.">
+        <Input value={team} onChange={event => setTeam(event.target.value)} data-trigger-team />
+      </Field>}
       {!changing && words !== undefined && <Field label={hook.ready ? `Replace ${words.label}` : words.label} hint={words.hint}>
         <Input type="password" autoComplete="off" value={secret} onChange={event => setSecret(event.target.value)} data-trigger-secret />
       </Field>}
@@ -1150,6 +1158,7 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
         {changing && <Button type="button" size="sm" disabled={busy || !ready} onClick={() => void go("sender", { sender })}>Change who signs it</Button>}
         {!changing && hook.makesSecret && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("setup", {})} data-trigger-setup>{hook.ready ? "Replace secret" : "Make its secret"}</Button>}
         {!changing && words !== undefined && <Button type="button" size="sm" disabled={busy || !ready || secret.trim() === ""} onClick={() => void go("secret", { secret })}>{hook.ready ? "Replace secret" : "Save secret"}</Button>}
+        {!changing && hook.scope !== null && (project.trim() !== (hook.scope.project ?? "") || team.trim() !== (hook.scope.team ?? "")) && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("scope", { project, team })} data-trigger-save-scope>Save project</Button>}
       </div>
     </div>
   </details>;
@@ -1781,6 +1790,14 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
       <h2 className="text-title-sm">Triggers</h2>
       <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-body" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
         <div className={cn("text-caption font-normal", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
+        {/* v126: what a webhook needs, said here too; its secrets are managed on the full panel. */}
+        {one.hook?.warning != null && <p className={cn("mt-1 text-caption font-normal", one.hook.sender === "none" || !one.hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{one.hook.warning}</p>}
+        {one.hook?.readerNote != null && <p className="mt-1 text-caption text-muted-foreground font-normal" data-trigger-reader-note>{one.hook.readerNote}</p>}
+        {one.hook?.dropped != null && <div className="mt-1.5 flex flex-col gap-1 rounded-md border border-attention/50 p-2" data-trigger-dropped>
+          <p className="text-body font-medium">{one.hook.dropped.count === 1 ? "1 delivery was" : `${one.hook.dropped.count} deliveries were`} turned away since {ago(one.hook.dropped.since)}: too many were already waiting.</p>
+          <p className="text-caption text-muted-foreground font-normal">{one.hook.dropped.resend}</p>
+          {view.canEdit && <Button size="sm" variant="outline" className="min-h-11 self-start" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/triggers/${one.id}/dropped`, {}, csrf)); setBusy(false); }}>Clear</Button>}
+        </div>}
         {/* A schedule's standing order (what a routine was): its approval in view, its terms on demand, and on or off here. */}
         {one.order !== undefined && <>
           <p className="mt-1 text-caption break-words font-normal" data-trigger-approval>{one.order.at(-1)}</p>

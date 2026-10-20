@@ -328,6 +328,8 @@ post("flows", "flow.trigger.secret", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\
 post("flows", "flow.trigger.setup", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/setup$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/setup" , ...EDIT_FLOWS });
 // v126: clear a webhook's turned-away count once it has been seen.
 post("flows", "flow.trigger.dropped", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/dropped$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/dropped" , ...EDIT_FLOWS });
+// v126: which project a Sentry or Vercel webhook takes deliveries from: behind the password, as its secret is.
+post("flows", "flow.trigger.scope", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/scope$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/scope" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.sender", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/sender$`, { scope: "step-up", project: "flow", limited: "resource", sample: "/flows/1/triggers/2/sender" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.share", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/share$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/share" , ...EDIT_FLOWS });
 post("flows", "flow.trigger.unshare", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\\/unshare$`, { project: "flow", limited: "resource", sample: "/flows/1/triggers/2/unshare" , ...EDIT_FLOWS });

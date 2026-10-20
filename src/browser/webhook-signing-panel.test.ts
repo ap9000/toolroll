@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "../store.js";
 import { flowFromSteps } from "../flows.js";
-import { addFlowTriggerTo, receiveFlowHook, saveSigningSecret } from "../flow-triggers.js";
+import { addFlowTriggerTo, receiveFlowHook, saveSigningSecret, setFlowHookScope } from "../flow-triggers.js";
 import { flowView } from "../flows-ui.js";
 import { FlowView } from "./views/flow-view.js";
 
@@ -83,4 +83,27 @@ test.each([
   expect(deliver(next, '{"n":2}').status).toBe(202);
   // The panel cleared what was typed: a secret isn't left in the form.
   expect(box().querySelector<HTMLInputElement>("[data-trigger-secret]")!.value).toBe("");
+});
+
+test("a Vercel webhook's project is set through the Signing box, behind the password", async () => {
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "vercel" }, "alex", T0, dir);
+  if (!made.ok) throw new Error(made.message);
+  const id = made.id;
+  const posted: { path: string; fields: Record<string, string> }[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init: { body: URLSearchParams }) => {
+    const fields = Object.fromEntries(init.body.entries());
+    posted.push({ path, fields });
+    const scoped = setFlowHookScope(store, store.getFlowTrigger(id)!, { project: fields["project"], team: fields["team"] }, "alex", T0);
+    return { ok: scoped.ok, json: async () => scoped.ok ? { ok: true, said: scoped.said, view: viewNow() } : { ok: false, said: scoped.message } };
+  }));
+  const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(FlowView, { view: viewNow(), csrf: "fixture" })));
+  await act(async () => document.querySelector<HTMLButtonElement>("[data-open-triggers]")!.click());
+  const box = () => document.querySelector(`[data-trigger-row="${id}"] [data-trigger-signing]`)!;
+  expect(box().querySelector("[data-trigger-save-scope]")).toBeNull();
+  await act(async () => type(box().querySelector<HTMLInputElement>("[data-trigger-project]")!, "prj_1"));
+  await act(async () => type(box().querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, "correct horse"));
+  await act(async () => box().querySelector<HTMLButtonElement>("[data-trigger-save-scope]")!.click());
+  expect(posted).toEqual([{ path: `/flows/${flow}/triggers/${id}/scope`, fields: { csrf: "fixture", project: "prj_1", team: "", password: "correct horse" } }]);
+  expect(store.getFlowTrigger(id)!.configJson).toContain('"project":"prj_1"');
 });

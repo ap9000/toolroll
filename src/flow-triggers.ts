@@ -278,7 +278,7 @@ export function describeTrigger(config: TriggerConfig, store: Store): string {
       const zone = flow === null ? null : flowDefinitionOf(flow)?.stages.find(one => one.id === config.when)?.title ?? null;
       return `Cards reaching ${zone ?? "the end"} in ${flow?.name ?? "another flow"}`;
     }
-    case "webhook": return "Anything posted to its webhook address";
+    case "webhook": return webhookWords(config);
     case "chat": return `Every new message in a ${CHAT_APP_NAMES[config.app]} channel; replies in a card's thread join its discussion`;
     case "plane-review": {
       const schedule = parseSchedule(config.schedule);
@@ -303,7 +303,7 @@ export function triggerHeadline(config: TriggerConfig, store: Store): { name: st
       const flow = store.getFlow(config.flow);
       return { name: `From ${flow?.name ?? "another flow"}`, detail: `When a card reaches ${flow === null ? "the end" : flowDefinitionOf(flow)?.stages.find(one => one.id === config.when)?.title ?? "the end"}` };
     }
-    case "webhook": return { name: "Webhook", detail: "Anything posted to its address" };
+    case "webhook": return { name: senderOf(config) === "sentry" ? "Sentry" : senderOf(config) === "vercel" ? "Vercel" : "Webhook", detail: webhookWords(config) };
     case "chat": return { name: `${CHAT_APP_NAMES[config.app]} channel`, detail: "Each message is a card" };
     case "plane-review": {
       const schedule = parseSchedule(config.schedule);
@@ -331,6 +331,14 @@ export function readTriggerConfig(raw: unknown): ContractResult<TriggerConfig> {
   const kind = isRecord(raw) ? raw["kind"] : undefined;
   const body = isRecord(raw) ? { zone: null, ...SAVED_DEFAULTS[kind as FlowTriggerKind], ...raw } : raw;
   return parseContract(triggerConfigSchema, body);
+}
+
+/** v126: what a webhook trigger takes, in words: what its sender sends it, or anything posted when it's unsigned. */
+function webhookWords(config: Extract<TriggerConfig, { kind: "webhook" }>): string {
+  const sender = senderOf(config);
+  const scope = config.project == null ? "" : ` from ${config.project}`;
+  return sender === "sentry" ? `Sentry issue alerts and new issues${scope}` : sender === "vercel" ? `Failed Vercel deployments${scope}`
+    : sender === "none" ? "Anything posted to its webhook address" : `Requests signed ${sender === "standard" ? "the Standard Webhooks way" : "GitHub-style"} to its webhook address`;
 }
 
 /** v126: who signs a webhook trigger's deliveries; one saved before senders were chosen is unsigned. */
@@ -1338,6 +1346,30 @@ export function changeFlowHookSender(store: Store, trigger: FlowTriggerRow, send
   const moved = nextHookCredential(store, trigger, null, JSON.stringify(changed), now, dir);
   if (!moved.ok) return moved;
   return { ok: true, said: next === "none" ? "Now unsigned: anyone with its address can add cards." : `Now signed by ${SENDER_WORDS[next]}. Set it up before deliveries are taken: until then they are refused.` };
+}
+
+/**
+ * v126: which project (and, for Vercel, team) a Sentry or Vercel webhook takes deliveries from, set in place: the
+ * trigger keeps its id, address, secret and history; blank takes any project the secret covers. Only from the settings
+ * read here, so a change racing it doesn't land on top of it.
+ */
+export function setFlowHookScope(store: Store, trigger: FlowTriggerRow, scope: { project: unknown; team: unknown }, actor: string, now: Date): { ok: true; said: string } | { ok: false; message: string } {
+  const config = triggerConfigOf(trigger);
+  const flow = store.getFlow(trigger.flow);
+  const definition = flow === null ? null : flowDefinitionOf(flow);
+  if (config?.kind !== "webhook" || flow === null || definition === null || trigger.state === "removed") return { ok: false, message: "Only a webhook trigger is scoped here." };
+  const sender = senderOf(config);
+  if (sender !== "sentry" && sender !== "vercel") return { ok: false, message: "Only a Sentry or Vercel webhook is scoped to a project." };
+  const words = (value: unknown) => typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  let changed: TriggerConfig;
+  try {
+    changed = validateTriggerConfig({ kind: "webhook", title: config.title, sender, zone: config.zone ?? undefined, project: words(scope.project), ...(sender === "vercel" ? { team: words(scope.team) } : {}) }, { store, flow, definition, actor });
+  } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That scope can't be used." }; }
+  if (!store.swapFlowHookCredential(trigger.id, { credential: trigger.hookCredential, configJson: trigger.configJson, hookHash: trigger.hookHash }, { credential: trigger.hookCredential }, JSON.stringify(changed), now)) {
+    return { ok: false, message: "That trigger changed meanwhile. Open it again." };
+  }
+  const project = changed.kind === "webhook" ? changed.project ?? null : null;
+  return { ok: true, said: project === null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards.` : `Only deliveries from ${project} add cards now.` };
 }
 
 /** Whether a webhook trigger can prove its deliveries: an unsigned webhook always (its address is all it has), the others

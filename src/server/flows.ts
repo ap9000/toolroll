@@ -18,7 +18,7 @@ import { assignFlowCard,commentOnFlowCard,watchFlowCard } from "../flow-people.j
 import { saveScript } from "../flow-scripts.js";
 import { chooseFlowCard } from "../flow-send.js";
 import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlowImport,type FlowImportPlan } from "../flow-share.js";
-import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveSigningSecret,setUpFlowHook,changeFlowHookSender,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
+import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveSigningSecret,setUpFlowHook,changeFlowHookSender,setFlowHookScope,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
@@ -647,7 +647,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     return cancelled.ok ? settle(cancelled.said) : answer(409, { ok: false, said: cancelled.message });
   };
 
-  type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "setup" | "sender" | "share" | "unshare" | "dropped";
+  type TriggerVerb = "pause" | "resume" | "remove" | "check" | "press" | "renew" | "secret" | "setup" | "sender" | "scope" | "share" | "unshare" | "dropped";
   const triggerAct = (verb: TriggerVerb) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who } = ctx;
     const change = openFlowChange(ctx);
@@ -688,6 +688,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (verb === "setup") {
       const made = setUpFlowHook(store, trigger, now, dir);
       return made.ok ? settle(made.said, { reveal: made.reveal }) : answer(409, { ok: false, said: made.message });
+    }
+    if (verb === "scope") {
+      const scoped = setFlowHookScope(store, trigger, { project: body.get("project"), team: body.get("team") }, who.name, now);
+      return scoped.ok ? settle(scoped.said) : answer(400, { ok: false, said: scoped.message });
     }
     if (verb === "sender") {
       const changed = changeFlowHookSender(store, trigger, body.get("sender"), who.name, now, dir);
@@ -834,6 +838,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     "flow.trigger.secret": triggerAct("secret"),
     "flow.trigger.setup": triggerAct("setup"),
     "flow.trigger.sender": triggerAct("sender"),
+    "flow.trigger.scope": triggerAct("scope"),
     "flow.trigger.dropped": triggerAct("dropped"),
     "flow.trigger.share": triggerAct("share"),
     "flow.trigger.unshare": triggerAct("unshare"),
