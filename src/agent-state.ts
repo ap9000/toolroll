@@ -126,23 +126,32 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
   // A result's outcome and its recorded check, for the families whose result is waiting on a person.
   const resultFacts = new Map(store.handle.prepare(`SELECT r.id, r.outcome, (SELECT c.status FROM run_check c WHERE c.run = r.id) AS recorded FROM run r
       WHERE r.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(families.flatMap(row => row.resultRun ?? []))).map(row => [Number(row["id"]), row]));
-  const checksFailed = (run: number) => resultFacts.get(run)?.["recorded"] === "failed" || assignmentChecksForRun(store, root, run, now).status === "failed";
+  // The result's checks as the result reads them (follow-up checks included); the recorded check only when nothing
+  // else was read, so a passing follow-up clears an earlier failure.
+  const checksFailed = (run: number) => {
+    const status = assignmentChecksForRun(store, root, run, now).status;
+    if (status === "failed" || status === "passed") return status === "failed";
+    return resultFacts.get(run)?.["recorded"] === "failed";
+  };
 
   const familyOf = new Map<number, WorkStateRow>();
+  for (const row of families) for (const ref of row.members) familyOf.set(ref, row);
+  const attempting = new Set(open.map(run => familyOf.get(Number(run["task_ref"]))?.rootId));
   const needing = new Set<string>();
   for (const row of families) {
-    for (const ref of row.members) familyOf.set(ref, row);
-    if (AT_WORK.has(row.code) || row.leadClaim) continue; // its attempts are counted below
+    // At work: its attempts are counted below; a stop whose run has ended but whose process is not yet confirmed gone
+    // is still at work.
+    if (AT_WORK.has(row.code)) { if (!attempting.has(row.rootId)) bump(row.repo, "working"); continue; }
     const result = row.resultRun === null ? null : resultFacts.get(row.resultRun);
     if (row.code === "failed" || row.code === "vanished-run") { bump(row.repo, "failed"); continue; }
-    // A result waiting on a person: a failure when it failed or its checks failed (as its headline reads), otherwise an ask.
-    if (row.code === "ready-to-check" || row.code === "result-needs-attention") {
-      const failed = result?.["outcome"] === "failed" || (row.resultRun !== null && checksFailed(row.resultRun));
-      bump(row.repo, failed ? "failed" : "needs-you");
-      if (!failed) needing.add(row.rootId);
-      continue;
-    }
-    if (row.personNeed) { bump(row.repo, "needs-you"); needing.add(row.rootId); continue; }
+    // Waiting its turn, as the Tasks list ranks it: confirmations another computer owes included.
+    if (row.waits) { bump(row.repo, "waiting"); continue; }
+    // A result waiting on a person is a failure when it failed or its checks failed (as its headline reads).
+    const asks = row.code === "ready-to-check" || row.code === "result-needs-attention";
+    if (asks && (result?.["outcome"] === "failed" || (row.resultRun !== null && checksFailed(row.resultRun)))) { bump(row.repo, "failed"); continue; }
+    // A family the person's lead has taken on waits on nobody (the Tasks list's rule); a failure still leads, above.
+    if (row.leadClaim) { bump(row.repo, "waiting"); continue; }
+    if (asks || row.personNeed) { bump(row.repo, "needs-you"); needing.add(row.rootId); continue; }
     if (WAITING_CODES.has(row.code)) { bump(row.repo, "waiting"); continue; }
     if (row.code === "complete" && row.resultRun !== null && unseen.has(row.resultRun)) bump(row.repo, "done");
   }

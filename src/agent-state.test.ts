@@ -215,6 +215,49 @@ describe("a project's counts, over the Tasks list's own families", () => {
     expect(states[OTHER]!.counts.working).toBe(1);
   });
 
+  test("a stop whose run has ended but is not yet settled is still at work", () => {
+    const run = built("halted");
+    const ref = store.refFor("built-in", "halted").id;
+    store.raw().prepare("INSERT INTO run_stop (run, task_ref, requested_by, requested_via, requested_at) VALUES (?, ?, 'sam', 'web', ?)").run(run, ref, NOW.toISOString());
+    expect(of()[REPO]!.counts).toMatchObject({ working: 1, "needs-you": 0 });
+    expect(of()[REPO]!.state).toBe("working");
+  });
+
+  test("a family the person's lead is on waits on nobody, but a failure still leads", () => {
+    built("claimed-ready");
+    store.createTask({ id: "claimed-broke", title: "claimed broke" }, NOW);
+    store.placeTask(store.refFor("built-in", "claimed-broke").id, REPO, {}, NOW);
+    store.setTaskState("claimed-broke", "failed", NOW);
+    for (const taskId of ["claimed-ready", "claimed-broke"])
+      store.recordAction({ at: NOW.toISOString(), actor: "lead for sam", repo: REPO, taskId, runId: null, action: "lead is on it", outcome: "ok", source: "work" });
+    const viewer = Object.fromEntries(projectStates(store, { principal: "operator", repos: [REPO], viewer: "sam" }, "sam", NOW, root).map(one => [one.repo, one]));
+    expect(viewer[REPO]!.counts).toMatchObject({ failed: 1, waiting: 1, "needs-you": 0 });
+    // Another person's lead is not this person's: for them the result still asks.
+    expect(of()[REPO]!.counts).toMatchObject({ failed: 1, "needs-you": 1 });
+  });
+
+  test("two live attempts of one family, in two roles, count twice", () => {
+    const { ref } = live("shared");
+    const authority = store.routeAuthorityFor(ref, "planner");
+    if (!authority?.ok) throw new Error("route");
+    const wt = join(dir, "wt-shared-plan"); mkdirSync(wt);
+    store.startRun({ taskRef: ref, leaseId: "l-shared-plan", runner: "builder-1", branch: "toolroll/shared-plan", worktree: wt, route: authority.stamp, role: "planner", now: NOW });
+    const roles = store.raw().prepare("SELECT role FROM run WHERE task_ref = ? AND outcome IS NULL ORDER BY id").all(ref).map(row => row["role"]);
+    expect(roles).toEqual(["builder", "planner"]);
+    expect(of()[REPO]!.counts).toMatchObject({ working: 2, "needs-you": 0 });
+  });
+
+  test("a passing follow-up check clears an earlier failure: the result asks again", () => {
+    const run = built("rechecked", "failed");
+    store.recordRunCheck(run, { status: "failed", exitCode: 1, suites: [] }, NOW); // the recorded failure, too
+    expect(of()[REPO]!.counts).toMatchObject({ failed: 1, "needs-you": 0 });
+    const request = store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks requested", outcome: "full", source: "work", detail: `${HEAD} · person` });
+    store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks started", outcome: String(request), source: "work" });
+    storeEvidence(store, root, run, "structured-output", "follow-up.json", Buffer.from(JSON.stringify({ request, head: HEAD, result: { ran: true, exitCode: 0 } })), "follow-up check receipt v1", NOW, { captureStatus: "ok" });
+    store.recordAction({ at: NOW.toISOString(), actor: "operator:sam", repo: REPO, taskId: "rechecked", runId: run, action: "checks finished", outcome: `${request}:passed`, source: "work", detail: "exit 0" });
+    expect(of()[REPO]!.counts).toMatchObject({ failed: 0, "needs-you": 1 });
+  });
+
   test("flow decisions are counted without a cap", () => {
     const flow = store.createFlow({ repo: OTHER, name: "Bulk", by: "sam", definitionJson: JSON.stringify(flowFromSteps([{ title: "Decide", kind: "approval" }], null)) }, NOW);
     const start = (JSON.parse(store.getFlow(flow)!.definitionJson) as { start: string }).start;
