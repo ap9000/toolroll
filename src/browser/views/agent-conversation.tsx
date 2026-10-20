@@ -250,6 +250,44 @@ function merged(conversation: Conversation): Shown[] {
   return out;
 }
 
+/** Output lines a terminal line shows under its step: the tail, as the records carry it. */
+export const TERMINAL_TAIL = 12;
+const VIEW_SETTING = "toolroll.agent.view";
+function savedView(): "conversation" | "terminal" {
+  try { return window.localStorage.getItem(VIEW_SETTING) === "terminal" ? "terminal" : "conversation"; } catch { return "conversation"; }
+}
+
+/**
+ * The terminal view (cockpit §5): the same records, dense and monospace — what the agent said, each step as one line
+ * (a command as `$ command`), how it ended, and its output's last lines; notes inline. It reads only what the
+ * conversation reads (sanitized, text only, commands only where the project allows them), and never types anything.
+ */
+function TerminalLines({ conversation }: { conversation: Conversation }) {
+  const lines: React.ReactNode[] = [];
+  const notes = conversation.notes.slice().sort((a, b) => a.at.localeCompare(b.at));
+  let next = 0;
+  const note = (one: ConversationNote) => lines.push(<li key={`note:${one.id}`} className="text-info" data-terminal-note>
+    {`» ${one.mine ? "you" : one.author}: ${one.text}`}<span className="text-muted-foreground">{`  (${one.standing}${one.readAt === null ? "" : ` ${clock(one.readAt)}`})`}</span></li>);
+  for (const item of conversation.items) {
+    while (next < notes.length && item.at !== "" && notes[next]!.at < item.at) note(notes[next++]!);
+    if (item.kind === "say") { lines.push(<li key={item.key} className="text-foreground" data-terminal-say>{item.lines.join("\n")}</li>); continue; }
+    if (item.kind === "marker") { lines.push(<li key={item.key} className="text-muted-foreground" data-terminal-marker>{`— ${item.words} —`}</li>); continue; }
+    const done = item.done;
+    const status = item.once ? "" : done === null ? (conversation.final ? "  [no result]" : "  [running]") : done.ok === true ? "" : done.ok === false ? "  [failed]" : "  [ended without a result]";
+    const head = item.step === "command" && item.target !== null ? `$ ${item.target}`
+      : `› ${KIND_VERBS[item.step] ?? KIND_WORDS[item.step]}${item.target === null ? "" : ` ${item.target}`}`;
+    const out = done?.out ?? [];
+    const tail = out.slice(-TERMINAL_TAIL);
+    lines.push(<li key={item.key} data-terminal-step={item.step}>
+      <span className={item.step === "command" ? "text-foreground" : "text-muted-foreground"}>{head}</span>
+      {status !== "" && <span className={done?.ok === false ? "text-danger" : "text-muted-foreground"}>{status}</span>}
+      {tail.length > 0 && <span className="block pl-3 text-muted-foreground" data-terminal-output>{out.length > tail.length ? `… ${out.length - tail.length} earlier lines\n` : ""}{tail.join("\n")}</span>}
+    </li>);
+  }
+  for (; next < notes.length; next += 1) note(notes[next]!);
+  return <ol className="flex flex-col gap-0.5 font-mono text-mono leading-[1.45] whitespace-pre-wrap break-words" data-terminal>{lines}</ol>;
+}
+
 export function ConversationPane({ url, live }: { url: string | null; live: boolean }) {
   const conversation = useConversation(url, live);
   const box = useRef<HTMLDivElement | null>(null);
@@ -278,18 +316,32 @@ export function ConversationPane({ url, live }: { url: string | null; live: bool
     if (node !== null && pinned.current) node.scrollTop = node.scrollHeight;
   }, [conversation.revision]);
   const shown = merged(conversation);
+  const [view, setView] = useState<"conversation" | "terminal">(savedView);
+  const choose = (next: "conversation" | "terminal") => { setView(next); try { window.localStorage.setItem(VIEW_SETTING, next); } catch { /* this browser keeps no settings */ } };
+  // Switching views keeps the pin: a reader at the end stays at the end.
+  useLayoutEffect(() => {
+    const node = scroller();
+    if (node !== null && pinned.current) node.scrollTop = node.scrollHeight;
+  }, [view]);
   const failed = "Couldn't read the conversation just now. Trying again.";
   const empty = conversation.state === "off" ? "Output from other computers isn't shown yet."
     : conversation.state === "unavailable" || conversation.state === "error" ? failed
     : conversation.state === "loading" ? "Reading the conversation…" : live ? "Nothing yet. What the agent says and does shows here as it works." : "This agent left no transcript.";
   return <section aria-label="Conversation" className="flex min-h-0 flex-col">
-    <h3 className="mb-1.5 text-caption font-medium text-muted-foreground">Conversation</h3>
+    <div className="mb-1.5 flex items-center justify-between gap-2">
+      <h3 className="text-caption font-medium text-muted-foreground">{view === "terminal" ? "Terminal" : "Conversation"}</h3>
+      <div role="group" aria-label="How to show it" className="flex gap-1" data-conversation-view={view}>
+        {(["conversation", "terminal"] as const).map(one => <button key={one} type="button" aria-pressed={view === one} onClick={() => choose(one)}
+          className={cn("rounded-md px-2 py-0.5 text-caption phone:min-h-11", view === one ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}>
+          {one === "terminal" ? "Terminal" : "Conversation"}</button>)}
+      </div>
+    </div>
     {shown.length === 0 ? <p className="rounded-md border border-dashed border-border px-3 py-6 text-body text-muted-foreground" data-transcript-empty>{empty}</p>
       : <div ref={attach} tabIndex={0} aria-label="Agent conversation" data-agent-transcript
         onScroll={event => { const node = event.currentTarget; if (scroller() === node) pinned.current = node.scrollTop + node.clientHeight >= node.scrollHeight - 24; }}
         className="max-h-[52vh] min-h-40 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-3 py-2 outline-none focus-visible:ring-2 focus-visible:ring-ring phone:max-h-none phone:min-h-0 phone:flex-1">
         {conversation.older > 0 && <p className="py-1 text-caption text-muted-foreground">{conversation.older} earlier {conversation.older === 1 ? "note is" : "notes are"} on the task page.</p>}
-        <ol className="flex flex-col">{shown.map(one => one.node)}</ol>
+        {view === "terminal" ? <TerminalLines conversation={conversation} /> : <ol className="flex flex-col">{shown.map(one => one.node)}</ol>}
         {conversation.state === "off" && <p className="py-1 text-caption text-muted-foreground" data-conversation-state="off">{empty}</p>}
         {(conversation.state === "error" || conversation.state === "unavailable") && <p role="status" className="py-1 text-caption text-warning" data-conversation-state="error">{failed}</p>}
       </div>}

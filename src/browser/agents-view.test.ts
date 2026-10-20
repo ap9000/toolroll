@@ -137,6 +137,41 @@ describe("the opened agent's conversation", () => {
   const at = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
   const answer = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
 
+  test("the terminal view: the same records, one dense line each, output tails, notes inline, markup never rendered; the choice is kept", async () => {
+    try { localStorage.removeItem("toolroll.agent.view"); } catch { /* none */ }
+    const notes = [{ id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Read by the agent at", readAt: at(13) }];
+    const out = Array.from({ length: 20 }, (_, n) => `line ${n + 1}`);
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => reads++ > 0 ? answer({ records: [], nextOffset: 400, gen: "records:1:2", final: false, notes, older: 0 }) : answer({ nextOffset: 400, gen: "records:1:2", final: false, older: 0, notes, records: [
+      { k: "open", at: at(0), detail: "commands" },
+      { k: "say", at: at(1), t: ["Looking at <b>the form</b>"] },
+      { k: "step", at: at(2), id: "s1", kind: "read", target: "src/form.ts" },
+      { k: "done", at: at(3), id: "s1", ok: true },
+      { k: "step", at: at(10), id: "s2", kind: "command", target: "npm test" },
+      { k: "done", at: at(14), id: "s2", ok: false, out },
+      { k: "step", at: at(20), id: "s3", kind: "command", target: "npm run lint" },
+    ] })));
+    await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view: board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })) })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    const toTerminal = [...host.querySelectorAll<HTMLButtonElement>('[data-conversation-view] button')].find(one => one.textContent === "Terminal")!;
+    await act(async () => { toTerminal.click(); });
+    const terminal = host.querySelector("[data-terminal]")!;
+    expect([...terminal.querySelectorAll("[data-terminal-step]")].map(one => one.firstChild?.textContent)).toEqual(["› Read src/form.ts", "$ npm test", "$ npm run lint"]);
+    const failed = terminal.querySelectorAll("[data-terminal-step]")[1]!;
+    expect(failed.textContent).toContain("[failed]");
+    expect(failed.querySelector("[data-terminal-output]")?.textContent).toBe(`… 8 earlier lines\n${out.slice(-12).join("\n")}`);
+    expect(terminal.querySelectorAll("[data-terminal-step]")[2]!.textContent).toContain("[running]");
+    expect(terminal.querySelector("[data-terminal-note]")?.textContent).toContain("» you: Skip the flaky test");
+    // The note sits between the steps it came between.
+    const order = [...terminal.children].map(one => one.hasAttribute("data-terminal-note") ? "note" : one.getAttribute("data-terminal-step") ?? "say");
+    expect(order).toEqual(["say", "read", "command", "note", "command"]);
+    // The agent's words are text, never markup.
+    expect(terminal.querySelector("b")).toBeNull();
+    expect(terminal.querySelector("[data-terminal-say]")?.textContent).toBe("Looking at <b>the form</b>");
+    expect(localStorage.getItem("toolroll.agent.view")).toBe("terminal");
+    localStorage.removeItem("toolroll.agent.view");
+  });
+
   test("steps show their target and how they ended, a failed command opens to its output, and notes sit in time order with their standing", async () => {
     const fetched: string[] = [];
     const notes = [
