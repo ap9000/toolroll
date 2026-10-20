@@ -287,7 +287,10 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     // A fragment that marks itself final stops: a finished or abandoned build is not fetched again.
     `.then(function(){busy=false;tell();if(region.querySelector("[data-region-stop]")){stopped=true;if(stamp)stamp.textContent="";return;}if(again)refresh();});}` +
     `function heard(name){if(name==="change"||name==="reload")refresh();}` +
-    `if(document.documentElement.dataset.live==="1"){addEventListener("so:live",function(e){heard(e.detail&&e.detail.event);});}` +
+    // On a workspace page the page's one stream (browser/live.ts) carries the workspace room: ask it, never open a second.
+    `function mine(e){var d=e.detail;if(d&&(d.room==="workspace"||d.room===null))heard(d.event);}` +
+    `if(document.getElementById("standing-orders-workspace")){(window.__soLiveRooms=window.__soLiveRooms||[]).push("workspace");addEventListener("so:live",mine);}` +
+    `else if(document.documentElement.dataset.live==="1"){addEventListener("so:live",mine);}` +
     `else if(typeof EventSource!=="undefined"){var es=new EventSource("/live?room=workspace");` +
     `es.addEventListener("change",function(){heard("change");});es.addEventListener("reload",function(){heard("reload");});` +
     `document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh();});}` +
@@ -463,6 +466,10 @@ export type Screen = {
   /** Render sensitive even when no password field is visible — one-time
    * secrets and judgment calls the classifier cannot see. */
   forceSensitive?: boolean;
+  /** The page's sensitivity, said explicitly (cockpit §2, R14): true for a page that asks for a password or shows a
+   * secret even when no password field renders (an SSO step-up, a fresh-password grant); false only where a page is
+   * known safe. Unset: judged from the page as authored. A sensitive page has no sidebar states and no summary room. */
+  sensitive?: boolean;
   /** Structured conversation; complex guarded forms stay native islands. */
   workspace?: Partial<Pick<BrowserWorkspace, 'conversation' | 'team' | 'focus' | 'result' | 'notices' | 'view' | 'firstRun' | 'phone' | 'home'>> & {
     /** Markup the workspace shows in place; it becomes bytes where the page's JSON is written (sendScreen). */

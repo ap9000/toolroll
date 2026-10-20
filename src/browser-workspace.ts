@@ -20,8 +20,13 @@ import type { AcceptLabel, ResultActFacts, ResultActs } from './result-acts.js';
 import type { FirstRunStep, FirstTaskSuggestion, JourneyStep } from './first-run.js';
 
 export type BrowserProject = { name: string; path: string; href: string; knowledgeHref: string };
-/** A project's state for one person (agent-state.ts): the strongest of its counts, and the counts. */
-export type BrowserProjectState = { path: string; state: DisplayState; counts: StateCounts };
+/** A project's state for one person (agent-state.ts): the strongest of its counts, the counts, and its tasks with
+ * something live, asking, failed or unread (strongest first, `more` beyond those shown). `path` null: work with no
+ * project yet. */
+export type BrowserProjectState = { path: string | null; name: string; href: string; state: DisplayState; counts: StateCounts;
+  tasks: BrowserRailTask[]; more: number };
+/** One task on the rail: its state, and its agent's last act when one is at work (else the state's words). */
+export type BrowserRailTask = { id: string; title: string; href: string; state: DisplayState; line: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */
 export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number;
   /** What the count covers, said aloud and on hover: "3 need you in shop". */

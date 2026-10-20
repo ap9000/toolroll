@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { BrowserCrewItem, BrowserMessage, BrowserProjectState, BrowserWorkspace } from "../browser-workspace.js";
+import type { BrowserCrewItem, BrowserMessage, BrowserProjectState, BrowserRailTask, BrowserWorkspace } from "../browser-workspace.js";
 import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-words.js";
 import {
   Alert, Artifact, ArtifactContent, Badge, Conversation, ConversationContent,
@@ -382,35 +382,62 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
 const STATE_GLYPH: Record<DisplayState, GlyphKind> = {
   "needs-you": "decide", failed: "failed", stuck: "unblock", paused: "idle", working: "building", waiting: "idle", done: "done", idle: "idle" };
 
-/** A summary snapshot as the summary room sends it (its `at`), read strictly: anything else is ignored. */
+/** A summary snapshot as the summary room sends it (its `at`), read strictly: anything malformed is no snapshot. */
 export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
   if (typeof raw !== "string") return null;
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
   if (!Array.isArray(parsed)) return null;
+  const text = (value: unknown, max: number) => typeof value === "string" && value.length <= max;
   const states: BrowserProjectState[] = [];
   for (const one of parsed) {
     if (one === null || typeof one !== "object") return null;
-    const { path, state, counts } = one as Record<string, unknown>;
-    if (typeof path !== "string" || !DISPLAY_STATES.includes(state as DisplayState) || counts === null || typeof counts !== "object") return null;
+    const { path, name, href, state, counts, tasks, more } = one as Record<string, unknown>;
+    if (!(path === null || text(path, 4096)) || !text(name, 400) || !text(href, 8192) || !(href as string).startsWith("/")
+      || !DISPLAY_STATES.includes(state as DisplayState) || counts === null || typeof counts !== "object"
+      || !Array.isArray(tasks) || typeof more !== "number" || !Number.isInteger(more) || more < 0) return null;
     const read = Object.fromEntries(DISPLAY_STATES.map(key => [key, (counts as Record<string, unknown>)[key]]));
     if (Object.values(read).some(value => typeof value !== "number" || !Number.isInteger(value) || value < 0)) return null;
-    states.push({ path, state: state as DisplayState, counts: read as BrowserProjectState["counts"] });
+    const rail: BrowserRailTask[] = [];
+    for (const task of tasks) {
+      if (task === null || typeof task !== "object") return null;
+      const t = task as Record<string, unknown>;
+      if (!text(t["id"], 400) || !text(t["title"], 2000) || !text(t["href"], 8192) || !(t["href"] as string).startsWith("/")
+        || !DISPLAY_STATES.includes(t["state"] as DisplayState) || !text(t["line"], 2000)) return null;
+      rail.push({ id: t["id"] as string, title: t["title"] as string, href: t["href"] as string, state: t["state"] as DisplayState, line: t["line"] as string });
+    }
+    states.push({ path: path as string | null, name: name as string, href: href as string, state: state as DisplayState, counts: read as BrowserProjectState["counts"], tasks: rail, more });
   }
   return states;
+}
+
+/** The page's one summary snapshot, shared by every part that shows it (the rail, the phone chip, the sheet): the
+ * page's own read until the summary room says more; `gone` or a lost stream clears it until the next read. */
+const summary = { states: null as BrowserProjectState[] | null, from: null as BrowserWorkspace["projectStates"] | null, listeners: new Set<() => void>() };
+function setSummary(states: BrowserProjectState[] | null): void {
+  summary.states = states;
+  for (const listener of [...summary.listeners]) listener();
 }
 
 /** The page's project states, kept current by the summary room; none on a sensitive page. Reading it never watches
  * or sees anything. */
 export function useProjectStates(workspace: BrowserWorkspace): BrowserProjectState[] | null {
-  const [states, setStates] = useState<BrowserProjectState[] | null>(workspace.projectStates ?? null);
-  useEffect(() => { setStates(workspace.projectStates ?? null); }, [workspace.projectStates]);
-  useLiveRoom(workspace.sensitive || workspace.projectStates === undefined ? null : "summary", (event, data) => {
+  const off = workspace.sensitive || workspace.projectStates === undefined;
+  // A new page read is the newest word: it replaces whatever the room said before it.
+  if (!off && summary.from !== workspace.projectStates) { summary.from = workspace.projectStates; summary.states = workspace.projectStates ?? null; }
+  const [, render] = useState(0);
+  useEffect(() => {
+    const listener = () => render(n => n + 1);
+    summary.listeners.add(listener);
+    return () => { summary.listeners.delete(listener); };
+  }, []);
+  useLiveRoom(off ? null : "summary", (event, data) => {
+    if (event === "gone" || event === "lost") { setSummary(null); return; }
     if (event !== "change") return;
     const next = readProjectStates(data["at"]);
-    if (next !== null) setStates(next);
+    if (next !== null) setSummary(next);
   });
-  return workspace.sensitive ? null : states;
+  return off ? null : summary.states;
 }
 
 /** A project's counts in words, strongest first, leaving out what is zero (idle is never counted). */
@@ -419,26 +446,26 @@ export function projectCountWords(state: BrowserProjectState): string {
     .map(key => `${state.counts[key]} ${key === "needs-you" ? (state.counts[key] === 1 ? "needs you" : "need you") : STATE_WORDS[key].toLowerCase()}`).join(" · ");
 }
 
-/** The sidebar's projects, each with its state and counts; under the open one, its tasks with something live or asking. */
-export function ProjectStates({ workspace, states, current }: { workspace: BrowserWorkspace; states: BrowserProjectState[]; current: string | null }) {
-  const byPath = new Map(states.map(one => [one.path, one]));
-  const tasks = current === null ? [] : workspace.crew.filter(item => item.project === current && item.tone !== "done" && item.state !== "cancelled"
-    && crewGroupOf(item) !== "waiting").slice(0, 8);
+/** The sidebar's projects, each with its state and counts; under the open one, its tasks with something live, asking,
+ * failed or unread, and how many more. Everything here is the summary snapshot, so it moves with it. */
+export function ProjectStates({ states, current }: { states: BrowserProjectState[]; current: string | null }) {
   return <nav aria-label="Projects now" className="so-project-states" data-project-states>
-    {workspace.projects.map(project => {
-      const state = byPath.get(project.path);
-      if (state === undefined) return null;
+    {states.map(state => {
       const words = projectCountWords(state);
-      return <div key={project.path} className="so-project-state" data-project-state={state.state}>
-        <a href={project.href} aria-current={project.path === current ? "true" : undefined} title={words === "" ? STATE_WORDS.idle : words}>
-          <StatusGlyph kind={STATE_GLYPH[state.state]} /><span className="so-project-state-name">{project.name}</span>
+      const open = state.path !== null && state.path === current;
+      return <div key={state.path ?? "(none)"} className="so-project-state" data-project-state={state.state}>
+        <a href={state.href} aria-current={open ? "true" : undefined} title={words === "" ? STATE_WORDS.idle : words}>
+          <StatusGlyph kind={STATE_GLYPH[state.state]} /><span className="so-project-state-name">{state.name}</span>
           {words !== "" && <span className="so-project-state-counts">{words}</span>}
           <span className="so-sr-only">{STATE_WORDS[state.state]}</span>
         </a>
-        {project.path === current && tasks.length > 0 && <ul className="so-project-tasks">{tasks.map(item => <li key={item.id}>
-          <a href={item.href} title={item.title}><StatusGlyph kind={headlineGlyph(item.tone)} /><span className="so-project-task-title">{item.title}</span>
-            <span className="so-project-task-line">{item.activity?.what ?? item.detail ?? item.label}</span></a>
-        </li>)}</ul>}
+        {(open || state.path === null) && state.tasks.length > 0 && <ul className="so-project-tasks">
+          {state.tasks.map(task => <li key={task.id} data-rail-task={task.state}>
+            <a href={task.href} title={task.title}><StatusGlyph kind={STATE_GLYPH[task.state]} /><span className="so-project-task-title">{task.title}</span>
+              <span className="so-project-task-line">{task.line}</span></a>
+          </li>)}
+          {state.more > 0 && <li><a className="so-project-tasks-more" href={state.href}>{state.more} more</a></li>}
+        </ul>}
       </div>;
     })}
   </nav>;
@@ -465,7 +492,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "agents", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
         {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
     })}</nav>
-    {states !== null && states.length > 0 && <ProjectStates workspace={workspace} states={states} current={currentProject?.path ?? null} />}
+    {states !== null && states.length > 0 && <ProjectStates states={states} current={currentProject?.path ?? null} />}
     {currentProject && <div className="so-project-links">
       <a className="so-project-knowledge" href={`/chat?project=${encodeURIComponent(currentProject.path)}`}>Project chat</a>
       <a className="so-project-knowledge" href={currentProject.knowledgeHref}>Project knowledge</a>

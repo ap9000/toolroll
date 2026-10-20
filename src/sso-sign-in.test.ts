@@ -15,6 +15,7 @@ import { openStore, type Store } from "./store.js";
 import { html, htmlString } from "./html.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer, ssoStepUps } from "./serve.js";
+import { workspaceOf } from "../test/serve-kit.js";
 
 const ISSUER = "https://sso.example.com";
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -133,6 +134,9 @@ test("a step-up is the provider's check from moments ago; later, a link to be ch
   const tools = await (await fetch(`${base}/settings/tools`, { headers: { cookie } })).text();
   expect(tools).toContain('data-sso-step-up="confirmed"');
   expect(tools).not.toMatch(/type="password"[^>]*autocomplete="current-password"/);
+  // Still a password page as written (cockpit §2, R14): sensitive, so no sidebar states ride along.
+  expect(workspaceOf(tools)).toMatchObject({ sensitive: true });
+  expect(workspaceOf(tools).projectStates).toBeUndefined();
   const add = (csrf: string) => fetch(`${base}/settings/tools/change`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, repo: "/repo/main", shown: "/repo/main", action: "add-catalog", catalog: "playwright", password: "" }) });
   expect((await add(csrfOf(tools))).headers.get("location")).toContain("said=");
   // Eleven minutes on: the page asks to confirm with the provider, and an empty password no longer does.

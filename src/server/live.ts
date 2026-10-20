@@ -89,17 +89,24 @@ type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number
 const json = (response: ServerResponse, status: number, value: unknown): void => respond(response, status, "application/json", JSON.stringify(value));
 
 export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus; workspaceRevision: WorkspaceRevision; chatProjectOf: (projects: string[]) => string | null | undefined;
-  /** One account's sidebar snapshot (serve.ts projectSummaryFor), read as that account; null: no such account. */
-  projectSummaryFor: (account: string) => string | null }) {
+  /** One account's sidebar snapshot for one scope (serve.ts projectSummaryFor); null: gone, or the scope moved. */
+  projectSummaryFor: (account: string, scope: string) => string | null;
+  /** What one account may see now (serve.ts projectScopeFor); null: no such account. */
+  projectScopeFor: (account: string) => string | null }) {
   const { store, identify, liveCeiling, familyOf, taskRooms, flowRooms, clock, leadPrincipal, taskChatFocus, chatScopeOf, liveTurns, team, visible } = runtime;
 
   // The reader's workspace: one room for everyone, nudged by any meaningful write or a clock-bound lapse.
   const workspaceRooms = createLiveRooms<"workspace", Viewer>(() => `${live.workspaceRevision.current()}:${live.workspaceRevision.expiresAt(clock())}`, null,
     { bus: live.bus, minIntervalMs: WORKSPACE_SETTLE_MS });
-  // The reader's project states, per account: the fingerprint IS the snapshot, so each `change` carries it (`at`).
-  // Re-read as the account on every signal, so a narrowed grant narrows the next snapshot.
-  const summaryRooms = createLiveRooms<string, Viewer>(account => live.projectSummaryFor(account), null,
-    { bus: live.bus, minIntervalMs: WORKSPACE_SETTLE_MS });
+  // The reader's project states, per account AND scope: the fingerprint IS the snapshot, so each `change` carries it
+  // (`at`). Every delivery re-proves the viewer's scope, so a snapshot read for a wider scope (a cached one, a held
+  // one, one a newcomer would be handed on joining) never reaches a narrowed reader: it hears `gone` instead. Reads
+  // settle: a burst of writes is one read, while every signal still re-proves at once.
+  const summaryKey = (account: string, scope: string) => JSON.stringify([account, scope]);
+  const summaryRooms = createLiveRooms<string, Viewer>(key => {
+    const [account, scope] = JSON.parse(key) as [string, string];
+    return live.projectSummaryFor(account, scope);
+  }, null, { bus: live.bus, minIntervalMs: WORKSPACE_SETTLE_MS, readSettleMs: WORKSPACE_SETTLE_MS });
   // A team audience is per actor (and per token): its key carries who reads, the room keeps how to read as them.
   const teamActors = new Map<string, TeamActor>();
   const teamRooms = createLiveRooms<string, Viewer>(key => {
@@ -215,7 +222,11 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         joins.push(connection => workspaceRooms.join("workspace", { name: who.name, room: name, connection, valid: sameBrowser(request, browser) }));
       } else if (room.kind === "summary") {
         const browser = who as Who & { via: "cookie" };
-        joins.push(connection => summaryRooms.join(who.name, { name: who.name, room: name, connection, valid: sameBrowser(request, browser) }));
+        const scope = live.projectScopeFor(who.name);
+        if (scope === null) return json(response, 404, { error: "summary" });
+        const signedIn = sameBrowser(request, browser);
+        joins.push(connection => summaryRooms.join(summaryKey(who.name, scope), { name: who.name, room: name, connection,
+          valid: () => signedIn() && live.projectScopeFor(who.name) === scope }));
       } else if (room.kind === "task") {
         const browser = who as Who & { via: "cookie" };
         const family = familyOf(room.task);

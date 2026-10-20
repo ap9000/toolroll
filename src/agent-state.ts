@@ -75,7 +75,11 @@ const WAITING_CODES = new Set(["queued", "planning-ready", "scouting-ready", "up
 /** Codes whose family is at work: its attempts say how. */
 const AT_WORK = new Set(["running", "stopping"]);
 
-export type ProjectState = { repo: string | null; state: DisplayState; counts: StateCounts };
+/** One task family's strongest state in a project, and its one line when an agent is at work on it. */
+export type FamilyState = { rootId: string; state: DisplayState; line: string | null };
+export type ProjectState = { repo: string | null; state: DisplayState; counts: StateCounts;
+  /** Each family that counted, strongest first (flow cards count without one). */
+  families: FamilyState[] };
 
 /**
  * A project's states for one person: complete counts over every task family they may see, with the Tasks list's own
@@ -86,10 +90,15 @@ export type ProjectState = { repo: string | null; state: DisplayState; counts: S
  */
 export function projectStates(store: Store, access: WorkSummaryAccess, account: string, now: Date, root?: string, flowRepos?: readonly string[]): ProjectState[] {
   const counts = new Map<string | null, StateCounts>();
-  const bump = (repo: string | null, state: DisplayState) => {
+  const strongest = new Map<string, FamilyState & { repo: string | null }>();
+  const bump = (repo: string | null, state: DisplayState, rootId?: string, line: string | null = null) => {
     const current = counts.get(repo) ?? { ...NO_COUNTS };
     current[state] += 1;
     counts.set(repo, current);
+    if (rootId === undefined || state === "waiting" || state === "idle") return;
+    const before = strongest.get(rootId);
+    if (before === undefined || DISPLAY_STATES.indexOf(state) < DISPLAY_STATES.indexOf(before.state)) strongest.set(rootId, { repo, rootId, state, line: line ?? before?.line ?? null });
+    else if (before.line === null && line !== null) before.line = line;
   };
   for (const repo of access.repos ?? store.listProjects().map(one => one.path)) counts.set(repo, { ...NO_COUNTS });
 
@@ -122,33 +131,36 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
   for (const row of families) {
     // At work: its attempts are counted below; a stop whose run has ended but whose process is not yet confirmed gone
     // is still at work.
-    if (AT_WORK.has(row.code)) { if (!attempting.has(row.rootId)) bump(row.repo, "working"); continue; }
+    if (AT_WORK.has(row.code)) { if (!attempting.has(row.rootId)) bump(row.repo, "working", row.rootId); continue; }
     const result = row.resultRun === null ? null : resultFacts.get(row.resultRun);
-    if (row.code === "failed" || row.code === "vanished-run") { bump(row.repo, "failed"); continue; }
+    if (row.code === "failed" || row.code === "vanished-run") { bump(row.repo, "failed", row.rootId); continue; }
     // Waiting its turn, as the Tasks list ranks it: confirmations another computer owes included.
-    if (row.waits) { bump(row.repo, "waiting"); continue; }
+    if (row.waits) { bump(row.repo, "waiting", row.rootId); continue; }
     // A result waiting on a person is a failure when it failed or its checks failed (as its headline reads).
     const asks = row.code === "ready-to-check" || row.code === "result-needs-attention";
-    if (asks && (result?.["outcome"] === "failed" || (row.resultRun !== null && checksFailed(row.resultRun)))) { bump(row.repo, "failed"); continue; }
+    if (asks && (result?.["outcome"] === "failed" || (row.resultRun !== null && checksFailed(row.resultRun)))) { bump(row.repo, "failed", row.rootId); continue; }
     // A family the person's lead has taken on waits on nobody (the Tasks list's rule); a failure still leads, above.
-    if (row.leadClaim) { bump(row.repo, "waiting"); continue; }
-    if (asks || row.personNeed) { bump(row.repo, "needs-you"); needing.add(row.rootId); continue; }
-    if (WAITING_CODES.has(row.code)) { bump(row.repo, "waiting"); continue; }
-    if (row.code === "complete" && row.resultRun !== null && unseen.has(row.resultRun)) bump(row.repo, "done");
+    if (row.leadClaim) { bump(row.repo, "waiting", row.rootId); continue; }
+    if (asks || row.personNeed) { bump(row.repo, "needs-you", row.rootId); needing.add(row.rootId); continue; }
+    if (WAITING_CODES.has(row.code)) { bump(row.repo, "waiting", row.rootId); continue; }
+    if (row.code === "complete" && row.resultRun !== null && unseen.has(row.resultRun)) bump(row.repo, "done", row.rootId);
   }
   // Each live attempt: paused, stuck or at work; one that needs a person counts there, unless its family already does.
   for (const run of open) {
     const family = familyOf.get(Number(run["task_ref"]));
     if (family === undefined) continue;
     const id = Number(run["id"]);
-    if (paused.has(id)) { bump(family.repo, "paused"); continue; }
-    if (run["role"] !== "builder") { bump(family.repo, "working"); continue; } // only builds are watched for quiet
+    // What the agent did last, in the task page's own words: the rail's line for this family.
+    const activity = runActivityOf(store, { id, runner: String(run["runner"]), startedAt: String(run["started_at"]) }, now);
+    const line = activity.what === "" ? null : activity.what;
+    if (paused.has(id)) { bump(family.repo, "paused", family.rootId, line); continue; }
+    if (run["role"] !== "builder") { bump(family.repo, "working", family.rootId, line); continue; } // only builds are watched for quiet
     const facts = agentFactsFor(store, id, { repos: null }, account);
-    if (facts === null || facts.outcome !== null) { bump(family.repo, "working"); continue; }
-    const at = runActivityOf(store, { id, runner: String(run["runner"]), startedAt: String(run["started_at"]) }, now).at;
+    if (facts === null || facts.outcome !== null) { bump(family.repo, "working", family.rootId, line); continue; }
+    const at = activity.at;
     const state = displayStateOf(factsOfAttempt(facts, at, false, now));
-    if (state === "needs-you") { if (!needing.has(family.rootId)) { bump(family.repo, "needs-you"); needing.add(family.rootId); } else bump(family.repo, "working"); continue; }
-    bump(family.repo, state === "stuck" ? "stuck" : "working");
+    if (state === "needs-you") { if (!needing.has(family.rootId)) { bump(family.repo, "needs-you", family.rootId, line); needing.add(family.rootId); } else bump(family.repo, "working", family.rootId, line); continue; }
+    bump(family.repo, state === "stuck" ? "stuck" : "working", family.rootId, line);
   }
 
   // Flow cards waiting at a person's decision (an approval or a choice), in the flows this person may see: one uncapped
@@ -164,6 +176,8 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
     for (let i = 0; i < n; i++) bump(flow.repo, "needs-you");
   }
 
-  return [...counts.entries()].map(([repo, value]) => ({ repo, ...rollUp(value) }))
+  const rank = (one: FamilyState) => DISPLAY_STATES.indexOf(one.state);
+  return [...counts.entries()].map(([repo, value]) => ({ repo, ...rollUp(value),
+    families: [...strongest.values()].filter(one => one.repo === repo).map(({ rootId, state, line }) => ({ rootId, state, line })).sort((a, b) => rank(a) - rank(b)) }))
     .sort((a, b) => (a.repo ?? "").localeCompare(b.repo ?? ""));
 }

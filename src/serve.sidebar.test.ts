@@ -144,11 +144,46 @@ describe("the sidebar's project states", () => {
       const pending = workspaceOf(await (await fetch(`${at}/next`, { headers: { cookie } })).text());
       expect(pending.sensitive).toBe(true);
       expect(pending.projectStates).toBeUndefined();
+      // Work with no project yet is its own entry for a reader who may see it.
+      store.createTask({ id: "t-loose", title: "Somewhere" }, T0);
+      store.refFor("built-in", "t-loose", "ours");
+      const loose = workspaceOf(await (await fetch(`${at}/agents`, { headers: { cookie } })).text()).projectStates?.find(one => one.path === null);
+      expect(loose).toMatchObject({ name: "No project", state: "needs-you" });
       // The same reader's ordinary page has them.
       expect((await (async () => workspaceOf(await (await fetch(`${at}/agents`, { headers: { cookie } })).text()))()).projectStates).toBeDefined();
     } finally {
       single.closeAllConnections?.();
       await new Promise<void>(resolve => single.close(() => resolve()));
+    }
+  });
+
+  test("a narrowed console never hands out a wider snapshot: an open room hears gone, and a newcomer gets the narrow one", async () => {
+    let admitted = [repoA, repoB];
+    const narrowing = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], admittedRepos: () => admitted, clock: () => new Date() });
+    await new Promise<void>(resolve => narrowing.listen(0, "127.0.0.1", resolve));
+    const address = narrowing.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    const at = `http://127.0.0.1:${address.port}`;
+    try {
+      running("t-a", repoA);
+      const signedIn = await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alexToken }), redirect: "manual" });
+      const cookie = (signedIn.headers.get("set-cookie") ?? "").split(";")[0]!;
+      const wide = new AbortController();
+      const stream = (await fetch(`${at}/live?room=summary`, { headers: { cookie, accept: "text/event-stream" }, signal: wide.signal })).body!.getReader();
+      expect(Object.keys(statesOf(snapshotOf(await until(stream, frame => frame.includes("event: change")))))).toContain(repoA);
+      // The console now serves project B only; the next write re-proves the open room.
+      admitted = [repoB];
+      store.createTask({ id: "t-nudge", title: "nudge" }, T0);
+      const after = await until(stream, frame => frame.includes("event: gone") || frame.includes("event: change"));
+      expect(after).toContain("event: gone");
+      wide.abort();
+      const narrow = new AbortController();
+      const fresh = (await fetch(`${at}/live?room=summary`, { headers: { cookie, accept: "text/event-stream" }, signal: narrow.signal })).body!.getReader();
+      expect(Object.keys(statesOf(snapshotOf(await until(fresh, frame => frame.includes("event: change")))))).not.toContain(repoA);
+      narrow.abort();
+    } finally {
+      narrowing.closeAllConnections?.();
+      await new Promise<void>(resolve => narrowing.close(() => resolve()));
     }
   });
 

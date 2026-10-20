@@ -193,6 +193,7 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-project-state[data-project-state="needs-you"] .so-project-state-counts { color: var(--so-attention); }
 .so-project-tasks { display: grid; gap: 1px; margin: 2px 0 var(--so-space-sm); padding: 0 0 0 18px; list-style: none; }
 .so-project-tasks a { display: grid; grid-template-columns: auto 1fr; column-gap: var(--so-space-sm); align-items: center; padding: 3px 10px; border-radius: 6px; font-size: 12px; color: var(--so-ink); text-decoration: none; }
+.so-project-tasks a.so-project-tasks-more { display: block; color: var(--so-muted); }
 .so-project-task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .so-project-task-line { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--so-muted); }
 @media (hover: hover) and (pointer: fine) { .so-project-state > a:hover, .so-project-tasks a:hover { background: var(--so-raised); } }

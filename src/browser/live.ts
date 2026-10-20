@@ -97,6 +97,17 @@ class LiveHub {
 
 const hub = new LiveHub();
 
+/** Rooms a server-rendered region may ask the page's stream for (chrome.ts regionScript): it pushes the name onto
+ * `window.__soLiveRooms`, before or after this module loads, and hears its events as `so:live`. */
+const REGION_ROOMS = new Set(["workspace"]);
+if (typeof window !== "undefined") {
+  const holder = window as unknown as { __soLiveRooms?: unknown };
+  const join = (room: unknown): number => { if (typeof room === "string" && REGION_ROOMS.has(room)) hub.subscribe(room, () => {}); return 0; };
+  const asked = holder.__soLiveRooms;
+  if (Array.isArray(asked)) for (const room of asked) join(room);
+  holder.__soLiveRooms = { push: join };
+}
+
 /** Join a room for as long as the component shows it; null joins nothing. The listener may change freely. */
 export function useLiveRoom(room: string | null, listener: LiveListener): void {
   const current = useRef(listener);

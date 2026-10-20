@@ -2,8 +2,10 @@ import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./l
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
-import { NO_COUNTS, projectStates } from './agent-state.js';
-import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
+/** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
+const RAIL_TASKS = 6;
+import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -1257,6 +1259,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * are what sensitivity strips.
    */
   function sendScreen(response: ServerResponse, status: number, s: Screen): void {
+    // Sensitivity is the page as authored (cockpit §2, R14): its own explicit word, else a password field it was written
+    // with — judged before an identity-provider sign-in replaces that field, so an SSO step-up page stays sensitive.
+    const authored = s.sensitive ?? (
+      s.forceSensitive === true ||
+      SENSITIVE_INPUT.test(htmlString(s.body)) ||
+      (s.workspace?.pageHtml != null && SENSITIVE_INPUT.test(htmlString(s.workspace.pageHtml))) ||
+      (s.chrome?.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(s.chrome.listPane))));
     // v100: signed in with the identity provider, a step-up's password field is that sign-in instead.
     const ssoFacts = requestContext.getStore()?.sso;
     if (ssoFacts !== undefined) {
@@ -1265,10 +1274,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
-    const sensitive =
-      s.forceSensitive === true ||
-      SENSITIVE_INPUT.test(htmlString(s.body)) ||
-      (s.chrome?.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(s.chrome.listPane)));
+    const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
     if (requestFacts?.browser && s.chrome && !s.forceSensitive && (requestFacts.workspaceRead || browserAssetsAvailable())) {
       const path = new URL(requestFacts.returnTo, 'http://standing-orders.local');
@@ -1415,16 +1421,36 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return rows;
   }
   /** The sidebar's projects with their states (agent-state.ts), for the request's own reader: the page's first read
-   * and the summary room's snapshots are this one function, so the two never disagree. Never marks anything seen. */
+   * and the summary room's snapshots are this one function, so the two never disagree. Never marks anything seen.
+   * Work with no project yet is its own entry when this reader may see it and something counts there. */
   function projectSummary(): BrowserProjectState[] {
     const projects = sidebarProjects();
     const actor = requestContext.getStore()?.actor ?? '';
     const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
-    return projects.map(one => { const state = states.get(one.path); return { path: one.path, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS } }; });
+    const railOf = (state: ProjectState | undefined) => {
+      const families = state?.families ?? [];
+      const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
+        const task = store.getTask(one.rootId);
+        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: one.line ?? STATE_WORDS[one.state] }];
+      });
+      return { tasks, more: Math.max(0, families.length - RAIL_TASKS) };
+    };
+    const rows: BrowserProjectState[] = projects.map(one => {
+      const state = states.get(one.path);
+      return { path: one.path, name: one.name, href: `/work?project=${encodeURIComponent(one.path)}`, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
+    });
+    const unplaced = states.get(null);
+    if (unplaced !== undefined && unplaced.state !== 'idle') rows.push({ path: null, name: 'No project', href: '/work', state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
+    return rows;
   }
-  /** One account's summary snapshot, read as that account (the summary room's fingerprint): null when it has no account. */
-  const projectSummaryFor = (account: string): string | null =>
-    store.accountOf(account) === null ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify(projectSummary()));
+  /** What one account may see now, as the summary room keys it: a narrowed ceiling or grant is a different key, so a
+   * snapshot read for the wider scope never reaches it. Null: no such account. */
+  const projectScopeFor = (account: string): string | null =>
+    store.accountOf(account) === null ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify({ projects: sidebarProjects().map(one => one.path), access: workAccess() }));
+  /** One account's summary snapshot, read as that account for this exact scope (the summary room's fingerprint): null
+   * when the account is gone or its scope moved. */
+  const projectSummaryFor = (account: string, scope: string): string | null =>
+    projectScopeFor(account) !== scope ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify(projectSummary()));
 
   /** The sidebar's facts for this request. */
   function chromeFor(
@@ -1811,7 +1837,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get teamsSourceBudget() { return teamsSourceBudget; },
     get teamsTenantBudget() { return teamsTenantBudget; },
   };
-  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor });
+  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor, projectScopeFor });
   liveTurnStarted = liveHandlers.turnStarted;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
