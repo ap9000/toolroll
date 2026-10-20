@@ -449,8 +449,28 @@ export function useProjectStates(workspace: BrowserWorkspace): BrowserProjectSta
     if (event !== "change") return;
     const next = readProjectStates(data["at"]);
     if (next !== null) setSummary(next);
-  });
+  }, true);
   return off ? null : summary.states;
+}
+
+/** What waits on this person across every project in the snapshot. */
+export function needsYouTotal(states: readonly BrowserProjectState[] | null): number {
+  return states?.reduce((sum, one) => sum + one.counts["needs-you"], 0) ?? 0;
+}
+/** The tab's own marks (cockpit §3): "(2) " before its title and a dot on its icon while something needs this person.
+ * Driven by the summary, which a hidden tab keeps; the page's own title is never otherwise changed. */
+export function titleWithCount(title: string, count: number): string {
+  const bare = title.replace(/^\(\d+\+?\) /, "");
+  return count > 0 ? `(${count > 99 ? "99+" : count}) ${bare}` : bare;
+}
+function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
+  const count = needsYouTotal(useProjectStates(workspace));
+  useEffect(() => {
+    document.title = titleWithCount(document.title, count);
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"][type="image/svg+xml"]');
+    if (icon !== null) icon.href = count > 0 ? "/icon-attention.svg" : "/icon.svg";
+  }, [count, workspace.title]);
+  return null;
 }
 
 /** A project's counts in words, strongest first, leaving out what is zero (idle is never counted). */
@@ -582,7 +602,7 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
 function PhoneNavigation({ workspace }: { workspace: BrowserWorkspace }) {
   // On a phone the rail is a sheet: a header chip says how many need you and opens it.
   const states = useProjectStates(workspace);
-  const needing = states?.reduce((sum, one) => sum + one.counts["needs-you"], 0) ?? 0;
+  const needing = needsYouTotal(states);
   return <Dialog><DialogTrigger asChild><ViewButton variant="ghost" size="icon" className="so-mobile-menu min-[901px]:hidden max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Open navigation"><Icon name="menu" /></ViewButton></DialogTrigger>
     {needing > 0 && <DialogTrigger asChild><button type="button" className="so-needs-chip min-[901px]:hidden" data-needs-chip>{needing} need{needing === 1 ? "s" : ""} you</button></DialogTrigger>}
     <DialogContent className="so-navigation-dialog"><DialogTitle className="so-sr-only">Workspace navigation</DialogTitle><DialogDescription className="so-sr-only">Choose a project or a workspace page.</DialogDescription>
@@ -848,7 +868,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
-  return <FormToken.Provider value={workspace.csrf}><Toaster /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
     <div className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>

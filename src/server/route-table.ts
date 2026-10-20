@@ -164,7 +164,7 @@ edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "re
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
 edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });
-edge("pages", "edge.install-asset", "GET", "^\\/(manifest\\.webmanifest|favicon\\.ico|icon\\.svg|icon-192\\.png|icon-512\\.png|apple-touch-icon\\.png|sw\\.js)$", { sample: "/sw.js" });
+edge("pages", "edge.install-asset", "GET", "^\\/(manifest\\.webmanifest|favicon\\.ico|icon\\.svg|icon-attention\\.svg|icon-192\\.png|icon-512\\.png|apple-touch-icon\\.png|sw\\.js)$", { sample: "/sw.js" });
 edge("pages", "edge.font", "GET", "^\\/fonts\\/geist-(sans|mono)-(400|500|600)\\.woff2$", { sample: "/fonts/geist-sans-400.woff2" });
 edge("pages", "edge.desktop-health", "GET", "/desktop/health");
 edge("people", "edge.login-page", "GET", "/login");

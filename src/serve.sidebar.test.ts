@@ -245,6 +245,13 @@ describe("the sidebar's project states", () => {
     }
   });
 
+  test("the icon with the attention dot is served beside the plain one", async () => {
+    const dot = await fetch(url("/icon-attention.svg"));
+    expect(dot.status).toBe(200);
+    expect(dot.headers.get("content-type")).toContain("image/svg+xml");
+    expect(await dot.text()).toContain("<circle");
+  });
+
   test("one summary room per page, and only for a browser session", async () => {
     const alex = await login("alex", alexToken);
     expect((await fetch(url("/live?room=summary&room=summary"), { headers: { cookie: alex } })).status).toBe(400);

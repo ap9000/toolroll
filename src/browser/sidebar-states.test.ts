@@ -125,3 +125,35 @@ test("after gone, the page joins the summary room again on its own", async () =>
     await act(async () => { root.unmount(); });
   } finally { vi.useRealTimers(); }
 });
+
+test("the tab's title carries the count while something needs this person, and only then", async () => {
+  const { titleWithCount, needsYouTotal } = await import("./app.js");
+  expect(titleWithCount("Agents — Toolroll", 2)).toBe("(2) Agents — Toolroll");
+  expect(titleWithCount("(2) Agents — Toolroll", 5)).toBe("(5) Agents — Toolroll");
+  expect(titleWithCount("(5) Agents — Toolroll", 0)).toBe("Agents — Toolroll");
+  expect(titleWithCount("Agents", 140)).toBe("(99+) Agents");
+  expect(needsYouTotal([project("/a", { "needs-you": 2 }, "needs-you"), project(null, { "needs-you": 1 }, "needs-you")])).toBe(3);
+  expect(needsYouTotal(null)).toBe(0);
+});
+
+test("a hidden tab keeps only the summary room: the count stays live, and nothing else is watched", async () => {
+  FakeStream.all = [];
+  (globalThis as unknown as { EventSource: unknown }).EventSource = FakeStream;
+  const { useLiveRoom } = await import("./live.js");
+  let hidden = false;
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  const Parts = () => { useLiveRoom("summary", () => {}, true); useLiveRoom("agent:7", () => {}); return null; };
+  const root = createRoot(document.createElement("div"));
+  await act(async () => { root.render(createElement(Parts)); });
+  await act(async () => { await Promise.resolve(); });
+  const open = () => FakeStream.all.filter(one => one.readyState !== FakeStream.CLOSED).map(one => decodeURIComponent(one.url));
+  expect(open()).toEqual(["/live?room=agent:7&room=summary"]);
+  hidden = true;
+  await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(open()).toEqual(["/live?room=summary"]);
+  hidden = false;
+  await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(open()).toEqual(["/live?room=agent:7&room=summary"]);
+  await act(async () => { root.unmount(); });
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+});
