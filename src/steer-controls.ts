@@ -10,11 +10,12 @@ import type { Store } from "./store.js";
 
 const taskHrefOf = (taskId: string) => `/t/${encodeURIComponent(taskId)}`;
 
-/** The attempt running for a task now (any role, under the task's live claim; a child shows as its owner's own). */
+/** The attempt running for a task now: one under the task's live claim (any role; a child shows as its owner's own),
+ * or a review, which runs under its own claim (requestRunStop exempts it from the task's). */
 export function liveAttemptOf(store: Store, taskRef: number, now: Date): number | null {
   const lease = store.currentLiveLease(taskRef, now);
-  if (lease === null) return null;
-  const row = store.handle.prepare("SELECT id FROM run WHERE task_ref = ? AND lease_id = ? AND outcome IS NULL AND finished_at IS NULL ORDER BY id DESC LIMIT 1").get(taskRef, lease);
+  const row = store.handle.prepare(`SELECT id FROM run WHERE task_ref = ? AND outcome IS NULL AND finished_at IS NULL
+      AND (lease_id = ? OR role = 'reviewer') ORDER BY (lease_id = ?) DESC, id DESC LIMIT 1`).get(taskRef, lease ?? "", lease ?? "");
   return row === undefined ? null : Number(row["id"]);
 }
 

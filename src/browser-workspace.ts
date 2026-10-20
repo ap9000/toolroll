@@ -279,6 +279,9 @@ export type BrowserTaskView = {
   /** The running attempt's composer (steer-controls.ts): what it takes, said plainly, and its note box when it takes
    * notes. Pause and Stop stay as `pause` and `stop`. */
   steering?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
+  /** This task's latest attempts, newest first: a draft this tab wrote for one that has since ended shows with a way
+   * to send it to the next attempt. */
+  steerRecent?: number[];
   /** Pause and Pause and steer, beside Stop: the same exact live Claude build, one request id per form (Pause, the note,
    * Resume), where its latest pause stands (null: running), and until when a paused build can wait before it ends. */
   pause?: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until?: string | null; limitMs?: number | null } | null;

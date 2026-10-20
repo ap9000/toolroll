@@ -525,6 +525,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         base: taskBaseOf(runtime.store, taskId),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
+        steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
         // The running attempt's composer, for an approver on a browser session (steer-controls.ts).
         steerComposer: (() => {
           const run = ref === null ? null : liveAttemptOf(runtime.store, ref.id, now);

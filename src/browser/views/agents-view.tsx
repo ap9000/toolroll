@@ -170,7 +170,7 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
     className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
       : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} />
-        {pauseAndSend !== null && <input type="hidden" name="request" value={pauseAndSend.requests[1]} />}</>}
+        {pauseAndSend !== null && <input type="hidden" name="request" value={`steer-${draft.key}`} />}</>}
     <label className="sr-only" htmlFor="agent-composer">{reply ? `Reply to: ${question.text}` : "A note for the agent"}</label>
     <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => { if (reply) setDraft(previous => ({ ...previous, text: event.target.value })); else setText(event.target.value); }}
       placeholder={reply ? "Your answer" : "Tell the agent something"} className="min-h-11 min-w-0 flex-1 resize-none phone:min-h-11"

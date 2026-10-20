@@ -466,7 +466,7 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
     {card.task !== null && <a className="text-body text-primary underline-offset-4 hover:underline font-medium" href={card.task.href}>Open its task</a>}
     {card.task?.composer != null && <div className="flex flex-col gap-1" data-flow-task-composer>
       <SteerControls controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />
-      {card.task.composer.steer !== null && <SteerNote steer={card.task.composer.steer} controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />}
+      {card.task.composer.steer !== null && <SteerNote key={`${card.id}:${card.task.composer.steer.run}`} steer={card.task.composer.steer} controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />}
     </div>}
     {card.draft !== null && !card.canDecide && <details className="rounded-md border px-3 py-2" open data-flow-draft>
       <summary className="cursor-pointer text-body font-medium">Draft from {card.draft.title}</summary>

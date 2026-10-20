@@ -6,7 +6,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { BrowserAgentControls } from "../browser-workspace.js";
-import { SteerNote } from "./views/steer-composer.js";
+import { saveDraft, SteerNote, UnsentNote } from "./views/steer-composer.js";
 
 const controls = (over: Partial<BrowserAgentControls> = {}): BrowserAgentControls => ({ send: "live", words: "Notes reach the agent right away.",
   pause: { action: "/t/t-1/pause", run: 5, state: null, requests: ["web-a", "web-b", "web-c"], until: null }, stop: { action: "/t/t-1/stop", run: 5, label: "Stop" }, ...over });
@@ -24,7 +24,8 @@ test("the box names its run and key; Pause and send goes to the pause route only
   render(createElement(SteerNote, { steer: { action: "/t/t-1/steer", run: 5 }, controls: controls(), back: "task" }));
   const form = host.querySelector<HTMLFormElement>("[data-steer-note]")!;
   const hidden = Object.fromEntries([...form.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value]));
-  expect(hidden).toMatchObject({ return: "task", run: "5", request: "web-b" });
+  expect(hidden).toMatchObject({ return: "task", run: "5" });
+  expect(hidden["request"]).toBe(`steer-${hidden["key"]}`);
   expect(hidden["key"]).toMatch(/^[A-Za-z0-9-]{8,64}$/);
   expect(host.querySelector("[data-steer-pause-send]")?.getAttribute("formaction")).toBe("/t/t-1/pause");
   act(() => root?.render(createElement(SteerNote, { steer: { action: "/t/t-1/steer", run: 5 }, controls: controls({ pause: { action: "/t/t-1/pause", run: 5, state: "paused", requests: ["a", "b", "c"], until: null } }), back: "task" })));
@@ -45,4 +46,14 @@ test("a refused send keeps the draft through a reload; the page coming back with
   history.replaceState(null, "", `/t/t-1?sent=${key}`);
   render(createElement(SteerNote, { steer: { action: "/t/t-1/steer", run: 5 }, controls: controls(), back: "task" }));
   expect(host.querySelector("textarea")!.value).toBe("");
+});
+
+test("a note written for an attempt that has ended is shown, with Send to the next attempt naming that attempt", () => {
+  saveDraft(3, { text: "check the migration first", key: "k-unsent-0003", submitted: true });
+  render(createElement(UnsentNote, { runs: [4, 3], action: "/t/t-1/steer", back: "task" }));
+  const form = host.querySelector<HTMLFormElement>("[data-steer-unsent]")!;
+  expect(form.getAttribute("data-steer-unsent")).toBe("3");
+  expect(host.querySelector("[data-steer-unsent-text]")?.textContent).toBe("check the migration first");
+  expect(Object.fromEntries([...form.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value])))
+    .toMatchObject({ note: "check the migration first", after: "3", key: "k-unsent-0003", return: "task" });
 });

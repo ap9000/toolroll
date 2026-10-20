@@ -4,7 +4,7 @@
  * in a Details panel beside it (a Details sheet on a phone). Forms,
  * ceremonies and ledgers stay the server's own HTML (same ids, same page
  * scripts); this page only frames them. */
-import { SteerNote } from "./steer-composer.js";
+import { freshDraft, loadDraft, saveDraft, SteerNote, UnsentNote, type SteerDraft } from "./steer-composer.js";
 import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
@@ -107,13 +107,24 @@ function ResumeForm({ pause }: { pause: LivePause }) {
  * only needs the note, so the same form reads Continue there. */
 function PauseSteerForm({ pause, onCancel }: { pause: LivePause; onCancel: () => void }) {
   const paused = pause.state === "paused";
-  return <PostForm action={pause.action} className="flex w-full flex-col gap-1.5" data-task-control="pause-and-steer" data-control-run={pause.run}>
+  // The note is this attempt's draft (the note box's too): kept through a refusal, cleared only by its own send.
+  const [draft, setDraft] = useState<SteerDraft>(() => loadDraft(pause.run));
+  const setText = (value: string) => setDraft(previous => {
+    const next = previous.submitted ? { ...freshDraft(), text: value } : { ...previous, text: value };
+    saveDraft(pause.run, next);
+    return next;
+  });
+  return <PostForm action={pause.action} className="flex w-full flex-col gap-1.5" data-task-control="pause-and-steer" data-control-run={pause.run}
+    onSubmit={() => setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(pause.run, sent); return sent; })}>
     <input type="hidden" name="run" value={pause.run} />
-    <input type="hidden" name="request" value={pause.requests[1]} />
+    {/* The draft's own request: an edited draft is a new request, never a repeat of the last. */}
+    <input type="hidden" name="request" value={`steer-${draft.key}`} />
+    <input type="hidden" name="key" value={draft.key} />
     <input type="hidden" name="return" value="task" />
     <label htmlFor="pause-steer-note" className="text-body font-medium">{paused ? "Note to continue with" : "Note for the agent"}</label>
     <div className="flex flex-wrap items-end gap-2 phone:flex-col phone:items-stretch">
       <Textarea id="pause-steer-note" name="note" required autoFocus maxLength={TEXT_LIMITS.note} rows={1} placeholder="What should it do instead?" data-pause-steer-note
+        value={draft.text} onChange={event => setText(event.target.value)}
         className="min-h-9 min-w-0 flex-1 basis-72 resize-none [field-sizing:content] max-h-40 phone:min-h-11 phone:basis-auto" />
       <Button type="submit" className="phone:w-full" data-pause-steer-send>{paused ? "Continue" : "Pause and send"}</Button>
       <Button type="button" variant="ghost" className="phone:w-full" onClick={onCancel}>Cancel</Button>
@@ -177,9 +188,11 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
     {retrying && <RetryForm action={retry.action} csrf={csrf} note={retry.note ?? failure?.suggestion} />}
     {pause !== null && steering && <PauseSteerForm pause={pause} onCancel={() => setSteering(false)} />}
     {/* The running attempt: what it takes, said plainly, and a note box when it takes notes (Pause and steer sits above). */}
+    {/* A note written for an attempt that ended before it went: shown, with a way to send it to the next one. */}
+    {csrf !== "" && (view.steerRecent?.length ?? 0) > 0 && <UnsentNote runs={view.steerRecent!.filter(run => run !== view.steering?.steer?.run && run !== pause?.run)} action={`/t/${encodeURIComponent(view.id)}/steer`} back="task" />}
     {view.steering != null && csrf !== "" && <div id="steering" className="flex flex-col gap-1 border-t border-border pt-3" data-task-steering>
       <p className="text-caption text-muted-foreground" data-agent-capability>{view.steering.controls.words}</p>
-      {view.steering.steer !== null && <SteerNote steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}
+      {view.steering.steer !== null && <SteerNote key={view.steering.steer.run} steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}
     </div>}
     <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
     {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&

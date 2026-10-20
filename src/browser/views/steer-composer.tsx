@@ -70,12 +70,34 @@ export function SteerNote({ steer, controls, back }: { steer: { action: string; 
     onSubmit={() => setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(steer.run, sent); return sent; })}
     className="flex items-end gap-2 pt-2">
     <input type="hidden" name="return" value={back} /><input type="hidden" name="run" value={String(steer.run)} /><input type="hidden" name="key" value={draft.key} />
-    {pauseAndSend !== null && <input type="hidden" name="request" value={pauseAndSend.requests[1]} />}
+    {/* Pause and send's request is this draft's own: an edited draft is a new request, never a repeat of the last. */}
+    {pauseAndSend !== null && <input type="hidden" name="request" value={`steer-${draft.key}`} />}
     <label className="sr-only" htmlFor={id}>A note for the agent</label>
     <Textarea id={id} name="note" rows={1} required maxLength={4000} value={draft.text} onChange={event => setText(event.target.value)}
       placeholder="Tell the agent something" className="min-h-11 min-w-0 flex-1 resize-none"
       onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
     {pauseAndSend !== null && <Button type="submit" formAction={pauseAndSend.action} variant="outline" className="h-11 w-auto shrink-0" disabled={draft.text.trim() === ""} data-steer-pause-send>Pause and send</Button>}
     <Button type="submit" className="h-11 w-auto shrink-0" disabled={draft.text.trim() === ""}>Send</Button>
+  </PostForm>;
+}
+
+/** A note this tab wrote for one of these attempts, which ended before it went: shown with Send to the next attempt
+ * (filed for the task's next attempt, named by the attempt it was written for) or Discard. Nothing when there is none. */
+export function UnsentNote({ runs, action, back }: { runs: readonly number[]; action: string; back: SteerBack }) {
+  const [found, setFound] = useState<{ run: number; draft: SteerDraft } | null>(() => {
+    for (const run of runs) { const draft = loadDraft(run); if (draft.text.trim() !== "") return { run, draft }; }
+    return null;
+  });
+  if (found === null) return null;
+  const discard = () => { saveDraft(found.run, { ...freshDraft(), text: "" }); setFound(null); };
+  return <PostForm action={action} className="flex flex-col gap-2 border-t border-border pt-3" data-steer-unsent={found.run}>
+    <p className="text-caption font-medium text-muted-foreground">Your note wasn't sent: its attempt ended first.</p>
+    <p className="rounded-md border border-border bg-muted px-3 py-2 text-body whitespace-pre-wrap break-words" data-steer-unsent-text>{found.draft.text}</p>
+    <input type="hidden" name="note" value={found.draft.text} /><input type="hidden" name="after" value={String(found.run)} />
+    <input type="hidden" name="key" value={found.draft.key} /><input type="hidden" name="return" value={back} />
+    <div className="flex flex-wrap gap-2">
+      <Button type="submit" className="h-11 w-auto">Send to the next attempt</Button>
+      <Button type="button" variant="ghost" className="h-11 w-auto" onClick={discard}>Discard</Button>
+    </div>
   </PostForm>;
 }

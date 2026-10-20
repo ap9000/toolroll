@@ -329,6 +329,41 @@ describe("the task page's note is for the exact attempt (cockpit §4)", () => {
   });
 });
 
+describe("composer receipts and reach (cockpit §4, round 2)", () => {
+  const form = async (cookie: string, path: string, fields: Record<string, string>) => {
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/settings"), { headers: { cookie } })).text())?.[1] ?? "";
+    const answer = await fetch(url(path), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, ...fields }).toString() });
+    return answer.headers.get("location") ?? "";
+  };
+
+  test("pause and send clears a draft only when that very note was stored: a repeated request with new words keeps the new draft", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-ps", repoA);
+    const now = new Date().toISOString();
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ?, live_input_opened_at = ? WHERE id = ?").run(now, now, run);
+    const first = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the cache", key: "draft-one-0001", return: "agents" });
+    expect(first).toContain("&sent=draft-one-0001");
+    // The same request again, with edited words (a restored form): the store answers with the first note, so nothing clears.
+    const again = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the replica", key: "draft-two-0002", return: "agents" });
+    expect(again).not.toContain("sent=");
+  });
+
+  test("a running review has its composer on the task page; the timeline opens every role in the agent view", async () => {
+    const cookie = await login("alex", alexToken);
+    const build = running("t-rev", repoA);
+    store.finishRun(build, { outcome: "built", committed: true, now: new Date() });
+    const review = store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, started_at, role, provider, parent_run) SELECT task_ref, 'review-lease-1', runner, ?, 'reviewer', provider, id FROM run WHERE id = ?")
+      .run(new Date().toISOString(), build).lastInsertRowid;
+    const view = workspaceOf(await (await fetch(url("/t/t-rev"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(view.steering).toMatchObject({ steer: null, controls: { send: null, words: "This reviewer can't take notes; stop it to change its course.", stop: { run: Number(review) } } });
+    expect(view.steerRecent).toContain(build);
+    const lanes = (await board("/agents", cookie)).lanes;
+    const hrefs = (lanes?.lanes ?? []).flatMap(lane => lane.segments.map(one => one.href));
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.every(href => href.startsWith("/agents?run="))).toBe(true);
+  });
+});
+
 describe("Settings → Project → Live view", () => {
   /** The Project page's own form, as the person sees it: its csrf, and the single-use nonce Show commands carries. */
   const form = async (cookie: string, repo: string) => {

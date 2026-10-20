@@ -1437,6 +1437,8 @@ export function taskBodyParts(data: {
   livePause?: LivePauseFact | null;
   /** The running attempt's composer facts (steer-controls.ts), for this reader. */
   steerComposer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
+  /** This task's latest attempts, newest first (a tab's unsent draft for one that ended is offered on). */
+  steerRecent?: number[];
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -2742,6 +2744,7 @@ export function taskBodyParts(data: {
     stop,
     pause,
     steering: data.csrf !== "" ? data.steerComposer ?? null : null,
+    ...(data.csrf !== "" && (data.steerRecent?.length ?? 0) > 0 ? { steerRecent: data.steerRecent } : {}),
     record,
     earlier,
     approval: fragmentString(approvalHtml),

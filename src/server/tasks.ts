@@ -1755,11 +1755,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           const afterRaw = body.get("after") ?? "";
           const keyRaw = body.get("key") ?? "";
           const ended = /^[1-9][0-9]{0,14}$/.test(afterRaw) ? store.getRun(Number(afterRaw)) : null;
-          if (ended === null || ended.taskRef !== ref.id || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw) || body.has("run") || body.has("return")) {
+          const afterBack = body.get("return");
+          const afterFlow = returnedFlow(afterBack);
+          if (ended === null || ended.taskRef !== ref.id || !/^[A-Za-z0-9-]{8,64}$/.test(keyRaw) || body.has("run") || (afterBack !== null && afterBack !== "task" && afterFlow === null)) {
             return taskScreen(response, who, taskId, "that note did not say which agent it came from, so nothing was sent", 400);
           }
           // The same receipt as a send to that run: a draft already filed while it ran comes back as sent, not twice.
           const filed = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true });
+          // From the task page or a flow card: back there with the draft's key (only that draft clears), or the refusal in words.
+          if (afterBack !== null) {
+            if (filed.ok) return redirect(response, afterFlow !== null ? `/flows/${afterFlow.flow}?card=${afterFlow.card}&sent=${keyRaw}` : `${taskHref(taskId)}?sent=${keyRaw}#steering`);
+            return taskScreen(response, who, taskId, filed.reason === "task-finished" ? "this task is finished, so there's no next attempt to send it to" : filed.reason === "key-reused" ? "that form was already used — reload and send it again" : "that note will not store", 409);
+          }
           if (filed.ok) return redirect(response, `/agents?run=${ended.id}&said=steered-next&sent=${keyRaw}`);
           return redirect(response, `/agents?run=${ended.id}&said=${filed.reason === "task-finished" ? "steer-next-finished" : filed.reason === "key-reused" ? "steer-stale" : "steer-invalid"}`);
         }
@@ -2515,7 +2522,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const back = body.get("return") ?? "";
         // A note that rode along came from a composer's draft: its key comes back, so only that draft clears.
         const keyRaw = body.get("key") ?? "";
-        const sent = note !== "" && /^[A-Za-z0-9-]{8,64}$/.test(keyRaw) ? keyRaw : null;
+        // Only a note this request actually stored clears its draft: a repeated request answers with the note it stored
+        // the first time, and a draft edited since is not that note.
+        const storedId = "note" in asked && typeof asked.note === "number" ? asked.note : null;
+        const stored = storedId === null ? null : store.handle.prepare("SELECT note FROM task_steer WHERE id = ?").get(storedId)?.["note"];
+        const sent = note !== "" && /^[A-Za-z0-9-]{8,64}$/.test(keyRaw) && typeof stored === "string" && stored.trim() === note ? keyRaw : null;
         if (back === "agents") return redirect(response, `/agents?run=${Number(named)}&said=${body.get("mode") === "resume" ? "resuming" : note === "" ? "pausing" : "pausing-with-note"}${sent === null ? "" : `&sent=${sent}`}`);
         const pauseFlow = returnedFlow(back);
         if (pauseFlow !== null) return redirect(response, `/flows/${pauseFlow.flow}?card=${pauseFlow.card}${sent === null ? "" : `&sent=${sent}`}`);
