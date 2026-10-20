@@ -133,6 +133,11 @@ describe("an explicit identity-provider re-check", () => {
  * A syntax-aware reading of every source file (.ts and .tsx, oxc's parser via rolldown): member reads, destructuring
  * and calls, whatever the spelling (optional chains, bracket keys, parentheses, aliases of the object).
  */
+/** Every production module the compiler or runtime could load from src: TS and JS in all their module flavours. */
+const MODULE = /\.(?:[cm]?tsx?|[cm]?jsx?)$/;
+const productionSources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(one => one.isDirectory() ? productionSources(join(dir, one.name))
+  : MODULE.test(one.name) && !/\.test\.[cm]?[jt]sx?$/.test(one.name) && !/\.d\.[cm]?ts$/.test(one.name) ? [join(dir, one.name)] : []);
+const langOf = (path: string): "ts" | "tsx" | "js" | "jsx" => /x$/.test(path) ? (/\.[cm]?jsx$/.test(path) ? "jsx" : "tsx") : /\.[cm]?js$/.test(path) ? "js" : "ts";
 type Hits = Record<string, Record<string, number>>;
 const FACT_NAMES = new Set(["passwordAt", "ssoReauthAt", "ssoNowAt", "freshFloor"]);
 const WATCHED_CALLS = new Set(["authenticateAccount", "authenticateApprover", "checkApproverPassword", "proveAccountNow", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone"]);
@@ -159,7 +164,7 @@ function audit(files: { path: string; text: string }[]): Hits {
     : null;
   const keyName = (key: Node | undefined): string => key === undefined ? "" : String(key["name"] ?? key["value"] ?? "");
   for (const { path, text } of files) {
-    const parsed = parseSync(path, text, { lang: path.endsWith(".tsx") ? "tsx" : "ts" });
+    const parsed = parseSync(path, text, { lang: langOf(path) });
     if (parsed.errors.length > 0) { add("unparsed", path); continue; }
     // Local names for an SSO object and for each watched function, closed under aliasing (`const a = ctx.sso`,
     // `const b = a`, `const { sso: c } = ctx`, `import { authenticateAccount as check }`, `const check2 = check`).
@@ -249,8 +254,7 @@ function audit(files: { path: string; text: string }[]): Hits {
 }
 
 describe("where freshness may be honoured", () => {
-  const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(one => one.isDirectory() ? sources(join(dir, one.name))
-    : /\.tsx?$/.test(one.name) && !/\.test\.tsx?$/.test(one.name) && !one.name.endsWith(".d.ts") ? [join(dir, one.name)] : []);
+  const sources = productionSources;
   const files = sources("src").map(path => ({ path, text: readFileSync(path, "utf8") }));
   const hits = audit(files);
   const using = (pattern: RegExp) => files.filter(one => pattern.test(one.text)).map(one => one.path).sort();
@@ -487,6 +491,12 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts": 3,
     "src/server/remote.ts": 3
   },
+  "spendingOnlyOnSuccess": {
+    "src/chat-actions.ts": 3,
+    "src/scope.ts": 1,
+    "src/server/chat.ts": 4,
+    "src/server/tasks.ts": 3
+  },
   "ssoNowAt": {
     "src/serve.ts": 5,
     "src/server/people-tokens.ts": 1,
@@ -506,16 +516,22 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts": 1,
     "src/server/session.ts": 1,
     "src/server/settings.ts": 1
+  },
+  "withFreshness": {
+    "src/chat-actions.ts": 4,
+    "src/scope.ts": 1,
+    "src/server/chat.ts": 4,
+    "src/server/task-views.ts": 3,
+    "src/server/tasks.ts": 4
   }
 };
 describe("the tripwire", () => {
-  const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(one => one.isDirectory() ? sources(join(dir, one.name))
-    : /\.tsx?$/.test(one.name) && !/\.test\.tsx?$/.test(one.name) && !one.name.endsWith(".d.ts") ? [join(dir, one.name)] : []);
-  const WATCH = new Set(["fresh", "sso", ...Object.keys(TRIPWIRE_PINS).filter(name => name !== "fresh")]);
+  const sources = productionSources;
+  const WATCH = new Set(["fresh", "sso", ...WATCHED_CALLS, ...FACT_NAMES]);
   const mentions = (files: { path: string; text: string }[]): Record<string, Record<string, number>> => {
     const hits: Record<string, Record<string, number>> = {};
     for (const { path, text } of files) {
-      const parsed = parseSync(path, text, { lang: path.endsWith(".tsx") ? "tsx" : "ts" });
+      const parsed = parseSync(path, text, { lang: langOf(path) });
       expect(parsed.errors, path).toEqual([]);
       each(parsed.program, one => {
         const name = one.type === "Identifier" ? one["name"] as string
@@ -545,6 +561,13 @@ describe("the tripwire", () => {
       { path: "caller.ts", text: "import { isConfirmed } from './helper.js'; export const c = (typed: string, session: { sso: never }) => !typed && isConfirmed(session.sso);" },
     ];
     expect(mentions(files)["fresh"]).toEqual({ "helper.ts": 2 });
+  });
+
+  test("an indirect call of a freshness wrapper trips it by naming it; every module flavour is read", () => {
+    const probe = mentions([{ path: "probe.ts", text: "export const p = (confirmIt: () => unknown) => Reflect.apply(withFreshness, undefined, ['chat-send', confirmIt]);" }]);
+    expect(probe["withFreshness"]).toEqual({ "probe.ts": 1 });
+    expect(mentions([{ path: "helper.mts", text: "export const isConfirmed = (value: { fresh: boolean }) => value.fresh;" }])["fresh"]).toEqual({ "helper.mts": 2 });
+    for (const name of ["a.ts", "a.tsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.cjs", "a.jsx"]) expect(MODULE.test(name), name).toBe(true);
   });
 
   test("every mention in the production source is the reviewed one", () => {
