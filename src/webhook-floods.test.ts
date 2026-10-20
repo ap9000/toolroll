@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createServer } from "node:http";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -363,4 +363,15 @@ test("over HTTP, one body too large is 413 with a fresh count, and only past the
     expect(over.status).toBe(429);
     expect(Number(over.headers.get("retry-after"))).toBeGreaterThan(0);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test("a sender is told why its item was left out, never this installation's flow or card names", () => {
+  const hook = signedHook();
+  const body = JSON.stringify({ title: "Failing run" });
+  const key = `v3:github-style:body:${createHash("sha256").update(body).digest("hex")}`;
+  store.recordFlowTriggerEvent(hook.id, key, null, "already a card in “Secret Project Triage”", T0);
+  const answer = hook.send("Failing run");
+  expect(answer).toEqual({ status: 202, said: "Already received; it wasn't added: already on a card." });
+  // The panel still says which.
+  expect(store.flowReceipt(hook.id, key)?.note).toBe("already a card in “Secret Project Triage”");
 });

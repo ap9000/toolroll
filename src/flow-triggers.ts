@@ -1148,7 +1148,7 @@ export function receiveFlowHook(store: Store, token: string, delivery: HookDeliv
       : makeCard(store, trigger, config, item, by, now));
     const said = outcomeWords(results, false);
     note(said);
-    return { status: 202, said };
+    return { status: 202, said: publicWords(said) };
   });
 }
 
@@ -1231,7 +1231,13 @@ export function hookRefusedUnread(store: Store, token: string, now: Date): HookA
 /** v126: a delivery received before, answered for what it was — never as a card that isn't there. */
 function repeatAnswer(before: FlowReceipt): HookAnswer {
   return { status: 202, said: before.state === "accepted" ? "Already received." : before.state === "held" ? "Already received; waiting for room."
-    : before.state === "skipped" ? `Already received; it wasn't added${before.note === null ? "" : `: ${before.note}`}.` : "Already received." };
+    : before.state === "skipped" ? publicWords(`Already received; it wasn't added${before.note === null ? "" : `: ${before.note}`}.`) : "Already received." };
+}
+
+/** What a delivery's sender is told (v126): why its own item was left out, but never this installation's flows or cards
+ * — those words stay on the signed-in panel. */
+function publicWords(said: string): string {
+  return said.replace(/already a card in “[^”]*”/g, "already on a card");
 }
 
 /**
