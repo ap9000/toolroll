@@ -1,5 +1,6 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
+import { fileTaskProposal } from "./proposal.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -117,6 +118,9 @@ export const CHAT_ACTIONS = {
   flow_create: { label: "Create flow", protected: false, password: false },
   // A starter flow: its zones and its trigger, switched on with one yes (flow-starters.ts).
   flow_starter: { label: "Switch on", protected: false, password: false },
+  // Lead fan-out (docs/plans/lead-fan-out.md): files N tasks under one brief and approves each one's scope — the
+  // person's ceremony (protected, with the password), N ordinary approvals of exactly the scopes shown.
+  sweep_file: { label: "Start sweep", protected: true, password: true },
   flow_edit: { label: "Save flow", protected: false, password: false },
   flow_card_add: { label: "Add card", protected: false, password: false },
   flow_card_move: { label: "Move card", protected: false, password: false },
@@ -315,7 +319,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_")
+    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation === "sweep_file"
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -575,6 +579,26 @@ export function prepareSharedAction(
       title = `Answer ${subagentOf === null ? "the subagent" : nameOf(subagentOf)}`;
       terms.push(question.question, `Your answer: ${[choice?.label, said].filter(Boolean).join(" — ")}`);
     }
+  } else if (operation === "sweep_file") {
+    // Everything the person approves is on this screen: the shared rules, every item, the one success test, the
+    // limit. Confirming files exactly these and approves exactly these scopes; anything changed is a new card.
+    const sweepTitle = text(input, "title", 200).trim(), brief = text(input, "brief", 8000).trim();
+    const items = Array.isArray(input["items"]) ? input["items"] as Record<string, unknown>[] : [];
+    if (items.length < 2 || items.length > 20) throw Error("A sweep is 2 to 20 items. For one, propose a task.");
+    const cleaned = items.map((one, index) => ({ title: text(one, "title", 200).trim(), item: text(one, "item", 4000).trim(), index }));
+    const maxParallel = integer(input, "maxParallel");
+    if (maxParallel < 1 || maxParallel > 8) throw Error("Run 1 to 8 at once.");
+    request["title"] = sweepTitle; request["brief"] = brief; request["items"] = cleaned.map(({ title, item }) => ({ title, item }));
+    state = {};
+    const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
+    title = `Start a sweep in ${project}: ${sweepTitle}`;
+    terms.push(
+      `${cleaned.length} tasks, each in its own worktree on its own branch, at most ${maxParallel} running at once.`,
+      `Shared rules for every item: ${brief}`,
+      ...cleaned.map(one => `Item ${one.index + 1} — ${one.title}: ${one.item}`),
+      "Confirming files all of them and approves each one's scope exactly as shown. An item that needs a second person, or that the project's rules keep from its requester, is filed and waits for its own approval.",
+      "Each ends with a verdict (fixed, not reproducible, blocked or done) and the sweep's table shows them as they land.",
+    );
   } else if (operation.startsWith("flow_")) {
     const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
     if (operation === "flow_create") {
@@ -1216,6 +1240,10 @@ export function executeSharedAction(
         const done = runFlowAction(store, payload, actor, who.repos, options.root, now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
+      else if (payload.operation === "sweep_file") {
+        const done = fileSweep(store, who, id, payload, options.review?.password ?? "", now);
+        return { ok: true as const, taskId: null, said: done.said, href: done.href };
+      }
       else if (payload.operation === "kit_setup") {
         const kit = kitOf(String(req["kit"]))!;
         const made = setUpKitNow(store, kit, repo, actor, now, null, true);
@@ -1349,6 +1377,41 @@ export function executeSharedAction(
 }
 
 /** A confirmed subagent action (v92), through the same helpers the Subagents pages use. */
+/**
+ * Lead fan-out: file every item (all of them or none — any refusal throws and the savepoint takes the whole sweep
+ * back), link them to one sweep record, then approve each one's scope through the ordinary approval (its own digest,
+ * its own rules). A child the approval refuses stays filed and unapproved; it is named, never retried.
+ */
+function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, password: string, now: Date): { said: string; href: string } {
+  const req = payload.request;
+  const already = store.sweepOfProposal(proposal);
+  if (already !== null) return { said: "This sweep was already started.", href: `/sweeps/${already}` };
+  const items = req["items"] as { title: string; item: string }[];
+  const brief = String(req["brief"]);
+  const sweep = store.createSweep({ owner: who.name, thread: store.getLeadProposal(proposal)?.thread ?? null, repo: payload.repo, title: String(req["title"]), brief,
+    maxParallel: Number(req["maxParallel"]), proposal }, now);
+  const filed: { id: string; title: string }[] = [];
+  for (const [index, one] of items.entries()) {
+    const made = fileTaskProposal(store, {
+      title: one.title, repo: payload.repo, goal: `${brief}\n\nThis item:\n${one.item}`, acceptance: req["acceptance"], planning: "skip",
+      filedVia: "mate", filedBy: { name: who.name, kind: "person" as const }, proposedVia: "mate", admittedRepos: [...who.repos],
+    }, now);
+    if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) couldn't be filed: ${made.message}. Nothing was filed.`);
+    store.addSweepTask(sweep, made.id, index, one.title);
+    filed.push({ id: made.id, title: one.title });
+  }
+  const waiting: string[] = [];
+  for (const one of filed) {
+    const scope = store.getScope(one.id);
+    const approved = scope === null ? null : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, password));
+    if (approved === null || !approved.ok) waiting.push(one.title);
+  }
+  const said = waiting.length === 0
+    ? `Started: ${filed.length} tasks, at most ${Number(req["maxParallel"])} at once.`
+    : `Started: ${filed.length - waiting.length} of ${filed.length} approved; ${waiting.length} wait for their own approval (${waiting.join(", ")}).`;
+  return { said, href: `/sweeps/${sweep}` };
+}
+
 function runSubagentAction(store: Store, payload: SharedAction, actor: string, now: Date): { said: string; href: string } {
   const req = payload.request;
   if (payload.operation === "subagent_create") {

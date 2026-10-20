@@ -1456,6 +1456,30 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       return { ok: true, body: { proposal: id, kind: "task", repo: args["repo"], deliverable: report ? "report" : "branch", planning: report ? "not needed for a scout" : planning, awaiting: "the operator's confirmation" } };
     },
   },
+  propose_sweep: {
+    description: "Several independent items under ONE shared rule set (a bug sweep, a batch of small fixes): 2-20 items, each becomes its own task in its own worktree, started with one approval, at most max_parallel (default 3) at once, each reporting a verdict into one table. brief holds the shared rules every item gets (e.g. reproduce first; 'not reproducible' is a valid result; prove the fix); each item is only its own report. Not for one task, and not for steps that depend on each other.",
+    handle: (ctx, args) => {
+      const repo = repoPathOf(ctx.who, args["repo"]);
+      if (repo === null) return { ok: false, message: "repo must be one of the ids from list_repos" };
+      const items = Array.isArray(args["items"]) ? args["items"] as Record<string, unknown>[] : [];
+      for (const one of [{ title: args["title"], goal: args["brief"] }, ...items.map(item => ({ title: item["title"], goal: item["item"] }))]) {
+        if (typeof one.title !== "string" || typeof one.goal !== "string") return { ok: false, message: "each title, the brief and each item are text" };
+        const bad = validateTaskText({ title: one.title, goal: one.goal, outOfScope: null });
+        if (bad !== null) return { ok: false, message: bad.message };
+        if ([one.title, one.goal].some(text => typeof text === "string" && scanForSecrets(text).length > 0)) return { ok: false, message: "Task text cannot contain credentials." };
+      }
+      const acceptance = readAcceptanceArg(args["acceptance"]);
+      if (acceptance === null) return { ok: false, message: "acceptance is required: at least one criterion with an id, statement, and evidence kinds (shared by every item)" };
+      try {
+        const action = prepareSharedAction(ctx.store, ctx.who, "sweep_file", { repo, title: args["title"], brief: args["brief"], items: items.map(item => ({ title: item["title"], item: item["item"] })),
+          acceptance, maxParallel: typeof args["max_parallel"] === "number" ? args["max_parallel"] : 3 }, ctx.evidenceRoot, ctx.now);
+        const id = ctx.draft("action", { ...action });
+        return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human review in the secure confirmation screen", executed: false } };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That sweep couldn't be drafted." };
+      }
+    },
+  },
   propose_next: {
     description: "Move a task to its queue column front; intervening queue changes invalidate confirmation.",
     handle: (ctx, args) => {

@@ -132,6 +132,12 @@ export const LEAD_TOOL_INPUTS = {
     not: scopeText.nullable().optional(), touches: touches.optional(), acceptance,
     planning: z.enum(["auto", "required", "skip"]).optional(), report: z.boolean().optional(), checks: text("checksWords").optional(),
   }),
+  // Lead fan-out (docs/plans/lead-fan-out.md): 2 to 20 independent items under one shared brief and one success test.
+  propose_sweep: z.strictObject({
+    repo: repoId, title: text("taskTitle"), brief: scopeText,
+    items: z.array(z.strictObject({ title: text("taskTitle"), item: scopeText })).min(2).max(20),
+    acceptance, max_parallel: z.number().int().min(1).max(8).optional(),
+  }),
   propose_next: z.strictObject({ task: taskRef }),
   propose_reserve: z.strictObject({ task: taskRef, worker: text("workerName").nullable() }),
   propose_hold: z.strictObject({ task: taskRef, reason: text("proposalReason") }),
@@ -264,6 +270,7 @@ export const LEAD_TOOL_OUTPUTS = {
   get_decision: decisionOutput,
   queue: z.looseObject({ repo: str, queueRevision: int, ...queueColumnsOutput }),
   propose_task: proposed("task", { repo: str, deliverable: z.enum(["branch", "report"]), planning: str }),
+  propose_sweep: cardDrafted,
   propose_next: proposed("next", { task: str }),
   propose_reserve: proposed("reserve", { task: str, worker: nullable(str) }),
   propose_hold: proposed("hold", { task: str }),
