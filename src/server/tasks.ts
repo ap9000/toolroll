@@ -507,8 +507,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
     }
     const selected = selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
-    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board.
-    if (wantedId !== null && selected?.run != null) markAgentSeen(store, who.name, selected.run.id, now);
+    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board — but only
+    // once the run has finished (cockpit §3): a page shown while it was still running saw no finished version.
+    if (wantedId !== null && selected?.run != null && store.getRun(selected.run.id)?.finishedAt != null) markAgentSeen(store, who.name, selected.run.id, now);
     // A build that delivered nothing reads Failed here, and so does a failed task's delivered result: what went wrong
     // is the card and Retry the ink act. That result may still be accepted, but only in outline, as Accept anyway, with
     // a reason.

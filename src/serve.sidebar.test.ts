@@ -261,6 +261,18 @@ describe("the sidebar's project states", () => {
     expect((await page("/agents", robin)).usage).toBeUndefined();
   });
 
+  test("a visit while an agent runs is not seeing it: only its finished version, opened, marks it seen", async () => {
+    const run = running("t-seen", repoA);
+    const alex = await login("alex", alexToken);
+    const seen = () => store.handle.prepare("SELECT 1 AS hit FROM agent_seen WHERE account = 'alex' AND run = ?").get(run) !== undefined;
+    await page(`/agents?run=${run}`, alex);
+    await fetch(url(`/r/${run}`), { headers: { cookie: alex } });
+    expect(seen()).toBe(false);
+    store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
+    await page(`/agents?run=${run}`, alex);
+    expect(seen()).toBe(true);
+  });
+
   test("one summary room per page, and only for a browser session", async () => {
     const alex = await login("alex", alexToken);
     expect((await fetch(url("/live?room=summary&room=summary"), { headers: { cookie: alex } })).status).toBe(400);
