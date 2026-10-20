@@ -482,8 +482,10 @@ export function watchingAgent(store: Store, account: string, run: number, at: Da
   return watchingAgentUntil(store, account, run, at) !== null;
 }
 
-/** Kinds no watch ever holds: a security alert and the evening digest reach people as they are (store.pingAllowed). */
+/** Kinds no watch ever holds: a security alert and the evening digest reach people as they are (store.pingAllowed).
+ * Nothing held may delay them either: a channel's ordering never keeps one behind a held ping (neverHeld). */
 const NEVER_HELD: ReadonlySet<string> = new Set(["secret-detected", "security-release", "evening-digest"]);
+export const neverHeld = (kind: string): boolean => NEVER_HELD.has(kind);
 /** Kinds that are news only until the finished run is seen: a ping about one already opened is not sent at all. */
 const SEEN_SETTLES: ReadonlySet<string> = new Set(["run-finished", "build-failed"]);
 

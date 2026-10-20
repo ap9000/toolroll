@@ -52,14 +52,16 @@ import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
-import { watchedPing } from "./agent-board.js";
+import { attentionSubjectOf, watchedPing } from "./agent-board.js";
 /**
  * The watch at a chat app's final fence (cockpit §3, R11), right before the network: a notice about an agent its
  * person has open now waits, as a held part, until the watch ends; then it is delivered as usual. The subject is the
- * part's own run, or its task's live build. True: held, so nothing is sent now.
+ * part's own run, or its task's live build. Only a part planned with `watch` (never a security alert or the digest)
+ * can be held. True: held, so nothing is sent now.
  */
 export function heldForWatch(state: ChatState, store: Store, part: number, event: { kind: string }, approver: string, content: ChatContent, now: Date): boolean {
-  if (event.kind !== "notice") return false;
+  // Fail closed: only a notice planned as holdable (a kind a watch may hold) is ever held here.
+  if (event.kind !== "notice" || content.watch !== true) return false;
   const taskRef = content.task ? store.lookupRef(content.task)?.id ?? null : null;
   const decided = watchedPing(store, { kind: "notice", run: content.run ?? null, taskRef }, approver, now);
   if (decided === "send" || decided === "skip") return false;
@@ -1144,6 +1146,7 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
             task: notification.taskId,
             run: run.id,
             link: card.link,
+            ...(attentionSubjectOf(store, notification) !== null ? { watch: true as const } : {}),
           };
           const digest = chatHash(JSON.stringify(content));
           const prior = state
@@ -1236,6 +1239,7 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
                 ), notification.taskId === null ? [] : [{ id: notification.taskId, title: chatTitle(store, notification.taskId) }]),
                 ...(notification.taskId ? { task: notification.taskId } : {}),
                 ...(run ? { run: run.id } : {}),
+                ...(attentionSubjectOf(store, notification) !== null ? { watch: true as const } : {}),
                 ...(offer !== null ? { decide: mintDecide(options, binding, target!, offer, now) }
                   : fallback !== null ? { link: fallback }
                   : notification.link

@@ -271,6 +271,21 @@ describe.each(CHAT_PROVIDERS)("the shared chat core on %s", provider => {
     expect(store.getTask("payout-2")?.state).toBe("queued");
   });
 
+  test("notifications: a security alert about a watched run is never held, at planning or at the final fence", async () => {
+    const m0 = h.member(0);
+    await pair(h, "alex", m0);
+    const ref = placed("vault-3", "Rotate the vault key");
+    propose(store, { taskId: "vault-3", goal: "Rotate", touches: ["src/vault.ts"], acceptance: [{ id: "c1", statement: "Rotated.", how: null, evidence: ["check"] }], now });
+    expect(approve(store, "vault-3", "alex", now, store.getScope("vault-3")!.digest, alexToken).ok).toBe(true);
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route fixture");
+    const run = store.startRun({ taskRef: ref, leaseId: "l-vault-3", runner: RUNNER, branch: "so/vault-3", worktree: `/pool/vault-3`, route: authority.stamp, now });
+    holdAgentView(store, ["v", "8".repeat(23)].join(""), "alex", run, now);
+    store.enqueueNotification({ source: { run }, dedupeKey: `secret:${run}`, kind: "secret-detected", pushClass: "attention", subject: "A secret was found in vault-3's changes", body: "Rotate it now." }, now);
+    await h.pass();
+    expect(h.cards(m0).filter(one => one.text.includes("A secret was found"))).toHaveLength(1);
+  });
+
   test("notifications: an agent's question waits while that person watches its run, then arrives once; one answered meanwhile never does", async () => {
     const m0 = h.member(0);
     await pair(h, "alex", m0);

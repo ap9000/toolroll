@@ -743,9 +743,12 @@ describe("who is watching", () => {
     // A chat app's part about the task waits the same way, as a held part.
     const held: [number, string][] = [];
     const state = { holdPart: (part: number, until: string) => { held.push([part, until]); } } as unknown as Parameters<typeof heldForWatch>[0];
-    expect(heldForWatch(state, store, 9, { kind: "notice" }, "alex", { text: "Plan ready", task: "t-1" }, at(2000))).toBe(true);
+    expect(heldForWatch(state, store, 9, { kind: "notice" }, "alex", { text: "Plan ready", task: "t-1", watch: true }, at(2000))).toBe(true);
     expect(held).toEqual([[9, at(1000 + VIEW_LEASE_MS).toISOString()]]);
-    expect(heldForWatch(state, store, 9, { kind: "reply" }, "alex", { text: "Hi", task: "t-1" }, at(2000))).toBe(false);
-    expect(heldForWatch(state, store, 9, { kind: "notice" }, "blair", { text: "Plan ready", task: "t-1" }, at(2000))).toBe(false);
+    expect(heldForWatch(state, store, 9, { kind: "reply" }, "alex", { text: "Hi", task: "t-1", watch: true }, at(2000))).toBe(false);
+    expect(heldForWatch(state, store, 9, { kind: "notice" }, "blair", { text: "Plan ready", task: "t-1", watch: true }, at(2000))).toBe(false);
+    // Fail closed: a part not planned as holdable (a security alert about this very task) is never held.
+    expect(heldForWatch(state, store, 9, { kind: "notice" }, "alex", { text: "A secret was found", task: "t-1", run }, at(2000))).toBe(false);
+    expect(held).toHaveLength(1);
   });
 });

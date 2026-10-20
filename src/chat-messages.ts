@@ -9,7 +9,7 @@
  * Imports the store's types only (no runtime cycle): the store builds its chats on it.
  */
 import { join } from "node:path";
-import { watchedPing } from "./agent-board.js";
+import { neverHeld, watchedPing } from "./agent-board.js";
 import { ChatCore } from "./chat-core.js";
 import { readChatMessageBody, readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatMessageBody } from "./contracts/chat-content.js";
 import { isTelegramProgressNotification, proposalTaskOf, readNotification, readNotificationReceipt } from "./notification-rows.js";
@@ -898,7 +898,8 @@ export class ChatMessages extends ChatCore {
             (row.run !== null && this.store.getRun(row.run)?.taskRef !== row.taskRef)) return TELEGRAM_HOLD_REASONS.task;
       }
     }
-    if (row.taskRef !== null) {
+    // A security alert never waits behind its task's earlier pings (one may be held while its person watches the agent).
+    if (row.taskRef !== null && !neverHeld(String(current["kind"]))) {
       // Skipped history never fences what follows it: it is settled.
       const earlier = this.db.prepare(`SELECT n.id FROM notification n
         LEFT JOIN notification_delivery d ON d.notification = n.id AND d.destination = ?
