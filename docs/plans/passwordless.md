@@ -107,7 +107,8 @@ returns the token's person first). The CLI **already** falls back to it wherever
 - `credentialsFrom` reports its **source** (`typed` or `remembered`); an act proved with the remembered login is
   recorded with the method `cli-login`, so the ledger never reads it as a typed password.
 - **Credential acts refuse `remembered` while Passwordless is on**: a typed `--token` (or stdin/file) only. The CLI
-  list mirrors the browser's: `approver add`; minting an API token; inviting people and widening access; `runner
+  list mirrors the browser's: `approver add`; minting an API token, a coordinator credential (`coordinator mint`) or a
+  lead credential (`lead token`, minting or replacing — `--revoke` is ordinary); inviting people and widening access; `runner
   register` and **`runner bind`** (widens a worker's projects); **`bridge telegram pair`** and any other chat pairing;
   **`chat-approval on`** (and changing its limits); signing a mode with chat approval; a flow trigger's
   setup/secret/sender/scope; `passwordless on`. A static test enumerates them.
@@ -161,3 +162,8 @@ The CLI credential list missed `runner bind`, `bridge telegram pair` and `chat-a
 `askCredentials`, which already accepts the remembered login) → added, and §5 now states the CLI already uses the
 remembered login through `credentialsFrom`; Passwordless only routes stray `--token` reads through it, records
 `cli-login`, and makes the listed credential commands typed-only.
+
+## Review — round 5 (Codex on §5: NO-GO, 1 finding)
+
+`coordinator mint` and `lead token` mint machine authority through `askCredentials` → added to the CLI credential
+list (using a machine token is unchanged; minting one is a credential act).
