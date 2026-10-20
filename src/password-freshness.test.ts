@@ -580,7 +580,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/browser/chime.ts#createChime@10>see@3>window.setTimeout(_,CHIME_SETTLE_MS)@6>exclusively(_)@1": 2,
     "src/browser/live-task.tsx#ActivityLine@2": 1,
     "src/browser/team-chat.tsx#<module>": 1,
-    "src/browser/team-chat.tsx#TeamChat@7><anonymous>@44>execute().then(_)@1": 1,
+    "src/browser/team-chat.tsx#TeamChat@7><anonymous>@44>execute(send,_).then(_)@1": 1,
     "src/browser/team-chat.tsx#TeamChat@7>accept:useCallback(_,_)@7": 1,
     "src/browser/team-chat.tsx#TeamChat@7>send@13": 1,
     "src/browser/team-chat.tsx#restore@2": 1,
@@ -633,7 +633,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,
     "src/scope.ts#proveAccountNow@39": 4,
     "src/serve.ts#createDecisionServer@1>checkLocalAgents@98": 1,
-    "src/serve.ts#createDecisionServer@1>checkLocalAgents@98>localSignInChecking:Promise.all(map()):map(_)@1": 1,
+    "src/serve.ts#createDecisionServer@1>checkLocalAgents@98>localSignInChecking:Promise.all(map(_)):map(_)@1": 1,
     "src/serve.ts#createDecisionServer@1>connectionCheck@41": 2,
     "src/serve.ts#createDecisionServer@1>handle@93": 4,
     "src/serve.ts#createDecisionServer@1>sendScreen@116": 2,
@@ -728,7 +728,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13>freshFacts.run(runtime.freshFactsOf(),_)@1": 1
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1
   },
   "scryptSync": {
     "src/scope.ts#<module>": 2,
@@ -767,7 +767,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#<module>": 2,
     "src/serve.ts#createDecisionServer@1>handle@93>requestFacts.sso.fresh@4": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11>sso.fresh:freshFacts.run(runtime.freshFactsOf(),_)@1": 1,
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11>sso.fresh:freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1
   },
@@ -852,7 +852,10 @@ describe("the tripwire", () => {
       : node.type === "TemplateLiteral" && (node["quasis"] as Node[]).length === 1 ? String(((node["quasis"] as Node[])[0]!["value"] as { cooked: string }).cooked)
       : node.type === "MemberExpression" ? [named(node["object"] as Node), named(node["property"] as Node)].filter(one => one !== null).join(".")
       : node.type === "PrivateIdentifier" ? `#${String(node["name"])}`
-      : node.type === "CallExpression" ? `${named(node["callee"] as Node) ?? "<call>"}()` : null;
+      // A call or construction is named by its callee AND everything it is given, all the way down
+      // (`Object.assign(checks.get("display"),_)`, `new PasswordChecks(_)`).
+      : node.type === "CallExpression" || node.type === "NewExpression" ? callLabel(node) : null;
+    const callLabel = (node: Node): string => `${node.type === "NewExpression" ? "new " : ""}${named(node["callee"] as Node) ?? "<call>"}(${(node["arguments"] as Node[]).map(argument => named(argument) ?? "_").join(",")})`;
     for (const { path, text } of files) {
       const parsed = parseSync(path, text, { lang: langOf(path) });
       expect(parsed.errors, path).toEqual([]);
@@ -886,7 +889,7 @@ describe("the tripwire", () => {
             // A call's arguments are owned by the call, under whatever owns the call (`passwordChecks.check:wrap()`).
             // …and by what the call is given: its arguments' names are part of the label, so composing the same
             // value into another object (`Object.assign(passwordChecks, …)` vs `Object.assign(display, …)`) is a new place.
-            : one.type === "CallExpression" && key === "arguments" ? [owner, `${named(one["callee"] as Node) ?? "<call>"}(${(one["arguments"] as Node[]).map(argument => named(argument) ?? "_").join(",")})`].filter(part => part !== null).join(":")
+            : (one.type === "CallExpression" || one.type === "NewExpression") && key === "arguments" ? [owner, callLabel(one)].filter(part => part !== null).join(":")
             // Everything else passes its owner down unchanged — wrappers (`as`, `satisfies`, `!`, parentheses), choices
             // (`a ? f : g`, `override ?? f`), sequences, arrays, awaits — so a value is owned by where it is written to
             // until something names it anew. (A function body starts with no owner of its own.)
@@ -972,6 +975,8 @@ describe("the tripwire", () => {
       pair(owner => `const wrap = <T,>(f: T) => f; export function create() { const ${owner} = { check: wrap(function identify(x: never) { const fresh = x; return fresh; }) }; return ${owner}; }`),
       pair(owner => `export function create() { const ${owner} = { check: class Check { read(x: never) { const fresh = x; return fresh; } } }; return ${owner}; }`),
       pair(owner => `const display = {}; const passwordChecks = {}; export function create() { Object.assign(${owner}, { identify(value: { sso: { fresh: boolean } }) { return value.sso.fresh; } }); }`),
+      pair(owner => `const checks = new Map<string, object>(); export function create() { Object.assign(checks.get("${owner}")!, { identify(v: { sso: { fresh: boolean } }) { return v.sso.fresh; } }); }`),
+      pair(owner => `class display { constructor(_: object) {} } class passwordChecks { constructor(_: object) {} } export function create() { return new ${owner}({ identify(v: { sso: { fresh: boolean } }) { return v.sso.fresh; } }); }`),
       [places([{ path: "h.ts", text: "export function create() { const checks: Record<string, unknown> = {}; checks[`display`] = (value: { sso: { fresh: boolean } }) => value.sso.fresh; }" }]),
         places([{ path: "h.ts", text: "export function create() { const checks: Record<string, unknown> = {}; checks[`identify`] = (value: { sso: { fresh: boolean } }) => value.sso.fresh; }" }])],
     ]) expect(b).not.toEqual(a);
