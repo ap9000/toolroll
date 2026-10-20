@@ -126,6 +126,11 @@ test("at the deadline Finder's answer is 'not shown', the child is killed outrig
   const pending = revealInFinder("/pool/x", (_file, _args, _options, done) => { setTimeout(() => done(null), 120); return { kill: () => {} }; }, 50).then(shown => { settledLate = shown; });
   await pending;
   expect(settledLate).toBe(false);
+  // A success that arrives after the deadline but before the overdue timer has run (a stalled event loop) is not shown.
+  let tick = 0;
+  expect(await revealInFinder("/pool/x", (_file, _args, _options, done) => { tick = 10_001; done(null); return undefined; }, 10_000, () => tick)).toBe(false);
+  tick = 0;
+  expect(await revealInFinder("/pool/x", (_file, _args, _options, done) => { tick = 9_999; done(null); return undefined; }, 10_000, () => tick)).toBe(true);
   // A real child that ignores SIGTERM is ended by the deadline, and the answer is not shown.
   const { spawn } = await import("node:child_process");
   let real: ReturnType<typeof spawn> | undefined;

@@ -33,13 +33,16 @@ export function localCheckoutOf(store: Store, runId: number, local: { runner?: s
 export type RevealExec = (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }, done: (error: Error | null) => void) => { kill: (signal: NodeJS.Signals) => unknown } | undefined;
 export const REVEAL_COMMAND = "/usr/bin/open";
 export const REVEAL_DEADLINE_MS = 10_000;
-export function revealInFinder(path: string, run: RevealExec = (file, args, options, done) => execFile(file, [...args], options, error => done(error)), deadlineMs = REVEAL_DEADLINE_MS): Promise<boolean> {
+export function revealInFinder(path: string, run: RevealExec = (file, args, options, done) => execFile(file, [...args], options, error => done(error)), deadlineMs = REVEAL_DEADLINE_MS, clock: () => number = () => performance.now()): Promise<boolean> {
   return new Promise(resolve => {
     let settled = false;
     let child: ReturnType<RevealExec>;
+    // The deadline is a moment on a monotonic clock, not the timer having run: a success that arrives after it (even
+    // ahead of an overdue timer, in a stalled event loop) is "not shown".
+    const due = clock() + deadlineMs;
     const finish = (shown: boolean) => { if (settled) return; settled = true; clearTimeout(timer); resolve(shown); };
     const timer = setTimeout(() => { finish(false); try { child?.kill("SIGKILL"); } catch { /* already gone */ } }, deadlineMs);
-    try { child = run(REVEAL_COMMAND, ["-R", path], { cwd: "/", env: { PATH: "/usr/bin:/bin" } }, error => finish(error === null)); }
+    try { child = run(REVEAL_COMMAND, ["-R", path], { cwd: "/", env: { PATH: "/usr/bin:/bin" } }, error => finish(error === null && clock() < due)); }
     catch { finish(false); }
   });
 }
