@@ -355,7 +355,7 @@ describe("where freshness may be honoured", () => {
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 1 });
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 59, "src/pull-request-flow.ts": 1,
       "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 3, "src/server/pages.ts": 3, "src/server/people-tokens.ts": 5, "src/server/settings.ts": 22,
-      "src/server/tasks.ts": 6, "src/task-outcome-cli.ts": 1 });
+      "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/remote.ts"]);
     expect((files.find(one => one.path === "src/serve.ts")!.text.match(/function freshFactsOf\(/g) ?? []).length).toBe(1);
   });
@@ -531,6 +531,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@21><anonymous>@1": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskConfirmStopped@26": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 3,
+    // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
+    "src/server/terminals.ts#createTerminalHandlers@2>start@10": 1,
     "src/task-outcome-cli.ts#<module>": 2,
     "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1
   },

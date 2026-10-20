@@ -1,4 +1,5 @@
 /** HTTP answers every console route shares: server options, body limits, safe responses, redirects and return paths. */
+import type { TerminalHost } from "../live-terminal.js";
 import { html, htmlString, isHtml, type Html } from "../html.js";
 import { chatResultHref as sharedResultHref } from "../chat-controls.js";
 import { type CliHttpOptions,type RunOperateAs } from "../cli-http.js";
@@ -30,6 +31,8 @@ export type ServeOptions = {
   installBin?: string;
   /** Native coding workspace injection for isolated integration tests. */
   codingWorkspace?: CodingWorkspace;
+  /** Live terminals (tests stand their own in; null turns them off). Default: one on a machine that runs agents. */
+  terminalHost?: TerminalHost | null;
   /** Read-only worker connections for heavy reads (read-executor.ts); 0 reads in-process. Default: off under tests. */
   readWorkers?: number;
   store: Store;

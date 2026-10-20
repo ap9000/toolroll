@@ -149,6 +149,7 @@ type FreshFacts
 import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
+import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
@@ -229,6 +230,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       catch (error) { codingProblem = error instanceof Error ? error.message : 'The coding workspace could not open.'; }
     }
   }
+  // Live terminals (docs/plans/live-terminal.md): on a machine that runs agents, when this install has a pty library.
+  const terminals = terminalHostFor(store, options);
   const clock = options.clock ?? (() => new Date());
   // Heavy reads (the work index behind `task list`) run on read-only worker connections, off the request loop.
   const readFile = store.isDemo() ? null : store.databaseFile();
@@ -1603,6 +1606,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             },
           }),
       ...(!restricted() && !unscopedMode && managedRepos().length > 0 ? { chat: true } : {}),
+      // Live terminals: offered to an installation-wide operator (the routes prove it again).
+      ...(actor !== undefined && !store.isDemo() && store.isInstanceOperator(actor) ? { code: true } : {}),
       ...(listPane === undefined ? {} : { listPane }),
       ...(scope === undefined ? {} : { scope }),
     };
@@ -1717,6 +1722,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // it closes at once and never waits behind a model turn: a stop must release
   // the owner record well inside the service's exit window (Oct 2: deploys
   // over 0.9.11 found it still held by a killed process).
+  /** Set once the terminal handlers exist (below): drops every socket and ends every program. */
+  const terminalClosing: { close?: () => Promise<void> } = {};
   let codingClosing: Promise<void> | null = null;
   const closeCoding = (): Promise<void> => {
     leadClosing = true;
@@ -1735,7 +1742,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
+    void Promise.all([closeCoding(), bounded(terminalClosing.close?.()), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
     });
@@ -1920,11 +1927,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   };
   const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor, projectScopeFor });
   liveTurnStarted = liveHandlers.turnStarted;
+  // The one upgrade this server takes is a terminal's socket (terminals.ts listens); anything else is dropped.
+  const terminalHandlers = createTerminalHandlers(handlerRuntime, { ...terminals, bus: liveBus, allowedHost, publicOrigin, forwardedSourceOf, server });
+  terminalClosing.close = terminalHandlers.close;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations, ...liveHandlers.registrations,
+    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

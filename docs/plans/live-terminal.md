@@ -1,6 +1,6 @@
 # Live terminal — plan
 
-Status: draft, 2026-10-20. Branch `live-terminal` (from `agents-cockpit`).
+Status: v2, 2026-10-20 — Codex round 1 NO-GO (6 findings), all folded in below (§ Review). Branch `live-terminal`.
 
 ## What and why
 
@@ -112,3 +112,25 @@ The desktop app needs no change: WKWebView speaks WebSocket.
 Sessions that survive a console restart (tmux-backed), split panes, handing a Live session to the task road or
 back, Linux cgroup containment for terminals, notifications when an agent waits for input, the herdr-style
 transcript reader for sessions started outside Toolroll.
+
+## Review — round 1 (Codex, NO-GO, 6 findings), and what changed
+
+1. **Approvers aren't enough** (critical). Every road — page, state, start, close, remove, the upgrade and every re-proof —
+   requires an installation-wide operator (`codingActorAllowed`) signed in with a browser, and the route rows carry the
+   `operator` role too. A terminal is bound to the owner's name *and* account generation.
+2. **Plain HTTP terminals.** The upgrade requires `transport.https || transport.privatePath` outright (this computer or
+   the tailnet); the expected Origin is the `--public-url` origin for its host, else `http(s)://<host>` matching the
+   transport.
+3. **Git hardening.** Worktree add/remove and every other git call go through `teardownGit()`: allowlisted env, no
+   system/global config, no hooks or fsmonitor, and a refusal when the project's own config sets anything that runs a
+   command or includes other config. (An LFS project checks out pointer files, since global filters are ignored.)
+4. **Limits.** 8 running, 16 kept (ended ones count until removed), 4 viewers per terminal (refused at the upgrade with
+   429), starts reserve their slot before any async work, typed input is a 256 KiB burst refilled at 256 KiB/s per socket
+   (over → 1008), a viewer over 4 MiB behind is closed (4008), and a socket that never answers a close is terminated.
+5. **Output after revocation.** The proof (persisted session, account, generation, role, operator, owner, project) runs
+   before every input frame, before any output once the last proof is 1 s old, every 5 s, and at once on every live-bus
+   signal. A revoked reader stops receiving within a second.
+6. **Shutdown and cleanup.** Close snapshots the program's whole process tree (`ps`, pid + start time — an interactive
+   shell gives each job its own group), SIGHUPs all of it, and SIGKILLs whatever from that snapshot is still the same
+   process after the grace. If anything outlives that, the terminal's cleanup is `uncertain` and Remove refuses to delete
+   the worktree. Console shutdown stops admission, terminates every socket and awaits every close (bounded).

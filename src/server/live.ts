@@ -86,6 +86,19 @@ type Viewer = LiveViewer;
 type FlowRoomViewer = LiveViewer & { card: number | null; editing: boolean };
 type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void };
 
+/** The same session, still signed in, from the cookie and the account (never this request's context): a live room's and
+ * a live terminal's re-proof. Null when it was signed out, ended elsewhere, revoked, rotated or re-roled. */
+export function rereadBrowser(runtime: Pick<ServerRuntime, "identify" | "sessions" | "store">, request: IncomingMessage, who: Who & { via: "cookie" }): (Who & { via: "cookie" }) | null {
+  const again = runtime.identify(request, false);
+  if (again?.via !== "cookie" || again.name !== who.name || again.session.generation !== who.session.generation) return null;
+  // The in-memory session may still exist after another process ends the saved session.
+  const hash = runtime.sessions.hashOf(again.session);
+  const saved = hash === null ? null : runtime.store.webSession(hash), account = runtime.store.accountOf(again.name);
+  if (saved === null || account === null || account.revokedAt !== null || account.generation !== again.session.generation
+    || saved.generation !== account.generation || saved.role !== account.role || again.role !== account.role) return null;
+  return again;
+}
+
 const json = (response: ServerResponse, status: number, value: unknown): void => respond(response, status, "application/json", JSON.stringify(value));
 
 export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus; workspaceRevision: WorkspaceRevision; chatProjectOf: (projects: string[]) => string | null | undefined;
@@ -118,17 +131,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   // One agent's open view (Agents board): what it shows, keyed by the exact run.
   const agentRooms = createLiveRooms<number, Viewer>(run => agentRunFingerprint(store, run), null, { bus: live.bus });
 
-  /** The same session, still signed in, from the cookie and the account (never this request's context). */
-  const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => {
-    const again = identify(request, false);
-    if (again?.via !== "cookie" || again.name !== who.name || again.session.generation !== who.session.generation) return null;
-    // The in-memory session may still exist after another process ends the saved session.
-    const hash = runtime.sessions.hashOf(again.session);
-    const saved = hash === null ? null : store.webSession(hash), account = store.accountOf(again.name);
-    if (saved === null || account === null || account.revokedAt !== null || account.generation !== again.session.generation
-      || saved.generation !== account.generation || saved.role !== account.role || again.role !== account.role) return null;
-    return again;
-  };
+  const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
 
   function admitted(viewer: ChatViewer, thread?: number): boolean {

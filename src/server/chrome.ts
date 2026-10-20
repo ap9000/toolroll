@@ -849,6 +849,8 @@ export type NavRow = { key: Chrome["active"]; href: string; label: string; hint:
 export function workToolRows(scoped = false, _offersChat = false, offersCode = false): NavRow[] {
   const rows: NavRow[] = [
     // D5: coding sessions are deprecated; /code still opens this release, but nothing links to it.
+    // Live terminals: an operator's own Claude Code, Codex or shell, in a real terminal (docs/plans/live-terminal.md).
+    ...(offersCode ? [{ key: "code" as const, href: "/term", label: "Live", hint: "your own terminals: Claude Code, Codex or a shell" }] : []),
     { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },

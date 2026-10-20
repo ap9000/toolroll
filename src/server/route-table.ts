@@ -169,7 +169,7 @@ edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bear
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
-edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
+edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });
 edge("pages", "edge.install-asset", "GET", "^\\/(manifest\\.webmanifest|favicon\\.ico|icon\\.svg|icon-attention\\.svg|icon-192\\.png|icon-512\\.png|apple-touch-icon\\.png|sw\\.js)$", { sample: "/sw.js" });
 edge("pages", "edge.font", "GET", "^\\/fonts\\/geist-(sans|mono)-(400|500|600)\\.woff2$", { sample: "/fonts/geist-sans-400.woff2" });
@@ -194,6 +194,14 @@ get("tasks", "code.session", `^\\/code\\/${SESSION}$`, { ...CODING, sample: `/co
 for (const one of ["state", "changes", "ship"]) get("tasks", `code.${one}`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING, sample: `/code/${"a".repeat(32)}/${one}` });
 // Any other coding address answers "not found" after the same access check.
 get("tasks", "code.other", "^\\/code\\/.*$", { ...CODING, sample: "/code/unknown" });
+// Live terminals (docs/plans/live-terminal.md): an installation-wide operator's own, from a browser. The handlers prove
+// the operator's generation, the terminal's owner and its project; the socket's upgrade is checked in terminals.ts.
+const TERM = { ...free, callers: ["cookie"], project: "none", limited: "deny", ...operator("Terminals are for installation-wide operators.", "/") } as const;
+const TERMINAL = "[a-f0-9]{32}";
+get("tasks", "term.page", "/term", TERM);
+get("tasks", "term.state", "/term/state", TERM);
+get("tasks", "term.session", `^\\/term\\/${TERMINAL}$`, { ...TERM, sample: `/term/${"a".repeat(32)}` });
+get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sample: `/term/${"a".repeat(32)}/socket` });
 get("pages", "projects.browse", "/projects/browse", free);
 get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie"], callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "listing repositories feeds a browser session's act" },
   ...anyApprover("your login can watch — adding projects is an approver's act") });
@@ -301,6 +309,8 @@ post("settings", "settings.updates-checks", "/settings/updates/checks");
 post("settings", "session.forget-password", "/session/forget-password", { ...free, limited: "self", viewer: true, callers: ["cookie"] });
 const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
 post("tasks", "code.start", "/code/start", CODING_ACT);
+post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });
+for (const one of ["close", "remove"]) post("tasks", `term.${one}`, `^\\/term\\/${TERMINAL}\\/${one}$`, { ...TERM, sample: `/term/${"a".repeat(32)}/${one}` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Any other coding action answers "not found" after the same access check.
 post("tasks", "code.act-other", "^\\/code(\\/.*)?$", { ...CODING_ACT, sample: "/code/unknown" });

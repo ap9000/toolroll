@@ -119,6 +119,7 @@ export const CONSOLE_FORMS = {
   runReveal: formContract("POST /r/<run>/reveal", ["return"]),
   updatesChecks: formContract("POST /settings/updates/checks", ["check"]),
   code: formContract("POST /code, /code/start, /code/<session>/<act>, /code/<anything else>", ["repo", "password", "title", "model", "prompt", "requestId", "base", "candidate", "goal", "acceptance", "visual", "decision", "answers"], { prefixes: ["question:"] }),
+  term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password"]),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo"]),

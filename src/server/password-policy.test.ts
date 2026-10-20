@@ -23,6 +23,8 @@ const COOKIE_ONLY_POSTS = [
   // Cockpit E: Show in Finder reveals a proved checkout — a person's act in their own browser.
   'run.act.reveal',
   'session.forget-password',
+  // Live terminals: an operator's own, from a browser.
+  'term.start', 'term.close', 'term.remove',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {
@@ -34,7 +36,7 @@ test('cookie-only POST routes match the independent browser-only list exactly', 
  * quietly downgraded from step-up (and so open to bearers) fails here. serve.bearer-scope.slow.test.ts proves over HTTP that
  * every step-up row refuses password, API and OAuth bearers. */
 const PASSWORD_CEREMONIES = [
-  '/code/start', `/code/${'a'.repeat(32)}/answer`,
+  '/code/start', `/code/${'a'.repeat(32)}/answer`, '/term/start',
   '/flows/1/triggers/1/secret', '/flows/1/triggers/1/setup', '/flows/1/triggers/1/sender', '/flows/1/triggers/1/scope', '/flows/1/linear-key', '/spend/budget', '/settings/project/delete',
   '/settings/policy', '/settings/approval', '/settings/request-limits', '/settings/sessions', '/settings/sign-in',
   '/settings/updates', '/settings/retention', '/settings/storage', '/settings/storage/clean', '/settings/storage/discard',
