@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS console_instance (
  * folder every spelling shares). Each console start binds a socket of its own, under a fresh random name recorded
  * with its secret: no console ever needs to remove — or can remove — another console's socket.
  */
-export const INSTANCE_DIR = "run";
+/** Toolroll's own name, so it never collides with a project or worktree that happens to sit beside the database. */
+export const INSTANCE_DIR = ".toolroll-run";
 export function instanceRunDir(databaseFile: string): string {
   let file = databaseFile;
   try { file = realpathSync(databaseFile); } catch {
@@ -103,6 +104,7 @@ export function runDirProblem(dir: string, uid = process.getuid?.() ?? -1, mustE
   try { info = lstatSync(dir); } catch { return mustExist ? `${dir} doesn't exist` : null; }
   if (!info.isDirectory()) return `${dir} isn't a directory`;
   if (uid >= 0 && info.uid !== uid) return `${dir} belongs to another user`;
+  try { lstatSync(join(dir, ".git")); return `${dir} holds a repository, not Toolroll's sockets`; } catch { /* as it should be */ }
   if ((info.mode & 0o077) !== 0) return `${dir} is open to other users — Toolroll uses it only when it is yours alone (chmod 700)`;
   return null;
 }
@@ -254,7 +256,11 @@ export async function proveLiveConsole(databaseFile: string, store: Store, build
   try {
     const socket = lstatSync(socketPath);
     if (!socket.isSocket() || (process.getuid !== undefined && socket.uid !== process.getuid())) return { ok: false, state: "refused", message: `the console's socket can't be trusted: ${socketPath} isn't this user's socket` };
-  } catch { return { ok: false, state: "none", message: "no console is running" }; }
+  } catch (error) {
+    // Only "not there" means nothing is running; a socket the system won't show can't be checked.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: false, state: "none", message: "no console is running" };
+    return { ok: false, state: "refused", message: `the console's socket can't be checked — ${restart}` };
+  }
   const challenge = seams.challenge ?? (() => randomBytes(32).toString("hex"));
   const first = challenge();
   const asked = await (seams.ask ?? askSocket)(socketPath, { verb: "hello", challenge: first });

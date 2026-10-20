@@ -227,7 +227,7 @@ describe("the agent fence", () => {
     expect(fence).toEqual([
       join(home, ".standing-orders"),
       join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
-      join(state, "repos.json"), join(state, "run"), join(state, "runner-token"), join(state, "up-login.txt"),
+      join(state, "repos.json"), join(state, ".toolroll-run"), join(state, "runner-token"), join(state, "up-login.txt"),
     ].sort());
     expect(fence.some(path => worktree.startsWith(path))).toBe(false);
     // A repository in the folder — the build's own, named by its worktree's git metadata, or any other — is work, never fenced.
@@ -240,7 +240,7 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "run"), join(shared, "up-login.txt")].sort());
+    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
     // No database file: only ~/.standing-orders.
     expect(agentFence({ databaseFile: null, worktree: null, home })).toEqual([join(home, ".standing-orders")]);
   });

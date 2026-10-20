@@ -132,9 +132,14 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // build may add, rename or remove anything in it while a console listens there. It is made (owner-only) before any
     // build starts if it isn't there yet, so a build can never be the one to create it — and the fence always has a
     // real folder to cover (a Linux bind needs one).
+    // Whatever is at that path is fenced — a folder, a file, a dangling link — so no build can replace it; when nothing
+    // is there it is made first. If it can't be made, the path is fenced anyway: a sandbox that can't cover a missing
+    // path refuses to launch rather than run unfenced. One that holds a repository is a project, never fenced here
+    // (and the console refuses to use it).
     const runFolder = join(state, INSTANCE_DIR);
-    if (!existsSync(runFolder)) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below if it exists */ } }
-    if (existsSync(runFolder)) fence.add(runFolder);
+    const present = (): boolean => { try { lstatSync(runFolder); return true; } catch { return false; } };
+    if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    if (!existsSync(join(runFolder, ".git"))) fence.add(runFolder);
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not

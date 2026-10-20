@@ -255,6 +255,15 @@ describe("attaching", () => {
     expect(Date.now() - started).toBeLessThan(2_500);
   });
 
+  test("a socket the system won't show (not 'not found') can't be checked: refused, never 'nothing running'", async () => {
+    const { name } = await start();
+    void name;
+    chmodSync(run, 0o000);
+    try {
+      expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
+    } finally { chmodSync(run, 0o700); }
+  });
+
   test("with no record, nothing is running", async () => {
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: false, state: "none", message: "no console is running" });
   });

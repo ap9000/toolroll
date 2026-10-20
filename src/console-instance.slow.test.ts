@@ -6,10 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { agentFence, macosFenceAvailable, macosFenced } from "./agent-fence.js";
-import { claimInstance, instanceRunDir, openInstanceSocket, readInstance } from "./console-instance.js";
+import { claimInstance, instanceRunDir, openInstanceSocket, readInstance, runDirProblem } from "./console-instance.js";
 import { openStore, type Store } from "./store.js";
 
 const BUILD = "9.9.9-test";
@@ -54,6 +54,20 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
     expect(lstatSync(run).isDirectory()).toBe(true);
     expect(lstatSync(run).mode & 0o777).toBe(0o700);
     expect(fence).toContain(run);
+  });
+
+  test("whatever sits at the run folder's path is fenced (a dangling link too); a folder holding a repository is left to the project", () => {
+    const shared = join(dir, "shared");
+    mkdirSync(shared, { mode: 0o700 });
+    const databaseFile = join(shared, "state.db");
+    store = openStore(databaseFile);
+    const run = instanceRunDir(databaseFile);
+    symlinkSync(join(dir, "nowhere"), run);
+    expect(agentFence({ databaseFile, worktree: null, home: join(dir, "home") })).toContain(run);
+    rmSync(run);
+    mkdirSync(join(run, ".git"), { recursive: true });
+    expect(agentFence({ databaseFile, worktree: null, home: join(dir, "home") })).not.toContain(run);
+    expect(runDirProblem(run)).toContain("holds a repository");
   });
 
   test.each([["Toolroll's own state folder", "toolroll/orders.db"], ["a folder shared with other things", "s/orders.db"], ["a custom database directory", "custom/db/state.sqlite"]])("in %s: only hello's public facts, no secret, nothing changed", async (_label, relative) => {
