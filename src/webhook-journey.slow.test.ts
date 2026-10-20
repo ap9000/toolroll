@@ -137,7 +137,8 @@ test("Vercel over HTTP, set up and scoped through the console's routes: only the
   };
   const at = (verb: string) => `/flows/${used.flow}/triggers/${trigger.id}/${verb}`;
   // Made from the gallery: no address, no secret. New address makes one; until the secret is pasted, every delivery is refused.
-  const renewed = await (await post(at("renew"), {})).json() as { reveal: { path: string } };
+  // A new address is a credential act: the password, typed (Passwordless never covers it).
+  const renewed = await (await post(at("renew"), { password: alex.token })).json() as { reveal: { path: string } };
   const address = `${hooksUrl}${renewed.reveal.path}`;
   const secret = "VercelSecret0123456789";
   const failed = (project: string, type = "deployment.error") => {
