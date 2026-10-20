@@ -14,7 +14,7 @@ import { addApprover } from "./scope.js";
 import { flowFromSteps, FLOW_GOAL_LIMIT } from "./flows.js";
 import { advanceFlows, flowGoalCuts } from "./flow-engine.js";
 import { addFlowTriggerTo, changeFlowHookSender, receiveFlowHook, saveSigningSecret, setUpFlowHook } from "./flow-triggers.js";
-import { plannerSourceBlock, plannerSourceOf } from "./planner-source.js";
+import { decodePlannerSource, encodePlannerSource, plannerSourceBlock, plannerSourceOf } from "./planner-source.js";
 import { outsideReferenceOf, scoutBrief } from "./scout.js";
 import { approvalSheetHtml } from "./server/render-tasks.js";
 import { htmlString } from "./html.js";
@@ -226,4 +226,17 @@ test("the approval sheet shows the line as escaped context, outside what the app
     revision: null, revisionSourceHref: "", repairChain: null, route: null, coordinator: null, origin: null, deliverable: "branch", editHref: "#", notNowHref: "#", sticky: false, earlier: { active: 0, running: 0 }, edit: null })));
   const fields = (html: string) => [...html.matchAll(/<input[^>]*name="([^"]+)"[^>]*>/g)].map(one => one[0]).sort();
   expect(fields(sheet)).toEqual(fields(withoutLine));
+});
+
+test("the longest reference there can be is recorded for the planner and read back whole", () => {
+  const { task } = filedFromSentry("Fix: {{card.title}}");
+  const host = `${"h".repeat(60)}.${"h".repeat(60)}.${"h".repeat(60)}.${"h".repeat(60)}.io`;
+  const longest = { label: "L".repeat(120), verified: "none", external: { id: "I".repeat(120), url: `https://${host}/${"p".repeat(2_000 - host.length - 9)}` }, receipt: "r" };
+  store.handle.prepare("PRAGMA foreign_keys = OFF").run();
+  store.handle.prepare("DROP TRIGGER task_source_immutable").run();
+  store.handle.prepare("UPDATE task_source SET source_json = ? WHERE task_id = ?").run(JSON.stringify(longest), task);
+  const sourced = plannerSourceOf(store, dir, task, []);
+  if (!sourced.ok) throw new Error(sourced.message);
+  expect(sourced.source.outsideReference!.length).toBeGreaterThan(2_500);
+  expect(decodePlannerSource(encodePlannerSource(sourced.source))).not.toBeNull();
 });

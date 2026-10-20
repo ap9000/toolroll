@@ -36,7 +36,7 @@
  * transactions of its own: the fenced finalizers in claim.ts seal.
  */
 
-import { readSnapshot, referenceWords } from "./task-source.js";
+import { readSnapshot, REFERENCE_LIMIT, referenceWords } from "./task-source.js";
 import { createHash } from "node:crypto";
 import type { Store } from "./store.js";
 import type { AcceptanceCriterion, Scope } from "./scope.js";
@@ -351,7 +351,7 @@ export function decodePlannerSource(content: Buffer): PlannerSource | null {
     const body = parsed as Record<string, unknown>;
     if (body["version"] !== PLANNER_SOURCE_VERSION || typeof body["taskId"] !== "string" || typeof body["sourceDigest"] !== "string") return null;
     if (!object(body["contract"]) || typeof body["title"] !== "string" || !nullableString(body["revisionBrief"])) return null;
-    if (body["outsideReference"] !== undefined && (typeof body["outsideReference"] !== "string" || body["outsideReference"].length > 2_500)) return null;
+    if (body["outsideReference"] !== undefined && (typeof body["outsideReference"] !== "string" || body["outsideReference"].length > REFERENCE_LIMIT)) return null;
     if (!Array.isArray(body["answers"]) || body["answers"].length > PLANNER_SOURCE_LIMITS.answers || !body["answers"].every(one => object(one) && typeof one["question"] === "string" && typeof one["choice"] === "string" && nullableString(one["note"]))) return null;
     const contract = body["contract"];
     if (!object(contract["task"]) || !["branch", "report"].includes(String(contract["task"]["deliverable"]))) return null;
