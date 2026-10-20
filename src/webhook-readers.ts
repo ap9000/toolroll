@@ -45,6 +45,8 @@ export function safeLink(value: unknown, hosts: LinkHosts | null): string | null
   const host = url.hostname.toLowerCase();
   if (hosts !== null && !hosts.some(one => host === one.host || (one.subdomains && host.endsWith(`.${one.host}`)))) return null;
   const kept = `${url.origin}${url.pathname}`;
+  // Judged as it will be kept: an address that only normalises past 2,000 characters (escaped non-ASCII) isn't kept.
+  if (kept.length > 2000) return null;
   // Screened as kept and as read: a token spelled with percent-escapes is the same token. A path that won't decode isn't kept.
   let decoded: string;
   try { decoded = decodeURIComponent(url.pathname); } catch { return null; }

@@ -64,6 +64,13 @@ test("the flow's name is rendered only for a viewer who can open its project; th
     expect(page).toContain("Sentry issue (signed by Sentry)");
     expect(page).toContain("acme.sentry.io");
   }
+  // Chat (the workspace's data, as the page reads it): its approval card carries the same line; an account limited to
+  // its projects isn't let into chat at all, so it is never shown a flow it can't open there either.
+  const alexChat = await alexSees("/chat?task=fix-checkout&format=workspace");
+  expect(alexChat).toContain("Started by an outside event: Sentry issue (signed by Sentry) · acme.sentry.io.");
+  const samChat = await samSees("/chat?task=fix-checkout&format=workspace");
+  expect(samChat).toContain("This area requires instance access");
+  expect(samChat).not.toContain("Classified Incident Desk");
   const samNext = await samSees("/next");
   expect(samNext).not.toContain("Classified Incident Desk");
   expect(samNext).toContain("Started by an outside event: Sentry issue (signed by Sentry) · acme.sentry.io.");

@@ -304,9 +304,25 @@ export const GALLERY: readonly GalleryTemplate[] = [
     never: NEVER_MERGES,
   },
   {
+    // v126: the direct road from a signed outside request to a build that waits for your approval.
+    id: "webhook-to-build", name: "Webhook to build", group: "health",
+    promise: "A signed request from any tool becomes a build, under your usual approvals.",
+    needs: ["A tool that can send signed webhooks", "GitHub"], asks: [],
+    steps: [
+      { id: "build", title: "Build it", kind: "task", instructions: work("{{card.title}}\n\n{{card.description}}") },
+      owner("review", "Review the build"),
+      { ...pr, next: "Done" },
+      { id: "done", title: "Done", kind: "done" },
+    ],
+    triggers: [{ kind: "webhook", sender: "standard", title: "Request" }],
+    does: ["Adds a webhook signed the Standard Webhooks way. Once the flow is made, open its Triggers and choose Make its secret under Signing; give the sender the address and the secret.",
+      "Each signed request becomes a card and is built as a task. The task waits for your approval, like any other.", "You review the build; what you approve opens a pull request."],
+    never: NEVER_MERGES,
+  },
+  {
     id: "error-to-fix", name: "Error to fix", group: "health", tools: ["sentry"],
-    promise: "New errors from Sentry or any error tracker are sorted, researched and fixed.",
-    needs: ["A webhook from Sentry or another tracker", SORTS], asks: [],
+    promise: "New Sentry errors are sorted, researched and fixed.",
+    needs: ["A Sentry Internal Integration", SORTS], asks: [],
     steps: [
       { id: "worth-fixing", title: "Worth fixing?", kind: "sort", question: "Is this error in our own code, and new or frequent enough to fix now?",
         answers: [
@@ -321,8 +337,9 @@ export const GALLERY: readonly GalleryTemplate[] = [
       { id: "done", title: "Done", kind: "done" },
       { id: "ignored", title: "Ignored", kind: "done" },
     ],
-    triggers: [{ kind: "webhook", title: "Error", titleField: "data.issue.title", bodyField: "data.issue.culprit" }],
-    does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Sentry or another error tracker.", "Jev keeps errors in your code that are new or frequent, and drops noise; ones it isn't sure about wait for you.",
+    // v126: signed by Sentry and read by Toolroll's Sentry reader: one card per issue, linked to it.
+    triggers: [{ kind: "webhook", sender: "sentry", title: "Error" }],
+    does: ["Adds a Sentry webhook. Once the flow is made, in Sentry create an Internal Integration (Settings → Developer Settings), paste the flow's webhook address as its Webhook URL, turn on Alert Rule Action and Issue events, then paste its Client Secret under Signing on the flow's Triggers.", "One card per Sentry issue, however often it alerts, linked to the issue.", "Jev keeps errors in your code that are new or frequent, and drops noise; ones it isn't sure about wait for you.",
       "Each kept error is researched, then fixed as a task, under your usual approvals.", "What you approve opens a pull request."],
     never: NEVER_MERGES,
   },
@@ -337,7 +354,7 @@ export const GALLERY: readonly GalleryTemplate[] = [
       pr,
     ],
     triggers: [{ kind: "webhook", title: "Incident", titleField: "data.attributes.name" }],
-    does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Better Stack.", "Reads the incident, its monitor's history and your recent commits and deploys, and sends you the likely cause.", "You choose Fix or Ignore; a fix is built as a task, under your usual approvals, and opens a pull request."],
+    does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Better Stack. Better Stack doesn't sign its webhooks, so anyone with the address could add cards: keep it private.", "Reads the incident, its monitor's history and your recent commits and deploys, and sends you the likely cause.", "You choose Fix or Ignore; a fix is built as a task, under your usual approvals, and opens a pull request."],
     never: NEVER_MERGES,
   },
   {
@@ -372,8 +389,9 @@ export const GALLERY: readonly GalleryTemplate[] = [
       pr,
       send("Send the fix"),
     ],
-    triggers: [{ kind: "webhook", title: "Failed deployment", titleField: "payload.deployment.name" }],
-    does: ["Adds a webhook. Once the flow is made, open its Triggers and choose New address, then paste that into Vercel for failed deployments.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
+    // v126: signed by Vercel and read by Toolroll's Vercel reader: failed deployments only, one card each.
+    triggers: [{ kind: "webhook", sender: "vercel", title: "Failed deployment" }],
+    does: ["Adds a Vercel webhook. Once the flow is made, in Vercel (Settings → Webhooks) paste the flow's webhook address and choose Deployment Error, then paste the secret Vercel shows under Signing on the flow's Triggers. Name your Vercel project there to take only its deployments.", "Reads the build log and finds the cause.", "Builds a fix as a task, under your usual approvals, opens a pull request and sends it to you."],
     never: NEVER_MERGES,
   },
   // ---------------------------------------------------------- Hear from users

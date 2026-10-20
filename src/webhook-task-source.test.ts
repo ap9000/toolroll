@@ -19,7 +19,8 @@ import { outsideReferenceOf, scoutBrief } from "./scout.js";
 import { approvalSheetHtml } from "./server/render-tasks.js";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
-import { originNote, originOf, readSnapshot } from "./task-source.js";
+import { originNote, originOf, readSnapshot, referenceWords } from "./task-source.js";
+import { safeLink } from "./webhook-readers.js";
 
 const T0 = new Date("2026-10-19T12:00:00.000Z");
 const REPO = "/test/shop";
@@ -239,4 +240,16 @@ test("the longest reference there can be is recorded for the planner and read ba
   if (!sourced.ok) throw new Error(sourced.message);
   expect(sourced.source.outsideReference!.length).toBeGreaterThan(2_500);
   expect(decodePlannerSource(encodePlannerSource(sourced.source))).not.toBeNull();
+});
+
+test("a link is judged at the length it is kept: escaped non-ASCII past 2,000 is refused, and one kept reaches every agent whole", () => {
+  expect(safeLink(`https://status.example/${"é".repeat(400)}`, null)).toBe(`https://status.example/${"%C3%A9".repeat(400)}`.length <= 2000 ? `https://status.example/${"%C3%A9".repeat(400)}` : null);
+  expect(safeLink(`https://status.example/${"é".repeat(400)}`, null)).toBeNull();
+  // A kept link full of words the scout's brief escapes still reaches it whole.
+  const url = `https://status.example/${"STANDING-ORDERS-".repeat(120)}`.slice(0, 1990);
+  expect(safeLink(url, null)).toBe(url);
+  const words = referenceWords({ label: "Webhook", verified: "standard", external: { id: "I".repeat(120), url }, receipt: "r" });
+  expect(words).toContain(url);
+  const brief = scoutBrief("t", "g", null, "m", "r.json", [], false, null, false, [], words);
+  expect(brief).toContain(url.replace(/STANDING-ORDERS/g, "STANDING[quoted]-ORDERS"));
 });
