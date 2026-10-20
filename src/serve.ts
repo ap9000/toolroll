@@ -2,7 +2,8 @@ import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./l
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
-import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { NO_COUNTS, projectStates } from './agent-state.js';
+import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -1331,6 +1332,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         receipt: conversation !== null && request && REQUEST_TOKEN.test(request)
           ? { request, received: store.leadRequestReceipt(conversation.sessionId, request) !== null } : null,
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
+        // The sidebar's project states: never on a sensitive page (no rail, no summary stream there).
+        ...(() => { if (sensitive) return {}; try { return { projectStates: projectSummary() }; } catch { return {}; } })(),
         conversation, ...(extras.team ? { team: extras.team } : {}), focus: extras.focus ?? null, result: extras.result ?? null,
         catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
@@ -1396,6 +1399,33 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     paletteCache.clear();
   };
 
+  /** Enrolled projects first (most recently opened), then the repos this server was told to serve that nobody has
+   * opened yet — the switcher lists every project it is allowed to show, each exactly once. */
+  function sidebarProjects(): { path: string; name: string }[] {
+    const seen = new Set<string>();
+    const rows: { path: string; name: string }[] = [];
+    for (const one of [
+      ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
+      ...managedRepos().map(path => ({ path, name: projectName(path) })),
+    ]) {
+      if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
+      seen.add(one.path);
+      rows.push(one);
+    }
+    return rows;
+  }
+  /** The sidebar's projects with their states (agent-state.ts), for the request's own reader: the page's first read
+   * and the summary room's snapshots are this one function, so the two never disagree. Never marks anything seen. */
+  function projectSummary(): BrowserProjectState[] {
+    const projects = sidebarProjects();
+    const actor = requestContext.getStore()?.actor ?? '';
+    const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
+    return projects.map(one => { const state = states.get(one.path); return { path: one.path, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS } }; });
+  }
+  /** One account's summary snapshot, read as that account (the summary room's fingerprint): null when it has no account. */
+  const projectSummaryFor = (account: string): string | null =>
+    store.accountOf(account) === null ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify(projectSummary()));
+
   /** The sidebar's facts for this request. */
   function chromeFor(
     project: string | null,
@@ -1432,19 +1462,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Enrolled projects first (most recently opened), then the repos this
       // server was told to serve that nobody has opened yet — the switcher
       // lists every project it is allowed to show, each exactly once.
-      projects: (() => {
-        const seen = new Set<string>();
-        const rows: { path: string; name: string }[] = [];
-        for (const one of [
-          ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
-          ...managedRepos().map(path => ({ path, name: projectName(path) })),
-        ]) {
-          if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
-          seen.add(one.path);
-          rows.push(one);
-        }
-        return rows;
-      })(),
+      projects: sidebarProjects(),
       ...(facts === undefined ? {} : { csrf: facts.csrf, returnTo: facts.returnTo }),
       inboxCount: badge.count,
       inboxSaturated: badge.saturated,
@@ -1793,7 +1811,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get teamsSourceBudget() { return teamsSourceBudget; },
     get teamsTenantBudget() { return teamsTenantBudget; },
   };
-  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf });
+  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor });
   liveTurnStarted = liveHandlers.turnStarted;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([

@@ -4,7 +4,7 @@
  * running reply, the team conversation — and the page keeps one EventSource
  * for all of them. Events are hints: a `change` asks a part to read itself
  * again the usual way; nothing here carries page content except the chat's
- * reply preview.
+ * reply preview and the summary room's project counts (its `change` carries them).
  *
  * Rooms are named `<kind>[:<id>][?<params>]`. A hidden tab closes the stream
  * (it isn't "here", and it frees one of the browser's few connections) and

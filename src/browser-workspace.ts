@@ -1,6 +1,7 @@
 /** The browser consumes this contract with a type-only import. All HTML is
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
+import type { DisplayState, StateCounts } from './agent-state-words.js';
 import type { TeamSnapshot } from './team-contract.js';
 import type { RunActivity } from './activity-line.js';
 import type { BrandIconId } from './brand-icons.js';
@@ -19,6 +20,8 @@ import type { AcceptLabel, ResultActFacts, ResultActs } from './result-acts.js';
 import type { FirstRunStep, FirstTaskSuggestion, JourneyStep } from './first-run.js';
 
 export type BrowserProject = { name: string; path: string; href: string; knowledgeHref: string };
+/** A project's state for one person (agent-state.ts): the strongest of its counts, and the counts. */
+export type BrowserProjectState = { path: string; state: DisplayState; counts: StateCounts };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */
 export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number;
   /** What the count covers, said aloud and on hover: "3 need you in shop". */
@@ -566,6 +569,8 @@ export type BrowserWorkspace = {
   leadName?: string;
   refreshUrl: string; receipt: { request: string; received: boolean } | null;
   projects: BrowserProject[]; crew: BrowserCrewItem[]; crewTruncated: boolean;
+  /** The sidebar's project states; absent on a sensitive page. The summary room keeps them current. */
+  projectStates?: BrowserProjectState[];
   conversation: BrowserConversation | null;
   team?: TeamSnapshot;
   focus: { id: string; title: string; html: string } | null;

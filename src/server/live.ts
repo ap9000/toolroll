@@ -7,6 +7,7 @@
  *   room=chat[?task=|?project=] the reader's own lead reply, as it runs (the only room that carries content)
  *   room=team[?conversation=]   the team conversation's cursor moved
  *   room=agent:<run>            one agent on the Agents board changed; while open, this person watches it (no pings)
+ *   room=summary                the reader's project states (the sidebar): each change carries the snapshot; never watching or seeing
  *
  * Every room is validated before anything is looked up, and admitted with
  * the same checks and answers as the page it belongs to, before the stream
@@ -35,8 +36,8 @@ import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
 
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
-export const LIVE_ROOMS_PER_PAGE = 5;
-const ROOM_NAME = /^(workspace|task|flow|chat|team|agent)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
+export const LIVE_ROOMS_PER_PAGE = 6;
+const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
 /** At most one workspace nudge a second: a burst of writes is one re-read, the first heard at once. */
 const WORKSPACE_SETTLE_MS = 1_000;
 /** A running reply's preview: at most one snapshot every 80 ms; the last one always goes out. */
@@ -44,6 +45,7 @@ const TURN_SETTLE_MS = 80;
 
 export type LiveRoom =
   | { kind: "workspace" }
+  | { kind: "summary" }
   | { kind: "task"; task: string }
   | { kind: "flow"; flow: number; card: number | null; editing: boolean }
   | { kind: "chat"; task: string | null; project: string | null }
@@ -61,6 +63,7 @@ export function parseLiveRoom(name: string): LiveRoom | null {
   const only = (...allowed: string[]): boolean => [...params.keys()].every(one => allowed.includes(one)) && allowed.every(one => params.getAll(one).length <= 1);
   switch (kind) {
     case "workspace": return key === null && query === undefined ? { kind } : null;
+    case "summary": return key === null && query === undefined ? { kind } : null;
     case "task": return key !== null && key !== "" && query === undefined ? { kind, task: key } : null;
     case "flow": {
       const flow = Number(key), card = params.get("card");
@@ -85,11 +88,17 @@ type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number
 
 const json = (response: ServerResponse, status: number, value: unknown): void => respond(response, status, "application/json", JSON.stringify(value));
 
-export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus; workspaceRevision: WorkspaceRevision; chatProjectOf: (projects: string[]) => string | null | undefined }) {
+export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus; workspaceRevision: WorkspaceRevision; chatProjectOf: (projects: string[]) => string | null | undefined;
+  /** One account's sidebar snapshot (serve.ts projectSummaryFor), read as that account; null: no such account. */
+  projectSummaryFor: (account: string) => string | null }) {
   const { store, identify, liveCeiling, familyOf, taskRooms, flowRooms, clock, leadPrincipal, taskChatFocus, chatScopeOf, liveTurns, team, visible } = runtime;
 
   // The reader's workspace: one room for everyone, nudged by any meaningful write or a clock-bound lapse.
   const workspaceRooms = createLiveRooms<"workspace", Viewer>(() => `${live.workspaceRevision.current()}:${live.workspaceRevision.expiresAt(clock())}`, null,
+    { bus: live.bus, minIntervalMs: WORKSPACE_SETTLE_MS });
+  // The reader's project states, per account: the fingerprint IS the snapshot, so each `change` carries it (`at`).
+  // Re-read as the account on every signal, so a narrowed grant narrows the next snapshot.
+  const summaryRooms = createLiveRooms<string, Viewer>(account => live.projectSummaryFor(account), null,
     { bus: live.bus, minIntervalMs: WORKSPACE_SETTLE_MS });
   // A team audience is per actor (and per token): its key carries who reads, the room keeps how to read as them.
   const teamActors = new Map<string, TeamActor>();
@@ -195,7 +204,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const names = url.searchParams.getAll("room");
     if ([...url.searchParams.keys()].some(key => key !== "room") || names.length === 0 || names.length > LIVE_ROOMS_PER_PAGE || new Set(names).size !== names.length) return json(response, 400, { error: "room" });
     const rooms = names.map(name => ({ name, room: parseLiveRoom(name) }));
-    if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "agent").length > 1 || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1) return json(response, 400, { error: "room" });
+    if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "agent").length > 1 || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1 || rooms.filter(one => one.room?.kind === "summary").length > 1) return json(response, 400, { error: "room" });
 
     // Admit every room before the stream opens, with the answers each page's own stream gave.
     const joins: Array<(connection: LiveConnection) => void> = [];
@@ -204,6 +213,9 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
       if (room.kind === "workspace") {
         const browser = who as Who & { via: "cookie" };
         joins.push(connection => workspaceRooms.join("workspace", { name: who.name, room: name, connection, valid: sameBrowser(request, browser) }));
+      } else if (room.kind === "summary") {
+        const browser = who as Who & { via: "cookie" };
+        joins.push(connection => summaryRooms.join(who.name, { name: who.name, room: name, connection, valid: sameBrowser(request, browser) }));
       } else if (room.kind === "task") {
         const browser = who as Who & { via: "cookie" };
         const family = familyOf(room.task);
@@ -307,6 +319,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     close(): void {
       detachChat();
       workspaceRooms.close();
+      summaryRooms.close();
       teamRooms.close();
       agentRooms.close();
       for (const viewer of [...chatViewers]) viewer.connection.close();

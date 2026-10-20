@@ -185,6 +185,18 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-crew-group-title { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0 0 var(--so-space-xs); font-size: 12px; font-weight: 600; color: var(--so-muted); }
 .so-crew-group-title > span { font: 12px/1 var(--so-mono); font-variant-numeric: tabular-nums; }
 .so-crew-more > summary { min-height: 36px; display: flex; align-items: center; font-size: 12px; color: var(--so-muted); }
+.so-project-states { display: grid; gap: 1px; margin: var(--so-space-sm) 0; }
+.so-project-state > a { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 30px; padding: 0 10px; border-radius: 6px; font-size: 13px; color: var(--so-ink); text-decoration: none; }
+.so-project-state > a[aria-current] { background: var(--so-raised); }
+.so-project-state-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-project-state-counts { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+.so-project-state[data-project-state="needs-you"] .so-project-state-counts { color: var(--so-attention); }
+.so-project-tasks { display: grid; gap: 1px; margin: 2px 0 var(--so-space-sm); padding: 0 0 0 18px; list-style: none; }
+.so-project-tasks a { display: grid; grid-template-columns: auto 1fr; column-gap: var(--so-space-sm); align-items: center; padding: 3px 10px; border-radius: 6px; font-size: 12px; color: var(--so-ink); text-decoration: none; }
+.so-project-task-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.so-project-task-line { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--so-muted); }
+@media (hover: hover) and (pointer: fine) { .so-project-state > a:hover, .so-project-tasks a:hover { background: var(--so-raised); } }
+.so-needs-chip { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; border: 1px solid var(--so-attention); border-radius: 999px; background: transparent; color: var(--so-attention); font-size: 13px; white-space: nowrap; }
 .so-fleet { display: grid; gap: 2px; margin: auto 0 var(--so-space-sm); padding: var(--so-space-sm) 10px; border-top: 1px solid var(--so-line); }
 .so-fleet > a, .so-fleet > p { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 26px; margin: 0; font-size: 12px; color: var(--so-muted); text-decoration: none; font-variant-numeric: tabular-nums; }
 @media (hover: hover) and (pointer: fine) { .so-fleet > a:hover { color: var(--so-ink); } }

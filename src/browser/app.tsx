@@ -2,7 +2,8 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { BrowserCrewItem, BrowserMessage, BrowserWorkspace } from "../browser-workspace.js";
+import type { BrowserCrewItem, BrowserMessage, BrowserProjectState, BrowserWorkspace } from "../browser-workspace.js";
+import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-words.js";
 import {
   Alert, Artifact, ArtifactContent, Badge, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
@@ -377,11 +378,78 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   </section>;
 }
 
+/** Each state's glyph in the console's one palette. */
+const STATE_GLYPH: Record<DisplayState, GlyphKind> = {
+  "needs-you": "decide", failed: "failed", stuck: "unblock", paused: "idle", working: "building", waiting: "idle", done: "done", idle: "idle" };
+
+/** A summary snapshot as the summary room sends it (its `at`), read strictly: anything else is ignored. */
+export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
+  if (typeof raw !== "string") return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (!Array.isArray(parsed)) return null;
+  const states: BrowserProjectState[] = [];
+  for (const one of parsed) {
+    if (one === null || typeof one !== "object") return null;
+    const { path, state, counts } = one as Record<string, unknown>;
+    if (typeof path !== "string" || !DISPLAY_STATES.includes(state as DisplayState) || counts === null || typeof counts !== "object") return null;
+    const read = Object.fromEntries(DISPLAY_STATES.map(key => [key, (counts as Record<string, unknown>)[key]]));
+    if (Object.values(read).some(value => typeof value !== "number" || !Number.isInteger(value) || value < 0)) return null;
+    states.push({ path, state: state as DisplayState, counts: read as BrowserProjectState["counts"] });
+  }
+  return states;
+}
+
+/** The page's project states, kept current by the summary room; none on a sensitive page. Reading it never watches
+ * or sees anything. */
+export function useProjectStates(workspace: BrowserWorkspace): BrowserProjectState[] | null {
+  const [states, setStates] = useState<BrowserProjectState[] | null>(workspace.projectStates ?? null);
+  useEffect(() => { setStates(workspace.projectStates ?? null); }, [workspace.projectStates]);
+  useLiveRoom(workspace.sensitive || workspace.projectStates === undefined ? null : "summary", (event, data) => {
+    if (event !== "change") return;
+    const next = readProjectStates(data["at"]);
+    if (next !== null) setStates(next);
+  });
+  return workspace.sensitive ? null : states;
+}
+
+/** A project's counts in words, strongest first, leaving out what is zero (idle is never counted). */
+export function projectCountWords(state: BrowserProjectState): string {
+  return DISPLAY_STATES.filter(key => key !== "idle" && state.counts[key] > 0)
+    .map(key => `${state.counts[key]} ${key === "needs-you" ? (state.counts[key] === 1 ? "needs you" : "need you") : STATE_WORDS[key].toLowerCase()}`).join(" · ");
+}
+
+/** The sidebar's projects, each with its state and counts; under the open one, its tasks with something live or asking. */
+export function ProjectStates({ workspace, states, current }: { workspace: BrowserWorkspace; states: BrowserProjectState[]; current: string | null }) {
+  const byPath = new Map(states.map(one => [one.path, one]));
+  const tasks = current === null ? [] : workspace.crew.filter(item => item.project === current && item.tone !== "done" && item.state !== "cancelled"
+    && crewGroupOf(item) !== "waiting").slice(0, 8);
+  return <nav aria-label="Projects now" className="so-project-states" data-project-states>
+    {workspace.projects.map(project => {
+      const state = byPath.get(project.path);
+      if (state === undefined) return null;
+      const words = projectCountWords(state);
+      return <div key={project.path} className="so-project-state" data-project-state={state.state}>
+        <a href={project.href} aria-current={project.path === current ? "true" : undefined} title={words === "" ? STATE_WORDS.idle : words}>
+          <StatusGlyph kind={STATE_GLYPH[state.state]} /><span className="so-project-state-name">{project.name}</span>
+          {words !== "" && <span className="so-project-state-counts">{words}</span>}
+          <span className="so-sr-only">{STATE_WORDS[state.state]}</span>
+        </a>
+        {project.path === current && tasks.length > 0 && <ul className="so-project-tasks">{tasks.map(item => <li key={item.id}>
+          <a href={item.href} title={item.title}><StatusGlyph kind={headlineGlyph(item.tone)} /><span className="so-project-task-title">{item.title}</span>
+            <span className="so-project-task-line">{item.activity?.what ?? item.detail ?? item.label}</span></a>
+        </li>)}</ul>}
+      </div>;
+    })}
+  </nav>;
+}
+
 function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
   const projectId = useId();
   const currentProject = workspace.projects.find(project => new URL(workspace.path, window.location.origin).searchParams.get("project") === project.path
     || new URL(workspace.path, window.location.origin).searchParams.get("repo") === project.path
     || workspace.crew.find(task => task.id === workspace.focus?.id)?.project === project.path);
+  const states = useProjectStates(workspace);
   return <div className="so-navigation-content">
     <a href="/chat" className="so-wordmark"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>
     <a href="/tasks/new" className="so-new-task"><Icon name="plus" />New task</a>
@@ -397,6 +465,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "agents", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
         {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
     })}</nav>
+    {states !== null && states.length > 0 && <ProjectStates workspace={workspace} states={states} current={currentProject?.path ?? null} />}
     {currentProject && <div className="so-project-links">
       <a className="so-project-knowledge" href={`/chat?project=${encodeURIComponent(currentProject.path)}`}>Project chat</a>
       <a className="so-project-knowledge" href={currentProject.knowledgeHref}>Project knowledge</a>
@@ -471,7 +540,11 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
 }
 
 function PhoneNavigation({ workspace }: { workspace: BrowserWorkspace }) {
+  // On a phone the rail is a sheet: a header chip says how many need you and opens it.
+  const states = useProjectStates(workspace);
+  const needing = states?.reduce((sum, one) => sum + one.counts["needs-you"], 0) ?? 0;
   return <Dialog><DialogTrigger asChild><ViewButton variant="ghost" size="icon" className="so-mobile-menu min-[901px]:hidden max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Open navigation"><Icon name="menu" /></ViewButton></DialogTrigger>
+    {needing > 0 && <DialogTrigger asChild><button type="button" className="so-needs-chip min-[901px]:hidden" data-needs-chip>{needing} need{needing === 1 ? "s" : ""} you</button></DialogTrigger>}
     <DialogContent className="so-navigation-dialog"><DialogTitle className="so-sr-only">Workspace navigation</DialogTitle><DialogDescription className="so-sr-only">Choose a project or a workspace page.</DialogDescription>
       <DialogClose asChild><ViewButton variant="ghost" size="icon" className="so-navigation-close max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Close navigation"><Icon name="close" /></ViewButton></DialogClose><Navigation workspace={workspace} />
     </DialogContent></Dialog>;
