@@ -1,6 +1,6 @@
 # Live terminal — plan
 
-Status: v2, 2026-10-20 — Codex round 1 NO-GO (6 findings), all folded in below (§ Review). Branch `live-terminal`.
+Status: built, Codex GO at round 5 (2026-10-20). Branch `live-terminal`. Review history below.
 
 ## What and why
 
@@ -187,6 +187,12 @@ not found — no worse than closing any terminal window on macOS.
   by pid and start time; Remove requires each to have *exited* (not merely changed directory), plus no current
   resident.
 - **3 (children escaping close)** is the stated limit, now narrowed: a child created during the close is caught by the
-  next 100 ms scan while it is a descendant, has this terminal, or works in the worktree (then it blocks removal until
-  it exits). Only one that detaches from the terminal, is reparented, AND leaves the worktree within one scan is not
-  seen — macOS has no containment to prove otherwise (Linux cgroups would; not in this slice).
+  next 100 ms scan while it is a descendant or has this terminal, and one still working in the worktree when the sweep
+  ends blocks removal until it exits. Cleanup is best-effort beyond that: a process that detaches from the terminal, is
+  reparented AND leaves the worktree before the sweep ends is not seen — macOS has no containment to prove otherwise
+  (Linux cgroups would; not in this slice).
+
+## Round 5 (Codex narrow confirmation on d1bab48b): **GO**
+
+The round-4 High is CLOSED, no new High, and the detached-process escape is an acceptable stated limit for an
+attended, operator-only terminal (wording corrected above to promise no time bound).
