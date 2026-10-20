@@ -1,4 +1,4 @@
-# The light cockpit (v5)
+# The light cockpit (v6)
 
 Alex, 2026-10-19, after comparing herdr-gpui: "copy the states and adjust for anything missing — do the quick start and
 then 3 and 4 — we need the direct steer / terminal view option for every agent that's running if possible."
@@ -183,15 +183,22 @@ It is never a pty and never types into the agent.
     database itself (the existing path) and reads it. It then proves the **live** console holds that secret, on both
     channels, with fresh challenges: over the socket (`hello` with a random challenge, answered with
     HMAC(secret, "socket:" + challenge)), and over the **advertised HTTP listener** (`GET /__instance?c=<another
-    challenge>` on 127.0.0.1:<port>, answered with HMAC(secret, "http:" + challenge)). Both must hold. A replayed
+    challenge>` on 127.0.0.1:<port>, answered with HMAC(secret, "http:" + challenge + " " + localAddress + " " + localPort),
+    where `localAddress`/`localPort` are what **the console itself observed** as the receiving end of that very
+    connection (`request.socket.localAddress` / `localPort`) — never `Host` or anything the client sends). The CLI
+    requires them to equal the address it dialed (127.0.0.1 and the recorded port); a console bound elsewhere (say
+    `--host ::1`) can't be attached on 127.0.0.1, and a relay listening on 127.0.0.1 that forwards to the real
+    console's other address produces an answer bound to that other address, so it is refused [r5-N20]. Both must hold. A replayed
     `hello`, a stale record with a recycled pid, or another process now on that port can't answer a new challenge,
     so the attach refuses (with the restart command) and never sends a person to another listener. The URL it prints
     or opens is that proved listener's;
   - tests: a native-sandbox build contacts the socket directly (bypassing the CLI's "under an agent" check), including
     with a custom database directory, and gets only the `hello` facts — it cannot read the instance secret, any other
     verb is refused and nothing in the database changes; **a stale `console_instance` record with a matching replayed
-    `hello`, a recycled pid and a replacement HTTP listener on the recorded port is refused**; a live console passes
-    both proofs.
+    `hello`, a recycled pid and a replacement HTTP listener on the recorded port is refused**; **a genuine live
+    console with a correct instance record, reached through an IPv4-to-IPv6 relay (an agent listening on 127.0.0.1:P,
+    forwarding to the console's [::1]:P), is refused on both-channel verification**; a live console reached directly
+    passes both proofs.
 - Admission uses the existing project-admission path, its registry lock and ceilings, from the CLI's own opened
   database (never through the socket).
 - An incompatible build refuses with the command to restart.
@@ -270,7 +277,8 @@ whether it can be built.
 - Establish what interrupting `codex exec --json` does mid-turn and mid-tool.
 - Establish what the session file holds afterwards, and whether `codex exec resume <exact session id>` resumes from the
   last completed turn.
-- If no reliable boundary exists, phase C stops, and Codex stays mailbox-only, said plainly.
+- If no reliable boundary exists, phase C stops, and Codex stays mailbox-only, said plainly. (Until C0 proves one and C
+  is separately decided, Codex is mailbox-only in production, as D's deferral says of every agent but Claude.)
 
 **If the spike holds**, the contract is:
 - **Boundary.** A continuation happens only between turns: the runner waits for the turn-complete event, never a
@@ -357,21 +365,21 @@ so Toolroll **launches nothing**. Instead, on a live view of an attempt whose ch
 - `auth_method` is recorded.
 - Instance attach refuses a mismatched identity file or build.
 
-**C and D:** as specified in their sections, with real binaries.
+**C:** the C0 spike's real-binary evidence decides C; D is deferred (nothing to test in this arc).
 
-**E:**
-- A path re-proved stale is refused.
-- The argv is fixed.
-- The environment is scrubbed.
-- It is refused off this machine or without a password typed now.
+**E (copy, don't launch):**
+- The copied `cd` text for a path with quotes and spaces.
+- Show in Finder: a stale or reassigned path is refused; `open -R`'s argv is fixed; viewers and bearer callers are
+  refused; it is not offered off this machine.
 
 ## Order
 
-1. A (§1 → §2 → §3 → §4/§5)
+1. A (§1 → §2 → §3 → §4/§5) — done
 2. B1
 3. B2
-4. C0 spike, then C
-5. D
-6. E
+4. E
+5. C0 spike (C only if it holds, as its own decision)
+
+D is deferred (mailbox-only for every agent but Claude).
 
 Each step is reviewed before the next. A ships on its own: it changes nothing anyone may do.
