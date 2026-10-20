@@ -381,6 +381,11 @@ describe("where freshness may be honoured", () => {
  * function. So every mention — as a name, a member, a key, a string or a template literal — of `fresh`, and of each
  * authentication function and freshness fact, in EVERY production file, is counted and pinned. A new mention, however it is spelled, fails here until a person reviews it. (Only a
  * key computed at run time, like "fr" + "esh", is outside what reading the source can see.)
+ *
+ * STATED LIMIT (accepted 2026-10-20, Codex B2 r21): this is a regression guard, not a proof. Pins are by place, so an
+ * ordinary refactor can still move an EXISTING mention or helper into an authorization path without changing a pin
+ * (destructuring, argument slots, aliases, reused helpers, label collisions). Changes near scope.ts's prover still
+ * need a human reviewer; the runtime gates carry the guarantee.
  */
 const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "FreshFacts": {

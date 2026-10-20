@@ -258,6 +258,14 @@ only place freshness is honoured. A static test fails any other read of `sso.fre
 and every route whose handler calls it carries `freshness: "never" | "allowlist"`. Task merge, for one, isn't declared
 step-up today; it gets `never`. OAuth consent and token creation are `never`.
 
+**Accepted 2026-10-20 with a stated limit.** Codex found the runtime sound (round 7). Rounds 8–21 hardened the static
+audit, which pins every mention of `fresh` and of each authentication function by place. It is a **regression
+guard, not a proof**: round 21 listed nine ways an ordinary refactor can move an existing read or helper into an
+authorization path without changing any pin, such as destructuring, slots, aliases, helper reuse and label
+collisions. Closing them needs whole-program binding/use tracking. Alex accepted B2 with the audit as it stands. The
+runtime gates in `scope.ts` (one prover, live facts, refunds only inside one transaction) are what carry the
+guarantee, and code review covers changes that touch them.
+
 **What an approval then records [R2]:**
 - The seal is unchanged: an explicit Approve, the exact terms, the one-shot nonce, the transactional digest check.
 - Each approval also records `auth_method` (password-now | sso-now | fresh-password | fresh-sso), `auth_at` and the
@@ -376,7 +384,7 @@ so Toolroll **launches nothing**. Instead, on a live view of an attempt whose ch
 
 1. A (§1 → §2 → §3 → §4/§5) — done
 2. B1
-3. B2
+3. B2 — accepted with the audit's stated limit
 4. E
 5. C0 spike (C only if it holds, as its own decision)
 
