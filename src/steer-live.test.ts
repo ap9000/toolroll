@@ -54,7 +54,7 @@ describe("live steering's dispatcher", () => {
     // The first send carries the note's own identity, minted when it was filed.
     expect(frames.at(-1)?.["uuid"]).toBe(note.liveUuid);
     expect(note).toMatchObject({ mailedRun: runId, liveSends: 1, liveSentAt: at(500).toISOString(), deliveredAt: null, ackedAt: null });
-    expect(steerStandingWords(note, true, iso => iso)).toBe("Waiting for the agent to read it");
+    expect(steerStandingWords(note, true, iso => iso)).toBe("Sent · not picked up yet");
     // Only the agent moving the file reads it.
     moveToHandled("001.json");
     tickLiveSteer(store, { box, session }, at(1_000), true);
@@ -83,7 +83,7 @@ describe("live steering's dispatcher", () => {
     expect(steerStandingWords(missed, false, iso => iso)).toBe("Will reach the next attempt");
     moveToHandled("001.json");
     tickLiveSteer(store, { box, session }, at(7 * LIVE_RESEND_MS), true);
-    expect(steerStandingWords(store.steerNote(id)!, true, iso => iso)).toBe(`Read by the agent at ${at(7 * LIVE_RESEND_MS).toISOString()}`);
+    expect(steerStandingWords(store.steerNote(id)!, true, iso => iso)).toBe(`Picked up at ${at(7 * LIVE_RESEND_MS).toISOString()}`);
   });
 
   test("c4: moving the file cancels the re-sends", () => {

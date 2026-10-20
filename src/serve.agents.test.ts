@@ -240,7 +240,18 @@ describe("what a running agent takes (cockpit §4)", () => {
     store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ?, live_input_opened_at = ? WHERE id = ?").run(now.toISOString(), now.toISOString(), live);
     expect(steerCapabilityOf(store, live, now)).toMatchObject({ send: "live", pause: true, stop: { run: live, label: "Stop" } });
     const mailbox = running("t-cap-box", repoA);
+    // Not yet at work: a note goes into its brief.
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: "mailbox", words: "It reads notes when it starts working." });
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(now.toISOString(), mailbox);
     expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: "mailbox", pause: false, stop: { run: mailbox }, words: "It reads notes at its next check." });
+    // Its mailbox closed while it finishes: no note reaches this attempt, and the view says so.
+    store.handle.prepare("UPDATE run SET steer_closed_at = ? WHERE id = ?").run(now.toISOString(), mailbox);
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: null, stop: { run: mailbox } });
+    store.handle.prepare("UPDATE run SET steer_closed_at = NULL WHERE id = ?").run(mailbox);
+    // A stop the store would refuse is not offered: here, a claim that has lapsed.
+    const lapsed = running("t-cap-lapsed", repoA);
+    store.handle.prepare("UPDATE claim SET expires_at = ? WHERE task_ref = (SELECT task_ref FROM run WHERE id = ?)").run(new Date(now.getTime() - 1000).toISOString(), lapsed);
+    expect(steerCapabilityOf(store, lapsed, now)?.stop ?? null).toBeNull();
     // Its protocol repair: no notes for either, and Stop names the owning attempt.
     const repair = store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, branch, worktree, started_at, role, parent_run, provider) SELECT task_ref, lease_id, runner, branch, worktree, ?, 'repair', id, provider FROM run WHERE id = ?")
       .run(now.toISOString(), mailbox).lastInsertRowid;
@@ -256,11 +267,16 @@ describe("what a running agent takes (cockpit §4)", () => {
   test("the agent view offers what its attempt takes; Stop comes back to it; a note for an agent that takes none is refused, never filed", async () => {
     const cookie = await login("alex", alexToken);
     const run = running("t-cap-board", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(new Date().toISOString(), run);
     const detail = (await board(`/agents?run=${run}`, cookie)).selected!;
     expect(detail.controls).toMatchObject({ send: "mailbox", words: "It reads notes at its next check.", pause: null, stop: { run, label: "Stop", action: "/t/t-cap-board/stop" } });
     expect(detail.steer).toMatchObject({ run });
     // A planner running for the same task: no notes; the board's send is refused in words, and nothing is filed.
     store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(run);
+    // A planner opens on the board too, saying it takes no notes, with Stop and no box.
+    const planner = (await board(`/agents?run=${run}`, cookie)).selected!;
+    expect(planner.controls).toMatchObject({ send: null, words: "This planner can't take notes; stop it to change its course.", stop: { run } });
+    expect(planner.steer).toBeNull();
     const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
     const refused = await post(cookie, "/t/t-cap-board/steer", { note: "use the other table", return: "agents", run: String(run), key: "k-planner-0001" });
     expect(refused.location).toBe(`/agents?run=${run}&said=steer-no-notes`);
@@ -278,7 +294,10 @@ describe("the task page's note is for the exact attempt (cockpit §4)", () => {
     const run = running("t-page-note", repoA);
     store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(new Date().toISOString(), run);
     const html = await (await fetch(url("/t/t-page-note"), { headers: { cookie } })).text();
-    const form = /<form[^>]*id="steering"[^>]*>[\s\S]*?<\/form>/.exec(html)?.[0] ?? "";
+    const form = [...html.matchAll(/<form[^>]*action="\/t\/t-page-note\/steer"[^>]*>[\s\S]*?<\/form>/g)].map(one => one[0]).find(one => one.includes('name="run"')) ?? "";
+    // The page's own composer names the same run, and says what it takes.
+    const view = workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(view.steering).toMatchObject({ steer: { run, action: "/t/t-page-note/steer" }, controls: { send: "mailbox", words: "It reads notes at its next check." } });
     expect(form).toContain(`name="run" value="${run}"`);
     expect(form).toContain('name="return" value="task"');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(form)?.[1] ?? "";
@@ -289,6 +308,23 @@ describe("the task page's note is for the exact attempt (cockpit §4)", () => {
       body: new URLSearchParams({ csrf, note: "use the cache", run: String(run), key, return: "task" }).toString() });
     expect(answer.status).toBe(409);
     expect(await answer.text()).toContain("that attempt ended before your note");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+  });
+
+  test("while a planner runs, the page's form is plainly for the next attempt; the demo files nothing", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-page-plan", repoA);
+    store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(run);
+    const html = await (await fetch(url("/t/t-page-plan"), { headers: { cookie } })).text();
+    expect(html).toContain("Save for the next attempt");
+    expect((workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView).steering).toMatchObject({ steer: null, controls: { send: null, words: "This planner can't take notes; stop it to change its course." } });
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "";
+    store.recordInstallationFact("demo", "1", new Date());
+    expect(store.isDemo()).toBe(true);
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const answer = await fetch(url("/t/t-page-plan/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, note: "try the cache" }).toString() });
+    expect(answer.status).toBe(403);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
   });
 });

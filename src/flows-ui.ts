@@ -1,5 +1,6 @@
 /** Flows in the console: the list of a person's flows, and one flow's canvas
  * (the React view's data, plus a plain fallback page the view replaces). */
+import { liveAttemptOf, steerControlsFor } from "./steer-controls.js";
 import type { BrowserFlowCard, BrowserFlowTrigger, BrowserFlowView } from "./browser-workspace.js";
 import { draftFor, flowDefinitionOf } from "./flow-engine.js";
 import { describeStandingOrder } from "./flow-schedule.js";
@@ -186,7 +187,14 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state,
       waiting: card.state === "active" && card.task !== null && (stage?.kind === "task" || stage?.kind === "report")
         ? canReadTask ? flowCardTaskLine(store, card.task, taskRepo!, now, secretsFor(taskRepo!)) : "Task unavailable" : card.waiting,
-      task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}` },
+      task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}`,
+        // Its running attempt's composer, for an approver who may read the task (steer-controls.ts).
+        ...(() => {
+          const ref = card.state === "active" && canReadTask && viewer.approver ? store.lookupRef(task) : null;
+          const run = ref === null ? null : liveAttemptOf(store, ref.id, now);
+          const composer = run === null ? null : steerControlsFor(store, task, run, now, viewer.approver);
+          return composer === null ? {} : { composer };
+        })() },
       createdBy: card.createdBy, updatedAt: card.updatedAt,
       canDecide,
       // What a "Send to me" sent shows once, in its own box (sent), not again here; a report zone's items and full report

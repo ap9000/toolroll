@@ -209,7 +209,7 @@ export const CONSOLE_FORMS = {
   resolveIncident: formContract("POST /i/<id>/resolve", ["return"]),
 
   // A task's verbs (/t/<task>/<verb>), one body each.
-  taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after"]),
+  taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after", "request"]),
   taskReply: formContract("POST /t/<task>/reply", ["question", "answer"]),
   taskHold: formContract("POST /t/<task>/hold", ["reason"]),
   taskBlock: formContract("POST /t/<task>/block|unblock", ["on"]),
@@ -229,7 +229,7 @@ export const CONSOLE_FORMS = {
   taskStop: formContract("POST /t/<task>/stop", ["run", "return"]),
   // Pause, or Pause and steer when a note rides along, or Resume (mode=resume): the exact run shown, and the page's own
   // request id.
-  taskPause: formContract("POST /t/<task>/pause", ["run", "request", "note", "mode", "return"]),
+  taskPause: formContract("POST /t/<task>/pause", ["run", "request", "note", "mode", "return", "key"]),
   taskResume: formContract("POST /t/<task>/resume|resume-arm", ["run", "token", "nonce", "return"]),
 } as const;
 

@@ -1,8 +1,8 @@
-import { steerCapabilityOf } from "../steer-capabilities.js";
+import { steerControlsFor } from "../steer-controls.js";
 import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
-import { createHmac,randomBytes,randomUUID } from "node:crypto";
+import { createHmac,randomBytes } from "node:crypto";
 import { existsSync,opendirSync,readdirSync,realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
@@ -448,7 +448,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         // Opening a finished agent is viewing it: it leaves this person's unread Done.
         if (facts.outcome !== null && markAgentSeen(store, who.name, facts.runId, now)) facts.seen = true;
         const live = facts.outcome === null;
-        const capability = live ? steerCapabilityOf(store, facts.runId, now) : null;
+        const composer = live ? steerControlsFor(store, facts.taskId, facts.runId, now, who.role === "approver") : null;
         const sealed = live ? null : sealedDiffOf(store, evidenceRoot, facts.runId);
         // A reply's own word first; otherwise the note that the agent asked past the questions cap.
         const said = AGENT_SAID[url.searchParams.get("said") ?? ""] ?? (facts.questionNote === null ? null : { tone: "info" as const, text: facts.questionNote });
@@ -461,18 +461,9 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           peek: live && options.localRunner !== undefined && run!.runner === options.localRunner && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
           files: (sealed?.files ?? []).slice(0, 30).map(one => ({ path: one.path, added: one.additions, removed: one.deletions })),
           filesMore: Math.max(0, (sealed?.fileCount ?? 0) - 30),
-          // A note goes only to an attempt that reads notes (steer-capabilities.ts); the composer says what it takes.
-          steer: live && capability?.send != null ? { action: `${taskHref(facts.taskId)}/steer`, run: facts.runId } : null,
-          controls: live && capability !== null && who.role === "approver" && !store.isDemo() ? {
-            send: capability.send, words: capability.words,
-            pause: capability.pause ? (() => {
-              const pause = store.livePauseOf(facts.runId);
-              const until = pause?.pausedAt == null || pause.limitMs === null ? null : new Date(Date.parse(pause.pausedAt) + pause.limitMs).toISOString();
-              return { action: `${taskHref(facts.taskId)}/pause`, run: facts.runId, state: pause?.state ?? null,
-                requests: [`web-${randomUUID()}`, `web-${randomUUID()}`, `web-${randomUUID()}`] as [string, string, string], until };
-            })() : null,
-            stop: capability.stop === null ? null : { action: `${taskHref(facts.taskId)}/stop`, ...capability.stop },
-          } : null,
+          // A note goes only to an attempt that reads notes (steer-controls.ts); the composer says what it takes.
+          steer: composer?.steer ?? null,
+          controls: composer?.controls ?? null,
           canAct: who.role === "approver" && !store.isDemo(),
           taskHref: taskHref(facts.taskId),
           // The run's own address: a finished result opens on its result page, anything else on its record.

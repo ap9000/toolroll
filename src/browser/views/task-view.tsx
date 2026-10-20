@@ -4,6 +4,7 @@
  * in a Details panel beside it (a Details sheet on a phone). Forms,
  * ceremonies and ledgers stay the server's own HTML (same ids, same page
  * scripts); this page only frames them. */
+import { SteerNote } from "./steer-composer.js";
 import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
@@ -175,6 +176,11 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
     </div>
     {retrying && <RetryForm action={retry.action} csrf={csrf} note={retry.note ?? failure?.suggestion} />}
     {pause !== null && steering && <PauseSteerForm pause={pause} onCancel={() => setSteering(false)} />}
+    {/* The running attempt: what it takes, said plainly, and a note box when it takes notes (Pause and steer sits above). */}
+    {view.steering != null && csrf !== "" && <div id="steering" className="flex flex-col gap-1 border-t border-border pt-3" data-task-steering>
+      <p className="text-caption text-muted-foreground" data-agent-capability>{view.steering.controls.words}</p>
+      {view.steering.steer !== null && <SteerNote steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}
+    </div>}
     <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
     {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&
       <div className="flex flex-col gap-1 border-t border-border pt-3 text-body phone:pt-2 phone:leading-[1.35]">

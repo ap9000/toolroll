@@ -15,6 +15,7 @@ import { ConversationPane } from "./agent-conversation.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
 import { Alert, PostForm } from "../ui/index.js";
+import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from "./steer-composer.js";
 
 const CHIP: Record<AgentGroupKey, string> = {
   "needs-you": "bg-attention-soft text-attention",
@@ -129,51 +130,6 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
   </Collapsible>;
 }
 
-type SteerDraft = { text: string; key: string; submitted: boolean };
-const draftStore = (run: number) => `toolroll:steer-draft:${run}`;
-function freshDraft(): SteerDraft {
-  const key = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
-  return { text: "", key, submitted: false };
-}
-/** This run's saved draft, unless the page says that very draft was just sent. */
-function loadDraft(run: number): SteerDraft {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem(draftStore(run)) ?? "null") as Partial<SteerDraft> | null;
-    if (saved === null || typeof saved.text !== "string" || typeof saved.key !== "string") return freshDraft();
-    if (new URLSearchParams(location.search).get("sent") === saved.key) { sessionStorage.removeItem(draftStore(run)); return freshDraft(); }
-    return { text: saved.text, key: saved.key, submitted: saved.submitted === true };
-  } catch { return freshDraft(); }
-}
-function saveDraft(run: number, draft: SteerDraft): void {
-  try { draft.text === "" && !draft.submitted ? sessionStorage.removeItem(draftStore(run)) : sessionStorage.setItem(draftStore(run), JSON.stringify(draft)); } catch { /* a convenience only */ }
-}
-
-/** What this running agent takes (steer-capabilities.ts), said plainly, with Pause / Resume and Stop for the exact run
- * each names. Every form goes back to this agent. */
-function Controls({ detail }: { detail: BrowserAgentDetail }) {
-  const controls = detail.controls;
-  if (controls == null || !detail.canAct) return null;
-  const pause = controls.pause;
-  return <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3 phone:px-4" data-agent-controls={controls.send ?? "none"}>
-    <p className="min-w-0 flex-1 text-caption text-muted-foreground" data-agent-capability>{controls.words}</p>
-    {pause !== null && (pause.state === "paused"
-      ? <PostForm action={pause.action} data-agent-resume>
-          <input type="hidden" name="run" value={String(pause.run)} /><input type="hidden" name="request" value={pause.requests[2]} />
-          <input type="hidden" name="mode" value="resume" /><input type="hidden" name="return" value="agents" />
-          <Button type="submit" variant="outline" size="sm" className="h-9 phone:h-11">Resume</Button>
-        </PostForm>
-      : <PostForm action={pause.action} data-agent-pause>
-          <input type="hidden" name="run" value={String(pause.run)} /><input type="hidden" name="request" value={pause.requests[0]} />
-          <input type="hidden" name="return" value="agents" />
-          <Button type="submit" variant="outline" size="sm" className="h-9 phone:h-11" disabled={pause.state === "pausing"}>{pause.state === "pausing" ? "Pausing…" : "Pause"}</Button>
-        </PostForm>)}
-    {controls.stop !== null && <PostForm action={controls.stop.action} data-agent-stop={controls.stop.run}>
-      <input type="hidden" name="run" value={String(controls.stop.run)} /><input type="hidden" name="return" value="agents" />
-      <Button type="submit" variant="outline" size="sm" className="h-9 phone:h-11">{controls.stop.label}</Button>
-    </PostForm>}
-  </div>;
-}
-
 /** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
 function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const question = detail.question;
@@ -207,15 +163,19 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
     </PostForm>;
   }
   const reply = question !== null;
+  // A live agent that is not paused: the note can also stop its turn first and go at once (one request, atomic).
+  const pauseAndSend = detail.controls?.pause != null && detail.controls.pause.state === null ? detail.controls.pause : null;
   return <PostForm action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"}
     onSubmit={() => { if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}
     className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:sticky desk:bottom-0 desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
-      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} /></>}
+      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} />
+        {pauseAndSend !== null && <input type="hidden" name="request" value={pauseAndSend.requests[1]} />}</>}
     <label className="sr-only" htmlFor="agent-composer">{reply ? `Reply to: ${question.text}` : "A note for the agent"}</label>
     <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => { if (reply) setDraft(previous => ({ ...previous, text: event.target.value })); else setText(event.target.value); }}
       placeholder={reply ? "Your answer" : "Tell the agent something"} className="min-h-11 min-w-0 flex-1 resize-none phone:min-h-11"
       onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
+    {!reply && pauseAndSend !== null && <Button type="submit" formAction={pauseAndSend.action} variant="outline" className="h-11 w-auto shrink-0" disabled={text.trim() === ""} data-agent-pause-send>Pause and send</Button>}
     <Button type="submit" variant={reply ? "attention" : "default"} className="h-11 w-auto shrink-0" disabled={text.trim() === ""}>{reply ? "Reply" : "Send"}</Button>
   </PostForm>;
 }
@@ -245,7 +205,7 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       <ConversationPane url={detail.transcript} live={detail.live} />
       <ChangesPane detail={detail} />
     </div>
-    <Controls detail={detail} />
+    {detail.canAct && detail.controls != null && <SteerControls controls={detail.controls} back="agents" />}
     <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
   </section>;
 }

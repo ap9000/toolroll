@@ -1,3 +1,4 @@
+import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
@@ -524,6 +525,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         base: taskBaseOf(runtime.store, taskId),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
+        // The running attempt's composer, for an approver on a browser session (steer-controls.ts).
+        steerComposer: (() => {
+          const run = ref === null ? null : liveAttemptOf(runtime.store, ref.id, now);
+          return run === null ? null : steerControlsFor(runtime.store, ref!.externalId, run, now, who?.role === "approver");
+        })(),
         // "publishes as" reads ONLY publicationGrantFor(repo) — the grant
         // the publisher would act under — never listGrants(), which is
         // dispatch authority (slice 1c).

@@ -139,7 +139,7 @@ describe("the opened agent's conversation", () => {
 
   test("the terminal view: the same records, one dense line each, output tails, notes inline, markup never rendered; the choice is kept", async () => {
     try { localStorage.removeItem("toolroll.agent.view"); } catch { /* none */ }
-    const notes = [{ id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Read by the agent at", readAt: at(13) }];
+    const notes = [{ id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Picked up at", readAt: at(13) }];
     const out = Array.from({ length: 20 }, (_, n) => `line ${n + 1}`);
     let reads = 0;
     vi.stubGlobal("fetch", vi.fn(async () => reads++ > 0 ? answer({ records: [], nextOffset: 400, gen: "records:1:2", final: false, notes, older: 0 }) : answer({ nextOffset: 400, gen: "records:1:2", final: false, older: 0, notes, records: [
@@ -196,8 +196,8 @@ describe("the opened agent's conversation", () => {
   test("steps show their target and how they ended, a failed command opens to its output, and notes sit in time order with their standing", async () => {
     const fetched: string[] = [];
     const notes = [
-      { id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Read by the agent at", readAt: at(13) },
-      { id: 6, author: "robin", mine: false, at: at(30), text: "Ping me when done", standing: "Waiting for the agent to read it", readAt: null },
+      { id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Picked up at", readAt: at(13) },
+      { id: 6, author: "robin", mine: false, at: at(30), text: "Ping me when done", standing: "Sent · not picked up yet", readAt: null },
     ];
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {
       fetched.push(input);
@@ -229,14 +229,14 @@ describe("the opened agent's conversation", () => {
     expect(order).toEqual(["src/form.ts", "npm test", "5", "npm run lint", "6"]);
     expect(pane.querySelector('[data-conversation-note="5"]')?.textContent).toContain("You");
     expect(pane.querySelector('[data-conversation-note="6"]')?.textContent).toContain("robin");
-    expect(pane.querySelector('[data-conversation-note="6"] [data-note-standing]')?.textContent).toBe("Waiting for the agent to read it");
+    expect(pane.querySelector('[data-conversation-note="6"] [data-note-standing]')?.textContent).toBe("Sent · not picked up yet");
     expect(host.querySelector("[data-conversation-detail]")).toBeNull();
     // The next read carries the offset and the file it belongs to.
     expect(fetched[1]).toBe("/r/7?fragment=transcript&shape=records&from=400&gen=records%3A1%3A2");
   });
 
   test("a run that hid commands says so; another machine's run still shows its notes; an unknown end is never success", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer({ error: "off", older: 0, notes: [{ id: 1, author: "alex", mine: true, at: at(1), text: "Hello", standing: "Waiting for the agent to read it", readAt: null }] })));
+    vi.stubGlobal("fetch", vi.fn(async () => answer({ error: "off", older: 0, notes: [{ id: 1, author: "alex", mine: true, at: at(1), text: "Hello", standing: "Sent · not picked up yet", readAt: null }] })));
     render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(host.querySelector('[data-conversation-note="1"]')).not.toBeNull();
@@ -320,7 +320,7 @@ describe("after the attempt ends", () => {
     act(() => root?.unmount());
     root = null;
     vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ records: [], nextOffset: 0, gen: "g", final: false, older: 0, notes: [{ id: 1, author: "alex", mine: true, at: new Date(NOW).toISOString(), text: "Hi", standing: "Waiting for the agent to read it", readAt: null }] }) } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ records: [], nextOffset: 0, gen: "g", final: false, older: 0, notes: [{ id: 1, author: "alex", mine: true, at: new Date(NOW).toISOString(), text: "Hi", standing: "Sent · not picked up yet", readAt: null }] }) } as Response)
       .mockRejectedValue(new TypeError("network down")));
     render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });

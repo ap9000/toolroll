@@ -9,7 +9,7 @@ import { type AssignmentCard,assignmentCardOf,assignmentStatusOf,assignmentSumma
 import { type AssignmentSnapshot } from "../assignment.js";
 import { holdOwnerWords } from "../board.js";
 import { baseStandingWords, type TaskBaseView } from "../task-base.js";
-import { type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
+import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
@@ -1435,6 +1435,8 @@ export function taskBodyParts(data: {
   activity?: RunActivity | null;
   /** Live steering: the Claude build that takes Pause right now, and its latest pause (null: none, or it continued). */
   livePause?: LivePauseFact | null;
+  /** The running attempt's composer facts (steer-controls.ts), for this reader. */
+  steerComposer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -1834,7 +1836,7 @@ export function taskBodyParts(data: {
       : joinHtml([
         postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem">${
           data.steeringRun == null ? "" : html`<input type="hidden" name="run" value="${String(data.steeringRun)}"><input type="hidden" name="key" value="${randomUUID()}"><input type="hidden" name="return" value="task">`
-        }<button type="submit">Steer</button>`, { attrs: { class: "row", id: "steering" } }),
+        }<button type="submit">${data.steeringRun == null ? "Save for the next attempt" : "Steer"}</button>`, { attrs: { class: "row" } }),
         html`<p class="meta">${steerDestinationWords(steeringLive)} A note can't widen the approved scope.</p>`,
       ]);
   const steeringCard =
@@ -2739,6 +2741,7 @@ export function taskBodyParts(data: {
     activity: liveRun === undefined ? null : data.activity ?? null,
     stop,
     pause,
+    steering: data.csrf !== "" ? data.steerComposer ?? null : null,
     record,
     earlier,
     approval: fragmentString(approvalHtml),

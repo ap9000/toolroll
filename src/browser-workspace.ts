@@ -276,6 +276,9 @@ export type BrowserTaskView = {
   live?: { room: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
+  /** The running attempt's composer (steer-controls.ts): what it takes, said plainly, and its note box when it takes
+   * notes. Pause and Stop stay as `pause` and `stop`. */
+  steering?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
   /** Pause and Pause and steer, beside Stop: the same exact live Claude build, one request id per form (Pause, the note,
    * Resume), where its latest pause stands (null: running), and until when a paused build can wait before it ends. */
   pause?: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until?: string | null; limitMs?: number | null } | null;
@@ -460,7 +463,9 @@ export type BrowserFlowSentItem = { number: number; title: string; lines: string
 
 export type BrowserFlowCard = {
   id: number; title: string; description: string | null; stage: string; state: "active" | "done" | "cancelled";
-  waiting: string | null; task: { id: string; href: string } | null; createdBy: string; updatedAt: string;
+  waiting: string | null; task: { id: string; href: string;
+    /** Its running attempt's composer (steer-controls.ts), for an approver: what it takes, its controls, its note box. */
+    composer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } } | null; createdBy: string; updatedAt: string;
   canDecide: boolean; outputs: { stage: string; title: string; text: string }[]; history: { text: string; at: string }[];
   /** Where a trigger found it: a GitHub or Linear issue, another flow's card, a button, a schedule. */
   /** `proved` and `host` (v126): how an outside event's delivery was proved ("signed by Sentry", "unsigned") and its

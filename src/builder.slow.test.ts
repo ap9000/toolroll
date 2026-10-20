@@ -2013,7 +2013,7 @@ describe("the pulse", () => {
     expect(liveDuringRun).toBe(req.runId);
     const note = store.listSteerNotes(taskRef)[0]!;
     expect(note).toMatchObject({ mailedRun: req.runId, attachedRun: req.runId });
-    expect(steerStandingWords(note, false, iso => iso)).toBe(`Read by the agent at ${note.ackedAt}`);
+    expect(steerStandingWords(note, false, iso => iso)).toBe(`Picked up at ${note.ackedAt}`);
     // The folder is gone, and never reached the commit.
     expect(existsSync2(join2(wt, folder!))).toBe(false);
     expect(gitCalls.find(args => args.includes("add"))).toContain(":!STANDING-ORDERS-*");
