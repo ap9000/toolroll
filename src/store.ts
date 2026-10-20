@@ -327,6 +327,30 @@ export function leadTurnKeepsProposals(turn: { state: string; failureReason: str
 /** What the lead promised to follow up on (lead-commitments.ts; no version bump: additive only, so a build that
  * predates it still opens the store). `condition_json` is a task, attempt, check or time; `check_at` is when to look
  * next; `channel` is where it reports (`chat`: the conversation it was promised in); a promise lapses at `expires_at`. */
+/** Lead fan-out (docs/plans/lead-fan-out.md): a sweep is N ordinary tasks under one shared brief, started with one yes,
+ * at most `max_parallel` of them claimed at once. Membership is by task family root, so a revision of a child is that
+ * child. Additive (no schema version bump), like lead_commitment. */
+export const LEAD_SWEEP_SCHEMA = `
+CREATE TABLE IF NOT EXISTS lead_sweep (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner        TEXT NOT NULL,
+  thread       INTEGER,
+  repo         TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  brief        TEXT NOT NULL,
+  max_parallel INTEGER NOT NULL CHECK (max_parallel BETWEEN 1 AND 16),
+  proposal     INTEGER UNIQUE,
+  created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lead_sweep_task (
+  sweep     INTEGER NOT NULL REFERENCES lead_sweep(id),
+  root_task TEXT NOT NULL UNIQUE,
+  ordinal   INTEGER NOT NULL,
+  label     TEXT NOT NULL,
+  PRIMARY KEY (sweep, ordinal)
+);
+`;
+
 export const LEAD_COMMITMENT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS lead_commitment (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4883,6 +4907,7 @@ function initializeStore(db: Database, file: string): Store {
   // What a person's lead knows about them, beside its name and persona (an older lead_config gains it).
   addColumn(db, "lead_config", "about_json", "TEXT NOT NULL DEFAULT '[]'");
   db.exec(LEAD_COMMITMENT_SCHEMA);
+  db.exec(LEAD_SWEEP_SCHEMA);
   mergeCheckTables(db);
   // v110: the action ledger admits remote commands ('api', 'mcp').
   rebuildLedger(db);
@@ -22327,6 +22352,63 @@ export class Store {
   updateWebSession(session: Pick<WebSessionRow, "idHash" | "lastSeen" | "project" | "projectRevision" | "ssoAt">): boolean {
     return Number(this.db.prepare("UPDATE web_session SET last_seen = ?, project = ?, project_revision = ?, sso_at = ? WHERE id_hash = ?")
       .run(session.lastSeen, session.project, session.projectRevision, session.ssoAt, session.idHash).changes) > 0;
+  }
+
+  // ---- lead sweeps (docs/plans/lead-fan-out.md). Kept last in the class: the freshness tripwire pins method positions.
+
+  /** A new sweep record (inside the caller's filing transaction). */
+  createSweep(input: { owner: string; thread: number | null; repo: string; title: string; brief: string; maxParallel: number; proposal: number | null }, now: Date): number {
+    const row = this.db.prepare("INSERT INTO lead_sweep (owner, thread, repo, title, brief, max_parallel, proposal, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(input.owner, input.thread, input.repo, input.title, input.brief, input.maxParallel, input.proposal, now.toISOString());
+    return Number(row.lastInsertRowid);
+  }
+
+  /** Link one filed child (its family root) to its sweep, in order. */
+  addSweepTask(sweep: number, rootTask: string, ordinal: number, label: string): void {
+    this.db.prepare("INSERT INTO lead_sweep_task (sweep, root_task, ordinal, label) VALUES (?, ?, ?, ?)").run(sweep, rootTask, ordinal, label);
+  }
+
+  getSweep(id: number): { id: number; owner: string; thread: number | null; repo: string; title: string; brief: string; maxParallel: number; proposal: number | null; createdAt: string } | null {
+    const row = this.db.prepare("SELECT * FROM lead_sweep WHERE id = ?").get(id);
+    if (row === undefined) return null;
+    return { id: Number(row["id"]), owner: String(row["owner"]), thread: row["thread"] === null ? null : Number(row["thread"]), repo: String(row["repo"]), title: String(row["title"]),
+      brief: String(row["brief"]), maxParallel: Number(row["max_parallel"]), proposal: row["proposal"] === null ? null : Number(row["proposal"]), createdAt: String(row["created_at"]) };
+  }
+
+  /** The sweep a proposal filed, if it did (a replayed confirm finds it). */
+  sweepOfProposal(proposal: number): number | null {
+    const row = this.db.prepare("SELECT id FROM lead_sweep WHERE proposal = ?").get(proposal);
+    return row === undefined ? null : Number(row["id"]);
+  }
+
+  /** A sweep's children, in order: each one's family root and its label. */
+  sweepTasks(sweep: number): { rootTask: string; ordinal: number; label: string }[] {
+    return this.db.prepare("SELECT root_task, ordinal, label FROM lead_sweep_task WHERE sweep = ? ORDER BY ordinal").all(sweep)
+      .map(row => ({ rootTask: String(row["root_task"]), ordinal: Number(row["ordinal"]), label: String(row["label"]) }));
+  }
+
+  /** The sweep a task belongs to through its family root (a revision of a child belongs too), or null. */
+  sweepOfTask(taskId: string): { id: number; maxParallel: number } | null {
+    const { chain } = this.revisionAncestryStatus(taskId);
+    const root = chain.at(-1) ?? taskId;
+    const row = this.db.prepare("SELECT s.id, s.max_parallel FROM lead_sweep_task t JOIN lead_sweep s ON s.id = t.sweep WHERE t.root_task = ?").get(root);
+    return row === undefined ? null : { id: Number(row["id"]), maxParallel: Number(row["max_parallel"]) };
+  }
+
+  /**
+   * How many of a sweep's families hold a live claim now (the latest lease of any task in the family, unreleased and
+   * unexpired, across every runner) — claimed-but-not-started counts. `except` leaves one task_ref out (the one being
+   * claimed). Read inside acquire's own write transaction, so two runners can't both take the last slot.
+   */
+  sweepLiveClaims(sweep: number, stamp: string, except: number | null = null): number {
+    const row = this.db.prepare(`WITH RECURSIVE fam(root, id, depth) AS (
+        SELECT t.root_task, t.root_task, 0 FROM lead_sweep_task t WHERE t.sweep = ?
+        UNION SELECT fam.root, r.external_id, fam.depth + 1 FROM task_ref r JOIN fam ON r.revision_of = fam.id WHERE r.backend = ? AND fam.depth < 64),
+      refs AS (SELECT DISTINCT fam.root, r.id AS ref FROM fam JOIN task_ref r ON r.backend = ? AND r.external_id = fam.id),
+      latest AS (SELECT refs.root, c.released_at, c.expires_at FROM refs JOIN claim c ON c.task_ref = refs.ref
+        WHERE refs.ref IS NOT ? AND c.lease_generation = (SELECT MAX(lease_generation) FROM claim WHERE task_ref = refs.ref))
+      SELECT COUNT(DISTINCT root) AS n FROM latest WHERE released_at IS NULL AND expires_at > ?`).get(sweep, BUILT_IN, BUILT_IN, except, stamp);
+    return Number(row?.["n"] ?? 0);
   }
 }
 

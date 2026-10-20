@@ -89,6 +89,8 @@ export type AcquireResult =
   /** A mode-sealed approval whose signature no longer stands (v29): the
    * approval falls back to a person; nothing dispatches on a dead mode. */
   | { ok: false; reason: "mode-ended"; message: string }
+  /** A lead sweep's limit (docs/plans/lead-fan-out.md): `limit` of its families already hold a live claim. */
+  | { ok: false; reason: "sweep-limit"; sweep: number; limit: number }
   /** The credential presented with this acquisition did not verify against
    * the runner row AT CLAIM TIME (MCP spec v6): stale incarnations never
    * ride a successor's rotation. */
@@ -243,6 +245,12 @@ function acquireLocked(
           reason: "mode-ended" as const,
           message: "the operating mode that approved this has ended — the approval falls back to a person",
         };
+      }
+      // A LEAD SWEEP'S LIMIT, inside this write transaction so two runners can't both take the last slot: at most
+      // max_parallel of its families hold a live claim (claimed-but-not-started counts; a revision counts as its child).
+      const sweep = placedRef === null ? null : store.sweepOfTask(placedRef.externalId);
+      if (sweep !== null && store.sweepLiveClaims(sweep.id, stamp, taskRef) >= sweep.maxParallel) {
+        return { ok: false as const, reason: "sweep-limit" as const, sweep: sweep.id, limit: sweep.maxParallel };
       }
       const existing = latest(db, taskRef);
 

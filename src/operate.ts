@@ -1800,6 +1800,9 @@ function claimCommand(
         EXIT.refused,
       );
     }
+    if (result.reason === "sweep-limit") {
+      return fail(write, json, "claim", "sweep-limit", `its sweep already has ${result.limit} running at once — it starts when one finishes`, EXIT.refused, { sweep: result.sweep, limit: result.limit });
+    }
     return fail(
       write,
       json,
