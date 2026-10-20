@@ -196,3 +196,11 @@ not found — no worse than closing any terminal window on macOS.
 
 The round-4 High is CLOSED, no new High, and the detached-process escape is an acceptable stated limit for an
 attended, operator-only terminal (wording corrected above to promise no time bound).
+
+## After GO: Linux CI (2026-10-20)
+
+CI on Linux found every sweep "uncertain": a setgid helper (ssh-agent, installed `_ssh` group) runs as the same user
+but its `/proc/<pid>/cwd` is unreadable (EACCES), and an unreadable resident made cleanup unknowable. Now a process
+whose working directory can't be read keeps cleanup uncertain only if it started after the terminal did — one from
+before (a login's agent) can't be the terminal's. Reproduced and verified in a Linux container as a non-root user with
+ssh-agent running. Also: the natural-exit test no longer uses `set +H` (dash, Debian's /bin/sh, rejects it).

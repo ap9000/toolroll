@@ -136,7 +136,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     const started = await host.start(ALEX, repo, "shell");
     const { seen, viewer } = watcher();
     host.attach(started.id, viewer);
-    host.input(started.id, "set +H; (trap '' HUP; exec sleep 60) & echo child=$! ; sleep 1; exit\n");
+    host.input(started.id, "(trap '' HUP; exec sleep 60) & echo child=$! ; sleep 1; exit\n");
     await until(() => /child=\d+/.test(seen.out));
     const child = Number(/child=(\d+)/.exec(seen.out)![1]);
     await until(() => host.get(started.id)!.cleanup !== null);
