@@ -176,26 +176,35 @@ function audit(files: { path: string; text: string }[]): Hits {
           const imported = keyName(one["imported"] as Node), local = keyName(one["local"] as Node);
           if (calls.has(imported)) learn(calls, local, calls.get(imported)!);
         }
-        // `from`: the name the bound value ends in (an expression's last name, or the key it was destructured from).
-        const bind = (target: Node, from: string | null, fromCall: boolean): void => {
-          if (target.type === "AssignmentPattern") return bind(target["left"] as Node, from, fromCall);
+        // Bind a pattern from the value it is given (a node, when known: an array literal binds element by element; a
+        // default value is a source too), or from a name the value ends in (a destructured key).
+        const bindFrom = (target: Node, value: Node | null | undefined, name: string | null = lastName(value)): void => {
+          if (target.type === "AssignmentPattern") {
+            bindFrom(target["left"] as Node, value, name);
+            bindFrom(target["left"] as Node, target["right"] as Node);
+            return;
+          }
           if (target.type === "Identifier") {
-            if (from !== null && sso.has(from)) learn(sso, target["name"] as string, "sso");
-            if (from !== null && calls.has(from) && !fromCall) learn(calls, target["name"] as string, calls.get(from)!);
+            if (name !== null && sso.has(name)) learn(sso, target["name"] as string, "sso");
+            if (name !== null && calls.has(name) && value?.type !== "CallExpression") learn(calls, target["name"] as string, calls.get(name)!);
           }
           if (target.type === "ObjectPattern") for (const property of target["properties"] as Node[]) {
-            if (property.type === "RestElement") continue;
-            bind(property["value"] as Node, keyName(property["key"] as Node), false);
+            // The rest of an SSO object is still an SSO object.
+            if (property.type === "RestElement") bindFrom(property["argument"] as Node, null, name);
+            else bindFrom(property["value"] as Node, null, keyName(property["key"] as Node));
           }
-          if (target.type === "ArrayPattern") for (const element of target["elements"] as (Node | null)[]) if (element !== null) bind(element, from, fromCall);
-          if (target.type === "RestElement") bind(target["argument"] as Node, from, fromCall);
+          if (target.type === "ArrayPattern") {
+            const elements = target["elements"] as (Node | null)[];
+            const given = value?.type === "ArrayExpression" ? value["elements"] as (Node | null)[] : null;
+            elements.forEach((element, index) => { if (element !== null) bindFrom(element.type === "RestElement" ? element["argument"] as Node : element, given?.[index] ?? null, given === null ? name : lastName(given[index] ?? null)); });
+          }
+          if (target.type === "RestElement") bindFrom(target["argument"] as Node, value, name);
         };
         const paramsOf = (node: Node): Node[] => ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type ?? "") ? (node["params"] as Node[]) : [];
-        const source = (node: Node | null | undefined): [string | null, boolean] => [lastName(node), node?.type === "CallExpression"];
-        if (one.type === "VariableDeclarator") bind(one["id"] as Node, ...source(one["init"] as Node));
-        if (one.type === "AssignmentExpression") bind(one["left"] as Node, ...source(one["right"] as Node));
-        // A parameter's pattern binds from whatever is passed: its own keys say what it takes.
-        for (const param of paramsOf(one)) bind((param.type === "TSParameterProperty" ? param["parameter"] : param) as Node, null, false);
+        if (one.type === "VariableDeclarator") bindFrom(one["id"] as Node, one["init"] as Node);
+        if (one.type === "AssignmentExpression") bindFrom(one["left"] as Node, one["right"] as Node);
+        // A parameter's pattern binds from whatever is passed (its own keys say what it takes) or from its default.
+        for (const param of paramsOf(one)) bindFrom((param.type === "TSParameterProperty" ? param["parameter"] : param) as Node, null, null);
       });
     }
     const ssoLike = (node: Node | null | undefined) => { const name = lastName(node); return name !== null && sso.has(name); };
@@ -253,11 +262,14 @@ describe("where freshness may be honoured", () => {
       "const f = ({ sso: { fresh } }: never) => fresh; return f;",
       "function g({ guards: { authenticateApprover: check } }: never) { check(who, token); } return g;",
       "const [{ sso: { fresh } }] = [ctx]; if (!token && fresh) return ok;",
+      "function h(check = authenticateApprover) { return check(store, who, token); } return h;",
+      "const [s] = [ctx.sso]; if (!token && s.fresh) return ok;",
+      "const { ...s } = ctx.sso; if (!token && s.fresh) return ok;",
     ];
     const caught = audit(bypasses.map((text, index) => ({ path: `probe-${index}.ts`, text: `export function probe(token: string, ok: unknown) { ${text} }` })));
     expect(caught["unparsed"]).toBeUndefined();
-    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-10.ts", "probe-11.ts", "probe-13.ts", "probe-15.ts", "probe-2.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts", "probe-9.ts"]);
-    expect(caught["authenticateApprover()"]).toEqual({ "probe-12.ts": 1, "probe-14.ts": 1 });
+    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-10.ts", "probe-11.ts", "probe-13.ts", "probe-15.ts", "probe-17.ts", "probe-18.ts", "probe-2.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts", "probe-9.ts"]);
+    expect(caught["authenticateApprover()"]).toEqual({ "probe-12.ts": 1, "probe-14.ts": 1, "probe-16.ts": 1 });
     expect(Object.keys(caught["sso.fresh"] ?? {})).toEqual(expect.arrayContaining(["probe-13.ts", "probe-15.ts"]));
     expect(caught["authenticateAccount()"]).toEqual({ "probe-8.ts": 1 });
     // A renamed import is the same function.

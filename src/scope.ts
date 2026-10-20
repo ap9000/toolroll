@@ -1405,18 +1405,26 @@ export function approve(
       proved();
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };
     }
-    if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now);
-
-    // SEAL, never re-resolve: the approval snapshots the stored working
-    // profile — the exact bytes the digest the approver signed was bound
-    // to. Routing saveScope here would re-run resolution and could sign a
-    // profile nobody saw.
-    const sealed = store.sealScopeApproval(taskId, by, now, mutation);
-    if (!sealed) return { ok: false as const, reason: "changed" as const };
-    const approved = store.getScope(taskId);
-    if (approved === null) return { ok: false as const, reason: "no-scope" as const };
-    proved();
-    return { ok: true as const, scope: approved };
+    // The vote, the seal and its proof stand or fall together: a seal that is refused takes this yes back with it
+    // (savepoint rolled back), so a refusal leaves nothing written — the approval roads may then refund a re-check.
+    const refused: { result?: ApproveResult } = {};
+    try {
+      return store.savepoint(() => {
+        if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now);
+        // SEAL, never re-resolve: the approval snapshots the stored working
+        // profile — the exact bytes the digest the approver signed was bound
+        // to. Routing saveScope here would re-run resolution and could sign a
+        // profile nobody saw.
+        const sealed = store.sealScopeApproval(taskId, by, now, mutation);
+        const approved = sealed ? store.getScope(taskId) : null;
+        if (!sealed || approved === null) { refused.result = { ok: false as const, reason: sealed ? "no-scope" as const : "changed" as const }; throw refused; }
+        proved();
+        return { ok: true as const, scope: approved };
+      });
+    } catch (error) {
+      if (error === refused && refused.result !== undefined) return refused.result;
+      throw error;
+    }
   });
 }
 

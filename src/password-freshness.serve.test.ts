@@ -131,3 +131,15 @@ test("a protected-work vote records how its person was proved, bound to the dige
   expect(row?.["outcome"]).toBe("password-now");
   expect(String(row?.["detail"])).toContain(`digest ${plan.digest}`);
 });
+
+test("a protected-work yes whose seal is refused leaves nothing behind: no vote, no proof", async () => {
+  const { post, filed } = await signedIn();
+  const plan = await filed("t-seal-refused");
+  vi.spyOn(store, "approvalGate").mockReturnValue({ verdict: "seal", protectedWork: true } as never);
+  vi.spyOn(store, "sealScopeApproval").mockReturnValue(false);
+  const answer = await post("/t/t-seal-refused/approve", { nonce: plan.nonce, digest: plan.digest, token: password });
+  expect(answer.status).toBeGreaterThanOrEqual(300);
+  expect(store.getScope("t-seal-refused")?.approvedBy ?? null).toBeNull();
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM scope_approval_vote WHERE task_id = 't-seal-refused'").get()?.["n"]).toBe(0);
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE task_id = 't-seal-refused' AND action = ?").get(APPROVAL_PROOF)?.["n"]).toBe(0);
+});
