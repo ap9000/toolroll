@@ -165,48 +165,71 @@ function audit(files: { path: string; text: string }[]): Hits {
     // `const b = a`, `const { sso: c } = ctx`, `import { authenticateAccount as check }`, `const check2 = check`).
     const sso = new Set(["sso"]);
     const calls = new Map<string, string>([...WATCHED_CALLS].map(name => [name, name]));
-    for (let changed = true; changed;) {
+    let changed = false;
+    const learn = (set: Set<string> | Map<string, string>, local: string, original: string) => {
+      if (set instanceof Set) { if (!set.has(local)) { set.add(local); changed = true; } }
+      else if (!set.has(local)) { set.set(local, original); changed = true; }
+    };
+    const WRAPPERS = ["ChainExpression", "ParenthesizedExpression", "TSNonNullExpression", "TSAsExpression", "TSSatisfiesExpression", "TSTypeAssertion"];
+    const unwrap = (node: Node | null | undefined): Node | null => node == null ? null : WRAPPERS.includes(node.type ?? "") ? unwrap(node["expression"] as Node) : node;
+    /**
+     * ONE reading of how a value flows into a pattern, used both to learn aliases and to flag reads: from the value's
+     * node when it is known (object and array literals map member by member, through `as`/`satisfies`/parentheses; a
+     * default is a source too), otherwise from the name it was destructured under. `read(key, from)` sees every key
+     * taken out of a value whose source name is `from`.
+     */
+    const flow = (target: Node, value: Node | null, name: string | null, read: (key: string, from: string | null) => void): void => {
+      const given = unwrap(value);
+      const from = given !== null ? lastName(given) : name;
+      if (target.type === "AssignmentPattern") {
+        flow(target["left"] as Node, value, name, read);
+        flow(target["left"] as Node, target["right"] as Node, null, read);
+        return;
+      }
+      if (target.type === "Identifier") {
+        if (from !== null && sso.has(from)) learn(sso, target["name"] as string, "sso");
+        if (from !== null && calls.has(from) && given?.type !== "CallExpression") learn(calls, target["name"] as string, calls.get(from)!);
+        return;
+      }
+      if (target.type === "RestElement") return flow(target["argument"] as Node, value, name, read);
+      if (target.type === "ObjectPattern") {
+        const members = given?.type === "ObjectExpression" ? given["properties"] as Node[] : null;
+        for (const property of target["properties"] as Node[]) {
+          // The rest of an SSO object is still an SSO object.
+          if (property.type === "RestElement") { flow(property["argument"] as Node, value, name, read); continue; }
+          const key = keyName(property["key"] as Node);
+          read(key, from);
+          const member = members?.find(one => one.type === "Property" && one["computed"] !== true && keyName(one["key"] as Node) === key);
+          flow(property["value"] as Node, member === undefined ? null : member["value"] as Node, member === undefined ? key : null, read);
+        }
+        return;
+      }
+      if (target.type === "ArrayPattern") {
+        const items = given?.type === "ArrayExpression" ? given["elements"] as (Node | null)[] : null;
+        (target["elements"] as (Node | null)[]).forEach((element, index) => {
+          if (element === null) return;
+          const item = items?.[index] ?? null;
+          flow(element, item?.type === "SpreadElement" ? item["argument"] as Node : item, items === null ? from : null, read);
+        });
+      }
+    };
+    const paramsOf = (node: Node): Node[] => ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type ?? "") ? (node["params"] as Node[]) : [];
+    const bindings = (one: Node, read: (key: string, from: string | null) => void) => {
+      if (one.type === "VariableDeclarator") flow(one["id"] as Node, one["init"] as Node, null, read);
+      if (one.type === "AssignmentExpression") flow(one["left"] as Node, one["right"] as Node, null, read);
+      // A parameter's pattern binds from whatever is passed (its own keys say what it takes) or from its default.
+      for (const param of paramsOf(one)) flow((param.type === "TSParameterProperty" ? param["parameter"] : param) as Node, null, null, read);
+    };
+    do {
       changed = false;
-      const learn = (set: Set<string> | Map<string, string>, local: string, original: string) => {
-        if (set instanceof Set) { if (!set.has(local)) { set.add(local); changed = true; } }
-        else if (!set.has(local)) { set.set(local, original); changed = true; }
-      };
       each(parsed.program, one => {
         if (one.type === "ImportSpecifier") {
           const imported = keyName(one["imported"] as Node), local = keyName(one["local"] as Node);
           if (calls.has(imported)) learn(calls, local, calls.get(imported)!);
         }
-        // Bind a pattern from the value it is given (a node, when known: an array literal binds element by element; a
-        // default value is a source too), or from a name the value ends in (a destructured key).
-        const bindFrom = (target: Node, value: Node | null | undefined, name: string | null = lastName(value)): void => {
-          if (target.type === "AssignmentPattern") {
-            bindFrom(target["left"] as Node, value, name);
-            bindFrom(target["left"] as Node, target["right"] as Node);
-            return;
-          }
-          if (target.type === "Identifier") {
-            if (name !== null && sso.has(name)) learn(sso, target["name"] as string, "sso");
-            if (name !== null && calls.has(name) && value?.type !== "CallExpression") learn(calls, target["name"] as string, calls.get(name)!);
-          }
-          if (target.type === "ObjectPattern") for (const property of target["properties"] as Node[]) {
-            // The rest of an SSO object is still an SSO object.
-            if (property.type === "RestElement") bindFrom(property["argument"] as Node, null, name);
-            else bindFrom(property["value"] as Node, null, keyName(property["key"] as Node));
-          }
-          if (target.type === "ArrayPattern") {
-            const elements = target["elements"] as (Node | null)[];
-            const given = value?.type === "ArrayExpression" ? value["elements"] as (Node | null)[] : null;
-            elements.forEach((element, index) => { if (element !== null) bindFrom(element.type === "RestElement" ? element["argument"] as Node : element, given?.[index] ?? null, given === null ? name : lastName(given[index] ?? null)); });
-          }
-          if (target.type === "RestElement") bindFrom(target["argument"] as Node, value, name);
-        };
-        const paramsOf = (node: Node): Node[] => ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type ?? "") ? (node["params"] as Node[]) : [];
-        if (one.type === "VariableDeclarator") bindFrom(one["id"] as Node, one["init"] as Node);
-        if (one.type === "AssignmentExpression") bindFrom(one["left"] as Node, one["right"] as Node);
-        // A parameter's pattern binds from whatever is passed (its own keys say what it takes) or from its default.
-        for (const param of paramsOf(one)) bindFrom((param.type === "TSParameterProperty" ? param["parameter"] : param) as Node, null, null);
+        bindings(one, () => {});
       });
-    }
+    } while (changed);
     const ssoLike = (node: Node | null | undefined) => { const name = lastName(node); return name !== null && sso.has(name); };
     each(parsed.program, one => {
       if (one.type === "MemberExpression") {
@@ -215,22 +238,10 @@ function audit(files: { path: string; text: string }[]): Hits {
         if (name !== null && FACT_NAMES.has(name)) add(`.${name}`, path);
       }
       // Destructuring reads: `fresh` taken out of anything SSO-like (at any depth), and the freshness facts themselves.
-      const reads = (pattern: Node, from: string | null): void => {
-        if (pattern.type === "AssignmentPattern") return reads(pattern["left"] as Node, from);
-        if (pattern.type === "ArrayPattern") { for (const element of pattern["elements"] as (Node | null)[]) if (element !== null) reads(element, from); return; }
-        if (pattern.type === "RestElement") return reads(pattern["argument"] as Node, from);
-        if (pattern.type !== "ObjectPattern") return;
-        for (const property of pattern["properties"] as Node[]) {
-          if (property.type === "RestElement") continue;
-          const key = keyName(property["key"] as Node);
-          if (key === "fresh" && from !== null && sso.has(from)) add("sso.fresh", path);
-          if (FACT_NAMES.has(key)) add(`{${key}}`, path);
-          reads(property["value"] as Node, key);
-        }
-      };
-      if (one.type === "VariableDeclarator") reads(one["id"] as Node, lastName(one["init"] as Node));
-      if (one.type === "AssignmentExpression") reads(one["left"] as Node, lastName(one["right"] as Node));
-      for (const param of ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(one.type ?? "") ? one["params"] as Node[] : []) reads(param, null);
+      bindings(one, (key, from) => {
+        if (key === "fresh" && from !== null && sso.has(from)) add("sso.fresh", path);
+        if (FACT_NAMES.has(key)) add(`{${key}}`, path);
+      });
       if (one.type === "CallExpression") { const name = lastName(one["callee"] as Node); if (name !== null && calls.has(name)) add(`${calls.get(name)}()`, path); }
     });
   }
@@ -265,11 +276,15 @@ describe("where freshness may be honoured", () => {
       "function h(check = authenticateApprover) { return check(store, who, token); } return h;",
       "const [s] = [ctx.sso]; if (!token && s.fresh) return ok;",
       "const { ...s } = ctx.sso; if (!token && s.fresh) return ok;",
+      "function d({ fresh } = ctx.sso) { return fresh; } return d;",
+      "const [{ fresh }] = [ctx.sso]; if (!token && fresh) return ok;",
+      "const [s2] = [ctx.sso] as const; if (!token && s2.fresh) return ok;",
+      "function e({ check } = { check: authenticateApprover }) { return check(store, who, token); } return e;",
     ];
     const caught = audit(bypasses.map((text, index) => ({ path: `probe-${index}.ts`, text: `export function probe(token: string, ok: unknown) { ${text} }` })));
     expect(caught["unparsed"]).toBeUndefined();
-    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-10.ts", "probe-11.ts", "probe-13.ts", "probe-15.ts", "probe-17.ts", "probe-18.ts", "probe-2.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts", "probe-9.ts"]);
-    expect(caught["authenticateApprover()"]).toEqual({ "probe-12.ts": 1, "probe-14.ts": 1, "probe-16.ts": 1 });
+    expect(Object.keys(caught["sso.fresh"] ?? {}).sort()).toEqual(["probe-0.ts", "probe-1.ts", "probe-10.ts", "probe-11.ts", "probe-13.ts", "probe-15.ts", "probe-17.ts", "probe-18.ts", "probe-19.ts", "probe-2.ts", "probe-20.ts", "probe-21.ts", "probe-5.ts", "probe-6.ts", "probe-7.ts", "probe-9.ts"]);
+    expect(caught["authenticateApprover()"]).toEqual({ "probe-12.ts": 1, "probe-14.ts": 1, "probe-16.ts": 1, "probe-22.ts": 1 });
     expect(Object.keys(caught["sso.fresh"] ?? {})).toEqual(expect.arrayContaining(["probe-13.ts", "probe-15.ts"]));
     expect(caught["authenticateAccount()"]).toEqual({ "probe-8.ts": 1 });
     // A renamed import is the same function.
