@@ -24,7 +24,8 @@ absolute), sign-out, and "end this session" on the Sessions page are the protect
   operating mode (the mate/coordinator quarantine in `store.ts`). Passwordless makes the person's act a click; it
   doesn't let a mode, a schedule, the lead or an API token decide.
 - **Machine callers**: API tokens, OAuth, the MCP gateway, chat bridges (Telegram/Slack/…) and the remote CLI keep their
-  own rules; step-up routes stay browser-only. Passwordless is about the person at a browser.
+  own rules; step-up routes stay browser-only. Passwordless is about the signed-in person: at a browser, or at this
+  computer's CLI through its remembered login (§5).
 - **Credential acts** still take a typed password (or a one-use identity-provider re-check, `sso-now`), because each
   creates or widens a way in. The closed list:
   - **your own login**: changing your password; sign-in methods and identity-provider (SSO) settings;
@@ -93,6 +94,26 @@ B2's static tripwire (`password-freshness.test.ts`) pins every password-related 
 reading lives inside `proveAccountNow` and the setting reader; their pins are added as reviewed changes, and the test
 gains one rule: `method: "session"` is produced in exactly one place and refused by the credential routes.
 
+### 5. The local CLI (Alex, 2026-10-20: "stop asking on CLI and apply wherever we're signed in")
+
+The CLI's "signed in" is the **remembered login**: `up-login.txt` beside the database (0600, written durably by
+`toolroll up`, denied to every agent by the fence's secret patterns, never read on a remote run). Today only a few CLI
+commands fall back to it; most still want `--as … --token …` on each write.
+
+- One helper, `cliCredential(flags, context)`, used by every CLI command that takes `--as/--token`: a typed `--token`
+  (or `--token-file`/stdin) is used as today; with Passwordless on and no token given, the remembered login stands in
+  (an `--as` naming someone else is refused, not silently replaced). It returns the source: `typed` or `remembered`.
+- The remembered login's password is real, so the act proves through the same prover; the ledger records the method as
+  `cli-login` so it reads as passwordless, not as a typed password.
+- **Credential acts** on the CLI (the closed list's CLI twins: `approver add`, token minting, people, worker register,
+  flow trigger secrets, mode signing with chat approval, Passwordless on) refuse `remembered`: a typed password only.
+- Passwordless off → unchanged (the few commands that fall back to the remembered login today still do).
+- The remote CLI (API tokens over HTTP) is unchanged.
+
+Tests: with Passwordless on, an approval, a settings change and a task merge succeed from the CLI with no `--token`;
+`--as someone-else` without a token is refused; every credential command refuses the remembered login; Passwordless
+off restores today's behaviour; a remote run never reads the file.
+
 ## Tests
 
 - Off (default): every existing ceremony test passes unchanged; an empty password is refused as today.
@@ -109,8 +130,8 @@ gains one rule: `method: "session"` is produced in exactly one place and refused
 
 ## Not in this slice
 
-Passwordless for the local CLI (it has no session; it keeps asking), per-project or per-person passwordless, a
-"this computer only" variant, and removing the password from sign-in itself.
+Per-project or per-person passwordless, a "this computer only" variant (Alex: wherever signed in), and removing the
+password from sign-in itself.
 
 ## Review — round 1 (Codex, NO-GO, 5 findings), and what changed
 
