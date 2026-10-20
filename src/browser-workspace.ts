@@ -28,8 +28,16 @@ export type BrowserProjectState = { path: string | null; name: string; href: str
   /** The projects folded together to keep a snapshot inside one live frame: their counts summed, `more` of them. */
   others?: true };
 
-/** The most a summary snapshot may take, as the summary room sends it (JSON inside JSON), well inside one live frame. */
+/** The most a summary snapshot may take in UTF-8 bytes, as the summary room sends it (JSON inside JSON, plus the
+ * frame's envelope), well inside one live frame (live-bus.ts STREAM_LIMIT_BYTES). */
 export const SUMMARY_BUDGET = 24_000;
+/** The frame around a snapshot: its event line, room, revision and the JSON around `at`. Generous on purpose. */
+const SUMMARY_ENVELOPE_BYTES = 512;
+const utf8 = new TextEncoder();
+/** A snapshot's size on the wire: UTF-8 bytes of the JSON string the frame carries, plus its envelope. */
+export function summaryFrameBytes(value: unknown): number {
+  return utf8.encode(JSON.stringify({ at: JSON.stringify(value) })).length + SUMMARY_ENVELOPE_BYTES;
+}
 const clip = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 /**
  * A summary snapshot that fits one live frame, with every count kept: long words are clipped, then rail tasks become
@@ -37,7 +45,7 @@ const clip = (text: string, max: number) => text.length <= max ? text : `${text.
  * summed. Nothing is dropped silently: whatever is not listed is counted.
  */
 export function boundProjectSummary(rows: readonly BrowserProjectState[], budget = SUMMARY_BUDGET): BrowserProjectState[] {
-  const size = (value: unknown) => JSON.stringify(JSON.stringify(value)).length;
+  const size = summaryFrameBytes;
   let out = rows.map(one => ({ ...one, name: clip(one.name, 80), tasks: one.tasks.map(task => ({ ...task, title: clip(task.title, 120), line: clip(task.line, 120) })) }));
   while (size(out) > budget) {
     const fullest = out.reduce((best, one, index) => one.tasks.length > (out[best]?.tasks.length ?? -1) ? index : best, -1);

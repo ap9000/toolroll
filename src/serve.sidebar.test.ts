@@ -216,6 +216,35 @@ describe("the sidebar's project states", () => {
     expect(row!.line.length).toBeGreaterThan(12);
   });
 
+  test("every listed row that needs a person has its sentence, past the index's page size", async () => {
+    const repos = Array.from({ length: 18 }, (_, n) => realpathSync(mkdtempSync(join(tmpdir(), `so-sidebar-many-${n}-`))));
+    const many = createDecisionServer({ store, evidenceRoot, repos, clock: () => new Date() });
+    await new Promise<void>(resolve => many.listen(0, "127.0.0.1", resolve));
+    const address = many.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    const at = `http://127.0.0.1:${address.port}`;
+    try {
+      repos.forEach((repo, p) => {
+        for (let t = 0; t < 6; t++) {
+          const id = `t-${p}-${t}`;
+          store.createTask({ id, title: id }, T0);
+          store.placeTask(store.refFor("built-in", id, "ours").id, repo);
+          store.saveScope({ taskId: id, goal: "do it", outOfScope: null, touches: [], acceptance: [], proposedAt: T0.toISOString(), digest: "f".repeat(32),
+            approvedAt: null, approvedBy: null, approvedDigest: null });
+        }
+      });
+      const signedIn = await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alexToken }), redirect: "manual" });
+      const cookie = (signedIn.headers.get("set-cookie") ?? "").split(";")[0]!;
+      const rows = (workspaceOf(await (await fetch(`${at}/agents`, { headers: { cookie } })).text()).projectStates ?? []).flatMap(one => one.tasks);
+      expect(rows.length).toBeGreaterThan(100);
+      expect(rows.filter(one => one.line === "Needs you")).toEqual([]);
+    } finally {
+      many.closeAllConnections?.();
+      await new Promise<void>(resolve => many.close(() => resolve()));
+      for (const repo of repos) rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("one summary room per page, and only for a browser session", async () => {
     const alex = await login("alex", alexToken);
     expect((await fetch(url("/live?room=summary&room=summary"), { headers: { cookie: alex } })).status).toBe(400);

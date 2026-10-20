@@ -80,10 +80,13 @@ test("every part of the page shows one snapshot: a newer one reaches the chip an
 
 test("a large snapshot fits one live frame with every count kept: tasks become more, then quiet projects fold together", async () => {
   const { boundProjectSummary, SUMMARY_BUDGET } = await import("../browser-workspace.js");
-  const size = (value: unknown) => JSON.stringify(JSON.stringify(value)).length;
+  // The frame as the summary room writes it, in UTF-8 bytes: inside the stream's 32 KiB limit, always.
+  const frame = (value: unknown) => new TextEncoder().encode(`event: change\ndata: ${JSON.stringify({ room: "summary", at: JSON.stringify(value), revision: "v1:1234567890" })}\n\n`).length;
+  const size = (value: unknown) => { expect(frame(value)).toBeLessThan(32_768); return frame(value); };
   const total = (rows: BrowserProjectState[]) => rows.reduce((sum, one) => sum + one.counts.working + one.counts["needs-you"], 0);
-  const long = "x".repeat(200);
-  const many = Array.from({ length: 20 }, (_, p) => project(`/r/p${p}-${long}`, { working: 6 }, "working",
+  // Wide characters: three bytes each on the wire, and quotes that grow when escaped.
+  const long = "漢字\"かな".repeat(40);
+  const many = Array.from({ length: 20 }, (_, p) => project(`/r/p${p}`, { working: 6 }, "working",
     Array.from({ length: 6 }, (_, t) => ({ ...task(`t${p}-${t}`, "working", long), title: long }))));
   const bounded = boundProjectSummary(many);
   expect(size(bounded)).toBeLessThanOrEqual(SUMMARY_BUDGET);

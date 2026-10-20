@@ -1433,8 +1433,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const needWords = new Map<string, string>();
     if (asking.length > 0) {
       try {
-        for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(0, WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
-          needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
+        // Every row the rail may list, in pages the index allows.
+        for (let at = 0; at < asking.length; at += WORK_INDEX_MAX_LIMIT)
+          for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(at, at + WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
+            needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
       } catch { /* the rows keep their state's words */ }
     }
     const railOf = (state: ProjectState | undefined) => {
