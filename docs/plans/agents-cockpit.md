@@ -288,6 +288,32 @@ whether it can be built.
 - If no reliable boundary exists, phase C stops, and Codex stays mailbox-only, said plainly. (Until C0 proves one and C
   is separately decided, Codex is mailbox-only in production, as D's deferral says of every agent but Claude.)
 
+**C0 result (2026-10-20, codex-cli 0.156.1, macOS, four real runs, uncontained, interrupt 3 s into a tool or 1.2 s
+into a turn, then `codex exec resume <id>` with an operator note).** The spike **holds, with conditions**:
+
+| Signal | Codex exits | Session file | Running tool | Resume |
+| --- | --- | --- | --- | --- |
+| SIGINT mid-tool | 1, no stdout terminal event | `turn_aborted` (reason `interrupted`) + a developer note that aborted tools "may have partially executed" | killed; its write never happened | exact id; context intact; step treated as unknown, not replayed; note obeyed |
+| SIGINT mid-reasoning | 1 | `turn_aborted` | none started | clean |
+| SIGTERM mid-tool | **0**, no abort record | ends at the open `function_call` | **orphaned, finished, wrote its file** | works; step unknown |
+| SIGKILL to the `codex` pid | killed | — | — | **the native binary under the npm launcher kept running and finished the whole turn**, step 3 included |
+
+What this means for C, if it is built:
+- **Interrupt with SIGINT only.** SIGTERM looks like success (exit 0) and leaves tools running. That makes it no
+  boundary at all.
+- **The boundary evidence is the session file, not stdout.** An interrupted `exec --json` prints no terminal event.
+  The runner reads the rollout's `turn_aborted` record for the exact turn id, or the stream's `turn.completed`.
+  Exit code alone means nothing.
+- **Custody before resume is mandatory.** The `codex` pid is a Node launcher, and killing it alone leaves the agent
+  running. Codex itself warns that unified-exec processes may outlive an interrupt. So after SIGINT the runner kills
+  the rest of the containment, and resumes only when the witness reports it empty. Otherwise two writers share one
+  session.
+- **The aborted tool's outcome is unknown and recorded as unknown.** Codex agrees: on resume it said so and did not
+  re-run it.
+- Not yet seen: repeat runs (one SIGINT-mid-tool sample), Linux, a tool that detaches its own child, and runs under
+  Toolroll's containment and per-launch `CODEX_HOME`. Further runs spend Codex quota and need Alex's OK. Building C
+  stays its own decision.
+
 **If the spike holds**, the contract is:
 - **Boundary.** A continuation happens only between turns: the runner waits for the turn-complete event, never a
   timer. A pending note waits for that event.
@@ -386,7 +412,7 @@ so Toolroll **launches nothing**. Instead, on a live view of an attempt whose ch
 2. B1
 3. B2 — accepted with the audit's stated limit
 4. E
-5. C0 spike (C only if it holds, as its own decision)
+5. C0 spike — holds with conditions (2026-10-20); building C is its own decision
 
 D is deferred (mailbox-only for every agent but Claude).
 
