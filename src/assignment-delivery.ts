@@ -110,6 +110,19 @@ export function assignmentInbox(store: Store, owner: AssignmentOwner, query: { c
   return inbox(store, coordinatorReader(store, owner), query, now);
 }
 
+/**
+ * What the lead's follow inbox would hand over next, without issuing anything (lead sweeps, docs/plans/lead-fan-out.md):
+ * whether a page is already issued (it always replays at once — never held), and the unread events' tasks.
+ */
+export function leadFollowUnread(store: Store, grant: { id: number; repos: readonly string[] }, consumer: string): { issued: boolean; events: { task: string; state: string }[] } {
+  const reader = followReader(grant), key = reader.key(consumer);
+  if (pendingBatch(store, reader, key) !== null) return { issued: true, events: [] };
+  const after = store.serviceCursor(`assignment-inbox:${key}:acked`);
+  const rows = store.handle.prepare("SELECT task_id, json_extract(outcome, '$.assignment.state') AS state FROM action_ledger WHERE id > ? AND actor = ? AND action = ? AND source = 'work' ORDER BY id LIMIT 100")
+    .all(after, reader.actor, ASSIGNMENT_STATUS_ACTION);
+  return { issued: false, events: rows.map(row => ({ task: String(row["task_id"]), state: String(row["state"] ?? "") })) };
+}
+
 /** The built-in lead's inbox: the same page, replay and acknowledgment as a coordinator's, over its follow grant. */
 export function leadFollowInbox(store: Store, grant: { id: number; repos: readonly string[] }, query: { consumer: string; limit?: number }, now: Date): AssignmentInboxResult {
   return inbox(store, followReader(grant), query, now);

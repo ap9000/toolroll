@@ -7,6 +7,7 @@ import { addApprover, approve, propose } from "./scope.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { fileTaskProposal } from "./proposal.js";
 import { register } from "./runner.js";
+import { acquire } from "./claim.js";
 import { configureLeadFollow, leadFollowStatus, recordLeadFollowFailure, runLeadFollowPass } from "./lead-follow.js";
 import { ASSIGNMENT_STATUS_ACTION } from "./assignment-status.js";
 import type { LeadTurnInput, LeadTurnOutcome } from "./lead.js";
@@ -198,5 +199,58 @@ describe("the built-in lead reads crew updates through the assignment inbox", ()
     // and the next clean pass, with nothing new, clears it.
     await pass(at(6));
     expect(leadFollowStatus(store, who.name).detail).toBe("The lead will respond when a result or decision is ready, or a task is cancelled.");
+  });
+
+  describe("a sweep's burst (docs/plans/lead-fan-out.md)", () => {
+    const sweepOf = (ids: string[], now: Date) => {
+      const sweep = store.createSweep({ owner: "operator", thread, repo, title: "Bug sweep", brief: "Reproduce first.", maxParallel: 3, proposal: null }, now);
+      ids.forEach((id, index) => store.addSweepTask(sweep, id, index, id));
+      return sweep;
+    };
+
+    test("is held until the window passes, then lands on ONE page, grouped by sweep", async () => {
+      follow(t0);
+      for (const id of ["a", "b", "c"]) file(id, at(1));
+      sweepOf(["a", "b", "c"], at(1));
+      // c is being built: the sweep is still working while a and b settle.
+      const claimed = acquire(store, store.refFor("built-in", "c").id, "builder-1", { token: "tok-builder-1", now: at(1), ttlMs: 60 * 60_000 });
+      if (!claimed.ok) throw Error(`claim: ${claimed.reason}`);
+      await pass(at(2));
+      store.setTaskState("a", "cancelled", at(3));
+      await pass(at(4));
+      expect(asked).toHaveLength(0);
+      store.setTaskState("b", "cancelled", at(5));
+      await pass(at(5.5));
+      expect(asked).toHaveLength(0);
+      // The window (2 minutes from the first held pass at 4) has passed: one page, both, and the sweep's line.
+      await pass(at(6.5));
+      expect(asked).toHaveLength(1);
+      expect(asked[0]!.context).toContain("ONE line per sweep");
+      expect(asked[0]!.context).toMatch(/"title":"Bug sweep".*"line":"2 of 3 settled"/);
+      const updates = JSON.parse(asked[0]!.context.split("\n")[1]!) as { task: string }[];
+      expect(updates.map(one => one.task).sort()).toEqual(["a", "b"]);
+    });
+
+    test("a non-sweep update is never held", async () => {
+      follow(t0);
+      for (const id of ["a", "b"]) file(id, at(1));
+      file("solo", at(1));
+      sweepOf(["a", "b"], at(1));
+      await pass(at(2));
+      store.setTaskState("solo", "cancelled", at(3));
+      await pass(at(4));
+      expect(asked).toHaveLength(1);
+    });
+
+    test("a sweep whose children have all settled is not held", async () => {
+      follow(t0);
+      for (const id of ["a", "b"]) file(id, at(1));
+      sweepOf(["a", "b"], at(1));
+      await pass(at(2));
+      store.setTaskState("a", "cancelled", at(3));
+      store.setTaskState("b", "cancelled", at(3));
+      await pass(at(4));
+      expect(asked).toHaveLength(1);
+    });
   });
 });

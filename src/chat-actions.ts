@@ -1,5 +1,8 @@
 /** Shared, exact-state actions. Models may prepare; only the existing human
  * confirmation door executes. Protected actions use a one-use review receipt. */
+import { fileTaskProposal } from "./proposal.js";
+import { heuristicSizing } from "./task-sizing.js";
+import { cancelSweepRest, sweepOpen, sweepTable, VERDICT_RULE, type SweepOpenItem } from "./lead-sweep.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { withActor } from "./actor.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -117,6 +120,11 @@ export const CHAT_ACTIONS = {
   flow_create: { label: "Create flow", protected: false, password: false },
   // A starter flow: its zones and its trigger, switched on with one yes (flow-starters.ts).
   flow_starter: { label: "Switch on", protected: false, password: false },
+  // Lead fan-out (docs/plans/lead-fan-out.md): files N tasks under one brief and approves each one's scope — the
+  // person's ceremony (protected, with the password), N ordinary approvals of exactly the scopes shown.
+  sweep_file: { label: "Start sweep", protected: true, password: true },
+  // Stops every item of a sweep not yet ready; finished results stay. An ordinary act, like cancelling a task.
+  sweep_cancel_rest: { label: "Cancel the rest", protected: false, password: false },
   flow_edit: { label: "Save flow", protected: false, password: false },
   flow_card_add: { label: "Add card", protected: false, password: false },
   flow_card_move: { label: "Move card", protected: false, password: false },
@@ -315,7 +323,7 @@ export function prepareSharedAction(
     return { version: SHARED_ACTION_VERSION, operation, request, repo: "", title, terms, stamp, state };
   }
   const task =
-    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_")
+    operation.startsWith("skill_") || operation.startsWith("knowledge_") || operation.startsWith("decision_") || operation.startsWith("tool_") || operation.startsWith("flow_") || operation.startsWith("subagent_") || operation.startsWith("kit_") || operation.startsWith("sweep_")
       ? null
       : text(input, "task", 64);
   const flowTarget = operation.startsWith("flow_") && operation !== "flow_create" && operation !== "flow_script_save" && operation !== "flow_starter" ? flowTargetOf(store, input) : null;
@@ -326,7 +334,8 @@ export function prepareSharedAction(
   const questionFlow = questionTarget === null ? null : store.getFlow(store.getFlowCard(questionTarget.card)?.flow ?? -1);
   if (operation === "subagent_answer" && (questionTarget === null || questionFlow === null)) throw Error("That question isn't open any more.");
   const repo =
-    flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
+    operation === "sweep_cancel_rest" ? store.getSweep(integer(input, "sweep"))?.repo
+      : flowTarget !== null ? flowTarget.flow.repo : subagentTarget !== null ? subagentTarget.repo : questionFlow !== null ? questionFlow.repo : task === null ? text(input, "repo", 4096) : store.lookupRef(task)?.repo;
   if (!repo) throw Error("Choose an available project.");
   requireActor(store, who, repo);
   const request = structuredClone(input),
@@ -575,6 +584,50 @@ export function prepareSharedAction(
       title = `Answer ${subagentOf === null ? "the subagent" : nameOf(subagentOf)}`;
       terms.push(question.question, `Your answer: ${[choice?.label, said].filter(Boolean).join(" — ")}`);
     }
+  } else if (operation === "sweep_cancel_rest") {
+    // Exactly the items open now: if any settles or starts in between, the card is stale and a fresh one is needed.
+    const table = sweepTable(store, integer(input, "sweep"), now, who.repos);
+    if (table === null || table.repo !== repo) throw Error("That sweep isn't one of yours.");
+    // Exactly the items as they stand now — each one's active task (a revision, after one), state, running attempt and
+    // last change: any change makes this card stale, so nothing is acted on that wasn't shown.
+    const open = sweepOpen(store, table, now);
+    if (open.length === 0) throw Error("Nothing in that sweep is still unfinished.");
+    state = { open };
+    title = `Cancel the rest of ${table.title}`;
+    const running = open.filter(one => one.run !== null);
+    terms.push(`Cancels ${open.length - running.length} unfinished item${open.length - running.length === 1 ? "" : "s"}${running.length === 0 ? "" : ` and stops ${running.length} running build${running.length === 1 ? "" : "s"}`}: ${open.map(one => `${one.label} (${one.task})`).join(", ")}.`, "Finished results stay.");
+  } else if (operation === "sweep_file") {
+    // Everything the person approves is on this screen: the shared rules, every item, the one success test, the
+    // limit. Confirming files exactly these and approves exactly these scopes; anything changed is a new card.
+    const sweepTitle = text(input, "title", 200).trim(), brief = text(input, "brief", 8000).trim();
+    const items = Array.isArray(input["items"]) ? input["items"] as Record<string, unknown>[] : [];
+    if (items.length < 2 || items.length > 20) throw Error("A sweep is 2 to 20 items. For one, propose a task.");
+    const cleaned = items.map((one, index) => ({ title: text(one, "title", 200).trim(), item: text(one, "item", 4000).trim(), index }));
+    const maxParallel = integer(input, "maxParallel");
+    if (maxParallel < 1 || maxParallel > 8) throw Error("Run 1 to 8 at once.");
+    request["title"] = sweepTitle; request["brief"] = brief; request["items"] = cleaned.map(({ title, item }) => ({ title, item }));
+    const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
+    title = `Start a sweep in ${project}: ${sweepTitle}`;
+    // Every word each child's scope will hold is shown here (the security review: nothing approved off-screen): its
+    // goal is the shared rules, then its item, then the verdict line; its success test is the shared acceptance.
+    const acceptance = Array.isArray(input["acceptance"]) ? input["acceptance"] as Record<string, unknown>[] : [];
+    if (acceptance.length === 0) throw Error("A sweep needs a success test every item shares.");
+    // Every child's scope exactly as filing would make it — its words AND its agent's permissions, limits and route —
+    // found by filing them in a savepoint that is always rolled back (prepare writes nothing). They are on this card and
+    // in its state: if a project default changes before confirm, the card is stale and nothing is filed or approved.
+    const children = sweepChildScopes(store, who, repo, brief, cleaned.map(({ title, item }) => ({ title, item })), input["acceptance"], now);
+    state = { children: children.map(one => one.fingerprint) };
+    const tests = acceptance.map((one, index) => `Success test ${index + 1}${typeof one["id"] === "string" ? ` (${one["id"]})` : ""}: ${String(one["statement"] ?? "")}${Array.isArray(one["evidence"]) ? ` — shown by ${(one["evidence"] as unknown[]).map(String).join(", ")}` : ""}`);
+    terms.push(
+      `${cleaned.length} tasks, each in its own worktree on its own branch, at most ${maxParallel} running at once, built directly (no separate planning step).`,
+      `Shared rules for every item: ${brief}`,
+      ...cleaned.map(one => `Item ${one.index + 1} — ${one.title}: ${one.item}`),
+      `Each item's goal is the shared rules, then its own item, then: ${VERDICT_RULE}`,
+      ...tests.map(line => `Every item — ${line}`),
+      ...(children.every(one => one.runtime === children[0]!.runtime) ? [`Every item — ${children[0]!.runtime}`] : children.map((one, index) => `Item ${index + 1} — ${one.runtime}`)),
+      "Confirming files all of them and approves each one's scope exactly as shown. An item that needs a second person, or that the project's rules keep from its requester, is filed and waits for its own approval.",
+      "Each ends with a verdict (fixed, not reproducible, blocked or done) and the sweep's table shows them as they land.",
+    );
   } else if (operation.startsWith("flow_")) {
     const project = repo.split(/[\\/]/).filter(Boolean).at(-1) ?? repo;
     if (operation === "flow_create") {
@@ -1216,6 +1269,14 @@ export function executeSharedAction(
         const done = runFlowAction(store, payload, actor, who.repos, options.root, now);
         return { ok: true as const, taskId: null, said: done.said, href: done.href };
       }
+      else if (payload.operation === "sweep_cancel_rest") {
+        const said = cancelSweepRest(store, who.name, payload.state["open"] as SweepOpenItem[], now, "web");
+        return { ok: true as const, taskId: null, said, href: `/sweeps/${Number(req["sweep"])}` };
+      }
+      else if (payload.operation === "sweep_file") {
+        const done = fileSweep(store, who, id, payload, options.review?.password ?? "", now);
+        return { ok: true as const, taskId: null, said: done.said, href: done.href };
+      }
       else if (payload.operation === "kit_setup") {
         const kit = kitOf(String(req["kit"]))!;
         const made = setUpKitNow(store, kit, repo, actor, now, null, true);
@@ -1349,6 +1410,88 @@ export function executeSharedAction(
 }
 
 /** A confirmed subagent action (v92), through the same helpers the Subagents pages use. */
+/**
+ * Lead fan-out: file every item (all of them or none — any refusal throws and the savepoint takes the whole sweep
+ * back), link them to one sweep record, then approve each one's scope through the ordinary approval (its own digest,
+ * its own rules). A child the approval refuses stays filed and unapproved; it is named, never retried.
+ */
+/** One child as filing makes it (the shared brief, its item, the verdict rule; the shared acceptance; built directly). */
+function fileSweepChild(store: Store, who: VerifiedApprover, repo: string, brief: string, one: { title: string; item: string }, acceptance: unknown, now: Date) {
+  const goal = `${brief}\n\nThis item:\n${one.item}\n\n${VERDICT_RULE}`;
+  return fileTaskProposal(store, {
+    title: one.title, repo, goal, acceptance, planning: "skip",
+    // Sized now, by the same heuristic filing would use: no background classifier is started — the card's dry run must
+    // leave nothing running after its rollback, and the approved scope must be the one shown (Codex sweep r2).
+    sizing: heuristicSizing({ title: one.title, goal, outOfScope: null }),
+    filedVia: "mate", filedBy: { name: who.name, kind: "person" as const }, proposedVia: "mate", admittedRepos: [...who.repos],
+  }, now);
+}
+
+/** A filed child's scope in the words an approval agrees to (no identity lines), its runtime terms, and their digest. */
+function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[] } {
+  const scope = store.getScope(taskId);
+  if (scope === null) throw Error("A sweep item has no scope to show.");
+  const authority = scopeAuthorityOf(scope, { authMode: readAuthModeStrict });
+  if (!authority.ok) throw Error(authority.problem);
+  const words = describeScope(scope).filter(line => !/^\s*(reference|approved)\s/.test(line)).map(line => line.trim());
+  const runtime = `Agent permissions and limits: ${runtimeTerms(authority.profile)} ${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`.trim();
+  // The fingerprint covers the scope's every field, not only what is rendered (a profile setting no sentence names, such
+  // as an agent's idle timeout, still makes the card stale): its exact terms with only identity left out.
+  const { taskId: _task, digest: _digest, approvedDigest: _approved, approvedBy: _by, approvedAt: _at, proposedAt: _proposed, approvalBasis: _basis,
+    modeDigest: _mode, approvedProfile: _approvedProfile, approvedProfileJson: _approvedProfileJson, approvedChainJson: _approvedChain, ...terms } = scope as unknown as Record<string, unknown>;
+  return { fingerprint: hash({ words, runtime, authMode: authority.authMode, profile: authority.profile, terms }), runtime, words };
+}
+
+/** Every child as filing would make it, found in a savepoint that is always rolled back: prepare never writes. */
+function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, brief: string, items: { title: string; item: string }[], acceptance: unknown, now: Date) {
+  const dryRun = new Error("sweep dry run");
+  let found: ReturnType<typeof sweepChildScopeOf>[] = [];
+  // Inside one transaction (filing opens its own; transact flattens), a savepoint that always rolls back.
+  store.transact(() => {
+    try {
+      store.savepoint(() => {
+        found = items.map((one, index) => {
+          const made = fileSweepChild(store, who, repo, brief, one, acceptance, now);
+          if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) can't be filed: ${made.message}`);
+          return sweepChildScopeOf(store, made.id);
+        });
+        throw dryRun;
+      });
+    } catch (error) { if (error !== dryRun) throw error; }
+  });
+  return found;
+}
+
+function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payload: SharedAction, password: string, now: Date): { said: string; href: string } {
+  const req = payload.request;
+  const already = store.sweepOfProposal(proposal);
+  if (already !== null) return { said: "This sweep was already started.", href: `/sweeps/${already}` };
+  const items = req["items"] as { title: string; item: string }[];
+  const brief = String(req["brief"]);
+  const sweep = store.createSweep({ owner: who.name, thread: store.getLeadProposal(proposal)?.thread ?? null, repo: payload.repo, title: String(req["title"]), brief,
+    maxParallel: Number(req["maxParallel"]), proposal }, now);
+  const filed: { id: string; title: string }[] = [];
+  for (const [index, one] of items.entries()) {
+    const made = fileSweepChild(store, who, payload.repo, brief, one, req["acceptance"], now);
+    if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) couldn't be filed: ${made.message}. Nothing was filed.`);
+    // Each filed scope must be exactly the one the card showed (words, permissions, limits, route); else nothing is filed.
+    if (sweepChildScopeOf(store, made.id).fingerprint !== (payload.state["children"] as string[] | undefined)?.[index])
+      throw Error(`Item ${index + 1} (${one.title}) no longer matches what you reviewed (a project default changed). Nothing was filed; ask for a fresh card.`);
+    store.addSweepTask(sweep, made.id, index, one.title);
+    filed.push({ id: made.id, title: one.title });
+  }
+  const waiting: string[] = [];
+  for (const one of filed) {
+    const scope = store.getScope(one.id);
+    const approved = scope === null ? null : withFreshness("approve-standard", () => approve(store, one.id, who.name, now, scope.digest, password));
+    if (approved === null || !approved.ok) waiting.push(one.title);
+  }
+  const said = waiting.length === 0
+    ? `Started: ${filed.length} tasks, at most ${Number(req["maxParallel"])} at once.`
+    : `Started: ${filed.length - waiting.length} of ${filed.length} approved; ${waiting.length} wait for their own approval (${waiting.join(", ")}).`;
+  return { said, href: `/sweeps/${sweep}` };
+}
+
 function runSubagentAction(store: Store, payload: SharedAction, actor: string, now: Date): { said: string; href: string } {
   const req = payload.request;
   if (payload.operation === "subagent_create") {

@@ -83,6 +83,12 @@
       { "repo": "r1", "title": "Rename the footer link", "goal": "Rename the footer's Help link to Support.", "acceptance": [{ "id": "c1", "statement": "The footer says Support", "evidence": ["manual-review"] }] },
       { "repo": "r1", "title": "Audit the docs", "goal": "Find stale pages.", "not": "Rewriting them.", "touches": ["docs/"], "acceptance": [{ "id": "c1", "statement": "A list of stale pages", "evidence": ["check", "manual-review"], "how": "Read the report." }], "planning": "required", "report": true, "checks": "skip the tests" }
     ],
+    "propose_sweep": [
+      { "repo": "r1", "title": "Discord bug sweep", "brief": "Reproduce first; 'not reproducible' is a valid result.", "items": [{ "title": "Router timeout", "item": "The router times out after 30s." }, { "title": "Cache TTL", "item": "Opus gets the 5-minute cache." }], "acceptance": [{ "id": "c1", "statement": "Fixed with proof, or shown not reproducible.", "evidence": ["check"] }] },
+      { "repo": "r1", "title": "Small fixes", "brief": "One change each.", "items": [{ "title": "a", "item": "one" }, { "title": "b", "item": "two" }, { "title": "c", "item": "three" }], "acceptance": [{ "id": "c1", "statement": "s", "evidence": ["check"] }], "max_parallel": 2 }
+    ],
+    "get_sweep": [{ "sweep": 1 }],
+    "propose_sweep_cancel": [{ "sweep": 1 }],
     "propose_next": [{ "task": "t-42" }],
     "propose_reserve": [{ "task": "t-42", "worker": "mac-mini" }, { "task": "t-42", "worker": null }],
     "propose_hold": [{ "task": "t-42", "reason": "Wait for the design review." }],

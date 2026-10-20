@@ -205,7 +205,7 @@ export function capabilitiesOf(store: Store, input: { repos: readonly string[]; 
  * report on a task, attempt or check does (crew work must run), and a timed one does when it is reported on a chat app. */
 const FLOW_WORK = new Set(["create", "edit", "kit", "starter", "add_trigger", "resume_trigger", "add_card"]);
 export function needsCapabilities(name: string, args: Record<string, unknown>, channel: string | undefined): boolean {
-  if (name === "propose_task") return true;
+  if (name === "propose_task" || name === "propose_sweep") return true;
   if (name === "propose_flow") return FLOW_WORK.has(String(args["operation"]));
   if (name === "commit_to") return args["when"] === "time" ? channel !== undefined && channel !== "chat" : true;
   return false;

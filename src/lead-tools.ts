@@ -1,3 +1,4 @@
+import { sweepLine, sweepTable } from "./lead-sweep.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
 import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
@@ -1454,6 +1455,52 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const id = ctx.draft("task", { repo, repoId: args["repo"], title: args["title"], goal: args["goal"], not, touches, acceptance, planning, report, ...(checks === null || report ? {} : { checks }) });
       if (id === null) return tooMany();
       return { ok: true, body: { proposal: id, kind: "task", repo: args["repo"], deliverable: report ? "report" : "branch", planning: report ? "not needed for a scout" : planning, awaiting: "the operator's confirmation" } };
+    },
+  },
+  propose_sweep: {
+    description: "Several independent items under ONE shared rule set (a bug sweep, a batch of small fixes): 2-20 items, each becomes its own task in its own worktree, started with one approval, at most max_parallel (default 3) at once, each reporting a verdict into one table. brief holds the shared rules every item gets (e.g. reproduce first; 'not reproducible' is a valid result; prove the fix); each item is only its own report. Not for one task, and not for steps that depend on each other.",
+    handle: (ctx, args) => {
+      const repo = repoPathOf(ctx.who, args["repo"]);
+      if (repo === null) return { ok: false, message: "repo must be one of the ids from list_repos" };
+      const items = Array.isArray(args["items"]) ? args["items"] as Record<string, unknown>[] : [];
+      for (const one of [{ title: args["title"], goal: args["brief"] }, ...items.map(item => ({ title: item["title"], goal: item["item"] }))]) {
+        if (typeof one.title !== "string" || typeof one.goal !== "string") return { ok: false, message: "each title, the brief and each item are text" };
+        const bad = validateTaskText({ title: one.title, goal: one.goal, outOfScope: null });
+        if (bad !== null) return { ok: false, message: bad.message };
+        if ([one.title, one.goal].some(text => typeof text === "string" && scanForSecrets(text).length > 0)) return { ok: false, message: "Task text cannot contain credentials." };
+      }
+      const acceptance = readAcceptanceArg(args["acceptance"]);
+      if (acceptance === null) return { ok: false, message: "acceptance is required: at least one criterion with an id, statement, and evidence kinds (shared by every item)" };
+      try {
+        const action = prepareSharedAction(ctx.store, ctx.who, "sweep_file", { repo, title: args["title"], brief: args["brief"], items: items.map(item => ({ title: item["title"], item: item["item"] })),
+          acceptance, maxParallel: typeof args["max_parallel"] === "number" ? args["max_parallel"] : 3 }, ctx.evidenceRoot, ctx.now);
+        const id = ctx.draft("action", { ...action });
+        return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human review in the secure confirmation screen", executed: false } };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That sweep couldn't be drafted." };
+      }
+    },
+  },
+  get_sweep: {
+    description: "A sweep's table as facts: each item's state, its verdict (fixed, not reproducible, blocked, done, or none yet) and its result, plus the one-line count. Read this, don't poll each task.",
+    handle: (ctx, args) => {
+      const table = sweepTable(ctx.store, Number(args["sweep"]), ctx.now, ctx.who.repos, ctx.evidenceRoot);
+      if (table === null) return { ok: false, message: "No such sweep in your projects." };
+      return { ok: true, body: { sweep: table.id, title: table.title, line: sweepLine(table), table: `/sweeps/${table.id}`, maxParallel: table.maxParallel,
+        items: table.rows.map(row => ({ item: row.ordinal + 1, label: row.label, task: row.task, state: row.state, detail: row.detail.slice(0, 300),
+          verdict: row.verdict?.verdict ?? null, why: row.verdict?.why ?? null, result: row.result })) } };
+    },
+  },
+  propose_sweep_cancel: {
+    description: "Cancel every item of a sweep that isn't ready yet (finished results stay); one confirmation. To steer, cancel or retry ONE item, use that task's own actions.",
+    handle: (ctx, args) => {
+      try {
+        const action = prepareSharedAction(ctx.store, ctx.who, "sweep_cancel_rest", { sweep: Number(args["sweep"]) }, ctx.evidenceRoot, ctx.now);
+        const id = ctx.draft("action", { ...action });
+        return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human confirmation", executed: false } };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That couldn't be drafted." };
+      }
     },
   },
   propose_next: {

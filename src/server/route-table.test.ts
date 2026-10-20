@@ -31,6 +31,8 @@ const LIMITED_ACCESS = {
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
   'code.other': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
+  // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.
+  'sweep.page': 'unscoped', 'sweep.cancel-rest': 'unscoped',
   'code.session': 'self', 'code.ship': 'self', 'code.ship-send': 'self', 'code.start': 'self', 'code.state': 'self', 'code.stop-send': 'self',
   'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
   'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
