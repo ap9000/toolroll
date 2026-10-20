@@ -102,11 +102,11 @@ test("a pasted secret of the wrong shape is refused in words, and nothing is sav
   expect(store.getFlowTrigger(sentry)!.hookCredential).toBe("");
 });
 
-test("a card from a signed webhook says how it was proved and where its link goes, however long the link", async () => {
+test.each([false, true])("a card from a signed webhook says how it was proved and where its link goes, however long the link (phone=%s)", async phone => {
   const url = `https://acme.sentry.io/organizations/acme/issues/1170820242/events/${"e".repeat(1800)}/`;
   store.addFlowCard({ flow, title: "TypeError in roundTotal", description: null, stage: JSON.parse(store.getFlow(flow)!.definitionJson).start, by: "Webhook", byKind: "automation",
     source: { kind: "sentry", label: "Sentry issue", url, verified: "sentry", external: { id: "1170820242", url }, receipt: "v3:sentry:id:1170820242" } }, T0);
-  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  vi.spyOn(window, "matchMedia").mockImplementation(query => ({ matches: phone && query === "(max-width: 767px)", media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(createElement(FlowView, { view: flowView(store, store.getFlow(flow)!, { name: "alex", approver: true }, null, { dir, repos: [REPO] }), csrf: "fixture" })));
   const card = [...document.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.startsWith("TypeError in roundTotal"))!;

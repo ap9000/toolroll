@@ -134,6 +134,11 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   store.handle.prepare("UPDATE task_ref SET revision_brief_artifact = ? WHERE id = ?").run(shared, other.second.ref);
   expect(mentions(repo).length).toBeGreaterThan(5);
 
+  // Each project's task came from a signed Sentry delivery (v126 task_source).
+  const source = JSON.stringify({ label: "Sentry issue", verified: "sentry", external: { id: "1", url: "https://acme.sentry.io/issues/1/" }, receipt: "v3:sentry:id:1" });
+  store.recordTaskSource(shop.first.id, { flow: 1, card: 1, entry: 1 }, source, NOW);
+  store.recordTaskSource(other.first.id, { flow: 1, card: 1, entry: 1 }, source, NOW);
+
   // A paired Telegram chat asked about each project's task; each message has its reply planned (event ids are text, 'm…').
   const talk = telegramTalk([[shop.first.id, 501], [other.first.id, 502]]);
   expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
@@ -144,6 +149,9 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   expect(store.handle.prepare("SELECT id FROM chat_event WHERE provider = 'telegram' AND kind = 'message'").all().map(row => row["id"])).toEqual([talk[1]]);
   expect(store.handle.prepare("SELECT event FROM chat_part WHERE provider = 'telegram'").all().map(row => row["event"])).toEqual([talk[1]]);
 
+  // Where the deleted task came from goes with it: a task later made under the same id is never given that origin.
+  expect(store.taskSourceOf(shop.first.id)).toBeNull();
+  expect(store.taskSourceOf(other.first.id)).not.toBeNull();
   // Nothing names the project any more; its tasks, runs, chats, cards, subagent and evidence are gone.
   expect(mentions(repo)).toEqual([]);
   expect(count("SELECT COUNT(*) AS n FROM task WHERE id IN (?, ?)", shop.first.id, shop.second.id)).toBe(0);

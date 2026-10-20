@@ -16,6 +16,8 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { advanceFlows } from "./flow-engine.js";
 import { GALLERY, useGalleryTemplate } from "./flow-gallery.js";
+import { addFlowTriggerTo } from "./flow-triggers.js";
+import { signUnattended } from "./flow-unattended.js";
 import { flowHook } from "./server/remote-hooks.js";
 import { scopeApprovedForDispatch } from "./dispatch.js";
 import { register } from "./runner.js";
@@ -44,6 +46,11 @@ test("from the gallery to a task waiting for a person, over HTTP; and no refusal
   const used = useGalleryTemplate(store, GALLERY.find(one => one.id === "webhook-to-build")!, repo, {}, { by: "alex", now: T0, dir: base });
   if (!used.ok) throw new Error(used.said);
   const trigger = store.flowTriggers(used.flow).find(one => one.kind === "webhook")!;
+  // The flow also runs on its own for its schedule: that grant never covers a webhook's card.
+  const schedule = addFlowTriggerTo(store, store.getFlow(used.flow)!, { kind: "schedule", schedule: "daily 09:00", title: "Nightly" }, "alex", T0, base);
+  if (!schedule.ok) throw new Error(schedule.message);
+  const granted = await signUnattended(store, { flow: used.flow, signer: "alex", ask: { days: 2, budgetMicrousd: null, dailyRunCap: null } }, new Date());
+  if (!granted.ok) throw new Error(granted.message);
 
   const consoleUrl = await listen(createDecisionServer({ store, evidenceRoot: join(base, "evidence"), clock: () => new Date(), repos: [repo], configDir: base }));
   const hooksUrl = await listen(createServer((request, response) => { void flowHook({ store, clock: () => new Date(), options: { configDir: base } }, request, response, new URL(request.url ?? "/", "http://localhost")); }));
@@ -137,10 +144,12 @@ test("Vercel over HTTP, set up and scoped through the console's routes: only the
     const body = JSON.stringify({ type, payload: { project: { id: project }, team: { id: "team_1" }, deployment: { id: `dpl_${project}_${type}`, name: "shop" }, links: { deployment: "https://vercel.com/acme/shop/x" } } });
     return fetch(address, { method: "POST", headers: { "x-vercel-signature": createHmac("sha1", secret).update(body).digest("hex") }, body });
   };
-  const outcome = () => store.getFlowTrigger(trigger.id)!.lastOutcome;
-  const before = outcome();
+  // Before its secret is pasted, a delivery is refused and writes nothing at all.
+  const everything = () => JSON.stringify({ trigger: store.handle.prepare("SELECT * FROM flow_trigger WHERE id = ?").get(trigger.id),
+    receipts: store.handle.prepare("SELECT * FROM flow_trigger_event").all(), cards: store.handle.prepare("SELECT COUNT(*) AS n FROM flow_card").get() });
+  const before = everything();
   expect((await failed("prj_1")).status).toBe(401);
-  expect(outcome()).toBe(before);
+  expect(everything()).toBe(before);
   // The secret and the project, each behind the password: a wrong one changes nothing.
   expect((await post(at("secret"), { secret, password: "wrong" })).status).toBe(403);
   expect((await post(at("secret"), { secret, password: alex.token })).status).toBe(200);

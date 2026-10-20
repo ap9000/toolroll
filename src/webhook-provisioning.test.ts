@@ -324,6 +324,7 @@ describe("over HTTP", () => {
     // The answer arrives chunked; its words are what matter.
     expect(twice.body).toContain(JSON.stringify({ said: "The webhook-signature header was sent more than once." }));
     expect(receipts(id)).toBe(0);
+    expect(trigger(id).lastOutcome).toBeNull();
     const once = await raw(`/hooks/flow/${token}`, [...lines, `webhook-signature: ${good["webhook-signature"]}`], body);
     expect(once.status).toBe(202);
   });
