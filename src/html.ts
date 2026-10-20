@@ -127,6 +127,18 @@ let formToken: () => string | undefined = () => undefined;
 /** The server's request context supplies the request's CSRF token (server/request-context.ts). */
 export function provideFormToken(source: () => string | undefined): void { formToken = source; }
 
+/** Passwordless (docs/plans/passwordless.md), as the request sees it: the request context provides it. */
+let passwordlessNow: () => boolean = () => false;
+export function providePasswordless(source: () => boolean): void { passwordlessNow = source; }
+/**
+ * A ceremony's re-authentication field: rendered as given, or — with Passwordless on for this signed-in browser —
+ * nothing at all (the form posts an empty password; the act proves the session). Never used for credential acts,
+ * the sign-in form, a new password, or a secret or API key field.
+ */
+export function reauth(field: Html): Html { return passwordlessNow() ? html`` : field; }
+/** The same question for a page's own script that builds a re-authentication field itself. */
+export const passwordlessRendering = (): boolean => passwordlessNow();
+
 /**
  * A POST form: the action, the request's one CSRF field, the optional
  * project revision and return fields, other hidden fields, then the body.

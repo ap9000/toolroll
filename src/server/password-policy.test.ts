@@ -25,6 +25,8 @@ const COOKIE_ONLY_POSTS = [
   'session.forget-password',
   // Live terminals: an operator's own, from a browser.
   'term.start', 'term.close', 'term.remove',
+  // Passwordless: an operator's switch, from a browser (on proves a typed password in the handler; off is one click).
+  'settings.passwordless-send',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

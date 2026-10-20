@@ -18,7 +18,7 @@ import { assignFlowCard,commentOnFlowCard,watchFlowCard } from "../flow-people.j
 import { saveScript } from "../flow-scripts.js";
 import { chooseFlowCard } from "../flow-send.js";
 import { exportFlow,fetchFlowFile,FlowFileError,importFlow,parseFlowFile,planFlowImport,type FlowImportPlan } from "../flow-share.js";
-import { addFlowTriggerTo,checkFlowTriggerNow,pressFlowButton,removeFlowTrigger,removeLinearKey,setFlowTriggerOn,renewFlowHook,saveHooksBase,saveLinearKey,saveSigningSecret,setUpFlowHook,changeFlowHookSender,setFlowHookScope,shareFlowButton,stopSharingFlowButton } from "../flow-triggers.js";
+import { addFlowTriggerTo, checkFlowTriggerNow, pressFlowButton, removeFlowTrigger, removeLinearKey, setFlowTriggerOn, renewFlowHook, saveHooksBase, saveLinearKey, saveSigningSecret, setUpFlowHook, changeFlowHookSender, setFlowHookScope, shareFlowButton, stopSharingFlowButton, rawTakesDeliveries } from "../flow-triggers.js";
 import { FLOW_IMPORT_SCRIPT,flowFallbackHtml,flowImportHtml,flowsListHtml,flowView } from "../flows-ui.js";
 import { FLOW_TEMPLATES,FlowContractError,validateFlowDefinition,withZoneNames } from "../flows.js";
 import { prepareUnattendedCandidates,parseUnattendedAsk,revokeUnattended,signUnattended,untilWords } from "../flow-unattended.js";
@@ -49,7 +49,7 @@ import { redirect,respond,SAFETY,taskHref } from "./http.js";
 import { html, type Html } from "../html.js";
 import { type Who } from "./session.js";
 export function createFlowsHandlers(runtime: ServerRuntime) {
-  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, flowRooms, identify, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
+  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, flowRooms, identify, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
 
   // ---- reads ---------------------------------------------------------------
 
@@ -536,7 +536,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (action === "triggers") {
       let raw: unknown;
       try { raw = JSON.parse(body.get("trigger") ?? "null"); } catch { return answer(400, { ok: false, said: "That trigger couldn't be read." }); }
-      const made = addFlowTriggerTo(store, flow, raw, who.name, now, dir);
+      // A trigger that takes deliveries mints an address: a credential act (docs/plans/passwordless.md).
+      const ingress = rawTakesDeliveries(raw);
+      if (ingress && !authenticateCredential(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "Enter your Toolroll password to make a webhook address." });
+      const made = addFlowTriggerTo(store, flow, raw, who.name, now, dir, ingress ? { ingress: "proved" } : {});
       if (made.ok) await prepareUnattendedCandidates(store, flow.id);
       return made.ok ? settle(made.said, made.reveal === null ? {} : { reveal: made.reveal }) : answer(400, { ok: false, said: made.message });
     }
@@ -657,6 +660,10 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (trigger === null || trigger.flow !== flow.id || trigger.state === "removed") return answer(404, { ok: false, said: "That trigger isn't on this flow." });
     if (verb === "pause" || verb === "resume") { setFlowTriggerOn(store, trigger, verb === "resume", now, who.name); return settle(verb === "pause" ? "Trigger paused." : "Trigger on again."); }
     if (verb === "remove") { removeFlowTrigger(store, trigger, now, dir, who.name); return settle("Trigger removed."); }
+    // A public form link and a new webhook address each open a way in: credential acts, a password typed now.
+    if ((verb === "share" || verb === "renew") && !authenticateCredential(who, body.get("password") ?? "").ok) {
+      return answer(403, { ok: false, said: verb === "share" ? "Enter your Toolroll password to share a form link." : "Enter your Toolroll password to make a new address." });
+    }
     if (verb === "share") {
       const shared = shareFlowButton(store, trigger, now, dir);
       return shared.ok ? settle(shared.said, { reveal: shared.reveal }) : answer(409, { ok: false, said: shared.message });
@@ -684,7 +691,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     }
     // A webhook's credentials change only on this secure panel, behind the password — never in chat (v126): a secret
     // pasted (Linear's, Sentry's, Vercel's), one made and shown once with a new address, or who signs its deliveries.
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: verb === "secret" ? "Enter your Toolroll password to save a secret." : "Enter your Toolroll password to change how this webhook is proved." });
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: verb === "secret" ? "Enter your Toolroll password to save a secret." : "Enter your Toolroll password to change how this webhook is proved." });
     if (verb === "setup") {
       const made = setUpFlowHook(store, trigger, now, dir);
       return made.ok ? settle(made.said, { reveal: made.reveal }) : answer(409, { ok: false, said: made.message });

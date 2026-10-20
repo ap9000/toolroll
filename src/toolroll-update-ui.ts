@@ -4,7 +4,7 @@
  * and a one-time "What's new" card afterwards. The work itself is the
  * `toolroll update` command (toolroll-update.ts), started as its own job.
  */
-import { html, postForm, replaceMarkup, type Html } from "./html.js";
+import { html, postForm, replaceMarkup, type Html, reauth } from "./html.js";
 import type { InstallMethod } from "./install-method.js";
 import { STEP_WORDS, UPDATE_STEPS, runtimeUpdateTerminal, type RuntimeUpdateJournal, type UpdateStep } from "./toolroll-update.js";
 
@@ -89,7 +89,7 @@ export function updatesHtml(view: UpdatesView, notice: { said?: string | null; p
     : latest === null ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Couldn’t check for a newer release: ${"problem" in view.latest ? view.latest.problem : ""}</p>`
     : html`<h2>Toolroll ${view.current} is up to date</h2>`;
   const form = newer && !["npx", "source", "desktop"].includes(view.method.kind)
-    ? postForm("/settings/updates", html`<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><div class="update-actions"><button type="submit" name="when" value="now" class="primary">Update now</button><button type="submit" name="when" value="when-idle">When idle</button><button type="submit" name="when" value="tonight">Tonight (03:00)</button></div>`, { hidden: { version: latest } })
+    ? postForm("/settings/updates", html`${reauth(html`<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<div class="update-actions"><button type="submit" name="when" value="now" class="primary">Update now</button><button type="submit" name="when" value="when-idle">When idle</button><button type="submit" name="when" value="tonight">Tonight (03:00)</button></div>`, { hidden: { version: latest } })
     : "";
   const rollback = view.rollbackTo !== null ? html`<p class="meta">To go back to ${view.rollbackTo}: <code>toolroll update --rollback</code></p>` : "";
   return html`<section class="updates">${note}${whatsNew}${j ? outcomeHtml(j) : ""}<div class="card" data-update-state="${newer ? "available" : "current"}">${state}${form}${rollback}</div></section>`;

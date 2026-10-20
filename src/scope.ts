@@ -1,5 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
+import { passwordlessOn } from "./passwordless.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
 import { contractChangesOf } from "./contract-changes.js";
@@ -1028,7 +1029,9 @@ export function addApprover(
     // 1, finding 1): a viewer's or a revoked person's credential is real
     // and still vouches for nothing — the CLI is a ceremony site like any
     // other, and this was the one road that forgot.
-    const vouching = by === undefined ? { ok: false as const } : authenticateApprover(store, by.name, by.token);
+    // Creating an approver is a credential act (docs/plans/passwordless.md): a password typed now, never a session or
+    // the CLI's remembered login under Passwordless.
+    const vouching = by === undefined ? { ok: false as const } : proveCredential(store, by.name, by.token);
     if (!vouching.ok) {
       return { ok: false, reason: "not-an-approver" };
     }
@@ -1137,7 +1140,17 @@ export function authenticateAccount(
  * revoked or rotated, a credential change or Forget made while a request was in flight is seen by it.
  */
 export type FreshOp = "approve-standard" | "chat-send" | "reply-question";
-export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso";
+/** "session": Passwordless is on and this is the person's own live browser session (docs/plans/passwordless.md). */
+/** "remote-token" / "lead-token": a machine credential stood in for the person (a remote run's API token, a lead's
+ * token) — fine for ordinary acts it is allowed, never for a credential act (it would mint a way in with no password). */
+export type AuthMethod = "password-now" | "sso-now" | "fresh-password" | "fresh-sso" | "session" | "cli-login" | "remote-token" | "lead-token";
+
+/**
+ * The local CLI's remembered login, marked for the one command that read it (operate.ts credentialsFrom): with
+ * Passwordless on, a proof made with it records "cli-login" — never a typed password — and no credential act accepts it.
+ * Scoped to that command's async chain; a browser request in the console's own process never carries it.
+ */
+export const rememberedLogin = new AsyncLocalStorage<{ login: { name: string; token: string } | null }>();
 export const FRESH_WINDOW_MS = 15 * 60_000;
 /** How long an explicit provider re-check stands in for one password typed now. */
 export const SSO_NOW_MS = 5 * 60_000;
@@ -1206,12 +1219,16 @@ export function ssoNowAvailable(by: string, now = Date.now()): boolean {
  * Proof that this person is here now, for any account step-up (an approver's or not): a password typed now, or an
  * explicit provider re-check (consumed). The core of every console step-up; `authenticateApprover` adds standing.
  */
-export function proveAccountNow(store: Store, by: string, token: string): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
+export function proveAccountNow(store: Store, by: string, token: string, options: { credential?: boolean } = {}): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
   const now = Date.now();
   const facts = freshFacts.getStore();
   if (facts != null && facts.actor === by && !facts.live()) return { ok: false, reason: "not-an-approver" };
   // An empty password is never checked as a password (and never counts toward a lockout).
   if (token === "") {
+    // Passwordless (read live): the person's own live browser session is the proof. Only a browser request carries facts;
+    // a CLI, a token, a chat bridge or detached work has none, and falls through to the rules below.
+    // A credential act never takes this road, so its own proofs (a one-use provider re-check) are reached and spent.
+    if (options.credential !== true && facts != null && facts.actor === by && facts.live() && passwordlessOn(store)) return { ok: true, method: "session", at: now };
     if (ssoNowAvailable(by, now)) {
       const at = facts!.ssoNow()!;
       const refund = facts!.consumeSsoNow();
@@ -1223,8 +1240,33 @@ export function proveAccountNow(store: Store, by: string, token: string): { ok: 
   }
   const account = authenticateAccount(store, by, token);
   if (!account.ok) return { ok: false, reason: account.reason === "no-approvers" ? "no-approvers" : "not-an-approver" };
+  // A machine credential named the person (authenticateAccount takes it as them): say so, never "a password typed now".
+  if (activeRemote() !== null) return { ok: true, method: "remote-token", at: now };
+  if (currentActor()?.lead === true && parseLeadToken(token) !== null) return { ok: true, method: "lead-token", at: now };
+  const remembered = rememberedLogin.getStore()?.login;
+  if (remembered != null && remembered.name === by && remembered.token === token && passwordlessOn(store)) return { ok: true, method: "cli-login", at: now };
   if (facts != null && facts.actor === by) facts.stamp(now);
   return { ok: true, method: "password-now", at: now };
+}
+
+/**
+ * A credential act (docs/plans/passwordless.md, the closed list: one that creates or widens a way in): only a password
+ * typed now, or a one-use identity-provider re-check, proves it — never a session, never a remembered password.
+ */
+/** Whether an empty password would pass for `by` right now because Passwordless is on and this is their live browser
+ * session. Read only — the act itself proves it again inside `proveAccountNow`. */
+export function passwordlessSessionFor(store: Store, by: string): boolean {
+  const facts = freshFacts.getStore();
+  return facts != null && facts.actor === by && facts.live() && passwordlessOn(store);
+}
+
+/** Whether a proof is one a credential act accepts: a password typed now, or a one-use identity-provider re-check. */
+export const credentialProof = (method: AuthMethod): boolean => method === "password-now" || method === "sso-now";
+
+export function proveCredential(store: Store, by: string, token: string, repo?: string | null): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
+  const proved = authenticateApprover(store, by, token, repo, { credential: true });
+  if (!proved.ok) return proved;
+  return credentialProof(proved.method) ? proved : { ok: false, reason: "not-an-approver" };
 }
 
 export function authenticateApprover(
@@ -1232,8 +1274,9 @@ export function authenticateApprover(
   by: string,
   token: string,
   repo?: string | null,
+  options: { credential?: boolean } = {},
 ): { ok: true; method: AuthMethod; at: number } | { ok: false; reason: "no-approvers" | "not-an-approver" } {
-  const proved = proveAccountNow(store, by, token);
+  const proved = proveAccountNow(store, by, token, options);
   if (!proved.ok) return proved;
   const standing = approverStanding(store, by, repo);
   return standing.ok ? proved : standing;

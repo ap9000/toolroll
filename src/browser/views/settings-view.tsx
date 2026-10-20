@@ -1,7 +1,7 @@
 /** Settings, rebuilt with shadcn/ui. Every control posts to the same server
  * route as before (CSRF included); choices save the moment they change and
  * the server's confirmation arrives as a toast. */
-import { PostForm } from "../ui/index.js";
+import { PostForm, Reauth } from "../ui/index.js";
 import { Activity, Bot, BookOpen, ChevronRight, Clock, Cpu, Database, Download, FileCheck, Folder, HardDrive, KeyRound, LineChart, Lock, Monitor, Moon, Plug, RefreshCw, ShieldCheck, Sparkles, Sun, Workflow, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -408,7 +408,7 @@ function Notifications({ view, csrf }: { view: BrowserSettingsView; csrf: string
           <span className="text-body text-muted-foreground">{view.push.available ? "A notification when something needs you. On iPhone, add this app to your Home Screen first." : "Alerts need a secure (https) address for this app."}</span></div>
         {view.push.available && <PostForm action="/push/subscribe" id="push-form" className="flex flex-wrap items-end gap-3">
           <input type="hidden" name="endpoint" value="" /><input type="hidden" name="p256dh" value="" /><input type="hidden" name="auth" value="" />
-          <div className="grid min-w-56 flex-1 gap-2"><Label htmlFor="push-password">Your password</Label><Input id="push-password" type="password" name="token" autoComplete="current-password" /></div>
+          <Reauth><div className="grid min-w-56 flex-1 gap-2"><Label htmlFor="push-password">Your password</Label><Input id="push-password" type="password" name="token" autoComplete="current-password" /></div></Reauth>
           <Button type="submit" id="push-enable" variant="outline">Get alerts on this device</Button>
           <p className="w-full text-body text-muted-foreground" id="push-state" aria-live="polite"></p>
         </PostForm>}

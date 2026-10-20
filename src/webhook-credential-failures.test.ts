@@ -45,12 +45,12 @@ const sign = (secret: string, body: string) => ({ "x-hub-signature-256": [`sha25
 const ping = (token: string, secret: string) => receiveFlowHook(store, token, { headers: { "x-github-event": ["ping"], ...sign(secret, "{}") }, body: Buffer.from("{}") }, dir, T0);
 const post = (token: string, secret: string, body: string) => receiveFlowHook(store, token, { headers: sign(secret, body), body: Buffer.from(body) }, dir, T0);
 function github() {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   return { id: made.id, token: tokenOf(made.reveal!.path), secret: made.reveal!.secret! };
 }
 function signed() {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "github-style" }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "github-style" }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   const setUp = setUpFlowHook(store, trigger(made.id), T0, dir);
   if (!setUp.ok) throw new Error(setUp.message);
@@ -79,7 +79,7 @@ test("a secret that can't be saved changes nothing: Replace secret, a pasted sec
   failing.mode = "ok";
   expect(post(hook.token, hook.secret, '{"title":"still works"}')).toMatchObject({ status: 202 });
 
-  const sentry = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry" }, "alex", T0, dir);
+  const sentry = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry" }, "alex", T0, dir, { ingress: "proved" });
   if (!sentry.ok) throw new Error(sentry.message);
   failing.mode = "save";
   expect(saveSigningSecret(store, trigger(sentry.id), "ab".repeat(32), T0, dir)).toEqual({ ok: false, message: "The keychain refused to save it." });

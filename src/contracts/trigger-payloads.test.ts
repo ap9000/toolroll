@@ -141,7 +141,7 @@ afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); 
 
 const flowNow = () => store.createFlow({ repo, name: "Intake", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)), by: "alex" }, T0);
 function hookOf(settings: Record<string, unknown>) {
-  const made = addFlowTriggerTo(store, store.getFlow(flowNow())!, settings, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flowNow())!, settings, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   return { id: made.id, token: made.reveal!.path.split("/").at(-1)!, secret: made.reveal!.secret };
 }

@@ -653,6 +653,8 @@ export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskVi
 
 export type BrowserWorkspace = {
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
+  /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
+  passwordless?: boolean;
   /** What this person named their lead (Settings → Lead): the chat header and every lead message say it. */
   leadName?: string;
   refreshUrl: string; receipt: { request: string; received: boolean } | null;

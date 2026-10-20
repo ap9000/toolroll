@@ -26,7 +26,7 @@ import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,ev
 import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
 import { chatResultHref,reviewHref,taskChatHref,taskHref } from "./http.js";
-import { attributes,type Html,html,htmlString,joinHtml,postForm } from "../html.js";
+import { attributes, type Html, html, htmlString, joinHtml, postForm, reauth } from "../html.js";
 import { publicationFactsOf,statusActionHref,statusLineHtml } from "./render-tasks.js";
 
 export const RUNS_PAGE = 50;
@@ -975,7 +975,7 @@ export function pullRequestCardHtml(pr: TaskPullRequest, csrf: string): Html {
   const merged = view.mergeCommit === null ? "" : html`<p class="meta">Merge commit <span class="mono">${view.mergeCommit.slice(0, 12)}</span></p>`;
   const target = pr.target === null ? "the base branch" : pr.target;
   const act = !view.canMerge || csrf === "" || view.prNumber === null ? "" :
-    postForm(`${taskHref(pr.taskId)}/merge`, html`<p class="meta">${view.mergeMethod === "squash" ? "Squash-merges" : view.mergeMethod === "rebase" ? "Rebase-merges" : "Merges"} PR #${view.prNumber} into ${target} and deletes its branch.</p><label>Password<input type="password" name="token" autocomplete="current-password" required></label>${
+    postForm(`${taskHref(pr.taskId)}/merge`, html`<p class="meta">${view.mergeMethod === "squash" ? "Squash-merges" : view.mergeMethod === "rebase" ? "Rebase-merges" : "Merges"} PR #${view.prNumber} into ${target} and deletes its branch.</p>${reauth(html`<label>Password<input type="password" name="token" autocomplete="current-password" required></label>`)}${
       view.fullCheck === null ? html`<button type="submit">Merge</button>` : html`<input type="hidden" name="anyway" value="1"><button type="submit" class="secondary">Merge anyway</button>`}`,
     { attrs: { class: "pull-request-act", "data-merge-form": true }, hidden: { run: view.runId } });
   return html`<section class="card pull-request pull-request--${tone}" id="merge" data-pull-request="${view.state}"><div class="pull-request-head"><strong>${view.label}</strong>${link}</div><p class="meta">${view.detail}${revision}</p>${merged}${act}</section>`;
@@ -2433,7 +2433,7 @@ export function resultNeedAction(need: BrowserNeedAction, o: ResultPanelOptions,
     : need.confirm !== null
     ? postForm(need.confirm.action, html`${
       need.confirm.checked === true ? html`<label><input type="checkbox" name="checked" value="yes" required> Nothing from build #${need.confirm.run} is running</label>` : ""
-      }<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><button type="submit" style="min-height:44px">${need.label}</button>`,
+      }${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button type="submit" style="min-height:44px">${need.label}</button>`,
       { attrs: { id: "confirm-stopped", class: "confirm-stopped" }, returnTo: need.confirm.returnTo, hidden: { run: need.confirm.run } })
     : html`<a class="button-link" href="${need.href ?? "#"}" data-primary-action>${need.label}</a>`;
   return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Request changes</a>` : ""}</div>`;

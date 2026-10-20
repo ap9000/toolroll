@@ -343,7 +343,8 @@ describe("bearer step-up and in-flight revocation", () => {
       body: new URLSearchParams({ csrf, token: 'incorrect-control-password', role: 'approver', access: 'all' }) });
     expect(control.status).toBe(403);
     await control.arrayBuffer();
-    expect(checked).toHaveBeenCalledExactlyOnceWith(store, 'alex', 'incorrect-control-password', undefined);
+    // Inviting is a credential act (Passwordless): proved as one, never by a session.
+    expect(checked).toHaveBeenCalledExactlyOnceWith(store, 'alex', 'incorrect-control-password', undefined, { credential: true });
     checked.mockClear();
     const before = snapshot();
     for (const row of browserOnly) {

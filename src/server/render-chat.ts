@@ -28,7 +28,7 @@ import { assignmentStageOf,stageOfCode } from "../task-status.js";
 import { type TeamChatProviderResolver } from "../team-chat-authorization.js";
 import { type TeamSnapshot } from "../team-contract.js";
 import { buildProgressOf,type DisplayStatus } from "../workspace-ui.js";
-import { html,htmlString,isHtml,joinHtml,postForm,replaceMarkup,type Html,type HtmlValue } from "../html.js";
+import { html, htmlString, isHtml, joinHtml, postForm, replaceMarkup, type Html, type HtmlValue, reauth } from "../html.js";
 import { requestContext,withFormToken } from "./request-context.js";
 import { createHash,randomBytes } from "node:crypto";
 import { chatMoney,type Chrome,oneLineOf,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon } from "./chrome.js";
@@ -562,7 +562,7 @@ export function chatPage(chrome: Chrome, data: {
       html`<div class="card"><p><strong>${draft.title}</strong> <span class="badge">Draft ${draft.kind}</span></p><p class="meta">Drafted by the model from fleet context — nothing is filed; drafts do not survive a restart</p><p style="white-space:pre-wrap">${draft.goal}</p>${
         draft.outOfScope === null ? "" : html`<p class="meta">Not: ${draft.outOfScope}</p>`}${
         draft.touches.length > 0 ? html`<p class="meta">Touches: ${draft.touches.join(", ")}</p>` : ""}<p class="meta">Repo: <span class="mono">${projectName(one.repoPath)}</span></p>${
-        postForm(`/chat/file/${one.key}`, html`<input type="password" name="token" placeholder="your password" autocomplete="current-password"><button type="submit">File unapproved</button>`, { attrs: { class: "inline" } })}</div>`,
+        postForm(`/chat/file/${one.key}`, html`${reauth(html`<input type="password" name="token" placeholder="your password" autocomplete="current-password">`)}<button type="submit">File unapproved</button>`, { attrs: { class: "inline" } })}</div>`,
     );
   }
   if (!subscription && data.canManage && data.focusTask === null) {
@@ -570,7 +570,7 @@ export function chatPage(chrome: Chrome, data: {
       html`<h2>Ask</h2>`,
       postForm("/chat", joinHtml([
         html`<label>Message<textarea name="message" rows="3" maxlength="2000"></textarea></label>`,
-        html`<label>Your password <span class="meta">(every message — chat spends)</span><input type="password" name="token" autocomplete="current-password"></label>`,
+        html`${reauth(html`<label>Your password <span class="meta">(every message — chat spends)</span><input type="password" name="token" autocomplete="current-password"></label>`)}`,
         html`<button type="submit">Ask</button>`,
       ], "\n"), { attrs: { class: "card" } }),
     );
@@ -595,7 +595,7 @@ export function chatAckPage(chrome: Chrome, turn: ChatTurn, nonce: string): Scre
     html`<p><strong>Acknowledging charges the reserved worst case, ${chatMoney(turn.reservedMicrousd)}, to the ledger and re-enables chat on this credential.</strong></p>`,
     html`<p class="meta">Check the provider's own usage dashboard if you want the exact figure first; the ledger keeps whichever is known.</p>`,
     postForm(`/chat/ack/${turn.id}`, joinHtml([
-      html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`,
+      html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
       html`<button type="submit">Accept the charge — re-enable chat</button>`,
     ], "\n"), { hidden: { nonce } }),
     html`</div>`,

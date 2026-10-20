@@ -4,7 +4,7 @@
  * only) stop new work at 100 %. An instance operator's page; budgets change
  * with a step-up.
  */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { budgetLabel, usd, type BudgetState, type SpendItem } from "./spend.js";
 
 const projectName = (repo: string) => repo.split("/").filter(Boolean).pop() ?? repo;
@@ -59,7 +59,7 @@ export function spendHtml(view: SpendView, notice: { said?: string | null; probl
     const over = budget.spentMicrousd >= budget.limitMicrousd;
     const label = budgetLabel(budget, budget.scope === "subagent" ? nameOfSubagent(budget.key) : undefined).replace(/'s$/, "");
     return html`<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${label}</span><span class="figures">${usd(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span><span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span><span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher budget." : budget.hardStop ? "Stops API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} unpriced` : ""}</span><details><summary>Change</summary>${
-      postForm("/spend/budget", html`<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" value="${Math.round(budget.limitMicrousd / 1_000_000)}" required></label><label class="choice"><input type="checkbox" name="stop" value="1"${budget.hardStop ? html` checked` : ""}> Stop new work at 100%</label><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><button type="submit" name="action" value="save">Save</button> <button type="submit" name="action" value="remove">Remove</button>`,
+      postForm("/spend/budget", html`<label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" value="${Math.round(budget.limitMicrousd / 1_000_000)}" required></label><label class="choice"><input type="checkbox" name="stop" value="1"${budget.hardStop ? html` checked` : ""}> Stop new work at 100%</label>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}<button type="submit" name="action" value="save">Save</button> <button type="submit" name="action" value="remove">Remove</button>`,
         { attrs: { class: "budget-form" }, hidden: { target: `${budget.scope}:${budget.key}` } })}</details></div>`;
   });
   const groups = ["Everything", "Projects", "People", "Subagents"] as const;
@@ -67,7 +67,7 @@ export function spendHtml(view: SpendView, notice: { said?: string | null; probl
     const members = view.targets.filter(one => one.group === group);
     return members.length === 0 ? "" : html`<optgroup label="${group}">${members.map(one => html`<option value="${one.value}">${one.label}</option>`)}</optgroup>`;
   });
-  const add = html`<details${view.budgets.length === 0 ? html` open` : ""}><summary>Add a budget</summary>${postForm("/spend/budget", html`<label>For<select name="target" required>${options}</select></label><label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" required></label><label class="choice"><input type="checkbox" name="stop" value="1" checked> Stop new work at 100%</label><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><button type="submit" name="action" value="save">Add budget</button>`, { attrs: { class: "budget-form" } })}</details>`;
+  const add = html`<details${view.budgets.length === 0 ? html` open` : ""}><summary>Add a budget</summary>${postForm("/spend/budget", html`<label>For<select name="target" required>${options}</select></label><label>Monthly limit (US dollars)<input type="number" name="usd" min="1" step="1" required></label><label class="choice"><input type="checkbox" name="stop" value="1" checked> Stop new work at 100%</label>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}<button type="submit" name="action" value="save">Add budget</button>`, { attrs: { class: "budget-form" } })}</details>`;
   return html`<article class="spend"><div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend?month=${view.previous}">← ${view.previous}</a><strong>${view.month}</strong>${view.next === null ? "" : html`<a href="/spend?month=${view.next}">${view.next} →</a>`}<a href="/spend?month=${view.month}&amp;format=csv" download>CSV</a></p></div>${note}<p class="spend-total" data-spend-total="${total}">${usd(total)}</p><p class="meta">${parts.join(" · ")}${unpriced > 0 ? ` · ${unpriced} unpriced (no reported cost or catalogue price)` : ""} · UTC month</p><section><h2>Budgets</h2>${budgets.length === 0 ? html`<p class="meta">No budgets yet.</p>` : budgets}${add}</section><div class="spend-grid">${
     table("By project", breakdown(view.items, item => item.project), projectName)}${
     table("By person", breakdown(view.items, item => item.person), key => key)}${

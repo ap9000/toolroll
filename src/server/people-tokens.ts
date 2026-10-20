@@ -3,7 +3,7 @@ import { adapterPolicy } from "./route-policy.js";
 /** settings handlers, moved without changing their route bodies. */
 import { mintApiToken,TOKEN_DAYS } from "../api-tokens.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
-import { html, htmlString, joinHtml, postForm } from "../html.js";
+import { html, htmlString, joinHtml, postForm, reauth } from "../html.js";
 import { credentialsHtml,tokenShownHtml } from "../credentials-ui.js";
 import {
 projectName
@@ -25,7 +25,7 @@ import { logEvent } from "../log.js";
 import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAuthorizeUrl,verifyIdToken } from "../oidc.js";
 import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
-import { hashPassword,proveAccountNow } from "../scope.js";
+import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
@@ -43,7 +43,7 @@ export function sameVisitCheck(authTime: number | null, startedAt: number, now: 
   return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -115,7 +115,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
           : joinHtml(acts.map(act => html`<p class="row meta">${act.kind} ${act.subject} \u00b7 ${act.at.slice(0, 16).replace("T", " ")}</p>`), "\n"),
         approverView && one.revokedAt === null && one.name !== who.name
           ? postForm("/people/revoke", html`\
-<label>Your password<input type="password" name="token" autocomplete="current-password"></label>\
+${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}\
 <button type="submit">Remove ${one.name}'s sign-in</button>\
 <span class="meta">ends their access and everything it signed \u2014 history stays</span>`, { attrs: { class: "row" }, hidden: { name: one.name } })
           : "",
@@ -126,7 +126,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const inviteRows = invites.map(one =>
       html`<p class="row">${one.role} invite · ${one.projects === null ? "all projects" : one.projects.map(repo => projectName(repo)).join(", ")} \u00b7 from ${personChip(one.mintedBy)} \u00b7 expires ${one.expiresAt.slice(0, 16).replace("T", " ")}${one.attempts > 0 ? ` \u00b7 ${one.attempts} failed attempt${one.attempts === 1 ? "" : "s"}` : ""}\
  ${postForm("/people/invite-revoke", html`\
-<label>Password <input type="password" name="token" autocomplete="current-password" style="width:8rem"></label>\
+${reauth(html`<label>Password <input type="password" name="token" autocomplete="current-password" style="width:8rem"></label>`)}\
 <button type="submit">Cancel it</button>`, { attrs: { style: "display:inline" }, hidden: { id: one.id } })}</p>`,
     );
     const inviteCard = !approverView
@@ -214,8 +214,10 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       // A token is a credential: made with the person's password typed now (or an explicit identity-provider re-check,
       // spent by it), counted once. Never a remembered password: this act is outside every freshness allowlist.
       const typed = body.get("password") ?? "";
-      const confirmed = who.role === "approver" ? authenticateApprover(who, typed).ok
-        : who.via === "cookie" && proveAccountNow(store, who.name, typed).ok;
+      // Passwordless never covers it (docs/plans/passwordless.md: a credential act).
+      const viewerProof = who.role === "approver" || who.via !== "cookie" ? null : proveAccountNow(store, who.name, typed, { credential: true });
+      const confirmed = who.role === "approver" ? authenticateCredential(who, typed).ok
+        : viewerProof !== null && viewerProof.ok && credentialProof(viewerProof.method);
       if (!confirmed) return back("problem", "Enter your Toolroll password to make a token.");
       const minted = mintApiToken();
       const expiresAt = new Date(now.getTime() + days * 86_400_000).toISOString();
@@ -229,7 +231,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
   async function peopleProjects(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.peopleProjects);
-    if (!authenticateApprover(who, body.get("token") ?? "", null).ok) return refuse(response, who, 403, "Saving access requires your password.", "/people");
+    // Widening access (up to instance operator) is a credential act: a password typed now, Passwordless or not.
+    if (!authenticateCredential(who, body.get("token") ?? "", null).ok) return refuse(response, who, 403, "Saving access requires your password.", "/people");
     const access = readAccessForm(body);
     if (!access.ok) return refuse(response, who, 400, access.message, "/people");
     const changed = store.setAccountProjects((body.get("name") ?? "").trim(), access.projects, who.name, now);
@@ -245,7 +248,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const token = body.get("token") ?? "";
     // RAISING authority is a password ceremony (the doctrine): adding a
     // person to the instance is exactly that.
-    if (!authenticateApprover(who, token).ok) {
+    if (!authenticateCredential(who, token).ok) {
       return refuse(response, who, 403, "making an invite takes your password, typed again", "/people");
     }
     const role = body.get("role") === "approver" ? ("approver" as const) : ("viewer" as const);

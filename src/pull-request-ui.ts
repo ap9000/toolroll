@@ -1,7 +1,7 @@
 /** Settings → Projects → Pull requests: one project's pull-request setup, in plain words. Off shows what setup
  * found (or what to fix) and one Turn on; on shows where pull requests go and how they merge. Every change takes
  * the password; turning on restates the exact repository and branch that were checked. */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import type { MergeMethod, Publishing, PublishingPlan } from "./pull-request-flow.js";
 
 
@@ -21,7 +21,7 @@ const METHOD_WORDS: Record<MergeMethod, string> = { squash: "Squash and merge", 
 
 export function pullRequestSettingsHtml(view: PullRequestSettingsView): Html {
   const post = (act: string, body: Html, hidden: Record<string, string> = {}) => postForm("/settings/pull-requests", body, { attrs: { class: "card pr-settings" }, hidden: { repo: view.repo, act, ...hidden } });
-  const password = html`<label>Password<input type="password" name="password" autocomplete="current-password" required></label>`;
+  const password = html`${reauth(html`<label>Password<input type="password" name="password" autocomplete="current-password" required></label>`)}`;
   const notes = [
     view.said === null ? "" : html`<p class="notice" role="status">${view.said}</p>`,
     view.problem === null ? "" : html`<p class="problem" role="alert">${view.problem}</p>`,

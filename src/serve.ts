@@ -150,6 +150,7 @@ import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
+import { passwordlessOn } from './passwordless.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
@@ -203,7 +204,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get liveRefreshSeconds() { return liveRefreshSeconds; },
   });
 
-  const { authenticateApprover, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
+  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
     get codingProjects() { return codingProjects; },
@@ -367,7 +368,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // lifetimes, under the account's current credential generation, not revoked.
     const live = () => {
       const now = Date.now(), account = store.accountOf(who.name);
-      return sessions.holds(session) && sessionWithinLifetime(session, now)
+      return sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, now)
         && account !== null && account.revokedAt === null && account.generation === session.generation;
     };
     return { actor: who.name, local, allowlisted, live,
@@ -778,6 +779,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       appOrigins: [consoleOrigin(request.headers.host), publicOrigin?.origin ?? null, options.configDir === undefined ? null : loadConsoleUrl(process.env, options.configDir)],
       // Every signed-in page shares the workspace shell; pages showing a one-time secret opt out (forceSensitive).
       browser: who.via === 'cookie',
+      // Passwordless (read once for rendering; every act proves it again at the act): ceremony fields render as nothing.
+      passwordless: who.via === 'cookie' && passwordlessOn(store),
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
       // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
       sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider",
@@ -1377,6 +1380,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const request = requestFacts.workspaceRequest;
       const workspace: BrowserWorkspace = {
         version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive,
+        ...(requestFacts.passwordless === true ? { passwordless: true } : {}),
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),
         refreshUrl: path.pathname + path.search,
         receipt: conversation !== null && request && REQUEST_TOKEN.test(request)
@@ -1894,6 +1898,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get revisionViewOf(): ServerRuntime['revisionViewOf'] { return revisionViewOf; },
     get revisionLedgerOf(): ServerRuntime['revisionLedgerOf'] { return revisionLedgerOf; },
     get firstTasks(): ServerRuntime['firstTasks'] { return firstTasks; },
+    get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);

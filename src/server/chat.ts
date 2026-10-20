@@ -1,4 +1,4 @@
-import { freshlyApprovable, freshnessFor, spendingOnlyOnSuccess, withFreshness } from "../scope.js";
+import { freshFacts, freshlyApprovable, freshnessFor, spendingOnlyOnSuccess, withFreshness } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** chat handlers, moved without changing their route bodies. */
@@ -58,7 +58,7 @@ import { loadBotToken,redactToken } from "../telegram.js";
 import { WORK_INDEX_MAX_LIMIT,workIndexPage,type WorkIndexItem } from "../work-index.js";
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
-import { html,htmlString,postForm } from "../html.js";
+import { html,htmlString,postForm,reauth } from "../html.js";
 import { requestContext } from "./request-context.js";
 import { refuse,screen,whenTime,type Screen } from "./chrome.js";
 import { chatResultHref,chatReturnWithLatest,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
@@ -416,9 +416,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
         const gate=store.approvalGate(task,who.name,'person');
         return freshlyApprovable(store,task,scope,gate.verdict==='seal'&&!gate.protectedWork)?new Date(fresh.at):null;
       })();
-      const passwordField=!CHAT_ACTIONS[action.operation].password?'':freshSince===null
+      const passwordField=!CHAT_ACTIONS[action.operation].password?'':reauth(freshSince===null
         ?html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`
-        :html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label><p class="approval-password-note" data-approval-fresh>Your password from ${whenTime(freshSince.toISOString())} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`;
+        :html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label><p class="approval-password-note" data-approval-fresh>Your password from ${whenTime(freshSince.toISOString())} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`);
       const content=html`<section class="shared-action"><h1>${action.title}</h1>${evidenceLink}${terms}${postForm(`/chat/proposal/${id}/confirm`,html`<label class="arm"><input type="checkbox" name="confirm" value="yes" required>I confirm this exact action</label>${passwordField}<button>${CHAT_ACTIONS[action.operation].label}</button>`,{returnTo:'/chat',hidden:{nonce:review.nonce}})}</section>`;
       return sendScreen(response,200,screen('Review action',content,{chrome:chromeFor(action.repo,'chat')}));
     }catch(error){return refuse(response,who,409,error instanceof Error?error.message:'This action could not be reviewed.','/chat');}
@@ -843,7 +843,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
       }
       const opened = store.openLeadThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
       const onProgress = beginLiveTurn(opened.thread.id);
-      void runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", ...(requestId === null ? {} : { requestId }), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot })
+      // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
+      void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", ...(requestId === null ? {} : { requestId }), ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {
           // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once.
           if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteLead(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);

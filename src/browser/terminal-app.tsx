@@ -24,6 +24,8 @@ const LINK_WORDS: Record<Link, string> = {
 const boot = document.getElementById("so-term-boot");
 const CSRF = boot?.dataset["csrf"] ?? "";
 const INITIAL = boot?.dataset["session"] ?? null;
+/** Passwordless (docs/plans/passwordless.md): starting a terminal takes no password; the server proves the session. */
+const PASSWORDLESS = boot?.dataset["passwordless"] === "1";
 
 async function readState(): Promise<State | null> {
   const response = await fetch("/term/state", { headers: { accept: "application/json" }, credentials: "same-origin" });
@@ -154,14 +156,16 @@ function NewSession({ state, onStarted, onCancel }: { state: State; onStarted: (
         <input type="radio" name="program" value={one} checked={program === one} onChange={() => setProgram(one)} /><Glyph program={one} /> {PROGRAM_WORDS[one]}
       </label>)}
     </fieldset>
-    <div className="term-ceremony">
-      <p>A terminal can do anything you can on this computer. Confirm with your Toolroll password.</p>
-      <label className="term-field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
-    </div>
+    {PASSWORDLESS
+      ? <p className="term-muted">A terminal can do anything you can on this computer.</p>
+      : <div className="term-ceremony">
+        <p>A terminal can do anything you can on this computer. Confirm with your Toolroll password.</p>
+        <label className="term-field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required /></label>
+      </div>}
     {error !== null ? <p className="term-error" role="alert">{error}</p> : null}
     <div className="term-actions">
       {onCancel !== null ? <button type="button" className="term-button term-button--quiet" onClick={onCancel}>Cancel</button> : null}
-      <button type="submit" className="term-button" disabled={busy || password === "" || repo === ""}>{busy ? "Starting…" : "Start"}</button>
+      <button type="submit" className="term-button" disabled={busy || (!PASSWORDLESS && password === "") || repo === ""}>{busy ? "Starting…" : "Start"}</button>
     </div>
   </form>;
 }

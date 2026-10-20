@@ -16,11 +16,12 @@ import { saveScript } from './flow-scripts.js';
 import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, FlowFileError, importFlow, parseFlowFile, planFlowImport, type FetchLike } from './flow-share.js';
 import { describeStandingOrder } from './flow-schedule.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
-import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo } from './flow-triggers.js';
+import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo, rawTakesDeliveries } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
 import { prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
 import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
+import { proveCredential } from './scope.js';
 import { projectName } from './project.js';
 import type { FlowRow, Store } from './store.js';
 
@@ -415,7 +416,11 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       const zone = definition.stages.find(one => one.id === (config.zone ?? definition.start))?.title ?? 'the first zone';
       return preview(flow.repo, `Add a trigger to ${flow.name}`, [words, `Cards start in ${zone}.`, 'Work a card starts still waits for your usual approvals.'], { flowId: flow.id, trigger: config });
     }
-    const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir);
+    // A trigger that takes deliveries mints an address: a credential act, a password typed for this command (never the
+    // remembered login under Passwordless) (docs/plans/passwordless.md).
+    const ingress = rawTakesDeliveries(input.value);
+    if (ingress && !proveCredential(store, acting.name, acting.token).ok) return refuse(flow.repo, 'unauthenticated', 'Making a webhook address takes your password, typed: pass --token.');
+    const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir, ingress ? { ingress: 'proved' } : {});
     if (!made.ok) return refuse(flow.repo, 'invalid-trigger', made.message);
     await prepareUnattendedCandidates(store, flow.id);
     record(flow.repo, 'accepted', `flow #${flow.id} trigger #${made.id}`);

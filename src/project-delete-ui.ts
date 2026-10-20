@@ -4,7 +4,7 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
 
 
@@ -45,7 +45,7 @@ function liveViewHtml(view: ProjectSettingsView): Html | "" {
   const change = !live.canChange ? html`<p class="meta">An approver for this project can change this.</p>`
     : live.commands
       ? postForm("/settings/project/live-view", html`<button type="submit">Hide commands</button><p class="meta">From the next run.</p>`, { hidden: { repo: view.repo, act: "off" } })
-      : postForm("/settings/project/live-view", html`<p class="meta">Output can include secrets the filter misses. Turn this on only where you're happy for anyone who can see this project to read it. From the next run.</p><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Show commands</button>`, { hidden: { repo: view.repo, act: "on", nonce: live.nonce ?? "" } });
+      : postForm("/settings/project/live-view", html`<p class="meta">Output can include secrets the filter misses. Turn this on only where you're happy for anyone who can see this project to read it. From the next run.</p>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button type="submit">Show commands</button>`, { hidden: { repo: view.repo, act: "on", nonce: live.nonce ?? "" } });
   return html`<section class="build-access live-view" aria-labelledby="live-view-title" data-live-view-setting="${live.commands ? "commands" : "base"}"><h2 id="live-view-title">Live view</h2>${said}${change}</section>`;
 }
 
@@ -114,5 +114,5 @@ export function projectDeleteConfirmHtml(view: ProjectSettingsView, problem: str
     "Its budgets, settings and knowledge",
   ];
   return html`<section class="project-delete">${problem === null ? "" : html`<p class="problem" role="alert">${problem}</p>`}<p>This removes:</p><ul class="removes">${items.map(one => html`<li>${one}</li>`)}</ul><p>The repository at <span class="path">${view.repo}</span> and its own branches stay. The ledger keeps its history. There's no undo.</p>${
-    postForm("/settings/project/delete", html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label><div class="actions"><button type="submit" class="danger">Delete project</button><a href="/settings/project?repo=${encodeURIComponent(view.repo)}">Cancel</a></div>`, { hidden: { repo: view.repo, name: view.name, step: "delete" } })}</section>`;
+    postForm("/settings/project/delete", html`${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}<div class="actions"><button type="submit" class="danger">Delete project</button><a href="/settings/project?repo=${encodeURIComponent(view.repo)}">Cancel</a></div>`, { hidden: { repo: view.repo, name: view.name, step: "delete" } })}</section>`;
 }

@@ -144,7 +144,9 @@ type Hits = Record<string, Record<string, number>>;
 /** Nodes that change only types or grouping: what flows through them, and who owns it, is unchanged. */
 const WRAPPERS = ["ChainExpression", "ParenthesizedExpression", "TSNonNullExpression", "TSAsExpression", "TSSatisfiesExpression", "TSTypeAssertion"];
 const FACT_NAMES = new Set(["passwordAt", "ssoReauthAt", "ssoNowAt", "freshFloor"]);
-const WATCHED_CALLS = new Set(["authenticateAccount", "authenticateApprover", "checkApproverPassword", "proveAccountNow", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone"]);
+const WATCHED_CALLS = new Set(["authenticateAccount", "authenticateApprover", "checkApproverPassword", "proveAccountNow",
+  // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading are watched too.
+  "authenticateCredential", "credentialApprover", "proveCredential", "passwordlessSessionFor", "consumeSsoNow", "freshnessFor", "ssoNowAvailable", "withFreshness", "spendingOnlyOnSuccess", "spendingOnlyIfDone"]);
 type Node = { type?: string; [key: string]: unknown };
 const each = (node: unknown, visit: (one: Node) => void): void => {
   if (node === null || typeof node !== "object") return;
@@ -352,11 +354,15 @@ describe("where freshness may be honoured", () => {
     expect(hits["spendingOnlyIfDone()"]).toBeUndefined();
     // Every approver step-up goes through authenticateApprover (scope.ts, or the console guard's wrapper of it via
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
-    expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 1 });
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 59, "src/pull-request-flow.ts": 1,
-      "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 3, "src/server/pages.ts": 3, "src/server/people-tokens.ts": 5, "src/server/settings.ts": 22,
+    expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
+    // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 57, "src/pull-request-flow.ts": 1,
+      "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
-    expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/remote.ts"]);
+    expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
+    // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
+    const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
+    expect(chatRuns).toEqual(["freshFacts.run(null,"]);
     expect((files.find(one => one.path === "src/serve.ts")!.text.match(/function freshFactsOf\(/g) ?? []).length).toBe(1);
   });
 
@@ -393,15 +399,15 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#<module>": 2,
     "src/serve.ts#createDecisionServer@1>freshFactsOf@51": 1,
     "src/server/remote.ts#<module>": 3,
-    "src/server/runtime.ts#<module>": 3
+    "src/server/runtime.ts#<module>": 3,
   },
   "approveSetup": {
     "src/control-setup.ts#approveSetup@2": 1,
     "src/server/settings.ts#<module>": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>controlAct@64><anonymous>@1": 1
+    "src/server/settings.ts#createSettingsHandlers@1>controlAct@66><anonymous>@1": 1,
   },
   "approverHash": {
-    "src/store.ts#<module>": 1
+    "src/store.ts#<module>": 1,
   },
   "authenticateAccount": {
     "src/operate.ts#<module>": 2,
@@ -411,15 +417,15 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/scope.ts#authenticateAccount@33": 1,
     "src/scope.ts#proveAccountNow@39": 1,
     "src/server/guards.ts#<module>": 2,
-    "src/server/guards.ts#createSharedGuards@1>identify@14": 1,
+    "src/server/guards.ts#createSharedGuards@1>identify@15": 1,
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/settings.ts#<module>": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@67><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@68><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>chatApprovalAct@69><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@70><anonymous>@1": 1,
     "src/tokens-cli.ts#<module>": 2,
-    "src/tokens-cli.ts#runTokensCommand@1": 1
+    "src/tokens-cli.ts#runTokensCommand@1": 1,
   },
   "authenticateApprover": {
     "src/chat-actions.ts#<module>": 2,
@@ -431,102 +437,95 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/desktop-host.ts#pairDesktopLogin@10": 3,
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@100": 1,
-    "src/operate.ts#authenticateApprover@126": 1,
+    "src/operate.ts#authenticateApprover@127": 1,
     "src/operate.ts#bridgeCommand@70": 1,
-    "src/operate.ts#budgetCommand@151": 1,
+    "src/operate.ts#budgetCommand@152": 1,
     "src/operate.ts#chatApprovalCommand@46": 1,
     "src/operate.ts#configCommand@48": 3,
     "src/operate.ts#continueTask@111": 1,
-    "src/operate.ts#coordinatorCommand@23": 2,
+    "src/operate.ts#coordinatorCommand@23": 1,
     "src/operate.ts#decideCommand@32": 1,
     "src/operate.ts#dispatch@14": 2,
     "src/operate.ts#incidentCommand@39": 1,
     "src/operate.ts#intakeCommand@52": 1,
     "src/operate.ts#leadCommand@105": 1,
-    "src/operate.ts#ledgerCommand@161": 1,
+    "src/operate.ts#ledgerCommand@162": 1,
     "src/operate.ts#modeCommand@47": 1,
-    "src/operate.ts#notificationsCommand@152": 1,
+    "src/operate.ts#notificationsCommand@153": 1,
     "src/operate.ts#onboardLogin@66": 1,
     "src/operate.ts#pauseTask@110": 1,
     "src/operate.ts#peopleCommand@45": 1,
     "src/operate.ts#planTaskCommand@37": 1,
-    "src/operate.ts#policyCommand@159": 1,
-    "src/operate.ts#projectChecksCommand@143": 1,
-    "src/operate.ts#projectConcurrencyCommand@142": 1,
-    "src/operate.ts#projectDeleteCommand@146": 1,
-    "src/operate.ts#projectDemoCommand@144": 1,
-    "src/operate.ts#projectRulesCommand@141": 1,
+    "src/operate.ts#policyCommand@160": 1,
+    "src/operate.ts#projectChecksCommand@144": 1,
+    "src/operate.ts#projectConcurrencyCommand@143": 1,
+    "src/operate.ts#projectDeleteCommand@147": 1,
+    "src/operate.ts#projectDemoCommand@145": 1,
+    "src/operate.ts#projectRulesCommand@142": 1,
     "src/operate.ts#publishCommand@71": 5,
     "src/operate.ts#regateTaskCommand@36": 1,
     "src/operate.ts#repairTaskCommand@101": 2,
     "src/operate.ts#requeueTask@35": 1,
     "src/operate.ts#resolveUpApprover@62": 3,
-    "src/operate.ts#resumeTaskCommand@139": 1,
-    "src/operate.ts#retentionCommand@153": 1,
-    "src/operate.ts#reviewSwitchCommand@158": 1,
+    "src/operate.ts#resumeTaskCommand@140": 1,
+    "src/operate.ts#retentionCommand@154": 1,
+    "src/operate.ts#reviewSwitchCommand@159": 1,
     "src/operate.ts#reviewTaskCommand@38": 1,
     "src/operate.ts#routeTaskCommand@119>edited:store.editTaskRoute(ref.id,_,clock()).authenticate@2": 1,
-    "src/operate.ts#runCommand@140": 1,
-    "src/operate.ts#runnerCommand@22": 4,
+    "src/operate.ts#runCommand@141": 1,
+    "src/operate.ts#runnerCommand@22": 2,
     "src/operate.ts#scopeTask@118": 1,
     "src/operate.ts#setupCommand@49": 1,
     "src/operate.ts#steerTask@109": 1,
-    "src/operate.ts#stopTaskCommand@138": 1,
-    "src/operate.ts#storageCommand@154>operator@1": 1,
+    "src/operate.ts#stopTaskCommand@139": 1,
+    "src/operate.ts#storageCommand@155>operator@1": 1,
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
-    "src/scope.ts#addApprover@32>store.transact(_)@1": 1,
-    "src/scope.ts#approve@44>store.transact(_)@1": 1,
-    "src/scope.ts#authenticateApprover@40": 1,
+    "src/scope.ts#approve@47>store.transact(_)@1": 1,
+    "src/scope.ts#authenticateApprover@43": 1,
     "src/serve.ts#createDecisionServer@1": 3,
     "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateApprover@220": 2,
     "src/server/chat.ts#createChatHandlers@1": 2,
     "src/server/chat.ts#createChatHandlers@1>chatAckSend@23": 1,
     "src/server/chat.ts#createChatHandlers@1>chatConfig@14": 1,
     "src/server/chat.ts#createChatHandlers@1>chatFile@22": 1,
-    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess(_,_)@5>withFreshness(chat-send,_)@1": 1,
+    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess(_,_)@6>withFreshness(chat-send,_)@1": 1,
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@11": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 2,
-    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 1,
     "src/server/guards.ts#<module>": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
-    "src/server/guards.ts#createSharedGuards@1>authenticateApprover@1": 1,
+    "src/server/guards.ts#createSharedGuards@1>authenticateApprover@2": 1,
     "src/server/pages.ts#createPagesHandlers@1": 2,
-    "src/server/pages.ts#createPagesHandlers@1>fleetRegister@22": 1,
     "src/server/pages.ts#createPagesHandlers@1>fleetRetire@23": 1,
     "src/server/pages.ts#createPagesHandlers@1>onboardConfirm@25": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2": 2,
-    "src/server/people-tokens.ts#createPeopleHandlers@2>peopleInvite@5": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>peopleInviteRevoke@6": 1,
-    "src/server/people-tokens.ts#createPeopleHandlers@2>peopleProjects@4": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>peopleRevoke@7": 1,
-    "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/runtime.ts#<module>": 2,
     "src/server/settings.ts#createSettingsHandlers@1": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>approvalSave@41": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>backupsSave@50": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>checksSave@48": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>controlAct@64><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>dataExport@51": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>discordAct@70><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>modeAct@81><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@54": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>policySave@40": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectDelete@39": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@38": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>pullRequestsSave@47": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>requestLimitsSave@42": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>retentionSave@45": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>signInSave@43": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>slackAct@65><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>spendBudget@36": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>storageAct@46><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@69><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>toolsChange@56": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@55": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>updatesAct@44><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>approvalSave@43": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>backupsSave@52": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>checksSave@50": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>controlAct@66><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>dataExport@53": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>discordAct@72><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modeAct@83><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@56": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>policySave@42": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectDelete@41": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@40": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>pullRequestsSave@49": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>requestLimitsSave@44": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>retentionSave@47": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>slackAct@67><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>spendBudget@38": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>storageAct@48><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@71><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>toolsChange@58": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@57": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>updatesAct@46><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@21><anonymous>@1": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskConfirmStopped@26": 1,
@@ -534,17 +533,23 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
     "src/server/terminals.ts#createTerminalHandlers@2>start@10": 1,
     "src/task-outcome-cli.ts#<module>": 2,
-    "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1
+    "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1,
+    // Passwordless (docs/plans/passwordless.md): reviewed new sites.
+    "src/operate.ts#credentialApprover@126": 1,
+    "src/scope.ts#proveCredential@42": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>telegramPairAct@70><anonymous>@1": 1,
   },
   "checkApproverPassword": {
     "src/server/guards.ts#<module>": 1,
-    "src/server/guards.ts#createSharedGuards@1>authenticateApprover@1": 2,
-    "src/server/runtime.ts#<module>": 2
+    "src/server/guards.ts#createSharedGuards@1>authenticateApprover@2": 2,
+    "src/server/runtime.ts#<module>": 3,
+    // Passwordless (docs/plans/passwordless.md): reviewed new sites.
+    "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 2,
   },
   "consumeSsoNow": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#proveAccountNow@39": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@51": 1
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@51": 1,
   },
   "credentialHash": {
     "src/runner.ts#authenticate@3": 1,
@@ -559,7 +564,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveApprover@148": 1,
     "src/store.ts#Store.saveApprover@148>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@231": 1,
-    "src/store.ts#Store.saveRunner@231>once(mutation,saveRunner,_)@1>transact(_)@1": 1
+    "src/store.ts#Store.saveRunner@231>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
   },
   "credential_hash": {
     "src/export.ts#<module>": 2,
@@ -574,7 +579,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.saveApprover@148>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.saveRunner@231>once(mutation,saveRunner,_)@1>transact(_)@1": 1,
     "src/store.ts#Store.signInWithSso@225>transact(_)@1": 1,
-    "src/store.ts#mergeCredentialsForV118@61": 1
+    "src/store.ts#mergeCredentialsForV118@61": 1,
   },
   "fresh": {
     "src/acp-check.ts#settleChecks@2": 4,
@@ -607,7 +612,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#keep@12": 5,
     "src/flow-send.ts#sendStep@14": 3,
     "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 5,
-    "src/flow-triggers.ts#checkTrigger@49": 3,
+    "src/flow-triggers.ts#checkTrigger@50": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@26": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@27": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
@@ -651,7 +656,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/render-people.ts#ssoStepUps@3>swap@2": 1,
     "src/server/request-context.ts#<module>": 1,
     "src/server/runtime.ts#<module>": 2,
-    "src/server/settings.ts#createSettingsHandlers@1>modelsView@87": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsView@89": 1,
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17": 3,
     "src/server/tasks.ts#createTasksHandlers@2>peekFragment@38>work@2": 11,
     "src/shared-deps.ts#pruneUnusedShared@29": 7,
@@ -669,7 +674,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/worktree.ts#WorktreePool.discardChanges@34": 4,
     "src/worktree.ts#WorktreePool.freshen@22": 4,
     "src/worktree.ts#WorktreePool.leaseNow@21": 4,
-    "src/worktree.ts#WorktreePool.prune@32": 1
+    "src/worktree.ts#WorktreePool.prune@32": 1,
   },
   "freshFacts": {
     "src/scope.ts#<module>": 1,
@@ -682,17 +687,21 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>sendScreen@116>workspace@5": 1,
     "src/server/remote.ts#<module>": 2,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13": 1,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11": 1
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11": 1,
+    // Passwordless (docs/plans/passwordless.md): reviewed new sites.
+    "src/scope.ts#passwordlessSessionFor@40": 1,
+    "src/server/chat.ts#<module>": 2,
+    "src/server/chat.ts#createChatHandlers@1>chatSend@21": 1,
   },
   "freshFloor": {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@51>floor@6": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@31": 1
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@33": 1,
   },
   "freshScope": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#freshnessFor@37": 1,
-    "src/scope.ts#withFreshness@35": 1
+    "src/scope.ts#withFreshness@35": 1,
   },
   "freshnessFor": {
     "src/chat-actions.ts#<module>": 2,
@@ -704,18 +713,18 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/task-views.ts#<module>": 2,
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>withFreshness(approve-standard,_)@10": 1
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>withFreshness(approve-standard,_)@10": 1,
   },
   "mergeAsPerson": {
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMerge@27": 1,
     "src/task-outcome-cli.ts#<module>": 2,
-    "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1
+    "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1,
   },
   "pairDesktopLogin": {
     "src/desktop-host.ts#desktopMain@14": 1,
-    "src/desktop-host.ts#pairDesktopLogin@10": 1
+    "src/desktop-host.ts#pairDesktopLogin@10": 1,
   },
   "passwordAt": {
     "src/scope.ts#<module>": 1,
@@ -727,20 +736,20 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/people-tokens.ts#createPeopleHandlers@2>loginSend@14": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>signupSend@13": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@31": 1
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@33": 1,
   },
   "proveAccountNow": {
-    "src/scope.ts#authenticateApprover@40": 1,
+    "src/scope.ts#authenticateApprover@43": 1,
     "src/scope.ts#proveAccountNow@39": 1,
     "src/server/people-tokens.ts#<module>": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/remote.ts#<module>": 2,
-    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1
+    "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).confirm@13>freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
   },
   "scryptSync": {
     "src/scope.ts#<module>": 2,
     "src/scope.ts#hashPassword@3": 1,
-    "src/scope.ts#verifyCredential@4": 1
+    "src/scope.ts#verifyCredential@4": 1,
   },
   "spendingOnlyOnSuccess": {
     "src/chat-actions.ts#<module>": 2,
@@ -750,13 +759,13 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatProposalAct@19><anonymous>@1": 1,
     "src/server/chat.ts#createChatHandlers@1>chatSend@21": 1,
     "src/server/tasks.ts#<module>": 2,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
   },
   "ssoNow": {
     "src/scope.ts#<module>": 1,
     "src/scope.ts#proveAccountNow@39": 1,
     "src/scope.ts#ssoNowAvailable@38": 1,
-    "src/serve.ts#createDecisionServer@1>freshFactsOf@51": 1
+    "src/serve.ts#createDecisionServer@1>freshFactsOf@51": 1,
   },
   "ssoNowAt": {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@51>consumeSsoNow@5": 2,
@@ -764,7 +773,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@51>ssoNow@4": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@31": 1
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@33": 1,
   },
   "ssoNowAvailable": {
     "src/chat-actions.ts#<module>": 2,
@@ -776,7 +785,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/remote.ts#<module>": 2,
     "src/server/remote.ts#createRemoteHandlers@1>oauthHttp:createOAuthHttp(_).session@11>sso.fresh:freshFacts.run(runtime.freshFactsOf(request,who),_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
   },
   "ssoReauthAt": {
     "src/scope.ts#<module>": 1,
@@ -785,7 +794,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@51>ssoReauthAt@3": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>ssoFinish@12": 1,
     "src/server/session.ts#<module>": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@31": 1
+    "src/server/settings.ts#createSettingsHandlers@1>forgetPassword@33": 1,
   },
   "verifyApproverByPassword": {
     "src/flows-cli.ts#<module>": 2,
@@ -797,14 +806,14 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#dispatch@14": 1,
     "src/operate.ts#proposalsCommand@122": 1,
     "src/operate.ts#taskAction@88>runTaskOutcomeCommand(action,rest,flags,_).operator@1": 1,
-    "src/operate.ts#verifyApproverByPassword@127": 1,
+    "src/operate.ts#verifyApproverByPassword@128": 1,
     "src/principal.ts#verifyApproverByPassword@4": 1,
     "src/server/chat.ts#<module>": 2,
-    "src/server/chat.ts#createChatHandlers@1>leadMint@15": 1
+    "src/server/chat.ts#createChatHandlers@1>leadMint@15": 1,
   },
   "verifyCredential": {
     "src/scope.ts#authenticateAccount@33": 2,
-    "src/scope.ts#verifyCredential@4": 1
+    "src/scope.ts#verifyCredential@4": 1,
   },
   "withFreshness": {
     "src/chat-actions.ts#<module>": 2,
@@ -812,14 +821,63 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/chat-actions.ts#executeSharedAction@25>act@3>store.savepoint(_)@1": 1,
     "src/scope.ts#withFreshness@35": 1,
     "src/server/chat.ts#<module>": 2,
-    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess(_,_)@5": 1,
+    "src/server/chat.ts#createChatHandlers@1>chatSend@21>opened:spendingOnlyOnSuccess(_,_)@6": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 1,
     "src/server/task-views.ts#<module>": 2,
     "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>approved:spendingOnlyOnSuccess(_,_)@11": 1
-  }
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39>approved:spendingOnlyOnSuccess(_,_)@11": 1,
+  },
+  // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
+  authenticateCredential: {
+    "src/serve.ts#createDecisionServer@1": 3,
+    "src/serve.ts#createDecisionServer@1>handlerRuntime.authenticateCredential@278": 2,
+    "src/server/flows.ts#createFlowsHandlers@1": 2,
+    "src/server/flows.ts#createFlowsHandlers@1>triggerAct@32><anonymous>@1": 2,
+    "src/server/guards.ts#createSharedGuards@1>authenticateCredential@1": 1,
+    "src/server/guards.ts#createSharedGuards@1": 2,
+    "src/server/pages.ts#createPagesHandlers@1": 2,
+    "src/server/pages.ts#createPagesHandlers@1>fleetRegister@22": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers@2": 2,
+    "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers@2>peopleProjects@4": 1,
+    "src/server/people-tokens.ts#createPeopleHandlers@2>peopleInvite@5": 1,
+    "src/server/runtime.ts#<module>": 1,
+    "src/server/settings.ts#createSettingsHandlers@1": 2,
+    "src/server/settings.ts#createSettingsHandlers@1>passwordlessSave@22": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>signInSave@45": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>slackAct@67><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>teamsAct@71><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>discordAct@72><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modeAct@83><anonymous>@1": 1,
+    // Passwordless review round 1: reviewed new sites.
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
+  },
+  credentialApprover: {
+    "src/operate.ts#runnerCommand@22": 2,
+    "src/operate.ts#coordinatorCommand@23": 1,
+    "src/operate.ts#peopleCommand@45": 1,
+    "src/operate.ts#chatApprovalCommand@46": 1,
+    "src/operate.ts#modeCommand@47": 1,
+    "src/operate.ts#bridgeCommand@70": 1,
+    "src/operate.ts#leadCommand@105": 1,
+    "src/operate.ts#credentialApprover@126": 1,
+  },
+  proveCredential: {
+    "src/scope.ts#addApprover@32>store.transact(_)@1": 1,
+    "src/scope.ts#proveCredential@42": 1,
+    // Passwordless review round 1: reviewed new sites.
+    "src/flows-cli.ts#<module>": 2,
+    "src/flows-cli.ts#runFlowsCommand@3": 1,
+  },
+  passwordlessSessionFor: {
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction@25": 1,
+    "src/scope.ts#passwordlessSessionFor@40": 1,
+    "src/server/tasks.ts#<module>": 2,
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@39": 1,
+  },
 };
 describe("the tripwire", () => {
   const sources = productionSources;

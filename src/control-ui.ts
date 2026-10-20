@@ -1,5 +1,5 @@
 /** Shared setup views over the existing project configuration and approval doors. */
-import { html, joinHtml, postForm, type Html } from "./html.js";
+import { html, joinHtml, postForm, type Html, reauth } from "./html.js";
 import type { ProviderId } from "./provider.js";
 import type { ProviderConnection } from "./provider-connection.js";
 import { ASSISTANTS, type ModelChoice } from "./setup-guide.js";
@@ -40,5 +40,5 @@ export function controlSetupHtml(data: {
 export function setupPreviewHtml(inputs: SetupInputs, fields: Record<string, string>): Html {
   const { csrf: _csrf, ...rest } = fields;
   return html`<h1>Approve project setup</h1><div class="card"><p>${fields.repo ?? ""}</p><p><strong>Builder:</strong> ${inputs.provider} · ${inputs.model}</p><p><strong>Preparation:</strong></p><pre class="recap">${inputs.command || "No preparation command"}</pre><p>Preparation timeout: ${inputs.seconds} seconds.</p><p>The builder default applies to new tasks. Preparation applies to subsequent runs, including already approved tasks. Existing signed task settings and verification rules remain in force.</p>${
-    postForm("/control/setup-approve", html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><button>Approve project setup</button>`, { hidden: { ...rest, ...inputs } })}</div>`;
+    postForm("/control/setup-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Approve project setup</button>`, { hidden: { ...rest, ...inputs } })}</div>`;
 }

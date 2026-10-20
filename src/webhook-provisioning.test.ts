@@ -46,7 +46,7 @@ const standard = (secret: string, id: string, body: string, now = T0) => {
 const githubStyle = (secret: string, body: string) => ({ "x-hub-signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` });
 const sentry = (secret: string, body: string) => ({ "sentry-hook-signature": createHmac("sha256", secret).update(body).digest("hex") });
 const add = (settings: Record<string, unknown>) => {
-  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", ...settings }, "alex", T0, dir);
+  const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", ...settings }, "alex", T0, dir, { ingress: "proved" });
   if (!made.ok) throw new Error(made.message);
   return { id: made.id, token: tokenOf(made.reveal!.path), secret: made.reveal!.secret };
 };
@@ -116,11 +116,11 @@ describe("provisioning", () => {
   });
 
   test("settings a sender doesn't read are refused, not kept", () => {
-    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry", titleField: "data.title" }, "alex", T0, dir)).toMatchObject({ ok: false, message: expect.stringContaining("titleField") });
-    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", project: "web" }, "alex", T0, dir)).toMatchObject({ ok: false, message: expect.stringContaining("project") });
-    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry", team: "acme" }, "alex", T0, dir)).toMatchObject({ ok: false, message: expect.stringContaining("team") });
-    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "fax" }, "alex", T0, dir)).toMatchObject({ ok: false });
-    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", idField: "data..id" }, "alex", T0, dir)).toMatchObject({ ok: false, message: expect.stringContaining("dot-path") });
+    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry", titleField: "data.title" }, "alex", T0, dir, { ingress: "proved" })).toMatchObject({ ok: false, message: expect.stringContaining("titleField") });
+    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "standard", project: "web" }, "alex", T0, dir, { ingress: "proved" })).toMatchObject({ ok: false, message: expect.stringContaining("project") });
+    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "sentry", team: "acme" }, "alex", T0, dir, { ingress: "proved" })).toMatchObject({ ok: false, message: expect.stringContaining("team") });
+    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", sender: "fax" }, "alex", T0, dir, { ingress: "proved" })).toMatchObject({ ok: false });
+    expect(addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "webhook", idField: "data..id" }, "alex", T0, dir, { ingress: "proved" })).toMatchObject({ ok: false, message: expect.stringContaining("dot-path") });
   });
 });
 
@@ -224,8 +224,8 @@ test("a database from before v126: its GitHub and Linear webhooks keep authentic
   const file = join(dir, "old.db");
   const old = openStore(file);
   const oldFlow = old.createFlow({ repo: REPO, name: "Intake", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }], null)) }, T0);
-  const github = made(addFlowTriggerTo(old, old.getFlow(oldFlow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir));
-  const linear = made(addFlowTriggerTo(old, old.getFlow(oldFlow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir));
+  const github = made(addFlowTriggerTo(old, old.getFlow(oldFlow)!, { kind: "github", repo: "acme/shop", watch: "issues", delivery: "webhook", from: "anyone" }, "alex", T0, dir, { ingress: "proved" }));
+  const linear = made(addFlowTriggerTo(old, old.getFlow(oldFlow)!, { kind: "linear", team: "ENG", delivery: "webhook" }, "alex", T0, dir, { ingress: "proved" }));
   const linearSecret = "l".repeat(32);
   saveHookSecret(dir, linear.id, linearSecret); // where a pre-v126 console pasted it
   old.close();

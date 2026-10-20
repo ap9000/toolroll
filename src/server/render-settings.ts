@@ -23,7 +23,7 @@ import { redactToken,TOKEN_ENV,type TokenSource } from "../telegram.js";
 import { requestContext } from "./request-context.js";
 import { chatMoney,type Chrome,screen,type Screen,strokeIcon,when,whenTime } from "./chrome.js";
 import { taskHref } from "./http.js";
-import { html,joinHtml,postForm,type Html } from "../html.js";
+import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
 import { permissionModeChoices,qualityModeChoices } from "./render-tasks.js";
 
 /** What the lead's settings form shows beside the saved configuration: where keys come from (never the keys), the
@@ -54,7 +54,7 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
       ? html`<p>The lead uses ${data.words}.</p><p class="meta">${config.model === "default" ? "Its default model" : `Model ${config.model}`} · up to ${config.dailyTurns} turns a day · no dollar spend. Every action it proposes waits for you to confirm it.</p>`
       : html`<p>The lead uses the ${config.provider === "anthropic-api" ? "Anthropic" : "OpenRouter"} API with ${config.model}.</p><p class="meta">Up to ${chatMoney(config.weeklyCeilingMicrousd)} a week · up to ${config.dailyTurns} turns a day.</p>`;
   const forget = facts.keyFacts.filter(one => one.state === "stored").map(one =>
-    postForm("/chat/config", html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password"><button type="submit" class="secondary">Forget the stored ${one.provider} key</button>`,
+    postForm("/chat/config", html`${reauth(html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password">`)}<button type="submit" class="secondary">Forget the stored ${one.provider} key</button>`,
       { attrs: { class: "inline" }, returnTo, hidden: { "forget-key": one.provider } }));
   return joinHtml([
     html`<p><a href="/settings">Settings</a></p><h1>Lead</h1>`,
@@ -80,7 +80,7 @@ ${postForm("/settings/lead/promise/cancel", html`<button type="submit" class="se
     }<p><a class="button-link" href="/settings/lead/subagents?add=1#add" data-add-subagent>Add subagent</a></p></section>`,
     html`<details class="lead-advanced" data-lead-advanced><summary>Advanced</summary>`,
     leadConfigForm(config, facts),
-    config === null ? "" : postForm("/chat/config", html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password"><button type="submit" class="secondary">Turn the lead off</button>`,
+    config === null ? "" : postForm("/chat/config", html`${reauth(html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password">`)}<button type="submit" class="secondary">Turn the lead off</button>`,
       { attrs: { class: "inline" }, returnTo, hidden: { off: "1" } }),
     forget,
     html`</details>`,
@@ -128,7 +128,7 @@ ${models.map(model => html`<option value="${model}">${labels.get(model) ?? ""}</
           .join(" · ")})</span>\
 <input type="password" name="key" placeholder="direct API only — leave empty to keep" autocomplete="off"></label>`,
       html`<label>Your password <span class="meta">(typed again to change the provider)</span>\
-<input type="password" name="token" autocomplete="current-password"></label>`,
+${reauth(html`<input type="password" name="token" autocomplete="current-password">`)}</label>`,
       html`<button type="submit">${current === null ? "turn chat on" : "save"}</button>`,
       "",
     ], "\n"), { attrs: { class: "card" }, returnTo: data.returnTo }),
@@ -362,7 +362,7 @@ ${[
                 postForm("/push/subscribe", joinHtml([
                   "",
                   html`<input type="hidden" name="endpoint" value=""><input type="hidden" name="p256dh" value=""><input type="hidden" name="auth" value="">`,
-                  html`<label>Your password <input type="password" name="token" autocomplete="current-password"></label>`,
+                  html`${reauth(html`<label>Your password <input type="password" name="token" autocomplete="current-password"></label>`)}`,
                   html`<button type="submit" id="push-enable">Get alerts on this device</button>`,
                   html`<p class="meta" id="push-state"></p>`,
                   "",
@@ -618,6 +618,7 @@ export const SETTINGS_GROUPS: [string, [string, string, Html][]][] = [
   ]],
   ["Access and rules", [
     ["/settings/sign-in", "Sign-in", html`<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>`],
+    ["/settings/passwordless", "Passwordless", html`<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>`],
     ["/settings/sessions", "Sessions & tokens", html`<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>`],
     ["/settings/project", "Project", html`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>`],
     ["/settings/policy", "Policy", html`<path d="M9 12l2 2 4-4"/><rect x="4" y="3" width="16" height="18" rx="2"/>`],

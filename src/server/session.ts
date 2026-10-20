@@ -148,6 +148,8 @@ export class PersistentSessions extends Map<string, Session> {
     this.savedAt.set(session, Date.now());
     if (!this.db.updateWebSession({ idHash: PersistentSessions.hash(id), lastSeen: session.lastSeen, project: session.project, projectRevision: session.projectRevision, ssoAt: session.sso?.at ?? null })) super.delete(id);
   }
+  /** Whether this exact session is still saved in the database (ended from another process, it isn't): read at the act. */
+  savedNow(session: Session): boolean { const hash = this.hashOf(session); return hash !== null && this.db.webSession(hash) !== null; }
   /** Whether this cookie's session is still saved (one ended in another process is not). */
   stillSaved(id: string): boolean { return this.db.webSession(PersistentSessions.hash(id)) !== null; }
   /** A cookie from before a restart, if its session is still kept. */
