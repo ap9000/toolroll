@@ -412,3 +412,25 @@ describe("latency, on real timers and a real file", () => {
     } finally { watched.close(); other.close(); local.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("a room whose read is costly", () => {
+  test("reads once per settle window however many signals arrive, while every signal re-proves its viewers at once", () => {
+    let reads = 0, proofs = 0, valid = true;
+    const rooms = createLiveRooms<string, LiveViewer>(() => { reads += 1; return `print-${Math.floor(reads / 1000)}`; }, null, { bus, readSettleMs: 1_000 });
+    const page = new Page();
+    rooms.join("summary", { name: "alex", room: "summary", connection: new LiveConnection(response(page)), valid: () => { proofs += 1; return valid; } });
+    const joined = reads;
+    const proved = proofs;
+    for (let index = 0; index < 100; index++) bus.publish({ revision: `v1:${index}` });
+    expect(reads).toBe(joined);
+    expect(proofs - proved).toBeGreaterThanOrEqual(100);
+    vi.advanceTimersByTime(1_000);
+    expect(reads - joined).toBe(1);
+    // A viewer that stops passing hears gone at the next signal, before any read.
+    valid = false;
+    bus.publish({ revision: "v1:late" });
+    expect(page.events("gone")).toHaveLength(1);
+    expect(reads - joined).toBe(1);
+    rooms.close();
+  });
+});

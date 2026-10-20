@@ -30,6 +30,12 @@ export const chatContentShape = {
   shot: z.strictObject({ follows: z.int().nullable() }).optional(),
   task: z.string().optional(),
   run: z.int().optional(),
+  /** A notice its person's watch may hold at the final fence (cockpit §3): set at planning only for a kind a watch
+   * can hold. Absent: never held (a security alert, the digest, anything unmarked). */
+  watch: z.literal(true).optional(),
+  /** Every task (and agent) a `watch` part covers, when it covers more than one: it is held only while its person is
+   * watching every one of them. */
+  subjects: z.array(z.strictObject({ ref: z.int().nullable(), run: z.int().nullable() })).max(100).optional(),
   edit: z.string().optional(),
   phase: z.literal("armed").optional(),
   link: link.optional(),

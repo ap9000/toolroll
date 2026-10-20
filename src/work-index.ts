@@ -55,7 +55,9 @@ export type WorkIndexItem = {
   lead?: string;
 };
 /** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it. */
-export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string };
+export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string;
+  /** Only these families (by root task id): the sidebar reads its rows' own words this way. */
+  roots?: readonly string[] };
 /** How the list is grouped: the Needs you rows by their ask, then building, then the rest. */
 export type WorkIndexGroup = Ask | 'building' | 'rest';
 export type WorkIndexGroupCounts = Record<WorkIndexGroup, number>;
@@ -425,7 +427,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'needs-you' ? 'needs=1' : view === 'running' ? 'family_running=1' : view === 'completed' ? "code='complete'" : '1';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
-    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($cursorRoot=0 OR
+    SELECT * FROM ranked WHERE ${filter} AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
   ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS} FROM ranked), project_totals AS (
@@ -452,7 +454,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
-    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
@@ -479,6 +481,38 @@ export function workCountsByProject(store: Store, now: Date, access: WorkSummary
     SUM(state='done' AND family_running=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`)
     .all({ ...parameters(now, access, {}, custodyReadings(store)), $recent: new Date(now.getTime()-86_400_000).toISOString() })
     .map(row => ({ repo: s(row, 'repo'), totals: counts(row), queued: n(row, 'queued'), doneRecently: n(row, 'done_recently') }));
+}
+
+/** One row per task family the person may see (the Tasks list's own projection: current version, admission, unplaced
+ * work and the ceiling as the list applies them), with what the cockpit's states read (agent-state.ts): its code, whether
+ * it waits on a person, whether a lead took it on, and its live, unfinished and result runs. Every family, no page. */
+export type WorkStateRow = { repo: string | null; rootId: string; code: string; needs: boolean; personNeed: boolean; leadClaim: boolean;
+  liveRun: number | null; unfinished: number | null; resultRun: number | null;
+  /** The Tasks list ranks it as waiting its turn (custody confirmations from another computer included). */
+  waits: boolean;
+  /** What it needs now, as an identity: its code and the question, hold, result or stop it is about. A new one of
+   * these — or a changed plan or approval terms (its digests) — is a new thing to need a person, even on the same task. */
+  version: string;
+  /** When what it needs now began: the newest of its plan's proposal, its question, its hold, its result and its stop
+   * (each fixed once written, so an unrelated edit never moves it). Newer asks are named first. */
+  at: string;
+  /** The agent its ask is about: the live one, or the one whose question or decision it parked on. */
+  askRun: number | null;
+  /** Every task_ref of the family (its versions), for counting each of its live attempts. */
+  members: number[] };
+export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
+  const projection = registerValidators(store);
+  return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
+      code||':'||COALESCE(question_id,'')||':'||COALESCE(agent_ask,'')||':'||COALESCE(hold_id,'')||':'||COALESCE(result_id,'')||':'||COALESCE(stop_run,'')||':'||COALESCE(digest,'')||':'||COALESCE(scope_digest,'') version,
+      COALESCE(NULLIF(MAX(COALESCE(proposed_at,''),COALESCE(finished_at,''),
+        COALESCE((SELECT created_at FROM decision WHERE id=question_id),''),COALESCE((SELECT asked_at FROM agent_question WHERE id=agent_ask),''),
+        COALESCE((SELECT held_at FROM hold WHERE id=hold_id),''),COALESCE((SELECT requested_at FROM run_stop WHERE run=stop_run),'')),''),sort_at) ask_at,
+      COALESCE(live_run,(SELECT run FROM decision WHERE id=question_id),(SELECT run FROM agent_question WHERE id=agent_ask)) ask_run,
+      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked`)
+    .all(parameters(now, access, {}, custodyReadings(store)))
+    .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
+      leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
+      resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), at: String(row['ask_at'] ?? ''), askRun: row['ask_run'] == null ? null : n(row, 'ask_run'), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
 }
 
 /** Families whose headline is Ready for review, newest first: the Tasks

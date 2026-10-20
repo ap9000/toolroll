@@ -115,8 +115,11 @@ export const CONSOLE_FORMS = {
 
   demo: formContract("POST /chat/demo/ask, /chat/demo/<id>/approve|change|revise|complete", ["message", "note"]),
   updatesDismiss: formContract("POST /settings/updates/dismiss", ["version", "quiet", "return"]),
+  forgetPassword: formContract("POST /session/forget-password", ["return"]),
+  runReveal: formContract("POST /r/<run>/reveal", ["return"]),
   updatesChecks: formContract("POST /settings/updates/checks", ["check"]),
   code: formContract("POST /code, /code/start, /code/<session>/<act>, /code/<anything else>", ["repo", "password", "title", "model", "prompt", "requestId", "base", "candidate", "goal", "acceptance", "visual", "decision", "answers"], { prefixes: ["question:"] }),
+  term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password"]),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo"]),
@@ -209,7 +212,7 @@ export const CONSOLE_FORMS = {
   resolveIncident: formContract("POST /i/<id>/resolve", ["return"]),
 
   // A task's verbs (/t/<task>/<verb>), one body each.
-  taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after"]),
+  taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after", "request"]),
   taskReply: formContract("POST /t/<task>/reply", ["question", "answer"]),
   taskHold: formContract("POST /t/<task>/hold", ["reason"]),
   taskBlock: formContract("POST /t/<task>/block|unblock", ["on"]),
@@ -229,7 +232,7 @@ export const CONSOLE_FORMS = {
   taskStop: formContract("POST /t/<task>/stop", ["run", "return"]),
   // Pause, or Pause and steer when a note rides along, or Resume (mode=resume): the exact run shown, and the page's own
   // request id.
-  taskPause: formContract("POST /t/<task>/pause", ["run", "request", "note", "mode", "return"]),
+  taskPause: formContract("POST /t/<task>/pause", ["run", "request", "note", "mode", "return", "key"]),
   taskResume: formContract("POST /t/<task>/resume|resume-arm", ["run", "token", "nonce", "return"]),
 } as const;
 

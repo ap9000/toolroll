@@ -2,7 +2,8 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { BrowserCrewItem, BrowserMessage, BrowserWorkspace } from "../browser-workspace.js";
+import type { BrowserCrewItem, BrowserMessage, BrowserProjectState, BrowserRailTask, BrowserWorkspace } from "../browser-workspace.js";
+import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-words.js";
 import {
   Alert, Artifact, ArtifactContent, Badge, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
@@ -27,6 +28,7 @@ import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
 import { useLiveRoom } from "./live.js";
+import { chimeOn, createChime, setChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import "./workspace.css";
 
@@ -377,11 +379,168 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   </section>;
 }
 
+/** Each state's glyph in the console's one palette. */
+const STATE_GLYPH: Record<DisplayState, GlyphKind> = {
+  "needs-you": "decide", failed: "failed", stuck: "unblock", paused: "idle", working: "building", waiting: "idle", done: "done", idle: "idle" };
+
+/** A summary snapshot as the summary room sends it (its `at`), read strictly: anything malformed is no snapshot. */
+export function readProjectStates(raw: unknown): BrowserProjectState[] | null {
+  if (typeof raw !== "string") return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (!Array.isArray(parsed)) return null;
+  const text = (value: unknown, max: number) => typeof value === "string" && value.length <= max;
+  const states: BrowserProjectState[] = [];
+  for (const one of parsed) {
+    if (one === null || typeof one !== "object") return null;
+    const { path, name, href, state, counts, tasks, more, others, asks } = one as Record<string, unknown>;
+    if (!Array.isArray(asks)) return null;
+    const asked: BrowserProjectState["asks"] = [];
+    for (const ask of asks) {
+      if (ask === null || typeof ask !== "object") return null;
+      const a = ask as Record<string, unknown>;
+      if (typeof a["key"] !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(a["key"]) || !(a["task"] === null || text(a["task"], 400))
+        || !(a["run"] === null || (typeof a["run"] === "number" && Number.isInteger(a["run"]) && a["run"] > 0)) || !text(a["at"], 64)) return null;
+      asked.push({ key: a["key"], task: a["task"] as string | null, run: a["run"] as number | null, at: a["at"] as string });
+    }
+    if (others !== undefined && others !== true) return null;
+    if (!(path === null || text(path, 4096)) || !text(name, 400) || !text(href, 8192) || !(href as string).startsWith("/")
+      || !DISPLAY_STATES.includes(state as DisplayState) || counts === null || typeof counts !== "object"
+      || !Array.isArray(tasks) || typeof more !== "number" || !Number.isInteger(more) || more < 0) return null;
+    const read = Object.fromEntries(DISPLAY_STATES.map(key => [key, (counts as Record<string, unknown>)[key]]));
+    if (Object.values(read).some(value => typeof value !== "number" || !Number.isInteger(value) || value < 0)) return null;
+    const rail: BrowserRailTask[] = [];
+    for (const task of tasks) {
+      if (task === null || typeof task !== "object") return null;
+      const t = task as Record<string, unknown>;
+      if (!text(t["id"], 400) || !text(t["title"], 2000) || !text(t["href"], 8192) || !(t["href"] as string).startsWith("/")
+        || !DISPLAY_STATES.includes(t["state"] as DisplayState) || !text(t["line"], 2000)) return null;
+      rail.push({ id: t["id"] as string, title: t["title"] as string, href: t["href"] as string, state: t["state"] as DisplayState, line: t["line"] as string });
+    }
+    states.push({ path: path as string | null, name: name as string, href: href as string, state: state as DisplayState, counts: read as BrowserProjectState["counts"], tasks: rail, more, asks: asked,
+      ...(others === true ? { others: true as const } : {}) });
+  }
+  return states;
+}
+
+/** How long a part waits after the summary room's `gone` before it joins again. */
+export const SUMMARY_REJOIN_MS = 2_000;
+/** The page's one summary snapshot, shared by every part that shows it (the rail, the phone chip, the sheet): the
+ * page's own read until the summary room says more; `gone` or a lost stream clears it until the next read. */
+const summary = { states: null as BrowserProjectState[] | null, from: null as BrowserWorkspace["projectStates"] | null, listeners: new Set<() => void>() };
+function setSummary(states: BrowserProjectState[] | null): void {
+  summary.states = states;
+  for (const listener of [...summary.listeners]) listener();
+}
+
+/** The page's project states, kept current by the summary room; none on a sensitive page. Reading it never watches
+ * or sees anything. */
+export function useProjectStates(workspace: BrowserWorkspace): BrowserProjectState[] | null {
+  const off = workspace.sensitive || workspace.projectStates === undefined;
+  // A new page read is the newest word: it replaces whatever the room said before it.
+  if (!off && summary.from !== workspace.projectStates) { summary.from = workspace.projectStates; summary.states = workspace.projectStates ?? null; }
+  const [, render] = useState(0);
+  // After `gone` (the reader's scope moved, or the server said so), this part leaves the room and asks again shortly:
+  // the new join is admitted for the scope as it is now, and its first word is the snapshot for it.
+  const [away, setAway] = useState(false);
+  useEffect(() => {
+    const listener = () => render(n => n + 1);
+    summary.listeners.add(listener);
+    return () => { summary.listeners.delete(listener); };
+  }, []);
+  useEffect(() => {
+    if (!away) return;
+    const back = window.setTimeout(() => setAway(false), SUMMARY_REJOIN_MS);
+    return () => window.clearTimeout(back);
+  }, [away]);
+  useLiveRoom(off || away ? null : "summary", (event, data) => {
+    if (event === "gone") { setSummary(null); setAway(true); return; }
+    if (event === "lost") { setSummary(null); return; }
+    if (event !== "change") return;
+    const next = readProjectStates(data["at"]);
+    if (next !== null) setSummary(next);
+  }, true);
+  return off ? null : summary.states;
+}
+
+/** What waits on this person across every project in the snapshot. */
+export function needsYouTotal(states: readonly BrowserProjectState[] | null): number {
+  return states?.reduce((sum, one) => sum + one.counts["needs-you"], 0) ?? 0;
+}
+/** The tab's own marks (cockpit §3): "(2) " before its title and a dot on its icon while something needs this person.
+ * Driven by the summary, which a hidden tab keeps; the page's own title is never otherwise changed. */
+export function titleWithCount(title: string, count: number): string {
+  const bare = title.replace(/^\(\d+\+?\) /, "");
+  return count > 0 ? `(${count > 99 ? "99+" : count}) ${bare}` : bare;
+}
+/** This browser's chime setting (off until turned on here). */
+function ChimeSwitch() {
+  const [on, setOn] = useState(chimeOn);
+  return <label className="so-chime-switch"><input type="checkbox" checked={on} onChange={event => { setChime(event.target.checked); setOn(event.target.checked); }} />
+    Chime when something needs me</label>;
+}
+
+function AttentionMarks({ workspace }: { workspace: BrowserWorkspace }) {
+  const states = useProjectStates(workspace);
+  const count = needsYouTotal(states);
+  // The chime hears every snapshot this page sees (it plays only when this browser turned it on).
+  const chime = useRef<ReturnType<typeof createChime> | null>(null);
+  useEffect(() => {
+    // What this tab shows: a task's page, or one agent opened on the Agents board.
+    chime.current = createChime(undefined, () => {
+      const at = new URL(window.location.href);
+      const task = at.pathname.startsWith("/t/") ? decodeURIComponent(at.pathname.slice(3).split("/")[0] ?? "") || null : null;
+      const run = at.pathname === "/agents" && /^[1-9][0-9]{0,9}$/.test(at.searchParams.get("run") ?? "") ? Number(at.searchParams.get("run")) : null;
+      return { visible: document.visibilityState === "visible", task, run };
+    });
+    return () => { chime.current?.close(); chime.current = null; };
+  }, []);
+  useEffect(() => { if (states !== null) chime.current?.see(states); }, [states]);
+  useEffect(() => {
+    document.title = titleWithCount(document.title, count);
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"][type="image/svg+xml"]');
+    if (icon !== null) icon.href = count > 0 ? "/icon-attention.svg" : "/icon.svg";
+  }, [count, workspace.title]);
+  return null;
+}
+
+/** A project's counts in words, strongest first, leaving out what is zero (idle is never counted). */
+export function projectCountWords(state: BrowserProjectState): string {
+  return DISPLAY_STATES.filter(key => key !== "idle" && state.counts[key] > 0)
+    .map(key => `${state.counts[key]} ${key === "needs-you" ? (state.counts[key] === 1 ? "needs you" : "need you") : STATE_WORDS[key].toLowerCase()}`).join(" · ");
+}
+
+/** The sidebar's projects, each with its state and counts; under the open one, its tasks with something live, asking,
+ * failed or unread, and how many more. Everything here is the summary snapshot, so it moves with it. */
+export function ProjectStates({ states, current }: { states: BrowserProjectState[]; current: string | null }) {
+  return <nav aria-label="Projects now" className="so-project-states" data-project-states>
+    {states.map(state => {
+      const words = projectCountWords(state);
+      const open = state.path !== null && state.path === current;
+      return <div key={state.others ? "(others)" : state.path ?? "(none)"} className="so-project-state" data-project-state={state.state} data-project-others={state.others ? "" : undefined}>
+        <a href={state.href} aria-current={open ? "true" : undefined} title={words === "" ? STATE_WORDS.idle : words}>
+          <StatusGlyph kind={STATE_GLYPH[state.state]} /><span className="so-project-state-name">{state.name}</span>
+          {words !== "" && <span className="so-project-state-counts">{words}</span>}
+          <span className="so-sr-only">{STATE_WORDS[state.state]}</span>
+        </a>
+        {(open || (state.path === null && !state.others)) && state.tasks.length > 0 && <ul className="so-project-tasks">
+          {state.tasks.map(task => <li key={task.id} data-rail-task={task.state}>
+            <a href={task.href} title={task.title}><StatusGlyph kind={STATE_GLYPH[task.state]} /><span className="so-project-task-title">{task.title}</span>
+              <span className="so-project-task-line">{task.line}</span></a>
+          </li>)}
+          {state.more > 0 && <li><a className="so-project-tasks-more" href={state.href}>{state.more} more</a></li>}
+        </ul>}
+      </div>;
+    })}
+  </nav>;
+}
+
 function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
   const projectId = useId();
   const currentProject = workspace.projects.find(project => new URL(workspace.path, window.location.origin).searchParams.get("project") === project.path
     || new URL(workspace.path, window.location.origin).searchParams.get("repo") === project.path
     || workspace.crew.find(task => task.id === workspace.focus?.id)?.project === project.path);
+  const states = useProjectStates(workspace);
   return <div className="so-navigation-content">
     <a href="/chat" className="so-wordmark"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>
     <a href="/tasks/new" className="so-new-task"><Icon name="plus" />New task</a>
@@ -397,6 +556,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "agents", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
         {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
     })}</nav>
+    {states !== null && states.length > 0 && <ProjectStates states={states} current={currentProject?.path ?? null} />}
     {currentProject && <div className="so-project-links">
       <a className="so-project-knowledge" href={`/chat?project=${encodeURIComponent(currentProject.path)}`}>Project chat</a>
       <a className="so-project-knowledge" href={currentProject.knowledgeHref}>Project knowledge</a>
@@ -407,6 +567,13 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
         <span className="so-recent-chat-kind" aria-hidden="true">{chat.kind === "task" ? "Task" : "Project"}</span><span className="so-recent-chat-title">{chat.title}</span>
       </a>)}
     </nav>}
+    {workspace.usage && !workspace.sensitive && <a className="so-usage-chip" href={workspace.usage.href} title={workspace.usage.title}
+      data-usage-chip={workspace.usage.tone} data-usage-stale={workspace.usage.stale ? "" : undefined}>{workspace.usage.text}</a>}
+    {workspace.fresh && !workspace.sensitive && <PostForm action={workspace.fresh.forget} className="so-fresh-chip" data-fresh-chip>
+      <input type="hidden" name="return" value={workspace.path} />
+      <span>Password remembered · {workspace.fresh.minutes} min</span><button type="submit">Forget</button>
+    </PostForm>}
+    {!workspace.sensitive && workspace.projectStates !== undefined && <ChimeSwitch />}
     <FleetStatus workspace={workspace} />
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
       <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[901px]:h-11 max-[901px]:min-h-11">Sign out</ViewButton></PostForm></div>
@@ -471,7 +638,11 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
 }
 
 function PhoneNavigation({ workspace }: { workspace: BrowserWorkspace }) {
+  // On a phone the rail is a sheet: a header chip says how many need you and opens it.
+  const states = useProjectStates(workspace);
+  const needing = needsYouTotal(states);
   return <Dialog><DialogTrigger asChild><ViewButton variant="ghost" size="icon" className="so-mobile-menu min-[901px]:hidden max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Open navigation"><Icon name="menu" /></ViewButton></DialogTrigger>
+    {needing > 0 && <DialogTrigger asChild><button type="button" className="so-needs-chip min-[901px]:hidden" data-needs-chip>{needing} need{needing === 1 ? "s" : ""} you</button></DialogTrigger>}
     <DialogContent className="so-navigation-dialog"><DialogTitle className="so-sr-only">Workspace navigation</DialogTitle><DialogDescription className="so-sr-only">Choose a project or a workspace page.</DialogDescription>
       <DialogClose asChild><ViewButton variant="ghost" size="icon" className="so-navigation-close max-[901px]:size-11 max-[901px]:min-h-11" aria-label="Close navigation"><Icon name="close" /></ViewButton></DialogClose><Navigation workspace={workspace} />
     </DialogContent></Dialog>;
@@ -735,7 +906,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
-  return <FormToken.Provider value={workspace.csrf}><Toaster /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
     <div className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>

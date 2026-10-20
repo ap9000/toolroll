@@ -53,7 +53,7 @@ test("a source that got the password wrong five times is locked; the owner signs
   // The owner, from a source that hasn't failed: a right password works, from another address and from this computer.
   expect((await signIn("alex", password, "198.51.100.7")).status).toBe(303);
   expect((await signIn("alex", password)).status).toBe(303);
-  expect(authenticateApprover(store, "alex", password)).toEqual({ ok: true });
+  expect(authenticateApprover(store, "alex", password)).toMatchObject({ ok: true });
   // The attacker's lock stands, on every road from that source: a request's password bearer too.
   expect((await signIn("alex", password, "203.0.113.5")).status).toBe(429);
   const bearer = await fetch(`${base}/work`, { headers: { authorization: `Bearer alex:${password}`, "x-forwarded-for": "203.0.113.5", "x-forwarded-proto": "https" }, redirect: "manual" });

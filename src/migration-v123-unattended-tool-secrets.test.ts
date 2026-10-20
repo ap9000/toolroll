@@ -41,9 +41,9 @@ test.each([122, -122])("v%s: unattended flows and tool secrets are added; saved 
 
   expect(updateSafeSchema(122)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(123);
-  expect(SCHEMA_VERSION).toBe(126);
+  expect(SCHEMA_VERSION).toBe(127);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(126);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(127);
   for (const table of V123_TABLES) expect(store.handle.prepare("SELECT count(*) AS n FROM " + table).get()?.["n"]).toBe(0);
   for (const index of V123_INDEXES) expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)).toBeDefined();
   for (const [table, columns] of Object.entries(V123_ADDED_COLUMNS)) expect(columnsOf(store, table)).toEqual(expect.arrayContaining(Object.keys(columns)));
@@ -69,7 +69,7 @@ test.each([122, -122])("v%s: unattended flows and tool secrets are added; saved 
   } finally { after.close(); }
   // Opening again changes nothing (the file is current), and the new columns and tables take writes.
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(126);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(127);
   expect(store.recordFlowTriggerEvent(trigger, "slot-2", null, null, now, null, true, "d".repeat(64))).toBe(true);
   expect(store.handle.prepare("SELECT on_time, ran_script FROM flow_trigger_event WHERE trigger = ? AND key = 'slot-2'").get(trigger)).toEqual({ on_time: 1, ran_script: "d".repeat(64) });
   expect(store.swapToolSecretKeyDigest(null, "e".repeat(64), now)).toBe(true);

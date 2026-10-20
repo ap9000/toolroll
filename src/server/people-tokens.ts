@@ -25,10 +25,23 @@ import { logEvent } from "../log.js";
 import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAuthorizeUrl,verifyIdToken } from "../oidc.js";
 import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
-import { hashPassword } from "../scope.js";
+import { hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+
+/** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
+ * running ahead). auth_time is in whole seconds, so a check made in the visit's own second is floored below startedAt:
+ * the one allowance backward is that rounding, never a check made before the visit began. */
+const AUTH_TIME_SKEW_MS = 60_000;
+/** When the provider checked the person, in ms, if its auth_time is a check made for this visit: present, no earlier
+ * than the second the visit began, and not in the future beyond the skew. Null otherwise. */
+export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {
+  if (authTime === null || !Number.isFinite(authTime)) return null;
+  const at = authTime * 1000;
+  if (at < Math.floor(startedAt / 1000) * 1000 || at > now + AUTH_TIME_SKEW_MS) return null;
+  return Math.min(Math.max(at, startedAt), now);
+}
 export function createPeopleHandlers(runtime: ServerRuntime) {
   const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
@@ -198,10 +211,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       if (name === "" || name.length > 60) return back("problem", "Name the token, in 60 characters or fewer.");
       if (!(TOKEN_DAYS as readonly number[]).includes(days)) return back("problem", "Choose when it expires.");
       if (access === "act" && who.role !== "approver") return back("problem", "A viewer's token can only read.");
-      // A token is a credential: made with the person's password (or their identity provider's check from moments ago), counted once.
+      // A token is a credential: made with the person's password typed now (or an explicit identity-provider re-check,
+      // spent by it), counted once. Never a remembered password: this act is outside every freshness allowlist.
       const typed = body.get("password") ?? "";
       const confirmed = who.role === "approver" ? authenticateApprover(who, typed).ok
-        : typed === "" ? requestContext.getStore()?.sso?.fresh === true : authenticateAccount(store, who.name, typed).ok;
+        : who.via === "cookie" && proveAccountNow(store, who.name, typed).ok;
       if (!confirmed) return back("problem", "Enter your Toolroll password to make a token.");
       const minted = mintApiToken();
       const expiresAt = new Date(now.getTime() + days * 86_400_000).toISOString();
@@ -346,7 +360,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
     // Bounded: anyone may start a sign-in, so the oldest waiting ones give way.
     while (ssoVisits.size >= 1000) ssoVisits.delete(ssoVisits.keys().next().value!);
-    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000 });
+    const asker = intent === "sign-in" || who?.via !== "cookie" ? null : sessions.hashOf(who.session);
+    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000, startedAt: Date.now(),
+      session: asker === null || who?.via !== "cookie" ? null : { hash: asker, generation: who.session.generation } });
     response.writeHead(302, { location: oidcAuthorizeUrl(found.provider, settings, visit, redirectUri, intent === "reauth"), "cache-control": "no-store", "referrer-policy": "no-referrer",
       "set-cookie": `${SIGN_IN_COOKIE}=${visit.state}; Path=${SSO_CALLBACK}; Max-Age=900; HttpOnly; SameSite=Lax${origin.startsWith("https:") ? "; Secure" : ""}` });
     response.end();
@@ -370,16 +386,23 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const identity = { issuer: handoff.issuer, subject: claims.sub, email: claims.email, label: settings.label };
     if (handoff.intent === "link" || handoff.intent === "reauth") {
       if (who?.via !== "cookie") return redirect(response, loginHref(handoff.returnTo));
+      // Only the session that asked: same kept session, same credential generation.
+      if (handoff.session === null || sessions.hashOf(who.session) !== handoff.session.hash || who.session.generation !== handoff.session.generation) {
+        return page(response, 403, loginPage(`That ${settings.label} check was started by another sign-in. Start it again from this page.`, handoff.returnTo, ssoOffer()));
+      }
       if (handoff.intent === "link") {
         const linked = store.linkSsoIdentity(who.name, identity, clock());
         if (!linked.ok) return redirect(response, `/settings/sign-in?problem=${encodeURIComponent(`That ${settings.label} account signs in as someone else here.`)}`);
-        who.session.sso = { at: Date.now() };
+        who.session.sso = { at: handoff.checkedAt ?? 0 };
         sessions.persist(who.session);
         return redirect(response, `/settings/sign-in?said=${encodeURIComponent(`This account signs in with ${settings.label} now.`)}`);
       }
       // A step-up: the provider checked the same person again.
       if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginPage(`That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
-      who.session.sso = { at: Date.now() };
+      who.session.sso = { at: handoff.checkedAt ?? 0 };
+      // An explicit re-check on request: the one identity-provider event that stands in for a password typed now (for ONE
+      // step-up, spent by it) and may start a freshness window (B2). Kept in memory only: a restart forgets it.
+      if (handoff.checkedAt !== null) { who.session.ssoReauthAt = handoff.checkedAt; who.session.ssoNowAt = handoff.checkedAt; }
       sessions.persist(who.session);
       recordSignIn(who.name, "confirmed", settings.label);
       return redirect(response, handoff.returnTo);
@@ -395,7 +418,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1, sso: { at: Date.now() } });
+      project: defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
     response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
     return redirect(response, handoff.returnTo);
@@ -444,6 +467,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       lastSeen: Date.now(),
       project: defaultProject,
       projectRevision: 1,
+      // A password typed on this computer starts this session's freshness window (cockpit B2); from anywhere else, never.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/");
@@ -495,6 +520,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       lastSeen: Date.now(),
       project: defaultProject,
       projectRevision: 1,
+      // A password typed to sign in on this computer starts this session's freshness window (cockpit B2); from anywhere
+      // else (a phone, a proxy) it signs in and proves nothing more.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
     response.setHeader(
       "Set-Cookie",
@@ -638,12 +666,15 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return page(response, 403, loginPage("This sign-in is not allowed."));
     const verified = await verifyIdToken(token.idToken, held.provider, settings, held.visit.nonce, clock(), fetcher);
     if (!verified.ok) { logEvent("warn", "sso.refused", { reason: verified.said }); return back(verified.said); }
-    // A step-up must be a check made just now, not a remembered one.
-    if (held.intent === "reauth" && verified.claims.authTime !== null && Date.now() / 1000 - verified.claims.authTime > 300) return back(`${settings.label} didn't check you again. Try once more.`);
+    // When the provider checked the person (its auth_time), proved against this visit (cockpit B2, N18): no earlier than
+    // this visit began, and not in the future beyond a minute of clock skew. A step-up must carry one that holds — a
+    // check made for this request, never a remembered one; any other sign-in without one signs in, but is never fresh.
+    const checkedAt = sameVisitCheck(verified.claims.authTime, held.startedAt, Date.now());
+    if (held.intent === "reauth" && checkedAt === null) return back(`${settings.label} didn't check you again. Try once more.`);
     const key = randomBytes(24).toString("base64url");
     for (const [one, value] of ssoHandoffs) if (value.expires < Date.now()) ssoHandoffs.delete(one);
     while (ssoHandoffs.size >= 1000) ssoHandoffs.delete(ssoHandoffs.keys().next().value!);
-    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000 });
+    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000, checkedAt, session: held.session });
     const to = `/login/sso/finish?h=${key}`;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
       // The hand-off key is this browser's alone, like the visit's state: its cookie rides to /login/sso/finish.

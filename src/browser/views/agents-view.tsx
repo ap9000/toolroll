@@ -15,6 +15,7 @@ import { ConversationPane } from "./agent-conversation.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
 import { Alert, PostForm } from "../ui/index.js";
+import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from "./steer-composer.js";
 
 const CHIP: Record<AgentGroupKey, string> = {
   "needs-you": "bg-attention-soft text-attention",
@@ -115,7 +116,7 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
     </CollapsibleTrigger>
     <CollapsibleContent className="pt-1.5 pl-5">
     {detail.live
-      ? detail.peek === null ? <p className="text-body text-muted-foreground">The changes can be read on the computer that runs the agent.</p>
+      ? detail.peek === null ? <p className="text-body text-muted-foreground">Output from other computers isn't shown yet.</p>
         : fragment === null ? <p className="text-body text-muted-foreground">Looking at the checkout…</p>
         : <GuardedHtml html={fragment} className="so-native-region text-body" />
       : detail.files.length === 0 ? <p className="text-body text-muted-foreground">No saved changes.</p>
@@ -129,23 +130,28 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
   </Collapsible>;
 }
 
-type SteerDraft = { text: string; key: string; submitted: boolean };
-const draftStore = (run: number) => `toolroll:steer-draft:${run}`;
-function freshDraft(): SteerDraft {
-  const key = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
-  return { text: "", key, submitted: false };
-}
-/** This run's saved draft, unless the page says that very draft was just sent. */
-function loadDraft(run: number): SteerDraft {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem(draftStore(run)) ?? "null") as Partial<SteerDraft> | null;
-    if (saved === null || typeof saved.text !== "string" || typeof saved.key !== "string") return freshDraft();
-    if (new URLSearchParams(location.search).get("sent") === saved.key) { sessionStorage.removeItem(draftStore(run)); return freshDraft(); }
-    return { text: saved.text, key: saved.key, submitted: saved.submitted === true };
-  } catch { return freshDraft(); }
-}
-function saveDraft(run: number, draft: SteerDraft): void {
-  try { draft.text === "" && !draft.submitted ? sessionStorage.removeItem(draftStore(run)) : sessionStorage.setItem(draftStore(run), JSON.stringify(draft)); } catch { /* a convenience only */ }
+/** This running attempt's files, on this computer (cockpit E): the words first, then the path, "Copy the command"
+ * (a cd to paste into your own terminal) and Show in Finder. Toolroll launches nothing in them. A phone shows the path. */
+export function CheckoutActions({ checkout }: { checkout: NonNullable<BrowserAgentDetail["checkout"]> }) {
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
+  // A clipboard that isn't there or refuses says so: the command is shown to select by hand instead.
+  const copy = () => {
+    if (navigator.clipboard?.writeText === undefined) { setCopied("failed"); return; }
+    void navigator.clipboard.writeText(checkout.cd).then(() => setCopied("yes"), () => setCopied("failed"));
+  };
+  return <section aria-label="Its files" className="flex flex-col gap-1.5" data-agent-checkout>
+    <p className="text-caption font-medium text-muted-foreground">Its files</p>
+    <p className="text-caption text-muted-foreground">These files were written by an agent. Your shell's startup scripts and prompt tools (git status in the prompt, direnv, .envrc) can run code from them when you open a terminal there.</p>
+    <code className="block break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono" data-agent-checkout-path>{checkout.path}</code>
+    <div className="flex flex-wrap gap-2 phone:hidden">
+      <Button type="button" variant="outline" size="sm" onClick={copy} data-agent-copy-cd>{copied === "yes" ? "Copied" : "Copy the command"}</Button>
+      {checkout.reveal !== null && <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><Button type="submit" variant="outline" size="sm">Show in Finder</Button></PostForm>}
+    </div>
+    {copied === "failed" && <div className="flex flex-col gap-1" role="status" data-agent-copy-failed>
+      <p className="text-caption text-danger">Couldn't copy. Select the command and copy it yourself:</p>
+      <code className="block select-all break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono">{checkout.cd}</code>
+    </div>}
+  </section>;
 }
 
 /** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
@@ -162,6 +168,8 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
     return next;
   });
   if (!detail.canAct) return null;
+  // A running attempt that takes no notes: Controls above says why, and nothing here pretends otherwise.
+  if (question === null && detail.live && detail.controls != null && detail.controls.send === null) return null;
   // The attempt ended with a note still unsent: it is shown, and can go to the task's next attempt instead.
   if (question === null && detail.steer === null) {
     if (text.trim() === "") return null;
@@ -179,15 +187,19 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
     </PostForm>;
   }
   const reply = question !== null;
+  // A live agent that is not paused: the note can also stop its turn first and go at once (one request, atomic).
+  const pauseAndSend = detail.controls?.pause != null && detail.controls.pause.state === null ? detail.controls.pause : null;
   return <PostForm action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"}
     onSubmit={() => { if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}
-    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:sticky desk:bottom-0 desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
-      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} /></>}
+      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} />
+        {pauseAndSend !== null && <input type="hidden" name="request" value={`steer-${draft.key}`} />}</>}
     <label className="sr-only" htmlFor="agent-composer">{reply ? `Reply to: ${question.text}` : "A note for the agent"}</label>
     <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => { if (reply) setDraft(previous => ({ ...previous, text: event.target.value })); else setText(event.target.value); }}
       placeholder={reply ? "Your answer" : "Tell the agent something"} className="min-h-11 min-w-0 flex-1 resize-none phone:min-h-11"
       onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
+    {!reply && pauseAndSend !== null && <Button type="submit" formAction={pauseAndSend.action} variant="outline" className="h-11 w-auto shrink-0" disabled={text.trim() === ""} data-agent-pause-send>Pause and send</Button>}
     <Button type="submit" variant={reply ? "attention" : "default"} className="h-11 w-auto shrink-0" disabled={text.trim() === ""}>{reply ? "Reply" : "Send"}</Button>
   </PostForm>;
 }
@@ -216,8 +228,13 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       </div> : detail.line !== null && <p className={cn("text-body break-words", detail.group === "stuck" ? "text-warning" : "text-muted-foreground")} data-agent-line>{detail.line}</p>}
       <ConversationPane url={detail.transcript} live={detail.live} />
       <ChangesPane detail={detail} />
+      {detail.checkout != null && detail.canAct && <CheckoutActions checkout={detail.checkout} />}
     </div>
-    <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
+    {/* One footer, pinned on a desk: what the agent takes and its controls, then the composer (never one over the other). */}
+    <div className="flex flex-col desk:sticky desk:bottom-0 desk:bg-card phone:shrink-0" data-agent-footer>
+      {detail.canAct && detail.controls != null && <SteerControls controls={detail.controls} back="agents" />}
+      <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
+    </div>
   </section>;
 }
 

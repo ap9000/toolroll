@@ -1,5 +1,6 @@
 import type { Database } from "./store.js";
 import { activeCodingUpdateWork, installCodingUpdateGate, removeCodingUpdateGate } from "./coding-update.js";
+import { activeTerminalUpdateWork, installTerminalUpdateGate, removeTerminalUpdateGate } from "./terminal-catalog.js";
 
 export const UPDATE_PAUSED = "Toolroll is updating. Current work can finish; new work will resume after the update. Open Update status in the desktop app.";
 const prefix = "so_desktop_update_";
@@ -32,6 +33,7 @@ export function installUpdateGate(db: Database, id: string): void {
     db.exec("COMMIT");
   } catch (error) { db.exec("ROLLBACK"); throw error; }
   installCodingUpdateGate(db, id);
+  installTerminalUpdateGate(db, id);
 }
 
 export function removeUpdateGate(db: Database, id: string): void {
@@ -41,6 +43,7 @@ export function removeUpdateGate(db: Database, id: string): void {
     const existing = rows(db);
     if (existing.some(row => !owns(wanted, row.sql))) throw Error("This update does not own the admission pause. Nothing was cleared.");
     removeCodingUpdateGate(db, id);
+    removeTerminalUpdateGate(db, id);
     for (const row of existing) db.exec(`DROP TRIGGER "${String(row.name)}"`);
     db.exec("COMMIT");
   } catch (error) { db.exec("ROLLBACK"); throw error; }
@@ -61,6 +64,8 @@ export function activeUpdateWork(db: Database): Record<string, number> {
     conversations: count("SELECT count(*) n FROM mate_turn WHERE state IN ('queued','running')") + count("SELECT count(*) n FROM chat_turn WHERE state IN ('queued','running')"),
     stopping: count("SELECT count(*) n FROM run_stop WHERE settled_at IS NULL"),
     ...activeCodingUpdateWork(db),
+    // Live terminals in a console that is still running (terminal-catalog.ts).
+    ...activeTerminalUpdateWork(db),
   };
 }
 
@@ -71,6 +76,7 @@ export function freezeUpdateGate(db: Database, id: string): boolean {
   try {
     if (!updateGateOwned(db, id)) throw Error("The update no longer owns admission.");
     installCodingUpdateGate(db, id);
+    installTerminalUpdateGate(db, id);
     const idle = Object.values(activeUpdateWork(db)).every(n => n === 0);
     if (idle) {
       for (const row of rows(db)) db.exec(`DROP TRIGGER "${String(row.name)}"`);

@@ -122,6 +122,7 @@ import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
+import { CONSOLE_INSTANCE_SCHEMA } from "./console-instance.js";
 import { endUnattendedGrants, FLOW_UNATTENDED_SCHEMA, grantStandsSql } from "./flow-unattended.js";
 import { RECIPE_SCHEMA } from "./recipes.js";
 import type { LimitReading, LimitWindow } from "./provider-limits.js";
@@ -755,7 +756,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // item_json); which saved secret a trigger's deliveries are proved with and its turned-away deliveries (flow_trigger.hook_credential,
 // dropped_count, dropped_since, limit_noted_at); who made a card (flow_card.created_kind); and the outside source a
 // task was filed from (task_source). Saved receipts read their state from their card, saved cards read a person.
-export const SCHEMA_VERSION = 126;
+// v127 adds, and changes no saved row: the running console's instance record (console_instance, one row: its secret,
+// pid, port and build) that bare `toolroll` proves a console with before attaching (docs/plans/agents-cockpit.md B1).
+export const SCHEMA_VERSION = 127;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -893,7 +896,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -4909,6 +4912,8 @@ function initializeStore(db: Database, file: string): Store {
   }
   db.exec(TASK_SOURCE_SCHEMA);
   db.exec(PLAN_AUTO_SCHEMA);
+  // v127 (cockpit B1): the running console's instance record (one row; a new table, additive only).
+  db.exec(CONSOLE_INSTANCE_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -21508,6 +21513,7 @@ export class Store {
   }
 
   telegramDeliveryProblem(...args: Parameters<ChatMessages["deliveryProblem"]>): ReturnType<ChatMessages["deliveryProblem"]> { return this.telegramChat().deliveryProblem(...args); }
+  telegramWatchFence(...args: Parameters<ChatMessages["watchFence"]>): ReturnType<ChatMessages["watchFence"]> { return this.telegramChat().watchFence(...args); }
 
 
   recordTelegramMessage(...args: Parameters<ChatMessages["recordMessage"]>): ReturnType<ChatMessages["recordMessage"]> { return this.telegramChat().recordMessage(...args); }
@@ -22155,7 +22161,7 @@ export class Store {
    * the subscription live under its enrolled generation, the notification
    * unresolved and still stamped. Null = do not transmit.
    */
-  pushSendFence(id: number, owner: string, generation: number): (PushPair & { subscriptionRow: PushSubscription; notificationRow: Notification }) | null {
+  pushSendFence(id: number, owner: string, generation: number, now: Date = new Date()): (PushPair & { subscriptionRow: PushSubscription; notificationRow: Notification }) | null {
     const pair = this.db
       .prepare(
         `SELECT * FROM push_delivery
@@ -22173,7 +22179,20 @@ export class Store {
       .prepare("SELECT * FROM notification WHERE id = ? AND resolved_at IS NULL AND (push_class IS NOT NULL OR kind = 'check-progress')")
       .get(Number(pair["notification"]));
     if (notification === undefined) return null;
-    return { ...readPushPair(pair), subscriptionRow: readPushSubscription(subscription), notificationRow: readNotification(notification) };
+    // The watch, again at the last moment (cockpit §3): a person who opened the agent since the claim holds the ping
+    // (back to pending, no attempt spent) or, for news they have now seen, retires it.
+    const row = readNotification(notification), approverName = String(subscription["approver"]);
+    const watched = watchedPing(this, row, approverName, now);
+    if (watched === "skip") {
+      this.db.prepare("UPDATE push_delivery SET state = 'retired', last_error = 'seen', claim_owner = NULL WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND claim_generation = ?").run(id, owner, generation);
+      return null;
+    }
+    if (watched !== "send") {
+      this.db.prepare(`UPDATE push_delivery SET state = 'pending', claim_owner = NULL, claim_expires_at = NULL, next_attempt_at = ?
+        WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND claim_generation = ?`).run(watched.hold, id, owner, generation);
+      return null;
+    }
+    return { ...readPushPair(pair), subscriptionRow: readPushSubscription(subscription), notificationRow: row };
   }
 
   /** Settle a pair, conditionally on owner + generation (finding 25). */
@@ -22301,6 +22320,13 @@ export class Store {
       )
       .run(idempotencyKey, operation, JSON.stringify(result ?? null), actor, at.toISOString());
     return result;
+  }
+
+  /** A kept web session's changes: never inserts, so a session ended elsewhere is not brought back by a cached copy.
+   * False when it is gone. (Kept last in the class: the freshness tripwire pins method positions.) */
+  updateWebSession(session: Pick<WebSessionRow, "idHash" | "lastSeen" | "project" | "projectRevision" | "ssoAt">): boolean {
+    return Number(this.db.prepare("UPDATE web_session SET last_seen = ?, project = ?, project_revision = ?, sso_at = ? WHERE id_hash = ?")
+      .run(session.lastSeen, session.project, session.projectRevision, session.ssoAt, session.idHash).changes) > 0;
   }
 }
 

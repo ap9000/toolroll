@@ -10,6 +10,7 @@ import { attemptKeyOf, ingestStatus, openAgentQuestions, recordAgentTurn, watche
 import type { BrowserAgentsView, BrowserTasksView, BrowserWorkspace } from "./browser-workspace.js";
 import { acquire } from "./claim.js";
 import { steerFolderName } from "./evidence.js";
+import { steerCapabilityOf } from "./steer-capabilities.js";
 import { register } from "./runner.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -221,6 +222,146 @@ describe("the Agents board", () => {
     expect(watchingAgent(store, "alex", run, new Date())).toBe(false);
     // The question is still open, so the held ping now goes.
     expect(watchedPing(store, ping, "alex", new Date())).toBe("send");
+  });
+});
+
+describe("what a running agent takes (cockpit §4)", () => {
+  /** The composer's own form fields, as the page would post them. */
+  const csrfOf = async (cookie: string) => /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/settings"), { headers: { cookie } })).text())?.[1] ?? "";
+  const post = async (cookie: string, path: string, fields: Record<string, string>) => {
+    const answer = await fetch(url(path), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: await csrfOf(cookie), ...fields }).toString() });
+    return { status: answer.status, location: answer.headers.get("location") ?? "" };
+  };
+
+  test("each capability, from the run's own facts: live input, mailbox, repair, planner, finished", () => {
+    const now = new Date();
+    const live = running("t-cap-live", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ?, live_input_opened_at = ? WHERE id = ?").run(now.toISOString(), now.toISOString(), live);
+    expect(steerCapabilityOf(store, live, now)).toMatchObject({ send: "live", pause: true, stop: { run: live, label: "Stop" } });
+    const mailbox = running("t-cap-box", repoA);
+    // Not yet at work: a note goes into its brief.
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: "mailbox", words: "It reads notes when it starts working." });
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(now.toISOString(), mailbox);
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: "mailbox", pause: false, stop: { run: mailbox }, words: "It reads notes at its next check." });
+    // Its mailbox closed while it finishes: no note reaches this attempt, and the view says so.
+    store.handle.prepare("UPDATE run SET steer_closed_at = ? WHERE id = ?").run(now.toISOString(), mailbox);
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: null, stop: { run: mailbox } });
+    store.handle.prepare("UPDATE run SET steer_closed_at = NULL WHERE id = ?").run(mailbox);
+    // A stop the store would refuse is not offered: here, a claim that has lapsed.
+    const lapsed = running("t-cap-lapsed", repoA);
+    store.handle.prepare("UPDATE claim SET expires_at = ? WHERE task_ref = (SELECT task_ref FROM run WHERE id = ?)").run(new Date(now.getTime() - 1000).toISOString(), lapsed);
+    expect(steerCapabilityOf(store, lapsed, now)?.stop ?? null).toBeNull();
+    // Its protocol repair: no notes for either, and Stop names the owning attempt.
+    const repair = store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, branch, worktree, started_at, role, parent_run, provider) SELECT task_ref, lease_id, runner, branch, worktree, ?, 'repair', id, provider FROM run WHERE id = ?")
+      .run(now.toISOString(), mailbox).lastInsertRowid;
+    expect(steerCapabilityOf(store, Number(repair), now)).toMatchObject({ send: null, stop: { run: mailbox, label: "Stop this attempt" } });
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: null, stop: { run: mailbox, label: "Stop this attempt" } });
+    const planner = store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(live);
+    expect(planner.changes).toBe(1);
+    expect(steerCapabilityOf(store, live, now)).toMatchObject({ send: null, pause: false, words: "This planner can't take notes; stop it to change its course." });
+    store.finishRun(live, { outcome: "built", committed: true, now });
+    expect(steerCapabilityOf(store, live, now)).toBeNull();
+  });
+
+  test("the agent view offers what its attempt takes; Stop comes back to it; a note for an agent that takes none is refused, never filed", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-cap-board", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(new Date().toISOString(), run);
+    const detail = (await board(`/agents?run=${run}`, cookie)).selected!;
+    expect(detail.controls).toMatchObject({ send: "mailbox", words: "It reads notes at its next check.", pause: null, stop: { run, label: "Stop", action: "/t/t-cap-board/stop" } });
+    expect(detail.steer).toMatchObject({ run });
+    // A planner running for the same task: no notes; the board's send is refused in words, and nothing is filed.
+    store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(run);
+    // A planner opens on the board too, saying it takes no notes, with Stop and no box.
+    const planner = (await board(`/agents?run=${run}`, cookie)).selected!;
+    expect(planner.controls).toMatchObject({ send: null, words: "This planner can't take notes; stop it to change its course.", stop: { run } });
+    expect(planner.steer).toBeNull();
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const refused = await post(cookie, "/t/t-cap-board/steer", { note: "use the other table", return: "agents", run: String(run), key: "k-planner-0001" });
+    expect(refused.location).toBe(`/agents?run=${run}&said=steer-no-notes`);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+    store.handle.prepare("UPDATE run SET role = 'builder' WHERE id = ?").run(run);
+    const stopped = await post(cookie, "/t/t-cap-board/stop", { run: String(run), return: "agents" });
+    expect(stopped.location).toBe(`/agents?run=${run}&said=stopping`);
+    expect((await board(`/agents?run=${run}&said=stopping`, cookie)).selected?.said).toMatchObject({ text: "Stopping. The work so far is kept." });
+  });
+});
+
+describe("the task page's note is for the exact attempt (cockpit §4)", () => {
+  test("its form names the running build; a note for an attempt that has ended is refused, never filed for the next", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-page-note", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(new Date().toISOString(), run);
+    const html = await (await fetch(url("/t/t-page-note"), { headers: { cookie } })).text();
+    const form = [...html.matchAll(/<form[^>]*action="\/t\/t-page-note\/steer"[^>]*>[\s\S]*?<\/form>/g)].map(one => one[0]).find(one => one.includes('name="run"')) ?? "";
+    // The page's own composer names the same run, and says what it takes.
+    const view = workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(view.steering).toMatchObject({ steer: { run, action: "/t/t-page-note/steer" }, controls: { send: "mailbox", words: "It reads notes at its next check." } });
+    expect(form).toContain(`name="run" value="${run}"`);
+    expect(form).toContain('name="return" value="task"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(form)?.[1] ?? "";
+    const key = /name="key" value="([^"]+)"/.exec(form)?.[1] ?? "";
+    store.finishRun(run, { outcome: "failed", reason: "agent", now: new Date() });
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const answer = await fetch(url("/t/t-page-note/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, note: "use the cache", run: String(run), key, return: "task" }).toString() });
+    expect(answer.status).toBe(409);
+    expect(await answer.text()).toContain("that attempt ended before your note");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+  });
+
+  test("while a planner runs, the page's form is plainly for the next attempt; the demo files nothing", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-page-plan", repoA);
+    store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(run);
+    const html = await (await fetch(url("/t/t-page-plan"), { headers: { cookie } })).text();
+    expect(html).toContain("Save for the next attempt");
+    expect((workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView).steering).toMatchObject({ steer: null, controls: { send: null, words: "This planner can't take notes; stop it to change its course." } });
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "";
+    store.recordInstallationFact("demo", "1", new Date());
+    expect(store.isDemo()).toBe(true);
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const answer = await fetch(url("/t/t-page-plan/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, note: "try the cache" }).toString() });
+    expect(answer.status).toBe(403);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+  });
+});
+
+describe("composer receipts and reach (cockpit §4, round 2)", () => {
+  const form = async (cookie: string, path: string, fields: Record<string, string>) => {
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/settings"), { headers: { cookie } })).text())?.[1] ?? "";
+    const answer = await fetch(url(path), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, ...fields }).toString() });
+    return answer.headers.get("location") ?? "";
+  };
+
+  test("pause and send clears a draft only when that very note was stored: a repeated request with new words keeps the new draft", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-ps", repoA);
+    const now = new Date().toISOString();
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ?, live_input_opened_at = ? WHERE id = ?").run(now, now, run);
+    const first = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the cache", key: "draft-one-0001", return: "agents" });
+    expect(first).toContain("&sent=draft-one-0001");
+    // The same request again, with edited words (a restored form): the store answers with the first note, so nothing clears.
+    const again = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the replica", key: "draft-two-0002", return: "agents" });
+    expect(again).not.toContain("sent=");
+    expect(again).toContain("said=pause-note-stale");
+  });
+
+  test("a running review has its composer on the task page; the timeline opens every role in the agent view", async () => {
+    const cookie = await login("alex", alexToken);
+    const build = running("t-rev", repoA);
+    store.finishRun(build, { outcome: "built", committed: true, now: new Date() });
+    const review = store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, started_at, role, provider, parent_run) SELECT task_ref, 'review-lease-1', runner, ?, 'reviewer', provider, id FROM run WHERE id = ?")
+      .run(new Date().toISOString(), build).lastInsertRowid;
+    const view = workspaceOf(await (await fetch(url("/t/t-rev"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(view.steering).toMatchObject({ steer: null, controls: { send: null, words: "This reviewer can't take notes; stop it to change its course.", stop: { run: Number(review) } } });
+    expect(view.steerRecent).toContain(build);
+    const lanes = (await board("/agents", cookie)).lanes;
+    const hrefs = (lanes?.lanes ?? []).flatMap(lane => lane.segments.map(one => one.href));
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.every(href => href.startsWith("/agents?run="))).toBe(true);
   });
 });
 

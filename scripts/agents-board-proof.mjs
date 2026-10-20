@@ -81,6 +81,8 @@ function startAgent(id, title, repo, startedMinutesAgo) {
   const run = store.startRun({ taskRef: ref, leaseId: claim.claim.leaseId, runner: 'mac-studio', branch: `toolroll/${id}`, worktree: join(repo, `.wt-${id}`),
     now: ago(startedMinutesAgo), provider: 'claude', model: 'sonnet',
     route: { routeDigest: routeDigestOf(route), phase: 'build', provider: legOf(route, 'build').provider, model: legOf(route, 'build').model, chosen: legOf(route, 'build').chosen } });
+  // A real build opens its steering mailbox as its agent starts (builder.ts): the board's composer reads that.
+  store.markSteerFolderOpened(run, now());
   store.setRunPhase(run, 'agent-running');
   store.setTaskState(id, 'running', ago(startedMinutesAgo));
   return { id, ref, run, key: attemptKeyOf(store, run), lease: claim.claim.leaseId, route, worktree: join(repo, `.wt-${id}`) };
@@ -124,7 +126,7 @@ function seed() {
   const steered = store.fileSteerNote(asking.id, 'alex', 'Keep the remember-me option checked by default.', ago(8));
   if (steered.ok) { store.markSteerMailed(steered.id, asking.run, ago(8)); store.ackSteerNote(steered.id, asking.run, ago(7)); }
   say(log, 'The old “Sign in with Google” button is still linked from two marketing pages. Asking before I remove it.');
-  log?.close();
+  // Left open: the phone journey writes more of this conversation while the terminal view is open (follow / pause).
   recordAgentTurn(store, { run: asking.run, attemptKey: asking.key, state: 'busy', at: ago(25) });
   store.recordRunActivity(asking.run, 'edit', ago(1));
   noteDiff(store, asking.run, asking.key, 6, ago(1));
@@ -209,7 +211,7 @@ function seed() {
   const idle = startAgent('readme-setup', 'Update the README setup steps', payments, 200);
   store.finishRun(idle.run, { outcome: 'no-change', committed: false, now: ago(180) });
   markAgentSeen(store, 'alex', idle.run, ago(170));
-  return { asking, working, stuck, done, failed, idle, fixing, checking, testing };
+  return { asking, working, stuck, done, failed, idle, fixing, checking, testing, askingLog: log };
 }
 
 const server = createDecisionServer({ store, evidenceRoot, repos: [shop, payments], clock: () => new Date(), localRunner: 'mac-studio' });
@@ -269,7 +271,7 @@ let seeded;
   await until(page, () => (document.querySelector('[data-agent-transcript]')?.textContent ?? '').includes('Asking before I remove it'));
   check('desktop: the conversation shows steps with their file or command, a failed command with its output, and the note it read', await page.$('[data-step-status="failed"] ') !== null
     && (await page.textContent('[data-agent-transcript]') ?? '').includes('npm test -- src/login') && (await page.textContent('[data-agent-transcript]') ?? '').includes('src/login/LoginForm.tsx')
-    && await page.$('[data-conversation-note]') !== null && (await page.textContent('[data-conversation-note] [data-note-standing]') ?? '').startsWith('Read by the agent at'));
+    && await page.$('[data-conversation-note]') !== null && (await page.textContent('[data-conversation-note] [data-note-standing]') ?? '').startsWith('Picked up at'));
   {
     // Open the failed command's output, then put the conversation back as it was.
     const failed = await page.$('[data-step-status="failed"]');
@@ -297,6 +299,15 @@ let seeded;
     movedNow === 'done' && await page.evaluate(() => window.__samePage) === 'agent-view' && await page.$(`[data-agent-detail="${seeded.asking.run}"]`) !== null,
     `working rows before ${before}; the agent's row now in ${movedNow}`);
   await shot(page, 'desktop-3-agent-live', 'Desktop 1440px: the opened agent (question, long transcript, Reply) while the board updates beside it (synthetic)');
+  // The terminal view of the same records (cockpit §5): dense lines, the failed command's output tail, then back.
+  await page.click('[data-conversation-view] button:has-text("Terminal")');
+  await page.waitForSelector('[data-terminal]');
+  await page.waitForTimeout(400);
+  check('desktop: the terminal view shows the same records as dense lines, a failed command with its output tail', (await page.textContent('[data-terminal]') ?? '').includes('$ npm test')
+    && (await page.evaluate(() => [...document.querySelectorAll('[data-terminal-step="command"]')].find(node => node.textContent?.includes('[failed]'))?.querySelector('[data-terminal-output]')?.textContent ?? '')).includes('Tests: 1 failed, 23 passed, 24 total')
+    && await page.getAttribute('[data-conversation-view] button:has-text("Terminal")', 'aria-pressed') === 'true');
+  await shot(page, 'desktop-3t-terminal', 'Desktop 1440px: the same agent in the terminal view (synthetic)');
+  await page.click('[data-conversation-view] button:has-text("Conversation")');
 
   // Reply.
   await page.fill('#agent-composer', 'Keep it until the marketing pages link to the new button, then remove it.');
@@ -351,7 +362,14 @@ let seeded;
   await page.waitForSelector('[data-agent-group-section]');
   const overflow = await page.evaluate(() => document.scrollingElement.scrollWidth - window.innerWidth);
   check('phone: the board is a list with no sideways overflow', overflow <= 0, `overflow ${overflow}px`);
-  const small = await page.$$eval('[data-agents-board] a, [data-agents-board] button', nodes => nodes.filter(node => { const box = node.getBoundingClientRect(); return box.width > 0 && box.height < 44; }).map(node => `${node.textContent?.trim().slice(0, 30)} ${Math.round(node.getBoundingClientRect().height)}px`));
+  // A target's touch area: its box, or the larger area its ::after hit-area extends to (the timeline bars do this on a
+  // phone: a 20px bar with 12px above and below to touch).
+  const small = await page.$$eval('[data-agents-board] a, [data-agents-board] button', nodes => nodes.map(node => {
+    const box = node.getBoundingClientRect();
+    const after = getComputedStyle(node, '::after');
+    const reach = after.content !== 'none' && after.position === 'absolute' ? Math.max(box.height, box.height - parseFloat(after.top || '0') - parseFloat(after.bottom || '0')) : box.height;
+    return { node, width: box.width, reach };
+  }).filter(one => one.width > 0 && one.reach < 44).map(one => `${one.node.textContent?.trim().slice(0, 30)} ${Math.round(one.reach)}px`));
   check('phone: every row is a 44px target', small.length === 0, small.join('; ') || 'all ≥ 44px');
   await shot(page, 'phone-1-board', 'Phone 390px: the Agents board as a list, grouped by state (synthetic)');
 
@@ -384,6 +402,47 @@ let seeded;
   await page.click('[data-agent-changes] button');
   await page.$eval('[data-agent-detail] > div', node => { node.scrollTop = node.scrollHeight; });
   await shot(page, 'phone-3-agent-changes', 'Phone 390px: the same view scrolled to its changes, the composer still at the bottom (synthetic)');
+
+  // The terminal view on a phone (cockpit §5): the long, commands-shown conversation, dense; the failed command's tail;
+  // the footer never over it; it follows new lines at the end, holds still when scrolled up, and follows again after.
+  await page.goto(`${base}/agents?run=${seeded.asking.run}`);
+  await page.waitForSelector('[data-agent-detail]');
+  await until(page, () => (document.querySelector('[data-agent-transcript]')?.textContent ?? '').includes('Step 28'));
+  await page.click('[data-conversation-view] button:has-text("Terminal")');
+  await page.waitForSelector('[data-terminal]');
+  await page.waitForTimeout(400);
+  const failedTail = await page.evaluate(() => [...document.querySelectorAll('[data-terminal-step="command"]')].find(node => node.textContent?.includes('[failed]'))?.querySelector('[data-terminal-output]')?.textContent ?? '');
+  check('phone: the terminal view shows the failed command with its output tail', failedTail.includes('Tests: 1 failed, 23 passed, 24 total'), failedTail.slice(0, 80));
+  const scrollerOf = () => page.evaluate(() => {
+    const box = document.querySelector('[data-agent-transcript]');
+    const node = box.scrollHeight > box.clientHeight + 1 ? box : box.closest('[data-agent-scroll]');
+    const footer = document.querySelector('[data-agent-footer]').getBoundingClientRect();
+    return { top: node.scrollTop, gap: node.scrollHeight - node.scrollTop - node.clientHeight, scrollerBottom: node.getBoundingClientRect().bottom, footerTop: footer.top, footerBottom: footer.bottom, innerHeight: window.innerHeight };
+  });
+  const atEnd = await scrollerOf();
+  check('phone: in the terminal view the footer sits at the bottom and nothing scrolls under it', Math.abs(atEnd.footerBottom - atEnd.innerHeight) <= 1 && atEnd.scrollerBottom <= atEnd.footerTop + 1, JSON.stringify(atEnd));
+  const write = text => { say(seeded.askingLog, text); };
+  // At the end: a new line arrives and the view follows it.
+  await page.evaluate(() => { const box = document.querySelector('[data-agent-transcript]'); const node = box.scrollHeight > box.clientHeight + 1 ? box : box.closest('[data-agent-scroll]'); node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event('scroll')); });
+  write('Following: the first new line.');
+  await until(page, () => (document.querySelector('[data-terminal]')?.textContent ?? '').includes('Following: the first new line.'));
+  await page.waitForTimeout(300);
+  const followed = await scrollerOf();
+  // Scrolled up: another line arrives and the view holds still.
+  await page.evaluate(() => { const box = document.querySelector('[data-agent-transcript]'); const node = box.scrollHeight > box.clientHeight + 1 ? box : box.closest('[data-agent-scroll]'); node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
+  write('Held: a line that arrives while scrolled up.');
+  await until(page, () => (document.querySelector('[data-terminal]')?.textContent ?? '').includes('Held: a line'));
+  await page.waitForTimeout(300);
+  const held = await scrollerOf();
+  // Back at the end: it follows again.
+  await page.evaluate(() => { const box = document.querySelector('[data-agent-transcript]'); const node = box.scrollHeight > box.clientHeight + 1 ? box : box.closest('[data-agent-scroll]'); node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event('scroll')); });
+  write('Resumed: following again.');
+  await until(page, () => (document.querySelector('[data-terminal]')?.textContent ?? '').includes('Resumed: following again.'));
+  await page.waitForTimeout(300);
+  const resumed = await scrollerOf();
+  check('phone: the terminal view follows new lines at the end, holds still when scrolled up, and follows again', followed.gap <= 2 && held.top === 0 && resumed.gap <= 2,
+    `followed gap ${followed.gap}, held top ${held.top}, resumed gap ${resumed.gap}`);
+  await shot(page, 'phone-4-terminal', 'Phone 390px: the terminal view of the commands-shown conversation, following its newest line (synthetic)');
   await ctx.close();
 }
 

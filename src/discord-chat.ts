@@ -23,6 +23,7 @@ import {
   chatObject as object,
   type ChatDeliveryOptions,
   planRoomMessages,
+  heldForWatch,
 } from "./chat-delivery.js";
 import { chatResultHref } from "./chat-controls.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
@@ -506,6 +507,8 @@ export async function deliverDiscordPart(
           fail_if_not_exists: false,
         };
     }
+    // The watch, at the last moment before the network (cockpit §3).
+    if (heldForWatch(state, store, row.id, event, binding.approver, content, now)) return true;
     const answer = await options.api(
       target ? "PATCH" : "POST",
       `/channels/${destination}/messages${target ? `/${target}` : ""}`,

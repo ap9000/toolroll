@@ -1,4 +1,5 @@
 /** HTTP answers every console route shares: server options, body limits, safe responses, redirects and return paths. */
+import type { TerminalHost } from "../live-terminal.js";
 import { html, htmlString, isHtml, type Html } from "../html.js";
 import { chatResultHref as sharedResultHref } from "../chat-controls.js";
 import { type CliHttpOptions,type RunOperateAs } from "../cli-http.js";
@@ -30,6 +31,8 @@ export type ServeOptions = {
   installBin?: string;
   /** Native coding workspace injection for isolated integration tests. */
   codingWorkspace?: CodingWorkspace;
+  /** Live terminals (tests stand their own in; null turns them off). Default: one on a machine that runs agents. */
+  terminalHost?: TerminalHost | null;
   /** Read-only worker connections for heavy reads (read-executor.ts); 0 reads in-process. Default: off under tests. */
   readWorkers?: number;
   store: Store;
@@ -138,6 +141,10 @@ export type ServeOptions = {
   connectFetch?: typeof fetch;
   /** Tests: every request sign-in with the identity provider makes (discovery, keys, tokens). */
   ssoFetch?: typeof fetch;
+  /** Cockpit B1: this `up` console's instance secret (null: none — the instance route answers 404). */
+  instanceSecret?: () => string | null;
+  /** Cockpit E: how Finder is asked to reveal a proved checkout (tests pass their own; never a launch). True: shown. */
+  revealPath?: (path: string) => Promise<boolean> | boolean;
   chatEnv?: Record<string, string | undefined>;
   /**
    * The live peek's locality ASSERTION (live-peek v3 §3): the administrator
@@ -292,7 +299,9 @@ export function goOutside(response: ServerResponse, to: string, words: string, b
 }
 
 export function redirect(response: ServerResponse, to: string): void {
-  response.writeHead(303, { ...SAFETY, Location: to });
+  // Set as a header (not only in writeHead) so the answer can be read back after: a refused act's redirect names it.
+  response.setHeader("Location", to);
+  response.writeHead(303, { ...SAFETY });
   response.end();
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   mkdtempSync,
   mkdirSync,
@@ -502,6 +502,29 @@ describe("shared chat action lifecycle", () => {
     expect(store.getScope(id)?.approvedDigest).toBeNull();
     expect(confirm(action, true)).toMatchObject({ ok: true });
     expect(store.getScope(id)?.approvedDigest).toBe(store.getScope(id)?.digest);
+  });
+  test("a first yes on protected work is kept, with how its person was proved — never rolled back as a refusal", () => {
+    const id = task();
+    propose(store, { now, taskId: id, goal: "Protected work needs two." });
+    const gate = vi.spyOn(store, "approvalGate").mockReturnValueOnce({ verdict: "vote", have: 1, need: 2, already: false }).mockReturnValue({ verdict: "vote", have: 1, need: 2, already: true });
+    try {
+      const action = proposal("scope_approve", { task: id });
+      const outcome = confirm(action, true);
+      expect(outcome).toMatchObject({ ok: true });
+      // The card stays open for the second approver.
+      expect(store.getLeadProposal(action)?.state).toBe("pending");
+      const digest = store.getScope(id)!.digest;
+      expect(store.getScope(id)?.approvedDigest).toBeNull();
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM scope_approval_vote WHERE task_id = ? AND digest = ?").get(id, digest)?.["n"]).toBe(1);
+      const proof = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved'").get(id);
+      expect(proof?.["outcome"]).toBe("password-now");
+      expect(String(proof?.["detail"])).toContain(`digest ${digest}`);
+      // The same person again: still one vote, no second proof row, and the card still waits.
+      expect(confirm(action, true)).toMatchObject({ ok: true });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM scope_approval_vote WHERE task_id = ?").get(id)?.["n"]).toBe(1);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE task_id = ? AND action = 'approval proved'").get(id)?.["n"]).toBe(1);
+      expect(store.getLeadProposal(action)?.state).toBe("pending");
+    } finally { gate.mockRestore(); }
   });
   test("editing the scope after review prevents approving a different plan", () => {
     const id = task();

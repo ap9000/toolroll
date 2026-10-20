@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -17,6 +17,8 @@ import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, authenticateApprover } from "./scope.js";
 import { addRepos, loadProjectRegistry, updateRepos } from "./repos.js";
+import { instanceRunDir, proveLiveConsole, readInstance } from "./console-instance.js";
+import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
 
 const PORT = 41000 + (process.pid % 2000);
@@ -85,6 +87,25 @@ describe("toolroll up", () => {
     } finally {
       store.close();
     }
+  });
+
+  test("a running up proves itself live to this installation's CLI (cockpit B1); stopping forgets the record and the socket", async () => {
+    // A short state folder: a Unix socket path has to fit the platform's limit (~104 bytes on macOS).
+    const short = realpathSync(mkdtempSync("/tmp/so-ui-"));
+    db = join(short, "orders.db");
+    try {
+    let proof: Promise<unknown> | null = null;
+    const code = await up([], PORT + 21, () => {
+      const store = openStore(db);
+      proof = proveLiveConsole(db, store, packageVersion()).finally(() => store.close());
+    });
+    expect(code).toBe(0);
+    expect(await proof).toEqual({ ok: true, url: `http://127.0.0.1:${PORT + 21}`, port: PORT + 21, pid: process.pid, build: packageVersion() });
+    const store = openStore(db);
+    try { expect(readInstance(store)).toBeNull(); } finally { store.close(); }
+    // Its own socket went with it.
+    expect(readdirSync(instanceRunDir(db))).toEqual([]);
+    } finally { rmSync(short, { recursive: true, force: true }); }
   });
 
   test("second start: adopts the existing login and reuses the retired worker name", async () => {

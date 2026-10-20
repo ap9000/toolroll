@@ -6,6 +6,7 @@
  * back or fails. Every change is the server's: it answers with the flow as
  * it now stands, and every open page hears the moment it changes (v88),
  * with the faces of whoever else has it open. */
+import { SteerControls, SteerNote } from "./steer-composer.js";
 import { roomName, useLiveRoom } from "../live.js";
 import { NEEDS } from "../../needs-you.js";
 import { Background, BackgroundVariant, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
@@ -463,6 +464,10 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
     {card.question != null && card.deadline != null && <p className="text-caption text-muted-foreground font-normal">{deadlineWords(card.deadline)}</p>}
     <CardPeople card={card} view={view} csrf={csrf} apply={apply} />
     {card.task !== null && <a className="text-body text-primary underline-offset-4 hover:underline font-medium" href={card.task.href}>Open its task</a>}
+    {card.task?.composer != null && <div className="flex flex-col gap-1" data-flow-task-composer>
+      <SteerControls controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />
+      {card.task.composer.steer !== null && <SteerNote key={`${card.id}:${card.task.composer.steer.run}`} steer={card.task.composer.steer} controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />}
+    </div>}
     {card.draft !== null && !card.canDecide && <details className="rounded-md border px-3 py-2" open data-flow-draft>
       <summary className="cursor-pointer text-body font-medium">Draft from {card.draft.title}</summary>
       <p className="mt-2 whitespace-pre-wrap text-[12.5px]">{card.draft.text}</p>

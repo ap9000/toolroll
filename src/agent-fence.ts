@@ -40,9 +40,10 @@
  * rename or remove a folder of the user's above a fenced path or the temp
  * folder, which would reach the fenced path under a new name.
  */
+import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -121,12 +122,26 @@ export function trustedWorktreeBinding(repository: string, worktree: string, poo
  */
 export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; binding?: WorktreeBinding | null; runFolders?: RunFolders }): string[] {
   const fence = new Set<string>();
+  /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
+  let runFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
     const database = real(options.databaseFile);
     const state = dirname(database);
     for (const suffix of ["", "-wal", "-shm", "-journal"]) if (existsSync(database + suffix)) fence.add(database + suffix);
+    // The console's run folder (its discovery sockets, console-instance.ts) beside the database, wherever that is: no
+    // build may add, rename or remove anything in it while a console listens there. It is made (owner-only) before any
+    // build starts if it isn't there yet, so a build can never be the one to create it — and the fence always has a
+    // real folder to cover (a Linux bind needs one).
+    // Whatever is at that path is fenced, always — a folder, a file, a link (the path itself, never only where a link
+    // points), a folder holding anything at all — so no build can replace it; when nothing is there it is made first.
+    // If it can't be made, the path is fenced anyway: a sandbox that can't cover a missing path refuses to launch
+    // rather than run unfenced. The name is Toolroll's own; nothing else belongs there.
+    runFolder = join(state, INSTANCE_DIR);
+    const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
+    if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    fence.add(runFolder);
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not
@@ -156,11 +171,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].map(real));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].map(real))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -432,7 +447,9 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
     for (const path of held.deny) access.set(path, "deny");
     for (const path of held.write) access.set(path, "write");
   }
-  for (const path of deny) access.set(real(path), "deny");
+  // Denies are keyed where they resolve; the console's run folder is also denied by its own pathname, so a link there
+  // stays unreplaceable, not only its target.
+  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
     "-c", 'default_permissions="standing-orders"',

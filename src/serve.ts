@@ -2,7 +2,15 @@ import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./l
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
-import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
+import { usageChipOf } from './limits-ui.js';
+/** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
+const RAIL_TASKS = 6;
+/** Any header a proxy adds: a request carrying one is never "from this computer" (password freshness, one-time links). */
+const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
+/** Asks a project names for the chime (its count is complete beyond them). */
+const ASKS_PER_PROJECT = 100;
+import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -34,7 +42,7 @@ import type { TeamChatProviderResolver } from './team-chat-authorization.js';
 import type { TeamResponse } from './team-contract.js';
 import { createTeamRuntime } from './team-runtime.js';
 import { type ToolsView } from "./tools-ui.js";
-import { workCountsByProject } from "./work-index.js";
+import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage } from "./work-index.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
 /**
@@ -133,11 +141,15 @@ RESULT_REVIEW_SCRIPT
 import { buildReviewOf } from "./review-switch.js";
 import { isAlive as runnerAlive } from "./runner.js";
 import {
-freshIdentitySignIn
+FRESH_WINDOW_MS,
+freshFacts,
+ssoNowAvailable,
+type FreshFacts
 } from "./scope.js";
 import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
+import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
 import { createPagesHandlers } from './server/pages.js';
@@ -151,7 +163,7 @@ import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
-import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
+import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
 import { createTasksHandlers } from './server/tasks.js';
 import { DEFAULT_GUARD_POLICY,passwordGuardOf,provenPasswordAccount,SourceBudget,withPasswordSource } from "./sign-in-guard.js";
 import { sourceKey } from "./source-key.js";
@@ -218,6 +230,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       catch (error) { codingProblem = error instanceof Error ? error.message : 'The coding workspace could not open.'; }
     }
   }
+  // Live terminals (docs/plans/live-terminal.md): on a machine that runs agents, when this install has a pty library.
+  const terminals = terminalHostFor(store, options);
   const clock = options.clock ?? (() => new Date());
   // Heavy reads (the work index behind `task list`) run on read-only worker connections, off the request loop.
   const readFile = store.isDemo() ? null : store.databaseFile();
@@ -312,13 +326,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** That source as every per-source budget counts it: a native IPv6 caller by its /64 (source-key.ts). */
   function joinSourceOf(request: IncomingMessage): string { return sourceKey(forwardedSourceOf(request)); }
   const signInBudget = new SourceBudget();
-  const ssoVisits = new Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number }>();
-  const ssoHandoffs = new Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number }>();
+  // A re-check or a link is the session that started it: its kept hash and credential generation ride the visit and the
+  // hand-off, and finish refuses any other session (a sign-out and a new sign-in in between never inherit it).
+  const ssoVisits = new Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number; session: { hash: string; generation: number } | null }>();
+  const ssoHandoffs = new Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null; session: { hash: string; generation: number } | null }>();
   let ssoProvider: { issuer: string; provider: OidcProvider; at: number } | null = null;
   const ssoSettings = () => readSsoSettings(options.configDir);
   const ssoOffer = () => { const settings = ssoSettings(); return settings === null ? null : { label: settings.label, operatorsOnly: settings.passwords === "operators" }; };
   /** A step-up within this long of the provider checking someone needs no password. */
-  const SSO_FRESH_MS = 10 * 60_000;
   // The one-time sign-in link `up` opens in the browser: single use, ten minutes, from this computer only. Only a hash
   // of the code is kept, in memory; the code itself is never written to a log or the ledger.
   const signInLinks = new Map<string, { account: string; expires: number }>();
@@ -332,13 +347,43 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     signInLinks.set(linkKey(code), { account, expires: Date.now() + SIGN_IN_LINK_MS });
     return `${SIGN_IN_LINK_PATH}${code}`;
   }
-  /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no forwarding proxy. */
+  /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no sign of a proxy —
+   * any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …) disqualifies the request. */
   const fromThisComputer = (request: IncomingMessage): boolean => {
     const peer = request.socket.remoteAddress ?? "";
-    const loopback = LOOPBACK_PEERS.has(peer);
-    return loopback && request.headers["x-forwarded-for"] === undefined && request.headers["forwarded"] === undefined
-      && /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
+    if (!LOOPBACK_PEERS.has(peer)) return false;
+    for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
+    return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
   };
+  /**
+   * Cockpit B2: a request's password-freshness facts — the one place they are made (scope.ts honours them). Every
+   * reader looks at the session as it is at the moment of the act, never a snapshot taken before the body arrived:
+   * still signed in here, under the account's current credential generation, after any Forget.
+   */
+  function freshFactsOf(request: IncomingMessage, who: Who | null, allowlisted = false): FreshFacts | null {
+    if (who?.via !== 'cookie') return null;
+    const session = who.session, local = fromThisComputer(request);
+    // The same validity lookupSession applies, read again at the act: held here, within its idle and absolute
+    // lifetimes, under the account's current credential generation, not revoked.
+    const live = () => {
+      const now = Date.now(), account = store.accountOf(who.name);
+      return sessions.holds(session) && sessionWithinLifetime(session, now)
+        && account !== null && account.revokedAt === null && account.generation === session.generation;
+    };
+    return { actor: who.name, local, allowlisted, live,
+      passwordAt: () => session.passwordAt ?? null, ssoReauthAt: () => session.ssoReauthAt ?? null,
+      ssoNow: () => session.ssoNowAt ?? null,
+      consumeSsoNow: () => {
+        const was = session.ssoNowAt;
+        delete session.ssoNowAt;
+        // A refund puts back only what this spend took, once, and only if nothing newer arrived (Forget still floors it).
+        let refunded = false;
+        return () => { if (refunded) return; refunded = true; if (was !== undefined && session.ssoNowAt === undefined) session.ssoNowAt = was; };
+      },
+      floor: () => session.freshFloor ?? 0,
+      // Only a direct local request may start a password window (a typed password elsewhere proves now, nothing more).
+      stamp: at => { if (local && live()) session.passwordAt = at; } };
+  }
   async function providerFor(issuer: string): Promise<{ ok: true; provider: OidcProvider } | { ok: false; said: string }> {
     if (ssoProvider !== null && ssoProvider.issuer === issuer && Date.now() - ssoProvider.at < 10 * 60_000) return { ok: true, provider: ssoProvider.provider };
     const found = await discoverOidc(issuer, options.ssoFetch ?? fetch);
@@ -687,7 +732,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Passive polls authenticate without extending the browser session.
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
-    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname)));
+    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'));
     const refuseBudget = (admitted: Admission): boolean => {
       if (admitted.ok) return false;
       request.resume();
@@ -708,7 +753,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     if (who?.via === "bearer" && refuseBudget(admitBearer(request, who))) return;
     const passwordProof = who?.via === 'cookie' ? { name: who.name, generation: who.session.generation } : null;
-    if (edgeRoute?.domain === 'people') return provenPasswordAccount.run(passwordProof, () => dispatchEdge(edgeRoute, { url, who, request, response, method }));
+    const fresh = freshFactsOf(request, who, matchedRoute?.freshness === 'allowlist');
+    if (edgeRoute?.domain === 'people') return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => dispatchEdge(edgeRoute, { url, who, request, response, method })));
 
 
     if (who === null) {
@@ -733,14 +779,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Every signed-in page shares the workspace shell; pages showing a one-time secret opt out (forceSensitive).
       browser: who.via === 'cookie',
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
-      sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } : undefined,
+      // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
+      sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider",
+        get fresh() { return freshFacts.getStore() != null && ssoNowAvailable(who.name); } } : undefined,
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
       workspaceRequest: url.searchParams.get('request'),
     };
-    // An empty password stands for a fresh identity-provider sign-in, for this person only (v100).
-    if (method === "GET" || method === "POST") return freshIdentitySignIn.run({ actor: requestFacts.sso?.fresh === true ? who.name : null }, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
+    if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
       const target = actionTarget(url, who, request, body === null ? null : readForm(body, CONSOLE_FORMS.ledgerTarget));
@@ -1256,6 +1303,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * are what sensitivity strips.
    */
   function sendScreen(response: ServerResponse, status: number, s: Screen): void {
+    // Sensitivity is the page as authored (cockpit §2, R14): its own explicit word, else a password field it was written
+    // with — judged before an identity-provider sign-in replaces that field, so an SSO step-up page stays sensitive.
+    const authored = s.sensitive ?? (
+      s.forceSensitive === true ||
+      SENSITIVE_INPUT.test(htmlString(s.body)) ||
+      (s.workspace?.pageHtml != null && SENSITIVE_INPUT.test(htmlString(s.workspace.pageHtml))) ||
+      (s.chrome?.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(s.chrome.listPane))));
     // v100: signed in with the identity provider, a step-up's password field is that sign-in instead.
     const ssoFacts = requestContext.getStore()?.sso;
     if (ssoFacts !== undefined) {
@@ -1264,10 +1318,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
-    const sensitive =
-      s.forceSensitive === true ||
-      SENSITIVE_INPUT.test(htmlString(s.body)) ||
-      (s.chrome?.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(s.chrome.listPane)));
+    const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
     if (requestFacts?.browser && s.chrome && !s.forceSensitive && (requestFacts.workspaceRead || browserAssetsAvailable())) {
       const path = new URL(requestFacts.returnTo, 'http://standing-orders.local');
@@ -1331,6 +1382,23 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         receipt: conversation !== null && request && REQUEST_TOKEN.test(request)
           ? { request, received: store.leadRequestReceipt(conversation.sessionId, request) !== null } : null,
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
+        // The sidebar's project states: never on a sensitive page (no rail, no summary stream there).
+        ...(() => { if (sensitive) return {}; try { return { projectStates: projectSummary() }; } catch { return {}; } })(),
+        // Cockpit B2: the remembered password's chip, only where it could be used (a direct local request).
+        ...(() => {
+          const facts = freshFacts.getStore();
+          if (sensitive || facts == null || !facts.local || !facts.live()) return {};
+          const at = facts.passwordAt();
+          if (at === null || at <= facts.floor()) return {};
+          const left = FRESH_WINDOW_MS - (Date.now() - at);
+          return left <= 0 ? {} : { fresh: { minutes: Math.max(1, Math.ceil(left / 60_000)), forget: '/session/forget-password' } };
+        })(),
+        // The usage chip: the Limits view's own audience (an operator on a browser session), never a sensitive page.
+        ...(() => {
+          const actor = requestFacts.actor;
+          if (sensitive || !actor || requestFacts.csrf === '' || !store.isInstanceOperator(actor)) return {};
+          try { const usage = usageChipOf(store.providerLimits(), clock()); return usage === null ? {} : { usage }; } catch { return {}; }
+        })(),
         conversation, ...(extras.team ? { team: extras.team } : {}), focus: extras.focus ?? null, result: extras.result ?? null,
         catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
@@ -1396,6 +1464,77 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     paletteCache.clear();
   };
 
+  /** Enrolled projects first (most recently opened), then the repos this server was told to serve that nobody has
+   * opened yet — the switcher lists every project it is allowed to show, each exactly once. */
+  function sidebarProjects(): { path: string; name: string }[] {
+    const seen = new Set<string>();
+    const rows: { path: string; name: string }[] = [];
+    for (const one of [
+      ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
+      ...managedRepos().map(path => ({ path, name: projectName(path) })),
+    ]) {
+      if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
+      seen.add(one.path);
+      rows.push(one);
+    }
+    return rows;
+  }
+  /** The sidebar's projects with their states (agent-state.ts), for the request's own reader: the page's first read
+   * and the summary room's snapshots are this one function, so the two never disagree. Never marks anything seen.
+   * Work with no project yet is its own entry when this reader may see it and something counts there. */
+  function projectSummary(): BrowserProjectState[] {
+    const projects = sidebarProjects();
+    const actor = requestContext.getStore()?.actor ?? '';
+    const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
+    // A row that needs a person or failed says what the Tasks list says it needs (its own next step); a row at work says
+    // what its agent did last; a finished one says Done.
+    const asking = [...states.values()].flatMap(one => one.families.slice(0, RAIL_TASKS)).filter(one => one.state === 'needs-you' || one.state === 'failed').map(one => one.rootId);
+    const needWords = new Map<string, string>();
+    if (asking.length > 0) {
+      try {
+        // Every row the rail may list, in pages the index allows.
+        for (let at = 0; at < asking.length; at += WORK_INDEX_MAX_LIMIT)
+          for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(at, at + WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
+            needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
+      } catch { /* the rows keep their state's words */ }
+    }
+    // The chime's subjects: an opaque key per obligation and version, scoped to this reader (no words, no ids in it).
+    const keyOf = (...parts: (string | number)[]) => createHash('sha256').update([actor, ...parts].join('\u0000')).digest('base64url').slice(0, 22);
+    // Newest first, so a new ask always has a key however many older ones wait (those were heard when they were new).
+    const asksOf = (state: ProjectState | undefined): BrowserAsk[] => [
+      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ at: one.ask.at, ask: { key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run, at: one.ask.at } }]),
+      ...(state?.flowAsks ?? []).map(one => ({ at: one.at, ask: { key: keyOf('flow', one.card, one.stage, one.entry), task: null, run: null, at: one.at } })),
+    ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, ASKS_PER_PROJECT).map(one => one.ask);
+    const railOf = (state: ProjectState | undefined) => {
+      const families = state?.families ?? [];
+      const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
+        const task = store.getTask(one.rootId);
+        const line = one.state === 'needs-you' || one.state === 'failed' ? needWords.get(one.rootId) ?? null : one.line;
+        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
+      });
+      return { tasks, more: Math.max(0, families.length - RAIL_TASKS), asks: asksOf(state) };
+    };
+    const rows: BrowserProjectState[] = projects.map(one => {
+      const state = states.get(one.path);
+      return { path: one.path, name: one.name, href: `/work?project=${encodeURIComponent(one.path)}`, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
+    });
+    const unplaced = states.get(null);
+    if (unplaced !== undefined && unplaced.state !== 'idle') rows.push({ path: null, name: 'No project', href: '/work', state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
+    return boundProjectSummary(rows);
+  }
+  /** What one account may see now, as the summary room keys it: a narrowed ceiling or grant is a different key, so a
+   * snapshot read for the wider scope never reaches it. Null: no such account. */
+  const projectScopeFor = (account: string): string | null =>
+    store.accountOf(account) === null ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => {
+      // Canonical: what may be seen, never the order it was last opened in.
+      const access = workAccess();
+      return JSON.stringify({ projects: sidebarProjects().map(one => one.path).sort(), access: { ...access, repos: access.repos === null ? null : [...access.repos].sort() } });
+    });
+  /** One account's summary snapshot, read as that account for this exact scope (the summary room's fingerprint): null
+   * when the account is gone or its scope moved. */
+  const projectSummaryFor = (account: string, scope: string): string | null =>
+    projectScopeFor(account) !== scope ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify(projectSummary()));
+
   /** The sidebar's facts for this request. */
   function chromeFor(
     project: string | null,
@@ -1432,19 +1571,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // Enrolled projects first (most recently opened), then the repos this
       // server was told to serve that nobody has opened yet — the switcher
       // lists every project it is allowed to show, each exactly once.
-      projects: (() => {
-        const seen = new Set<string>();
-        const rows: { path: string; name: string }[] = [];
-        for (const one of [
-          ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
-          ...managedRepos().map(path => ({ path, name: projectName(path) })),
-        ]) {
-          if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
-          seen.add(one.path);
-          rows.push(one);
-        }
-        return rows;
-      })(),
+      projects: sidebarProjects(),
       ...(facts === undefined ? {} : { csrf: facts.csrf, returnTo: facts.returnTo }),
       inboxCount: badge.count,
       inboxSaturated: badge.saturated,
@@ -1479,6 +1606,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             },
           }),
       ...(!restricted() && !unscopedMode && managedRepos().length > 0 ? { chat: true } : {}),
+      // Live terminals: offered to an installation-wide operator (the routes prove it again).
+      ...(actor !== undefined && !store.isDemo() && store.isInstanceOperator(actor) ? { code: true } : {}),
       ...(listPane === undefined ? {} : { listPane }),
       ...(scope === undefined ? {} : { scope }),
     };
@@ -1593,6 +1722,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // it closes at once and never waits behind a model turn: a stop must release
   // the owner record well inside the service's exit window (Oct 2: deploys
   // over 0.9.11 found it still held by a killed process).
+  /** Set once the terminal handlers exist (below): drops every socket and ends every program. */
+  const terminalClosing: { close?: () => Promise<Error | null>; problem?: Error | null } = {};
   let codingClosing: Promise<void> | null = null;
   const closeCoding = (): Promise<void> => {
     leadClosing = true;
@@ -1611,7 +1742,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())]).then(() => closeServer(callback)).catch(error => {
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())])
+      // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
+      .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
       else server.emit('error', error);
     });
@@ -1728,6 +1861,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get signInLinks(): ServerRuntime['signInLinks'] { return signInLinks; },
     get linkKey(): ServerRuntime['linkKey'] { return linkKey; },
     get fromThisComputer(): ServerRuntime['fromThisComputer'] { return fromThisComputer; },
+    get freshFactsOf(): ServerRuntime['freshFactsOf'] { return freshFactsOf; },
     get passwordAllowed(): ServerRuntime['passwordAllowed'] { return passwordAllowed; },
     get arrival(): ServerRuntime['arrival'] { return arrival; },
     get cookieSecure(): ServerRuntime['cookieSecure'] { return cookieSecure; },
@@ -1770,6 +1904,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   const remoteRuntime: RemoteRuntime = {
     get identify() { return identify; },
+    get freshFactsOf() { return freshFactsOf; },
     get store() { return store; },
     get admitPasswordSource() { return admitPasswordSource; },
     get admitBearer() { return admitBearer; },
@@ -1787,19 +1922,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get managedRepos() { return managedRepos; },
     get joinSourceOf() { return joinSourceOf; },
     get ssoSettings() { return ssoSettings; },
-    get SSO_FRESH_MS() { return SSO_FRESH_MS; },
     get oauthTokenBudget() { return oauthTokenBudget; },
     get hookContext() { return hookContext; },
     get teamsSourceBudget() { return teamsSourceBudget; },
     get teamsTenantBudget() { return teamsTenantBudget; },
   };
-  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf });
+  const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor, projectScopeFor });
   liveTurnStarted = liveHandlers.turnStarted;
+  // The one upgrade this server takes is a terminal's socket (terminals.ts listens); anything else is dropped.
+  const terminalHandlers = createTerminalHandlers(handlerRuntime, { ...terminals, bus: liveBus, allowedHost, publicOrigin, forwardedSourceOf, server });
+  terminalClosing.close = terminalHandlers.close;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
-    ...remoteHandlers.registrations, ...liveHandlers.registrations,
+    ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

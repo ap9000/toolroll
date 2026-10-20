@@ -64,7 +64,9 @@ export const oauthProjects = (store: Store, tokenId: string): string[] | null =>
 // ---- the HTTP side --------------------------------------------------------------------------------------------------
 
 export type OAuthSession = { name: string; role: "approver" | "viewer"; csrf: string;
-  /** Signed in with an identity provider: its name, and whether it checked the person in the last ten minutes. */
+  /** The account's credential generation this session signed in under: a code is never issued under another. */
+  generation: number;
+  /** Signed in with an identity provider: its name, and whether an explicit re-check made on request awaits one step-up. */
   sso: { label: string; fresh: boolean } | null };
 
 export type OAuthHttpOptions = {
@@ -78,8 +80,9 @@ export type OAuthHttpOptions = {
   session: (request: IncomingMessage) => OAuthSession | null;
   /** A posted form came from a page of this console (its Origin, or Referer, names an allowed host). */
   sameSite: (request: IncomingMessage) => boolean;
-  /** The step-up: the person's password, or (empty) a fresh identity-provider check. */
-  confirm: (session: OAuthSession, typed: string) => boolean;
+  /** The step-up, proved at the moment of consent on this request's live session: the person's password, or (empty)
+   * an explicit identity-provider re-check, spent by this consent. */
+  confirm: (request: IncomingMessage, session: OAuthSession, typed: string) => boolean;
   /** The projects this person may choose: each a project the server knows that they can use now. */
   projectsFor: (account: string) => string[];
   /** The token exchange's budget by source (request-budget.ts): charged once per request, before its body is read or any code or refresh secret is spent. */
@@ -329,7 +332,7 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
       return backToClient(response, origin, one.redirectUri, one.state, { error: "access_denied", error_description: "the person declined" }, "Cancelled. Returning to your MCP client…");
     }
     const account = store.accountOf(session.name);
-    if (account === null || account.revokedAt !== null) return problemPage(response, 403, "Sign in first", "Your account can't sign in. Nothing was allowed.");
+    if (account === null || account.revokedAt !== null || account.generation !== session.generation) return problemPage(response, 403, "Sign in first", "Your access changed. Sign in again; nothing was allowed.");
     const access: TokenAccess = form.get("access") === "act" ? "act" : "read";
     const chosen = [...new Set(form.getAll("project"))];
     const again = (status: number, problem: string) => page(response, status, consentHtml(session, id, one, problem, { access, projects: chosen }));
@@ -339,10 +342,13 @@ export function createOAuthHttp(options: OAuthHttpOptions): (request: IncomingMe
     // Never named back: a project outside the person's access is refused without saying whether it exists.
     if (!chosen.every(path => mine.includes(path))) return again(403, "Choose from your own projects.");
     if (!adapterPolicy({ caller: "cookie", capability: account.role === "approver" ? "act" : "read", viewer: account.role === "viewer" }, "step-up", source => source === "none" && chosen.every(path => mine.includes(path))).ok) return again(403, "Choose from your own projects.");
-    if (!options.confirm(session, form.get("password") ?? "")) return again(403, "Enter your Toolroll password to allow access.");
+    if (!options.confirm(request, session, form.get("password") ?? "")) return again(403, "Enter your Toolroll password to allow access.");
+    // Re-proved after the step-up: the code carries the generation the person consented under, never a newer one.
+    const current = store.accountOf(session.name);
+    if (current === null || current.revokedAt !== null || current.generation !== session.generation) return problemPage(response, 403, "Sign in first", "Your access changed. Sign in again; nothing was allowed.");
     waiting.delete(id);
     const code = randomBytes(32).toString("base64url");
-    store.saveOAuthCode(sha256(code), { client: client.id, account: session.name, generation: account.generation, access, projects: chosen, redirectUri: one.redirectUri, resource: one.resource,
+    store.saveOAuthCode(sha256(code), { client: client.id, account: session.name, generation: session.generation, access, projects: chosen, redirectUri: one.redirectUri, resource: one.resource,
       challenge: one.challenge, expiresAt: new Date(now.getTime() + OAUTH_TIMES.codeMs).toISOString() });
     return backToClient(response, origin, one.redirectUri, one.state, { code }, "Allowed. Returning to your MCP client…");
   }

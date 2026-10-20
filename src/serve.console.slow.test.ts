@@ -847,7 +847,8 @@ describe("the operations console", () => {
       return /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? "";
     };
 
-    // No token: refused, whatever the session says.
+    // No token, once the session's remembered password is forgotten (cockpit B2): refused, whatever the session says.
+    await post("/session/forget-password", cookie, { csrf, return: "/t/t-a" });
     const tokenless = await post("/t/t-a/approve", cookie, { csrf, nonce: await readNonce(), digest, token: "" });
     expect(tokenless.status).toBe(400);
 

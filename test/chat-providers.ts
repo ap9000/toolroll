@@ -27,6 +27,8 @@ export type ChatWorld = {
   origin: string;
   /** How a Merge tapped in chat reaches GitHub. */
   merge: (input: { runId: number; by: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
+  /** Called the moment an app accepts a new message (Telegram today): a test can change the world mid-send. */
+  onSend?: () => void;
 };
 
 export type ChatHarness = {
@@ -91,6 +93,7 @@ export function telegramHarness(world: ChatWorld): ChatHarness {
     if (method === "sendMessage") {
       const message = String(next++);
       log.push({ chat: String(params["chat_id"]), message, text: String(params["text"] ?? ""), buttons, edit: false });
+      world.onSend?.();
       return { ok: true, result: { message_id: Number(message) } };
     }
     if (method === "editMessageText") {

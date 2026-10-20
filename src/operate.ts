@@ -120,6 +120,7 @@ import {
   type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
+import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
@@ -4427,6 +4428,7 @@ async function startConsole(options: {
   registryPath?: string;
   upConsole?: boolean;
   editorLinks?: "vscode";
+  instanceSecret?: () => string | null;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
   const server = createDecisionServer({
@@ -4453,6 +4455,7 @@ async function startConsole(options: {
     ...(options.registryPath === undefined ? {} : { registryPath: options.registryPath }),
     ...(options.upConsole === undefined ? {} : { upConsole: options.upConsole }),
     ...(options.editorLinks === undefined ? {} : { editorLinks: options.editorLinks }),
+    ...(options.instanceSecret === undefined ? {} : { instanceSecret: options.instanceSecret }),
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -7746,7 +7749,7 @@ async function resolveUpApprover(
 }
 
 /** The platform browser opener — detached, silent, never load-bearing. */
-function openBrowser(url: string): void {
+export function openBrowser(url: string): void {
   // TOOLROLL_BROWSER_COMMAND names another program to open it with (it gets the address as its one argument).
   const chosen = envValue(process.env, "BROWSER_COMMAND");
   const command =
@@ -8138,9 +8141,12 @@ async function upCommand(
   // proved set on each request, so its project rail and unified chat move
   // with the live builder instead of freezing at process start.
   const activeRepos = new Set<string>(repos);
+  // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
+  let instanceSecret: string | null = null;
   let console_: Awaited<ReturnType<typeof startConsole>>;
   try {
     console_ = await startConsole({
+      instanceSecret: () => instanceSecret,
       context,
       host: hostFlag,
       port,
@@ -8419,6 +8425,19 @@ async function upCommand(
     login: { account: approverPlan2.passwordFile === null ? approverPlan2.approver : loginAccount(approverPlan2.passwordFile) ?? approverPlan2.approver, file: approverPlan2.passwordFile },
   });
   recordUpConsoleUrl(dirname(context.databaseFile), url, clock());
+  // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
+  // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
+  // isn't offered; the console runs either way.
+  // The socket is taken FIRST: only the console that owns it publishes a record. A second console on the same database
+  // (another port) never replaces the first one's record; it runs, but isn't attached to.
+  let mintedSecret: string | null = null;
+  const instanceSocket = await openInstanceSocket(context.databaseFile,
+    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
+  if (instanceSocket.ok) {
+    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
+    instanceSecret = mintedSecret;
+    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
+  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
   if (fatal === null) {
     if (json) {
       write(
@@ -8483,7 +8502,12 @@ async function upCommand(
   process.removeListener("SIGINT", stop);
   process.removeListener("SIGTERM", stop);
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-  await new Promise<void>(done => console_.server.close(() => done()));
+  if (instanceSocket.ok) instanceSocket.close();
+  if (mintedSecret !== null) clearInstance(store, mintedSecret);
+  let closeProblem: Error | null = null;
+  await new Promise<void>(done => console_.server.close(error => { closeProblem = error ?? null; done(); }));
+  // A live terminal that couldn't be proved stopped (or any other close failure) is said, never "stopped".
+  if (closeProblem !== null && fatal === null) fatal = (closeProblem as Error).message;
 
   if (fatal !== null) {
     // The startup envelope (when json) already went out; the exit code is

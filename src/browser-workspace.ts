@@ -1,6 +1,7 @@
 /** The browser consumes this contract with a type-only import. All HTML is
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
+import { DISPLAY_STATES as DISPLAY_ORDER, type DisplayState, type StateCounts } from './agent-state-words.js';
 import type { TeamSnapshot } from './team-contract.js';
 import type { RunActivity } from './activity-line.js';
 import type { BrandIconId } from './brand-icons.js';
@@ -19,6 +20,74 @@ import type { AcceptLabel, ResultActFacts, ResultActs } from './result-acts.js';
 import type { FirstRunStep, FirstTaskSuggestion, JourneyStep } from './first-run.js';
 
 export type BrowserProject = { name: string; path: string; href: string; knowledgeHref: string };
+/** A project's state for one person (agent-state.ts): the strongest of its counts, the counts, and its tasks with
+ * something live, asking, failed or unread (strongest first, `more` beyond those shown). `path` null: work with no
+ * project yet. */
+export type BrowserProjectState = { path: string | null; name: string; href: string; state: DisplayState; counts: StateCounts;
+  tasks: BrowserRailTask[]; more: number;
+  /** Everything here that needs this person, as opaque keys (one per obligation and version: the chime's subjects),
+   * with the task and agent each is about so a tab already showing one stays quiet. */
+  asks: BrowserAsk[];
+  /** The projects folded together to keep a snapshot inside one live frame: their counts summed, `more` of them. */
+  others?: true };
+
+/** The most a summary snapshot may take in UTF-8 bytes, as the summary room sends it (JSON inside JSON, plus the
+ * frame's envelope), well inside one live frame (live-bus.ts STREAM_LIMIT_BYTES). */
+export const SUMMARY_BUDGET = 24_000;
+/** The frame around a snapshot: its event line, room, revision and the JSON around `at`. Generous on purpose. */
+const SUMMARY_ENVELOPE_BYTES = 512;
+const utf8 = new TextEncoder();
+/** A snapshot's size on the wire: UTF-8 bytes of the JSON string the frame carries, plus its envelope. */
+export function summaryFrameBytes(value: unknown): number {
+  return utf8.encode(JSON.stringify({ at: JSON.stringify(value) })).length + SUMMARY_ENVELOPE_BYTES;
+}
+const clip = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+/**
+ * A summary snapshot that fits one live frame, with every count kept: long words are clipped, then rail tasks become
+ * `more` (from the project listing most), then the quietest projects fold into one `others` entry with their counts
+ * summed. Nothing is dropped silently: whatever is not listed is counted.
+ */
+export function boundProjectSummary(rows: readonly BrowserProjectState[], budget = SUMMARY_BUDGET): BrowserProjectState[] {
+  const size = summaryFrameBytes;
+  let out = rows.map(one => ({ ...one, name: clip(one.name, 80), tasks: one.tasks.map(task => ({ ...task, title: clip(task.title, 120), line: clip(task.line, 120) })) }));
+  while (size(out) > budget) {
+    const fullest = out.reduce((best, one, index) => one.tasks.length > (out[best]?.tasks.length ?? -1) ? index : best, -1);
+    if (fullest === -1 || out[fullest]!.tasks.length === 0) break;
+    const one = out[fullest]!;
+    out[fullest] = { ...one, tasks: one.tasks.slice(0, -1), more: one.more + 1 };
+  }
+  if (size(out) <= budget) return out;
+  // Fold the quietest projects (weakest state last in the list) into one entry until it fits.
+  const strength = (one: BrowserProjectState) => DISPLAY_ORDER.indexOf(one.state);
+  const order = out.map((one, index) => ({ one, index })).sort((a, b) => strength(b.one) - strength(a.one) || b.index - a.index);
+  const folded = new Set<number>();
+  const othersOf = (): BrowserProjectState | null => {
+    if (folded.size === 0) return null;
+    const counts = Object.fromEntries(DISPLAY_ORDER.map(key => [key, [...folded].reduce((sum, index) => sum + out[index]!.counts[key], 0)])) as StateCounts;
+    const state = DISPLAY_ORDER.find(key => key !== 'idle' && counts[key] > 0) ?? 'idle';
+    return { path: null, name: `${folded.size} more ${folded.size === 1 ? 'project' : 'projects'}`, href: '/projects', state, counts, tasks: [], more: folded.size, others: true,
+      asks: [...folded].flatMap(index => out[index]!.asks) };
+  };
+  const assemble = () => { const others = othersOf(); return [...out.filter((_, index) => !folded.has(index)), ...(others === null ? [] : [others])]; };
+  for (const { index } of order) {
+    if (size(assemble()) <= budget) break;
+    folded.add(index);
+  }
+  // Still too large: the oldest asks go last (their counts stay; only their chimes are lost).
+  let assembled = assemble();
+  while (size(assembled) > budget) {
+    const fullest = assembled.reduce((best, one, index) => one.asks.length > (assembled[best]?.asks.length ?? -1) ? index : best, -1);
+    if (fullest === -1 || assembled[fullest]!.asks.length === 0) break;
+    assembled = assembled.map((one, index) => index === fullest ? { ...one, asks: one.asks.slice(0, -1) } : one);
+  }
+  return assembled;
+}
+/** One thing that needs this person, as the chime knows it: an opaque key (never words), and what it is about. */
+export type BrowserAsk = { key: string; task: string | null; run: number | null;
+  /** When it last changed (ISO): one older than the chime's memory reaches back is never news. */
+  at: string };
+/** One task on the rail: its state, and its agent's last act when one is at work (else the state's words). */
+export type BrowserRailTask = { id: string; title: string; href: string; state: DisplayState; line: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */
 export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number;
   /** What the count covers, said aloud and on hover: "3 need you in shop". */
@@ -105,6 +174,8 @@ export type BrowserLimitTile = {
   detail: string; tone: 'neutral' | 'warning' | 'danger'; marks: number[]; title: string | null; href: string | null;
 };
 export type BrowserLimits = { tiles: BrowserLimitTile[] };
+/** The sidebar's usage chip (limits-ui.ts usageChipOf): the most-used subscription window, stale when its reading is old. */
+export type BrowserUsageChip = { text: string; tone: BrowserLimitTile['tone']; stale: boolean; href: string; title: string };
 export type BrowserSettingsView = {
   kind: 'settings';
   said: string | null;
@@ -205,6 +276,12 @@ export type BrowserTaskView = {
   live?: { room: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
+  /** The running attempt's composer (steer-controls.ts): what it takes, said plainly, and its note box when it takes
+   * notes. Pause and Stop stay as `pause` and `stop`. */
+  steering?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
+  /** This task's latest attempts, newest first: a draft this tab wrote for one that has since ended shows with a way
+   * to send it to the next attempt. */
+  steerRecent?: number[];
   /** Pause and Pause and steer, beside Stop: the same exact live Claude build, one request id per form (Pause, the note,
    * Resume), where its latest pause stands (null: running), and until when a paused build can wait before it ends. */
   pause?: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until?: string | null; limitMs?: number | null } | null;
@@ -389,7 +466,9 @@ export type BrowserFlowSentItem = { number: number; title: string; lines: string
 
 export type BrowserFlowCard = {
   id: number; title: string; description: string | null; stage: string; state: "active" | "done" | "cancelled";
-  waiting: string | null; task: { id: string; href: string } | null; createdBy: string; updatedAt: string;
+  waiting: string | null; task: { id: string; href: string;
+    /** Its running attempt's composer (steer-controls.ts), for an approver: what it takes, its controls, its note box. */
+    composer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } } | null; createdBy: string; updatedAt: string;
   canDecide: boolean; outputs: { stage: string; title: string; text: string }[]; history: { text: string; at: string }[];
   /** Where a trigger found it: a GitHub or Linear issue, another flow's card, a button, a schedule. */
   /** `proved` and `host` (v126): how an outside event's delivery was proved ("signed by Sentry", "unsigned") and its
@@ -513,6 +592,11 @@ export type BrowserAgentRow = {
   agent: string;
 };
 export type BrowserAgentQuestion = { id: number; key: string; text: string; action: string };
+export type BrowserAgentControls = {
+  send: "live" | "mailbox" | null; words: string;
+  pause: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until: string | null } | null;
+  stop: { action: string; run: number; label: string } | null;
+};
 export type BrowserAgentDetail = BrowserAgentRow & {
   live: boolean;
   question: BrowserAgentQuestion | null;
@@ -524,6 +608,13 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   filesMore: number;
   /** Steer the running agent (POST /t/<task>/steer): null once it has finished. */
   steer: { action: string; run: number } | null;
+  /** What this running attempt takes (steer-capabilities.ts): how a note reaches it (or why none does), Pause and
+   * Stop for the exact run each names. Null when it is not running or this person may not act. */
+  controls?: BrowserAgentControls | null;
+  /** Cockpit E: this running attempt's checkout, proved to be on this machine — the cd command to copy, and where Show
+   * in Finder posts. Absent off this machine, for a viewer, or once it ends. Nothing is ever launched in it. */
+  /** `reveal` is null where Finder can't be asked (not a Mac): the path and the command stand alone. */
+  checkout?: { path: string; cd: string; reveal: string | null } | null;
   /** Whether this person may reply or steer (an approver, outside the demo); a viewer sees the question but no composer. */
   canAct: boolean;
   /** The task, and once finished the run's own page (its result page when it built one). */
@@ -566,6 +657,13 @@ export type BrowserWorkspace = {
   leadName?: string;
   refreshUrl: string; receipt: { request: string; received: boolean } | null;
   projects: BrowserProject[]; crew: BrowserCrewItem[]; crewTruncated: boolean;
+  /** The sidebar's project states; absent on a sensitive page. The summary room keeps them current. */
+  projectStates?: BrowserProjectState[];
+  /** Cockpit B2: this session's remembered password — minutes left, and where Forget posts. Absent unless it is
+   * live on a direct local request; never on a sensitive page. */
+  fresh?: { minutes: number; forget: string };
+  /** The most-used subscription window, for an operator; absent for everyone else and on a sensitive page. */
+  usage?: BrowserUsageChip;
   conversation: BrowserConversation | null;
   team?: TeamSnapshot;
   focus: { id: string; title: string; html: string } | null;

@@ -134,7 +134,8 @@ describe("fleet chat — the LLM drafts, the ceremony approves (v13)", () => {
     const cookie = await login();
     const csrf = await csrfFrom(cookie);
 
-    // No password → no turn.
+    // No password (and the sign-in's remembered one forgotten: cockpit B2) → no turn.
+    await fetch(url("/session/forget-password"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, return: "/chat" }), redirect: "manual" });
     const refused = await fetch(url("/chat"), {
       method: "POST",
       headers: { cookie, origin: base },

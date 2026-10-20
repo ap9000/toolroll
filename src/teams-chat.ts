@@ -4,7 +4,7 @@ import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
-import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
+import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { roomCommand } from "./chat-rooms.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
@@ -213,6 +213,8 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     const bodies = teamsMessages(voiced ?? text, voiced !== null, one => actions.length || content.proposal ? teamsCard(one, actions) : { type: "message", text: one, textFormat: voiced !== null ? "markdown" : "plain" });
     const activities = `/v3/conversations/${encodeURIComponent(destination)}/activities`;
     // An edit replaces its one message with the first part; any more follow it as new messages.
+    // The watch, at the last moment before the network (cockpit §3).
+    if (heldForWatch(state, store, row.id, event, binding.approver, content, now)) return true;
     let answer = await options.api(target ? "PUT" : "POST", serviceUrl, target ? `${activities}/${encodeURIComponent(target)}` : activities, bodies[0]!);
     for (const more of bodies.slice(1)) answer = await options.api("POST", serviceUrl, activities, more);
     const messageId = target ?? (typeof answer.id === "string" ? answer.id : null);

@@ -43,8 +43,8 @@ test("a note mailed to one attempt and read by the next shows on both, credited 
   expect(onFirst.notes).toEqual([{ id: note, author: "alex", mine: true, at: at(1).toISOString(), text: "start with the retry path", standing: "Read in another attempt", readAt: null }]);
   const onSecond = runNotes(store, { id: second, taskRef }, "robin", at(7));
   expect(onSecond.notes.map(one => [one.id, one.mine, one.standing, one.readAt])).toEqual([
-    [note, false, "Read by the agent at", at(6).toISOString()],
-    [later, true, "Read by the agent at", at(6).toISOString()],
+    [note, false, "Picked up at", at(6).toISOString()],
+    [later, true, "Picked up at", at(6).toISOString()],
   ]);
 });
 

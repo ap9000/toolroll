@@ -1,3 +1,6 @@
+import { steerControlsFor } from "../steer-controls.js";
+import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
+import { instanceHttpAnswer } from "../console-instance.js";
 import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
@@ -426,6 +429,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "reply-closed": { tone: "error", text: "That question was already answered." },
     "reply-stale": { tone: "error", text: "This attempt ended before your reply, so nothing was sent." },
     "reply-invalid": { tone: "error", text: "Write a reply of up to 1,500 characters." },
+    "steer-no-notes": { tone: "error", text: "This agent takes no notes right now, so nothing was sent. Stop it to change its course." },
+    stopping: { tone: "info", text: "Stopping. The work so far is kept." },
+    pausing: { tone: "info", text: "Pausing. It stops at the end of its current step." },
+    "pausing-with-note": { tone: "info", text: "Pausing. Your note goes to it as soon as it stops." },
+    "pause-note-stale": { tone: "error", text: "That form was already used, so your note was not sent. It is still in the box — send it again." },
+    resuming: { tone: "info", text: "Resuming. It carries on where it stopped." },
+    revealed: { tone: "info", text: "Shown in Finder." },
+    "reveal-refused": { tone: "error", text: "That checkout couldn't be shown: it isn't this attempt's running checkout on this computer any more." },
+    "reveal-mac-only": { tone: "error", text: "Show in Finder works on a Mac. Copy the command instead." },
+    "reveal-failed": { tone: "error", text: "Finder didn't show it. The path is above; copy the command instead." },
   };
 
   // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
@@ -442,6 +455,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         // Opening a finished agent is viewing it: it leaves this person's unread Done.
         if (facts.outcome !== null && markAgentSeen(store, who.name, facts.runId, now)) facts.seen = true;
         const live = facts.outcome === null;
+        const composer = live ? steerControlsFor(store, facts.taskId, facts.runId, now, who.role === "approver") : null;
         const sealed = live ? null : sealedDiffOf(store, evidenceRoot, facts.runId);
         // A reply's own word first; otherwise the note that the agent asked past the questions cap.
         const said = AGENT_SAID[url.searchParams.get("said") ?? ""] ?? (facts.questionNote === null ? null : { tone: "info" as const, text: facts.questionNote });
@@ -454,7 +468,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           peek: live && options.localRunner !== undefined && run!.runner === options.localRunner && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
           files: (sealed?.files ?? []).slice(0, 30).map(one => ({ path: one.path, added: one.additions, removed: one.deletions })),
           filesMore: Math.max(0, (sealed?.fileCount ?? 0) - 30),
-          steer: live ? { action: `${taskHref(facts.taskId)}/steer`, run: facts.runId } : null,
+          // A note goes only to an attempt that reads notes (steer-controls.ts); the composer says what it takes.
+          steer: composer?.steer ?? null,
+          controls: composer?.controls ?? null,
+          checkout: (() => {
+            if (!live || who.role !== "approver" || store.isDemo()) return null;
+            const proof = localCheckoutOf(store, facts.runId, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
+            // Show in Finder only where it can work (a Mac); elsewhere the path and the command stand alone.
+            return proof.ok ? { path: proof.path, cd: cdCommandOf(proof.path), reveal: canReveal(options.revealPath !== undefined) ? `/r/${facts.runId}/reveal` : null } : null;
+          })(),
           canAct: who.role === "approver" && !store.isDemo(),
           taskHref: taskHref(facts.taskId),
           // The run's own address: a finished result opens on its result page, anything else on its record.
@@ -923,6 +945,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         who.via === "cookie" ? (path: string) => projectCheckLevel(store, path).level : undefined),
     );
   }
+  async function instanceEdge(ctx: EdgeContext): Promise<void> {
+    const { request, response, url } = ctx;
+    const secret = options.instanceSecret?.() ?? null;
+    if (secret === null) return respond(response, 404, "application/json; charset=utf-8", JSON.stringify({ error: "not-up" }));
+    // Bound to what THIS console saw as the receiving end of this very connection — never the Host header.
+    const answer = instanceHttpAnswer(secret, url.searchParams.getAll("c").length === 1 ? url.searchParams.get("c") : null, { address: request.socket.localAddress, port: request.socket.localPort });
+    response.setHeader("Cache-Control", "no-store");
+    return respond(response, answer.status, "application/json; charset=utf-8", answer.body);
+  }
+
   async function healthzEdge(ctx: EdgeContext): Promise<void> {
     const { response, method } = ctx;
     return healthz(store, response, method === 'HEAD');
@@ -988,6 +1020,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.onboard-confirm": onboardConfirm,
   }, {
     "edge.healthz": healthzEdge,
+    "edge.instance": instanceEdge,
     "edge.browser-asset": browserAsset,
     "edge.workspace-style": workspaceStyle,
     "edge.install-asset": installAsset,

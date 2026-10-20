@@ -9,7 +9,7 @@
  * Imports the store's types only (no runtime cycle): the store builds its chats on it.
  */
 import { join } from "node:path";
-import { watchedPing } from "./agent-board.js";
+import { neverHeld, watchedPing } from "./agent-board.js";
 import { ChatCore } from "./chat-core.js";
 import { readChatMessageBody, readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatMessageBody } from "./contracts/chat-content.js";
 import { isTelegramProgressNotification, proposalTaskOf, readNotification, readNotificationReceipt } from "./notification-rows.js";
@@ -898,15 +898,42 @@ export class ChatMessages extends ChatCore {
             (row.run !== null && this.store.getRun(row.run)?.taskRef !== row.taskRef)) return TELEGRAM_HOLD_REASONS.task;
       }
     }
-    if (row.taskRef !== null) {
+    // A security alert never waits behind its task's earlier pings (one may be held while its person watches the agent).
+    if (row.taskRef !== null && !neverHeld(String(current["kind"]))) {
       // Skipped history never fences what follows it: it is settled.
-      const earlier = this.db.prepare(`SELECT n.id FROM notification n
+      const earlier = this.db.prepare(`SELECT n.*, d.next_attempt_at AS held_until, d.last_error AS held_error FROM notification n
         LEFT JOIN notification_delivery d ON d.notification = n.id AND d.destination = ?
         WHERE n.task_ref = ? AND n.id < ? AND n.resolved_at IS NULL AND ${TELEGRAM_UNSETTLED}`)
         .all(row.destination, row.taskRef, row.id);
-      if (earlier.some(one => !batch.includes(Number(one["id"])))) return TELEGRAM_HOLD_REASONS.order;
+      // One a watch is holding (cockpit §3) keeps nothing behind it: it goes when the watch ends, and what followed
+      // it about another attempt is not that watch's to delay.
+      // Held: deferred by a watch (a future next attempt with no failure behind it), or watched right now.
+      const held = (one: Record<string, unknown>) => (one["held_until"] != null && String(one["held_until"]) > now.toISOString() && one["held_error"] == null)
+        || typeof watchedPing(this.store, readNotification(one), binding.approver, now) === "object";
+      if (earlier.some(one => !batch.includes(Number(one["id"])) && !held(one))) return TELEGRAM_HOLD_REASONS.order;
     }
     return null;
+  }
+
+  /**
+   * The watch at the final fence (cockpit §3, R11): right before the network, a person who has since opened the
+   * agent this ping is about holds it — the claim is released with the watch's end as its next attempt, no attempt
+   * spent — and news about a finished run they have now seen settles quietly. "send": nothing changed.
+   */
+  watchFence(row: TelegramDelivery, binding: TelegramBinding, owner: string, now: Date): "send" | "held" | "skipped" {
+    const current = this.db.prepare("SELECT * FROM notification WHERE id = ?").get(row.id);
+    if (current === undefined) return "send";
+    const decided = watchedPing(this.store, readNotification(current), binding.approver, now);
+    if (decided === "send") return "send";
+    const where = "WHERE notification = ? AND destination = ? AND claim_owner = ? AND claim_generation = ? AND delivered_at IS NULL";
+    if (decided === "skip") {
+      this.db.prepare(`UPDATE notification_delivery SET receipt = '${TELEGRAM_SKIPPED_QUIET}', claim_owner = NULL, claim_expires_at = NULL ${where}`)
+        .run(row.id, row.destination, owner, row.claimGeneration);
+      return "skipped";
+    }
+    this.db.prepare(`UPDATE notification_delivery SET next_attempt_at = ?, claim_owner = NULL, claim_expires_at = NULL ${where}`)
+      .run(decided.hold, row.id, row.destination, owner, row.claimGeneration);
+    return "held";
   }
 
   claimHeld(row: TelegramDelivery, owner: string, now: Date): boolean {

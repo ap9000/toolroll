@@ -97,6 +97,31 @@ describe("the Agents board", () => {
     expect(host.querySelector("[data-agent-composer]")).toBeNull();
   });
 
+  test("the controls offer what the attempt takes: Pause or Resume and Stop for the exact run, and words where notes can't go", () => {
+    const requests: [string, string, string] = ["web-a", "web-b", "web-c"];
+    render(board(detail({ question: null, controls: { send: "live", words: "Notes reach the agent right away.",
+      pause: { action: "/t/t-7/pause", run: 7, state: null, requests, until: null }, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })));
+    expect(host.querySelector("[data-agent-capability]")?.textContent).toBe("Notes reach the agent right away.");
+    const pause = host.querySelector<HTMLFormElement>("[data-agent-pause]")!;
+    expect([...pause.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value])).toEqual(expect.arrayContaining([["run", "7"], ["request", "web-a"], ["return", "agents"]]));
+    expect(host.querySelector<HTMLFormElement>('[data-agent-stop="7"]')?.getAttribute("action")).toBe("/t/t-7/stop");
+    expect(host.querySelector('[data-agent-composer="steer"]')).not.toBeNull();
+    // Paused: Resume instead of Pause.
+    act(() => root?.render(createElement(AgentsView, { view: board(detail({ question: null, controls: { send: "live", words: "Notes reach the agent right away.",
+      pause: { action: "/t/t-7/pause", run: 7, state: "paused", requests, until: null }, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })) })));
+    expect(host.querySelector("[data-agent-pause]")).toBeNull();
+    expect(host.querySelector<HTMLFormElement>("[data-agent-resume]")?.querySelector<HTMLInputElement>('input[name="mode"]')?.value).toBe("resume");
+    // Repairing its handoff: no box, the words say why, and Stop names the owning attempt.
+    act(() => root?.render(createElement(AgentsView, { view: board(detail({ question: null, steer: null, controls: { send: null,
+      words: "It's repairing its handoff and reads no notes now. Stop this attempt to change its course.", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop this attempt" } } })) })));
+    expect(host.querySelector("[data-agent-composer]")).toBeNull();
+    expect(host.querySelector("[data-agent-unsent]")).toBeNull();
+    expect(host.querySelector('[data-agent-stop="7"]')?.textContent).toBe("Stop this attempt");
+    // A viewer gets no controls.
+    act(() => root?.render(createElement(AgentsView, { view: board(detail({ canAct: false, controls: { send: "mailbox", words: "x", pause: null, stop: { action: "/t/t-7/stop", run: 7, label: "Stop" } } })) })));
+    expect(host.querySelector("[data-agent-controls]")).toBeNull();
+  });
+
   test("the opened agent's room nudges the workspace to read again", async () => {
     const nudged = vi.fn();
     window.addEventListener(WORKSPACE_NUDGE, nudged);
@@ -112,11 +137,67 @@ describe("the opened agent's conversation", () => {
   const at = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
   const answer = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
 
+  test("the terminal view: the same records, one dense line each, output tails, notes inline, markup never rendered; the choice is kept", async () => {
+    try { localStorage.removeItem("toolroll.agent.view"); } catch { /* none */ }
+    const notes = [{ id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Picked up at", readAt: at(13) }];
+    const out = Array.from({ length: 20 }, (_, n) => `line ${n + 1}`);
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => reads++ > 0 ? answer({ records: [], nextOffset: 400, gen: "records:1:2", final: false, notes, older: 0 }) : answer({ nextOffset: 400, gen: "records:1:2", final: false, older: 0, notes, records: [
+      { k: "open", at: at(0), detail: "commands" },
+      { k: "say", at: at(1), t: ["Looking at <b>the form</b>"] },
+      { k: "step", at: at(2), id: "s1", kind: "read", target: "src/form.ts" },
+      { k: "done", at: at(3), id: "s1", ok: true },
+      { k: "step", at: at(10), id: "s2", kind: "command", target: "npm test" },
+      { k: "done", at: at(14), id: "s2", ok: false, out },
+      { k: "step", at: at(20), id: "s3", kind: "command", target: "npm run lint" },
+    ] })));
+    await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view: board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })) })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    const toTerminal = [...host.querySelectorAll<HTMLButtonElement>('[data-conversation-view] button')].find(one => one.textContent === "Terminal")!;
+    await act(async () => { toTerminal.click(); });
+    const terminal = host.querySelector("[data-terminal]")!;
+    expect([...terminal.querySelectorAll("[data-terminal-step]")].map(one => one.firstChild?.textContent)).toEqual(["› Read src/form.ts", "$ npm test", "$ npm run lint"]);
+    const failed = terminal.querySelectorAll("[data-terminal-step]")[1]!;
+    expect(failed.textContent).toContain("[failed]");
+    expect(failed.querySelector("[data-terminal-output]")?.textContent).toBe(`… 8 earlier lines\n${out.slice(-12).join("\n")}`);
+    expect(terminal.querySelectorAll("[data-terminal-step]")[2]!.textContent).toContain("[running]");
+    expect(terminal.querySelector("[data-terminal-note]")?.textContent).toContain("» you: Skip the flaky test");
+    // The note sits between the steps it came between.
+    const order = [...terminal.children].map(one => one.hasAttribute("data-terminal-note") ? "note" : one.getAttribute("data-terminal-step") ?? "say");
+    expect(order).toEqual(["say", "read", "command", "note", "command"]);
+    // The agent's words are text, never markup.
+    expect(terminal.querySelector("b")).toBeNull();
+    expect(terminal.querySelector("[data-terminal-say]")?.textContent).toBe("Looking at <b>the form</b>");
+    expect(localStorage.getItem("toolroll.agent.view")).toBe("terminal");
+    localStorage.removeItem("toolroll.agent.view");
+  });
+
+  test("the terminal view keeps the project's command consent: a run that hid commands shows no command or output, and says so", async () => {
+    localStorage.setItem("toolroll.agent.view", "terminal");
+    let reads = 0;
+    // The recorder kept no command text for a base-tier run: its steps arrive without targets or output.
+    vi.stubGlobal("fetch", vi.fn(async () => reads++ > 0 ? answer({ records: [], nextOffset: 200, gen: "records:1:2", final: false, notes: [], older: 0 }) : answer({ nextOffset: 200, gen: "records:1:2", final: false, older: 0, notes: [], records: [
+      { k: "open", at: at(0), detail: "base" },
+      { k: "step", at: at(1), id: "s1", kind: "command" },
+      { k: "done", at: at(2), id: "s1", ok: true },
+      { k: "cut", at: at(3) },
+    ] })));
+    await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view: board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })) })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    const terminal = host.querySelector("[data-terminal]")!;
+    expect(terminal).not.toBeNull();
+    expect(terminal.querySelector("[data-terminal-step]")?.textContent).not.toContain("$");
+    expect(terminal.querySelector("[data-terminal-output]")).toBeNull();
+    expect(terminal.querySelector("[data-terminal-marker]")).not.toBeNull();
+    expect(host.querySelector('[data-conversation-detail="base"]')?.textContent).toContain("Commands were hidden for this run.");
+    localStorage.removeItem("toolroll.agent.view");
+  });
+
   test("steps show their target and how they ended, a failed command opens to its output, and notes sit in time order with their standing", async () => {
     const fetched: string[] = [];
     const notes = [
-      { id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Read by the agent at", readAt: at(13) },
-      { id: 6, author: "robin", mine: false, at: at(30), text: "Ping me when done", standing: "Waiting for the agent to read it", readAt: null },
+      { id: 5, author: "alex", mine: true, at: at(12), text: "Skip the flaky test", standing: "Picked up at", readAt: at(13) },
+      { id: 6, author: "robin", mine: false, at: at(30), text: "Ping me when done", standing: "Sent · not picked up yet", readAt: null },
     ];
     vi.stubGlobal("fetch", vi.fn(async (input: string) => {
       fetched.push(input);
@@ -148,14 +229,14 @@ describe("the opened agent's conversation", () => {
     expect(order).toEqual(["src/form.ts", "npm test", "5", "npm run lint", "6"]);
     expect(pane.querySelector('[data-conversation-note="5"]')?.textContent).toContain("You");
     expect(pane.querySelector('[data-conversation-note="6"]')?.textContent).toContain("robin");
-    expect(pane.querySelector('[data-conversation-note="6"] [data-note-standing]')?.textContent).toBe("Waiting for the agent to read it");
+    expect(pane.querySelector('[data-conversation-note="6"] [data-note-standing]')?.textContent).toBe("Sent · not picked up yet");
     expect(host.querySelector("[data-conversation-detail]")).toBeNull();
     // The next read carries the offset and the file it belongs to.
     expect(fetched[1]).toBe("/r/7?fragment=transcript&shape=records&from=400&gen=records%3A1%3A2");
   });
 
   test("a run that hid commands says so; another machine's run still shows its notes; an unknown end is never success", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer({ error: "off", older: 0, notes: [{ id: 1, author: "alex", mine: true, at: at(1), text: "Hello", standing: "Waiting for the agent to read it", readAt: null }] })));
+    vi.stubGlobal("fetch", vi.fn(async () => answer({ error: "off", older: 0, notes: [{ id: 1, author: "alex", mine: true, at: at(1), text: "Hello", standing: "Sent · not picked up yet", readAt: null }] })));
     render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(host.querySelector('[data-conversation-note="1"]')).not.toBeNull();
@@ -239,7 +320,7 @@ describe("after the attempt ends", () => {
     act(() => root?.unmount());
     root = null;
     vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ records: [], nextOffset: 0, gen: "g", final: false, older: 0, notes: [{ id: 1, author: "alex", mine: true, at: new Date(NOW).toISOString(), text: "Hi", standing: "Waiting for the agent to read it", readAt: null }] }) } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ records: [], nextOffset: 0, gen: "g", final: false, older: 0, notes: [{ id: 1, author: "alex", mine: true, at: new Date(NOW).toISOString(), text: "Hi", standing: "Sent · not picked up yet", readAt: null }] }) } as Response)
       .mockRejectedValue(new TypeError("network down")));
     render(board(detail({ question: null, transcript: "/r/7?fragment=transcript&shape=records" })));
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });

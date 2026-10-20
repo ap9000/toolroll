@@ -87,6 +87,9 @@ export interface RouteDeclaration {
   readonly roleRefusal?: RouteRefusal;
   /** The largest form body a POST here reads (else the console's default). */
   readonly bodyCap?: number;
+  /** Cockpit B2: whether a password remembered on this session may stand in here (`allowlist`), or never. Only the
+   * allowlisted acts run their check inside `withFreshness` (scope.ts); every other step-up is `never`. */
+  readonly freshness: "never" | "allowlist";
 }
 
 type Options = Partial<Omit<RouteDeclaration, "id" | "domain" | "method" | "pattern" | "stage">>;
@@ -119,6 +122,7 @@ function row(stage: Stage, domain: Domain, id: string, method: RouteMethod, patt
     roleBrowser: options.roleBrowser ?? false,
     ...(options.roleRefusal === undefined ? {} : { roleRefusal: options.roleRefusal }),
     ...(options.bodyCap === undefined ? {} : { bodyCap: options.bodyCap }),
+    freshness: options.freshness ?? "never",
   });
 }
 const edge = (domain: Domain, id: string, method: RouteMethod, path: string, options: Options = {}) => row("edge", domain, id, method, path.startsWith("^") ? path : exact(path), options);
@@ -144,6 +148,9 @@ const LARGE_FORM = 1024 * 1024;
 // ---- edge: answered before the console's sign-in ---------------------------------------------------------------
 // Ordered exactly as the server checks them: health and webhooks before the Host check, the rest after it.
 edge("pages", "edge.healthz", "GET,HEAD", "/healthz", { host: "before" });
+// Cockpit B1: the running console proves itself to this installation's CLI (a fresh challenge, answered with the
+// instance secret and the address this connection was received on). It reveals nothing and changes nothing.
+edge("pages", "edge.instance", "GET", "/__instance");
 edge("remote", "edge.telegram-hook", "POST", "/hooks/telegram", { callers: ["service"], host: "before", proof: "adapter" });
 edge("remote", "edge.flow-form", "GET,HEAD", "^\\/hooks\\/form\\/[^/]+$", { project: "flow", sample: "/hooks/form/abc", host: "before", proof: "adapter" });
 edge("remote", "edge.flow-form-send", "POST", "^\\/hooks\\/form\\/[^/]+$", { project: "flow", sample: "/hooks/form/abc", host: "before", proof: "adapter" });
@@ -162,9 +169,9 @@ edge("remote", "edge.team-read", "GET", "/api/team", { callers: ["cookie", "bear
 edge("remote", "edge.team-send", "POST", "/api/team", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.cli", "POST", "/api/cli", { callers: ["bearer"], scope: "read", project: "adapter", proof: "adapter" });
 edge("remote", "edge.teams", "POST", "/teams/messages", { callers: ["service"], proof: "adapter" });
-edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
+edge("pages", "edge.browser-asset", "GET,HEAD", "^\\/assets\\/(workspace\\.js|workspace\\.css|terminal\\.js|terminal\\.css|THIRD_PARTY_NOTICES\\.txt)$", { sample: "/assets/workspace.js" });
 edge("pages", "edge.workspace-style", "GET,HEAD", "^\\/assets\\/workspace-[0-9a-f]{64}\\.css$", { sample: `/assets/workspace-${"0".repeat(64)}.css` });
-edge("pages", "edge.install-asset", "GET", "^\\/(manifest\\.webmanifest|favicon\\.ico|icon\\.svg|icon-192\\.png|icon-512\\.png|apple-touch-icon\\.png|sw\\.js)$", { sample: "/sw.js" });
+edge("pages", "edge.install-asset", "GET", "^\\/(manifest\\.webmanifest|favicon\\.ico|icon\\.svg|icon-attention\\.svg|icon-192\\.png|icon-512\\.png|apple-touch-icon\\.png|sw\\.js)$", { sample: "/sw.js" });
 edge("pages", "edge.font", "GET", "^\\/fonts\\/geist-(sans|mono)-(400|500|600)\\.woff2$", { sample: "/fonts/geist-sans-400.woff2" });
 edge("pages", "edge.desktop-health", "GET", "/desktop/health");
 edge("people", "edge.login-page", "GET", "/login");
@@ -187,6 +194,14 @@ get("tasks", "code.session", `^\\/code\\/${SESSION}$`, { ...CODING, sample: `/co
 for (const one of ["state", "changes", "ship"]) get("tasks", `code.${one}`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING, sample: `/code/${"a".repeat(32)}/${one}` });
 // Any other coding address answers "not found" after the same access check.
 get("tasks", "code.other", "^\\/code\\/.*$", { ...CODING, sample: "/code/unknown" });
+// Live terminals (docs/plans/live-terminal.md): an installation-wide operator's own, from a browser. The handlers prove
+// the operator's generation, the terminal's owner and its project; the socket's upgrade is checked in terminals.ts.
+const TERM = { ...free, callers: ["cookie"], project: "none", limited: "deny", ...operator("Terminals are for installation-wide operators.", "/") } as const;
+const TERMINAL = "[a-f0-9]{32}";
+get("tasks", "term.page", "/term", TERM);
+get("tasks", "term.state", "/term/state", TERM);
+get("tasks", "term.session", `^\\/term\\/${TERMINAL}$`, { ...TERM, sample: `/term/${"a".repeat(32)}` });
+get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sample: `/term/${"a".repeat(32)}/socket` });
 get("pages", "projects.browse", "/projects/browse", free);
 get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie"], callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "listing repositories feeds a browser session's act" },
   ...anyApprover("your login can watch — adding projects is an approver's act") });
@@ -289,8 +304,13 @@ for (const one of ["approve", "change", "revise", "complete"]) post("chat", `cha
 post("settings", "provider.resume", "^\\/providers\\/[a-z]+\\/resume$", { sample: "/providers/codex/resume" });
 post("settings", "settings.updates-dismiss", "/settings/updates/dismiss");
 post("settings", "settings.updates-checks", "/settings/updates/checks");
+// Cockpit B2: Forget ends this session's remembered password now.
+// Forget is about the caller's own session only: anyone signed in with a browser may use it (a viewer, a project-limited person).
+post("settings", "session.forget-password", "/session/forget-password", { ...free, limited: "self", viewer: true, callers: ["cookie"] });
 const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
 post("tasks", "code.start", "/code/start", CODING_ACT);
+post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });
+for (const one of ["close", "remove"]) post("tasks", `term.${one}`, `^\\/term\\/${TERMINAL}\\/${one}$`, { ...TERM, sample: `/term/${"a".repeat(32)}/${one}` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Any other coding action answers "not found" after the same access check.
 post("tasks", "code.act-other", "^\\/code(\\/.*)?$", { ...CODING_ACT, sample: "/code/unknown" });
@@ -404,7 +424,7 @@ post("tasks", "task.act.unhold", `^\\/t\\/${TASK}\\/unhold$`, { project: "task",
 post("tasks", "task.act.requeue", `^\\/t\\/${TASK}\\/requeue$`, { project: "task", limited: "resource", sample: "/t/one/requeue" });
 post("tasks", "task.act.cancel", `^\\/t\\/${TASK}\\/cancel$`, { project: "task", limited: "resource", sample: "/t/one/cancel" });
 post("tasks", "task.act.scope", `^\\/t\\/${TASK}\\/scope$`, { project: "task", limited: "resource", sample: "/t/one/scope", bodyCap: LARGE_FORM });
-post("tasks", "task.act.approve", `^\\/t\\/${TASK}\\/approve$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/approve" });
+post("tasks", "task.act.approve", `^\\/t\\/${TASK}\\/approve$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/approve", freshness: "allowlist" });
 post("tasks", "task.act.plan", `^\\/t\\/${TASK}\\/plan$`, { project: "task", limited: "resource", sample: "/t/one/plan" });
 post("tasks", "task.act.plan-edit", `^\\/t\\/${TASK}\\/plan-edit$`, { project: "task", limited: "resource", sample: "/t/one/plan-edit" });
 post("tasks", "task.act.next", `^\\/t\\/${TASK}\\/next$`, { project: "task", limited: "resource", sample: "/t/one/next" });
@@ -434,14 +454,18 @@ const LEAD_WORDS: Record<string, string> = { identity: "An approver names their 
 for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`, approver(LEAD_WORDS[one]!, "/settings/lead"));
 post("chat", "chat.config", "/chat/config", { scope: "step-up" });
 for (const one of ["mint", "follow", "end", "stop"]) post("chat", `chat.mate-${one}`, `/chat/mate/${one}`, { callers: ["cookie"], ...(one === "mint" ? { scope: "step-up" as const } : {}) });
-for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}` });
+// Confirming a proposal may approve a scope (scope_approve): that one act takes the same standard-approval freshness as
+// /t/:id/approve (chat-actions.ts scopes it); every other operation it confirms still needs a password typed now.
+for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}`, ...(one === "confirm" ? { freshness: "allowlist" as const } : {}) });
 for (const one of ["confirm", "dismiss"]) post("chat", `coordinator.proposal.${one}`, `^\\/proposals\\/${ID}\\/${one}$`, { sample: `/proposals/1/${one}` });
-post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation" });
+post("chat", "chat.send", "/chat", { scope: "step-up", project: "conversation", freshness: "allowlist" });
 post("chat", "chat.file", "^\\/chat\\/file\\/[0-9a-f]{32}$", { scope: "step-up", sample: `/chat/file/${"a".repeat(32)}` });
 post("chat", "chat.ack-send", `^\\/chat\\/ack\\/${ID}$`, { scope: "step-up", sample: "/chat/ack/1" });
 for (const one of ["prepare", "preview", "import", "save"]) post("flows", `recipes.${one}-send`, `/recipes/${one}`, { limited: "collection" });
 post("flows", "recipes.launch-send", "/recipes/launch", { limited: "collection" });
 for (const one of ["note", "comment", "revise", "draft-repair", "checks", "add-tests"]) post("tasks", `run.act.${one}`, `^\\/r\\/${ID}\\/${one}$`, { project: "run", limited: "resource", sample: `/r/1/${one}` });
+// Cockpit E: reveal a running attempt's proved checkout in Finder (nothing is launched in it).
+post("tasks", "run.act.reveal", `^\\/r\\/${ID}\\/reveal$`, { project: "run", limited: "resource", callers: ["cookie"], sample: "/r/1/reveal", ...approver("Only an approver can show an agent's files.") });
 post("tasks", "session.editor-links", "/session/editor-links", { viewer: true });
 post("tasks", "incident.resolve", `^\\/i\\/${ID}\\/resolve$`, { project: "incident", sample: "/i/1/resolve" });
 

@@ -4,11 +4,12 @@
  * running reply, the team conversation — and the page keeps one EventSource
  * for all of them. Events are hints: a `change` asks a part to read itself
  * again the usual way; nothing here carries page content except the chat's
- * reply preview.
+ * reply preview and the summary room's project counts (its `change` carries them).
  *
- * Rooms are named `<kind>[:<id>][?<params>]`. A hidden tab closes the stream
- * (it isn't "here", and it frees one of the browser's few connections) and
- * reopens it when shown. The browser reconnects a dropped stream by itself;
+ * Rooms are named `<kind>[:<id>][?<params>]`. A hidden tab leaves every room
+ * but the summary (it isn't "here", and that frees the browser's few
+ * connections) and rejoins them when shown; the summary stays, so the tab's
+ * title can keep its count. The browser reconnects a dropped stream by itself;
  * when it gives up, every room hears `lost`, so a part can read once and show
  * what the read says (signed out, offline).
  *
@@ -31,16 +32,18 @@ export const roomName = (kind: string, id?: string | number | null, params?: Rec
 };
 
 class LiveHub {
-  private readonly subscriptions = new Map<number, { room: string; listener: LiveListener }>();
+  private readonly subscriptions = new Map<number, { room: string; listener: LiveListener; hidden: boolean }>();
   private next = 0;
   private source: EventSource | null = null;
   private url = "";
   private scheduled = false;
   private watching = false;
 
-  subscribe(room: string, listener: LiveListener): () => void {
+  /** `hidden`: the room stays joined while the tab is hidden (the summary: a count, never a watch). Every other room
+   * leaves with the tab, so a hidden tab never counts as watching anything. */
+  subscribe(room: string, listener: LiveListener, hidden = false): () => void {
     const id = this.next++;
-    this.subscriptions.set(id, { room, listener });
+    this.subscriptions.set(id, { room, listener, hidden });
     this.schedule();
     return () => { this.subscriptions.delete(id); this.schedule(); };
   }
@@ -52,8 +55,8 @@ class LiveHub {
     queueMicrotask(() => { this.scheduled = false; this.reconcile(); });
   }
 
-  private wanted(): string {
-    const rooms = [...new Set([...this.subscriptions.values()].map(one => one.room))].sort();
+  private wanted(hidden: boolean): string {
+    const rooms = [...new Set([...this.subscriptions.values()].filter(one => !hidden || one.hidden).map(one => one.room))].sort();
     return rooms.length === 0 ? "" : `/live?${rooms.map(room => `room=${encodeURIComponent(room)}`).join("&")}`;
   }
 
@@ -64,7 +67,7 @@ class LiveHub {
       document.addEventListener("visibilitychange", () => this.reconcile());
       window.addEventListener("online", () => this.reconcile());
     }
-    const url = document.hidden ? "" : this.wanted();
+    const url = this.wanted(document.hidden);
     if (url === this.url && (url === "" || this.source !== null)) return;
     this.source?.close();
     this.source = null;
@@ -97,12 +100,24 @@ class LiveHub {
 
 const hub = new LiveHub();
 
-/** Join a room for as long as the component shows it; null joins nothing. The listener may change freely. */
-export function useLiveRoom(room: string | null, listener: LiveListener): void {
+/** Rooms a server-rendered region may ask the page's stream for (chrome.ts regionScript): it pushes the name onto
+ * `window.__soLiveRooms`, before or after this module loads, and hears its events as `so:live`. */
+const REGION_ROOMS = new Set(["workspace"]);
+if (typeof window !== "undefined") {
+  const holder = window as unknown as { __soLiveRooms?: unknown };
+  const join = (room: unknown): number => { if (typeof room === "string" && REGION_ROOMS.has(room)) hub.subscribe(room, () => {}); return 0; };
+  const asked = holder.__soLiveRooms;
+  if (Array.isArray(asked)) for (const room of asked) join(room);
+  holder.__soLiveRooms = { push: join };
+}
+
+/** Join a room for as long as the component shows it; null joins nothing. The listener may change freely.
+ * `keepWhenHidden`: stay joined while the tab is hidden (only for a room that is never a watch). */
+export function useLiveRoom(room: string | null, listener: LiveListener, keepWhenHidden = false): void {
   const current = useRef(listener);
   current.current = listener;
   useEffect(() => {
     if (room === null) return;
-    return hub.subscribe(room, (event, data) => current.current(event, data));
-  }, [room]);
+    return hub.subscribe(room, (event, data) => current.current(event, data), keepWhenHidden);
+  }, [room, keepWhenHidden]);
 }
