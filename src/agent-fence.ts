@@ -43,7 +43,7 @@
 import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -129,8 +129,12 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     const state = dirname(database);
     for (const suffix of ["", "-wal", "-shm", "-journal"]) if (existsSync(database + suffix)) fence.add(database + suffix);
     // The console's run folder (its discovery sockets, console-instance.ts) beside the database, wherever that is: no
-    // build may add, rename or remove anything in it while a console listens there.
-    if (existsSync(join(state, INSTANCE_DIR))) fence.add(join(state, INSTANCE_DIR));
+    // build may add, rename or remove anything in it while a console listens there. It is made (owner-only) before any
+    // build starts if it isn't there yet, so a build can never be the one to create it — and the fence always has a
+    // real folder to cover (a Linux bind needs one).
+    const runFolder = join(state, INSTANCE_DIR);
+    if (!existsSync(runFolder)) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below if it exists */ } }
+    if (existsSync(runFolder)) fence.add(runFolder);
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not

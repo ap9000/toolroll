@@ -44,6 +44,18 @@ describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket
   beforeEach(() => { dir = realpathSync(mkdtempSync(join("/tmp", "so-cif-"))); });
   afterEach(() => { close?.(); close = null; store?.close(); store = null; rmSync(dir, { recursive: true, force: true }); });
 
+  test("the run folder is made, owner-only, before a build could make it, and fenced even before any console starts", () => {
+    const databaseFile = join(dir, "custom", "state.sqlite");
+    mkdirSync(join(dir, "custom"), { mode: 0o700 });
+    store = openStore(databaseFile);
+    const run = instanceRunDir(databaseFile);
+    expect(() => lstatSync(run)).toThrow();
+    const fence = agentFence({ databaseFile, worktree: null, home: join(dir, "home") });
+    expect(lstatSync(run).isDirectory()).toBe(true);
+    expect(lstatSync(run).mode & 0o777).toBe(0o700);
+    expect(fence).toContain(run);
+  });
+
   test.each([["Toolroll's own state folder", "toolroll/orders.db"], ["a folder shared with other things", "s/orders.db"], ["a custom database directory", "custom/db/state.sqlite"]])("in %s: only hello's public facts, no secret, nothing changed", async (_label, relative) => {
     const databaseFile = join(dir, relative);
     const state = join(databaseFile, "..");
