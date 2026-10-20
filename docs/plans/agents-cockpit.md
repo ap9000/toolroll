@@ -1,4 +1,4 @@
-# The light cockpit (v4)
+# The light cockpit (v5)
 
 Alex, 2026-10-19, after comparing herdr-gpui: "copy the states and adjust for anything missing — do the quick start and
 then 3 and 4 — we need the direct steer / terminal view option for every agent that's running if possible."
@@ -164,8 +164,8 @@ It is never a pty and never types into the agent.
   - `up` creates the socket in the owner-only (0700) configuration directory beside the database. Only the same
     user can connect, so whoever owns a port is irrelevant.
   - The CLI checks the socket's directory and ownership before connecting.
-  - The CLI sends nothing secret: the socket's filesystem permission is the authentication. The server answers with
-    its database path and build, which the CLI compares with its own.
+  - The CLI sends nothing secret over it. The socket's permissions keep out other users, but they are **not** what
+    proves the console is real (build agents share the user); the instance proof below is.
   - A stale socket (no listener) is removed and treated as "no console running". An impostor can't create one in a
     directory it can't write.
   - Tests:
@@ -177,14 +177,21 @@ It is never a pty and never types into the agent.
   - it answers one request, `hello`, with the console's pid, build, database path and listening port — nothing
     secret, nothing an agent can't already learn — and refuses every other verb;
   - it changes nothing: no admission, no session, no token, no sign-in;
-  - the CLI never trusts what it says on its own. It opens the database itself (the existing path, behind the agent
-    fence) and checks the socket's answer against the record `up` writes there under owner authority (pid alive,
-    build, port). The URL it prints or opens comes from that database record, never from the socket. A replaced or
-    impostor socket can only make the attach refuse (with the restart command), never send a person to another
-    listener;
-  - test: a native-sandbox build contacts the socket directly (bypassing the CLI's "under an agent" check), including
-    with a custom database directory, and gets only the `hello` facts; any other verb is refused and nothing in the
-    database changes; an impostor socket whose answer disagrees with the database record is refused.
+  - **a live instance proof, not matching facts [r4-N20].** Each start of `up` mints a fresh random instance secret
+    and records it, with its listening port, pid and build, in a `console_instance` row in the database — written
+    under owner authority, behind the agent fence (which covers a custom database directory too). The CLI opens the
+    database itself (the existing path) and reads it. It then proves the **live** console holds that secret, on both
+    channels, with fresh challenges: over the socket (`hello` with a random challenge, answered with
+    HMAC(secret, "socket:" + challenge)), and over the **advertised HTTP listener** (`GET /__instance?c=<another
+    challenge>` on 127.0.0.1:<port>, answered with HMAC(secret, "http:" + challenge)). Both must hold. A replayed
+    `hello`, a stale record with a recycled pid, or another process now on that port can't answer a new challenge,
+    so the attach refuses (with the restart command) and never sends a person to another listener. The URL it prints
+    or opens is that proved listener's;
+  - tests: a native-sandbox build contacts the socket directly (bypassing the CLI's "under an agent" check), including
+    with a custom database directory, and gets only the `hello` facts — it cannot read the instance secret, any other
+    verb is refused and nothing in the database changes; **a stale `console_instance` record with a matching replayed
+    `hello`, a recycled pid and a replacement HTTP listener on the recorded port is refused**; a live console passes
+    both proofs.
 - Admission uses the existing project-admission path, its registry lock and ceilings, from the CLI's own opened
   database (never through the socket).
 - An incompatible build refuses with the command to restart.
@@ -287,78 +294,30 @@ whether it can be built.
 - **Tests:** a real-CLI interruption under containment, and crash recovery between segments (an orphaned segment is
   reconciled, never double-counted).
 
-## Phase D — ACP multi-turn [R6, R7]
+## Phase D — ACP multi-turn [R6, R7] — deferred (decided 2026-10-20)
 
-- `acp-client.ts` gains per-prompt identities and a turn lifecycle (prompting → cancelling → turn-ended → prompting).
-- Cancelling a turn:
-  1. cancels pending permission requests;
-  2. consumes final updates and the original prompt's terminal response;
-  3. resets only turn-local state;
-  4. **proves process safety for this continuation [r2-N17, r3-N17]**: the agent's tool processes from that turn
-     must be gone, proved by the native containment's own **membership accounting**, never a snapshot of ancestry
-     (which misses escaped or re-parented children):
-     - **Baseline.** When the agent reports ready, before the first prompt, the runner records the run container's
-       members (cgroup `cgroup.procs` on Linux; the job object's process list on Windows) as `(pid, start time)`
-       pairs: the agent and its own long-lived helpers.
-     - **Proof.** After the cancelled turn's terminal response, every member of the container must be in the
-       baseline (same pid **and** start time, so a reused pid never passes). Any other member — a tool still running,
-       escaped or re-parented — fails the proof. Whole-container emptiness is not required (the agent stays).
-     - **macOS and observed runners** have no membership accounting (process groups don't capture escaped children):
-       there, cancel-and-continue is **not offered**, and the agent is mailbox-only, said plainly.
-     - Unknown or failed proof refuses the continuation: the note falls back to the mailbox, and the composer says the
-       agent will read it at its next check. A real test (Linux cgroup, Windows job object) has a tool process that
-       outlives a cancellation answer, and the continuation must be refused; a reused pid with another start time
-       must fail the proof;
-  5. sends the next `session/prompt` on the **same session**, pinned to the negotiated protocol version.
-- Races are handled: cancellation racing a normal completion, duplicate responses, late updates, disconnects, and Stop.
-- **Admission.** Admission stays as it is: no conformance bump invalidates working agents. **Cancel-and-continue** is a
-  separate, optional **capability attestation** bound to the same attested launch. It is checked by:
-  1. a second graded step that cancels mid-tool;
-  2. proving the agent's descendants are gone **before** the second prompt, with the agent still running;
-  3. sending a second prompt that must use context from the first and finish with permissions working, within bounded
-     accounting.
+Cancel-and-continue for agents other than Claude is **not built in this arc**. Review showed a cancelled turn's work
+can't be proved stopped when an agent runs tools inside its own long-lived processes (r4-N22), and Linux membership
+needs a whole-subtree proof (r4-N21). Alex chose the safe road: Codex, Gemini, OpenRouter and ACP agents stay
+**mailbox-only** — their composer says "It reads notes at its next check" (phase A, §4) — and nothing here weakens
+that. A later arc may revisit a narrow form (tools only through terminals Toolroll hosts, on Linux/Windows) with its
+own proof.
 
-  An agent without the capability is mailbox-only. A failed **mandatory** safety check still refuses it, as today.
+## Phase E — A terminal in the agent's checkout [R13] — copy, don't launch (decided 2026-10-20)
 
-## Phase E — A terminal in the agent's checkout [R13]
-
-- **Server-side launch, macOS first, concrete [r2-R13].**
-  - The console writes a one-use launcher script, 0700, into its own private directory: a fixed template with the
-    checkout path as its only value. The path is proved canonical beforehand and passed as a single-quoted shell word
-    with any quote escaped.
-  - **An explicit environment at every hop [r3-R13].** `open(1)` passes the caller's environment to an app it
-    launches, and a script cleared from inside is cleared too late, so:
-    1. the console runs `osascript` with `execFile` and an **explicit environment** — `PATH=/usr/bin:/bin:/usr/sbin:/sbin`,
-       `HOME`, `USER`, `LOGNAME`, `LANG` only (the existing allowlist mechanism, exec.ts) — and a fixed argv; a
-       Terminal it starts inherits only that;
-    2. `osascript` tells Terminal to `do script` a fixed line: `exec /usr/bin/env -i HOME=… USER=… LOGNAME=… SHELL=…
-       TERM=xterm-256color LANG=… PATH=<the login default> /bin/sh <launcher>` — so the new window's shell starts from
-       that allowlist whatever Terminal's own environment is (already running or not);
-    3. the launcher (0700, one use) deletes itself, `cd`s to the checkout, and `exec`s the chosen shell.
-  - The boundary that remains is stated: the chosen shell then reads the user's own startup files (or, for the plain
-    shell, only `/etc/zshenv`), which may set variables of their own; nothing from the console or Terminal does.
-  - It is offered only when the console and that attempt's runner are on this machine.
-  - It needs operator authority and a password typed now (never freshness).
-- **Path.** The checkout path comes from trusted run and lease records. It is re-proved canonical, owned by the local
-  runner, and still bound to that attempt immediately before launch; a stale or reassigned path is refused.
-- **Environment.** The launch environment is the allowlist above at each hop, never the console's scrubbed: a
-  sentinel secret placed in the console's environment (and in Terminal's own, by starting Terminal first from a shell
-  that has it) is absent from the new window's `env`.
-- **Consent first.** Before the password field, the console says: "This opens your own terminal, outside Toolroll's
-  sandbox, in files an agent wrote. Your shell's startup scripts and prompt tools (git status in the prompt, direnv,
-  .envrc) can run code from those files." It offers two shells:
-  - **your usual shell**;
-  - **a plain shell** (`/bin/zsh -f`). That skips your own startup files (`~/.zshenv`, `~/.zshrc` and the rest) but
-    still reads the system's `/etc/zshenv`, and the words say so exactly.
-- **Tests:**
-  - the script is written from the template, with a path that holds quotes and spaces;
-  - the argv is fixed;
-  - the script removes itself;
-  - the `osascript` call's environment is exactly the allowlist (asserted on the spawn), and the `do script` line is
-    the fixed `env -i` form;
-  - a sentinel-secret check on a real Mac with Terminal closed and with it already running (that Terminal started
-    with the sentinel in its environment): `env` in the new window has neither, recorded in the PR.
-- **Out of scope:** Linux and Windows (offered later), and an in-browser terminal.
+Review showed that a console-launched Terminal runs its startup shell before any environment can be cleaned (r4-R13),
+so Toolroll **launches nothing**. Instead, on a live view of an attempt whose checkout is on this machine:
+- **Copy the command**: copies `cd '<checkout>'` (the path proved canonical, owned by the local runner and still bound
+  to that attempt when the page was drawn; single-quoted, any quote escaped). The person pastes it into their own
+  terminal, under their own environment — no console process, environment or secret is involved.
+- **Show in Finder** (macOS): `open -R <checkout>` on the server, a fixed argv, after the same path proof and an
+  operator's act (cookie + CSRF). Finder reveals; nothing executes.
+- **The words**, before both: "These files were written by an agent. Your shell's startup scripts and prompt tools (git
+  status in the prompt, direnv, .envrc) can run code from them when you open a terminal there."
+- Offered only when the console and that attempt's runner are on this machine; never on a phone (no clipboard path to
+  a terminal there — the path is shown as text instead).
+- **Tests:** the copied text for a path with quotes and spaces; a stale or reassigned path refused for Show in Finder;
+  `open -R`'s argv fixed; the act refused to viewers and bearer callers.
 
 ## Tests, per phase
 
