@@ -128,6 +128,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   const fence = new Set<string>();
   /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
   let runFolder: string | null = null;
+  /** The bridges' folder, likewise. */
+  let bridgeFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -146,6 +148,9 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // from every build, so no build — however long it runs — can reach a bridge made for a later one.
     const bridges = join(state, BRIDGE_DIR);
     try { lstatSync(bridges); } catch { try { mkdirSync(bridges, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    // Fenced by its own name as well as where it leads: a link planted there is itself out of reach (and the bridge
+    // refuses a root that isn't a private folder: egress-bridge.ts).
+    bridgeFolder = bridges;
     fence.add(bridges);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
@@ -180,11 +185,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -746,17 +751,24 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
  * engines), wherever they exist here. */
 export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp"): string[] {
-  // The user's own: container engines run per user (Docker Desktop, Colima, OrbStack, Lima, Rancher Desktop), a
-  // terminal multiplexer takes commands from its socket, and an SSH agent signs as you.
-  const own = [".docker/desktop", ".docker/run", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(path => join(home, path));
-  let perUser: string[] = [];
-  try { perUser = readdirSync(tmp).filter(name => /^(ssh-|tmux-|screen|\.X11-unix|\.ICE-unix|vscode-)/.test(name)).map(name => join(tmp, name)); } catch { perUser = []; }
-  const candidates = [
+  // The system's own, root-owned: resolved (/var/run is a link to /run) so bubblewrap mounts over the real path, once.
+  const system = [
     ...(uid === undefined ? [] : [`/run/user/${uid}`]), "/run/dbus", "/var/run/dbus", "/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/podman",
-    "/var/run/podman", "/run/systemd/private", "/run/snapd.socket", "/run/screen", ...own, ...perUser,
+    "/var/run/podman", "/run/systemd/private", "/run/snapd.socket", "/run/screen",
   ];
-  // Where each really is (/var/run is a link to /run): bubblewrap mounts over the real path, once.
-  const real = new Set<string>();
-  for (const path of candidates) { try { real.add(realpathSync(path)); } catch { /* not here */ } }
-  return [...real].sort();
+  const masks = new Set<string>();
+  for (const path of system) { try { masks.add(realpathSync(path)); } catch { /* not here */ } }
+  // The user's own, in places a build could plant names: taken only as the real folders or sockets they are, owned
+  // by this user, never through a link (a planted link would turn a mask onto any folder at all). Container engines
+  // run per user (Docker Desktop and the docker CLI's folder whole, so a socket made there later is covered too;
+  // Colima, OrbStack, Lima, Rancher Desktop, rootless containers); a terminal multiplexer takes commands from its
+  // socket; an SSH agent signs as you; editors keep IPC sockets in /tmp.
+  const owned = (path: string): boolean => {
+    try { const held = lstatSync(path); return !held.isSymbolicLink() && (held.isDirectory() || held.isSocket()) && (uid === undefined || held.uid === uid); } catch { return false; }
+  };
+  for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) if (owned(path)) masks.add(path);
+  let entries: string[] = [];
+  try { entries = readdirSync(tmp); } catch { entries = []; }
+  for (const name of entries) if (/^(ssh-|tmux-|screen|\.X11-unix|\.ICE-unix|vscode-)/.test(name) && owned(join(tmp, name))) masks.add(join(tmp, name));
+  return [...masks].sort();
 }

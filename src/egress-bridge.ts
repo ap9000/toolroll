@@ -8,7 +8,7 @@
  * The forwarder is written into the folder at launch (the plane's own file, read-only to the build), so it never runs
  * from an installation path a fence might hide or a build could change.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +60,11 @@ export type EgressBridge = { folder: string; forwarder: string; close: () => Pro
  * hides from launch, so no other build can change the forwarder or reach the sockets.
  */
 export async function startEgressBridge(ports: readonly number[], root: string = tmpdir()): Promise<EgressBridge> {
+  // The root must be a real folder of this user's alone, never a link a build could have planted before it existed.
+  const held = lstatSync(root);
+  if (held.isSymbolicLink() || !held.isDirectory() || (process.getuid !== undefined && held.uid !== process.getuid()) || (root !== tmpdir() && (held.mode & 0o077) !== 0)) {
+    throw new Error(`the bridge folder ${root} isn't a private folder of this user's`);
+  }
   const folder = mkdtempSync(join(root, BRIDGE_PREFIX));
   chmodSync(folder, 0o700);
   const forwarder = join(folder, "forward.mjs");

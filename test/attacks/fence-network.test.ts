@@ -195,12 +195,33 @@ describe("attack: reaching the network around the build's approved hosts (Linux)
     expect(readFileSync(join(later, "forward.mjs"), "utf8")).toBe("original");
   });
 
-  test("this user's own engine, multiplexer and agent sockets are among the masks, wherever they exist", () => {
+  test("this user's own engine, multiplexer and agent sockets are among the masks, wherever they exist; never through a link", async () => {
     const dir = scratch();
     const home = join(dir, "home"), tmp = join(dir, "tmp");
     for (const path of [join(home, ".docker/desktop"), join(home, ".colima/default"), join(tmp, "tmux-501"), join(tmp, "ssh-abc"), join(tmp, "unrelated")]) mkdirSync(path, { recursive: true });
-    const masks = linuxHostSockets(501, home, tmp);
-    for (const path of [join(home, ".docker/desktop"), join(home, ".colima"), join(tmp, "tmux-501"), join(tmp, "ssh-abc")]) expect(masks).toContain(realpathSync(path));
-    expect(masks).not.toContain(realpathSync(join(tmp, "unrelated")));
+    // A link planted where a mask is looked for is never followed onto its target.
+    const { symlinkSync } = await import("node:fs");
+    symlinkSync("/usr", join(tmp, "ssh-planted"));
+    const uid = process.getuid?.();
+    const masks = linuxHostSockets(uid, home, tmp);
+    for (const path of [join(home, ".docker"), join(home, ".colima"), join(tmp, "tmux-501"), join(tmp, "ssh-abc")]) expect(masks).toContain(path);
+    expect(masks).not.toContain(join(tmp, "unrelated"));
+    expect(masks).not.toContain(join(tmp, "ssh-planted"));
+    expect(masks).not.toContain("/usr");
+  });
+
+  test("a link planted where the bridges' folder goes is fenced by its own name, and no bridge is made through it", async () => {
+    const { symlinkSync } = await import("node:fs");
+    const dir = scratch();
+    const state = join(dir, "shared");
+    const target = join(dir, "attacker");
+    mkdirSync(state, { recursive: true });
+    mkdirSync(target, { mode: 0o700 });
+    writeFileSync(join(state, "orders.db"), "");
+    symlinkSync(target, join(state, BRIDGE_DIR));
+    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: null, home: join(dir, "home") });
+    expect(fence).toContain(join(realpathSync(state), BRIDGE_DIR));
+    expect(fence).toContain(realpathSync(target));
+    await expect(startEgressBridge([], join(realpathSync(state), BRIDGE_DIR))).rejects.toThrow(/isn't a private folder/);
   });
 });

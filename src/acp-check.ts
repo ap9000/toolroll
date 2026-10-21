@@ -216,9 +216,6 @@ async function runSteps(job: AcpCheckJob, request: AcpCheckRequest, at: StepCont
   const finish = (run: number) => finishCheckRun(store, run, clock);
   const options = (extra: Partial<RunOptions>): Parameters<typeof invokeAgent>[4] => ({
     cwd: at.worktree, idleTimeoutMs: 60_000, timeoutMs: 300_000, clock,
-    // The check's two fixed prompts reach whatever model service the agent was set up with (an ACP agent may bring
-    // its own: Goose names none of its own hosts); a build of it reaches only its approved network.
-    network: { policy: { version: 1, mode: "open", hosts: [], loopback: "proxy-only" } },
     ...(job.keyHome === undefined ? {} : { keyHome: job.keyHome }),
     ...(job.agent === undefined ? {} : { runner: job.agent }),
     ...extra,

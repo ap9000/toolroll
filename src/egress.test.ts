@@ -202,4 +202,21 @@ describe("the Linux bridge's forwarder", () => {
     expect(ended.signal ?? ended.code).toBe("SIGTERM");
     expect(ended.ms).toBeLessThan(3000);
   });
+
+  test("is made only in a private folder of this user's: never through a link planted where the folder should be", async () => {
+    const { startEgressBridge } = await import("./egress-bridge.js");
+    const { chmodSync, symlinkSync } = await import("node:fs");
+    const dir = mkdtempSync(join(tmpdir(), "so-bridge-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const elsewhere = join(dir, "elsewhere"), planted = join(dir, "bridge-secrets"), open = join(dir, "open");
+    mkdirSync(elsewhere, { mode: 0o700 });
+    mkdirSync(open);
+    chmodSync(open, 0o777);
+    symlinkSync(elsewhere, planted);
+    await expect(startEgressBridge([], planted)).rejects.toThrow(/isn't a private folder/);
+    await expect(startEgressBridge([], open)).rejects.toThrow(/isn't a private folder/);
+    const own = await startEgressBridge([], elsewhere);
+    closers.push(() => own.close());
+    expect(own.folder.startsWith(elsewhere)).toBe(true);
+  });
 });
