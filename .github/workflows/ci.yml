@@ -19,7 +19,10 @@ on:
 jobs:
   test:
     name: node ${{ matrix.node }} · ubuntu-latest
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
+    # unprivileged, so the agent-fence and ACP tests take the Linux fence road
+    # they were never written for. The job name stays (release.ts waits for it).
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
