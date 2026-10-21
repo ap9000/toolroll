@@ -1218,7 +1218,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const limit = Number.isSafeInteger(args["limit"]) ? Math.max(1, Math.min(30, Number(args["limit"]))) : 12;
       const thread = ctx.store.liveLeadThreadFor(ctx.who.name, { kind: "task", key: root });
       if (thread === null || thread.ceilingDigest !== ctx.who.ceilingDigest) return { ok: true, body: { task: root, messages: [], notice: "No conversation about this task yet." } };
-      const messages = ctx.store.listLeadMessages(thread.id, limit).map(one => ({ from: one.role === "operator" ? "operator" : "lead", text: one.text.length > 1_200 ? `${one.text.slice(0, 1_200)}…` : one.text, at: one.createdAt }));
+      // What the lead reads of a task's conversation is what it has been told: admitted messages only (v128).
+      const messages = ctx.store.listLeadHistory(thread.id, limit).map(one => ({ from: one.role === "operator" ? "operator" : "lead", text: one.text.length > 1_200 ? `${one.text.slice(0, 1_200)}…` : one.text, at: one.createdAt }));
       return { ok: true, body: { task: root, title: family?.root.title ?? null, messages, notice: messages.length === limit ? "Only the most recent messages are shown." : null } };
     },
   },

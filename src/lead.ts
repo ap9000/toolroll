@@ -239,7 +239,9 @@ const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_actions", "
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
 export function historyFor(store: Store, thread: number, queuedMessageId?: number): LeadHistoryMessage[] {
-  const rows = store.listLeadMessages(thread, LEAD_HISTORY_MAX_MESSAGES);
+  // Admitted messages only (v128): a queued message — this one, a teammate's, or one removed while waiting — never
+  // reaches the model before its own turn takes it.
+  const rows = store.listLeadHistory(thread, LEAD_HISTORY_MAX_MESSAGES);
   const kept: LeadHistoryMessage[] = [];
   let bytes = 0;
   for (let index = rows.length - 1; index >= 0; index--) {
@@ -388,7 +390,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     if (!started.ok) throw new Error("new lead turn could not start");
     if (input.queuedMessageId === undefined) store.appendLeadMessage({ thread: thread.id, turn: turnId, role: "operator", text: message }, now);
     else {
-      const bound = store.handle.prepare("UPDATE lead_message SET turn=? WHERE id=? AND thread=? AND role='operator' AND turn IS NULL AND text=?")
+      // Binding admits it: the same statement clears pending, so it joins history exactly when its turn exists (v128).
+      const bound = store.handle.prepare("UPDATE lead_message SET turn=?, pending=0 WHERE id=? AND thread=? AND role='operator' AND turn IS NULL AND text=?")
         .run(turnId, input.queuedMessageId, thread.id, message);
       if (Number(bound.changes) !== 1) throw new Error('The queued message changed before admission.');
     }

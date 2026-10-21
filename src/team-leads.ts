@@ -236,7 +236,7 @@ export class TeamLeads {
       const seen=this.db.prepare('SELECT * FROM team_message WHERE conversation=? AND author=? AND request_id=?').get(conversationId,actor.name,requestId);
       if(seen){if(seen['payload_hash']!==digest)refuse('request-conflict','This request ID already saved a different message.');return ok('Message already saved.',{messageId:Number(seen['message']),status:String(seen['status'])});}
       const revisions=this.memberRevisions(conversationId,actor.name)!;
-      const messageId=this.store.appendLeadMessage({thread:conversation.threadId,turn:null,role:'operator',text},now);
+      const messageId=this.store.appendLeadMessage({thread:conversation.threadId,turn:null,role:'operator',text,pending:true},now);
       this.db.prepare("INSERT INTO team_message(message,conversation,author,author_generation,lead_member_revision,participant_revision,request_id,payload_hash,status) VALUES(?,?,?,?,?,?,?,?,'queued')").run(messageId,conversationId,actor.name,actor.generation,revisions.lead,revisions.participant,requestId,digest);
       this.event(lead.id,conversationId,'message-queued',actor.name,now);return ok('Message saved.',{messageId,status:'queued'});
     }
