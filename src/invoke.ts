@@ -440,7 +440,7 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
@@ -523,6 +523,8 @@ export async function invokeAgent(
         bridge = await startEgressBridge([grants.network.proxyPort, ...grants.network.brokerPorts],
           database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR));
         grants.network.bridge = { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath };
+        // Its private /tmp gives back only its own folders: its checkout and its launch folder (its temp is inside).
+        grants.network.keep = [...(workspace === null ? [] : [realpathSync(workspace)]), ...(ownTools === null ? [] : [ownTools]), ...(fenceOf.gitPaths ?? [])];
       }
     } catch (error) {
       await egress?.close();
@@ -1003,7 +1005,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; problem?: string } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -1024,6 +1026,8 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
       // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
       grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
         poolRoots }),
+      // The checkout's own Git data, which a private /tmp gives back beside the checkout (agent-fence.ts linuxFenced).
+      gitPaths: binding === null ? [] : [binding.gitdir, join(binding.main, ".git")],
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };

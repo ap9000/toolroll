@@ -155,7 +155,7 @@ describe("attack: reaching the network around the build's approved hosts (Linux)
     const bridge = await startEgressBridge([proxy.port]);
     bridges.push(bridge);
     const network: NetworkFence = { mode: "allowlist", proxyPort: proxy.port, brokerPorts: [], loopback: "proxy-only", socketRoots: [],
-      bridge: { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath } };
+      bridge: { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath }, keep: [realpathSync(dir)] };
     const result = await underBubblewrap([
       `curl -s -m 5 --noproxy '*' http://127.0.0.1:${local}/ || echo host-loopback-refused`,
       `curl -s -m 5 --noproxy '*' https://1.1.1.1/ >/dev/null 2>&1 || echo direct-internet-refused`,
@@ -164,8 +164,9 @@ describe("attack: reaching the network around the build's approved hosts (Linux)
       `curl -s -m 5 -o /dev/null -w '%{http_code}\\n' -x '${proxy.url}' http://elsewhere.test/`,
       `test -S /var/run/docker.sock && echo docker-socket-visible || echo docker-socket-hidden`,
       `ls -A /run/user/$(id -u) 2>/dev/null | grep -q . && echo runtime-visible || echo runtime-hidden`,
+      `ls -A /tmp | grep -v ${JSON.stringify(realpathSync(dir).split("/")[2] ?? "")} | grep -q . && echo tmp-shared || echo tmp-private`,
     ].join("\n"), grantsFor(network), { cwd: dir });
-    expect(lines(result), result.stderr).toEqual(["host-loopback-refused", "direct-internet-refused", "dns-refused", "upstream", "403", "docker-socket-hidden", "runtime-hidden"]);
+    expect(lines(result), result.stderr).toEqual(["host-loopback-refused", "direct-internet-refused", "dns-refused", "upstream", "403", "docker-socket-hidden", "runtime-hidden", "tmp-private"]);
   });
 
   test("a build can't see or touch a bridge made after it started", async ctx => {
@@ -181,7 +182,7 @@ describe("attack: reaching the network around the build's approved hosts (Linux)
     const own = await startEgressBridge([], bridgeRoot);
     bridges.push(own);
     const network: NetworkFence = { mode: "allowlist", proxyPort: 18080, brokerPorts: [], loopback: "proxy-only", socketRoots: [],
-      bridge: { folder: realpathSync(own.folder), forwarder: realpathSync(own.forwarder), node: process.execPath } };
+      bridge: { folder: realpathSync(own.folder), forwarder: realpathSync(own.forwarder), node: process.execPath }, keep: [realpathSync(dir)] };
     const later = join(bridgeRoot, "so-net-later");
     const pending = underBubblewrapIn([
       "sleep 1",
@@ -201,12 +202,11 @@ describe("attack: reaching the network around the build's approved hosts (Linux)
     for (const path of [join(home, ".docker/desktop"), join(home, ".colima/default"), join(tmp, "tmux-501"), join(tmp, "ssh-abc"), join(tmp, "unrelated")]) mkdirSync(path, { recursive: true });
     // A link planted where a mask is looked for is never followed onto its target.
     const { symlinkSync } = await import("node:fs");
-    symlinkSync("/usr", join(tmp, "ssh-planted"));
+    symlinkSync("/usr", join(home, ".lima"));
     const uid = process.getuid?.();
     const masks = linuxHostSockets(uid, home, tmp);
-    for (const path of [join(home, ".docker"), join(home, ".colima"), join(tmp, "tmux-501"), join(tmp, "ssh-abc")]) expect(masks).toContain(path);
-    expect(masks).not.toContain(join(tmp, "unrelated"));
-    expect(masks).not.toContain(join(tmp, "ssh-planted"));
+    for (const path of [join(home, ".docker"), join(home, ".colima")]) expect(masks).toContain(path);
+    expect(masks).not.toContain(join(home, ".lima"));
     expect(masks).not.toContain("/usr");
   });
 

@@ -338,7 +338,9 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
 export type NetworkFence =
   | { mode: "open" }
   | { mode: "allowlist"; proxyPort: number; brokerPorts: number[]; loopback: LoopbackMode; socketRoots: string[];
-      bridge?: { folder: string; forwarder: string; node: string } };
+      bridge?: { folder: string; forwarder: string; node: string };
+      /** Linux: the run's own folders a private /tmp gives back (its checkout, its launch folder), when they are there. */
+      keep?: string[] };
 
 /**
  * Services a sandboxed process could ask to act outside the sandbox for it (macOS): open a URL in a browser (Launch
@@ -743,9 +745,12 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
     ...linuxHostSockets().flatMap(mask),
     "--ro-bind", network.bridge!.folder, network.bridge!.folder,
   ];
+  // A confined build gets a /tmp of its own (other programs' sockets, other runs' folders and anything planted there
+  // all out of sight at once), with only its own folders there given back; every mask and grant below still applies.
+  const privateTmp = network === null ? [] : ["--tmpfs", "/tmp", ...(network.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...privateTmp, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
@@ -758,17 +763,18 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
   ];
   const masks = new Set<string>();
   for (const path of system) { try { masks.add(realpathSync(path)); } catch { /* not here */ } }
-  // The user's own, in places a build could plant names: taken only as the real folders or sockets they are, owned
-  // by this user, never through a link (a planted link would turn a mask onto any folder at all). Container engines
+  // The user's own, in places a build could plant names: taken only as the real folders or sockets they are, never
+  // through a link (a planted link would turn a mask onto any folder at all). Container engines
   // run per user (Docker Desktop and the docker CLI's folder whole, so a socket made there later is covered too;
   // Colima, OrbStack, Lima, Rancher Desktop, rootless containers); a terminal multiplexer takes commands from its
-  // socket; an SSH agent signs as you; editors keep IPC sockets in /tmp.
+  // socket; an SSH agent signs as you; editors keep IPC sockets in /tmp (hidden by the build's private /tmp).
+  // Masked whoever owns it (a folder `sudo docker` made is root's): only a link is never followed, since a link turns
+  // a mask onto its target. A link there is a residual until builds can't write the home folder (arc 2).
   const owned = (path: string): boolean => {
-    try { const held = lstatSync(path); return !held.isSymbolicLink() && (held.isDirectory() || held.isSocket()) && (uid === undefined || held.uid === uid); } catch { return false; }
+    try { const held = lstatSync(path); return !held.isSymbolicLink() && (held.isDirectory() || held.isSocket()); } catch { return false; }
   };
   for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) if (owned(path)) masks.add(path);
-  let entries: string[] = [];
-  try { entries = readdirSync(tmp); } catch { entries = []; }
-  for (const name of entries) if (/^(ssh-|tmux-|screen|\.X11-unix|\.ICE-unix|vscode-)/.test(name) && owned(join(tmp, name))) masks.add(join(tmp, name));
+  // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
+  void tmp;
   return [...masks].sort();
 }
