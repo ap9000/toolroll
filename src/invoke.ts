@@ -32,10 +32,11 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { readFileSync, realpathSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
+import { BRIDGE_DIR } from "./agent-fence.js";
 import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
@@ -496,10 +497,17 @@ export async function invokeAgent(
   }
   let egress: EgressProxy | null = null;
   let bridge: EgressBridge | null = null;
+  let runTemp: string | null = null;
   const confinedOs = fenced.method === "macos-sandbox" || fenced.method === "linux-bubblewrap";
   if (fence.length > 0 && !codexHarness && confinedOs) {
     const brokerPorts = tools?.brokerPort === undefined ? [] : [tools.brokerPort];
-    const socketRoots = [realpathSync(tmpdir()), ...(workspace === null ? [] : [realpathSync(workspace)])];
+    // Unix sockets only under this run's own folders: its checkout, and a temp folder of its own inside its private
+    // launch folder (the system temp folder holds other programs' sockets — editors, agents, password managers).
+    if (ownTools !== null) {
+      runTemp = join(ownTools, "tmp");
+      mkdirSync(runTemp, { recursive: true, mode: 0o700 });
+    }
+    const socketRoots = [...(runTemp === null ? [] : [runTemp]), ...(workspace === null ? [] : [realpathSync(workspace)])];
     try {
       if ("via" in network) {
         const [proxyPort, ...more] = network.via;
@@ -511,7 +519,9 @@ export async function invokeAgent(
         grants.network = { mode: "allowlist", proxyPort: egress.port, brokerPorts, loopback: network.policy.loopback, socketRoots };
       }
       if (fenced.method === "linux-bubblewrap" && grants.network.mode === "allowlist") {
-        bridge = await startEgressBridge([grants.network.proxyPort, ...grants.network.brokerPorts]);
+        const database = store.databaseFile();
+        bridge = await startEgressBridge([grants.network.proxyPort, ...grants.network.brokerPorts],
+          database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR));
         grants.network.bridge = { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath };
       }
     } catch (error) {
@@ -542,6 +552,8 @@ export async function invokeAgent(
     // The run's own proxy, in every spelling a program reads (egress.ts): after every other setting, so no caller's
     // environment points the build around it. A program that ignores them is refused by the OS fence instead.
     ...(egress === null || !("policy" in network) ? {} : proxyEnv(egress, network.policy.loopback)),
+    // Its own temp folder, where its tools' sockets may live (the only one its fence admits besides its checkout).
+    ...(runTemp === null ? {} : { TMPDIR: runTemp, TMP: runTemp, TEMP: runTemp }),
     // This key is deliberately last: no caller may point an agent back at
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),

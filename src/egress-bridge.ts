@@ -21,7 +21,7 @@ export const FORWARDER_SOURCE = String.raw`import { connect, createServer } from
 import { spawn } from "node:child_process";
 const argv = process.argv.slice(2);
 const split = argv.indexOf("--");
-if (split < 2) { process.stderr.write("toolroll forwarder: usage <folder> <port>... -- <command>\n"); process.exit(2); }
+if (split < 1 || split === argv.length - 1) { process.stderr.write("toolroll forwarder: usage <folder> <port>... -- <command>\n"); process.exit(2); }
 const folder = argv[0];
 const ports = argv.slice(1, split).map(Number);
 const command = argv.slice(split + 1);
@@ -42,13 +42,23 @@ function start() {
   const child = spawn(command[0], command.slice(1), { stdio: "inherit" });
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => child.kill(signal));
   child.on("error", error => { process.stderr.write("toolroll forwarder: " + error.message + "\n"); process.exit(127); });
-  child.on("exit", (code, signal) => { if (signal !== null) { process.kill(process.pid, signal); return; } process.exit(code ?? 1); });
+  child.on("exit", (code, signal) => {
+    if (signal === null) process.exit(code ?? 1);
+    // Die the way the agent died: this process's own handlers (which only pass a signal on) step aside first.
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+    setTimeout(() => process.exit(128), 1000).unref();
+  });
 }
 `;
 
 export type EgressBridge = { folder: string; forwarder: string; close: () => Promise<void> };
 
-/** Serve one socket per port (each relayed to that port on the host's loopback) in a fresh owner-only folder. */
+/**
+ * Serve one socket per port (each relayed to that port on the host's loopback) in a fresh owner-only folder under
+ * `root`: the plane's own bridge folder beside the database (agent-fence.ts BRIDGE_DIR), which every build's fence
+ * hides from launch, so no other build can change the forwarder or reach the sockets.
+ */
 export async function startEgressBridge(ports: readonly number[], root: string = tmpdir()): Promise<EgressBridge> {
   const folder = mkdtempSync(join(root, BRIDGE_PREFIX));
   chmodSync(folder, 0o700);

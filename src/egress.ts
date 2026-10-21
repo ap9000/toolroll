@@ -39,8 +39,10 @@ export type NetworkProfile = { version: 1; mode: NetworkMode; hosts: string[]; l
 export type ProjectNetwork = { mode: NetworkMode; hosts: string[]; loopback: LoopbackMode };
 export const PROJECT_NETWORK_DEFAULT: ProjectNetwork = { mode: "allowlist", hosts: [], loopback: "proxy-only" };
 
-/** At most this many hosts in one policy: a list longer than this is a different policy (open). */
+/** At most this many hosts a project adds (a list longer than this is a different policy: open). */
 export const MAX_NETWORK_HOSTS = 200;
+/** At most this many in a sealed snapshot: the project's, plus its provider's and every registry's. */
+export const MAX_SNAPSHOT_HOSTS = MAX_NETWORK_HOSTS + 100;
 
 /**
  * A host as a policy names it: lowercase ASCII (an international name in its punycode form), no trailing dot, at
@@ -179,7 +181,7 @@ export function networkFromValue(value: unknown): NetworkProfile | null {
   if (v["version"] !== NETWORK_POLICY_VERSION) return null;
   if (v["mode"] !== "allowlist" && v["mode"] !== "open") return null;
   if (v["loopback"] !== "any" && v["loopback"] !== "proxy-only") return null;
-  if (!Array.isArray(v["hosts"]) || v["hosts"].length > MAX_NETWORK_HOSTS) return null;
+  if (!Array.isArray(v["hosts"]) || v["hosts"].length > MAX_SNAPSHOT_HOSTS) return null;
   const hosts: string[] = [];
   for (const one of v["hosts"]) {
     if (typeof one !== "string" || normalizeHost(one) !== one) return null;
@@ -315,7 +317,8 @@ export async function startEgressProxy(options: {
       let url: URL;
       try { url = new URL(incoming.url ?? ""); } catch { outgoing.writeHead(400).end(); return; }
       const hostHeader = String(incoming.headers.host ?? "").toLowerCase();
-      if (url.protocol !== "http:" || url.username !== "" || url.password !== "" || (hostHeader !== url.host.toLowerCase() && hostHeader !== url.hostname.toLowerCase())) {
+      const sameHost = hostHeader === url.host.toLowerCase() || hostHeader === url.hostname.toLowerCase() || (url.port === "" && hostHeader === `${url.hostname.toLowerCase()}:80`);
+      if (url.protocol !== "http:" || url.username !== "" || url.password !== "" || !sameHost) {
         count(url.hostname, false, "not a plain web request for its own host");
         outgoing.writeHead(403, { "content-type": "text/plain" }).end("Toolroll: this build may reach only its approved hosts.");
         return;

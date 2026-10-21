@@ -51,6 +51,9 @@ import { existingFolders } from "./names.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
 import type { LoopbackMode } from "./egress.js";
 
+/** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
+export const BRIDGE_DIR = "bridge-secrets";
+
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
 
@@ -139,6 +142,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // points), a folder holding anything at all — so no build can replace it; when nothing is there it is made first.
     // If it can't be made, the path is fenced anyway: a sandbox that can't cover a missing path refuses to launch
     // rather than run unfenced. The name is Toolroll's own; nothing else belongs there.
+    // The folder Linux builds' network bridges are made in (egress-bridge.ts): made before any build starts and fenced
+    // from every build, so no build — however long it runs — can reach a bridge made for a later one.
+    const bridges = join(state, BRIDGE_DIR);
+    try { lstatSync(bridges); } catch { try { mkdirSync(bridges, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    fence.add(bridges);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
@@ -737,10 +745,15 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
  * engines), wherever they exist here. */
-export function linuxHostSockets(uid: number | undefined = process.getuid?.()): string[] {
+export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp"): string[] {
+  // The user's own: container engines run per user (Docker Desktop, Colima, OrbStack, Lima, Rancher Desktop), a
+  // terminal multiplexer takes commands from its socket, and an SSH agent signs as you.
+  const own = [".docker/desktop", ".docker/run", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(path => join(home, path));
+  let perUser: string[] = [];
+  try { perUser = readdirSync(tmp).filter(name => /^(ssh-|tmux-|screen|\.X11-unix|\.ICE-unix|vscode-)/.test(name)).map(name => join(tmp, name)); } catch { perUser = []; }
   const candidates = [
     ...(uid === undefined ? [] : [`/run/user/${uid}`]), "/run/dbus", "/var/run/dbus", "/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/podman",
-    "/var/run/podman", "/tmp/.X11-unix", "/run/systemd/private", "/run/snapd.socket",
+    "/var/run/podman", "/run/systemd/private", "/run/snapd.socket", "/run/screen", ...own, ...perUser,
   ];
   // Where each really is (/var/run is a link to /run): bubblewrap mounts over the real path, once.
   const real = new Set<string>();

@@ -9,12 +9,12 @@
  */
 import { createServer as createHttpServer, type Server } from "node:http";
 import { createServer as createNetServer, type Server as NetServer } from "node:net";
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { spawn } from "node:child_process";
-import { linuxFenced, macosFenced, NO_GRANTS, type FenceGrants, type NetworkFence } from "../../src/agent-fence.js";
+import { agentFence, BRIDGE_DIR, linuxFenced, linuxHostSockets, macosFenced, NO_GRANTS, type FenceGrants, type NetworkFence } from "../../src/agent-fence.js";
 import { startEgressBridge, type EgressBridge } from "../../src/egress-bridge.js";
 import { spawnSync } from "node:child_process";
 import { startEgressProxy, type EgressProxy } from "../../src/egress.js";
@@ -29,7 +29,10 @@ function bubblewrapNet(): { available: boolean; note: string } {
 
 /** `script` under the generated bubblewrap command, without blocking this process. */
 function underBubblewrap(script: string, grants: FenceGrants, options: { cwd: string }): Promise<{ stdout: string; stderr: string }> {
-  const { file, args } = linuxFenced("/bin/sh", ["-c", script], [], grants);
+  return underBubblewrapIn(script, [], grants, options);
+}
+function underBubblewrapIn(script: string, fence: readonly string[], grants: FenceGrants, options: { cwd: string }): Promise<{ stdout: string; stderr: string }> {
+  const { file, args } = linuxFenced("/bin/sh", ["-c", script], fence, grants);
   return new Promise(done => {
     const child = spawn(file, args, { cwd: options.cwd, env: { ...process.env, NODE_OPTIONS: undefined } });
     let stdout = "", stderr = "";
@@ -163,5 +166,41 @@ describe("attack: reaching the network around the build's approved hosts (Linux)
       `ls -A /run/user/$(id -u) 2>/dev/null | grep -q . && echo runtime-visible || echo runtime-hidden`,
     ].join("\n"), grantsFor(network), { cwd: dir });
     expect(lines(result), result.stderr).toEqual(["host-loopback-refused", "direct-internet-refused", "dns-refused", "upstream", "403", "docker-socket-hidden", "runtime-hidden"]);
+  });
+
+  test("a build can't see or touch a bridge made after it started", async ctx => {
+    needs(ctx, bubblewrapNet());
+    const dir = scratch();
+    const state = join(dir, "toolroll");
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, "orders.db"), "");
+    // The earlier build: its fence (which holds the bridge folder from launch) and its own bridge.
+    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: null, home: join(dir, "home") });
+    const bridgeRoot = realpathSync(join(state, BRIDGE_DIR));
+    expect(fence).toContain(bridgeRoot);
+    const own = await startEgressBridge([], bridgeRoot);
+    bridges.push(own);
+    const network: NetworkFence = { mode: "allowlist", proxyPort: 18080, brokerPorts: [], loopback: "proxy-only", socketRoots: [],
+      bridge: { folder: realpathSync(own.folder), forwarder: realpathSync(own.forwarder), node: process.execPath } };
+    const later = join(bridgeRoot, "so-net-later");
+    const pending = underBubblewrapIn([
+      "sleep 1",
+      `ls -A ${JSON.stringify(bridgeRoot)} | grep -v ${JSON.stringify(own.folder.split("/").at(-1)!)} | grep -q . && echo later-visible || echo later-hidden`,
+      `(echo x > ${JSON.stringify(join(later, "forward.mjs"))}) 2>/dev/null && echo later-written || echo later-untouched`,
+    ].join("\n"), fence, grantsFor(network), { cwd: dir });
+    // The later run's bridge is made while the earlier build runs.
+    setTimeout(() => { mkdirSync(later, { recursive: true }); writeFileSync(join(later, "forward.mjs"), "original"); }, 200);
+    const result = await pending;
+    expect(lines(result), result.stderr).toEqual(["later-hidden", "later-untouched"]);
+    expect(readFileSync(join(later, "forward.mjs"), "utf8")).toBe("original");
+  });
+
+  test("this user's own engine, multiplexer and agent sockets are among the masks, wherever they exist", () => {
+    const dir = scratch();
+    const home = join(dir, "home"), tmp = join(dir, "tmp");
+    for (const path of [join(home, ".docker/desktop"), join(home, ".colima/default"), join(tmp, "tmux-501"), join(tmp, "ssh-abc"), join(tmp, "unrelated")]) mkdirSync(path, { recursive: true });
+    const masks = linuxHostSockets(501, home, tmp);
+    for (const path of [join(home, ".docker/desktop"), join(home, ".colima"), join(tmp, "tmux-501"), join(tmp, "ssh-abc")]) expect(masks).toContain(realpathSync(path));
+    expect(masks).not.toContain(realpathSync(join(tmp, "unrelated")));
   });
 });

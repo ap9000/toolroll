@@ -79,6 +79,12 @@ describe("a stored network reads back exactly or not at all", () => {
     ]) expect([bad, networkFromValue(bad)]).toEqual([bad, null]);
   });
 
+  test("the most hosts a project may add still seal, beside its provider's and every registry's", () => {
+    const project = Array.from({ length: 200 }, (_, i) => `h${i}.example`).sort();
+    const sealed = resolveNetwork("claude", { mode: "allowlist", hosts: project, loopback: "proxy-only" }, ["go", "jvm", "npm", "python", "ruby", "rust"]);
+    expect(networkFromValue(JSON.parse(JSON.stringify(sealed)))).toEqual(sealed);
+  });
+
   test("a project setting: exact keys; a damaged one is refused (the store reads it as the narrowest)", () => {
     expect(projectNetworkFromValue({ mode: "allowlist", hosts: ["B.example", "a.example"], loopback: "any" })).toEqual({ mode: "allowlist", hosts: ["a.example", "b.example"], loopback: "any" });
     for (const bad of [{ mode: "allowlist", hosts: ["1.2.3.4"], loopback: "any" }, { mode: "allowlist", hosts: [], loopback: "any", x: 1 }, { mode: "x", hosts: [], loopback: "any" }]) {
@@ -167,6 +173,11 @@ describe("the run's own proxy", () => {
     expect(await tunnel(mapped, "approved.example:443", auth(mapped))).toMatch(/ 403 /);
   });
 
+  test("a plain request may name port 80 in its Host", async () => {
+    const proxy = await proxyFor(["approved.example"], await upstream());
+    expect((await get(proxy, "http://approved.example:80/", { host: "approved.example:80", "proxy-authorization": auth(proxy) })).status).toBe(200);
+  });
+
   test("its counts are bounded: fifty hosts, the rest summed", async () => {
     const proxy = await proxyFor([], await upstream());
     for (let i = 0; i < 55; i++) await tunnel(proxy, `h${i}.example:443`, auth(proxy));
@@ -174,5 +185,21 @@ describe("the run's own proxy", () => {
     expect(counts.hosts).toHaveLength(50);
     expect(counts.otherHosts).toBe(5);
     expect(counts.refused).toBe(55);
+  });
+});
+
+describe("the Linux bridge's forwarder", () => {
+  test("ends as its agent ended, a signal included, without waiting on anything", async () => {
+    const { startEgressBridge } = await import("./egress-bridge.js");
+    const { spawn } = await import("node:child_process");
+    const bridge = await startEgressBridge([]);
+    closers.push(() => bridge.close());
+    const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; ms: number }>(done => {
+      const started = Date.now();
+      const child = spawn(process.execPath, [bridge.forwarder, bridge.folder, "--", "/bin/sh", "-c", "kill -TERM $$"], { stdio: "ignore" });
+      child.on("exit", (code, signal) => done({ code, signal, ms: Date.now() - started }));
+    });
+    expect(ended.signal ?? ended.code).toBe("SIGTERM");
+    expect(ended.ms).toBeLessThan(3000);
   });
 });
