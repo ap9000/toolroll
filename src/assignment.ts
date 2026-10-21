@@ -336,6 +336,15 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
         access: access.principal === "operator" ? "operator-control" : "operator-handoff", retry: "refresh-before-acting" };
       need = { key: "rebuild", build: result.id };
     }
+    // Rewritten after the build and not approved yet: Build again can't start an unapproved plan, so the yes is the
+    // one action (approve-scope opens the approval on the task page); Build again follows it.
+    else if (current.state === "done" && result !== null && scope !== null && scope.termsProblem == null && !approvalOf(scope).approved && !!result.scopeDigest && scope.digest !== result.scopeDigest &&
+      store.activeHolds(current.refId, now).length === 0 && unfinished === null && store.currentLiveLease(current.refId, now) === null && store.finalResultReason(result.id) === null) {
+      detail = NEEDS.replan.sentence({ build: result.id });
+      primaryAction = { code: "approve-scope", label: NEEDS.replan.action.label, target: { taskId: current.id, runId: null, decisionId: null },
+        access: access.principal === "operator" ? "operator-control" : "operator-handoff", retry: "refresh-before-acting" };
+      need = { key: "replan", build: result.id };
+    }
   }
   if (earlierActive.length > 0) {
     attention.push(`${earlierActive.length} earlier task version${earlierActive.length === 1 ? " is" : "s are"} still active.`);

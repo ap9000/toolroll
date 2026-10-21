@@ -1,3 +1,4 @@
+import { taskMovedSince } from "./chat-ask.js";
 import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./live-detail.js";
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
@@ -1072,7 +1073,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * keeps only that task's coordinator cards; the lead's own thread is one
    * thread regardless of lens. */
   function leadConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
-    messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; asks: Map<number, LeadAsk>;
+    messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; staleAsk: number | null; asks: Map<number, LeadAsk>;
     previous: ReplacedThread | null;
   } {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
@@ -1086,7 +1087,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const messages = store.listLeadMessages(opened.thread.id, 40);
     // The lead's question with buttons, while its reply is the last word in the thread.
     const last = messages.at(-1);
-    const ask = last?.role === "assistant" && last.turn !== null && store.getLeadTurn(last.turn)?.approver === who.name ? store.leadAskOpen(last.turn, now) : null;
+    const asking = last?.role === "assistant" && last.turn !== null && store.getLeadTurn(last.turn)?.approver === who.name ? store.leadAskOpen(last.turn, now) : null;
+    // A question about this task loses its buttons once the task moved after it was asked (its plan rewritten or
+    // approved, a build started or ended): its options answered a state that is gone. Its words stay, marked so.
+    const staleAsk = asking !== null && focusTask !== null && taskMovedSince(store, focusTask.id, asking.createdAt) ? asking.turn : null;
+    const ask = staleAsk === null ? asking : null;
     // Answered questions stay readable above the answer; only their buttons go.
     const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.leadAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
     // The thread a ceiling change replaced (ruling 9): read after the open, display only.
@@ -1096,6 +1101,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       previous: replaced === null ? null : { messages: store.listLeadMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
       messages,
       ask,
+      staleAsk,
       asks,
       proposals,
       decisions: decisionsFor(store, [...proposals, ...coordinatorProposals]),

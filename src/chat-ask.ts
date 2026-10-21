@@ -14,6 +14,18 @@ import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-deli
 import { chatHash, partContent, savedChatPart } from "./chat-delivery-state.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type Store } from "./store.js";
 
+/** Whether a task changed after `since` (a lead's question about it was asked then): its plan was rewritten or
+ * approved, or a build of it started or ended. The question's options answered a state that is gone. */
+export function taskMovedSince(store: Store, taskId: string, since: string): boolean {
+  const at = new Date(since).getTime();
+  if (Number.isNaN(at)) return false;
+  const after = (iso: string | null | undefined): boolean => iso != null && new Date(iso).getTime() > at;
+  const scope = store.getScope(taskId);
+  if (scope !== null && (after(scope.proposedAt) || after(scope.approvedAt))) return true;
+  const ref = store.lookupRef(taskId);
+  return ref !== null && store.runsFor(ref.id).some(run => after(run.startedAt) || after(run.finishedAt));
+}
+
 /** The question as text with its options, where no buttons are drawn. */
 export function chatAskText(ask: Pick<LeadAsk, "question" | "options">): string {
   return [ask.question, ...ask.options.map(one => `• ${one}`), `• ${LEAD_ASK_OTHER}: say it in your own words`].join("\n");
