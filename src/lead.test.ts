@@ -6,7 +6,7 @@ import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverSta
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
 import { leadToolLabel } from "./lead-progress.js";
 import { settleWithCache } from "./converse.js";
-import { retentionPlan } from "./retention.js";
+import { retentionPlan, sweepRetention } from "./retention.js";
 import { searchMemory } from "./project-memory.js";
 import { LEAD_QUEUE_EXPIRY_MS, LEAD_QUEUE_MAX_MESSAGES, PersonalQueue, type LeadQueueContext } from "./lead-queue.js";
 import { chatAckPage } from "./server/render-chat.js";
@@ -706,6 +706,36 @@ describe("the lead's turn", () => {
       expect(outcome).toMatchObject({ ok: true });
       expect(found("zebracrossing")).toBe(1);
       expect(found("quokkaburrow")).toBe(0);
+    });
+
+    test("search shows a waiting message only as the words its turn took, and never words the store no longer keeps", async () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const edited = send(queue, live, where, "originalcanary wording", "a".repeat(32));
+      const dropped = send(queue, live, where, "droppedcanary aside", "b".repeat(32));
+      if (edited.kind !== "queued" || dropped.kind !== "queued") throw new Error("unreachable");
+      const found = (word: string) => searchMemory(store, { actor: "alex", repos: [INSIDE], query: word }).length;
+      expect(found("originalcanary")).toBe(0);
+      // Its words change while it waits (as a team room's edit does): the turn takes the new words, and only those are found.
+      store.handle.prepare("UPDATE lead_message SET text = 'replacementcanary wording' WHERE id = ?").run(edited.row.message);
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const claim = queue.claimNext("runner-1", clock())!;
+      expect(claim.text).toBe("replacementcanary wording");
+      const outcome = await turn(claim.text, scripted([text("Answered.")]).fetcher, { session: live, thread: where, requestId: claim.requestId, queuedMessageId: claim.message,
+        queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation }, onAdmitted: id => { if (!queue.bindTurn(claim, id)) throw new Error("fence"); } });
+      expect(outcome).toMatchObject({ ok: true });
+      expect(found("replacementcanary")).toBe(1);
+      expect(found("originalcanary")).toBe(0);
+      // An admitted message the store later deletes (retention, after its conversation ended) is no longer found either.
+      expect(queue.reconcile(clock(), 60_000)).toBeGreaterThanOrEqual(1);
+      expect(queue.remove("alex", dropped.row.message, clock())).toBe("removed");
+      expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
+      store.setRetentionPeriod("chat", 30, "alex", clock());
+      sweepRetention(store, "/nowhere", new Date(clock().getTime() + 40 * 86_400_000));
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_message WHERE id = ?").get(claim.message)).toEqual({ n: 0 });
+      expect(found("replacementcanary")).toBe(0);
+      expect(found("droppedcanary")).toBe(0);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_search WHERE body LIKE '%canary%'").get()).toEqual({ n: 0 });
     });
 
     test("a removed message's request stays a tombstone while its conversation is open: retention keeps it, so the same request never sends again", () => {

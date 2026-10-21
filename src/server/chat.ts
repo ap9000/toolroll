@@ -879,20 +879,24 @@ export function createChatHandlers(runtime: ServerRuntime) {
             : redirect(response, chatReturnWithLatest(back));
         }
       }
-      const onProgress = beginLiveTurn(opened.thread.id);
+      // The live display starts once this message holds a turn: a refusal (a secret, a turn still running) never blanks
+      // the display of a reply that is still running in the same conversation.
+      let onProgress: ((event: LeadProgress) => void) | undefined;
+      const ended = (ok: boolean) => { if (onProgress !== undefined) endLiveTurn(opened.thread.id, ok, onProgress); };
       // Detached work never carries this request's browser session (Passwordless reads it): it runs with no session facts.
-      void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message, onProgress, channel: "console", requestId, ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
+      void freshFacts.run(null, () => runLeadTurn({ store, who: principal, session: leadSession, thread: opened.thread, config: enabled.config, key: enabled.key, message,
+        onAdmitted: () => { onProgress = beginLiveTurn(opened.thread.id); }, onProgress: event => onProgress?.(event), channel: "console", requestId, ...(focusTask === null && chatProject !== null ? { context: `Current project: ${projectName(chatProject)} (${chatProject}). Keep this conversation about that project unless the operator explicitly asks to broaden it; use it as the repo for project tools.` } : {}), ...(focusTask === null ? {} : { context: `Current task: ${focusTask.id}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.${resultContext}${modeContext}` }), fetcher: chatFetcher, ...(options.subscriptionChatRunner === undefined ? {} : { subscriptionRunner: options.subscriptionChatRunner }), clock, evidenceRoot }))
         .then(outcome => {
           // Lost a race to another turn of this person's between deciding and admission: it waits instead of being refused.
           if (!outcome.ok && "refused" in outcome && (outcome.refused === "concurrent" || outcome.refused === "backlog") && queueIt().kind === "queued") {
-            endLiveTurn(opened.thread.id, false, onProgress);
+            ended(false);
             return;
           }
           // A turn that saved its outcome in the thread (one stopped at its deadline) is said there, once.
           if (!outcome.ok && !("saved" in outcome && outcome.saved === true)) noteLead(who.session.csrf, "turn" in outcome ? outcome.turn : null, outcome.message);
-          endLiveTurn(opened.thread.id, outcome.ok, onProgress);
+          ended(outcome.ok);
         })
-        .catch(() => { noteLead(who.session.csrf, null, "the turn failed unexpectedly"); endLiveTurn(opened.thread.id, false, onProgress); })
+        .catch(() => { noteLead(who.session.csrf, null, "the turn failed unexpectedly"); ended(false); })
         // A personal turn ended: the next waiting message (this person's or anyone's) may start now.
         .finally(() => runtime.personalQueue.kick());
       // Accepted for the engine, not received: the receipt is written by

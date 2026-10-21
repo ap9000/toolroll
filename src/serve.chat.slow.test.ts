@@ -878,7 +878,11 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(queued).toMatchObject({ ok: true, queued: true, request: 'b'.repeat(32) });
     // A queued send counts as received: an acknowledgement lost on the way never holds the draft.
     expect(await (await fetch(url(`/chat/mate/status?request=${'b'.repeat(32)}`), { headers: { cookie } })).json()).toMatchObject({ received: true });
-    // A message with a key in it never waits: nothing is saved, and the engine refuses it as when the lead is free.
+    // A message with a key in it never waits: nothing is saved, and the engine refuses it as when the lead is free —
+    // without touching the running reply's live display (the first finished snapshot is the first reply's own).
+    const room = await chatRoom(cookie);
+    await room.until(() => room.turns.length > 0);
+    expect(room.turns.at(-1)).toMatchObject({ done: false });
     const secret = await sendJson(cookie, { csrf, message: `Use AKIA${'Q'.repeat(16)} for this.`, request: 'e'.repeat(32), 'request-session': '1' });
     expect(secret.status).toBe(202);
     expect(await secret.json()).not.toHaveProperty('queued');
@@ -898,6 +902,9 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(html).toContain(`data-queued="${third.message}" data-queue-state="cancelled"`);
     // The first reply ends; the queue runs the second by itself, as its own turn, in order.
     finish(answer([{ type: 'text', text: 'First answered.' }]));
+    await room.until(() => room.turns.some(one => one.done));
+    expect(room.turns.find(one => one.done)).toMatchObject({ done: true, ok: true });
+    room.close();
     for (let i = 0; i < 300 && store.handle.prepare("SELECT status FROM lead_queue WHERE message = ?").get(queued.message)?.['status'] !== 'answered'; i++) await new Promise(resolve => setTimeout(resolve, 20));
     expect(store.handle.prepare("SELECT status FROM lead_queue WHERE message = ?").get(queued.message)).toEqual({ status: 'answered' });
     expect(store.handle.prepare("SELECT pending, turn IS NOT NULL AS bound FROM lead_message WHERE id = ?").get(queued.message)).toEqual({ pending: 0, bound: 1 });

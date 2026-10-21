@@ -1178,6 +1178,31 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "failed", outcome: "busy:gave-up" });
   });
 
+  test("an answered, receipted turn is delivered after a registry outage, however long it lasts — never abandoned", async () => {
+    const me = who();
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
+    const running = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 4 * 60 * 60_000 }, now);
+    if (!running.ok) throw new Error(running.reason);
+    const started = store.startLeadTurn(running.id, now);
+    if (!started.ok) throw new Error("start");
+    script.updates.push([textUpdate(3, "what shipped?")]);
+    expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
+    const row = store.listTelegramConversations(BOT).at(-1)!;
+    store.handle.prepare("UPDATE chat_event SET session = ? WHERE substr(id, 2) = ?").run(session, String(row.id));
+    store.replay({ idempotencyKey: `mate-send:${session}:${row.request}`, actor: "alex", at: now }, "mate-send", () => ({ digest: "d".repeat(64), turn: running.id }));
+    expect(store.finalizeLeadTurn(running.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, message: { text: "Release 0.9.9 shipped.", activity: "" } }, now)).toBe(true);
+    readProjects.mockRejectedValue(new Error("registry down"));
+    try {
+      now = new Date(now.getTime() + 3 * 60 * 60_000);
+      expect((await pass()).report).not.toMatchObject({ chatRefused: 1 });
+      expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "registry-unavailable:admitted" });
+    } finally { readProjects.mockReset(); }
+    now = new Date(now.getTime() + 60_000);
+    expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
+    expect(script.texts().at(-1)).toBe("Release 0.9.9 shipped.");
+  });
+
   test("behind the person's lead queue the phone's message waits (said once), and ten waiting messages per chat is the bound", async () => {
     const me = who();
     const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);

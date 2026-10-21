@@ -267,12 +267,15 @@ export function sweepRetention(store: Store, evidenceRoot: string, now: Date, ac
       const message = db.prepare(`DELETE FROM lead_message WHERE id = ? AND NOT EXISTS (SELECT 1 FROM team_message WHERE message = ?)
         AND NOT EXISTS (SELECT 1 FROM ${KEPT_QUEUE_ROW("lead_message.id")})`);
       const asked = db.prepare("SELECT turn FROM lead_message WHERE id = ? AND role = 'assistant' AND turn IS NOT NULL");
+      const searchCopy = db.prepare("DELETE FROM memory_search WHERE kind = 'conversation' AND ref = ?");
       // The lead's question goes with the reply that asked it; its buttons then say it expired.
       const ask = db.prepare("DELETE FROM lead_ask WHERE turn = ? AND NOT EXISTS (SELECT 1 FROM lead_message WHERE turn = ? AND role = 'assistant')");
       for (const one of plan.items.chat) {
         team.run(one.id);
         const turn = asked.get(one.id)?.["turn"];
         if (Number(message.run(one.id, one.id).changes) === 1) {
+          // Its search copy goes with it (search never shows words the store no longer keeps).
+          searchCopy.run(`message:${one.id}`);
           done.chat.count++; done.chat.bytes += one.bytes;
           if (turn !== undefined && turn !== null) ask.run(Number(turn), Number(turn));
         }

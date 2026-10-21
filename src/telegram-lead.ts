@@ -45,6 +45,8 @@ export const CONVERSATION_MAX_AGE_MS = 10 * 60_000;
 /** Waiting for the lead itself (it is answering, or earlier messages wait in the person's lead queue) is bounded longer:
  * two hours from the message's arrival, never reset as it moves from waiting behind the queue to waiting on a turn. */
 export const CONVERSATION_WAIT_MAX_AGE_MS = 2 * 3_600_000;
+/** A message whose turn was admitted, waiting for the project records to deliver its answer (no age bound). */
+const ADMITTED_REGISTRY_WAIT = "registry-unavailable:admitted";
 /** A card's buttons and an armed irreversible challenge live this long. */
 export const CARD_TTL_MS = 24 * 3_600_000;
 export const CHALLENGE_TTL_MS = 10 * 60_000;
@@ -436,7 +438,8 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   const requeue = async (outcome: string): Promise<void> => {
     // A turn already admitted for it waits for that turn's own outcome (bounded by the turn's deadline); waiting for the
     // lead gets two hours from arrival; anything else, ten minutes.
-    const limit = outcome === "replayed:running" ? Number.POSITIVE_INFINITY : outcome === "busy" || outcome === "backlog" ? CONVERSATION_WAIT_MAX_AGE_MS : CONVERSATION_MAX_AGE_MS;
+    const limit = outcome === "replayed:running" || outcome === ADMITTED_REGISTRY_WAIT ? Number.POSITIVE_INFINITY
+      : outcome === "busy" || outcome === "backlog" ? CONVERSATION_WAIT_MAX_AGE_MS : CONVERSATION_MAX_AGE_MS;
     if (ageMs > limit) {
       await notify(couldNotAnswerText(outcome === "registry-unavailable" ? "your projects couldn't be read" : "the assistant stayed busy with another message"));
       finish({ state: "failed", outcome: `${outcome}:gave-up` });
@@ -721,7 +724,10 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     registry = await readProjects();
   } catch {
     report.problems.push("telegram chat could not read the current project records");
-    await requeue("registry-unavailable");
+    // A turn already took it (its receipt is in the bound session): its answer exists or will, and is delivered once
+    // the projects can be read again — never abandoned to the outage.
+    const admitted = row.session !== null && store.leadRequestReceipt(row.session, row.request) !== null;
+    await requeue(admitted ? ADMITTED_REGISTRY_WAIT : "registry-unavailable");
     return;
   }
   const repos = telegramConversationRepos(store, binding.approver, registry);
