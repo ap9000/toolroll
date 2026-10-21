@@ -1356,12 +1356,35 @@ await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboar
     const panned = await measure();
     if (Math.round(panned.shellTop) !== 120 || panned.box > panned.visible + 0.5) throw new Error(`the screen doesn't follow Safari's pan: ${JSON.stringify(panned)}`);
     if (await box.inputValue() !== "A first line\nand a second\nand a third") throw new Error("the draft changed while the keyboard moved");
+    // The phone's keyboard has no Shift: its Return writes a new line, and nothing is sent.
+    const sent = await phone.locator("#chat-thread [data-message-id]").count();
+    await box.press("End"); await box.press("Enter");
+    if (await box.inputValue() !== "A first line\nand a second\nand a third\n") throw new Error(`Return on the phone keyboard didn't write a new line: ${JSON.stringify(await box.inputValue())}`);
+    if (await phone.locator("#chat-thread [data-message-id]").count() !== sent) throw new Error("Return on the phone keyboard sent the message");
+    // A reader who scrolled up a little stays there when the box grows a line.
+    const thread = phone.locator(".so-conversation > div").first(); // the hook's scroller, inside its root
+    await thread.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await phone.waitForTimeout(100);
+    // A finger drag is a plain scroll (no wheel), as on a phone.
+    await thread.evaluate(node => { node.scrollTop -= 40; });
+    await phone.waitForTimeout(250);
+    const before = await thread.evaluate(node => node.scrollTop);
+    await box.fill("A first line\nand a second\nand a third\nand a fourth\nand a fifth");
+    await phone.waitForTimeout(250);
+    const after = await thread.evaluate(node => node.scrollTop);
+    if (Math.abs(after - before) > 1) throw new Error(`a reader who scrolled up was moved from ${before} to ${after}`);
+    // The keyboard closed while zoomed in: the screen comes back whole, not left at the keyboard's size.
+    await phone.evaluate(() => Object.defineProperty(visualViewport, "scale", { configurable: true, get: () => 2 }));
     await keyboard(0, 0);
     await box.fill("");
     await box.blur();
     await phone.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-keyboard"));
+    await phone.waitForFunction(() => document.querySelector(".so-workspace").getBoundingClientRect().height === innerHeight, null, { timeout: 2000 }).catch(() => undefined);
+    const zoomed = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
+    await phone.evaluate(() => { delete visualViewport.scale; visualViewport.dispatchEvent(new Event("resize")); });
+    await phone.waitForTimeout(100);
     const rested = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
-    if (Math.round(rested) !== 844) throw new Error(`the screen didn't come back to full height: ${rested}`);
+    if (Math.round(zoomed) !== 844 || Math.round(rested) !== 844) throw new Error(`the screen didn't come back to full height: zoomed ${zoomed}, after ${rested}`);
     return { typing, panned };
   } finally { await putPhoneDown(); }
 });

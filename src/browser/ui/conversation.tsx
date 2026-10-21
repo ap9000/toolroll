@@ -18,16 +18,18 @@ export function Conversation({ className, children, ...props }: ConversationProp
 /** The hook follows the thread growing, not its own box shrinking: when a phone's keyboard rises (or the composer grows
  * a line) a reader who was at the newest message stays there instead of it sliding under the composer. */
 function FollowShrinkingBox() {
-  const { scrollRef, isAtBottom, scrollToBottom } = useStickToBottomContext();
-  const atEnd = useRef(isAtBottom);
-  atEnd.current = isAtBottom;
+  const { scrollRef, state, scrollToBottom } = useStickToBottomContext();
+  // The hook's own follow state, read when the box changes: "at bottom" alone is a 70px proximity, and a reader who
+  // scrolled up a little has stopped following (escapedFromLock), so the box shrinking must leave them where they are.
+  const following = useRef(() => state.isAtBottom && !state.escapedFromLock);
+  following.current = () => state.isAtBottom && !state.escapedFromLock;
   useEffect(() => {
     const box = scrollRef.current;
     if (box === null || typeof ResizeObserver === "undefined") return;
     let height = box.clientHeight;
     const observer = new ResizeObserver(() => {
       const next = box.clientHeight;
-      if (next < height && atEnd.current) void scrollToBottom({ animation: "instant" });
+      if (next < height && following.current()) void scrollToBottom({ animation: "instant" });
       height = next;
     });
     observer.observe(box);
