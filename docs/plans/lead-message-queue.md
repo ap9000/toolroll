@@ -1,6 +1,8 @@
 # Lead message queue — plan
 
-Status: **v3** (2026-10-20). r1 NO-GO (3 High / 4 Medium); r2 closed r1's 1, 2, 3, 6 and found 2 new High + 2 new
+Status: **v4** (2026-10-20). r3 closed 4, 7 and all four r2 new findings; left 5 open (claim-to-admission gap) and
+found 2 Medium (mirrored channel history; Telegram's 10-minute retry). v4 amendments are marked **(v4)**. Earlier:
+**v3** (2026-10-20). r1 NO-GO (3 High / 4 Medium); r2 closed r1's 1, 2, 3, 6 and found 2 new High + 2 new
 Medium (history leak of unadmitted rows, stalled deferral stamp, monthly-budget terminal, edit vs request identity)
 plus open 4, 5, 7. v3 amendments are marked **(v3)**.
 
@@ -56,7 +58,11 @@ that; the index makes the queue agree).
 **(v3) History never includes unadmitted messages — on every path.** Today `historyFor` skips operator rows with
 `turn IS NULL` only when the caller passes `queuedMessageId` (src/lead.ts:236), and `listLeadMessages` takes the
 latest 40 **before** that filter (src/store.ts:19120). v3 makes both unconditional: history is selected **in SQL** as
-admitted rows only (operator rows with a turn, and assistant rows), then limited to 40. Queued, removed, expired and
+admitted rows only, then limited to 40. **(v4)** "Unadmitted" is defined by provenance, not by `turn IS NULL`:
+excluded are operator rows referenced by a `lead_queue` or `team_message` row that is not bound to an admitted turn
+(queued, claimed-unbound, cancelled, expired, refused). Rows with no queue provenance are kept — notably
+`mirrorToTaskChat`'s already-answered channel exchanges, saved with both turns NULL (src/chat-channel.ts:168), which
+stay in history as question + answer. Queued, removed, expired and
 refused messages therefore never reach the model through an immediate send, a follow turn or a channel turn. Removing
 or expiring a queued message also **deletes its text** (`lead_message.text` blanked, `context_json` deleted) and keeps
 only a tombstone (request id, payload hash, status). A test fixes the reproduction Codex gave (queue B while A runs,
@@ -72,11 +78,24 @@ remove B, send C → C's history has no B; a follow turn while B waits → no B)
    `{ ok:true, queued:true, request, message }`.
 The secret scan runs on the text at send (as today).
 
-**(v3) Priority across entry points.** While an approver has queued personal rows, `openLeadTurn` (inside its existing
-admission transaction) refuses any personal-turn admission for that approver **except the oldest queued row's own**
-(`concurrent`). So follow passes, immediate sends (which queue instead) and channel turns (which already retry on
+**(v3/v4) Priority across entry points.** The **backlog** of an approver is every personal row that is `queued` **or
+claimed but not yet bound to a turn** (`running` with `turn_id NULL` — the claim happens before engine admission,
+src/team-leads.ts:297, and admission then awaits revalidation, src/lead.ts:305). While the backlog is non-empty,
+`openLeadTurn` (inside its existing admission transaction) refuses every personal-turn admission for that approver
+(new refusal `backlog`) **except one that carries the exact fenced claim identity of the backlog's oldest row** —
+`(row id, runner, generation)`, passed with `queuedMessageId` and checked in the same transaction. So: with only A
+waiting, claiming A keeps A in the backlog until it binds — nothing overtakes it; with A then B, A (claimed) is still
+the oldest backlog row, so A's own admission is admitted and B waits. Both cases are tested with revalidation
+deliberately suspended between claim and admission. So follow passes, immediate sends (which queue instead) and channel turns (which already retry on
 `concurrent`) all wait behind the backlog; the drainer is the only starter until the queue is empty. Atomic, because it
 is the same transaction that already enforces one live personal turn.
+
+**(v4) Channels behind a backlog.** Slack/Discord/Teams already defer and retry `concurrent`/`backlog`; follow passes
+keep their unacknowledged batch. **Telegram** gives up after ten minutes today (src/telegram-lead.ts:433): on a
+`backlog` refusal it instead keeps the update pending for as long as the backlog exists (bounded by the queue's 7-day
+expiry), tells the person once *"Queued behind N messages"*, and retries when the backlog's stamp changes; its other
+refusals keep today's ten-minute rule. Tested: Telegram message waits behind a 10-turn backlog longer than ten minutes
+and is answered after it.
 
 **(v3) Waiting, and what wakes it.** Transient admission refusals keep the row `queued` with the words shown; each has
 a named wake-up: `concurrent` (a live personal turn ends), `daily-cap` (local midnight), `over-budget` (weekly window
