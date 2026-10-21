@@ -1,6 +1,8 @@
 # Lead message queue — plan
 
-Status: **v2** (2026-10-20) after Codex plan review r1 (NO-GO, 3 High / 4 Medium). For re-review.
+Status: **v3** (2026-10-20). r1 NO-GO (3 High / 4 Medium); r2 closed r1's 1, 2, 3, 6 and found 2 new High + 2 new
+Medium (history leak of unadmitted rows, stalled deferral stamp, monthly-budget terminal, edit vs request identity)
+plus open 4, 5, 7. v3 amendments are marked **(v3)**.
 
 ## What and why
 
@@ -26,7 +28,11 @@ stamp instead of failing it; an exception after admission marks it `uncertain` a
 ## Behaviour
 
 - Sending while the lead answers (or while any personal lead turn of yours runs) saves the message at once; it shows
-  in the thread as yours with *Queued* and **Remove** (and **Edit** while still queued). The composer is free again.
+  in the thread as yours with *Queued* and **Remove**. The composer is free again. **(v3)** No Edit in this version:
+  Remove + send again covers it, and keeps one immutable identity per request.
+- **(v3) Bounds**: at most 10 queued messages and 20,000 characters queued per person; beyond that the send is refused
+  with *"10 messages are already waiting — remove one or wait for a reply"*, the draft kept. Queued messages expire
+  after 7 days (*Not sent — it waited too long*).
 - Queued messages run **one per turn, in order** — exactly like team conversations. Each turn sees the earlier ones
   in history. (v1's "join into one turn" is dropped: it broke the 2,000-character message limit, mixed per-message
   context such as "viewing result #N" and composer modes, and needed one receipt per joined request.)
@@ -47,6 +53,15 @@ uncertain`), `revision`, `generation`, `runner`, `claimed_at`, `turn_id`, `error
 `running` row per approver (personal concurrency is per approver, not per thread — `openLeadTurn` already enforces
 that; the index makes the queue agree).
 
+**(v3) History never includes unadmitted messages — on every path.** Today `historyFor` skips operator rows with
+`turn IS NULL` only when the caller passes `queuedMessageId` (src/lead.ts:236), and `listLeadMessages` takes the
+latest 40 **before** that filter (src/store.ts:19120). v3 makes both unconditional: history is selected **in SQL** as
+admitted rows only (operator rows with a turn, and assistant rows), then limited to 40. Queued, removed, expired and
+refused messages therefore never reach the model through an immediate send, a follow turn or a channel turn. Removing
+or expiring a queued message also **deletes its text** (`lead_message.text` blanked, `context_json` deleted) and keeps
+only a tombstone (request id, payload hash, status). A test fixes the reproduction Codex gave (queue B while A runs,
+remove B, send C → C's history has no B; a follow turn while B waits → no B).
+
 **Send** (`chatSend`, personal branch) — in one store transaction:
 1. If `(session, request)` has an engine receipt (`leadRequestReceipt`), answer as today (same digest → the existing
    turn; changed → `request-changed`). If it has a `lead_queue` row: same hash → that row (idempotent, never a second
@@ -57,12 +72,32 @@ that; the index makes the queue agree).
    `{ ok:true, queued:true, request, message }`.
 The secret scan runs on the text at send (as today).
 
+**(v3) Priority across entry points.** While an approver has queued personal rows, `openLeadTurn` (inside its existing
+admission transaction) refuses any personal-turn admission for that approver **except the oldest queued row's own**
+(`concurrent`). So follow passes, immediate sends (which queue instead) and channel turns (which already retry on
+`concurrent`) all wait behind the backlog; the drainer is the only starter until the queue is empty. Atomic, because it
+is the same transaction that already enforces one live personal turn.
+
+**(v3) Waiting, and what wakes it.** Transient admission refusals keep the row `queued` with the words shown; each has
+a named wake-up: `concurrent` (a live personal turn ends), `daily-cap` (local midnight), `over-budget` (weekly window
+rolls or the ceiling is raised), `monthly-budget` (month rolls or the budget is raised — the team runtime's list omits
+this one; the personal list includes it), `session-exhausted` (a new session is started — the row then becomes *Not
+sent*, because it is bound to its original session), `latched` (the unknown cost is acknowledged). The personal
+eligibility **stamp** covers everything `openLeadTurn` checks for this approver: live `mate_turn`/`chat_turn` ids and
+states, today's admitted count, session/weekly/monthly spend, latch, and update-admission pause — so a competing
+subscription turn finishing (no spend change) changes the stamp and the row is retried without another send. A 60 s
+stamp expiry is the belt.
+
 **Runner** — the team runtime's loop gains a second source (`PersonalQueue`, same method shapes as `TeamLeads`:
 `claimNext`, `current`, `bindTurn`, `finish`, `defer`, `cancel`, `reconcileFinished`). For each claim it rebuilds the
 principal **from the row**: approver active with the **same generation**, the row's **session** still active and
 unended (never moved to a newer session), `ceiling_digest` unchanged, and the admitted project set recomputed through
 the same runtime admission callback the console uses (`managedRepos`/`leadPrincipal` path), checked against the
-row's task/project; the provider/config and update-admission pause are read at claim time. It then calls
+row's task/project; the provider/config and update-admission pause are read at claim time. **(v3)** The project
+resolver is explicitly **actor-scoped** (`admittedReposFor(account)`), never `managedRepos`/`visible`, which read the
+request context (src/serve.ts:442, src/server/guards.ts:76) and are meaningless on a timer. `onAdmitted` re-checks the
+claim's runner, generation and revision transactionally (as `current`/`bindTurn` do, src/team-leads.ts:305), not only
+owner and thread. It then calls
 `runLeadTurn({ …, requestId: row.request_id, queuedMessageId: row.message, onAdmitted, context, revalidate })` —
 `onAdmitted` binds the row inside admission (the engine's guard on `queuedMessageId` is widened from "shared thread"
 to "a queued row of this approver in this thread"). `revalidate` re-checks the row, session, generation, access and
@@ -82,10 +117,12 @@ the draft for the next send and shows the queued row; the transport understands 
 back with the row visible. Legacy continuity script and `/chat` status polling — recognise queued/answered rows by
 request id. Workspace snapshot — carries queue rows; `leadChatVersion` includes them.
 
-**Retention / end / revoke**: the queued text lives in `lead_message`; chat retention deletes `lead_message` rows,
-so `lead_queue` rows are deleted with them (explicit delete in the retention sweep, not only FK). Ending a session or
-revoking chat cancels its `queued` rows (`cancelled`, error words) and follows the existing forgetting rules for
-text. Terminal rows keep no text of their own.
+**(v3) Retention / end / revoke**: `queued`, `running` and `uncertain` rows are **protected** from chat retention (as
+`retentionPlan` already exempts active team queue rows, src/retention.ts:185) until they finish or expire (7 days).
+Terminal rows: text and `context_json` deleted at removal/expiry/refusal; the tombstone (request id, payload hash,
+status) lives as long as its session and is purged with the session/thread, so a removed request can't be recreated
+during the session that sent it. Ending a session or revoking chat cancels its `queued` rows (*Not sent*), deleting
+text by the existing forgetting rules. Versioned migration with upgrade-path coverage.
 
 ## Safety
 
@@ -96,7 +133,10 @@ re-proved at claim and before every step. Caps, weekly/monthly budgets and the l
 ## Tests
 
 Store: send-path decision is atomic; idempotency (immediate→retry while running stays the same turn; queued→retry
-same row; changed text/context refused; removed never resurrected); one running row per approver; claim/bind/finish;
+same row; changed text/context refused; removed never resurrected); **(v3)** history excludes unadmitted rows on
+every path (Codex's reproduction); backlog priority over follow/channel/immediate starters; every transient refusal
+waits and wakes (incl. monthly-budget; a competing subscription turn ending); bounds and 7-day expiry; retention
+protects pending rows and deletes terminal text; one running row per approver; claim/bind/finish;
 deferral on each admission refusal and resume on change; uncertain after bound-turn crash; retention + end/revoke.
 Runtime: session replaced → Not sent; generation/access/project-order change → Not sent; task no longer visible →
 Not sent; follow disabled → queue still drains; Stop then next; cross-thread order (oldest first per approver).

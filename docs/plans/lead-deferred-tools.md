@@ -1,6 +1,7 @@
 # Lead deferred tools and prompt caching — plan
 
-Status: **v2** (2026-10-20) after Codex plan review r1 (NO-GO, 2 High / 4 Medium / 1 Low). For re-review.
+Status: **v3** (2026-10-20). r1 NO-GO; r2 closed r1's 1, 3, 4, 5, 6, 7 and left 2 open (the reservation body
+contradicted itself) plus a new Medium (subscription cache usage discarded). v3 amendments are marked **(v3)**.
 
 ## What and why
 
@@ -24,9 +25,12 @@ first"* (the turn continues), not a failed turn.
 - One registry of all tools (55 + `find_tools`), each with `deferred: boolean` and `keywords`. `isLeadTool` keeps
   meaning *registered* (the engine fails a turn on unregistered names, src/lead.ts:590 — unchanged).
 - Per request, an **immutable advertised set** = core ∪ tools found in earlier requests of this turn. `executeLeadTool`
-  checks advertisement **before** `read`/`prepare`/`handle`; missing state fails closed. All three schema uses in
-  `runLeadTurn` (direct compose, subscription compose, the base used for scanning/reservation) and the subscription
-  output-schema enum (src/subscription-chat.ts:78) read the advertised set.
+  checks advertisement **before** `read`/`prepare`/`handle`; missing state fails closed. **(v3)** Two bodies are
+  composed, never confused: the **outbound** body (advertised set — what is sent, and what the secret scan reads,
+  every round) and a **reservation-only** body (the full registry incl. `find_tools`, plus system, data, history,
+  provider wrappers and cache annotations, serialised exactly as a request would be) used only for the worst-case
+  reservation at the cache-write rate. Direct compose, subscription compose and the subscription output-schema enum
+  (src/subscription-chat.ts:78) read the advertised set; only the reservation reads the full body.
 - Discovery never changes authority: a found tool runs through its unchanged contract and handler.
 
 **Core set — curated, dependency-aware** (not frequency-only; no historical tool-call store exists —
@@ -43,9 +47,9 @@ to revisit the split; counted by distinct turns.
 returned with it; empty/no-match answers list the deferred groups ("flows, subagents, sweeps, …") so the model can
 search again. Bounded: ≤6 results, ≤3 `find_tools` calls per turn, cumulative discovered-schema bytes capped.
 
-**Reservation stays proven**: the direct-API worst-case reservation keeps using the **full registry's schema size**
-(as today), so any discovery within the turn is already covered; the actual request is smaller, the reservation is
-not. (Simplest correct bound; tightening it is a later optimisation.)
+**Reservation stays proven**: the direct-API worst-case reservation is computed from the **reservation-only body**
+above (full registry), so any discovery within the turn is already covered; the outbound request is smaller, the
+reservation is not. (Simplest correct bound; tightening it is a later optimisation.)
 
 **Cache accounting first, caching second** (src/converse.ts):
 1. Parse usage categories per provider: Anthropic `input_tokens`, `cache_creation_input_tokens`,
@@ -60,7 +64,14 @@ not. (Simplest correct bound; tightening it is a later optimisation.)
    identical across discovery) and one on the static system block. OpenRouter: leave implicit caching to the
    provider; its existing cost handling (max of pinned math and reported cost, src/lead.ts:554) is kept until reported
    cache costs are validated.
-5. Measure cold/warm requests and discovery transitions on a real-model journey before claiming savings.
+5. Measure cold/warm requests and discovery transitions on a real-model journey before claiming savings. **(v3)** The
+   order is core tools → discovered tools → system, so the system breakpoint's prefix **changes** across discovery;
+   only core-tool prefix reuse is expected, and only the measurement can establish it.
+6. **(v3) Scope of cache metrics: direct API turns.** The subscription transport discards cache categories today
+   (`claudeOutput`, `codexOutput`, and `parseSubscriptionLeadAnswer` turns missing counts into zero,
+   src/subscription-chat.ts:148-183). In this plan subscription turns keep input/output as today, their cache
+   categories are recorded as **unavailable (null), never zero**, and their dollar settlement stays zero. Carrying the
+   Claude CLI's cache usage through the adapter is a follow-up.
 
 **Parity and docs**: `chat-channel.ts` `parityGaps()` keeps auditing the **full** registry (+ `find_tools`); Telegram
 and chat-delivery call the shared engine and need no change; `get_capabilities` keeps its meaning. `LEAD_CONTRACT`
