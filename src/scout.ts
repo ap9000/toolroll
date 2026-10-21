@@ -78,6 +78,12 @@ const SCOUT_RESEARCH_TOOLS: readonly string[] = ["WebSearch", "WebFetch"];
  * scout-browser.ts). Every request it makes goes through `proxy` (scout-net.ts), which lets only public pages and the
  * project's own demo through; loopback is proxied too, never bypassed, and file: stays blocked. Screenshots are saved
  * in `imageFolder`. */
+/** The port of a loopback address this process started (the scout's proxy, its browser). */
+function portOf(url: string): number {
+  const parsed = new URL(url);
+  return Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
+}
+
 export function scoutBrowserLaunch(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): browserCheck.BrowserLaunch | null {
   if (tool === null || tool.command === null) return null;
   return { command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"] };
@@ -462,6 +468,9 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         idleTimeoutMs: timeoutMs,
         omitEnv: [...AGENT_ENV_DENYLIST, ...(proxy === null ? [] : PROXY_BYPASS_ENV.filter(name => !(name in proxyEnv)))],
         ...(proxy === null ? {} : { env: proxyEnv }),
+        // The scout reaches the web only through its own public-web proxy and its browser (egress.ts LaunchNetwork
+        // `via`): those ports are all its fence leaves open. With no proxy it reaches its provider alone.
+        ...(proxy === null ? {} : { network: { via: [portOf(proxy.url), ...(browserServer === null ? [] : [portOf(browserServer.url)])] } }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,

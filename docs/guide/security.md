@@ -19,8 +19,24 @@ at the operating system:
 | Claude | Seatbelt sandbox | bubblewrap (install `bubblewrap`) |
 | Gemini | Seatbelt sandbox | bubblewrap |
 
-Each run records how it was fenced. Without bubblewrap on Linux, Claude is
-held back only by its own file-tool rules; install it.
+Each run records how it was fenced. A build this machine can't fence (Windows,
+or Linux without bubblewrap) doesn't start, unless an instance operator runs
+`toolroll config unconfined-agents allow`; install bubblewrap instead.
+
+## Builds reach only their approved hosts
+
+Each approved scope seals what its build may reach: the agent's provider, the
+package registries the project uses, and hosts an approver adds:
+
+    toolroll project network --repo ~/code/shop --allow api.stripe.com
+
+Every connection goes through the run's own proxy, which admits only those
+hosts; the sandbox refuses everything else, name lookups included. On a Mac a
+build reaches no local service but its own proxy and tools; if a project's tests
+start a local server, `--local any` lets its builds reach every local service on
+that Mac. `--open` lifts the rule for a project. New scopes use the setting;
+approved ones keep the network they were approved with. A result's **Network**
+row shows what the build connected to and what was refused.
 
 ## Sign in with your identity provider
 

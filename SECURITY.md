@@ -25,9 +25,22 @@ user. What it promises:
 - **The agent fence.** Standing Orders' own secrets (the state folder beside
   the database, except the build's worktree, and `~/.toolroll`) are
   denied to agents by the operating system: Codex through its own sandbox on
-  every platform; Claude and Gemini through a sandbox on macOS. On Linux and
-  Windows, Claude's file tools are fenced but its shell is not yet, and Gemini
-  is not fenced. The README's "What an agent can reach" has the full table.
+  every platform; Claude, Gemini and ACP agents through Seatbelt on macOS and
+  bubblewrap on Linux. Where neither exists (Windows, or Linux without a
+  working bubblewrap) a build doesn't start, unless an instance operator
+  allows unconfined agents (`config unconfined-agents allow`; each such run
+  says "Not confined"). The README's "What an agent can reach" has the table.
+- **The network a build reaches is approved with it.** Each scope seals its
+  network: the agent's provider, the package registries the project uses, and
+  hosts an approver added (`project network --allow`), or `open`. The
+  operating system enforces it: on macOS the sandbox refuses every outbound
+  connection but the run's own proxy (direct connections, UDP, name lookups,
+  and asking another service to fetch, like `open https://…`); on Linux the
+  build gets a network of its own, reaching the proxy by a bridge, with the
+  machine's D-Bus, container and display sockets out of reach. The proxy
+  admits only the approved hosts, on ports 443 and 80, to public addresses,
+  and only for that run. A result shows what its proxy connected to and
+  refused.
 - **Separation of duties, per project** (Settings → Approval rules, or
   `project rules`). Every task records who filed it. A project can refuse
   the requester's own approval, and can mark the whole project or chosen
@@ -89,3 +102,17 @@ Known limits:
   outside the fence. Use it only for repositories you trust.
 - The console serves plain HTTP. Keep it on localhost or a private network
   such as Tailscale; don't expose it to the internet.
+- The network rule restricts where a build connects, not what it sends
+  there: the proxy never decrypts TLS, so an approved host (a registry, the
+  provider) receives whatever the build sends it.
+- On a Mac a build reaches no local service but its own proxy and tools. A
+  project that needs local test servers sets `project network --local any`,
+  which admits every local service on that Mac (the macOS sandbox can't admit
+  some local ports and refuse others). Linux builds always have a loopback of
+  their own.
+- Codex's command sandbox can't use a proxy: its commands are offline unless
+  the project's network is `open` and the build has Full access.
+- A project's tool servers keep their own network reach (they hold the
+  tool's secrets, not the agent's code).
+- Approvals sealed before network rules run with the narrow default: the
+  provider and the project's registries, no local services.

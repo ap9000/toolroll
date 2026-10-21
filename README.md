@@ -581,9 +581,19 @@ and launch tools remain available.
 
 | | Auto | Full access |
 |---|---|---|
-| **Codex / OpenRouter** (any OS) | Codex's workspace sandbox (workspace writes, no network) with the fence | Codex's sandbox widened to write anywhere with network, with the fence |
-| **Claude** | macOS: the agent runs inside a sandbox that denies the fence. Linux/Windows: Claude's own file tools refuse the fence, but its shell is not fenced yet | same |
-| **Gemini** | macOS: fenced like Claude. Linux/Windows: not fenced yet | same |
+| **Codex / OpenRouter** (any OS) | Codex's workspace sandbox (workspace writes, no network) with the fence | Codex's sandbox widened to write anywhere, with the fence; its commands reach the network only when the project's network is open |
+| **Claude, Gemini, ACP agents** | macOS: the agent runs inside a Seatbelt sandbox that denies the fence. Linux: inside bubblewrap. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents | same |
+
+**The network.** Each approved scope says what its build may reach: the
+agent's provider, the package registries the project uses (npm, PyPI,
+crates.io, the Go proxy, RubyGems, Maven), and any hosts an approver added
+with `toolroll project network --repo <p> --allow api.example.com`. Every
+connection goes through the run's own proxy, which admits only those hosts;
+the sandbox refuses everything else, name lookups included. On a Mac a build
+reaches no local service but its own proxy and tools: a project whose tests
+start a local server sets `--local any` (every local service on that Mac then
+becomes reachable). A result's **Network** row says what the build connected
+to and what was refused.
 
 Each attempt records how it was fenced. Two limits to know: in **API-key
 mode** an agent's own provider key is in its environment, so its shell can

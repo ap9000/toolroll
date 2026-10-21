@@ -87,6 +87,7 @@ import { openRouterPickerScript } from "../openrouter-models.js";
 import { policyHtml } from "../policy-ui.js";
 import { checkPolicy,parseList,policyParts } from "../policy.js";
 import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concurrency.js";
+import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
@@ -795,6 +796,23 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (!consumeApprovalNonce(body.get("nonce") ?? "", who.name, LIVE_VIEW_CONSENT, liveViewConsentDigest(repo))) return back("problem", "That form was already used or is out of date. Try again from this page.");
     if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to show commands.");
     return back("said", setLiveCommands(store, { repo, commands: true, by: who.name, via: "the console" }, now).said);
+  }
+  // Settings → Project → Network (egress.ts): what the project's builds may reach. An approver for the project changes it
+  // with their password typed now; the ledger keeps before → after. New scopes use it; approved ones keep theirs.
+  async function projectNetwork(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectNetwork);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes what its builds may reach.", "/settings/project");
+    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#network`);
+    const hosts = (body.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean).map(normalizeHost);
+    if (hosts.some(one => one === null)) return back("problem", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path. Nothing changed.");
+    if (hosts.length > MAX_NETWORK_HOSTS) return back("problem", `A project lists at most ${MAX_NETWORK_HOSTS} hosts. Nothing changed.`);
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change what builds may reach.");
+    const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);
+    const same = JSON.stringify(changed.before) === JSON.stringify(changed.after);
+    return back("said", same ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep the network they were approved with.");
   }
   // Delete a project, in two steps: its name, then what goes and the password. An instance operator; the ledger keeps who and what.
   async function projectDelete(ctx: HandlerContext): Promise<void> {
@@ -2132,6 +2150,7 @@ ${modeWords(terms)
     "spend.budget": spendBudget,
     "settings.project-concurrency": projectConcurrency,
     "settings.project-live-view": projectLiveView,
+    "settings.project-network": projectNetwork,
     "settings.project-delete": projectDelete,
     "settings.policy-send": policySave,
     "settings.approval-send": approvalSave,

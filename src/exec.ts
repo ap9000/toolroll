@@ -53,6 +53,9 @@ export type RunOptions = ProcessTreeObserver & {
   fence?: readonly string[];
   /** What the fence gives back beside those paths (agent-fence.ts FenceGrants). */
   fenceGrants?: FenceGrants;
+  /** `required`: this spawn runs code a build controls, so it runs inside the OS fence or not at all (never unwrapped
+   * because no backend applies here). The caller passes the fence it must run in. */
+  confinement?: "required";
   /** UTF-8 input for JSONL or buffered process-group transports; closed after delivery. */
   stdin?: string;
   /** One ACP conversation (runAcpSession only): the brief, the sealed model, and the agent the attestation names. */
@@ -207,6 +210,23 @@ export class ContainmentRefusal extends Error {
   override readonly name = "ContainmentRefusal";
 }
 
+/**
+ * The command as it runs inside the agent fence (sandbox-exec or bubblewrap wrapping it), or as it is when it has no
+ * fence. A spawn whose confinement is required and that no backend here can wrap is refused (ContainmentRefusal):
+ * nothing runs, and nothing falls back to running it unwrapped.
+ */
+export function confined(file: string, args: readonly string[], bag: { fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined }): { file: string; args: string[] } {
+  const fence = bag.fence ?? [];
+  if (fence.length > 0 && macosFenceAvailable()) return macosFenced(file, args, fence, bag.fenceGrants);
+  if (fence.length > 0 && linuxFenceAvailable()) return linuxFenced(file, args, fence, bag.fenceGrants);
+  if (bag.confinement === "required") {
+    throw new ContainmentRefusal(fence.length === 0
+      ? "This process must run inside the agent fence, and it was given none."
+      : "This machine can't confine a build (no macOS sandbox, no working bubblewrap), so nothing was started.");
+  }
+  return { file, args: [...args] };
+}
+
 /** A spawn callback refused custody AFTER the child existed: the caller
  * must reap exactly this child before answering. */
 class SpawnCustodyFailure extends Error {
@@ -242,12 +262,11 @@ function spawnContained(
   args: readonly string[],
   spawnOptions: { cwd?: string | undefined; env?: Record<string, string | undefined> | undefined; stdio: ("pipe" | "ignore")[]; detached: boolean },
   label: string,
-  bag: { beforeSpawn?: (() => boolean) | undefined; onSpawn?: ((pid: number) => void) | undefined; onSpawnFailed?: (() => void) | undefined; onContainer?: RunOptions["onContainer"]; onContainerEmpty?: RunOptions["onContainerEmpty"]; onUnknown?: RunOptions["onUnknown"]; fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined },
+  bag: { beforeSpawn?: (() => boolean) | undefined; onSpawn?: ((pid: number) => void) | undefined; onSpawnFailed?: (() => void) | undefined; onContainer?: RunOptions["onContainer"]; onContainerEmpty?: RunOptions["onContainerEmpty"]; onUnknown?: RunOptions["onUnknown"]; fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined },
   contain = true,
 ): ContainedSpawn {
   // The agent fence wraps the target itself (sandbox-exec then execs it, same pid).
-  if (bag.fence !== undefined && bag.fence.length > 0 && macosFenceAvailable()) ({ file, args } = macosFenced(file, args, bag.fence, bag.fenceGrants));
-  else if (bag.fence !== undefined && bag.fence.length > 0 && linuxFenceAvailable()) ({ file, args } = linuxFenced(file, args, bag.fence, bag.fenceGrants));
+  ({ file, args } = confined(file, args, bag));
   // The policy refusal comes first: nothing is reserved, recorded or
   // spawned for a spawn that cannot be contained as required.
   const effective = contain ? currentContainment() : null;
@@ -357,7 +376,7 @@ function spawnStream(
     args,
     { cwd: options.cwd, env: childEnv, stdio, detached: options.processGroup === true && process.platform !== "win32" },
     options.owner ?? "stream",
-    { beforeSpawn: options.beforeSpawn, onSpawn: options.onSpawn, onSpawnFailed: options.onSpawnFailed, onContainer: options.onContainer, onContainerEmpty: options.onContainerEmpty, onUnknown: options.onUnknown, fence: options.fence, fenceGrants: options.fenceGrants },
+    { beforeSpawn: options.beforeSpawn, onSpawn: options.onSpawn, onSpawnFailed: options.onSpawnFailed, onContainer: options.onContainer, onContainerEmpty: options.onContainerEmpty, onUnknown: options.onUnknown, fence: options.fence, fenceGrants: options.fenceGrants, confinement: options.confinement },
     options.processGroup === true,
   );
 }
@@ -656,6 +675,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
         ...(options.onStderr === undefined ? {} : { onStderr: options.onStderr }),
         ...(options.fence === undefined ? {} : { fence: options.fence }),
         ...(options.fenceGrants === undefined ? {} : { fenceGrants: options.fenceGrants }),
+        ...(options.confinement === undefined ? {} : { confinement: options.confinement }),
         ...(options.onDescendant === undefined ? {} : { onDescendant: options.onDescendant }),
         ...(options.onDescendantWriteFailure === undefined ? {} : { onDescendantWriteFailure: options.onDescendantWriteFailure }),
         ...(options.onDescendantExit === undefined ? {} : { onDescendantExit: options.onDescendantExit }),
@@ -667,12 +687,20 @@ export function run(file: string, args: readonly string[], options: RunOptions =
     );
   }
 
+  // The plain road wraps exactly as the process-group road does: a fence given here is never dropped, and a spawn
+  // whose confinement is required and can't be wrapped refuses before anything runs.
+  let wrapped: { file: string; args: string[] };
+  try { wrapped = confined(file, args, options); }
+  catch (error) {
+    if (!(error instanceof ContainmentRefusal)) throw error;
+    return Promise.resolve({ code: CONTAINMENT_REFUSED_CODE, stdout: "", stderr: error.message, timedOut: false, notFound: false, containment: { refused: error.message } });
+  }
   return retryTransientSpawn(
     () =>
       new Promise<SpawnAttempt>(resolve => {
         execFile(
-          file,
-          [...args],
+          wrapped.file,
+          wrapped.args,
           {
             cwd,
             timeout: timeoutMs,
@@ -706,7 +734,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
 function runBufferedGroup(
   file: string,
   args: readonly string[],
-  bag: ProcessTreeObserver & { cwd?: string; stdin?: string; timeoutMs: number; signal?: AbortSignal; maxBuffer: number; childEnv?: Record<string, string | undefined>; onSpawn?: (pid: number) => void; onSpawnFailed?: () => void; owner?: string; beforeSpawn?: () => boolean; onContainer?: RunOptions["onContainer"]; onContainerEmpty?: RunOptions["onContainerEmpty"]; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void; fence?: readonly string[]; fenceGrants?: FenceGrants },
+  bag: ProcessTreeObserver & { cwd?: string; stdin?: string; timeoutMs: number; signal?: AbortSignal; maxBuffer: number; childEnv?: Record<string, string | undefined>; onSpawn?: (pid: number) => void; onSpawnFailed?: () => void; owner?: string; beforeSpawn?: () => boolean; onContainer?: RunOptions["onContainer"]; onContainerEmpty?: RunOptions["onContainerEmpty"]; onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void; fence?: readonly string[]; fenceGrants?: FenceGrants; confinement?: "required" },
 ): Promise<SpawnAttempt> {
   return new Promise(resolve => {
     let child!: ReturnType<typeof spawn>;
@@ -718,7 +746,7 @@ function runBufferedGroup(
         args,
         { cwd: bag.cwd, env: bag.childEnv, stdio: [bag.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"], detached: process.platform !== "win32" },
         bag.owner ?? "buffered",
-        { beforeSpawn: bag.beforeSpawn, onSpawn: bag.onSpawn, onSpawnFailed: bag.onSpawnFailed, onContainer: bag.onContainer, onContainerEmpty: bag.onContainerEmpty, onUnknown: bag.onUnknown, fence: bag.fence, fenceGrants: bag.fenceGrants },
+        { beforeSpawn: bag.beforeSpawn, onSpawn: bag.onSpawn, onSpawnFailed: bag.onSpawnFailed, onContainer: bag.onContainer, onContainerEmpty: bag.onContainerEmpty, onUnknown: bag.onUnknown, fence: bag.fence, fenceGrants: bag.fenceGrants, confinement: bag.confinement },
       );
       child = spawned.child;
       container = spawned.container;

@@ -420,6 +420,8 @@ export type BrowserResultView = {
     complete: { action: string; receipt: string; run: number; accept?: { note: string | null } | null; returnTo?: string } | null;
     /** How its run went (docs/plans/run-efficiency.md): recorded numbers only, unknowns null. */
     efficiency?: import("./run-efficiency.js").RunEfficiency | null;
+    /** What its network was and what its proxy saw (egress.ts): display only. */
+    network?: import("./egress.js").RunNetworkRecord | null;
     /** Words for the result's Accept: Accept and finish when offered, else the Needs you acceptance. */
     decision: BrowserResultDecision | null;
     checks: { detail: string; problem: boolean; logHref: string | null } | null;

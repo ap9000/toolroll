@@ -41,6 +41,8 @@ export type ToolBroker = {
   /** The launch's token: the agent's only key to its tools. */
   token: string;
   url: (name: string) => string;
+  /** Its loopback port: the one a confined network leaves reachable for its agent (agent-fence.ts NetworkFence). */
+  port: number;
   /** The local servers running now (the fence tests read them). */
   pids: () => number[];
   /** Revoke the token, stop every server, close the port. */
@@ -325,6 +327,7 @@ export async function startToolBroker(tools: readonly BrokeredTool[], options: B
   return {
     token,
     url: name => `http://127.0.0.1:${port}/mcp/${name}`,
+    port,
     pids: () => [...local.values()].map(one => one.pid()).filter((pid): pid is number => pid !== null),
     close: () => {
       revoked = true;

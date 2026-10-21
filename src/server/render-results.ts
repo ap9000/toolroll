@@ -1,4 +1,5 @@
 /** Results and runs: the review cockpit, evidence, receipts, diffs and the result panel. */
+import type { RunNetworkRecord } from "../egress.js";
 import { assignmentPresentationOf,historicalAssessmentReason,shortenedMaterialReason } from "../assignment-presentation.js";
 import { assignmentActionHref,assignmentStatusOf,assignmentWithEvidence } from "../assignment-ui.js";
 import { type AssignmentSnapshot,owedAcceptance } from "../assignment.js";
@@ -445,6 +446,8 @@ export type RankedReviewRow = CompletedWorkRow & { ciFailing: boolean; priority:
 export type ReviewCockpitView = {
   /** How the result's run went (docs/plans/run-efficiency.md): display only, its sources and their gaps said. */
   efficiency?: RunEfficiency | null;
+  /** What the run's network was and what its proxy saw (egress.ts): display only. */
+  network?: RunNetworkRecord | null;
   taskId: string;
   title: string;
   repo: string | null;
@@ -776,6 +779,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     next: reviewNextActionOf(view, csrf, host.kind === "task" && run !== null ? `${host.base}&run=${run.id}` : undefined), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null,
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
     efficiency: view.efficiency ?? null,
+    network: view.network ?? null,
     acts: { primary: null, secondary: null, line: null }, runChecks: null, mismatch: null,
     // The raw run record lives under Details now (2026-10-02): /r/<id> for this result redirects here.
     record: run === null ? null : { build: run.id, href: `/r/${run.id}?record=1`, facts: [

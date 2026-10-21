@@ -131,6 +131,7 @@ import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, 
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from "./names.js";
 import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
+import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
@@ -420,6 +421,11 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll project show              show the current project and credential reference
   toolroll project rules --repo <p>  a project's approval rules; an instance operator changes them with
                                         --not-requester on|off, --protect none|project, --protect-paths "a/**,b/**"
+  toolroll project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]
+                                        what the project's builds may reach on the network; an approver changes it
+                                        (new scopes seal it; approved ones keep theirs)
+  toolroll config unconfined-agents [allow|refuse]
+                                        whether builds run where this machine can't confine them (instance operator)
   toolroll project concurrency [<n>] --repo <p>
                                         how many of a project's tasks build at once (default 2, never past the
                                         worker's capacity); an approver changes it with <n>
@@ -1408,6 +1414,7 @@ async function dispatch(
       if (positional[0] === "rules") return projectRulesCommand(positional, flags, context);
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
+      if (positional[0] === "network") return projectNetworkCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
@@ -1479,6 +1486,7 @@ async function dispatch(
     case "flows":
       return flowsCommand(positional, flags, context);
     case "config":
+      if (positional[0] === "unconfined-agents") return unconfinedAgentsCommand(positional, flags, context);
       return configCommand(positional, flags, context);
     case "chat":
       return chatCommand(flags, context);
@@ -12002,6 +12010,80 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
   };
   context.store.setApprovalRules(repo, next, acting.name, context.clock());
   return succeed(context.write, context.json, command, { repo, rules: next }, () => [`${repo}: ${rulesSummary(next)}`]);
+}
+
+/**
+ * `project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]`: what the project's
+ * builds may reach (egress.ts). New scopes are written with it and their approvals seal it; scopes already approved
+ * keep the network they were approved with. Widening or narrowing it is an approver's act with a password typed now,
+ * kept in the ledger as before → after.
+ */
+async function projectNetworkCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project network";
+  const allowed = new Set(["repo", "allow", "remove", "open", "allowlist", "local", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project network option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const local = flags.get("local");
+  if (positional.length > 1 || repoFlag === undefined || (flags.has("open") && flags.has("allowlist")) || (local !== undefined && local !== "any" && local !== "none")) {
+    return fail(context.write, context.json, command, "usage", "Use project network --repo <project path> [--allow host,…] [--remove host,…] [--open | --allowlist] [--local any|none].", EXIT.usage);
+  }
+  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
+  const known = [...new Set([...context.store.knownRepos(), ...context.store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])];
+  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const current = context.store.projectNetwork(repo);
+  const words = (one: ProjectNetwork): string[] => [
+    `${repo}: ${one.mode === "open" ? "builds may reach any host" : `builds reach their agent's provider, the package registries the project uses${one.hosts.length === 0 ? "" : `, and ${one.hosts.join(", ")}`}`}.`,
+    one.loopback === "any" ? "On a Mac, builds may reach this Mac's local services (never Toolroll's own)." : "On a Mac, builds reach no local services but their own proxy and tools.",
+  ];
+  const listOf = (name: string): string[] | null => {
+    const given = text(flags, name);
+    if (given === undefined) return [];
+    const hosts = given.split(",").map(one => one.trim()).filter(Boolean).map(normalizeHost);
+    return hosts.some(one => one === null) ? null : hosts as string[];
+  };
+  const add = listOf("allow"), remove = listOf("remove");
+  if (add === null || remove === null) return fail(context.write, context.json, command, "usage", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path.", EXIT.usage);
+  const changing = add.length > 0 || remove.length > 0 || flags.has("open") || flags.has("allowlist") || local !== undefined;
+  if (!changing) return succeed(context.write, context.json, command, { repo, network: current }, () => words(current));
+  const next: ProjectNetwork = {
+    mode: flags.has("open") ? "open" : flags.has("allowlist") ? "allowlist" : current.mode,
+    hosts: [...new Set([...current.hosts.filter(one => !remove.includes(one)), ...add])].sort(),
+    loopback: local === "any" ? "any" : local === "none" ? "proxy-only" : current.loopback,
+  };
+  if (next.hosts.length > MAX_NETWORK_HOSTS) return fail(context.write, context.json, command, "usage", `A project lists at most ${MAX_NETWORK_HOSTS} hosts.`, EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project changes what its builds may reach, with their password: pass --as and --token.", EXIT.refused);
+  }
+  const changed = context.store.setProjectNetwork(repo, next, acting.name, context.clock());
+  return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep the network they were approved with.",
+  ]);
+}
+
+/** `config unconfined-agents [allow|refuse]`: whether a build may run on a machine that can't confine it at the OS
+ * (no macOS sandbox, no working bubblewrap). Refused unless an instance operator allows it, with a password. */
+async function unconfinedAgentsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const command = "config unconfined-agents";
+  const { store, write, json } = context;
+  const wanted = positional[1];
+  if (positional.length > 2 || (wanted !== undefined && wanted !== "allow" && wanted !== "refuse")) {
+    return fail(write, json, command, "usage", "Use config unconfined-agents [allow|refuse].", EXIT.usage);
+  }
+  const words = (allowed: boolean) => [allowed
+    ? "Builds run even where this machine can't confine them (each such run says \"Not confined\")."
+    : "Builds this machine can't confine at the OS don't start."];
+  if (wanted === undefined) return succeed(write, json, command, { allowed: store.unfencedAgentsAllowed() }, () => words(store.unfencedAgentsAllowed()));
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token);
+  if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
+    return fail(write, json, command, "refused", "An instance operator changes this, with their password: pass --as and --token.", EXIT.refused);
+  }
+  store.setUnfencedAgentsAllowed(wanted === "allow", acting.name, context.clock());
+  return succeed(write, json, command, { allowed: wanted === "allow" }, () => words(wanted === "allow"));
 }
 
 /** `project concurrency [<n>] --repo <p>`: how many of a project's tasks build at once. Changing it is an approver's act. */

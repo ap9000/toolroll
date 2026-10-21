@@ -29,22 +29,43 @@ const NOT_PUBLIC = (() => {
   return list;
 })();
 
-/** Whether an IP literal is a public internet address. IPv4 inside IPv6 (mapped, compatible or NAT64) is judged as IPv4. */
+/** An IPv6 address as its eight 16-bit groups, whatever way it was written (compressed, expanded, IPv4-tailed). */
+function ipv6Groups(address: string): number[] | null {
+  if (isIP(address) !== 6) return null;
+  let text = address.toLowerCase();
+  const tail = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (tail !== null) {
+    const [a, b, c, d] = tail.slice(1).map(Number) as [number, number, number, number];
+    text = `${text.slice(0, tail.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, rest] = text.split("::") as [string, string | undefined];
+  const left = head === "" ? [] : head.split(":");
+  const right = rest === undefined || rest === "" ? [] : rest.split(":");
+  const missing = 8 - left.length - right.length;
+  if (rest === undefined ? left.length !== 8 : missing < 1) return null;
+  const groups = [...left, ...Array<string>(rest === undefined ? 0 : missing).fill("0"), ...right].map(one => parseInt(one, 16));
+  return groups.length === 8 && groups.every(one => Number.isInteger(one) && one >= 0 && one <= 0xffff) ? groups : null;
+}
+
+/**
+ * Whether an IP literal is a public internet address. IPv4 inside IPv6 (mapped, translated, compatible or NAT64) is
+ * judged as IPv4, read from the address's groups so every way of writing it is caught (an expanded NAT64 form too).
+ */
 export function isPublicAddress(address: string): boolean {
   const bare = address.replace(/^\[|\]$/g, "").replace(/%.*$/, "");
   const family = isIP(bare);
   if (family === 4) return !NOT_PUBLIC.check(bare, "ipv4");
   if (family !== 6) return false;
-  const embedded = /^(?:::ffff:(?:0:)?|::|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/i.exec(bare)?.[1];
-  if (embedded !== undefined) return isPublicAddress(embedded);
-  const mappedHex = /^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(bare);
-  if (mappedHex !== null) {
-    const high = parseInt(mappedHex[1]!, 16);
-    const low = parseInt(mappedHex[2]!, 16);
-    return isPublicAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
-  }
-  if (/^::ffff:/i.test(bare)) return false;
-  return !NOT_PUBLIC.check(bare, "ipv6");
+  const groups = ipv6Groups(bare);
+  if (groups === null) return false;
+  const v4 = (high: number, low: number) => `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+  const zero = (from: number, to: number) => groups.slice(from, to).every(one => one === 0);
+  // ::ffff:a.b.c.d (mapped), ::ffff:0:a.b.c.d (translated), ::a.b.c.d (compatible), 64:ff9b::a.b.c.d (NAT64).
+  if (zero(0, 5) && groups[5] === 0xffff) return isPublicAddress(v4(groups[6]!, groups[7]!));
+  if (zero(0, 4) && groups[4] === 0xffff && groups[5] === 0) return isPublicAddress(v4(groups[6]!, groups[7]!));
+  if (zero(0, 6) && (groups[6] !== 0 || groups[7]! > 1)) return isPublicAddress(v4(groups[6]!, groups[7]!));
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && zero(2, 6)) return isPublicAddress(v4(groups[6]!, groups[7]!));
+  return !NOT_PUBLIC.check(groups.map(one => one.toString(16)).join(":"), "ipv6");
 }
 
 export type Lookup = (host: string) => Promise<readonly string[]>;

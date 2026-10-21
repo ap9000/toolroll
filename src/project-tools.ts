@@ -634,7 +634,7 @@ export type ToolLaunch = { tools: ResolvedTool[]; skipped: { name: string; reaso
 /** Everything a provider spawn needs to use exactly these tools, and the
  * cleanup. `privateDir` holds the run's launch files, which name the broker
  * and its token, never a tool's secret (tool-broker.ts). */
-export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omitEnv: string[]; cleanup: () => void; privateDir?: string; serverPids?: () => number[] };
+export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omitEnv: string[]; cleanup: () => void; privateDir?: string; serverPids?: () => number[]; brokerPort?: number };
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const tomlList = (values: readonly string[]): string => `[${values.map(toml).join(",")}]`;
@@ -674,7 +674,7 @@ export async function claudeToolArgs(launch: ToolLaunch, options: ToolLaunchOpti
     omitEnv: [],
     cleanup,
     privateDir: dir,
-    ...(broker === null ? {} : { serverPids: broker.pids }),
+    ...(broker === null ? {} : { serverPids: broker.pids, brokerPort: broker.port }),
   };
 }
 
@@ -718,7 +718,7 @@ export async function codexToolArgs(launch: ToolLaunch, options: ToolLaunchOptio
     const enabled = options.enabledTools?.[tool.spec.name];
     if (enabled !== undefined) argv.push("-c", `${key}.enabled_tools=${tomlList(enabled)}`);
   }
-  return { argv, env: {}, omitEnv: [], cleanup, privateDir: dir, serverPids: broker.pids };
+  return { argv, env: {}, omitEnv: [], cleanup, privateDir: dir, serverPids: broker.pids, brokerPort: broker.port };
 }
 
 /** Gemini: no way yet to hand it exactly these servers, so it gets none. */

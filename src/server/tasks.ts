@@ -2873,6 +2873,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       detail,
       // How it ran: derived from the run's own records once it has finished, display only.
       efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now); } catch { return null; } })(),
+      // What its network was and what its proxy saw (egress.ts), display only.
+      network: store.runNetwork(run.id),
       reviewRetry: store.reviewRetryStateOf(run.id),
       review: reviewFactsFor(run.id),
       notes: store.notesForRun(run.id),

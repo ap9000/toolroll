@@ -49,6 +49,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { readMonitoring } from "./monitoring-settings.js";
 import { existingFolders } from "./names.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
+import type { LoopbackMode } from "./egress.js";
+
+/** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
+export const BRIDGE_DIR = "bridge-secrets";
 
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
@@ -124,6 +128,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   const fence = new Set<string>();
   /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
   let runFolder: string | null = null;
+  /** The bridges' folder, likewise. */
+  let bridgeFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -138,6 +144,14 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // points), a folder holding anything at all — so no build can replace it; when nothing is there it is made first.
     // If it can't be made, the path is fenced anyway: a sandbox that can't cover a missing path refuses to launch
     // rather than run unfenced. The name is Toolroll's own; nothing else belongs there.
+    // The folder Linux builds' network bridges are made in (egress-bridge.ts): made before any build starts and fenced
+    // from every build, so no build — however long it runs — can reach a bridge made for a later one.
+    const bridges = join(state, BRIDGE_DIR);
+    try { lstatSync(bridges); } catch { try { mkdirSync(bridges, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    // Fenced by its own name as well as where it leads: a link planted there is itself out of reach (and the bridge
+    // refuses a root that isn't a private folder: egress-bridge.ts).
+    bridgeFolder = bridges;
+    fence.add(bridges);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
@@ -171,11 +185,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -284,8 +298,9 @@ export function taskBoundary(options: { worktree: string; provider: string; home
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
 export type RunFolders = { root: string; own: string | null };
-/** The prefixes of every launch's private folders: its tools' config and a Codex build's own home. */
-export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-"] as const;
+/** The prefixes of every launch's private folders: its tools' config, a Codex build's own home, and a Linux build's
+ * network bridge (egress-bridge.ts). */
+export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-"] as const;
 
 export function runFolders(own: string | null, root: string = tmpdir()): RunFolders {
   return { root: real(root), own: own === null ? null : real(own) };
@@ -309,7 +324,35 @@ function otherRunFolders(folders: RunFolders): string[] {
  * `pool` denies the plane's checkout pools whole and gives this build's own
  * checkout back (CheckoutPool).
  */
-export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool };
+export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence };
+
+/**
+ * A launch's network confinement (egress.ts, docs/plans/agent-baseline-hardening.md arc 1). `open`: the network as it
+ * always was. `allowlist`: nothing leaves the machine but through the run's own proxy (`proxyPort`); the run's tool
+ * broker (`brokerPorts`) stays reachable; on macOS this Mac's other local services are reachable only under
+ * `loopback: "any"` (all of them: Seatbelt can't refuse one local port once it admits the rest); unix sockets only
+ * under `socketRoots` (the run's own temp folder and checkout). On Linux the agent gets a network of its own and
+ * reaches the proxy and broker through `bridge` (a folder of unix sockets the plane serves, and the forwarder that
+ * carries them onto the namespace's own loopback).
+ */
+export type NetworkFence =
+  | { mode: "open" }
+  | { mode: "allowlist"; proxyPort: number; brokerPorts: number[]; loopback: LoopbackMode; socketRoots: string[];
+      bridge?: { folder: string; forwarder: string; node: string };
+      /** Linux: the run's own folders a private /tmp gives back (its checkout, its launch folder), when they are there. */
+      keep?: string[] };
+
+/**
+ * Services a sandboxed process could ask to act outside the sandbox for it (macOS): open a URL in a browser (Launch
+ * Services), script another application (Apple Events), fetch in the background (nsurlsessiond), look a name up
+ * (the DNS service: a lookup is itself a message out), or read and write the clipboard. Denied when the network is
+ * confined; the run's proxy resolves names for it.
+ */
+export const DELEGATION_SERVICES: readonly string[] = [
+  "com.apple.coreservices.launchservicesd", "com.apple.coreservices.quarantine-resolver", "com.apple.lsd.mapdb", "com.apple.lsd.modifydb", "com.apple.lsd.open",
+  "com.apple.coreservices.appleevents", "com.apple.nsurlsessiond", "com.apple.nsurlsessiond.NSURLSessionProxyService",
+  "com.apple.dnssd.service", "com.apple.mDNSResponder", "com.apple.pasteboard.1",
+];
 export const NO_GRANTS: FenceGrants = { readOnly: [], readable: [], lookup: [] };
 
 /**
@@ -455,7 +498,10 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
     "-c", 'default_permissions="standing-orders"',
     "-c", 'permissions.standing-orders.extends=":workspace"',
     "-c", `permissions.standing-orders.filesystem={${filesystem.join(",")}}`,
-    ...(fullAccess ? ["-c", "permissions.standing-orders.network.enabled=true", "-c", 'approval_policy="never"'] : []),
+    // Codex's command sandbox can't route through a proxy: its commands reach the network only when the run's sealed
+    // network is open (and Full access asked for it), and are offline otherwise.
+    ...(fullAccess && (grants.network === undefined || grants.network.mode === "open") ? ["-c", "permissions.standing-orders.network.enabled=true"] : []),
+    ...(fullAccess ? ["-c", 'approval_policy="never"'] : []),
   ];
 }
 
@@ -597,7 +643,26 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     "(deny mach-priv-task-port)",
     "(deny mach-task-name)",
     ...(above.length === 0 ? [] : [`(deny file-write* ${paths("literal", above)})`]),
+    ...macosNetworkRules(grants.network),
   ].join("\n");
+}
+
+/**
+ * The network half of the macOS fence. Every outbound connection is denied, then loopback is given back as the launch
+ * allows: every local port under `loopback: "any"`, else the run's proxy and broker alone. (Seatbelt admits a port an
+ * allow names whatever a deny after it says, so a local port can't be refused once all are admitted: the choice is all
+ * or none, plus the run's own.) Filters name the remote end only: a `local ip` filter would admit any outbound
+ * connection.
+ */
+export function macosNetworkRules(network: NetworkFence | undefined): string[] {
+  if (network === undefined || network.mode === "open") return [];
+  const local = (port: number | "*") => `(remote ip "localhost:${port}")`;
+  return [
+    "(deny network-outbound)",
+    `(allow network-outbound ${network.loopback === "any" ? local("*") : [network.proxyPort, ...network.brokerPorts].map(local).join(" ")})`,
+    ...(network.socketRoots.length === 0 ? [] : [`(allow network-outbound ${network.socketRoots.map(root => `(remote unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`]),
+    `(deny mach-lookup ${DELEGATION_SERVICES.map(name => `(global-name ${seatbelt(name)})`).join(" ")})`,
+  ];
 }
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -663,6 +728,8 @@ function linuxGrants(fence: readonly string[], grants: FenceGrants): string[] {
  * folder, or /dev/null for a file), so what is made there after launch is masked too; then only the explicit grants
  * bound back read-only (bubblewrap binds from the original root, so a grant inside a mask still reaches its files). */
 export function linuxFenced(file: string, args: readonly string[], fence: readonly string[], grants: FenceGrants = NO_GRANTS): { file: string; args: string[] } {
+  const network = grants.network?.mode === "allowlist" ? grants.network : null;
+  if (network !== null && network.bridge === undefined) throw new Error("A confined network on Linux needs its bridge");
   const mask = (path: string) => {
     let folder = true;
     try { folder = statSync(path).isDirectory(); } catch { folder = true; }
@@ -671,5 +738,43 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const pool = grants.pool?.deny ?? [];
   const own = grants.pool?.own != null && existsSync(grants.pool.own) ? ["--bind", grants.pool.own, grants.pool.own] : [];
   const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
-  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, "--die-with-parent", "--", file, ...args] };
+  // A confined network: a network and a process view of its own, the host's sockets out of reach (a socket in a
+  // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
+  const isolated = network === null ? [] : [
+    "--unshare-net", "--unshare-pid", "--proc", "/proc",
+    ...linuxHostSockets().flatMap(mask),
+    "--ro-bind", network.bridge!.folder, network.bridge!.folder,
+  ];
+  // A confined build gets a /tmp of its own (other programs' sockets, other runs' folders and anything planted there
+  // all out of sight at once), with only its own folders there given back; every mask and grant below still applies.
+  const privateTmp = network === null ? [] : ["--tmpfs", "/tmp", ...(network.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
+  const command = network === null ? [file, ...args]
+    : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
+  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...privateTmp, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
+}
+
+/** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
+ * engines), wherever they exist here. */
+export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp"): string[] {
+  // The system's own, root-owned: resolved (/var/run is a link to /run) so bubblewrap mounts over the real path, once.
+  const system = [
+    ...(uid === undefined ? [] : [`/run/user/${uid}`]), "/run/dbus", "/var/run/dbus", "/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/podman",
+    "/var/run/podman", "/run/systemd/private", "/run/snapd.socket", "/run/screen",
+  ];
+  const masks = new Set<string>();
+  for (const path of system) { try { masks.add(realpathSync(path)); } catch { /* not here */ } }
+  // The user's own, in places a build could plant names: taken only as the real folders or sockets they are, never
+  // through a link (a planted link would turn a mask onto any folder at all). Container engines
+  // run per user (Docker Desktop and the docker CLI's folder whole, so a socket made there later is covered too;
+  // Colima, OrbStack, Lima, Rancher Desktop, rootless containers); a terminal multiplexer takes commands from its
+  // socket; an SSH agent signs as you; editors keep IPC sockets in /tmp (hidden by the build's private /tmp).
+  // Masked whoever owns it (a folder `sudo docker` made is root's): only a link is never followed, since a link turns
+  // a mask onto its target. A link there is a residual until builds can't write the home folder (arc 2).
+  const owned = (path: string): boolean => {
+    try { const held = lstatSync(path); return !held.isSymbolicLink() && (held.isDirectory() || held.isSocket()); } catch { return false; }
+  };
+  for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) if (owned(path)) masks.add(path);
+  // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
+  void tmp;
+  return [...masks].sort();
 }

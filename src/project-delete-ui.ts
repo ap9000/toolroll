@@ -4,6 +4,7 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
+import type { ProjectNetwork } from "./egress.js";
 import { html, postForm, type Html, reauth } from "./html.js";
 import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
 
@@ -33,7 +34,32 @@ export type ProjectSettingsView = {
   access?: { tools: { name: string; loads: boolean; words: string }[] } | { problem: string };
   /** Live view (live-detail.ts): whether running agents' commands and their output show, and whether this person may change it. */
   liveView?: { commands: boolean; canChange: boolean; nonce?: string };
+  /** What its builds may reach on the network (egress.ts), and whether this person may change it. */
+  network?: { setting: ProjectNetwork; canChange: boolean };
 };
+
+/** Network: what the project's builds may reach, said plainly; an approver changes it with their password. */
+function networkHtml(view: ProjectSettingsView): Html | "" {
+  const network = view.network;
+  if (network === undefined) return "";
+  const { setting } = network;
+  const reach = setting.mode === "open"
+    ? html`<p>Builds may reach <strong>any host</strong>.</p>`
+    : html`<p>Builds reach their agent's provider and the package registries this project uses${setting.hosts.length === 0 ? "" : html`, and <span class="tool-name">${setting.hosts.join(", ")}</span>`}. Everything else is refused.</p>`;
+  const local = setting.loopback === "any"
+    ? html`<p>On a Mac, builds may reach <strong>this Mac's local services</strong>: test servers, and anything else listening here.</p>`
+    : html`<p>On a Mac, builds reach no local services. A project whose tests start a local server needs them on.</p>`;
+  if (!network.canChange) return html`<section class="build-access network-setting" id="network" aria-labelledby="network-title"><h2 id="network-title">Network</h2>${reach}${local}<p class="meta">An approver for this project can change this.</p></section>`;
+  const form = postForm("/settings/project/network", html`
+    <label class="check"><input type="checkbox" name="local" value="any"${setting.loopback === "any" ? html` checked` : ""}> Builds may reach this Mac's local services</label>
+    <p class="meta">Local test servers work, and so does anything else listening on this Mac (a local database, a dev proxy). Linux builds always have local services of their own.</p>
+    <label>Other hosts builds may reach<textarea name="hosts" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="api.stripe.com&#10;*.example.com">${setting.hosts.join("\n")}</textarea></label>
+    <label class="check"><input type="checkbox" name="mode" value="open"${setting.mode === "open" ? html` checked` : ""}> Open: builds may reach any host</label>
+    <p class="meta">Tasks scoped from now on use this; tasks already approved keep the network they were approved with.</p>
+    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
+  return html`<section class="build-access network-setting" id="network" aria-labelledby="network-title"><h2 id="network-title">Network</h2>${reach}${local}<details><summary>Change</summary>${form}</details></section>`;
+}
 
 /** Live view: hidden by default; showing commands takes the password, hiding them is one step. */
 function liveViewHtml(view: ProjectSettingsView): Html | "" {
@@ -90,7 +116,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: 
   const remote = html`<section class="build-access recorded-remote" aria-labelledby="recorded-remote-title"><h2 id="recorded-remote-title">Recorded remote</h2>${view.remoteUrl
     ? html`<p class="path">${view.remoteUrl}</p>`
     : html`<p>No remote recorded. Landed work waits for your review.</p>`}<details><summary>Change remote</summary><p>An owner or instance operator can run:</p><p class="path">toolroll repos add &lt;project&gt; --remote &lt;url&gt;</p></details></section>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${liveViewHtml(view)}`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${liveViewHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`

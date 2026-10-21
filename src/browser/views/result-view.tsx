@@ -388,6 +388,32 @@ export function tokenWords(count: number): string {
 }
 const DASH = "—";
 /** The one line: time, turns, tokens in (and from cache), out, steps. Unknown reads as a dash, never zero. */
+type RunNetwork = NonNullable<Selected["network"]>;
+
+/** The run's network in one line: what it could reach, and what its proxy refused. */
+export function networkLine(one: RunNetwork): string {
+  if (one.mode === "open") return "Open: it could reach any host";
+  if (one.via === true) return "Through its own research proxy only";
+  const counts = one.counts;
+  if (counts === undefined) return `Approved hosts only (${one.hosts ?? 0})`;
+  const refusedHosts = counts.hosts.filter(host => host.refused > 0).map(host => host.host);
+  return `${counts.connections} connection${counts.connections === 1 ? "" : "s"} to approved hosts`
+    + (counts.refused === 0 ? "; nothing refused" : `; refused ${refusedHosts.slice(0, 3).join(", ")}${refusedHosts.length > 3 ? ` and ${refusedHosts.length - 3} more` : ""}`);
+}
+
+function NetworkBody({ one }: { one: RunNetwork }) {
+  const counts = one.counts;
+  return <div className="flex flex-col gap-2 text-body">
+    {counts !== undefined && counts.hosts.length > 0 && <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+      {counts.hosts.map(host => <div key={host.host} className="contents"><dt className="min-w-0 font-mono text-caption [overflow-wrap:anywhere]">{host.host}</dt>
+        <dd className="text-right tabular-nums text-muted-foreground">{host.refused > 0 ? `refused ×${host.refused}` : `${host.connections}`}</dd></div>)}
+    </dl>}
+    {counts !== undefined && counts.otherHosts > 0 && <p className="text-muted-foreground">And {counts.otherHosts} more connection{counts.otherHosts === 1 ? "" : "s"} to other hosts.</p>}
+    {counts !== undefined && counts.refused > 0 && <p className="text-muted-foreground">An approver adds a host in the project's network settings (<span className="font-mono">toolroll project network --allow</span>); new scopes get it.</p>}
+    <p className="text-caption text-muted-foreground">Counted by the build's own proxy: a connection its sandbox refused outright isn't counted.{one.loopback === "proxy-only" ? " Local services on this machine were out of reach." : ""}</p>
+  </div>;
+}
+
 export function efficiencyLine(one: Efficiency): string {
   const time = one.time.agentMs === null ? DASH : durationWords(one.time.agentMs);
   const tokensIn = one.usage.in === null ? `${DASH} tokens in` : `${tokenWords(one.usage.in)} tokens in${one.usage.cacheShare === null ? "" : `, ${Math.round(one.usage.cacheShare * 100)}% from cache`}`;
@@ -449,6 +475,7 @@ function Details({ selected }: { selected: Selected }) {
     ...(panel?.reviewHistory == null ? [] : [{ id: "review-history", title: "Review history", hint: null,
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
     ...(selected.efficiency == null ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
+    ...(selected.network == null ? [] : [{ id: "network", title: "Network", hint: networkLine(selected.network), body: <NetworkBody one={selected.network} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
       body: <div className="flex flex-col gap-3 text-body">
         <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">

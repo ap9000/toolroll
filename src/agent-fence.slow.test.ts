@@ -212,7 +212,7 @@ describe("the agent fence", () => {
     const folders = runFolders(null, dir);
     const argv = codexFenceArgv([], true, { readOnly: [], readable: [], lookup: [], runFolders: folders });
     const filesystem = argv.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
-    for (const prefix of ["so-tools-", "so-codex-"]) {
+    for (const prefix of ["so-tools-", "so-codex-", "so-net-"]) {
       expect(filesystem).toContain(`"${dir}/${prefix}*"="deny"`);
       expect(filesystem).toContain(`"${dir}/${prefix}*/**"="deny"`);
     }
@@ -226,7 +226,7 @@ describe("the agent fence", () => {
     const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home });
     expect(fence).toEqual([
       join(home, ".standing-orders"),
-      join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
+      join(state, "backups"), join(state, "bridge-secrets"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
       join(state, "repos.json"), join(state, ".toolroll-run"), join(state, "runner-token"), join(state, "up-login.txt"),
     ].sort());
     expect(fence.some(path => worktree.startsWith(path))).toBe(false);
@@ -240,7 +240,7 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
+    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "bridge-secrets"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
     // No database file: only ~/.standing-orders.
     expect(agentFence({ databaseFile: null, worktree: null, home })).toEqual([join(home, ".standing-orders")]);
   });
@@ -615,7 +615,7 @@ describe("what the fence gives back", () => {
       "(allow default)",
       '(deny file-read* file-write* (subpath "/s/secret"))',
       '(deny file-write* (subpath "/r/meta"))',
-      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-)"))',
+      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-)"))',
       '(allow file-read-metadata (literal "/r/checkout"))',
       `(allow file-read* file-write* (subpath "${own}"))`,
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',

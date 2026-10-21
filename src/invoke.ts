@@ -32,12 +32,15 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
+import { BRIDGE_DIR } from "./agent-fence.js";
 import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
+import { proxyEnv, providerOnlyNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
+import { startEgressBridge, type EgressBridge } from "./egress-bridge.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 
@@ -175,12 +178,20 @@ export type InvokeResult =
  * bug, not a case. Attestation and protocol refusals are VALUES (above),
  * not throws — those are cases, and they must dispose cleanly.
  */
+/**
+ * What a launch may reach on the network (egress.ts, docs/plans/agent-baseline-hardening.md arc 1). `policy`: the
+ * network a build's approval sealed (or the narrowed legacy one), enforced through the run's own proxy. `via`: the
+ * caller already runs the proxy (a scout's public-web proxy, its browser): only those loopback ports are reachable.
+ * Absent: the provider's own hosts only (a planner, a check — nothing that installs or browses).
+ */
+export type LaunchNetwork = { policy: NetworkProfile } | { via: number[] };
+
 export async function invokeAgent(
   store: Store,
   runId: number,
   spec: AgentSpec,
   invocation: Omit<Invocation, "model">,
-  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean },
+  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork },
 ): Promise<InvokeResult> {
   const clock = options.clock ?? (() => new Date());
   if (options.accumulateUsage && (invocation.phase !== "review" || invocation.resumeSession === null)) {
@@ -334,6 +345,7 @@ export async function invokeAgent(
     accumulateUsage: _accumulateUsage,
     liveInput: _liveInput,
     acpCheck: _acpCheck,
+    network: launchNetwork,
     ...runOptions
   } = options;
   // The live setting is read STRICTLY (atomic authority closure): a
@@ -428,7 +440,7 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
@@ -436,7 +448,15 @@ export async function invokeAgent(
     return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: fenceOf.problem };
   }
   const fence = [...fenceOf.fence, ...(fenceOf.fence.length > 0 && codexHarness ? [ownTools, codexHome === null ? null : realpathSync(codexHome.dir)].filter((path): path is string => path !== null) : [])];
-  const grants = fenceOf.grants;
+  const grants: FenceGrants = { ...fenceOf.grants };
+  // The run's network (egress.ts): sealed by its approval, or the provider's hosts alone, or the caller's own proxy.
+  const network: LaunchNetwork = launchNetwork ?? { policy: providerOnlyNetwork(spec.provider) };
+  // Codex's command sandbox has no proxy (its argv is fixed just below): its commands are online only for a sealed
+  // open network, and offline otherwise.
+  if (fence.length > 0 && codexHarness) {
+    grants.network = "policy" in network && network.policy.mode === "open" ? { mode: "open" }
+      : { mode: "allowlist", proxyPort: 0, brokerPorts: [], loopback: "proxy-only", socketRoots: [] };
+  }
   const inherited = spec.model === null && invocation.phase !== "review" ? inheritedDefaults(spec.provider, { ...process.env, ...(runOptions.env ?? {}) }, keyHome ?? homedir()) : undefined;
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
@@ -459,8 +479,62 @@ export async function invokeAgent(
   // A tool server the broker starts is fenced by what this platform supports, whatever the provider: Codex's own
   // profile fences only its agent's commands, and the broker starts servers outside it.
   if (fence.length > 0) {
-    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, fence, grants);
-    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, fence, grants);
+    // A tool server keeps its own reach (it holds its tool's secrets, not the agent's code): never the agent's network.
+    const serverGrants = (): FenceGrants => { const { network: _agentOnly, ...rest } = grants; return rest; };
+    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, fence, serverGrants());
+    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, fence, serverGrants());
+  }
+  // No silent fallback (arc 1): a build this machine can't confine at the OS — Claude reduced to its own file-tool
+  // rules, Gemini to nothing — doesn't start unless the instance operator allowed unconfined agents here. An injected
+  // runner (tests) starts no real agent.
+  const unconfined = fence.length > 0 && (fenced.method === "claude-rules" || fenced.method === "none");
+  if (unconfined && runner === undefined && !store.unfencedAgentsAllowed()) {
+    tools?.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
+      diagnostic: "This machine can't confine an agent (no macOS sandbox, no working bubblewrap), so nothing was started. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
+  }
+  let egress: EgressProxy | null = null;
+  let bridge: EgressBridge | null = null;
+  let runTemp: string | null = null;
+  const confinedOs = fenced.method === "macos-sandbox" || fenced.method === "linux-bubblewrap";
+  if (fence.length > 0 && !codexHarness && confinedOs) {
+    const brokerPorts = tools?.brokerPort === undefined ? [] : [tools.brokerPort];
+    // Unix sockets only under this run's own folders: its checkout, and a temp folder of its own inside its private
+    // launch folder (the system temp folder holds other programs' sockets — editors, agents, password managers).
+    if (ownTools !== null) {
+      runTemp = join(ownTools, "tmp");
+      mkdirSync(runTemp, { recursive: true, mode: 0o700 });
+    }
+    const socketRoots = [...(runTemp === null ? [] : [runTemp]), ...(workspace === null ? [] : [realpathSync(workspace)])];
+    try {
+      if ("via" in network) {
+        const [proxyPort, ...more] = network.via;
+        grants.network = { mode: "allowlist", proxyPort: proxyPort ?? 0, brokerPorts: [...more, ...brokerPorts], loopback: "proxy-only", socketRoots };
+      } else if (network.policy.mode === "open") {
+        grants.network = { mode: "open" };
+      } else {
+        egress = await startEgressProxy({ hosts: network.policy.hosts });
+        grants.network = { mode: "allowlist", proxyPort: egress.port, brokerPorts, loopback: network.policy.loopback, socketRoots };
+      }
+      if (fenced.method === "linux-bubblewrap" && grants.network.mode === "allowlist") {
+        const database = store.databaseFile();
+        bridge = await startEgressBridge([grants.network.proxyPort, ...grants.network.brokerPorts],
+          database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR));
+        grants.network.bridge = { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath };
+        // Its private /tmp gives back only its own folders: its checkout and its launch folder (its temp is inside).
+        grants.network.keep = [...(workspace === null ? [] : [realpathSync(workspace)]), ...(ownTools === null ? [] : [ownTools]), ...(fenceOf.gitPaths ?? [])];
+      }
+    } catch (error) {
+      await egress?.close();
+      await bridge?.close();
+      tools?.cleanup();
+      codexHome?.cleanup();
+      removeAgentDatabase(isolatedDb.dir);
+      return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
+        diagnostic: `The build's network could not be set up, so nothing was started: ${error instanceof Error ? error.message : String(error)}` };
+    }
   }
   if (invocation.phase !== "review") store.recordRunFence(runId, { method: fenced.method, paths: fence.length }, clock());
   const billingSeen: { keySource: string | null; model: string | null; planWindows: boolean; answered: boolean } = { keySource: null, model: null, planWindows: false, answered: false };
@@ -477,6 +551,11 @@ export async function invokeAgent(
     ...(fence.length > 0 ? fencedGitEnv({ ...process.env, ...(runOptions.env ?? {}) }) : {}),
     ...(codexHome === null ? {} : { CODEX_HOME: codexHome.dir }),
     ...(managedKey === null || keyEnvName === null ? {} : { [keyEnvName]: managedKey }),
+    // The run's own proxy, in every spelling a program reads (egress.ts): after every other setting, so no caller's
+    // environment points the build around it. A program that ignores them is refused by the OS fence instead.
+    ...(egress === null || !("policy" in network) ? {} : proxyEnv(egress, network.policy.loopback)),
+    // Its own temp folder, where its tools' sockets may live (the only one its fence admits besides its checkout).
+    ...(runTemp === null ? {} : { TMPDIR: runTemp, TMP: runTemp, TEMP: runTemp }),
     // This key is deliberately last: no caller may point an agent back at
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),
@@ -683,6 +762,17 @@ export async function invokeAgent(
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
     codexHome?.cleanup();
+    // What the run's proxy saw (shown on its result): connections it made and refused. A connection the OS refused
+    // outright never reached it, and isn't counted.
+    if (invocation.phase !== "review" && grants.network !== undefined) {
+      store.recordRunNetwork(runId, {
+        mode: grants.network.mode, phase: "agent",
+        ...("via" in network ? { via: true } : { hosts: network.policy.hosts.length, loopback: network.policy.loopback }),
+        ...(egress === null ? {} : { counts: egress.counts() }),
+      }, clock());
+    }
+    await egress?.close();
+    await bridge?.close();
   }
 
   // v105: the run's billing, fixed from evidence before its usage is priced: a key it was given is a key; otherwise
@@ -915,7 +1005,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; problem?: string } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -936,6 +1026,8 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
       // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
       grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
         poolRoots }),
+      // The checkout's own Git data, which a private /tmp gives back beside the checkout (agent-fence.ts linuxFenced).
+      gitPaths: binding === null ? [] : [binding.gitdir, join(binding.main, ".git")],
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
