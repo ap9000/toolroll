@@ -782,7 +782,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // task was filed from (task_source). Saved receipts read their state from their card, saved cards read a person.
 // v127 adds, and changes no saved row: the running console's instance record (console_instance, one row: its secret,
 // pid, port and build) that bare `toolroll` proves a console with before attaching (docs/plans/agents-cockpit.md B1).
-export const SCHEMA_VERSION = 127;
+// v128 adds, and changes no saved row's existing columns: the personal lead queue (lead_queue; docs/plans/
+// lead-message-queue.md) and whether a lead message is still waiting for its turn (lead_message.pending, indexed with
+// its thread so the model's history reads only admitted messages). A saved message reads waiting exactly when it is an
+// operator message of a team queue row never bound to a turn (V128_ADDED_COLUMNS).
+export const SCHEMA_VERSION = 128;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -920,7 +924,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1020,6 +1024,47 @@ export const V126_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     created_kind: { definition: "TEXT CHECK (created_kind IN ('person','automation'))", saved: "NULL" },
   },
 });
+
+/** v128: whether a lead message waits for its turn. A message saved before v128 waits exactly when it is an operator
+ * message that a team queue row holds and no turn has taken (the team runtime's own unadmitted messages); every other
+ * saved message is history (`saved` is evaluated per row). */
+export const V128_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  lead_message: {
+    pending: {
+      definition: "INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1))",
+      saved: "(CASE WHEN role = 'operator' AND turn IS NULL AND EXISTS (SELECT 1 FROM team_message q WHERE q.message = lead_message.id) THEN 1 ELSE 0 END)",
+    },
+  },
+});
+/** v128: the personal lead queue (docs/plans/lead-message-queue.md). A message sent while one of its author's personal
+ * lead turns runs (or while earlier ones wait) waits here, one turn per message, in order. Its words are the
+ * lead_message row (pending until admitted); terminal rows keep only their request identity (a tombstone). */
+export const LEAD_QUEUE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS lead_queue (
+  message             INTEGER PRIMARY KEY REFERENCES lead_message(id) ON DELETE CASCADE,
+  thread              INTEGER NOT NULL REFERENCES lead_thread(id) ON DELETE CASCADE,
+  approver            TEXT NOT NULL,
+  approver_generation INTEGER NOT NULL,
+  session             INTEGER NOT NULL,
+  ceiling_digest      TEXT NOT NULL,
+  request_id          TEXT NOT NULL,
+  payload_hash        TEXT NOT NULL,
+  context_json        TEXT,
+  status              TEXT NOT NULL CHECK (status IN ('queued','running','answered','failed','cancelled','uncertain')),
+  revision            INTEGER NOT NULL DEFAULT 1,
+  generation          INTEGER NOT NULL DEFAULT 0,
+  runner              TEXT,
+  claimed_at          TEXT,
+  turn_id             INTEGER REFERENCES mate_turn(id),
+  error               TEXT,
+  created_at          TEXT NOT NULL,
+  settled_at          TEXT,
+  UNIQUE (session, request_id)
+);
+CREATE INDEX IF NOT EXISTS lead_queue_backlog ON lead_queue (approver, status, message);
+CREATE UNIQUE INDEX IF NOT EXISTS lead_queue_one_running ON lead_queue (approver) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS lead_queue_admitted ON lead_queue (turn_id) WHERE turn_id IS NOT NULL;
+`;
 
 /** v126: the outside source a task was filed from, kept with the task (a card's own task link moves on; this never
  * does). Written in the filing's transaction, copied whole to a revision, never changed. */
@@ -1390,7 +1435,23 @@ export type LeadThread = { id: number; approver: string; ceilingDigest: string; 
 /** A thread as the chat list shows it: its scope and its latest message. */
 export type LeadThreadSummary = LeadThread & { lastMessageAt: string | null; lastMessage: string | null; messages: number };
 
-export type LeadMessage = { id: number; thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity: string | null; createdAt: string };
+export type LeadMessage = { id: number; thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity: string | null; createdAt: string;
+  /** v128: still waiting for its turn (a queued message); absent when admitted or never queued. */
+  pending?: true };
+
+/** A lead_message row as a LeadMessage. */
+function readLeadMessageRow(row: Record<string, unknown>): LeadMessage {
+  return {
+    id: Number(row["id"]),
+    thread: Number(row["thread"]),
+    turn: row["turn"] === null ? null : Number(row["turn"]),
+    role: String(row["role"]) as LeadMessage["role"],
+    text: String(row["text"]),
+    activity: row["activity"] === null ? null : String(row["activity"]),
+    createdAt: String(row["created_at"]),
+    ...(Number(row["pending"] ?? 0) === 1 ? { pending: true as const } : {}),
+  };
+}
 
 export type LeadProposalKind = "task" | "next" | "reserve" | "hold" | "unhold" | "steer" | "scope" | "cancel" | "answer" | "repair" | "agents" | "review" | "control" | "task_action" | "action";
 
@@ -4939,6 +5000,16 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(PLAN_AUTO_SCHEMA);
   // v127 (cockpit B1): the running console's instance record (one row; a new table, additive only).
   db.exec(CONSOLE_INSTANCE_SCHEMA);
+  // v128: the personal lead queue (a new table) and lead_message.pending, set once from each saved row's provenance
+  // (exactly V128_ADDED_COLUMNS' `saved` expression), then the history index the model's reads use.
+  if (!hasColumn(db, "lead_message", "pending")) {
+    addColumn(db, "lead_message", "pending", V128_ADDED_COLUMNS.lead_message!.pending!.definition);
+    db.exec(`UPDATE lead_message SET pending = ${V128_ADDED_COLUMNS.lead_message!.pending!.saved}`);
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS lead_message_history ON lead_message (thread, pending, id)");
+  db.exec(LEAD_QUEUE_SCHEMA);
+  // v128: the memory search indexes a waiting message when a turn takes it, found by the turn that took it.
+  db.exec("CREATE INDEX IF NOT EXISTS team_message_admitted ON team_message (turn_id) WHERE turn_id IS NOT NULL");
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -18079,18 +18150,31 @@ export class Store {
   }
 
   endLeadSession(id: number, by: string, now: Date): boolean {
-    const changed = this.db
-      .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL")
-      .run(now.toISOString(), by, id);
-    return Number(changed.changes) === 1;
+    return this.transact(() => {
+      const changed = this.db
+        .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL")
+        .run(now.toISOString(), by, id);
+      // Its waiting messages can never run under it (each is bound to the session it was sent in): they end now, Not
+      // sent, and keep no words (v128 lead queue).
+      if (Number(changed.changes) === 1) {
+        const waiting = this.db.prepare("SELECT message FROM lead_queue WHERE session = ? AND status = 'queued'").all(id).map(row => Number(row["message"]));
+        for (const message of waiting) {
+          this.db.prepare("UPDATE lead_queue SET status = 'cancelled', error = 'Not sent: this conversation ended before it ran.', revision = revision + 1, settled_at = ? WHERE message = ?").run(now.toISOString(), message);
+          this.forgetQueuedLeadMessage(message);
+        }
+      }
+      return Number(changed.changes) === 1;
+    });
   }
 
   /** Revocation's companion (ruling 10): an approver's standing ends every session it minted. */
   endLeadSessionsFor(approver: string, by: string, now: Date): number {
-    const changed = this.db
-      .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE approver = ? AND ended_at IS NULL")
-      .run(now.toISOString(), by, approver);
-    return Number(changed.changes);
+    return this.transact(() => {
+      const ending = this.db.prepare("SELECT id FROM lead_session WHERE approver = ? AND ended_at IS NULL").all(approver).map(row => Number(row["id"]));
+      // Each ends as endLeadSession ends one: its waiting messages too (v128 lead queue).
+      for (const id of ending) this.endLeadSession(id, by, now);
+      return ending.length;
+    });
   }
 
   /** The live thread for this approver and scope under THIS ceiling; a
@@ -19109,12 +19193,24 @@ export class Store {
     });
   }
 
-  appendLeadMessage(message: { thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity?: string | null }, now: Date): number {
+  /** `pending`: a queued message (personal or team) that waits for its turn — out of the model's history until the
+   * admission that binds it clears the flag in the same statement (v128). */
+  appendLeadMessage(message: { thread: number; turn: number | null; role: "operator" | "assistant"; text: string; activity?: string | null; pending?: boolean }, now: Date): number {
     const inserted = this.db
-      .prepare("INSERT INTO lead_message (thread, turn, role, text, activity, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(message.thread, message.turn, message.role, message.text, message.activity ?? null, now.toISOString());
+      .prepare("INSERT INTO lead_message (thread, turn, role, text, activity, created_at, pending) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(message.thread, message.turn, message.role, message.text, message.activity ?? null, now.toISOString(), message.pending === true ? 1 : 0);
     this.db.prepare("UPDATE lead_thread SET last_turn_at = ? WHERE id = ?").run(now.toISOString(), message.thread);
     return Number(inserted.lastInsertRowid);
+  }
+
+  /** The model's history: the last `limit` ADMITTED messages, oldest first — a message still waiting for its turn (or
+   * removed, expired or refused while waiting) is never read back to the lead. An index range scan whatever the backlog
+   * (lead_message_history). People see the whole thread through listLeadMessages. */
+  listLeadHistory(thread: number, limit: number): LeadMessage[] {
+    return this.db
+      .prepare("SELECT * FROM (SELECT * FROM lead_message WHERE thread = ? AND pending = 0 ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
+      .all(thread, limit)
+      .map(readLeadMessageRow);
   }
 
   /** The last `limit` messages, oldest first. */
@@ -19122,15 +19218,7 @@ export class Store {
     return this.db
       .prepare("SELECT * FROM (SELECT * FROM lead_message WHERE thread = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC")
       .all(thread, limit)
-      .map(row => ({
-        id: Number(row["id"]),
-        thread: Number(row["thread"]),
-        turn: row["turn"] === null ? null : Number(row["turn"]),
-        role: String(row["role"]) as LeadMessage["role"],
-        text: String(row["text"]),
-        activity: row["activity"] === null ? null : String(row["activity"]),
-        createdAt: String(row["created_at"]),
-      }));
+      .map(readLeadMessageRow);
   }
 
   /** A proposal is inert (`drafting`) until its turn finalizes. */
@@ -19289,9 +19377,11 @@ export class Store {
    * approver serializes the console and the CLI.
    */
   openLeadTurn(
-    args: { approver: string; session: number; thread: number; credentialKey: string; reservedMicrousd: number; dailyTurns: number; weeklyCeilingMicrousd: number; deadlineMs: number; provider?: string },
+    args: { approver: string; session: number; thread: number; credentialKey: string; reservedMicrousd: number; dailyTurns: number; weeklyCeilingMicrousd: number; deadlineMs: number; provider?: string;
+      /** The personal queue claim this turn runs (lead-queue.ts): the only admission the backlog lets through. */
+      queueClaim?: { message: number; runner: string; generation: number } },
     now: Date,
-  ): { ok: true; id: number } | { ok: false; reason: "latched" | "concurrent" | "daily-cap" | "session-exhausted" | "session-ended" | "not-yours" | "thread-closed" | "over-budget" | "monthly-budget" } {
+  ): { ok: true; id: number } | { ok: false; reason: "latched" | "concurrent" | "backlog" | "daily-cap" | "session-exhausted" | "session-ended" | "not-yours" | "thread-closed" | "over-budget" | "monthly-budget" } {
     return this.transact(() => {
       // The binding (slice-1 review, finding 2): the session and the thread
       // are THIS approver's, under THIS credential, under one ceiling, and
@@ -19322,6 +19412,17 @@ export class Store {
         : this.db.prepare("SELECT 1 FROM mate_turn WHERE approver=? AND state IN ('queued','running') AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_turn.thread) LIMIT 1").get(args.approver);
       const liveChat = this.db.prepare("SELECT 1 FROM chat_turn WHERE approver=? AND state IN ('queued','running') AND mate_turn IS NULL LIMIT 1").get(args.approver);
       if (live !== undefined || liveChat !== undefined) return { ok: false as const, reason: "concurrent" as const };
+      // v128: while something of this person's waits in the personal queue (or is claimed but not yet bound), the only
+      // personal turn admitted is the one carrying the exact claim of the backlog's oldest message — a follow pass, a
+      // channel turn or another send waits behind it. Team turns are counted per thread and are not held.
+      if (!teamBinding) {
+        const oldest = this.db.prepare("SELECT message, runner, generation, status FROM lead_queue WHERE approver = ? AND (status = 'queued' OR (status = 'running' AND turn_id IS NULL)) ORDER BY message LIMIT 1").get(args.approver);
+        if (oldest !== undefined) {
+          const claim = args.queueClaim;
+          const own = claim !== undefined && Number(oldest["message"]) === claim.message && oldest["status"] === "running" && oldest["runner"] === claim.runner && Number(oldest["generation"]) === claim.generation;
+          if (!own) return { ok: false as const, reason: "backlog" as const };
+        }
+      }
       if (this.chatTurnsToday(args.approver, now) >= args.dailyTurns) return { ok: false as const, reason: "daily-cap" as const };
       if (session.endedAt !== null) {
         return { ok: false as const, reason: "session-ended" as const };
@@ -21476,6 +21577,7 @@ export class Store {
   // ---- the conversation queue (v62) ------------------------------------------
 
   enqueueTelegramConversation(...args: Parameters<ChatMessages["enqueueMessage"]>): ReturnType<ChatMessages["enqueueMessage"]> { return this.telegramChat().enqueueMessage(...args); }
+  telegramMessagesWaiting(binding: number): number { return this.telegramChat().messagesWaiting(binding); }
 
   telegramConversationWaitingOn(...args: Parameters<ChatMessages["messageWaitingOn"]>): ReturnType<ChatMessages["messageWaitingOn"]> { return this.telegramChat().messageWaitingOn(...args); }
 
@@ -22423,6 +22525,22 @@ export class Store {
   leadTurnOfStep(step: number): LeadTurn | null {
     const row = this.db.prepare("SELECT mate_turn FROM chat_turn WHERE id = ?").get(step);
     return row === undefined || row["mate_turn"] === null ? null : this.getLeadTurn(Number(row["mate_turn"]));
+  }
+
+  /** A waiting message that will never run keeps nothing of what it said (v128 lead queue): its words, the context it was
+   * sent with, and any copy the memory search made of it. Only while it is still pending — a message a turn took stays. */
+  /** Whether a send of this session reached the plane: the engine took it, or the lead queue holds it (waiting, run,
+   * removed or expired — any of those means the composer's draft was accepted and must not be sent again). */
+  leadRequestReceived(session: number, request: string): boolean {
+    return this.leadRequestReceipt(session, request) !== null
+      || this.db.prepare("SELECT 1 FROM lead_queue WHERE session = ? AND request_id = ?").get(session, request) !== undefined;
+  }
+
+  forgetQueuedLeadMessage(message: number): void {
+    const blanked = this.db.prepare("UPDATE lead_message SET text = '' WHERE id = ? AND pending = 1").run(message);
+    if (Number(blanked.changes) !== 1) return;
+    this.db.prepare("UPDATE lead_queue SET context_json = NULL WHERE message = ?").run(message);
+    this.db.prepare("DELETE FROM memory_search WHERE kind = 'conversation' AND ref = ?").run(`message:${message}`);
   }
 }
 

@@ -860,6 +860,64 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     } finally { current.close(); }
   });
 
+  test('the lead queue: a message sent while the lead answers waits, runs next by itself, and a removed one is never sent', async () => {
+    const cookie = await login(); const csrf = await mint(cookie);
+    let finish!: (value: Response) => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    script.push(
+      () => new Promise<Response>(resolve => { finish = resolve; entered(); }) as unknown as Response,
+      () => answer([{ type: 'text', text: 'Second answered.' }]),
+    );
+    expect((await sendJson(cookie, { csrf, message: 'First question.', request: 'a'.repeat(32), 'request-session': '1' })).status).toBe(202);
+    await waiting;
+    // The lead is answering: the next message is saved and waits — never refused.
+    const second = await sendJson(cookie, { csrf, message: 'Second question.', request: 'b'.repeat(32), 'request-session': '1' });
+    expect(second.status).toBe(202);
+    const queued = await second.json() as { ok: boolean; queued: boolean; request: string; message: number };
+    expect(queued).toMatchObject({ ok: true, queued: true, request: 'b'.repeat(32) });
+    // A queued send counts as received: an acknowledgement lost on the way never holds the draft.
+    expect(await (await fetch(url(`/chat/mate/status?request=${'b'.repeat(32)}`), { headers: { cookie } })).json()).toMatchObject({ received: true });
+    // A message with a key in it never waits: nothing is saved, and the engine refuses it as when the lead is free —
+    // without touching the running reply's live display (the first finished snapshot is the first reply's own).
+    const room = await chatRoom(cookie);
+    await room.until(() => room.turns.length > 0);
+    expect(room.turns.at(-1)).toMatchObject({ done: false });
+    const secret = await sendJson(cookie, { csrf, message: `Use AKIA${'Q'.repeat(16)} for this.`, request: 'e'.repeat(32), 'request-session': '1' });
+    expect(secret.status).toBe(202);
+    expect(await secret.json()).not.toHaveProperty('queued');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_message WHERE text LIKE '%AKIA%'").get()).toEqual({ n: 0 });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_queue WHERE request_id = ?").get('e'.repeat(32))).toEqual({ n: 0 });
+    // A retry of the same request is the same message, not a second one.
+    expect(await (await sendJson(cookie, { csrf, message: 'Second question.', request: 'b'.repeat(32), 'request-session': '1' })).json()).toMatchObject({ queued: true, message: queued.message });
+    const third = await (await sendJson(cookie, { csrf, message: 'Never mind that.', request: 'c'.repeat(32), 'request-session': '1' })).json() as { message: number };
+    const removed = await fetch(url(`/chat/queued/${third.message}/remove`), { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, body: new URLSearchParams({ csrf }), redirect: 'manual' });
+    expect(removed.status).toBe(200);
+    // The thread shows it waiting, with Remove; the removed one says it was not sent.
+    const shown = await (await fetch(url('/chat?format=workspace'), { headers: { cookie } })).json() as { conversation: { messages: { html: string }[] } };
+    const html = shown.conversation.messages.map(one => one.html).join('\n');
+    expect(html).toContain(`data-queued="${queued.message}" data-queue-state="queued"`);
+    expect(html).toContain(`/chat/queued/${queued.message}/remove`);
+    expect(html).toContain(`data-queued="${third.message}" data-queue-state="cancelled"`);
+    // The first reply ends; the queue runs the second by itself, as its own turn, in order.
+    finish(answer([{ type: 'text', text: 'First answered.' }]));
+    await room.until(() => room.turns.some(one => one.done));
+    expect(room.turns.find(one => one.done)).toMatchObject({ done: true, ok: true });
+    room.close();
+    for (let i = 0; i < 300 && store.handle.prepare("SELECT status FROM lead_queue WHERE message = ?").get(queued.message)?.['status'] !== 'answered'; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    expect(store.handle.prepare("SELECT status FROM lead_queue WHERE message = ?").get(queued.message)).toEqual({ status: 'answered' });
+    expect(store.handle.prepare("SELECT pending, turn IS NOT NULL AS bound FROM lead_message WHERE id = ?").get(queued.message)).toEqual({ pending: 0, bound: 1 });
+    const texts = store.listLeadMessages(store.getLeadThread(store.handle.prepare("SELECT thread FROM lead_queue WHERE message = ?").get(queued.message)!['thread'] as number)!.id, 20).map(one => one.text);
+    expect(texts).toEqual(expect.arrayContaining(['First question.', 'First answered.', 'Second question.', 'Second answered.']));
+    // The removed message never ran: never admitted, its words forgotten, and only two turns were ever taken.
+    expect(store.handle.prepare("SELECT status FROM lead_queue WHERE message = ?").get(third.message)).toEqual({ status: 'cancelled' });
+    expect(store.handle.prepare("SELECT pending, text, turn FROM lead_message WHERE id = ?").get(third.message)).toEqual({ pending: 1, text: '', turn: null });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()).toEqual({ n: 2 });
+    expect(script).toHaveLength(0);
+    await settle();
+  });
+
   test('chat streaming preserves each tool outcome, including failure in an answered turn, alongside legacy labels', async () => {
     const cookie = await login(); const csrf = await mint(cookie);
     let finish!: (value: Response) => void;

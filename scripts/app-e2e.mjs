@@ -39,7 +39,7 @@ const GROUPS = {
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
-  maya: { journeys: 4, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help" },
+  maya: { journeys: 5, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help; messages that wait for the lead" },
   rosa: { journeys: 4, real: 1, shared: 1, about: "A subagent that acts with a real tool: its rules, routine, week and undo" },
   memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },
@@ -1281,6 +1281,33 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   if (cards.length !== 1 || cards[0].created_by !== "alex") throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
   const answer = await until("Maya's answer to reach you", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND body LIKE '%#1204%'")[0] ?? null, { timeoutMs: 120_000, everyMs: 1500 });
   return { section: section.slice(0, 160), answer };
+});
+
+await journey("maya", SCRIPTED, "The lead queue: a message sent while the lead answers is saved, shows Queued with Remove, and runs next by itself, in order", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
+  script(
+    { role: "lead", when: [/Summarise the refunds, slowly/], answer: { delayMs: 5_000, steps: [{ text: "Refunds summarised.", calls: [] }] } },
+    { role: "lead", when: [/Then list the open questions/], answer: { steps: [{ text: "Open questions listed.", calls: [] }] } },
+  );
+  await page.goto(`${base}/chat`);
+  await page.waitForSelector("[data-workspace-composer] textarea");
+  const messages = page.locator("[data-workspace-chat] [data-message-id]");
+  const before = await messages.count();
+  const say = async text => { await page.fill("[data-workspace-composer] textarea", text); await page.click('[data-workspace-composer] button[type="submit"]'); };
+  await say("Summarise the refunds, slowly.");
+  await until("the first reply to be running", async () => rows("SELECT 1 FROM mate_turn WHERE state = 'running'").length === 1, { timeoutMs: 15_000 });
+  // The composer stays usable while the lead answers; the second message is saved and waits its turn.
+  await say("Then list the open questions.");
+  await waitFor(page.locator('[data-queue-state="queued"]').first(), "the second message shown Queued", { timeoutMs: 15_000 });
+  if (await page.locator('[data-queue-state="queued"] .so-queued-remove').count() !== 1) throw new Error("the queued message has no Remove");
+  await until("both replies, in order", async () => (await messages.count()) >= before + 4, { timeoutMs: 60_000 });
+  const order = (await messages.allInnerTexts()).slice(before).map(one => one.replace(/\s+/g, " "));
+  const at = words => order.findIndex(one => one.includes(words));
+  if (!(at("Summarise the refunds") < at("Refunds summarised") && at("Refunds summarised") < at("Open questions listed") && at("Then list the open questions") < at("Open questions listed")))
+    throw new Error(`out of order: ${JSON.stringify(order)}`);
+  const statuses = rows("SELECT status FROM lead_queue").map(one => one.status);
+  if (statuses.length !== 1 || statuses[0] !== "answered") throw new Error(`lead queue rows: ${JSON.stringify(statuses)}`);
+  await shot("lead-queue-answered");
+  return { order };
 });
 
 await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {

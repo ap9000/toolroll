@@ -1,6 +1,8 @@
 # Lead message queue — plan
 
-Status: **v4** (2026-10-20). r3 closed 4, 7 and all four r2 new findings; left 5 open (claim-to-admission gap) and
+Status: **v5** (2026-10-20). r4 closed 5 and mirrored history; left Telegram's retry open and found 3 Medium
+(chat-delivery doesn't retry `backlog`; Telegram's wait not bounded; history query not index-bounded). v5 amendments
+are marked **(v5)**. Earlier: **v4** (2026-10-20). r3 closed 4, 7 and all four r2 new findings; left 5 open (claim-to-admission gap) and
 found 2 Medium (mirrored channel history; Telegram's 10-minute retry). v4 amendments are marked **(v4)**. Earlier:
 **v3** (2026-10-20). r1 NO-GO (3 High / 4 Medium); r2 closed r1's 1, 2, 3, 6 and found 2 new High + 2 new
 Medium (history leak of unadmitted rows, stalled deferral stamp, monthly-budget terminal, edit vs request identity)
@@ -58,7 +60,13 @@ that; the index makes the queue agree).
 **(v3) History never includes unadmitted messages — on every path.** Today `historyFor` skips operator rows with
 `turn IS NULL` only when the caller passes `queuedMessageId` (src/lead.ts:236), and `listLeadMessages` takes the
 latest 40 **before** that filter (src/store.ts:19120). v3 makes both unconditional: history is selected **in SQL** as
-admitted rows only, then limited to 40. **(v4)** "Unadmitted" is defined by provenance, not by `turn IS NULL`:
+admitted rows only, then limited to 40. **(v5) Index-bounded:** `lead_message` gains `pending INTEGER NOT NULL
+DEFAULT 0` (versioned migration with backfill: 1 for operator rows of `team_message` rows never bound to a turn), set
+to 1 when a queue row (personal or team) inserts its operator message and cleared to 0 in the same statement that binds
+it to an admitted turn; removed/expired/refused rows stay 1. A new index `(thread, pending, id)` makes the model's
+history `WHERE thread = ? AND pending = 0 ORDER BY id DESC LIMIT 40` an index range scan whatever the backlog (query
+plan asserted in a test with 100,000 pending rows). The same model filter applies to `get_task_conversation`; the
+**visible** thread (what people see) keeps showing queued rows with their state. **(v4)** "Unadmitted" is defined by provenance, not by `turn IS NULL`:
 excluded are operator rows referenced by a `lead_queue` or `team_message` row that is not bound to an admitted turn
 (queued, claimed-unbound, cancelled, expired, refused). Rows with no queue provenance are kept — notably
 `mirrorToTaskChat`'s already-answered channel exchanges, saved with both turns NULL (src/chat-channel.ts:168), which
@@ -90,11 +98,17 @@ deliberately suspended between claim and admission. So follow passes, immediate 
 `concurrent`) all wait behind the backlog; the drainer is the only starter until the queue is empty. Atomic, because it
 is the same transaction that already enforces one live personal turn.
 
-**(v4) Channels behind a backlog.** Slack/Discord/Teams already defer and retry `concurrent`/`backlog`; follow passes
-keep their unacknowledged batch. **Telegram** gives up after ten minutes today (src/telegram-lead.ts:433): on a
-`backlog` refusal it instead keeps the update pending for as long as the backlog exists (bounded by the queue's 7-day
-expiry), tells the person once *"Queued behind N messages"*, and retries when the backlog's stamp changes; its other
-refusals keep today's ten-minute rule. Tested: Telegram message waits behind a 10-turn backlog longer than ten minutes
+**(v4/v5) Channels behind a backlog.** **(v5)** Slack/Discord/Teams defer and retry only `concurrent` today
+(src/chat-delivery.ts:537): v5 adds `backlog` to that deferral (same 5 s retry) with contract tests, so a channel
+message waits instead of getting a final refusal. Follow passes keep their batch for any refusal (src/lead-follow.ts:260). **Telegram** gives up after ten minutes today (src/telegram-lead.ts:433). **(v5)** Each Telegram update gets a
+durable **wait deadline** stored with it (`created_at + 2 hours`, a new column on its conversation row) that replaces
+the ten-minute age rule for `backlog` **and** for a following `concurrent` (the last queued turn still running), so
+the transition backlog → concurrent → admitted never resets or loses it; at the deadline the person is told once
+*"Not sent — the lead was busy for too long; send it again"*. An update whose turn was already admitted (a saved
+receipt) is never aged out: it waits for that turn's own outcome (bounded by the turn deadline). Pending volume:
+at most 10 Telegram updates waiting per chat — the 11th gets *"10 messages are already waiting — wait for a reply"*
+immediately. Tested: the 11-minute backlog → concurrent → admitted path; deadline expiry; the 11th update; recovery of
+an admitted running turn after restart. Tested: Telegram message waits behind a 10-turn backlog longer than ten minutes
 and is answered after it.
 
 **(v3) Waiting, and what wakes it.** Transient admission refusals keep the row `queued` with the words shown; each has

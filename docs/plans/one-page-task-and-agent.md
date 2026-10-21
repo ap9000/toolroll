@@ -1,7 +1,9 @@
 # One page per task, one page per agent — plan
 
-Status: **v3** (2026-10-20). r1 NO-GO (10); r2 closed 1, 2, 5, 6, 9, 10, left 3, 4, 7, 8 open and found 2 new High +
-2 new Medium. v3 amendments are marked **(v3)**. Builds on branch `task-page-cta` (96f6d77b), which is merged into
+Status: **v4** (2026-10-21). r1 NO-GO (10); r2 closed 1, 2, 5, 6, 9, 10, left 3, 4, 7, 8 open and found 2 new High +
+2 new Medium. r3 closed 3, 7, 8, decision owner and go-to targets; left fragment versioning (High), controller/form
+lifetime and scout links (Medium). v3 amendments are marked **(v3)**, v4 ones **(v4)**. Built in phases, with one Codex
+implementation review at the end (Alex 2026-10-21: stop per-round plan loops). Builds on branch `task-page-cta` (96f6d77b), which is merged into
 this work's branch first (it is not an ancestor of the plan commit).
 
 ## What and why
@@ -97,16 +99,27 @@ and the header never diverges from the checks shown. Before Result has loaded, t
 primary (e.g. *Review result* → Result › Decision), never a decision it can't see. `ResultBody` takes a **host**
 (`review` | `task`): on the task host the result script writes `section=` and the feedback POST return is built as
 the task URL (`render-results.ts:2284`, `tasks.ts:1373` migrate together, no conflicting `tab` params); on the
-`/review` host everything stays exactly as today. Native initialisation/cleanup runs on tab mount; feedback receipts,
+`/review` host everything stays exactly as today. **(v4) Panels are hidden, never
+unmounted.** Once a tab has been shown its panel stays mounted (inactive panels get `hidden`), so a ceremony inside it —
+the Decision's ConfirmStoppedForm with its password and required checkbox, the approval, cancel — is the same mounted
+instance whichever tab is in front; switching attempts mounts a new panel keyed by run and keeps the previous one only
+while it holds an unsent ceremony. **(v4) Native behaviour is per fragment:** each replaceable server fragment that
+carries native behaviour (the result review script's forms and document listeners, `result-review.ts`) initialises
+when that fragment element mounts and cleans up (removing its document listeners) when it is replaced or unmounted —
+never once per tab — so a refreshed fragment never leaves listeners targeting detached elements. Feedback receipts,
 scroll restoration and per-attempt draft keys (task, run) carry over.
 
 **(v3) Refresh and selection contract.** The selected `tab`/`run`/`section` are part of the canonical URL **and** of
 `workspace.refreshUrl`, which the server sets to that URL; switching tab or attempt is an in-app navigation that
 updates both. Every workspace read carries a monotonic sequence; a response for an older sequence (or another
 selection) is discarded. The conversation identity is the task (`sameConversation` ignores tab/run); a changed
-selected result is an **intentional context transition** for the composer (draft kept, context line updated). Server
-fragments inside the Result tab are keyed by `(run, receipt digest, fragment)`, so checks completing on the same run
-remount just those fragments, while React-owned drafts persist. Tested: switching tab during a refresh, switching
+selected result is an **intentional context transition** for the composer (draft kept, context line updated). **(v4)** Server
+fragments inside the Result tab are keyed by `(run, presentation revision, fragment)`. The presentation revision is a
+hash of everything the fragment shows — the checks as displayed (including running/batch/release/level, which the
+consent receipt deliberately leaves out), feedback rows, the decision controls' availability and the result
+projection's inputs — computed by the server next to the fragment; it is **not** the consent receipt digest, which
+keeps binding the decision exactly as today. Checks completing on the same run change it and remount just those
+fragments, while React-owned drafts persist. Tested: switching tab during a refresh, switching
 attempt with a pending message, checks completing while Result is open.
 
 **Performance boundary**: the result projection (`resultDetailOf`, patch parsing, diff HTML) is computed **only when
@@ -128,9 +141,11 @@ restrictions and the target's state — the way `runChecksHere` is computed toda
 from `workAccess()`'s `principal: "operator"` (src/server/guards.ts:269); POST guards stay authoritative, shown **apart from** the selected run's own state (a historical run never borrows the
 task's current action as if it were its own). Controls are only those the run supports (Pause/Steer/Stop/Resume/
 Continue/Reply, unsupported-control explanations, unsent notes, checkout actions) — no universal toolbar. Tabs:
-**Conversation · Terminal · Changes · How it ran**. **(v3)** Links are role/outcome-aware: a builder/repair **result** → the task's Result tab at that run; a planner
-run → the task's Plan tab; a reviewer or scout run, or any run that isn't a result → its record (`/r/<n>?record=1`),
-as today. Contract cases include a finished planner and a historical reviewer.
+**Conversation · Terminal · Changes · How it ran**. **(v4)** Links are role/outcome-aware and use the **shared result predicate** (`runIsTaskResult`,
+src/server/task-views.ts): any run it calls a result — builder/repair results and scout reports or attempts, failed and
+stopped ones included, as the run route sends them today (src/server/tasks.ts) — → the task's Result tab at that run; a
+planner run → the task's Plan tab; anything else (a reviewer run, a run that isn't a result) → its record
+(`/r/<n>?record=1`), as today. Contract cases include a finished planner, a historical reviewer and a failed scout.
 
 ## Nesting
 

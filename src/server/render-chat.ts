@@ -28,6 +28,7 @@ import { assignmentStageOf,stageOfCode } from "../task-status.js";
 import { type TeamChatProviderResolver } from "../team-chat-authorization.js";
 import { type TeamSnapshot } from "../team-contract.js";
 import { buildProgressOf,type DisplayStatus } from "../workspace-ui.js";
+import type { LeadQueueRow } from "../lead-queue.js";
 import { html, htmlString, isHtml, joinHtml, postForm, replaceMarkup, type Html, type HtmlValue, reauth } from "../html.js";
 import { requestContext,withFormToken } from "./request-context.js";
 import { createHash,randomBytes } from "node:crypto";
@@ -990,7 +991,23 @@ export type LeadThreadRows = {
   ask?: LeadAsk | null;
   /** Every question the lead asked in these messages, by turn: answered ones show their words without buttons. */
   asks?: Map<number, LeadAsk>;
+  /** The person's lead queue rows for these messages, by message id (docs/plans/lead-message-queue.md). */
+  queue?: Map<number, LeadQueueRow>;
 };
+
+/** A queued message's state under its words: waiting (with Remove), or why it was not sent. Nothing for one that ran.
+ * A div, not a p: the Remove form can't sit inside a paragraph (the parser would close it first). */
+function queuedStateHtml(row: LeadQueueRow, back: string | null): Html {
+  if (row.status === "queued") {
+    const waiting = row.error?.startsWith("Waiting: ") === true ? row.error.slice("Waiting: ".length) : "It goes to the lead when it finishes.";
+    return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="queued"><span class="so-queued-state">Queued</span> · ${waiting}${
+      postForm(`/chat/queued/${row.message}/remove`, html`<button type="submit" class="so-queued-remove quiet">Remove</button>`, { attrs: { class: "inline" }, ...(back === null ? {} : { returnTo: back }) })}</div>`;
+  }
+  if (row.status === "running" && row.turnId === null) return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="starting"><span class="so-queued-state">Starting</span></div>`;
+  if (row.status === "cancelled" || row.status === "failed") return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="${row.status}"><span class="so-queued-state">Not sent</span> · ${row.error ?? "It was not sent."}</div>`;
+  if (row.status === "uncertain") return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="uncertain"><span class="so-queued-state">Not confirmed</span> · ${row.error ?? "Delivery could not be confirmed. Nothing was sent again."}</div>`;
+  return html``;
+}
 
 /** The lead's question as buttons: each option sends itself as the next message (the same POST as a typed one);
  * "Something else" moves to the composer. Nothing shows while a reply is running. */
@@ -1004,7 +1021,7 @@ export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project
 /** The thread's messages as the React conversation renders them, each
  * with the proposal cards its turn produced; `back` is where a card's
  * confirm or dismiss returns. */
-export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "asks">, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
+export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "asks" | "queue">, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
   const open = rows.pending === null ? rows.ask?.turn ?? null : null;
   const asked = (turn: number | null): Html | "" => {
     const ask = turn === null ? undefined : rows.asks?.get(turn);
@@ -1015,7 +1032,9 @@ export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "pro
   rows.messages.reduce<string | undefined>((last, message) => { if (message.role === 'operator') return message.text; if (last !== undefined) askedBy.set(message.id, last); return last; }, undefined);
   return rows.messages.map(message => ({
     id: message.id, role: message.role, text: message.text,
-    html: htmlString(message.role === 'operator' ? html`<p>${message.text}</p>` : html`${renderChatText(message.text, askedBy.get(message.id))}${asked(message.turn)}`),
+    html: htmlString(message.role === 'operator'
+      ? (() => { const queued = rows.queue?.get(message.id); return html`${message.text === "" ? "" : html`<p>${message.text}</p>`}${queued === undefined ? "" : queuedStateHtml(queued, back)}`; })()
+      : html`${renderChatText(message.text, askedBy.get(message.id))}${asked(message.turn)}`),
     activity: message.activity, createdAt: message.createdAt,
     ...(() => {
       // Under the lead's message only, as the server-rendered thread does: the person's message shares the turn.
@@ -1036,6 +1055,7 @@ export function leadChatVersion(rows: LeadThreadRows): string {
   const focus = rows.focusTask;
   const facts = [
     rows.messages.map(one => [one.id, one.role, one.turn]),
+    rows.queue === undefined ? null : [...rows.queue.values()].map(one => [one.message, one.status, one.revision, one.error]),
     rows.previous == null ? null : rows.previous.messages.map(one => one.id),
     rows.proposals.map(one => [one.id, one.state, one.outcome === null ? null : JSON.stringify(one.outcome)]),
     rows.coordinatorProposals.map(one => [one.id, one.state, one.outcome === null ? null : JSON.stringify(one.outcome)]),
@@ -1092,7 +1112,10 @@ export function leadThreadHtml(data: LeadThreadRows & { csrf: string; now: Date;
   for (const message of data.messages) {
     if (message.role === "operator") {
       asked = message.text;
-      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}"><p style="white-space:pre-wrap">${message.text}</p></div>`);
+      // A message that waits its turn (the lead queue) says so, with Remove while it still waits — as in the React thread.
+      const queued = data.queue?.get(message.id);
+      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}">${message.text === "" ? "" : html`<p style="white-space:pre-wrap">${message.text}</p>`}${
+        queued === undefined ? "" : queuedStateHtml(queued, returnTo)}</div>`);
       continue;
     }
     const cards = message.turn === null ? [] : (byTurn.get(message.turn) ?? []);
@@ -1187,7 +1210,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     html`<div class="chat-new-update-holder"><button type="button" class="chat-new-update" id="chat-new-update" hidden>New update ↓</button></div>`,
     postForm("/chat", joinHtml([
       html`<label>Message<textarea id="chat-message" name="message" rows="1" maxlength="${LEAD_MESSAGE_MAX_CHARS}" placeholder="${data.focusTask !== null ? "Ask about this task…" : chatProject !== null ? `Ask about ${projectName(chatProject)}…` : "Describe what you want done…"}"></textarea></label>`,
-      html`<button type="submit" aria-label="${data.pending === null ? "send message" : "wait for the current reply before sending"}"${data.pending === null ? "" : html` disabled`}>Send</button>`,
+      html`<button type="submit" aria-label="${data.pending === null ? "send message" : "send message — it waits for the current reply"}">Send</button>`,
     ], "\n"), {
       attrs: { class: "card composer", id: latestReply === null && data.pending === null ? "latest" : "chat-composer", "aria-label": "message the lead", "data-chat-session": data.session.id, "data-chat-task": data.focusTask?.id ?? "", "data-chat-user": data.session.approver, "data-chat-busy": data.pending === null ? "0" : "1", "data-chat-version": leadChatVersion(data), "data-chat-approval": data.focusTask?.approval?.digest ?? "" },
       hidden: { request: randomBytes(16).toString("hex"), "request-session": data.session.id, task: data.focusTask?.id, project: chatProject, result: data.resultRunId },
@@ -1195,7 +1218,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     // Concise pass (2026-09-13): the status line speaks only when there is
     // a state to report — a reply in progress here, the connection from
     // the continuity script — and the composer carries no second intro.
-    html`<p class="meta composer-hint" id="chat-connection" role="status" aria-live="polite">${data.pending === null ? "" : "Reply in progress. You can draft your next message or come back later."}</p>`,
+    html`<p class="meta composer-hint" id="chat-connection" role="status" aria-live="polite">${data.pending === null ? "" : "Reply in progress. A message you send now waits its turn."}</p>`,
     // The explicit reconnection (package 2): shown only once the session
     // or sign-in changed under this page; it reloads on the reader's act.
     html`<p class="meta composer-hint" id="chat-reconnect" hidden><button type="button" class="quiet">Reconnect</button></p>`,

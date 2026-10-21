@@ -28,9 +28,9 @@ test.each([126, -126])("v%s: the running console's instance record is added; eve
 
   expect(updateSafeSchema(126)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(127);
-  expect(SCHEMA_VERSION).toBe(127);
+  expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(127);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(127);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
   // Nothing recorded until a console starts; then it can be.
   expect(readInstance(store)).toBeNull();
   await claimInstance(store, file, { pid: fakePid(1), port: 4180, build: "test", socket: "0000000000000001.sock" }, now, async () => "gone" as const);

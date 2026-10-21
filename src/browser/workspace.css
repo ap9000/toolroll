@@ -538,6 +538,12 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-suggestions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
 .so-suggestion { max-width: 100%; }
 /* The lead's question to its owner: the question, then one tap per option and "Something else". */
+/* A queued message (the lead queue): its state under the words, quiet; Remove is a text action. */
+.so-queued { margin: 4px 0 0; font-size: 13px; color: var(--so-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.so-queued-state { font-weight: 600; color: var(--so-ink); }
+.so-queued form { margin: 0; }
+.so-queued-remove { min-height: 28px; padding: 0 6px; }
+@media (max-width: 900px) { .so-queued-remove { min-height: 44px; } }
 .so-owner-ask { margin-top: var(--so-space-md); }
 .so-owner-ask-question { margin: 0 0 var(--so-space-sm); }
 .so-owner-ask-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px; margin: 0; }

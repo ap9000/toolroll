@@ -19,6 +19,8 @@ const COOKIE_ONLY_POSTS = [
   'task.act.approve', 'task.act.reopen', 'task.act.accept-revision', 'task.act.reject-revision',
   'task.act.confirm-stopped', 'task.act.resume', 'projects.onboard-confirm', 'push.subscribe',
   'chat.config', 'chat.mate-mint', 'chat.mate-follow', 'chat.mate-end', 'chat.mate-stop',
+  // The lead queue: removing your own waiting message, from a browser.
+  'chat.queued-remove',
   'chat.send', 'chat.file', 'chat.ack-send',
   // Cockpit E: Show in Finder reveals a proved checkout — a person's act in their own browser.
   'run.act.reveal',

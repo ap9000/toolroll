@@ -80,6 +80,9 @@ export type LeadTurnInput = {
   queuedMessageId?: number;
   /** Called inside turn admission. A failed queue fence rolls admission back. */
   onAdmitted?: (turn: number) => void;
+  /** A personal queue claim (lead-queue.ts) this turn runs: with `queuedMessageId`, the queued message of the person's
+   * own thread this turn binds; admission lets it through the person's backlog (store.openLeadTurn). */
+  queueClaim?: { message: number; runner: string; generation: number };
   /** Safe, server-authored context for this turn only. Kept out of the
    * visible thread so a task-scoped composer still reads like a normal
    * conversation. */
@@ -128,6 +131,7 @@ export type LeadRefusal =
   | "thread-closed"
   | "latched"
   | "concurrent"
+  | "backlog"
   | "daily-cap"
   | "session-exhausted"
   | "session-ended"
@@ -158,6 +162,7 @@ export const LEAD_REFUSAL_COPY: Record<LeadRefusal, string> = {
   "thread-closed": "This conversation is closed. Start a new one to keep going.",
   latched: "An earlier reply stopped before its cost was known, so chat is paused. Acknowledge that reply on the Chat page, then send again.",
   concurrent: "The lead is still answering your last message. Wait for that reply, then send this one.",
+  backlog: "Your earlier messages are still waiting for the lead. This one goes after them.",
   "daily-cap": "You've reached today's limit on chat replies, so this one wasn't sent. Try again tomorrow.",
   "session-exhausted": "This chat has used its spending limit. Start a new chat to keep going.",
   "session-ended": "This chat has ended. Start a new chat to keep going.",
@@ -238,18 +243,20 @@ function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
 const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
-export function historyFor(store: Store, thread: number, queuedMessageId?: number): LeadHistoryMessage[] {
-  const rows = store.listLeadMessages(thread, LEAD_HISTORY_MAX_MESSAGES);
+export function historyFor(store: Store, thread: number, queuedMessageId?: number, named = queuedMessageId !== undefined): LeadHistoryMessage[] {
+  // Admitted messages only (v128): a queued message — this one, a teammate's, or one removed while waiting — never
+  // reaches the model before its own turn takes it.
+  const rows = store.listLeadHistory(thread, LEAD_HISTORY_MAX_MESSAGES);
   const kept: LeadHistoryMessage[] = [];
   let bytes = 0;
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]!;
-    // Other teammates may have already queued later messages. They do not
-    // enter model history until admitted, and the current message appears once.
-    if (queuedMessageId !== undefined && (row.id === queuedMessageId || row.role === 'operator' && row.turn === null)) continue;
+    // The current message appears once (it is added after the history). Messages still waiting — a teammate's or this
+    // person's — are already left out by listLeadHistory (pending); a mirrored channel question is history like any other.
+    if (row.id === queuedMessageId) continue;
     bytes += Buffer.byteLength(row.text, "utf8");
     if (bytes > LEAD_HISTORY_CAP_BYTES) break;
-    const author = queuedMessageId !== undefined && row.role === 'operator' && row.turn !== null ? store.getLeadTurn(row.turn)?.approver : undefined;
+    const author = named && row.role === 'operator' && row.turn !== null ? store.getLeadTurn(row.turn)?.approver : undefined;
     kept.unshift(row.role === "operator" ? { role: "operator", text: author ? `From ${author}:\n${row.text}` : row.text } : { role: "assistant", text: row.text, calls: [] });
   }
   // A history must open with the operator: a leading assistant reply without its question is dropped.
@@ -307,7 +314,12 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const liveThread = store.getLeadThread(thread.id);
   const sharedThread = liveThread !== null && store.canUseTeamMateThread(who.name, who.generation, liveThread.id);
   if (liveSession?.approver !== who.name || (liveThread?.approver !== who.name && !sharedThread) || liveSession.credentialKey !== credentialKey) return refuse("not-yours");
-  if (input.queuedMessageId !== undefined && (!sharedThread || !Number.isSafeInteger(input.queuedMessageId) || input.onAdmitted === undefined)) return refuse('invalid-request');
+  // A queued message binds only from a shared team thread, or as the exact personal queue claim of this person's own
+  // thread (its row is this approver's, in this thread, claimed under that runner and generation).
+  const personalQueued = input.queueClaim !== undefined && input.queueClaim.message === input.queuedMessageId &&
+    store.handle.prepare("SELECT 1 FROM lead_queue WHERE message = ? AND approver = ? AND thread = ? AND status = 'running' AND runner = ? AND generation = ? AND turn_id IS NULL")
+      .get(input.queueClaim.message, who.name, thread.id, input.queueClaim.runner, input.queueClaim.generation) !== undefined;
+  if (input.queuedMessageId !== undefined && ((!sharedThread && !personalQueued) || !Number.isSafeInteger(input.queuedMessageId) || input.onAdmitted === undefined)) return refuse('invalid-request');
   if (liveSession.endedAt !== null) return refuse("session-ended");
   if (liveThread.closedAt !== null) return refuse("thread-closed");
   if (liveSession.ceilingDigest !== who.ceilingDigest || liveThread.ceilingDigest !== who.ceilingDigest) return refuse("ceiling-changed");
@@ -325,9 +337,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const document = leadContext(store, who.repos, now, { owner: who.name, thread: thread.id, redact: text => redactForLead(text, view),
     projectName: (path, index) => projectLabelForLead(path, index, view.names),
     ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.channel === undefined ? {} : { channel: input.channel }), ...(input.leadName === undefined ? {} : { leadName: input.leadName }) });
-  const authoredMessage = input.queuedMessageId === undefined ? message : `From ${who.name}:\n${message}`;
+  // A team room names who wrote each message; a person's own queued message is just theirs.
+  const authoredMessage = input.queuedMessageId === undefined || personalQueued ? message : `From ${who.name}:\n${message}`;
   const historyMessage = input.context === undefined ? authoredMessage : `${redactForLead(input.context, view)}\n\n${authoredMessage}`;
-  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId), { role: "operator", text: historyMessage }];
+  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId, input.queuedMessageId !== undefined && !personalQueued), { role: "operator", text: historyMessage }];
   // Tools on demand (docs/plans/lead-deferred-tools.md): a request advertises the core tools, then the ones find_tools
   // found earlier in this reply, in that order (so the core prefix stays the same as tools are found).
   const findTools = { searches: 0, found: new Set<string>() };
@@ -379,6 +392,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
         weeklyCeilingMicrousd: config.weeklyCeilingMicrousd,
         deadlineMs: TURN_WALL_CLOCK_MS + 10_000,
         provider: config.provider,
+        ...(input.queueClaim === undefined ? {} : { queueClaim: input.queueClaim }),
       },
       now,
     );
@@ -388,7 +402,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     if (!started.ok) throw new Error("new lead turn could not start");
     if (input.queuedMessageId === undefined) store.appendLeadMessage({ thread: thread.id, turn: turnId, role: "operator", text: message }, now);
     else {
-      const bound = store.handle.prepare("UPDATE lead_message SET turn=? WHERE id=? AND thread=? AND role='operator' AND turn IS NULL AND text=?")
+      // Binding admits it: the same statement clears pending, so it joins history exactly when its turn exists (v128).
+      const bound = store.handle.prepare("UPDATE lead_message SET turn=?, pending=0 WHERE id=? AND thread=? AND role='operator' AND turn IS NULL AND text=?")
         .run(turnId, input.queuedMessageId, thread.id, message);
       if (Number(bound.changes) !== 1) throw new Error('The queued message changed before admission.');
     }

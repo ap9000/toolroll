@@ -1800,6 +1800,9 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
  * message that carried several tasks (never guessed). Everything hostile is
  * silence, as for every other inbound shape.
  */
+/** At most this many of a chat's messages wait for the lead at once (the personal lead queue's bound). */
+export const TELEGRAM_MAX_WAITING = 10;
+
 function applyConversation(context: Context, update: Update, effects: Effect[]): void {
   const { store, botId, transport, clock, report } = context;
   const message = update.message as NonNullable<Update["message"]>;
@@ -1865,6 +1868,12 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
       taskId = focused;
       context_ = focusContextFor(focused);
     }
+  }
+  // The lead queue's bound, per chat: ten messages wait at most; the next is answered at once instead of queued.
+  if (store.telegramMessagesWaiting(binding.id) >= TELEGRAM_MAX_WAITING) {
+    say(`${TELEGRAM_MAX_WAITING} messages are already waiting for the lead. Wait for a reply, then send this again.`);
+    report.ignored++;
+    return;
   }
   store.enqueueTelegramConversation(
     {
@@ -2272,6 +2281,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     const option = ask.options[askTap.option];
     if (option === undefined) { ack("That option is no longer there."); return; }
     const focused = store.chatFocus("telegram", binding.id);
+    if (store.telegramMessagesWaiting(binding.id) >= TELEGRAM_MAX_WAITING) { ack(`${TELEGRAM_MAX_WAITING} messages are already waiting. Wait for a reply.`); return; }
     store.enqueueTelegramConversation({
       binding, updateId: update.update_id, messageId: String(message.message_id), replyTo: null,
       request: telegramRequestId(botId, binding.id, update.update_id), text: option,

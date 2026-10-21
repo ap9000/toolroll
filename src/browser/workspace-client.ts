@@ -94,6 +94,13 @@ export function receiveDraft(draft: ChatDraft, asked: string | null, receipt: Br
   return { ...draft, pending: null, at: now };
 }
 
+/** The message was saved in the lead queue: exactly that request is accepted, so its draft is released for the next one. */
+export function queuedDraft(draft: ChatDraft, asked: string, request: () => string = freshRequest, now = Date.now()): ChatDraft {
+  if (draft.pending?.request !== asked) return draft;
+  if (draft.submitted && draft.request === asked && draft.text === draft.pending.text) return emptyDraft(request(), now);
+  return { ...draft, pending: null, at: now };
+}
+
 export function rejectDraft(draft: ChatDraft, asked: string): ChatDraft {
   return draft.pending?.request === asked ? { ...draft, pending: null, submitted: false } : draft;
 }
@@ -190,7 +197,7 @@ export async function readWorkspace(workspace: BrowserWorkspace, request: string
 /** Exactly one POST. A lost response is resolved only through readWorkspace. */
 export async function sendMessage(workspace: BrowserWorkspace, message: PendingMessage, fetcher: typeof fetch = fetch,
   /** The task composer's mode ("build", "plan" or "answer"); the server refuses it anywhere else. */
-  mode: string | null = null): Promise<{ refused: boolean; message: string | null }> {
+  mode: string | null = null): Promise<{ refused: boolean; message: string | null; queued?: boolean }> {
   const chat = workspace.conversation;
   if (!chat) throw new WorkspaceAuthError("Reconnect to the conversation before sending.");
   const body = new URLSearchParams({ csrf: workspace.csrf, message: message.text, request: message.request, "request-session": String(chat.sessionId) });
@@ -203,6 +210,8 @@ export async function sendMessage(workspace: BrowserWorkspace, message: PendingM
   if (response.headers.get("content-type")?.includes("application/json")) {
     const data: unknown = await response.json();
     if (record(data) && data.ok === false) return { refused: true, message: typeof data.said === "string" ? data.said : "Message not sent. Your draft is saved." };
+    // Saved in the lead queue (the lead is busy): this request is durably accepted; it runs when the lead is free.
+    if (record(data) && data.ok === true && data.queued === true && data.request === message.request) return { refused: false, message: null, queued: true };
   }
   // A native 303 may have followed through to HTML. It is not a receipt.
   return { refused: false, message: null };

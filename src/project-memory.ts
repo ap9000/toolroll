@@ -209,28 +209,47 @@ export function reindexProjectMemory(store: Store, repo: string): void {
   });
 }
 
-/** Index conversation messages incrementally: private threads under their person, team conversations under their id and each project they cover. */
+/** Index conversation messages incrementally: private threads under their person, team conversations under their id and each project they cover.
+ * A message still waiting for a turn is not indexed: it is indexed when a turn takes it (the admitted-turn pass below,
+ * with the words the turn took), so a withdrawn, removed or edited waiting message never reaches search. */
 export function reindexConversations(store: Store): void {
-  const key = 'memory-search:messages';
+  const key = 'memory-search:messages', admittedKey = 'memory-search:admitted';
   const cursor = store.serviceCursor(key);
-  const rows = store.handle.prepare('SELECT m.id,m.thread,m.role,m.text,t.approver FROM lead_message m JOIN lead_thread t ON t.id=m.thread WHERE m.id>? ORDER BY m.id LIMIT 500').all(cursor);
-  if (rows.length === 0) return;
+  const rows = store.handle.prepare('SELECT m.id,m.thread,m.role,m.text,m.pending,t.approver FROM lead_message m JOIN lead_thread t ON t.id=m.thread WHERE m.id>? ORDER BY m.id LIMIT 500').all(cursor);
   const insert = store.handle.prepare('INSERT INTO memory_search(kind,ref,repo,scope,title,body) VALUES (?,?,?,?,?,?)');
   const teamOf = store.handle.prepare('SELECT id, projects_json FROM team_conversation WHERE thread=?');
+  const indexOne = (row: Record<string, unknown>): void => {
+    const id = Number(row['id']);
+    // Indexed exactly as stored (the search proves a hit against the stored words); blank means nothing to index.
+    const text = String(row['text']);
+    if (!text.trim() || text.length > 20_000) return;
+    const team = teamOf.get(Number(row['thread']));
+    if (team) {
+      let projects: string[] = [];
+      try { projects = JSON.parse(String(team['projects_json'])) as string[]; } catch { projects = []; }
+      for (const repo of projects.length ? projects : ['']) insert.run('conversation', `message:${id}`, repo, `conversation:${String(team['id'])}`, `${row['role']} in a team conversation`, text);
+    } else insert.run('conversation', `message:${id}`, '', `approver:${String(row['approver'])}`, `${row['role']} in a private chat`, text);
+  };
   store.transact(() => {
     let last = cursor;
     for (const row of rows) {
       last = Number(row['id']);
-      const text = String(row['text']).trim();
-      if (!text || text.length > 20_000) continue;
-      const team = teamOf.get(Number(row['thread']));
-      if (team) {
-        let projects: string[] = [];
-        try { projects = JSON.parse(String(team['projects_json'])) as string[]; } catch { projects = []; }
-        for (const repo of projects.length ? projects : ['']) insert.run('conversation', `message:${last}`, repo, `conversation:${String(team['id'])}`, `${row['role']} in a team conversation`, text);
-      } else insert.run('conversation', `message:${last}`, '', `approver:${String(row['approver'])}`, `${row['role']} in a private chat`, text);
+      if (Number(row['pending']) === 1) continue;
+      indexOne(row);
     }
-    store.setServiceCursor(key, last, new Date());
+    if (rows.length > 0) store.setServiceCursor(key, last, new Date());
+    // Messages that waited and were then admitted (a personal queue row or a team room message bound to a turn since the
+    // last pass): one the walk passed while it waited (at or below the cursor this pass started from) is indexed now,
+    // with the words its turn took. One past it is left to the walk, so nothing is indexed twice. Found by the turn
+    // indexes on both queues: only queued messages are visited, never every turn. (After an update from before v128, a
+    // team message already indexed when it was saved gains a second copy once; search counts each entry once.)
+    const turnCursor = store.serviceCursor(admittedKey);
+    const admitted = store.handle.prepare(`SELECT message, turn FROM (SELECT message, turn_id AS turn FROM lead_queue WHERE turn_id > ?
+      UNION ALL SELECT message, turn_id AS turn FROM team_message WHERE turn_id > ?) ORDER BY turn LIMIT 500`).all(turnCursor, turnCursor);
+    if (admitted.length === 0) return;
+    const taken = store.handle.prepare("SELECT m.id,m.thread,m.role,m.text,t.approver FROM lead_message m JOIN lead_thread t ON t.id=m.thread WHERE m.id=? AND m.pending=0 AND m.id<=?");
+    for (const one of admitted) { const row = taken.get(Number(one['message']), cursor); if (row !== undefined) indexOne(row); }
+    store.setServiceCursor(admittedKey, Number(admitted.at(-1)!['turn']), new Date());
   });
 }
 
@@ -250,10 +269,17 @@ export function searchMemory(store: Store, args: { actor: string; repos: readonl
   for (const repo of repos) reindexProjectMemory(store, repo);
   const conversations = store.handle.prepare('SELECT conversation FROM team_participant WHERE account=? AND active=1').all(args.actor).map(row => `conversation:${String(row['conversation'])}`);
   const scopes = ['project', `approver:${args.actor}`, ...conversations];
+  const limit = Math.min(50, Math.max(1, args.limit ?? 12));
   const match = ftsQuery(query);
   if (!match) return [];
   const rows = store.handle.prepare(`SELECT kind, ref, repo, scope, title, snippet(memory_search, 5, '[', ']', '…', 24) AS snippet FROM memory_search
-    WHERE memory_search MATCH ? AND scope IN (SELECT value FROM json_each(?)) AND (repo='' OR repo IN (SELECT value FROM json_each(?))) ORDER BY bm25(memory_search) LIMIT ?`)
-    .all(match, JSON.stringify(scopes), JSON.stringify(repos), Math.min(50, Math.max(1, args.limit ?? 12)));
-  return rows.map(row => ({ kind: row['kind'] as MemoryHit['kind'], ref: String(row['ref']), repo: String(row['repo']), title: String(row['title']).slice(0, 200), snippet: String(row['snippet']).slice(0, 400) }));
+    WHERE memory_search MATCH ? AND scope IN (SELECT value FROM json_each(?)) AND (repo='' OR repo IN (SELECT value FROM json_each(?)))
+      AND (kind<>'conversation' OR EXISTS (SELECT 1 FROM lead_message m WHERE m.id=CAST(substr(memory_search.ref, 9) AS INTEGER) AND m.pending=0
+        AND (m.text = memory_search.body OR trim(m.text, ' '||char(9)||char(10)||char(13)) = memory_search.body)))
+    ORDER BY bm25(memory_search) LIMIT ?`)
+    .all(match, JSON.stringify(scopes), JSON.stringify(repos), limit * 2);
+  // One hit per entry and place: a message indexed before it waited and again when its turn took it counts once.
+  const seen = new Set<string>();
+  return rows.filter(row => { const key = `${row['kind']}\u0000${row['ref']}\u0000${row['repo']}\u0000${row['scope']}`; return !seen.has(key) && seen.add(key) !== undefined; }).slice(0, limit)
+    .map(row => ({ kind: row['kind'] as MemoryHit['kind'], ref: String(row['ref']), repo: String(row['repo']), title: String(row['title']).slice(0, 200), snippet: String(row['snippet']).slice(0, 400) }));
 }
