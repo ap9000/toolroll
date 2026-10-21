@@ -117,6 +117,9 @@ test("the reader says what it couldn't read: too large, an older text format, no
   // A good opening and then lines that don't read: incomplete, and how much was lost is said.
   writeLive(run, `${serializeLiveRecord({ k: "open", at: at(0), detail: "base" })}\n{"k":"step",broken\nnot json\n`);
   expect(derive()).toMatchObject({ state: "truncated", total: 0, reason: "2 step records couldn't be read" });
+  // A malformed last line with no newline is a record lost too.
+  writeLive(run, `${serializeLiveRecord({ k: "open", at: at(0), detail: "base" })}\n{"k":"step",broken`);
+  expect(derive()).toMatchObject({ state: "truncated", reason: "1 step record couldn't be read" });
 });
 
 test("a store that can't save the row still shows what was derived", () => {

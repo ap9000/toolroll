@@ -130,7 +130,7 @@ function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord
     try { lstatSync(legacyLiveLogPath(evidenceRoot, runId)); return { unreadable: "This run's steps were recorded in an older format that has no step detail." }; }
     catch { return null; }
   }
-  let text: string;
+  let text: string, short = false;
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return { unreadable: "The step records aren't a plain file, so they weren't read." };
@@ -139,6 +139,8 @@ function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord
     const buffer = Buffer.alloc(stat.size);
     let at = 0;
     while (at < buffer.length) { const got = readSync(fd, buffer, at, buffer.length - at, at); if (got <= 0) break; at += got; }
+    // Less than it measured: the file changed under the read.
+    short = at < buffer.length;
     text = buffer.subarray(0, at).toString("utf8");
   } catch { return { unreadable: "The step records couldn't be read." }; }
   finally { closeSync(fd); }
@@ -151,12 +153,16 @@ function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord
   // One record per line: a whole line that doesn't read is a record lost.
   const read = liveWindowRecords({ text: whole.length === 0 ? "" : `${whole.join("\n")}\n`, format: "records" }, keys);
   const lost = whole.length - read.length;
-  const records = unfinished.trim() === "" ? read : [...read, ...liveWindowRecords({ text: `${unfinished}\n`, format: "records" }, keys)];
+  // A finished run's last line without its newline is read like any other; one that doesn't read is a record lost.
+  const tail = unfinished.trim() === "" ? [] : liveWindowRecords({ text: `${unfinished}\n`, format: "records" }, keys);
+  const records = [...read, ...tail];
+  const lostAll = lost + (unfinished.trim() !== "" && tail.length === 0 ? 1 : 0);
   if (records.length === 0 && text.trim() !== "") return { unreadable: "The step records couldn't be read." };
-  const truncated = lines.length - 1 > EFFICIENCY_RECORDS ? `only the first ${EFFICIENCY_RECORDS.toLocaleString("en-US")} records were read`
+  const truncated = short ? "the step records changed while they were read"
+    : lines.length - 1 > EFFICIENCY_RECORDS ? `only the first ${EFFICIENCY_RECORDS.toLocaleString("en-US")} records were read`
     : records.some(one => one.k === "cap") ? "the step records reached their size limit while the agent ran"
     : records.some(one => one.k === "cut") ? "a step record was too long to keep"
-    : lost > 0 ? `${lost} step record${lost === 1 ? "" : "s"} couldn't be read`
+    : lostAll > 0 ? `${lostAll} step record${lostAll === 1 ? "" : "s"} couldn't be read`
     : null;
   return { records, truncated };
 }
