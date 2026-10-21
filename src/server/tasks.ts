@@ -95,6 +95,7 @@ import { requestContext } from "./request-context.js";
 import { oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { boardBody,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { runEfficiencyOf } from "../run-efficiency.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
@@ -2870,6 +2871,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         summary: detail.handoff?.conclusion ?? run.handoff,
       },
       detail,
+      // How it ran: derived from the run's own records once it has finished, display only.
+      efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now); } catch { return null; } })(),
       reviewRetry: store.reviewRetryStateOf(run.id),
       review: reviewFactsFor(run.id),
       notes: store.notesForRun(run.id),

@@ -20,7 +20,9 @@ const MAX_AGE_MS = 60_000;
 const OMIT = new Set(['schema_version', 'service_cursor', 'wake', 'notification_delivery', 'sqlite_sequence',
   'team_read', 'team_request', 'push_delivery', 'chat_message_ref',
   // Who is watching an agent right now: renewed by every open page's keep-alive, never news.
-  'agent_view']);
+  'agent_view',
+  // A run's How it ran, derived from its own records on first view (run-efficiency.ts): a cache, never news.
+  'run_efficiency']);
 const QUIET: Record<string, readonly string[]> = {
   runner: ['heartbeat_at'], claim: ['heartbeat_at', 'expires_at'], watch_lease: ['heartbeat_at', 'expires_at'],
   watch_episode: ['ticks'], provider_readiness: ['observed_at'],

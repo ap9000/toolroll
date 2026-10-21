@@ -265,8 +265,9 @@ export function historyFor(store: Store, thread: number, queuedMessageId?: numbe
 }
 
 /** "read 3 · proposed 1 · 2 steps" — counts only, never results (ruling 11). */
-export function activitySummary(reads: number, proposals: number, steps: number): string {
-  return [`read ${reads}`, `proposed ${proposals}`, `${steps} step${steps === 1 ? "" : "s"}`].join(" · ");
+export function activitySummary(reads: number, proposals: number, steps: number, cacheShare: number | null = null): string {
+  // How much of what it read came from the provider's cache, when every request reported it (docs/plans/run-efficiency.md).
+  return [`read ${reads}`, `proposed ${proposals}`, `${steps} step${steps === 1 ? "" : "s"}`, ...(cacheShare === null ? [] : [`${Math.round(cacheShare * 100)}% cached`])].join(" · ");
 }
 
 /** A tool result as the model sees it, measured as embedded; over the cap it becomes a typed refusal. */
@@ -429,6 +430,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   /** The turn's one question to its owner: shown with the reply only once the turn answers; a failed turn drops it. */
   const ask = (question: string, options: readonly string[]): boolean => store.recordLeadAsk({ turn: turnId, thread: thread.id, question, options }, clock());
   let tokensIn = 0;
+  // What its requests read from the provider's cache; known only while every request reported it.
+  let cacheRead = 0, cacheKnown = true;
   let tokensOut = 0;
   let settled = 0;
   const draft = (kind: LeadProposalKind, payload: Record<string, unknown>): number | null => {
@@ -606,9 +609,11 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       finishStep({ state: "failed", failureReason: "over-budget", settledMicrousd: null, unknownSpend: true });
       return fail("over-reservation", LEAD_FAILURE_COPY.overReserved, true);
     }
-    finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8") });
+    finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8"),
+      cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;
+    if (answer.cacheReadTokens === undefined) cacheKnown = false; else cacheRead += answer.cacheReadTokens;
     settled += stepSettled;
     lastText = answer.text;
 
@@ -686,7 +691,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   if (scanForSecrets(reply).length > 0) return fail("secret-refused", LEAD_FAILURE_COPY.secretReply, false);
 
   now = clock();
-  const activity = activitySummary(reads, proposals, steps);
+  const activity = activitySummary(reads, proposals, steps, cacheKnown && tokensIn > 0 ? Math.min(1, cacheRead / tokensIn) : null);
   // One write (finding 12): settle, debit, promote the drafts, append the assistant text.
   const finalized = store.finalizeLeadTurn(turnId, started.generation, { state: "answered", settledMicrousd: settled, tokensIn, tokensOut, message: { text: reply, activity } }, now);
   if (!finalized) return { ok: false, turn: turnId, failed: "superseded", message: LEAD_FAILURE_COPY.stopped, unknownSpend: false };

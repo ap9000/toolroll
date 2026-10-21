@@ -786,7 +786,11 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // lead-message-queue.md) and whether a lead message is still waiting for its turn (lead_message.pending, indexed with
 // its thread so the model's history reads only admitted messages). A saved message reads waiting exactly when it is an
 // operator message of a team queue row never bound to a turn (V128_ADDED_COLUMNS).
-export const SCHEMA_VERSION = 128;
+// v129 adds, and changes no saved row: how a run went (docs/plans/run-efficiency.md) — the agent's turn count where its
+// provider reports it (run.agent_turns), a lead request's cache read and write tokens (chat_turn.cache_read_tokens,
+// cache_write_tokens), each NULL (unknown) on saved rows, and the derived, display-only run_efficiency row a result's
+// How it ran reads (a cache of the run's own records, written on first view, never a verdict).
+export const SCHEMA_VERSION = 129;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -924,7 +928,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1036,6 +1040,26 @@ export const V128_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     },
   },
 });
+/** v129: how a run went (docs/plans/run-efficiency.md). Recorded from now on; a saved row reads unknown (NULL), never 0. */
+export const V129_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: { agent_turns: { definition: "INTEGER CHECK (agent_turns IS NULL OR agent_turns >= 0)", saved: "NULL" } },
+  chat_turn: {
+    cache_read_tokens: { definition: "INTEGER CHECK (cache_read_tokens IS NULL OR cache_read_tokens >= 0)", saved: "NULL" },
+    cache_write_tokens: { definition: "INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0)", saved: "NULL" },
+  },
+});
+/** v129: a finished run's How it ran, derived from its own records on first view (display only: never a verdict). Its
+ * parser version says when to derive again; `steps` says how complete the step detail was, and why not. */
+export const RUN_EFFICIENCY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_efficiency (
+  run             INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  parser_version  INTEGER NOT NULL,
+  steps           TEXT NOT NULL CHECK (steps IN ('complete','truncated','expired','absent')),
+  steps_reason    TEXT,
+  payload_json    TEXT NOT NULL CHECK (length(payload_json) <= 16384),
+  derived_at      TEXT NOT NULL
+);
+`;
 /** v128: the personal lead queue (docs/plans/lead-message-queue.md). A message sent while one of its author's personal
  * lead turns runs (or while earlier ones wait) waits here, one turn per message, in order. Its words are the
  * lead_message row (pending until admitted); terminal rows keep only their request identity (a tombstone). */
@@ -1993,6 +2017,8 @@ export type Run = {
   tokensIn: number | null;
   tokensOut: number | null;
   costUsd: number | null;
+  /** v129: the agent's turns where its provider reports them (Claude's num_turns); null when unknown. */
+  agentTurns?: number | null;
   /** HEAD after the agent, as accepted — what a publication may push. */
   headRevision: string | null;
   /** The validated terminal handoff's conclusion. */
@@ -5010,6 +5036,12 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(LEAD_QUEUE_SCHEMA);
   // v128: the memory search indexes a waiting message when a turn takes it, found by the turn that took it.
   db.exec("CREATE INDEX IF NOT EXISTS team_message_admitted ON team_message (turn_id) WHERE turn_id IS NOT NULL");
+  // v129: how a run went — its turn count and a lead request's cache tokens (V129_ADDED_COLUMNS: saved rows read NULL),
+  // and the derived How it ran row (a new table).
+  for (const [table, columns] of Object.entries(V129_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  db.exec(RUN_EFFICIENCY_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -13806,6 +13838,9 @@ export class Store {
       unknownSpend?: boolean;
       replyBytes?: number;
       candidateCount?: number;
+      /** v129: the request's cache read and write tokens, where its provider reports them (unknown stays NULL). */
+      cacheReadTokens?: number | null;
+      cacheWriteTokens?: number | null;
     },
     now: Date,
   ): boolean {
@@ -13813,7 +13848,7 @@ export class Store {
     const changed = this.db
       .prepare(
         `UPDATE chat_turn SET state = ?, failure_reason = ?, tokens_in = ?, tokens_out = ?,
-           settled_microusd = ?, unknown_spend = ?, reply_bytes = ?, candidate_count = ?, finished_at = ?
+           settled_microusd = ?, unknown_spend = ?, reply_bytes = ?, candidate_count = ?, cache_read_tokens = ?, cache_write_tokens = ?, finished_at = ?
          WHERE id = ? AND generation = ? AND state IN ('queued','running')`,
       )
       .run(
@@ -13825,6 +13860,8 @@ export class Store {
         outcome.unknownSpend === true ? 1 : 0,
         outcome.replyBytes ?? null,
         outcome.candidateCount ?? null,
+        outcome.cacheReadTokens ?? null,
+        outcome.cacheWriteTokens ?? null,
         now.toISOString(),
         id,
         generation,
@@ -15454,14 +15491,15 @@ export class Store {
   /** What the provider said it cost. NULL columns stay NULL — unmeasured, and said so. */
   recordUsage(
     id: number,
-    usage: { tokensIn?: number; tokensOut?: number; costUsd?: number; usageJson?: string },
+    usage: { tokensIn?: number; tokensOut?: number; costUsd?: number; usageJson?: string; agentTurns?: number },
   ): void {
     this.db
       .prepare(
         `UPDATE run SET tokens_in = COALESCE(?, tokens_in),
                         tokens_out = COALESCE(?, tokens_out),
                         cost_usd = COALESCE(?, cost_usd),
-                        usage_json = COALESCE(?, usage_json)
+                        usage_json = COALESCE(?, usage_json),
+                        agent_turns = COALESCE(?, agent_turns)
           WHERE id = ?`,
       )
       .run(
@@ -15469,6 +15507,7 @@ export class Store {
         usage.tokensOut ?? null,
         usage.costUsd ?? null,
         usage.usageJson ?? null,
+        usage.agentTurns ?? null,
         id,
       );
     this.settleRunSpend(id, new Date());
@@ -22599,6 +22638,7 @@ function readRun(row: Record<string, unknown>): Run {
         : String(row["provider_started_at"]),
     tokensIn: row["tokens_in"] === null || row["tokens_in"] === undefined ? null : Number(row["tokens_in"]),
     tokensOut: row["tokens_out"] === null || row["tokens_out"] === undefined ? null : Number(row["tokens_out"]),
+    agentTurns: row["agent_turns"] === null || row["agent_turns"] === undefined ? null : Number(row["agent_turns"]),
     costUsd: row["cost_usd"] === null || row["cost_usd"] === undefined ? null : Number(row["cost_usd"]),
     headRevision:
       row["head_revision"] === null || row["head_revision"] === undefined

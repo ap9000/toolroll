@@ -14,7 +14,7 @@ import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
 import { chatMoney } from "./server/chrome.js";
 import { leadFailureText } from "./lead.js";
-import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
+import { activitySummary, runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, LEAD_TOOL_SCHEMAS, executeLeadTool, findLeadTools, redactForLead } from "./lead-tools.js";
 import { TEXT_LIMITS } from "./text-limits.js";
@@ -1588,4 +1588,9 @@ describe("the lead's turn", () => {
     expect(script.bodies).toEqual([]);
     expect(store.raw().prepare("SELECT COUNT(*) AS n FROM chat_turn").get()?.["n"]).toBe(0);
   });
+});
+
+test("a lead reply's activity line says how much it read from the cache, only when every request reported it", () => {
+  expect(activitySummary(1, 0, 2, 0.74)).toBe("read 1 · proposed 0 · 2 steps · 74% cached");
+  expect(activitySummary(1, 0, 2)).toBe("read 1 · proposed 0 · 2 steps");
 });

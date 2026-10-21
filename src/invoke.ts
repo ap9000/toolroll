@@ -746,6 +746,8 @@ export async function invokeAgent(
     ...(envelope.tokensOut === null ? {} : { tokensOut: envelope.tokensOut + (options.accumulateUsage ? run.tokensOut ?? 0 : 0) }),
     ...(costUsd === null ? {} : { costUsd: costUsd + (options.accumulateUsage ? run.costUsd ?? 0 : 0) }),
     ...(usageJson === null ? {} : { usageJson }),
+    // How many agent turns it took, where the provider reports it (docs/plans/run-efficiency.md); unknown stays NULL.
+    ...(envelope.ending?.turns == null ? {} : { agentTurns: envelope.ending.turns + (options.accumulateUsage ? run.agentTurns ?? 0 : 0) }),
   });
 
   // How the attempt ended, classified HERE where the structural terminal
