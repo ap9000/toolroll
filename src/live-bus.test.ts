@@ -298,7 +298,7 @@ describe("one connection per page", () => {
 
         const event = frame === "presence" ? "here" : "change";
         const data = frame === "presence" ? { people: [] } : { at: "d", revision: "v1:4" };
-        expect(raw(alone)).toEqual([["gone", { room: "task:private" }]]);
+        expect(raw(alone)).toEqual([["gone", { room: "task:private" }], ["ended", {}]]);
         expect(raw(shared)).toEqual([["gone", { room: "task:private" }], [event, { room: "task:other", ...data }]]);
         expect(raw(peer)).toEqual([[event, { room: "task:private", ...data }]]);
         expect(ended).toHaveBeenCalledTimes(1);
@@ -311,7 +311,7 @@ describe("one connection per page", () => {
         vi.advanceTimersByTime(delay);
         expect(raw(shared).filter(([kind]) => kind === "change").at(-1)).toEqual(["change", { room: "task:other", at: "e", revision: "v1:5" }]);
         expect(peer.events("change").at(-1)).toEqual({ at: "e", revision: "v1:5" });
-        expect(raw(alone)).toEqual([["gone", { room: "task:private" }]]);
+        expect(raw(alone)).toEqual([["gone", { room: "task:private" }], ["ended", {}]]);
         rooms.close();
         const counts = [shared.sent.length, alone.sent.length, peer.sent.length];
         vi.advanceTimersByTime(30_000);
@@ -323,6 +323,13 @@ describe("one connection per page", () => {
       } finally { rooms.close(); }
     });
 
+  test("a refusal nested in another keeps the outer one: the connection it closes still says `ended`", () => {
+    const page = new Page();
+    const connection = new LiveConnection(response(page));
+    connection.refuse(() => { connection.refuse(() => {}); connection.close(); });
+    expect(page.sent).toEqual(["event: ended\ndata: {}\n\n"]);
+  });
+
   test.each([false, "throws"] as const)("initial frames fail closed when the proof is %s", proof => {
     const rooms = createTaskRooms(() => "private", { bus });
     const page = new Page();
@@ -332,12 +339,12 @@ describe("one connection per page", () => {
         if (proof === "throws") throw new Error("Cannot read the session");
         return proof;
       } });
-      expect(raw(page)).toEqual([["gone", { room: "task:private" }]]);
+      expect(raw(page)).toEqual([["gone", { room: "task:private" }], ["ended", {}]]);
       expect(connection.open).toBe(false);
       expect(rooms.size()).toBe(0);
       expect(bus.listeners()).toBe(1);
       vi.advanceTimersByTime(30_000);
-      expect(page.sent).toHaveLength(1);
+      expect(page.sent).toHaveLength(2);
     } finally { rooms.close(); }
   });
 
@@ -361,7 +368,8 @@ describe("one connection per page", () => {
       for (const page of [lapsed, shared, peer]) page.sent = [];
       // No write and no safety net yet: the first keep-alive after the lapse is the next delivery.
       vi.advanceTimersByTime(15_000 - 150);
-      expect(lapsed.sent).toEqual([`event: gone\ndata: ${JSON.stringify({ room: "task:private" })}\n\n`]);
+      // Its last room refused it: the stream says it ended, so the page stops instead of reconnecting at once.
+      expect(lapsed.sent).toEqual([`event: gone\ndata: ${JSON.stringify({ room: "task:private" })}\n\n`, "event: ended\ndata: {}\n\n"]);
       expect(lapsed.writableEnded).toBe(true);
       expect(alone.open).toBe(false);
       // The same session's other room on another page still proves, so that page keeps its stream.
@@ -369,9 +377,16 @@ describe("one connection per page", () => {
       expect(both.rooms).toBe(1);
       expect(peer.sent).toEqual([": keep-alive\n\n"]);
       vi.advanceTimersByTime(30_000);
-      expect(lapsed.sent).toHaveLength(1);
+      expect(lapsed.sent).toHaveLength(2);
       expect(shared.sent.filter(one => one.includes("task:private"))).toHaveLength(1);
       expect(tasks.size()).toBe(1);
+      // A page that goes by itself is never told the stream ended.
+      peer.end();
+      expect(peer.sent.some(one => one.startsWith("event: ended"))).toBe(false);
+      // Nor is one whose earlier room was refused, when its still-valid connection later closes for another reason.
+      both.close();
+      expect(shared.writableEnded).toBe(true);
+      expect(shared.sent.some(one => one.startsWith("event: ended"))).toBe(false);
     } finally { tasks.close(); flows.close(); }
   });
 
