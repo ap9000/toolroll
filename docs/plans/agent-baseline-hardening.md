@@ -204,6 +204,12 @@ Where the build departs from the text above, and why:
   a scout keeps its public-web proxy and browser as its only reachable ports (`via`).
 - **Tool servers** keep their own reach for now (arc 2 gives them a trusted working directory and a policy of their
   own); the agent's network rules never apply to them.
+- **Linux builds get a private /tmp** (tmpfs, their checkout, launch folder and Git data bound back): every socket in
+  /tmp and every other run's folder is out of sight, with no check-then-mount race.
+- **Codex review: four rounds** (7 findings → 4 → 4 → GO). Deferred to arc 2 with Codex's agreement: a symlinked or
+  absent `~/.docker` (and the other per-user engine folders) — arc 2 must handle existing link targets as well as
+  planted links and folders made later, once builds can't write the home folder; Goose needs its model host named
+  (fails closed). Known: a long-running Linux build can see a later run's launch folder outside /tmp (arc 2).
 - Natively proved: macOS (Seatbelt) and Linux (Ubuntu 26.04, bubblewrap 0.11) attack tests, and a real Claude build
   whose eight connections all went to api.anthropic.com through its proxy (its Datadog telemetry refused).
 
