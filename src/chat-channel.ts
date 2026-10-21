@@ -714,6 +714,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Read by the model during a phone turn over the enrolled ceiling.",
     gap: null,
   },
+  find_tools: {
+    support: "direct",
+    how: "Searches the lead's own other tools by what it wants to do; what it finds is offered to it from its next step in the same reply. Same on every channel: the shared engine runs it.",
+    gap: null,
+  },
   list_repos: {
     support: "direct",
     how: "Read during a turn; projects are r1..rN in enrollment order, as on the console.",
