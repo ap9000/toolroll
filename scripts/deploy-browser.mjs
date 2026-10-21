@@ -16,7 +16,7 @@
 // must already be checked and marked complete, or the script stops before touching
 // the service.
 import { deploymentCandidate } from "./deploy-candidate.mjs";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -164,7 +164,9 @@ process.on("exit", () => { if (cleanBuild?.scratch) rmSync(cleanBuild.scratch, {
  * mutable node_modules is used; the compiler itself comes from the lockfile. */
 function cleanBuildOf(commit) {
   if (cleanBuild?.commit === commit) return cleanBuild;
-  const scratch = mkdtempSync(join(tmpdir(), "so-deploy-"));
+  // npm ls prints real paths; macOS's temp folder is behind a symlink (/var → /private/var), and a scratch path in the
+  // symlinked form matched no dependency, staging none and proving "none" equal to "none".
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), "so-deploy-")));
   execFileSync("sh", ["-c", `git -C "${source}" archive --format=tar ${commit} | tar -x -C "${scratch}"`]);
   const env = { ...process.env, NODE_OPTIONS: "" };
   execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
@@ -172,6 +174,8 @@ function cleanBuildOf(commit) {
   const files = list(join(scratch, "dist"));
   const bytes = new Map(files.map(f => [f, readFileSync(join(scratch, "dist", f))]));
   const dependencies = productionDependencies(scratch);
+  const declared = Object.keys(JSON.parse(readFileSync(join(scratch, "package.json"), "utf8")).dependencies ?? {});
+  requireTrue(declared.every(name => dependencies.includes(`node_modules/${name}`)), `The clean install resolved none of some declared dependencies: ${declared.filter(name => !dependencies.includes(`node_modules/${name}`)).join(", ")}`);
   cleanBuild = { commit, scratch, files, bytes, dependencies };
   return cleanBuild;
 }

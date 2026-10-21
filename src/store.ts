@@ -5532,7 +5532,11 @@ function rebuildExact(
         ? (db.prepare("SELECT name, seq FROM sqlite_sequence ORDER BY rowid").all() as { name: string; seq: number | bigint }[])
         : [];
       db.exec(targetDdl(`${table}_next`));
-      const names = columns.join(", ");
+      // A table keyed by anything but an INTEGER PRIMARY KEY still has a hidden rowid, and a plain copy renumbers it;
+      // the update's history check reads it (count and highest rowid), so it is carried whole like any id.
+      const key = db.prepare(`PRAGMA table_info(${table})`).all().filter(one => Number(one["pk"]) > 0);
+      const aliased = key.length === 1 && String(key[0]!["type"]).toUpperCase() === "INTEGER";
+      const names = (aliased || /WITHOUT\s+ROWID/i.test(stored) ? columns : ["rowid", ...columns]).join(", ");
       db.exec(`INSERT INTO ${table}_next (${names}) SELECT ${names} FROM ${table}`);
       db.exec(`DROP TABLE ${table}`);
       db.exec(`ALTER TABLE ${table}_next RENAME TO ${table}`);
@@ -6278,7 +6282,7 @@ function widenPhaseTierSchema(db: Database): void {
   updated_by TEXT NOT NULL,
   PRIMARY KEY (scope, phase, tier)
 )`);
-    db.exec("INSERT INTO phase_tier_config_next SELECT scope, phase, tier, provider, model, updated_at, updated_by FROM phase_tier_config");
+    db.exec("INSERT INTO phase_tier_config_next (rowid, scope, phase, tier, provider, model, updated_at, updated_by) SELECT rowid, scope, phase, tier, provider, model, updated_at, updated_by FROM phase_tier_config");
     db.exec("DROP TABLE phase_tier_config");
     db.exec("ALTER TABLE phase_tier_config_next RENAME TO phase_tier_config");
     db.exec("COMMIT");

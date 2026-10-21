@@ -53,6 +53,18 @@ test.each([124, -124])("v%s: ACP agents become providers — the CHECKs widen, e
   for (const [table, columns] of Object.entries(V125_ADDED_COLUMNS)) for (const column of Object.keys(columns)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   // v125's new tables (an ACP agent's checks and billing) don't exist yet either.
   for (const table of ["acp_attestation", "acp_billing"]) db.exec(`DROP TABLE ${table}`);
+  // Rows keyed by text, with gaps in their hidden rowids (settings changed and cleared), as a long-lived install has
+  // them: the update's history check reads count and highest rowid, so the rebuild must carry rowids whole.
+  const keyedByText = ["phase_tier_config", "phase_tier_alternate"];
+  for (const table of keyedByText) {
+    const tier = table === "phase_tier_config" ? "strong" : "routine";
+    const add = db.prepare(`INSERT INTO ${table} (scope, phase, tier, provider, model, updated_at, updated_by) VALUES (?, 'build', ?, 'codex', 'm', 't', 'alex')`);
+    for (const scope of ["/a", "/b", "/c", "/d"]) add.run(scope, tier);
+    db.prepare(`DELETE FROM ${table} WHERE scope IN ('/a', '/c')`).run();
+  }
+  const rowids = (handle: DatabaseSync) => keyedByText.map(table => handle.prepare(`SELECT rowid AS id, scope FROM ${table} ORDER BY scope`).all());
+  const savedRowids = rowids(db);
+  expect(savedRowids.map(rows => rows.map(row => row["id"]))).toEqual([[2, 4], [2, 4]]);
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   expect(() => db.prepare("INSERT INTO phase_config (scope, phase, provider, model, updated_at, updated_by) VALUES ('p', 'build', 'opencode', 'm', 't', 'a')").run()).toThrow(/CHECK/);
   const before = historySnapshot(db);
@@ -66,6 +78,7 @@ test.each([124, -124])("v%s: ACP agents become providers — the CHECKs widen, e
   try {
     // Nothing saved changed: the widening carries every row whole.
     expect(changedHistory(opened, before)).toEqual([]);
+    expect(rowids(opened)).toEqual(savedRowids);
   } finally { opened.close(); }
 
   store = openStore(file);
