@@ -199,4 +199,6 @@ export interface ServerRuntime {
 
 /** What the task page's GET adds (docs/plans/one-page-task-and-agent.md): the tab its address names, and the Result tab's
  * selected result (its no-script HTML and its view), whether it is the task's current one. Refusals re-render without. */
-export type TaskPageExtras = { tab?: BrowserTaskTab; result?: { html: Html; selected: NonNullable<BrowserResultView["selected"]>; current: boolean } | null };
+export type TaskPageExtras = { tab?: BrowserTaskTab; result?: { html: Html; selected: NonNullable<BrowserResultView["selected"]>; current: boolean } | null;
+  /** The result runs the attempt picker may offer (the Result tab would show each); absent: every finished result run. */
+  admissible?: ReadonlySet<number> };

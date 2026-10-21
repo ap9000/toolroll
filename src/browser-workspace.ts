@@ -309,7 +309,10 @@ export type BrowserTaskView = {
   tab?: BrowserTaskTab;
   /** The Result tab: the selected attempt's result exactly as its result page shows it, whether it is the task's
    * current one (the header then owns its status and ceremonies), and every result attempt to pick from. Null: none yet. */
-  result?: { selected: NonNullable<BrowserResultView["selected"]>; current: boolean; attempts: { label: string; href: string; current: boolean }[] } | null;
+  result?: { selected: NonNullable<BrowserResultView["selected"]>; current: boolean; attempts: { label: string; href: string; current: boolean }[];
+    /** What the result shows, as one stamp (every check, note and control in it; never a form's fresh request token): the
+     * page holds the result it loaded and says when a newer one is ready, so its evidence and decision always agree. */
+    revision: string } | null;
   /** Where the approval sits: under the header when it is the thing to do now, else at the top of the Plan tab. */
   approvalPlacement?: "lead" | "plan";
   /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */

@@ -381,12 +381,26 @@ function PlanPanel({ view, approval }: { view: BrowserTaskView; approval: boolea
 /** The Result tab: the chosen attempt's result as its result page shows it — evidence, your checks, the decision — with
  * the attempts to pick from. Nothing yet: one line saying so. */
 function ResultPanel({ view, csrf, result }: { view: BrowserTaskView; csrf: string; result: ResultSlot | undefined }) {
-  const shown = view.result ?? null;
-  if (shown === null || result === undefined) return <Card className="items-start py-8" data-task-result="none">
-    <p className="text-body text-muted-foreground">No result yet. It shows here once a build finishes.</p>
-  </Card>;
+  // The result this page loaded stays as it was: its evidence, its checks and its decision always agree, and the
+  // result's own script stays bound to the forms it found. A newer one (another run, the same run's checks finishing,
+  // a first result) is announced with Reload; never swapped in under the person's hands.
+  const loaded = useRef(view.result ?? null);
+  const shown = loaded.current;
+  const now = view.result ?? null;
+  const newer = now !== null && (shown === null || now.selected.build !== shown.selected.build || now.revision !== shown.revision);
+  const notice = newer && <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border border-info/40 bg-info-soft px-3.5 py-2.5 text-body text-info" data-result-newer>
+    <span className="min-w-0 flex-1">{shown === null ? "A result is ready." : now.selected.build !== shown.selected.build ? "A newer result is ready." : "This result was updated."}</span>
+    <Button type="button" variant="outline" size="sm" onClick={() => window.location.reload()}>Reload</Button>
+  </div>;
+  if (shown === null || result === undefined) return <div className="flex flex-col gap-3">
+    {notice}
+    <Card className="items-start py-8" data-task-result="none">
+      <p className="text-body text-muted-foreground">No result yet. It shows here once a build finishes.</p>
+    </Card>
+  </div>;
   const picked = shown.attempts.find(one => one.current) ?? null;
   return <div className="flex flex-col gap-4" data-task-result={shown.selected.build ?? "none"}>
+    {notice}
     {shown.attempts.length > 1 && <div className="flex flex-wrap items-center gap-2 text-body text-muted-foreground" data-result-attempts={shown.attempts.length}>
       <span>{shown.current ? "Latest result" : "An earlier attempt"}</span>
       <DropdownMenu>

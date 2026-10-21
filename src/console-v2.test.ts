@@ -179,6 +179,17 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     expect(groups).toEqual([...groups].sort((a, b) => ["work", "share", "danger"].indexOf(a) - ["work", "share", "danger"].indexOf(b)));
     expect(finished.more).toContainEqual({ group: "share", label: "Copy link", kind: "copy" });
     expect((finished.more ?? []).every(one => one.kind !== "post" || !/approve|confirm|cancel|complete/.test(one.action))).toBe(true);
+    // Built again: only the newer build is the task's result, so the picker offers only it, and the older one's address
+    // is no result of it (the picker and the page agree).
+    const againAuthority = store.routeAuthorityFor(doneRef, "builder");
+    if (!againAuthority?.ok) throw new Error("route");
+    const again = store.startRun({ taskRef: doneRef, leaseId: "l-done-2", runner: "builder-1", branch: "b/done-2", worktree: "/w/done-2", route: againAuthority.stamp, now: T0 });
+    store.stampRun(again, { scopeDigest: store.getScope("finished")!.digest, baseRevision: "1".repeat(40) });
+    store.recordOutcomeFacts(again, { headRevision: "3".repeat(40), handoff: "Images now use responsive sizes, again." });
+    store.finishRun(again, { outcome: "built", committed: true, now: T0 });
+    const twice = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
+    expect(twice.result?.attempts.map(one => one.href)).toEqual([`/t/finished?tab=result&run=${again}`]);
+    expect((await fetch(url(`/t/finished?tab=result&run=${doneRun}`), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
   });
 
   test("c3: the composer's mode is fixed server words for one turn; it never stands in for a confirmation", async () => {

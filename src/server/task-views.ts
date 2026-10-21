@@ -23,7 +23,7 @@ import { pullRequestFactOf } from '../task-status.js';
 import { openWorkDecisionOf } from "../work-summary.js";
 import { learningHtml } from "../workspace-ui.js";
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { type ServerResponse } from "node:http";
 import { agentChoicesFor,routeOfTask } from "../agentconfig.js";
 import { rulesSummary } from "../approval-rules-ui.js";
@@ -56,7 +56,6 @@ import { type Who } from "./session.js";
 import type { TaskPageExtras } from "./runtime.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
-import { SENSITIVE_INPUT } from "./chrome.js";
 import { reviewEvidenceScript } from "./render-results.js";
 import { budgetHoldWords,budgetLabel,monthOf } from "../spend.js";
 import type { PlanRevision,TaskRef } from "../store.js";
@@ -763,7 +762,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const root = family?.root.id ?? view.id;
     const current = family?.current.id ?? view.id;
     const versions = new Set(family?.versions.map(one => one.id) ?? [view.id]);
-    const results = new Map(runs.filter(runIsTaskResult).map(run => [run.id, run.taskId] as const));
+    const results = new Map(runs.filter(run => runIsTaskResult(run) && (extras.admissible === undefined || extras.admissible.has(run.id))).map(run => [run.id, run.taskId] as const));
     const tabHref = (taskId: string, run: number | null, section: string | null, hash: string): string =>
       `${taskHref(root)}?${taskId !== current ? `version=${encodeURIComponent(taskId)}&` : ""}tab=result${run === null ? "" : `&run=${run}`}${section === null || section === "summary" ? "" : `&section=${section}`}${hash}`;
     const toTab = (href: string): string => {
@@ -794,7 +793,9 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       // The previous result's fold moves to the Result tab when there is one.
       sections: selected === null ? view.sections : view.sections.filter(one => one.id !== "result"),
       tab: extras.tab ?? "activity",
-      result: selected === null ? null : { selected, current: extras.result!.current, attempts },
+      result: selected === null ? null : { selected, current: extras.result!.current, attempts,
+        // Fresh per-render request tokens (32 hex) are not what it shows: left out, so an unchanged result keeps its stamp.
+        revision: createHash("sha256").update(JSON.stringify(selected).replace(/\b[a-f0-9]{32}\b/g, "")).digest("hex").slice(0, 16) },
     };
   }
 
@@ -849,12 +850,16 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }),
       // A signed-in page hears the moment the task changes, and who else has it open.
       ...(who.via === "cookie" ? { live: { room: `task:${encodeURIComponent(family?.root.id ?? taskId)}`, at: (() => { try { return taskFingerprint(runtime.store, family?.root.id ?? taskId, runtime.clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
-    const oneTaskView = taskView?.kind === "task" ? onePageView(taskView, family, presentedData.family?.runs ?? data.runs.map(run => ({ ...run, taskId: data.task.id })), extras) : taskView;
+    // A refusal that keeps a draft (a scope edit, an armed cancel) or asks for the plan editor reopens on Plan, where the
+    // draft and its error are; anything else on Activity unless the address named a tab.
+    const tab = extras.tab ?? (scopeDraft !== undefined || cancelDraft !== undefined || editPlan ? "plan" : "activity");
+    const oneTaskView = taskView?.kind === "task" ? onePageView(taskView, family, presentedData.family?.runs ?? data.runs.map(run => ({ ...run, taskId: data.task.id })), { ...extras, tab }) : taskView;
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
-      // A page carrying a password field ships no script of its own (the sensitive-page rule): the result's included.
-      if (!SENSITIVE_INPUT.test(htmlString(page.body))) page.functional = { script: `${page.functional?.script ?? ""}${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, fetches: page.functional?.fetches ?? false };
+      // The result's own script, as its result page ships it (a password form there keeps it too: Request changes and
+      // the line notes need it).
+      page.functional = { script: `${page.functional?.script ?? ""}${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, fetches: page.functional?.fetches ?? false };
     }
     if (docked !== null) page.workspace = { ...page.workspace, ...(oneTaskView === undefined ? {} : { view: oneTaskView }), conversation: docked, pageHtml: page.body };
     else if (oneTaskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: oneTaskView };

@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
+import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, needSentence, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
 import { stageOfCode, taskStatusOf } from "./task-status.js";
 import { assignmentActionHref } from "./assignment-ui.js";
 import { browserWorkActionHref } from "./browser-crew.js";
@@ -505,4 +505,10 @@ describe("Confirm it stopped, end to end", () => {
       expect(ledger, id).toMatchObject({ actor: "sam" });
     }
   });
+});
+
+test("a blocker's reason that already says what to do is said once (never \"Fix or remove it…\" twice)", () => {
+  const once = "design-tokens was cancelled before it finished. Fix or remove it so this one can start.";
+  expect(needSentence("fix-dependency", once)).toBe(once);
+  expect(needSentence("fix-dependency", "design-tokens was cancelled before it finished")).toBe(once);
 });

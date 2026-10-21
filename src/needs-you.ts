@@ -49,7 +49,11 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
     useReason: reason => /the planner can carry at most/.test(reason) },
   "choose-agent": { sentence: () => "Choose an agent to build this.", action: { code: "select-agent", label: "Choose an agent" } },
   "fix-dependency": { sentence: () => "A task this one waits on didn't finish. Fix or remove it so this one can start.", action: { code: "repair-dependency", label: "Fix the required task" },
-    useReason: reason => /didn't finish|did not finish|before it finished/i.test(reason), withReason: reason => `${reason.replace(/[.\s]*$/, ".")} Fix or remove it so this one can start.` },
+    useReason: reason => /didn't finish|did not finish|before it finished/i.test(reason), withReason: reason => {
+      // A reason that already says what to do is said once.
+      const said = reason.replace(/[.\s]*$/, ".");
+      return /Fix or remove it so this one can start\.$/.test(said) ? said : `${said} Fix or remove it so this one can start.`;
+    } },
   "add-requirement": { sentence: () => "This project is missing something the task needs. Add it so a builder can start.", action: { code: "repair-capability", label: "Add the requirement" } },
   "connect-builder": { sentence: () => "No builder works on this project yet. Connect one so the task can start.", action: { code: "start-worker", label: "Connect a builder" } },
   "start-builder": { sentence: () => "The builder for this project is offline. Start it and the task begins on its own.", action: { code: "start-worker", label: "Start the builder" } },

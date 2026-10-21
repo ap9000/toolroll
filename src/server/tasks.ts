@@ -517,6 +517,17 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return { chosen, attemptRow, beyond, selected };
   }
 
+  /** Whether `run` is a result selectResultFor shows for version `taskId`: a finished attempt that didn't deliver (failed,
+   * stopped, refused…), or the delivered one that is the version's own result — its completed row's, or, for a failed
+   * version, its latest finished attempt. An older delivered build is not (its version's result is the newer one). */
+  function resultRunAdmissible(taskId: string, run: Run, project: string | null): boolean {
+    if ((run.role !== "builder" && run.role !== "scout") || (run.finishedAt === null && run.outcome === null) || runIsLive(run)) return false;
+    if (run.outcome !== "built" && run.outcome !== "no-change") return true;
+    const task = store.getTask(taskId);
+    if (task?.state === "failed") return latestFinishedAttempt(store.runsFor(run.taskRef).filter(one => (one.role === "builder" || one.role === "scout") && (one.finishedAt !== null || one.outcome !== null)))?.id === run.id;
+    return completedRowFor(taskId, project)?.runId === run.id;
+  }
+
   /** A run's own task and its family's root: the task pages a result form may return to. */
   function runTasks(taskRef: number): string[] {
     const task = store.externalIdFor(taskRef);
@@ -668,15 +679,23 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const version = url.searchParams.get("version");
     if (version !== null && !family.versions.some(one => one.id === version)) return refuse(response, who, 404, "That version is not available for this task.", taskHref(family.root.id));
     // A version's own address lands on its family's page, still asking for the plan editor when it did (Chat's Edit plan).
-    if (task.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}?version=${encodeURIComponent(task.taskId)}${url.searchParams.get("edit") === "plan" ? "&edit=plan" : ""}`);
+    if (task.taskId !== family.root.id) {
+      // Everything else the address asked for (its tab, result run and view, a form's feedback) rides along.
+      const kept = new URLSearchParams(url.searchParams);
+      kept.delete("version");
+      return redirect(response, `${taskHref(family.root.id)}?version=${encodeURIComponent(task.taskId)}${kept.size === 0 ? "" : `&${kept.toString()}`}`);
+    }
     // One page per task (docs/plans/one-page-task-and-agent.md): the tab named, and the Result tab's result — the shown
     // version's own, or the exact run `run=` names, which must be a result of that very version.
-    const shown = version ?? family.current.id;
     const tabWord = url.searchParams.get("tab");
     const tab = tabWord === "result" || tabWord === "plan" ? tabWord : "activity";
     const runWord = url.searchParams.get("run");
     const named = runWord === null ? null : /^[1-9][0-9]{0,14}$/.test(runWord) ? Number(runWord) : -1;
     if (named === -1) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
+    // A run named without a version is shown with the version it belongs to: a saved link to a result outlives a newer
+    // revision becoming current. A run of no version of this family is no result of it.
+    const owner = named === null || version !== null ? null : (() => { const ref = store.getRun(named)?.taskRef; const id = ref === undefined ? null : store.externalIdFor(ref); return id !== null && family.versions.some(one => one.id === id) ? id : null; })();
+    const shown = version ?? owner ?? family.current.id;
     const picked = selectResultFor(shown, named, ctx.project, who, ctx.now);
     if (named !== null && picked.chosen?.runId !== named) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
     const base = `${taskHref(family.root.id)}?${shown !== family.current.id ? `version=${encodeURIComponent(shown)}&` : ""}tab=result`;
@@ -689,7 +708,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const latest = named === null ? picked.chosen?.runId ?? null : selectResultFor(shown, null, ctx.project, who, ctx.now).chosen?.runId ?? null;
       return { html: parts.html, selected: parts.selected, current: shown === family.current.id && latest !== null && latest === picked.chosen?.runId };
     })();
-    return taskScreen(response, who, shown, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan", { tab, result });
+    // The attempts the picker offers: exactly the runs this page would show for their version (the same rule as above).
+    const admissible = new Set(family.versions.flatMap(one => {
+      const ref = store.lookupRef(one.id);
+      return ref === null ? [] : store.runsFor(ref.id).filter(run => resultRunAdmissible(one.id, run, ctx.project)).map(run => run.id);
+    }));
+    return taskScreen(response, who, shown, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan", { tab, result, admissible });
   }
 
   // v103: a task's evidence pack, as a printable page or JSON (the whole family, sealed ledger entries included).
