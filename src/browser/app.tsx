@@ -755,15 +755,23 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
               if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyCommand(commandMatches[current]!); return; }
               if (event.key === "Escape") { event.preventDefault(); setCommandsClosed(true); return; }
             }
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && (returnSends() || event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
           }} aria-describedby="composer-hint" />
-        <div className="so-composer-actions"><span id="composer-hint">{!storageAvailable ? "Draft stays on this page only." : draft.text.length > chat.maxChars - 200 ? `${draft.text.length} / ${chat.maxChars}` : "/ for commands · Shift + Enter for a new line"}</span>
+        <div className="so-composer-actions"><span id="composer-hint">{!storageAvailable ? "Draft stays on this page only." : draft.text.length > chat.maxChars - 200 ? `${draft.text.length} / ${chat.maxChars}` : <>/ for commands<span className="so-enter-hint"> · Shift + Enter for a new line</span></>}</span>
           <ViewButton type="submit" disabled={disabled} aria-label="Send message"><Icon name="send" /><span>Send</span></ViewButton>
         </div>
       </PostForm>
       {!dock && workspace.controlsHtml && <Disclosure summary="Conversation settings" className="so-conversation-settings"><GuardedHtml html={workspace.controlsHtml} immutable /></Disclosure>}
     </div>
   </div>;
+}
+
+/** A phone's on-screen keyboard has no Shift + Enter, so on a phone (a touch screen of the phone layout's width, or
+ * whenever mobile-viewport.ts sees its keyboard up) Return writes a new line and Send sends; Cmd/Ctrl + Enter sends
+ * anywhere. A desk or a wide tablet, whose keyboards have Shift, sends on Enter. */
+const PHONE_TYPING = "(hover: none) and (pointer: coarse) and (max-width: 900px)";
+function returnSends(): boolean {
+  return !document.documentElement.hasAttribute("data-mobile-keyboard") && !matchMedia(PHONE_TYPING).matches;
 }
 
 /** The task composer's modes: what the lead may come back with. Every action
@@ -821,7 +829,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
         <textarea ref={box} id="task-message" name="message" rows={2} maxLength={chat.maxChars} placeholder="Message the agent: ask, or ask for a change" value={draft.text}
           className="block max-h-[180px] min-h-12 w-full resize-none px-0.5 pb-2 text-sm leading-relaxed outline-none placeholder:text-muted-foreground phone:min-h-11 phone:text-base"
           onChange={event => controller.edit(event.target.value)} onKeyDown={event => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && (returnSends() || event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
           }} aria-describedby="task-composer-hint" />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div role="radiogroup" aria-label="Mode" className="so-mode-switch">
