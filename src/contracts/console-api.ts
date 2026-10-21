@@ -199,6 +199,7 @@ export const CONSOLE_FORMS = {
   leadFollow: formContract("POST /chat/mate/follow", ["enabled", "return"]),
   leadEnd: formContract("POST /chat/mate/end", ["return"]),
   leadStop: formContract("POST /chat/mate/stop", ["return", "turn"]),
+  leadQueuedRemove: formContract("POST /chat/queued/<message>/remove", ["return"]),
   leadProposal: formContract("POST /chat/proposal/<id>/confirm|dismiss", ["return", "nonce", "confirm", "token"]),
   coordinatorProposal: formContract("POST /proposals/<id>/confirm|dismiss", ["return", "confirm"]),
   chat: formContract("POST /chat", ["task", "project", "result", "mode", "request", "request-session", "message", "token"]),

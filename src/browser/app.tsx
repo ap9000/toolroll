@@ -9,7 +9,7 @@ import {
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
   DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, Passwordless, PostForm } from "./ui/index.js";
 import {
-  carryDraft, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft, rejectDraft,
+  carryDraft, editDraft, emptyDraft, isWorkspace, queuedDraft, readWorkspace, receiveDraft, rejectDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
 } from "./workspace-client.js";
 import type { ChatDraft, DraftScope, DraftStorage } from "./workspace-client.js";
@@ -201,8 +201,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
   const send = async (event: FormEvent, mode: string | null = null) => {
     event.preventDefault();
     const current = state.current;
-    if (sendLatch.current || current.stale || navigator.onLine === false || current.draft.pending
-      || current.workspace.conversation?.pendingTurnId !== null || !current.draft.text.trim()) return;
+    // A reply in progress no longer blocks a send: the server queues it (docs/plans/lead-message-queue.md).
+    if (sendLatch.current || current.stale || navigator.onLine === false || current.draft.pending || !current.draft.text.trim()) return;
     const next = submitDraft(current.draft);
     if (!next.pending) return;
     sendLatch.current = true;
@@ -215,6 +215,10 @@ export function useWorkspace(initial: BrowserWorkspace) {
       if (result.refused) {
         updateDraft(rejectDraft(state.current.draft, next.pending.request));
         setNotice(result.message ?? "Message not sent. Your draft is saved.");
+      } else if (result.queued === true) {
+        updateDraft(queuedDraft(state.current.draft, next.pending.request));
+        setNotice("Queued: it goes to the lead when it finishes.");
+        void check();
       } else {
         setNotice("Checking delivery…");
         void check();

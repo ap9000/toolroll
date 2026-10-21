@@ -462,6 +462,8 @@ const LEAD_WORDS: Record<string, string> = { identity: "An approver names their 
 for (const one of ["identity", "about", "promise/cancel", "on"]) post("settings", `settings.lead-${one.replaceAll("/", "-")}`, `/settings/lead/${one}`, approver(LEAD_WORDS[one]!, "/settings/lead"));
 post("chat", "chat.config", "/chat/config", { scope: "step-up" });
 for (const one of ["mint", "follow", "end", "stop"]) post("chat", `chat.mate-${one}`, `/chat/mate/${one}`, { callers: ["cookie"], ...(one === "mint" ? { scope: "step-up" as const } : {}) });
+// Remove a message still waiting in the person's lead queue (docs/plans/lead-message-queue.md): their own, while it waits.
+post("chat", "chat.queued-remove", "^\\/chat\\/queued\\/[1-9][0-9]{0,14}\\/remove$", { callers: ["cookie"], sample: "/chat/queued/1/remove" });
 // Confirming a proposal may approve a scope (scope_approve): that one act takes the same standard-approval freshness as
 // /t/:id/approve (chat-actions.ts scopes it); every other operation it confirms still needs a password typed now.
 for (const one of ["confirm", "dismiss"]) post("chat", `chat.proposal.${one}`, `^\\/chat\\/proposal\\/${ID}\\/${one}$`, { project: "proposal", limited: "proposal", sample: `/chat/proposal/1/${one}`, ...(one === "confirm" ? { freshness: "allowlist" as const } : {}) });

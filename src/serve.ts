@@ -41,6 +41,8 @@ import { createTaskRooms,taskFingerprint } from "./task-live.js";
 import type { TeamChatProviderResolver } from './team-chat-authorization.js';
 import type { TeamResponse } from './team-contract.js';
 import { createTeamRuntime } from './team-runtime.js';
+import { createPersonalQueueRuntime } from './lead-queue-runtime.js';
+import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage } from "./work-index.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
@@ -162,7 +164,7 @@ import { createSettingsHandlers } from './server/settings.js';
 import { requestContext } from "./server/request-context.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
-import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
+import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
 import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
@@ -536,6 +538,28 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const team = createTeamRuntime({ store, repos: codingProjects, evidenceRoot, clock, workspaceRevision,
     ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
     provider: teamChatProvider,
+    ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}),
+  });
+  // The personal lead queue (docs/plans/lead-message-queue.md). Projects and a message's task are re-proved AS the
+  // person (never from a live request's context), and its live reply display is the console's own (chat handlers below,
+  // reached only once the server is listening).
+  const asActor = <T>(account: string, work: () => T): T => requestContext.run({ csrf: "", returnTo: "/", actor: account }, work);
+  const admittedReposFor = (account: string): string[] => asActor(account, () => managedRepos());
+  const personalQueue = createPersonalQueueRuntime({
+    store, evidenceRoot, clock, provider: teamChatProvider, admittedReposFor,
+    contextStands: (account, context) => asActor(account, () => {
+      const admitted = managedRepos();
+      if (context.project !== undefined && !admitted.includes(context.project)) return false;
+      if (context.task === undefined) return true;
+      const family = store.taskFamilyOf(context.task, admitted, false);
+      if (family === null) return false;
+      if (context.result === undefined) return true;
+      const run = store.getRun(context.result);
+      return run !== null && family.versions.some(one => one.refId === run.taskRef);
+    }),
+    names: { project: projectName, modes: TASK_COMPOSER_MODES },
+    live: { begin: thread => chatHandlers.beginLiveTurn(thread), end: (thread, ok, progress) => chatHandlers.endLiveTurn(thread, ok, progress) },
+    ...(options.chatFetcher ? { fetcher: options.chatFetcher } : {}),
     ...(options.subscriptionChatRunner ? { subscriptionRunner: options.subscriptionChatRunner } : {}),
   });
   // Only browser sessions receive HTML cards. The CLI keeps its summary contract.
@@ -1072,7 +1096,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * keeps only that task's coordinator cards; the lead's own thread is one
    * thread regardless of lens. */
   function leadConversationRows(who: Who & { via: "cookie" }, principal: VerifiedApprover, focusTask: TaskChatFocus | null, now: Date, chatProject: string | null = null): {
-    messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; asks: Map<number, LeadAsk>;
+    messages: LeadMessage[]; proposals: LeadProposal[]; decisions: Map<number, Decision>; coordinatorProposals: CoordinatorProposal[]; pending: LeadTurn | null; recent: LeadTurn[]; ask: LeadAsk | null; asks: Map<number, LeadAsk>; queue: Map<number, LeadQueueRow>;
     previous: ReplacedThread | null;
   } {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
@@ -1089,6 +1113,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const ask = last?.role === "assistant" && last.turn !== null && store.getLeadTurn(last.turn)?.approver === who.name ? store.leadAskOpen(last.turn, now) : null;
     // Answered questions stay readable above the answer; only their buttons go.
     const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.leadAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
+    // The person's queued messages in this thread: each shows waiting (with Remove) or why it was not sent.
+    const queue = new Map(personalQueue.queue.forThread(opened.thread.id).map(row => [row.message, row] as const));
     // The thread a ceiling change replaced (ruling 9): read after the open, display only.
     const replaced = store.replacedLeadThread(opened.thread);
     const previousProposals = replaced === null ? [] : store.listLeadProposals(replaced.id);
@@ -1097,6 +1123,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       messages,
       ask,
       asks,
+      queue,
       proposals,
       decisions: decisionsFor(store, [...proposals, ...coordinatorProposals]),
       coordinatorProposals,
@@ -1714,6 +1741,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let leadClosing = false;
   server.once('listening', () => {
     team.start();
+    personalQueue.start();
     leadMaintenance = startMaintenance({ intervalMs: 5_000, shouldStop: () => leadClosing,
       run: () => runLeadFollowPass({ store, repos: managedRepos, evidenceRoot, clock,
         provider: () => { const enabled = chatEnablement(); return enabled.ok ? { config: enabled.config, key: enabled.key } : null; },
@@ -1747,7 +1775,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())])
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())])
       // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
       .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
@@ -1808,6 +1836,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get chatScopeOf(): ServerRuntime['chatScopeOf'] { return chatScopeOf; },
     get liveTurns(): ServerRuntime['liveTurns'] { return liveTurns; },
     get liveTurnStarted(): ServerRuntime['liveTurnStarted'] { return liveTurnStarted; },
+    get personalQueue(): ServerRuntime['personalQueue'] { return personalQueue; },
     get leadConversationRows(): ServerRuntime['leadConversationRows'] { return leadConversationRows; },
     get demoLeadHere(): ServerRuntime['demoLeadHere'] { return demoLeadHere; },
     get teamBrowserReply(): ServerRuntime['teamBrowserReply'] { return teamBrowserReply; },

@@ -1,4 +1,5 @@
 import type { FreshFacts } from '../scope.js';
+import type { createPersonalQueueRuntime } from '../lead-queue-runtime.js';
 import type { FlowRooms } from '../flow-live.js';
 import type { IntegrationMonitor } from '../integrations.js';
 import type { OidcSettings } from '../oidc.js';
@@ -108,6 +109,8 @@ export interface ServerRuntime {
   demoLeadHere: () => DemoLead | null;
   teamBrowserReply: (reply: TeamResponse, actor: { name: string; generation: number; }, csrf: string) => TeamResponse;
   team: ReturnType<typeof createTeamRuntime>;
+  /** The personal lead queue (lead-queue-runtime.ts): a message sent while the person's lead is busy waits here. */
+  personalQueue: ReturnType<typeof createPersonalQueueRuntime>;
   teamChatProvider: TeamChatProviderResolver;
   pullRequestTargetOf: (runId: number) => string | null;
   chatEnablement: () => ChatEnablement;
