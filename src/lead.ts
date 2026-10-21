@@ -35,7 +35,8 @@ import {
   leadWorstCaseForPrice,
   performLeadRequest,
   priceForConfig,
-  settleForPrice,
+  cacheWorstPrice,
+  settleWithCache,
   subscriptionCredentialKey,
   type LeadHistoryMessage,
   type LeadToolSchema,
@@ -325,7 +326,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   ];
   const composeDirect = (key: string, tools: readonly LeadToolSchema[]): { url: string; headers: Record<string, string>; body: string } => {
     if (!direct) throw new Error("not a direct chat provider");
-    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools });
+    // Anthropic prompt caching: the core tools (always first) end the first breakpoint (docs/plans/lead-deferred-tools.md).
+    const cache = directProvider === "anthropic-api" ? { coreTools: tools.filter(one => LEAD_CORE_TOOLS.has(one.name)).length } : undefined;
+    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools, ...(cache === undefined ? {} : { cache }) });
   };
   const composeSubscription = (tools: readonly LeadToolSchema[]): string =>
     composeSubscriptionLeadPrompt({ system: LEAD_CONTRACT, dataDocument: document, history, tools });
@@ -339,7 +342,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   // Each chosen step retains the same worst-case call/output accounting.
   let maxSteps = LEAD_MAX_STEPS;
   const baseBytes = Buffer.byteLength(base, "utf8");
-  const reserveFor = (steps: number) => direct ? leadWorstCaseForPrice(price as NonNullable<typeof price>, baseBytes, { steps }) : 0;
+  // With prompt caching on (Anthropic), the worst case reserves every input token at the cache-write rate (the dearest).
+  const reservePrice = direct && directProvider === "anthropic-api" ? cacheWorstPrice(price as NonNullable<typeof price>) : price;
+  const reserveFor = (steps: number) => direct ? leadWorstCaseForPrice(reservePrice as NonNullable<typeof price>, baseBytes, { steps }) : 0;
   if (direct) {
     const remaining = Math.min(liveSession.ceilingMicrousd - liveSession.spentMicrousd,
       config.weeklyCeilingMicrousd - store.chatWeeklySpendMicrousd(credentialKey, now));
@@ -565,7 +570,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     }
     // The pinned math, or the provider's own reported charge when HIGHER.
     const stepSettled = direct
-      ? Math.max(settleForPrice(price as NonNullable<typeof price>, answer.tokensIn, answer.tokensOut), answer.reportedCostMicrousd ?? 0)
+      ? Math.max(settleWithCache(price as NonNullable<typeof price>, answer), answer.reportedCostMicrousd ?? 0)
       : 0;
     finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8") });
     tokensIn += answer.tokensIn;

@@ -5,6 +5,7 @@ import { propose } from "./scope.js";
 import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
 import { leadToolLabel } from "./lead-progress.js";
+import { settleWithCache } from "./converse.js";
 import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, LEAD_TOOL_SCHEMAS, executeLeadTool, findLeadTools, redactForLead } from "./lead-tools.js";
@@ -623,6 +624,35 @@ describe("the lead's turn", () => {
       expect(findLeadTools("propose_agents")[0]?.name).toBe("propose_agents");
       expect(findLeadTools("qqqq")).toEqual([]);
       for (const query of ["task", "project", "memory", "decision", "result"]) for (const found of findLeadTools(query)) expect(LEAD_CORE_TOOLS.has(found.name), found.name).toBe(false);
+    });
+    test("prompt caching (Anthropic): breakpoints after the core tools, on the system block and on DATA; found tools come after the first", async () => {
+      const script = scripted([answer([call("find_tools", { query: "make a flow" })]), text("ok")]);
+      expect(await turn("set up a flow", script.fetcher)).toMatchObject({ ok: true });
+      const bodies = script.bodies.map(one => JSON.parse(one) as { system: unknown; tools: { name: string; cache_control?: unknown }[]; messages: { content: unknown }[] });
+      const core = LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)).length;
+      for (const body of bodies) {
+        expect(body.tools.flatMap((one, index) => one.cache_control === undefined ? [] : [index])).toEqual([core - 1]);
+        expect(body.system).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral" } })]);
+        expect(body.messages[0]!.content).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral" } })]);
+      }
+      // The second request's prefix up to the first breakpoint is byte-identical to the first's; propose_flow follows it.
+      expect(JSON.stringify(bodies[1]!.tools.slice(0, core))).toBe(JSON.stringify(bodies[0]!.tools.slice(0, core)));
+      expect(bodies[1]!.tools.slice(core).map(one => one.name)).toContain("propose_flow");
+    });
+    test("cache usage is read and settled per category; the reservation (at the cache-write rate) covers the worst settlement", async () => {
+      const cached = { input_tokens: 10, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 2_000, output_tokens: 20 };
+      const script = scripted([answer([{ type: "text", text: "hi" }], cached)]);
+      const live = session();
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      expect(outcome).toMatchObject({ ok: true });
+      if (!outcome.ok || outcome.replayed) throw new Error("unreachable");
+      const expected = settleWithCache(PRICE, { tokensIn: 3_010, tokensOut: 20, cacheWriteTokens: 1_000, cacheReadTokens: 2_000 });
+      expect(expected).toBe(10 * PRICE.inMicrousd + 1_000 * Math.ceil(PRICE.inMicrousd * 1.25) + 2_000 * Math.ceil(PRICE.inMicrousd * 0.1) + 20 * PRICE.outMicrousd);
+      expect(outcome.settledMicrousd).toBe(expected);
+      expect(store.getLeadTurn(outcome.turn)!.reservedMicrousd).toBeGreaterThanOrEqual(settleWithCache(PRICE, { tokensIn: 3_010, tokensOut: 20, cacheWriteTokens: 3_010 }));
+      // A cache count that isn't a token count is malformed usage: unknown cost, never a guess.
+      const bad = scripted([answer([{ type: "text", text: "hi" }], { ...cached, cache_read_input_tokens: "2000" })]);
+      expect(await turn("hello", bad.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
     });
     test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
       const names = LEAD_TOOL_SCHEMAS.map(one => one.name);
