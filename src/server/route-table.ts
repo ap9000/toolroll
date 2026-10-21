@@ -356,6 +356,7 @@ post("flows", "flow.trigger.unshare", `^\\/flows\\/${FLOW}\\/triggers\\/${FLOW}\
 post("settings", "spend.budget", "/spend/budget", { scope: "step-up", ...operator("An instance operator sets budgets.", "/spend") });
 post("settings", "settings.project-concurrency", "/settings/project/concurrency");
 post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
+post("settings", "settings.project-network", "/settings/project/network", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
 // Lead sweeps (docs/plans/lead-fan-out.md): the table, and cancelling what isn't ready. The handler shows a sweep only in
 // a project the reader can see, and acts only for an approver.

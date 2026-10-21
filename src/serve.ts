@@ -460,6 +460,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     canDelete: who.via === "cookie" && store.isInstanceOperator(who.name),
     builds: projectBuildsOf(repo, who),
     access: projectAccessOf(repo),
+    network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     liveView: (() => {
       const commands = liveCommandsShown(store, repo);
       const canChange = who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo);

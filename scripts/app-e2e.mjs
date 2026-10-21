@@ -33,7 +33,7 @@ const skipBuild = flag("--skip-build");
  * many of its scripted ones another group runs too (checked at the end of every run). Every journey that isn't
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
-  console: { journeys: 14, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects, knowledge, skills, tools, models, old routine links" },
+  console: { journeys: 15, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects and their network, knowledge, skills, tools, models, old routine links" },
   pages: { journeys: 7, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, signing out" },
   task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
@@ -814,6 +814,44 @@ await journey("console", SCRIPTED, "Projects: the project is listed and opens", 
   if (!/Open now/.test(await row.innerText())) await Promise.all([page.waitForNavigation(), row.locator('form[action="/projects/open"] button').click()]);
   await page.goto(`${base}/projects`);
   if (!/Open now/.test(await page.locator(`li[data-project="${repo}"]`).innerText())) throw new Error("the project isn't the open one");
+});
+
+await journey("console", SCRIPTED, "Network: a project's page says what its builds may reach; an approver turns local services on and adds a host with their password, and the ledger keeps it", [], async () => {
+  await page.goto(`${base}/settings/project?repo=${encodeURIComponent(repo)}`);
+  const section = page.locator("section#network");
+  await waitFor(section, "the Network section");
+  if (!/no local services/.test(await section.innerText())) throw new Error(`a new project's network isn't the narrow default: ${await section.innerText()}`);
+  await section.locator("summary").click();
+  await section.locator('input[name="local"]').check();
+  await section.locator('textarea[name="hosts"]').fill("api.stripe.com");
+  // A wrong password changes nothing.
+  await section.locator('input[name="password"]').fill("not-the-password");
+  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  if (rows(`SELECT 1 FROM project_network WHERE repo = '${repo}'`).length !== 0) throw new Error("a wrong password saved the network");
+  await section.locator("summary").click().catch(() => undefined);
+  await section.locator('input[name="local"]').check();
+  await section.locator('textarea[name="hosts"]').fill("api.stripe.com\nnot a host");
+  await section.locator('input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  if (!/no address, port or path/.test(await page.locator('[role="alert"]').first().innerText())) throw new Error("a bad host wasn't refused in words");
+  await section.locator("summary").click().catch(() => undefined);
+  await section.locator('input[name="local"]').check();
+  await section.locator('textarea[name="hosts"]').fill("api.stripe.com");
+  await section.locator('input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  const saved = rows(`SELECT network_json FROM project_network WHERE repo = '${repo}'`)[0]?.network_json;
+  if (saved !== JSON.stringify({ mode: "allowlist", hosts: ["api.stripe.com"], loopback: "any" })) throw new Error(`saved network: ${saved}`);
+  const text = await page.locator("section#network").innerText();
+  if (!/api\.stripe\.com/.test(text) || !/local services/.test(text)) throw new Error(`the page doesn't say the new network: ${text}`);
+  if (rows("SELECT 1 FROM action_ledger WHERE action LIKE '%network%' AND actor = 'alex'").length !== 1) throw new Error("the change isn't in the ledger");
+  await shot("project-network");
+  // Back to the narrow default, so later journeys see a fresh project.
+  await page.locator("section#network summary").click();
+  await page.locator('section#network input[name="local"]').uncheck();
+  await page.locator('section#network textarea[name="hosts"]').fill("");
+  await page.locator('section#network input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), page.locator('section#network button[type="submit"]').click()]);
+  return { saved };
 });
 
 await journey("console", SCRIPTED, "Knowledge: instructions saved for a project are kept for future tasks", [], async () => {

@@ -131,6 +131,7 @@ export const CONSOLE_FORMS = {
   spendBudget: formContract("POST /spend/budget", ["password", "target", "action", "usd", "stop"]),
   projectConcurrency: formContract("POST /settings/project/concurrency", ["repo", "concurrency"]),
   projectLiveView: formContract("POST /settings/project/live-view", ["repo", "act", "password", "nonce"]),
+  projectNetwork: formContract("POST /settings/project/network", ["repo", "mode", "local", "hosts", "password"]),
   projectDelete: formContract("POST /settings/project/delete", ["repo", "name", "step", "password"]),
   policy: formContract("POST /settings/policy", ["password", "provider", "models", "tools", "ceiling"]),
   approval: formContract("POST /settings/approval", ["repo", "password", "protect", "paths", "not_requester"]),
