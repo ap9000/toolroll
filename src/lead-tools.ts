@@ -465,6 +465,10 @@ export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
   "propose_answer", "propose_review", "remember", "ask_owner", "commit_to",
   // The lead's queue verbs: basic, and small enough that deferring them saves almost nothing.
   "queue", "propose_next", "propose_reserve", "propose_hold", "propose_unhold", "propose_cancel",
+  // Task and result acts a reply uses often (links to a control, a result's images and evidence, the task's own acts):
+  // small, so deferral is kept for the large, occasional families (flows, subagents, sweeps, project tools).
+  "show_control", "get_controls", "get_result_images", "get_acceptance_evidence", "offer_approval", "propose_task_action", "propose_agents",
+  "get_agents", "propose_dependency_repair",
 ]);
 
 /** Words a deferred tool is found by, beyond its name and description. */
@@ -477,23 +481,14 @@ const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
   propose_sweep: ["sweep", "fan-out", "many", "parallel", "batch", "each", "list of"],
   get_sweep: ["sweep", "fan-out", "batch", "table", "verdict"],
   propose_sweep_cancel: ["sweep", "cancel", "stop the rest"],
-  propose_agents: ["agent", "model", "builder", "planner", "route", "provider", "switch"],
-  get_agents: ["agent", "model", "builder", "planner", "route", "provider"],
   get_models: ["model", "models", "provider", "price"],
   get_project_tools: ["tools", "mcp", "server", "integration", "connect", "stripe", "notion", "linear", "sentry", "jira"],
   get_integrations: ["integration", "slack", "telegram", "discord", "teams", "email", "connected"],
   get_skills: ["skill", "skills", "guide"],
   get_project_knowledge: ["knowledge", "docs", "notes", "memory"],
-  get_controls: ["control", "settings", "page", "open", "show"],
-  show_control: ["control", "settings", "page", "open", "show", "link"],
-  offer_approval: ["approve", "approval", "sign", "yes"],
-  propose_task_action: ["retry", "rerun", "build again", "reopen", "stop", "pause", "resume", "merge", "publish", "pull request"],
-  get_result_images: ["screenshot", "image", "picture", "evidence"],
-  get_acceptance_evidence: ["evidence", "requirement", "acceptance", "proof"],
   get_task_conversation: ["conversation", "chat", "history", "messages"],
   release_commitment: ["promise", "commitment", "release", "forget"],
   get_person: ["person", "people", "who", "member", "teammate"],
-  propose_dependency_repair: ["dependency", "waits for", "blocked", "repair"],
 };
 
 /** At most this many find_tools searches per reply, results per search, and bytes of found tool schemas per reply. */
@@ -507,7 +502,8 @@ const LOOK_WORDS = new Set(["show", "list", "see", "what", "which", "how", "chec
 
 /** The deferred tools a query finds, best first: an exact name, then words in the name, keywords and description. */
 export function findLeadTools(query: string): { name: string; summary: string }[] {
-  const words = query.toLowerCase().split(/[^a-z0-9-]+/).filter(one => one.length >= 3);
+  // A plural matches its singular ("sweeps" finds sweep tools).
+  const words = query.toLowerCase().split(/[^a-z0-9-]+/).filter(one => one.length >= 3).map(one => one.length > 4 && one.endsWith("s") && !one.endsWith("ss") ? one.slice(0, -1) : one);
   const exact = query.trim().toLowerCase();
   const scored = LEAD_TOOLS.filter(tool => !LEAD_CORE_TOOLS.has(tool.name)).map(tool => {
     const name = tool.name.toLowerCase(), keywords = (LEAD_TOOL_KEYWORDS[tool.name as LeadToolName] ?? []).join(" ").toLowerCase();
@@ -530,12 +526,13 @@ function summaryLine(description: string): string {
 
 const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
   find_tools: {
+    // Counted before the call is read, so an invalid search still uses one of the reply's three.
+    prepare: (ctx, raw) => { if (ctx.findTools !== undefined) ctx.findTools.searches++; return raw; },
     description: "Find the lead's other tools by what you want to do — flows, subagents, sweeps, agents and models, project tools and integrations, controls and settings pages, holds and the queue, task actions (retry, stop, merge), result images and evidence, people, promises. Search before saying something can't be done. Matching tools become available from your next step in this reply: call them then, not in the same step.",
     handle: (ctx, args) => {
       const state = ctx.findTools;
       if (state === undefined) return { ok: false, message: "find_tools works inside a conversation reply." };
-      if (state.searches >= FIND_TOOLS_PER_TURN) return { ok: false, message: `You have searched ${FIND_TOOLS_PER_TURN} times this reply. Use the tools you found, or answer with what you have.` };
-      state.searches++;
+      if (state.searches > FIND_TOOLS_PER_TURN) return { ok: false, message: `You have searched ${FIND_TOOLS_PER_TURN} times this reply. Use the tools you found, or answer with what you have.` };
       const bytesOf = (name: string): number => Buffer.byteLength(JSON.stringify(LEAD_TOOL_SCHEMAS.find(one => one.name === name) ?? {}), "utf8");
       let used = [...state.found].reduce((sum, name) => sum + bytesOf(name), 0);
       const tools: { name: string; summary: string }[] = [];

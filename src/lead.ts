@@ -195,6 +195,7 @@ export const LEAD_FAILURE_COPY = {
   tooLongUnknownCost: leadTimeoutNotice(false, true),
   lostUnknownCost: "The chat provider stopped responding partway through, and the cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
   unreadableUnknownCost: "The chat provider sent back an answer that couldn't be read, and its cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
+  overReserved: "This reply reported more use than was set aside for it, so its cost is counted as unknown and chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
   empty: "The lead sent back an empty answer. Nothing was kept. Send your message again.",
   unusable: "The lead's answer couldn't be used, so it was thrown away. Nothing was kept. Send your message again.",
 } as const;
@@ -572,6 +573,14 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     const stepSettled = direct
       ? Math.max(settleWithCache(price as NonNullable<typeof price>, answer), answer.reportedCostMicrousd ?? 0)
       : 0;
+    // The reservation is the bound: a step whose reported usage would settle past what this reply reserved (the
+    // estimate counts a token per three bytes; a provider may report more) ends the turn with its cost unknown, which
+    // settles the whole reservation and pauses chat until the cost is confirmed — never a debit past the reservation
+    // or the session's ceiling.
+    if (direct && settled + stepSettled > reserved) {
+      finishStep({ state: "failed", failureReason: "malformed-reply", settledMicrousd: null, unknownSpend: true });
+      return fail("malformed-reply", LEAD_FAILURE_COPY.overReserved, true);
+    }
     finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8") });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;

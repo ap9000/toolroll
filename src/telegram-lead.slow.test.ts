@@ -465,6 +465,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
   test("the lead delegates (D5): a message naming a subagent reaches the lead, which asks it with a card; once confirmed it lands on the subagent's desk and its answer comes back in Telegram", async () => {
     const maya = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     answers.push(
+      // Subagent tools are found first (lead tools on demand), then called from the next step.
+      { text: "", calls: [{ id: "f1", name: "find_tools", args: { query: "ask a subagent" } }] },
       { text: "Asking Maya.", calls: [{ id: "a1", name: "propose_subagent", args: { operation: "ask", subagent: maya, text: "Where's order 2201?" } }] },
       { text: "I'll ask Maya once you confirm." },
     );

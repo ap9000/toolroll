@@ -545,7 +545,8 @@ export function parseLeadProviderWrapper(
     // input_tokens counts only the uncached part; the request's whole input is the three added up.
     const cache = (key: string): number | null | undefined => {
       const value = (body["usage"] as Record<string, unknown>)[key];
-      return value === undefined || value === null ? undefined : typeof value === "number" && tokenCount(value) ? value : null;
+      // Absent: not reported. Present (even null): it must be a token count, or the usage is malformed.
+      return value === undefined ? undefined : typeof value === "number" && tokenCount(value) ? value : null;
     };
     const write = cache("cache_creation_input_tokens"), read = cache("cache_read_input_tokens");
     if (write === null || read === null) return { ok: false, problem: "no-usage" };

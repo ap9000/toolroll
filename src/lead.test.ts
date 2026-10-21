@@ -588,15 +588,15 @@ describe("the lead's turn", () => {
     });
     test("a tool found in a response can't be called in that same response; it works from the next step, and the reply goes on", async () => {
       const script = scripted([
-        answer([call("find_tools", { query: "show the settings page" }), call("show_control", { control: "settings" })]),
-        answer([call("show_control", { control: "settings" })]),
-        text("Here's the link to Settings."),
+        answer([call("find_tools", { query: "read the flows" }), call("get_flows", {})]),
+        answer([call("get_flows", {})]),
+        text("No flows yet."),
       ]);
-      const outcome = await turn("where are settings?", script.fetcher);
+      const outcome = await turn("what flows do I have?", script.fetcher);
       expect(outcome).toMatchObject({ ok: true });
-      expect(script.bodies[1]).toContain("show_control isn't available in this step. Call find_tools");
+      expect(script.bodies[1]).toContain("get_flows isn't available in this step. Call find_tools");
       // Refused once (step 1); the history carries that refusal forward, and the step-2 call ran (no second refusal).
-      const refusals = (body: string) => body.split("show_control isn't available in this step").length - 1;
+      const refusals = (body: string) => body.split("get_flows isn't available in this step").length - 1;
       expect(refusals(script.bodies[1]!)).toBe(1);
       expect(refusals(script.bodies[2]!)).toBe(1);
     });
@@ -621,7 +621,7 @@ describe("the lead's turn", () => {
       expect(findLeadTools("make a flow")[0]?.name).toBe("propose_flow");
       expect(findLeadTools("add a sales rep subagent")[0]?.name).toBe("propose_subagent");
       expect(findLeadTools("run these eleven bug reports in parallel").map(one => one.name)).toContain("propose_sweep");
-      expect(findLeadTools("propose_agents")[0]?.name).toBe("propose_agents");
+      expect(findLeadTools("get_models")[0]?.name).toBe("get_models");
       expect(findLeadTools("qqqq")).toEqual([]);
       for (const query of ["task", "project", "memory", "decision", "result"]) for (const found of findLeadTools(query)) expect(LEAD_CORE_TOOLS.has(found.name), found.name).toBe(false);
     });
@@ -654,6 +654,35 @@ describe("the lead's turn", () => {
       const bad = scripted([answer([{ type: "text", text: "hi" }], { ...cached, cache_read_input_tokens: "2000" })]);
       expect(await turn("hello", bad.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
     });
+    test("a reply is never charged past its reservation: usage reported beyond it ends the turn with its cost unknown", async () => {
+      // Every byte reported as a token and as a cache write: more than the reservation's estimate allows.
+      const live = session();
+      const script = scripted([(() => {
+        const body = (requestBytes: number) => answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: requestBytes, cache_read_input_tokens: 0, output_tokens: 2_048 });
+        return body(70_000);
+      })()]);
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      expect(outcome).toMatchObject({ ok: false, failed: "malformed-reply", unknownSpend: true });
+      if (outcome.ok) throw new Error("unreachable");
+      const row = store.getLeadTurn(outcome.turn)!;
+      // Unknown cost settles the reservation itself: never more than it, never past the session's ceiling.
+      expect(row.settledMicrousd).toBe(row.reservedMicrousd);
+      expect(store.getLeadSession(live.id)!.spentMicrousd).toBeLessThanOrEqual(live.ceilingMicrousd);
+    });
+    test("an explicit null cache count is malformed usage (unknown cost), never zero", async () => {
+      const script = scripted([answer([{ type: "text", text: "hi" }], { input_tokens: 10, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 5 })]);
+      expect(await turn("hello", script.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
+    });
+    test("an invalid find_tools call still uses one of the reply's three searches; a plural finds its tools", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "" }), call("find_tools", {}), call("find_tools", { nope: 1 })]),
+        answer([call("find_tools", { query: "sweeps" })]),
+        text("done"),
+      ]);
+      expect(await turn("look", script.fetcher)).toMatchObject({ ok: true });
+      expect(script.bodies[2]).toContain("You have searched 3 times this reply");
+      expect(findLeadTools("sweeps").map(one => one.name)).toEqual(expect.arrayContaining(["propose_sweep", "get_sweep", "propose_sweep_cancel"]));
+    });
     test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
       const names = LEAD_TOOL_SCHEMAS.map(one => one.name);
       expect(new Set(names).size).toBe(names.length);
@@ -663,7 +692,7 @@ describe("the lead's turn", () => {
       // an answer (decision): a prerequisite is never behind find_tools.
       for (const prerequisite of ["search_project_memory", "get_capabilities", "get_result", "get_decision", "find_tools"]) expect(LEAD_CORE_TOOLS.has(prerequisite), prerequisite).toBe(true);
       const bytes = (list: readonly unknown[]) => list.reduce<number>((sum, one) => sum + JSON.stringify(one).length, 0);
-      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(22_000);
+      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(26_000);
       expect(bytes(LEAD_TOOL_SCHEMAS)).toBeGreaterThan(60_000);
     });
   });

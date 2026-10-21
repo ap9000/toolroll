@@ -1264,6 +1264,8 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   // from you, she works it within her rules, and her answer comes back to you.
   script(
     { role: "lead", when: [/Ask Maya to look up order #1204/], answer: { steps: [
+      // Subagent tools are found first (lead tools on demand), then called from the next step.
+      { text: "", calls: [{ name: "find_tools", arguments: { query: "ask a subagent" } }] },
       { text: "Asking Maya.", calls: [{ name: "propose_subagent", arguments: { operation: "ask", subagent: maya, text: "Look up order #1204 and tell me when it ships." } }] },
       { text: "Maya will look it up once you confirm.", calls: [] },
     ] } },
