@@ -766,10 +766,12 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
   </div>;
 }
 
-/** A phone's on-screen keyboard has no Shift + Enter, so while it is up (mobile-viewport.ts marks it) Return writes a
- * new line and Send sends; any other keyboard, a tablet's hardware one included, sends on Enter. */
+/** A phone's on-screen keyboard has no Shift + Enter, so on a phone (a touch screen of the phone layout's width, or
+ * whenever mobile-viewport.ts sees its keyboard up) Return writes a new line and Send sends; Cmd/Ctrl + Enter sends
+ * anywhere. A desk or a wide tablet, whose keyboards have Shift, sends on Enter. */
+const PHONE_TYPING = "(hover: none) and (pointer: coarse) and (max-width: 900px)";
 function returnSends(): boolean {
-  return !document.documentElement.hasAttribute("data-mobile-keyboard");
+  return !document.documentElement.hasAttribute("data-mobile-keyboard") && !matchMedia(PHONE_TYPING).matches;
 }
 
 /** The task composer's modes: what the lead may come back with. Every action

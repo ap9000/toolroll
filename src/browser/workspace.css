@@ -353,7 +353,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   html[data-mobile-keyboard] .so-workspace { min-height: 0; }
   /* While typing, the thread and the box get the room: the settings fold waits for the keyboard to go. */
   html[data-mobile-keyboard] .so-conversation-settings { display: none; }
-  /* On the phone's own keyboard Return writes a new line, so the Shift + Enter hint has nothing to say. */
+  /* On a phone Return writes a new line (app.tsx returnSends), so the Shift + Enter hint has nothing to say. */
   html[data-mobile-keyboard] .so-enter-hint { display: none; }
   html[data-mobile-keyboard] .so-composer-area { padding-top: 6px; padding-bottom: 8px; }
   .so-sidebar { display: none; }
@@ -809,3 +809,4 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-mode { flex: 1; }
   .so-mode span { width: 100%; justify-content: center; min-height: 40px; font-size: 13px; }
 }
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) { .so-enter-hint { display: none; } }

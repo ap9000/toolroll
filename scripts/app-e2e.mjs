@@ -1373,15 +1373,15 @@ await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboar
     await phone.waitForTimeout(250);
     const after = await thread.evaluate(node => node.scrollTop);
     if (Math.abs(after - before) > 1) throw new Error(`a reader who scrolled up was moved from ${before} to ${after}`);
-    // The keyboard closed while zoomed in: the screen comes back whole, not left at the keyboard's size.
+    // The keyboard closed while zoomed in, the box still focused: the screen comes back whole, not left at the keyboard's size.
     await phone.evaluate(() => Object.defineProperty(visualViewport, "scale", { configurable: true, get: () => 2 }));
     await keyboard(0, 0);
-    await box.fill("");
-    await box.blur();
     await phone.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-keyboard"));
     await phone.waitForFunction(() => document.querySelector(".so-workspace").getBoundingClientRect().height === innerHeight, null, { timeout: 2000 }).catch(() => undefined);
     const zoomed = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
     await phone.evaluate(() => { delete visualViewport.scale; visualViewport.dispatchEvent(new Event("resize")); });
+    await box.fill("");
+    await box.blur();
     await phone.waitForTimeout(100);
     const rested = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
     if (Math.round(zoomed) !== 844 || Math.round(rested) !== 844) throw new Error(`the screen didn't come back to full height: zoomed ${zoomed}, after ${rested}`);

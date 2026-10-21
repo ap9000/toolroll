@@ -22,12 +22,12 @@ export const MOBILE_VIEWPORT_SCRIPT = String.raw`
     var opening=open&&!root.hasAttribute('data-mobile-keyboard');
     var atEnd=opening&&window.innerHeight+window.scrollY>=root.scrollHeight-120;
     root.toggleAttribute('data-mobile-keyboard',Boolean(open));
-    // A pinch zoom shrinks the visual viewport too: zoomed, the shell keeps its size while a field is being typed in,
-    // and otherwise goes back to the whole screen (a keyboard closed while zoomed must not leave it short).
+    // A pinch zoom shrinks the visual viewport too, and then a keyboard can't be told from the zoom: zoomed, the shell
+    // is the whole screen (the reader pans to the field), so a keyboard closed while zoomed never leaves it short.
     if(Math.abs(viewport.scale-1)<0.01){
       root.style.setProperty('--viewport-height',Math.round(viewport.height)+'px');
       root.style.setProperty('--viewport-top',Math.max(0,Math.round(viewport.offsetTop))+'px');
-    }else if(!editing){
+    }else{
       root.style.removeProperty('--viewport-height');
       root.style.removeProperty('--viewport-top');
     }
