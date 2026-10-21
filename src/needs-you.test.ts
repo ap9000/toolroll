@@ -30,6 +30,7 @@ import type { WorkIndexItem } from "./work-index.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
 import { taskMovedSince } from "./chat-ask.js";
 import { leadBrowserMessages } from "./server/render-chat.js";
+import { approvalIdentity } from "./browser/views/task-view.js";
 
 const NEED_KEYS = Object.keys(NEEDS) as NeedKey[];
 const WAIT_KEYS = Object.keys(WAITS) as WaitKey[];
@@ -336,6 +337,8 @@ describe("Confirm it stopped, end to end", () => {
     expect(task.approval).toContain("Approve & build again");
     expect(task.approval).toContain(`name="rebuild" value="${run}"`);
     expect(task.status?.action).toBeNull();
+    // The page keys this region by what it is, read from the server's own markup.
+    expect(approvalIdentity(task.approval)).toBe(`open:${store.getScope(id)!.digest}`);
     const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(task.approval)?.[1] ?? "";
     const yes = await post(`/t/${id}/approve`, { csrf: csrfOf(html), nonce: field("nonce"), digest: field("digest"), token: password, rebuild: String(run) });
     expect(yes.status).toBe(303);

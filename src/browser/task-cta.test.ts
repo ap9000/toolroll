@@ -118,6 +118,20 @@ test("a refresh that only re-mints the approval's nonce keeps the region (and a 
   expect(host.querySelector<HTMLInputElement>('input[name="digest"]')!.value).toBe("d2");
 });
 
+test("plan words that name the fold's class never pass for the fold", async () => {
+  const { approvalIdentity } = await import("./views/task-view.js");
+  const words = '<p class="approval-goal">Fix task-secondary-approval so &quot;task-secondary-approval&quot; opens</p>';
+  const open = approvalOf("n1").replace("</form>", `${words}</form>`);
+  const folded = `<details class="task-secondary-approval"><summary>Updated approval terms</summary>${open}</details>`;
+  expect(approvalIdentity(open)).toBe("open:d1");
+  expect(approvalIdentity(folded)).toBe("folded:d1");
+  show(viewOf(cardOf("Needs you", null), { approval: folded }));
+  show(viewOf(cardOf("Needs you", null), { approval: open }));
+  expect(host.querySelector("details.task-secondary-approval")).toBeNull();
+  seen(false);
+  expect(bar()!.querySelector("button")!.textContent).toContain("Approve & build again");
+});
+
 test("nothing waits on the person: no bar, however far the page scrolls", () => {
   show(viewOf(cardOf("Building")));
   seen(false);

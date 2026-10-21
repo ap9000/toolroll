@@ -377,8 +377,10 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
 /** The approval region's identity: whether it leads open or sits folded, and the digest it signs. The nonce (new on
  * every render) is deliberately not part of it. */
 export function approvalIdentity(approval: string): string {
-  const folded = approval.includes("task-secondary-approval");
-  const digest = /name="digest" value="([^"]*)"/.exec(approval)?.[1] ?? "";
+  // Read from the region's own wrapper and its hidden field, never from text inside it: the server escapes every quote
+  // in the plan's words, so an attribute with its quotes can only be markup.
+  const folded = /^\s*<details class="task-secondary-approval"/.test(approval);
+  const digest = /<input type="hidden" name="digest" value="([^"]*)"/.exec(approval)?.[1] ?? "";
   return `${folded ? "folded" : "open"}:${digest}`;
 }
 
