@@ -49,6 +49,8 @@ import { healthz } from "./remote-hooks.js";
 import type { ServerRuntime } from './runtime.js';
 import { projectChip,refuse,regionScript,relativeAge,screen,settingsRows,transcriptScript,WORKSPACE_STYLE,workToolRows,type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
+import { assignmentOf } from "../assignment.js";
+import { assignmentTaskStatusOf } from "../assignment-presentation.js";
 import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,originUrlOf,portfolioOverview,projectsPage,systemPage,workbenchRail } from "./render-pages.js";
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
@@ -441,6 +443,35 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "reveal-failed": { tone: "error", text: "Finder didn't show it. The path is above; copy the command instead." },
   };
 
+  /**
+   * The opened agent's head (docs/plans/one-page-task-and-agent.md): its task's status in the task page's own words and
+   * that status's one action as a link to the task page tab holding its form, and where this run opens there — a
+   * result (the shared predicate: a finished builder or scout run) on the Result tab at this run, a plan on the Plan
+   * tab, anything else on its record.
+   */
+  function agentTaskHeadOf(taskId: string, runId: number, live: boolean, access: ReturnType<typeof workAccess>, now: Date): Pick<BrowserAgentDetail, "task" | "open"> {
+    const family = store.taskFamilyOf(taskId, access.repos, access.includeUnplaced);
+    const root = family?.root.id ?? taskId;
+    const versionOf = (id: string): string => family !== null && id !== family.current.id ? `version=${encodeURIComponent(id)}&` : "";
+    const run = store.getRun(runId);
+    const open = live || run === null ? null
+      : run.finishedAt !== null && (run.role === "builder" || run.role === "scout") ? { label: run.role === "scout" ? "Report" : "Result", href: `${taskHref(root)}?${versionOf(taskId)}tab=result&run=${runId}` }
+      : run.role === "planner" ? { label: "Plan", href: `${taskHref(root)}?${versionOf(taskId)}tab=plan` }
+      : { label: "Record", href: `/r/${runId}?record=1` };
+    let task: BrowserAgentDetail["task"] = null;
+    try {
+      const assignment = family === null ? null : assignmentOf(store, family.current.id, now, access, evidenceRoot);
+      if (assignment !== null) {
+        const words = assignmentTaskStatusOf(assignment);
+        const wants = words.primaryAction?.href ?? "";
+        // A result to review is on the Result tab; everything else the task page heads with (the approval, a retry…).
+        const href = /^\/review\?result=|[?&]result=/.test(wants) ? `${taskHref(root)}?tab=result` : taskHref(root);
+        task = { headline: words.headline, sentence: words.sentence, tone: words.tone, action: { label: words.primaryAction?.label ?? "Open task", href } };
+      }
+    } catch { task = null; }
+    return { task, open };
+  }
+
   // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
   async function agentsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
@@ -481,6 +512,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
           taskHref: taskHref(facts.taskId),
           // The run's own address: a finished result opens on its result page, anything else on its record.
           resultHref: live ? null : `/r/${facts.runId}`,
+          ...agentTaskHeadOf(facts.taskId, facts.runId, live, access, now),
           room: `agent:${facts.runId}`, said,
         };
       }

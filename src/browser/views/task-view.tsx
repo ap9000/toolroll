@@ -8,13 +8,13 @@ import { freshDraft, loadDraft, saveDraft, SteerNote, UnsentNote, type SteerDraf
 import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
-import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, MoreHorizontal, X } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import type { AssignmentCard } from "../../assignment-ui.js";
-import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskSection, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
+import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { Journey } from "../first-run.js";
-import { Badge, Button, Card, Textarea, cn } from "../components/ui/index.js";
+import { Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Textarea, cn } from "../components/ui/index.js";
 import { ConfirmStoppedForm, HEADLINE_GLYPH, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
@@ -22,21 +22,31 @@ import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
 
-/** A link to a fold (#scope, #holds, #task-actions) opens it and every fold
- * around it, on arrival and on in-page links alike. */
-function useRevealHashTarget() {
+/** Bring an element of this page into view: switch to the tab that holds it (panels stay mounted, so it is always
+ * found), show the Details sheet when it is there (phones), open every fold around it, then scroll and focus its first
+ * field when asked. The one road for hash links (#scope, #holds, #cancel-task…) and ⋯ go-to items alike. */
+function revealTarget(id: string, showTab: (tab: BrowserTaskTab) => void, focus = false): boolean {
+  const target = id === "" ? null : document.getElementById(id);
+  if (target === null) return false;
+  const panel = target.closest<HTMLElement>("[data-task-panel]");
+  if (panel !== null) showTab(panel.dataset["taskPanel"] as BrowserTaskTab);
+  if (target.closest("[data-task-details]") !== null) window.dispatchEvent(new CustomEvent("so:show-details"));
+  // After the tab is shown: open the folds, then scroll (a hidden panel has no layout to scroll to).
+  requestAnimationFrame(() => {
+    for (let node: HTMLElement | null = target; node !== null; node = node.parentElement) {
+      if (node instanceof HTMLDetailsElement) node.open = true;
+    }
+    if (target instanceof HTMLDetailsElement) target.open = true;
+    target.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+    if (focus) target.querySelector<HTMLElement>("input:not([type=hidden]), textarea, select, button")?.focus({ preventScroll: true });
+  });
+  return true;
+}
+
+/** A link to a fold (#scope, #holds, #cancel-task) shows its tab and opens it, on arrival and on in-page links alike. */
+function useRevealHashTarget(showTab: (tab: BrowserTaskTab) => void) {
   useEffect(() => {
-    const reveal = () => {
-      const id = decodeURIComponent(window.location.hash.slice(1));
-      const target = id === "" ? null : document.getElementById(id);
-      if (target === null) return;
-      // A fold in the Details sheet: show the sheet first (phones).
-      if (target.closest("[data-task-details]") !== null) window.dispatchEvent(new CustomEvent("so:show-details"));
-      for (let node: HTMLElement | null = target; node !== null; node = node.parentElement) {
-        if (node instanceof HTMLDetailsElement) node.open = true;
-      }
-      target.scrollIntoView({ block: "start" });
-    };
+    const reveal = () => { revealTarget(decodeURIComponent(window.location.hash.slice(1)), showTab); };
     reveal();
     window.addEventListener("hashchange", reveal);
     return () => window.removeEventListener("hashchange", reveal);
@@ -197,10 +207,9 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
     <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
     {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&
       <div className="flex flex-col gap-1 border-t border-border pt-3 text-body phone:pt-2 phone:leading-[1.35]">
-      <StatusWhy status={card.status} extra={[...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`)]} />
-      {card.notices !== null && <Fold summary={card.notices.summary} quiet>
-        {card.notices.lines.map(line => <p key={line} className="text-muted-foreground">{line}</p>)}
-      </Fold>}
+      {/* One fold, never a stack of them: the notices' lines join the recorded reasons under More (their row above
+          already says what they are about). */}
+      <StatusWhy status={card.status} extra={[...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`), ...(card.notices?.lines ?? [])]} />
     </div>}
     {view.earlier != null && <div className="border-t border-border pt-1 text-body" data-earlier-attempts={view.earlier.attempts.length}>
       <Fold summary={view.earlier.summary} quiet>
@@ -214,8 +223,11 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
 }
 
 /** A quiet in-card disclosure (native details: content stays in the page). */
-function Fold({ summary, quiet, children }: { summary: ReactNode; quiet?: boolean; children: ReactNode }) {
-  return <details className="group">
+function Fold({ summary, quiet, flatten, children }: { summary: ReactNode; quiet?: boolean; flatten?: boolean; children: ReactNode }) {
+  // `flatten`: never a fold inside a fold; opening this one opens every fold in it, so one tap shows it all.
+  return <details className="group" {...(flatten ? { onToggle: (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (event.currentTarget.open) event.currentTarget.querySelectorAll("details").forEach(one => { one.open = true; });
+  } } : {})}>
     <summary className={cn("flex cursor-pointer list-none items-center gap-1.5 py-1.5 font-medium phone:min-h-11 [&::-webkit-details-marker]:hidden", quiet && "text-muted-foreground hover:text-foreground")}>
       <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />{summary}
     </summary>
@@ -231,23 +243,6 @@ function FactValue({ fact }: { fact: BrowserTaskFact }) {
     : "seal" in part
       ? <code key={index} className="mr-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{part.seal}</code>
       : <a key={index} href={part.href} className="font-medium underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:relative phone:z-[1] phone:-my-3 phone:inline-flex phone:min-h-11 phone:items-center">{part.label}</a>)}</>;
-}
-
-/** One fold of a grouped card (the accordion pattern, on native details). */
-function Section({ section }: { section: BrowserTaskSection }) {
-  return <details id={section.id} open={section.open} className="group scroll-mt-4" data-task-section={section.id}>
-    <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 hover:bg-accent/50 phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
-      <ChevronRight className="size-4 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-      <h2 className="text-title">{section.title}</h2>
-      {section.count !== null && section.count > 0 && <Badge>{section.count}</Badge>}
-    </summary>
-    <div className="px-5 pb-5 pt-1 phone:px-3.5 phone:pb-3.5 phone:pt-0"><Html html={section.html} className="so-task-fold" /></div>
-  </details>;
-}
-
-function Sections({ sections, label }: { sections: BrowserTaskSection[]; label: string }) {
-  return sections.length === 0 ? null
-    : <Card aria-label={label} className="gap-0 divide-y divide-border overflow-hidden p-0 phone:p-0">{sections.map(one => <Section key={one.id} section={one} />)}</Card>;
 }
 
 /** "16:39" today, "Yesterday 16:39", else "Sep 28", in the viewer's zone: the one formatter every time on every
@@ -284,7 +279,7 @@ function ThreadEntry({ item }: { item: BrowserTaskThreadItem }) {
         item.who === "person" && "w-fit max-w-full rounded-xl bg-user-bubble px-3 py-2")}>{item.text}</p>}
       {item.link !== null && <a href={item.link.href} className="mt-1 inline-flex text-body underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:min-h-11 phone:items-center font-medium">{item.link.label}</a>}
       {item.html !== "" && <div className="mt-2"><Html html={item.html} className="so-thread-card" /></div>}
-      {item.more !== null && <div className="mt-1 text-body"><Fold summary={item.more.summary} quiet><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
+      {item.more !== null && <div className="mt-1 text-body"><Fold summary={item.more.summary} quiet flatten><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
     </div>
   </li>;
 }
@@ -324,9 +319,8 @@ export function attemptGlyph(label: string): GlyphKind {
   return headline === undefined ? "idle" : HEADLINE_GLYPH[HEADLINE_TONE[headline]];
 }
 
-/** The Details panel (desk) and sheet (phone): the task's metadata grouped
- * Work, Links, Review and About; its attempts; then the folds that carry the
- * scope, the ledgers and the task's own controls, unchanged. */
+/** The Details panel (desk) and sheet (phone): the task's properties grouped Work, Links, Review and About, then its
+ * attempts. Read-only facts: every form lives in a tab (docs/plans/one-page-task-and-agent.md). */
 export function TaskDetails({ view }: { view: BrowserTaskView }) {
   const groups: BrowserTaskDetailGroup[] = (view.details ?? []).filter(group => group.facts.length > 0);
   const card = view.status;
@@ -353,35 +347,234 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
       </ol>
       {attempts.lead !== null && <p className="text-muted-foreground">Lead: {attempts.lead.label}{attempts.lead.active ? "" : " · access ended"}</p>}
     </section>}
-    <Sections sections={view.sections} label="Task details" />
-    {(view.manage.length > 0 || view.cancel !== null || view.everyTime) && <section aria-labelledby="task-manage" className="flex flex-col gap-3 phone:gap-2">
-      <h2 id="task-manage" className="text-caption text-muted-foreground">Manage</h2>
-      <Sections sections={view.manage} label="Manage" />
-      {view.everyTime && <a href={view.everyTime.href} data-every-time className="flex min-h-12 items-center gap-2 rounded-lg border border-border bg-card px-4 text-title-sm transition-colors hover:bg-accent">
-        <Repeat className="size-4 text-muted-foreground" aria-hidden="true" />Do this every time…
-        <span className="ml-auto truncate pl-3 text-caption text-muted-foreground font-normal">{view.everyTime.starter}</span>
-      </a>}
-      {/* Cancel stays armed behind one deliberate tap, far from the primary action. */}
-      {view.cancel !== null && <details open={view.cancel.open} className="group rounded-lg border border-destructive/30 bg-card" data-task-section="cancel">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-title-sm text-destructive phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
-          <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />Cancel task
-        </summary>
-        <div className="px-4 pb-4 pt-1 phone:px-3.5 phone:pb-3.5 phone:pt-0"><Html html={view.cancel.html} className="so-task-cancel" /></div>
-      </details>}
-    </section>}
   </div>;
 }
 
-/** The page: title, status card, what needs a person, then the thread. With
- * `details` (no Details panel beside it, e.g. a page without the shell's
- * panel), the Details content follows the thread. */
-export function TaskView({ view, chat = null, details = true, csrf = "" }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string }) {
-  useRevealHashTarget();
+/** One section of the Plan tab, flat: its heading and its content, open, never a fold (page → tab → section). */
+function PlanSection({ section }: { section: BrowserTaskSection }) {
+  return <section id={section.id} aria-labelledby={`plan-${section.id}`} className="scroll-mt-4 flex flex-col gap-2 px-5 py-4 phone:px-3.5 phone:py-3" data-task-section={section.id}>
+    <h2 id={`plan-${section.id}`} className="flex items-center gap-2 text-title">{section.title}{section.count !== null && section.count > 0 && <Badge>{section.count}</Badge>}</h2>
+    <Html html={section.html} className="so-task-fold" />
+  </section>;
+}
+
+/** The Plan tab: the approval when it isn't the thing to do now, the scope and agents, dependencies and holds, the
+ * records (build activity, usage, report), the task's options, and Cancel — armed behind one deliberate tap, last. */
+/** The Plan tab's order: what the work is and what it waits on first, then its options, then the records. */
+const PLAN_ORDER = ["scope", "waits-for", "holds", "steering", "task-diagnostics"];
+const planRank = (id: string): number => { const at = PLAN_ORDER.indexOf(id); return at === -1 ? PLAN_ORDER.length : at; };
+
+function PlanPanel({ view, approval }: { view: BrowserTaskView; approval: boolean }) {
+  const sections = [...view.sections, ...view.manage].map((one, index) => ({ one, index })).sort((a, b) => planRank(a.one.id) - planRank(b.one.id) || a.index - b.index).map(({ one }) => one);
+  return <div className="flex flex-col gap-4">
+    {approval && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
+    {sections.length > 0 && <Card aria-label="Plan" className="gap-0 divide-y divide-border overflow-hidden p-0 phone:p-0">{sections.map(one => <PlanSection key={one.id} section={one} />)}</Card>}
+    {view.cancel !== null && <details id="cancel-task" open={view.cancel.open} className="group scroll-mt-4 rounded-lg border border-destructive/30 bg-card" data-task-section="cancel">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-title-sm text-destructive phone:min-h-11 phone:px-3.5 phone:py-2 [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />Cancel task
+      </summary>
+      <div className="px-4 pb-4 pt-1 phone:px-3.5 phone:pb-3.5 phone:pt-0"><Html html={view.cancel.html} className="so-task-cancel" /></div>
+    </details>}
+  </div>;
+}
+
+/** The Result tab: the chosen attempt's result as its result page shows it — evidence, your checks, the decision — with
+ * the attempts to pick from. Nothing yet: one line saying so. */
+function ResultPanel({ view, csrf, result }: { view: BrowserTaskView; csrf: string; result: ResultSlot | undefined }) {
+  // The result this page loaded stays as it was: its evidence, its checks and its decision always agree, and the
+  // result's own script stays bound to the forms it found. A newer one (another run, the same run's checks finishing,
+  // a first result) is announced with Reload; never swapped in under the person's hands.
+  const loaded = useRef(view.result ?? null);
+  const shown = loaded.current;
+  const now = view.result ?? null;
+  const newer = now !== null && (shown === null || now.selected.build !== shown.selected.build || now.revision !== shown.revision);
+  const notice = newer && <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border border-info/40 bg-info-soft px-3.5 py-2.5 text-body text-info" data-result-newer>
+    <span className="min-w-0 flex-1">{shown === null ? "A result is ready." : now.selected.build !== shown.selected.build ? "A newer result is ready." : "This result was updated."}</span>
+    <Button type="button" variant="outline" size="sm" onClick={() => window.location.reload()}>Reload</Button>
+  </div>;
+  if (shown === null || result === undefined) return <div className="flex flex-col gap-3">
+    {notice}
+    <Card className="items-start py-8" data-task-result="none">
+      <p className="text-body text-muted-foreground">No result yet. It shows here once a build finishes.</p>
+    </Card>
+  </div>;
+  const picked = shown.attempts.find(one => one.current) ?? null;
+  return <div className="flex flex-col gap-4" data-task-result={shown.selected.build ?? "none"}>
+    {notice}
+    {shown.attempts.length > 1 && <div className="flex flex-wrap items-center gap-2 text-body text-muted-foreground" data-result-attempts={shown.attempts.length}>
+      <span>{shown.current ? "Latest result" : "An earlier attempt"}</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" data-result-attempt-picker>{picked?.label ?? "Pick an attempt"}<ChevronDown /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-h-[60vh] w-72 overflow-y-auto">
+          {shown.attempts.map(one => <DropdownMenuItem key={one.href} asChild><a href={one.href} aria-current={one.current ? "true" : undefined} className={cn(one.current && "bg-accent")}>{one.label}</a></DropdownMenuItem>)}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>}
+    {result(shown.selected, csrf, shown.current)}
+  </div>;
+}
+
+/** The Result tab's body, given by the page that hosts it (the result view's own component, kept out of this module). */
+export type ResultSlot = (selected: NonNullable<BrowserTaskView["result"]>["selected"], csrf: string, current: boolean) => ReactNode;
+
+/** ⋯ More actions: the task's secondary acts in one menu, the same order everywhere — Work, Share & reuse, Danger last.
+ * A one-click POST submits its own small form (outside the menu, so closing the menu never drops it); a go-to shows
+ * the tab that holds the item's one form, opens it and focuses it. */
+function MoreMenu({ items, showTab }: { items: BrowserTaskMore[]; showTab: (tab: BrowserTaskTab) => void }) {
+  const forms = useRef(new Map<number, HTMLFormElement | null>());
+  const [copied, setCopied] = useState(false);
+  if (items.length === 0) return null;
+  const groups: { key: BrowserTaskMore["group"]; label: string }[] = [{ key: "work", label: "Work" }, { key: "share", label: "Share & reuse" }, { key: "danger", label: "Danger" }];
+  const select = (item: BrowserTaskMore, index: number) => {
+    if (item.kind === "post") forms.current.get(index)?.requestSubmit();
+    else if (item.kind === "goto") { showTab(item.tab); revealTarget(item.target, showTab, true); }
+    else if (item.kind === "copy") {
+      void navigator.clipboard?.writeText(window.location.href).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {});
+    }
+  };
+  return <>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="icon" aria-label="More actions" data-task-more className="phone:size-11"><MoreHorizontal /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        {groups.map((group, at) => {
+          const mine = items.map((item, index) => ({ item, index })).filter(one => one.item.group === group.key);
+          if (mine.length === 0) return null;
+          return <div key={group.key} role="group" aria-label={group.label}>
+            {at > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{group.label}</DropdownMenuLabel>
+            {mine.map(({ item, index }) => item.kind === "link"
+              ? <DropdownMenuItem key={index} asChild><a href={item.href} data-more-item={item.label}>{item.label}</a></DropdownMenuItem>
+              : <DropdownMenuItem key={index} data-more-item={item.label} className={cn(item.group === "danger" && "text-destructive focus:text-destructive")}
+                  onSelect={() => select(item, index)}>{item.kind === "copy" && copied ? "Link copied" : item.label}</DropdownMenuItem>)}
+          </div>;
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+    {items.map((item, index) => item.kind !== "post" ? null : <PostForm key={index} action={item.action} hidden ref={form => { forms.current.set(index, form); }} data-more-form={item.label}>
+      {Object.entries(item.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
+    </PostForm>)}
+  </>;
+}
+
+/** The approval region's identity: whether it leads open or sits folded, and the digest it signs. The nonce (new on
+ * every render) is deliberately not part of it. */
+export function approvalIdentity(approval: string): string {
+  // Read from the region's own wrapper and its hidden field, never from text inside it: the server escapes every quote
+  // in the plan's words, so an attribute with its quotes can only be markup.
+  const folded = /^\s*<details class="task-secondary-approval"/.test(approval);
+  const digest = /<input type="hidden" name="digest" value="([^"]*)"/.exec(approval)?.[1] ?? "";
+  return `${folded ? "folded" : "open"}:${digest}`;
+}
+
+/** Where the one thing that waits on a person lives: the status card's action (Confirm it stopped, Build again, Retry
+ * and the rest), or the approval under it. A button inside a closed fold is never the one action. */
+const PRIMARY_ACTION = "[data-task-status] [data-primary-action], .so-task-approval [data-primary-action]";
+const primaryActionNow = (): HTMLElement | null =>
+  [...document.querySelectorAll<HTMLElement>(PRIMARY_ACTION)].find(one => one.closest("details:not([open])") === null && one.closest("[hidden]") === null && (one.textContent?.trim() ?? "") !== "") ?? null;
+
+/** The one action, never out of reach: while something waits on the person and its button has scrolled out of
+ * view, a bar pinned to the foot of the page names it. A tap brings the button back into view (opening any fold
+ * around it) and puts the cursor where it starts (its password, when it asks for one); it never acts by itself.
+ * The button is found again after every render, so a live update that swaps it (Retry appearing, a new approval)
+ * is followed. */
+function PinnedAction({ waiting }: { waiting: boolean }) {
+  const [action, setAction] = useState<{ element: HTMLElement; label: string } | null>(null);
+  const [hidden, setHidden] = useState(true);
+  const tracked = useRef<{ element: HTMLElement | null; label: string; observer: IntersectionObserver | null }>({ element: null, label: "", observer: null });
+  useEffect(() => {
+    const element = waiting ? primaryActionNow() : null;
+    const label = element?.textContent?.trim() ?? "";
+    const now = tracked.current;
+    if (element === now.element && label === now.label) return;
+    now.observer?.disconnect();
+    now.element = element; now.label = label; now.observer = null;
+    setHidden(true);
+    if (element === null || typeof IntersectionObserver === "undefined") { setAction(null); return; }
+    now.observer = new IntersectionObserver(entries => setHidden(entries.some(one => one.isIntersecting)));
+    now.observer.observe(element);
+    setAction({ element, label });
+  });
+  useEffect(() => () => tracked.current.observer?.disconnect(), []);
+  if (action === null || hidden) return null;
+  const reach = () => {
+    for (let node = action.element.parentElement; node !== null; node = node.parentElement) if (node instanceof HTMLDetailsElement) node.open = true;
+    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    action.element.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
+    const field = action.element.closest("form")?.querySelector<HTMLInputElement>("input[type=password], textarea, input[type=text]:not([tabindex='-1'])");
+    (field ?? action.element).focus({ preventScroll: true });
+  };
+  return <div data-pinned-action role="region" aria-label="What this task needs from you"
+    className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+    <span className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
+      <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-attention" />Needs you
+    </span>
+    <Button type="button" variant="attention" onClick={reach} className="shrink-0">{action.label}<ArrowRight /></Button>
+  </div>;
+}
+
+const TAB_LABEL: Record<BrowserTaskTab, string> = { activity: "Activity", result: "Result", plan: "Plan" };
+
+/** The page's tabs: plain buttons over panels that all stay mounted (an inactive one is only hidden), so a form or a
+ * ceremony inside one is the same instance whichever tab is in front. The address keeps the tab (`tab=`). */
+function TaskTabs({ tab, showTab, counts }: { tab: BrowserTaskTab; showTab: (tab: BrowserTaskTab) => void; counts: Partial<Record<BrowserTaskTab, number>> }) {
+  const keys: BrowserTaskTab[] = ["activity", "result", "plan"];
+  const move = (event: KeyboardEvent<HTMLButtonElement>, at: number) => {
+    const next = event.key === "ArrowRight" ? (at + 1) % keys.length : event.key === "ArrowLeft" ? (at + keys.length - 1) % keys.length : event.key === "Home" ? 0 : event.key === "End" ? keys.length - 1 : null;
+    if (next === null) return;
+    event.preventDefault();
+    showTab(keys[next]!);
+    document.getElementById(`task-tab-${keys[next]}`)?.focus();
+  };
+  return <div role="tablist" aria-label="Task" className="flex gap-1 border-b border-border" data-task-tabs>
+    {keys.map((key, at) => <button key={key} type="button" role="tab" id={`task-tab-${key}`} aria-controls={`task-panel-${key}`} aria-selected={tab === key} tabIndex={tab === key ? 0 : -1}
+      onClick={() => showTab(key)} onKeyDown={event => move(event, at)} data-task-tab={key}
+      className="-mb-px inline-flex min-h-10 items-center gap-1.5 border-b-2 border-transparent px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground aria-selected:border-primary aria-selected:text-foreground phone:min-h-11">
+      {TAB_LABEL[key]}{(counts[key] ?? 0) > 0 && <span className="rounded-full bg-muted px-1.5 text-xs font-medium tabular-nums">{counts[key]}</span>}
+    </button>)}
+  </div>;
+}
+
+/** The page (docs/plans/one-page-task-and-agent.md): one header — title, status with its one action, ⋯ — then
+ * Activity (the thread and the composer), Result (the chosen attempt's result and its decision) and Plan (scope,
+ * dependencies, holds, options, Cancel), all on this page. With `details` (no Details panel beside it), the task's
+ * properties follow the tabs. */
+export function TaskView({ view, chat = null, details = true, csrf = "", result }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string; result?: ResultSlot }) {
+  const [tab, setTab] = useState<BrowserTaskTab>(view.tab ?? "activity");
+  const showTab = (next: BrowserTaskTab) => {
+    setTab(next);
+    try {
+      const url = new URL(window.location.href);
+      if (next === "activity") url.searchParams.delete("tab"); else url.searchParams.set("tab", next);
+      if (next !== "result") url.searchParams.delete("section");
+      history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+    } catch { /* the address is a convenience; the tab is shown either way */ }
+  };
+  useRevealHashTarget(showTab);
   const people = useLiveTask(view.live);
-  return <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 phone:gap-3">
+  const approvalHere = view.approval !== "" && (view.approvalPlacement ?? "lead") === "lead";
+  // A link to this very page's other tab (the status's Review result, a build in the thread) switches in place.
+  const inPage = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = (event.target as HTMLElement).closest?.("a[href]");
+    if (!(anchor instanceof HTMLAnchorElement)) return;
+    const to = new URL(anchor.href, window.location.href), here = new URL(window.location.href);
+    const wanted = to.searchParams.get("tab");
+    if (to.origin !== here.origin || to.pathname !== here.pathname || (wanted !== "result" && wanted !== "plan" && wanted !== "activity")) return;
+    if ((to.searchParams.get("version") ?? "") !== (here.searchParams.get("version") ?? "")) return;
+    const run = to.searchParams.get("run");
+    if (wanted === "result" && run !== null && String(view.result?.selected.build ?? "") !== run) return;
+    if (to.searchParams.get("section") !== null && to.searchParams.get("section") !== here.searchParams.get("section")) return;
+    event.preventDefault();
+    showTab(wanted);
+    if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), showTab);
+  };
+  const threadCount = (view.thread ?? []).length;
+  return <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 phone:gap-3" onClick={inPage}>
     <header className="flex flex-col gap-3 pb-1 phone:gap-2 phone:pb-0">
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-3 phone:gap-y-2">
-        <div className="min-w-0 flex-1 basis-72">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
           <h1 className="text-display tracking-tight phone:text-[22px]">{view.title}</h1>
           <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-body text-muted-foreground phone:mt-0.5">
             {view.project !== null && <><span className="font-medium text-foreground/80">{view.project}</span><span aria-hidden="true">·</span></>}
@@ -390,15 +583,7 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
             {people.length > 0 && <><span aria-hidden="true">·</span><AlsoViewing people={people} /></>}
           </p>
         </div>
-        {view.tabs.length > 0 && <nav aria-label="Task view">
-          <ul className="inline-flex h-10 items-center gap-1 rounded-lg bg-muted p-1 phone:h-[52px]">
-            {view.tabs.map(tab => <li key={tab.href} className="h-full">
-              <a href={tab.href} aria-current={tab.active ? "page" : undefined}
-                className={cn("inline-flex h-full items-center rounded-md px-3.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground",
-                  tab.active && "bg-card text-foreground shadow-sm")}>{tab.label}</a>
-            </li>)}
-          </ul>
-        </nav>}
+        <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
       </div>
       {view.version !== null && <p className="rounded-md bg-info-soft px-3 py-2 text-body text-info">
         {view.version.label} · <a href={view.version.current.href} className="font-semibold underline underline-offset-4">{view.version.current.label}</a>
@@ -411,15 +596,28 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
       ? <StatusCard view={view} card={view.status} csrf={csrf} />
       : <Html html={view.statusHtml} />}
 
-    {/* The approval is its own section under the status, never a card inside it. */}
-    {view.approval !== "" && <Html html={view.approval} className="so-task-approval" />}
+    {/* The approval is its own section under the status when it is the thing to do now; otherwise it heads Plan. */}
+    {/* Installed once (a refresh's new nonce never wipes a password being typed), but a new region when what it is
+        changes: folded under Updated approval terms or leading open, and the exact plan it signs. */}
+    {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
 
     {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
 
     {view.questions !== "" && <Card><Html html={view.questions} className="so-task-questions" /></Card>}
 
-    <div className="mt-2 phone:mt-1"><Thread items={view.thread ?? []} chat={chat} chatHref={view.tabs.length > 0 ? null : view.chatHref ?? null} /></div>
+    <TaskTabs tab={tab} showTab={showTab} counts={{ activity: threadCount > 0 ? 0 : 0 }} />
+    <div role="tabpanel" id="task-panel-activity" aria-labelledby="task-tab-activity" hidden={tab !== "activity"} data-task-panel="activity">
+      <Thread items={view.thread ?? []} chat={chat} chatHref={chat === null ? view.chatHref ?? null : null} />
+    </div>
+    <div role="tabpanel" id="task-panel-result" aria-labelledby="task-tab-result" hidden={tab !== "result"} data-task-panel="result">
+      <ResultPanel view={view} csrf={csrf} result={result} />
+    </div>
+    <div role="tabpanel" id="task-panel-plan" aria-labelledby="task-tab-plan" hidden={tab !== "plan"} data-task-panel="plan">
+      <PlanPanel view={view} approval={view.approval !== "" && !approvalHere} />
+    </div>
 
     {details && <div className="border-t border-border pt-2"><TaskDetails view={view} /></div>}
+
+    <PinnedAction waiting={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed"} />
   </div>;
 }

@@ -1238,8 +1238,9 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(gap?.closest(".requirement-evidence")).toBeNull();
     expect(incomplete?.querySelector('[data-review-judgement="cannot-tell"]')?.closest(".requirement-evidence")).toBeNull();
     // The change's images are one line under the requirement's details, never a missing file.
-    const assets = contextWindow.document.querySelectorAll('.requirement[data-criterion-id="c1"] [data-context-assets]');
-    expect([...assets].map(one => one.textContent)).toEqual(["12 images, 3.4 MB, in the run's evidence"]);
+    // The task's own part of the page (its Result tab's no-script copy of the result follows it, once).
+    const assets = [...contextWindow.document.querySelectorAll('.requirement[data-criterion-id="c1"] [data-context-assets]')].filter(one => one.closest(".task-result-tab") === null);
+    expect(assets.map(one => one.textContent)).toEqual(["12 images, 3.4 MB, in the run's evidence"]);
     expect(assets[0]?.closest(".requirement-evidence")).not.toBeNull();
     await contextWindow.happyDOM.close();
     // The run page: the same projection under the evidence bundle.
@@ -1531,9 +1532,9 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const said = "The result didn't meet its signed requirements.";
     expect(view.status).toMatchObject({ status: { headline: "Failed", sentence: said }, action: null });
     // No check log and no saved report: the stop reason, one suggestion of what to change, and the build's own result
-    // page (never the run record, which would bring the person back here).
+    // on this task's Result tab (never the run record, which would bring the person back here).
     const suggestion = "Before handing off, check each signed requirement against the changes.";
-    expect(view.failure).toEqual({ line: said, evidence: null, suggestion, link: { label: `See build #${failedRun}`, href: `/review?result=t-broke&run=${failedRun}` } });
+    expect(view.failure).toEqual({ line: said, evidence: null, suggestion, link: { label: `See build #${failedRun}`, href: `/t/t-broke?tab=result&run=${failedRun}` } });
     expect(renderedHtmlOf(html)).not.toMatch(/“acceptance”|recorded reason “/);
     // Retry stays the one ink act, its note already holding the suggestion.
     expect(view.retry).toEqual({ action: "/t/t-broke/requeue", note: suggestion });
@@ -1592,7 +1593,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     await boot();
     const cookie = await login();
     const later = workspaceOf(await (await fetch(url("/t/t-later"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
-    expect(later.failure).toMatchObject({ line: "No reason was recorded for this attempt.", evidence: null, suggestion: "Say what to do differently this time.", link: { href: `/review?result=t-later&run=${newer}` } });
+    expect(later.failure).toMatchObject({ line: "No reason was recorded for this attempt.", evidence: null, suggestion: "Say what to do differently this time.", link: { href: `/t/t-later?tab=result&run=${newer}` } });
     // Its latest attempt finished with no change; it is still the page of what failed.
     expect((await fetch(url(`/review?result=t-later&run=${newer}`), { headers: { cookie } })).status).toBe(200);
     expect(diagnoseTaskDispatch(store, "t-later", T0)?.detail).toBe("No reason was recorded for this attempt.");
@@ -2141,7 +2142,7 @@ describe("failures say what failed and builds say how far along: the demo's own 
     // The card keeps its way to the build's own record.
     expect(building.record).toEqual({ label: `Build #${live.id} record`, href: `/r/${live.id}` });
     const stopped = runsOf("harden-webhook-retries").find(one => one.role === "builder" && one.outcome === "refused")!;
-    expect(building.earlier).toEqual({ summary: "1 earlier attempt stopped", attempts: [{ label: `Build #${stopped.id}`, href: `/r/${stopped.id}`, text: "The plan changed, so a fresh attempt took over." }] });
+    expect(building.earlier).toEqual({ summary: "1 earlier attempt stopped", attempts: [{ label: `Build #${stopped.id}`, href: `/t/harden-webhook-retries?tab=result&run=${stopped.id}`, text: "The plan changed, so a fresh attempt took over." }] });
     // Not a red mark in the thread beside the healthy build.
     expect(building.thread!.some(one => one.key === `run-${stopped.id}`)).toBe(false);
     expect(building.thread!.some(one => one.kind === "progress" && /^Building/.test(one.title))).toBe(true);

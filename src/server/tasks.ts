@@ -95,7 +95,7 @@ import { requestContext } from "./request-context.js";
 import { oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { boardBody,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
-import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
+import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
@@ -469,55 +469,28 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     );
   }
 
-  async function showReview(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, now, project, chosenProject } = ctx;
-    // The review cockpit (Priority 5): every visible COMPLETED task,
-    // ranked by review priority, with one selected result projected
-    // from the records the task, run, and done pages already read —
-    // scope, plan, run, artifacts, verdict, publication. The
-    // ranking is a labeled presentation aid: it never rewrites the
-    // stored verdict, and the sealed patch downloads exactly as stored.
-    // Admission binds BEFORE the SQL limit (the done page's own rule),
-    // and every row is re-proved against the ceiling before ranking.
-    const resultRow = (row: CompletedWorkRow) => {
-      const assignment = assignmentOf(store, row.taskId, now, workAccess(), evidenceRoot);
-      return { ...row, proofReasons: row.runId === null ? [] : store.proofVerdictFor(row.runId)?.reasons ?? [], ciFailing: ciFailingFor(row.runId, row.prNumber),
-        assignment: assignment?.activeTaskId === row.taskId && (assignment.receipt?.runId ?? null) === row.runId ? assignment : null };
-    };
-    const rows = familiesInView(project, { states: ["done"], limit: REVIEW_QUEUE_CAP }).flatMap(family => {
-        const row = completedRowFor(family.current.id, project);
-        return row === null ? [] : [{ ...resultRow(row), title: family.root.title }];
-      });
-    const ranked = rankReviewQueue(rows);
-    const wanted = url.searchParams.get("result");
-    const wantedId =
-      wanted === null || wanted.length === 0 || wanted.length > 64 || hasForbiddenControls(wanted) ? null : wanted;
-    const inQueue = wantedId === null ? null : ranked.find(one => one.taskId === wantedId) ?? null;
-    // A stable deep link outlives the queue window (v2 review, comment
-    // 1): a completion older than the newest REVIEW_QUEUE_CAP resolves
-    // directly — re-proved as done, in this project, and inside the
-    // ceiling — so an old receipt never reads as unfinished or foreign.
-    // The ranked queue itself stays bounded and says so.
-    const beyond = wantedId === null || inQueue !== null ? null : completedRowFor(wantedId, project);
-    const beyondRow = beyond === null ? null : resultRow(beyond);
-    const completedChoice = inQueue ?? (beyondRow === null ? null : { ...beyondRow, priority: reviewPriorityOf(beyondRow) });
-    const expectedRun = url.searchParams.get("run");
-    const namedRun = expectedRun !== null && /^[1-9]\d*$/.test(expectedRun) ? Number(expectedRun) : null;
-    // A build that failed (or stopped) has its own result page too: the run named, or a failed task's latest attempt.
-    const attempt = wantedId === null || (completedChoice !== null && (namedRun === null || completedChoice.runId === namedRun)) ? null : attemptRowFor(wantedId, namedRun, project);
-    const attemptRow = attempt === null ? null : resultRow(attempt);
-    const chosen = attemptRow !== null ? { ...attemptRow, priority: reviewPriorityOf(attemptRow) } : completedChoice;
-    const selectedRow = wantedId === null ? ranked[0] ?? null : chosen;
+  /** A completed (or attempted) row as the review list ranks it: its proof reasons, CI standing, and the assignment
+   * when that assignment's receipt is this very row. */
+  function reviewRowOf(row: CompletedWorkRow, now: Date) {
+    const assignment = assignmentOf(store, row.taskId, now, workAccess(), evidenceRoot);
+    return { ...row, proofReasons: row.runId === null ? [] : store.proofVerdictFor(row.runId)?.reasons ?? [], ciFailing: ciFailingFor(row.runId, row.prNumber),
+      assignment: assignment?.activeTaskId === row.taskId && (assignment.receipt?.runId ?? null) === row.runId ? assignment : null };
+  }
+
+  /** The result a link names (the task's own result, or the exact run `namedRun` of it): its completed row when the
+   * task is done (`inQueue` when the review list already holds it), else that attempt's own result (a failed or stopped
+   * build has a result page too), with what went wrong and Retry / Accept anyway as the review page offers them.
+   * Shared by /review and the task page's Result tab (docs/plans/one-page-task-and-agent.md). */
+  function selectResultFor(wantedId: string, namedRun: number | null, project: string | null, who: Who, now: Date, inQueue: (RankedReviewRow | null) = null) {
     const csrf = who.via === "cookie" ? who.session.csrf : "";
-    // An exact link to a result this person can't see (or that never existed) reads the same either way.
-    if (expectedRun !== null && wantedId !== null && chosen === null) return refuse(response, who, 404, "No such result in your projects.", "/work");
-    if (expectedRun !== null && (!/^[1-9]\d*$/.test(expectedRun) || selectedRow?.runId !== Number(expectedRun))) {
-      return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
-    }
-    const selected = selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
-    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board — but only
-    // once the run has finished (cockpit §3): a page shown while it was still running saw no finished version.
-    if (wantedId !== null && selected?.run != null && store.getRun(selected.run.id)?.finishedAt != null) markAgentSeen(store, who.name, selected.run.id, now);
+    const beyond = inQueue !== null ? null : completedRowFor(wantedId, project);
+    const beyondRow = beyond === null ? null : reviewRowOf(beyond, now);
+    const completedChoice = inQueue ?? (beyondRow === null ? null : { ...beyondRow, priority: reviewPriorityOf(beyondRow) });
+    // A build that failed (or stopped) has its own result page too: the run named, or a failed task's latest attempt.
+    const attempt = (completedChoice !== null && (namedRun === null || completedChoice.runId === namedRun)) ? null : attemptRowFor(wantedId, namedRun, project);
+    const attemptRow = attempt === null ? null : reviewRowOf(attempt, now);
+    const chosen = attemptRow !== null ? { ...attemptRow, priority: reviewPriorityOf(attemptRow) } : completedChoice;
+    const selected = chosen === null ? null : reviewCockpitViewOf(chosen, who, now);
     // A build that delivered nothing reads Failed here, and so does a failed task's delivered result: what went wrong
     // is the card and Retry the ink act. That result may still be accepted, but only in outline, as Accept anyway, with
     // a reason.
@@ -541,6 +514,66 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         selected.failure = { ...failure, retry: retry === null ? null : { ...retry, note: retryNoteOf(failure.suggestion) }, ...(acceptAnyway === null ? {} : { acceptAnyway }) };
       }
     }
+    return { chosen, attemptRow, beyond, selected };
+  }
+
+  /** Whether `run` is a result selectResultFor shows for version `taskId`: a finished attempt that didn't deliver (failed,
+   * stopped, refused…), or the delivered one that is the version's own result — its completed row's, or, for a failed
+   * version, its latest finished attempt. An older delivered build is not (its version's result is the newer one). */
+  function resultRunAdmissible(taskId: string, run: Run, project: string | null): boolean {
+    if ((run.role !== "builder" && run.role !== "scout") || (run.finishedAt === null && run.outcome === null) || runIsLive(run)) return false;
+    if (run.outcome !== "built" && run.outcome !== "no-change") return true;
+    const task = store.getTask(taskId);
+    if (task?.state === "failed") return latestFinishedAttempt(store.runsFor(run.taskRef).filter(one => (one.role === "builder" || one.role === "scout") && (one.finishedAt !== null || one.outcome !== null)))?.id === run.id;
+    return completedRowFor(taskId, project)?.runId === run.id;
+  }
+
+  /** A run's own task and its family's root: the task pages a result form may return to. */
+  function runTasks(taskRef: number): string[] {
+    const task = store.externalIdFor(taskRef);
+    return task === null ? [] : [task, familyOf(task)?.root.id ?? task];
+  }
+
+  async function showReview(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project, chosenProject } = ctx;
+    // The review cockpit (Priority 5): every visible COMPLETED task,
+    // ranked by review priority, with one selected result projected
+    // from the records the task, run, and done pages already read —
+    // scope, plan, run, artifacts, verdict, publication. The
+    // ranking is a labeled presentation aid: it never rewrites the
+    // stored verdict, and the sealed patch downloads exactly as stored.
+    // Admission binds BEFORE the SQL limit (the done page's own rule),
+    // and every row is re-proved against the ceiling before ranking.
+    const resultRow = (row: CompletedWorkRow) => reviewRowOf(row, now);
+    const rows = familiesInView(project, { states: ["done"], limit: REVIEW_QUEUE_CAP }).flatMap(family => {
+        const row = completedRowFor(family.current.id, project);
+        return row === null ? [] : [{ ...resultRow(row), title: family.root.title }];
+      });
+    const ranked = rankReviewQueue(rows);
+    const wanted = url.searchParams.get("result");
+    const wantedId =
+      wanted === null || wanted.length === 0 || wanted.length > 64 || hasForbiddenControls(wanted) ? null : wanted;
+    const inQueue = wantedId === null ? null : ranked.find(one => one.taskId === wantedId) ?? null;
+    // A stable deep link outlives the queue window (v2 review, comment
+    // 1): a completion older than the newest REVIEW_QUEUE_CAP resolves
+    // directly — re-proved as done, in this project, and inside the
+    // ceiling — so an old receipt never reads as unfinished or foreign.
+    // The ranked queue itself stays bounded and says so.
+    const expectedRun = url.searchParams.get("run");
+    const namedRun = expectedRun !== null && /^[1-9]\d*$/.test(expectedRun) ? Number(expectedRun) : null;
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    const picked = wantedId === null ? null : selectResultFor(wantedId, namedRun, project, who, now, inQueue);
+    const chosen = picked?.chosen ?? null, attemptRow = picked?.attemptRow ?? null, beyond = picked?.beyond ?? null;
+    const selectedRow = wantedId === null ? ranked[0] ?? null : chosen;
+    // An exact link to a result this person can't see (or that never existed) reads the same either way.
+    if (expectedRun !== null && wantedId !== null && chosen === null) return refuse(response, who, 404, "No such result in your projects.", "/work");
+    if (expectedRun !== null && (!/^[1-9]\d*$/.test(expectedRun) || selectedRow?.runId !== Number(expectedRun))) {
+      return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/review">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
+    }
+    const selected = picked !== null ? picked.selected : selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
+    // Opening a run's own result page is viewing it: it leaves this person's unread Done on the Agents board — but only
+    // once the run has finished (cockpit §3): a page shown while it was still running saw no finished version.
+    if (wantedId !== null && selected?.run != null && store.getRun(selected.run.id)?.finishedAt != null) markAgentSeen(store, who.name, selected.run.id, now);
     const reviewPage = reviewCockpitPage(chromeFor(wantedId === null ? project : chosenProject, "runs"), {
         queue: ranked,
         queueCap: REVIEW_QUEUE_CAP,
@@ -646,8 +679,41 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const version = url.searchParams.get("version");
     if (version !== null && !family.versions.some(one => one.id === version)) return refuse(response, who, 404, "That version is not available for this task.", taskHref(family.root.id));
     // A version's own address lands on its family's page, still asking for the plan editor when it did (Chat's Edit plan).
-    if (task.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}?version=${encodeURIComponent(task.taskId)}${url.searchParams.get("edit") === "plan" ? "&edit=plan" : ""}`);
-    return taskScreen(response, who, version ?? family.current.id, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan");
+    if (task.taskId !== family.root.id) {
+      // Everything else the address asked for (its tab, result run and view, a form's feedback) rides along.
+      const kept = new URLSearchParams(url.searchParams);
+      kept.delete("version");
+      return redirect(response, `${taskHref(family.root.id)}?version=${encodeURIComponent(task.taskId)}${kept.size === 0 ? "" : `&${kept.toString()}`}`);
+    }
+    // One page per task (docs/plans/one-page-task-and-agent.md): the tab named, and the Result tab's result — the shown
+    // version's own, or the exact run `run=` names, which must be a result of that very version.
+    const tabWord = url.searchParams.get("tab");
+    const tab = tabWord === "result" || tabWord === "plan" ? tabWord : "activity";
+    const runWord = url.searchParams.get("run");
+    const named = runWord === null ? null : /^[1-9][0-9]{0,14}$/.test(runWord) ? Number(runWord) : -1;
+    if (named === -1) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
+    // A run named without a version is shown with the version it belongs to: a saved link to a result outlives a newer
+    // revision becoming current. A run of no version of this family is no result of it.
+    const owner = named === null || version !== null ? null : (() => { const ref = store.getRun(named)?.taskRef; const id = ref === undefined ? null : store.externalIdFor(ref); return id !== null && family.versions.some(one => one.id === id) ? id : null; })();
+    const shown = version ?? owner ?? family.current.id;
+    const picked = selectResultFor(shown, named, ctx.project, who, ctx.now);
+    if (named !== null && picked.chosen?.runId !== named) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
+    const base = `${taskHref(family.root.id)}?${shown !== family.current.id ? `version=${encodeURIComponent(shown)}&` : ""}tab=result`;
+    const csrf = who.via === "cookie" ? who.session.csrf : "";
+    const result = picked.selected === null ? null : (() => {
+      const parts = reviewCockpitDetailParts(picked.selected, csrf, url.searchParams.get("noted") !== null, who.via === "cookie" && who.role === "approver",
+        parseResultTab(url.searchParams.get("section")), who.name, { kind: "task", base });
+      // Current: the result the task itself would show (its latest), however the address named it — the header then
+      // owns its status and ceremonies, so no form is ever on the page twice.
+      const latest = named === null ? picked.chosen?.runId ?? null : selectResultFor(shown, null, ctx.project, who, ctx.now).chosen?.runId ?? null;
+      return { html: parts.html, selected: parts.selected, current: shown === family.current.id && latest !== null && latest === picked.chosen?.runId };
+    })();
+    // The attempts the picker offers: exactly the runs this page would show for their version (the same rule as above).
+    const admissible = new Set(family.versions.flatMap(one => {
+      const ref = store.lookupRef(one.id);
+      return ref === null ? [] : store.runsFor(ref.id).filter(run => resultRunAdmissible(one.id, run, ctx.project)).map(run => run.id);
+    }));
+    return taskScreen(response, who, shown, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan", { tab, result, admissible });
   }
 
   // v103: a task's evidence pack, as a printable page or JSON (the whole family, sealed ledger entries included).
@@ -1284,7 +1350,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         ? `Something from build #${run.id} may still be running, so it can't be confirmed stopped yet.` : `Build #${run.id} can't be confirmed stopped.`, 409);
     }
     bustBadge();
-    const to = resultReturnTarget(body.get("return"), run.id);
+    const to = resultReturnTarget(body.get("return"), run.id, runTasks(run.taskRef));
     return redirect(response, body.get("return") ? to : back);
   }
 
@@ -1374,9 +1440,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // the chat's result view, or the run page — validated to those exact
     // shapes. A refusal sends them back THERE, where the browser has kept
     // their draft, so a failed submission is recoverable in place.
-    const returnTo = resultReturnTarget(body.get("return"), id);
+    const returnTo = resultReturnTarget(body.get("return"), id, runTasks(found.taskRef));
     const selectedTab = parseResultTab(body.get("tab"));
-    const back = selectedTab === "summary" ? returnTo : `${returnTo}${returnTo.includes("?") ? "&" : "?"}tab=${selectedTab}`;
+    // A task page's Result tab keeps the result's own view in `section=` (its `tab` is the task's).
+    const viewParam = returnTo.startsWith("/t/") ? "section" : "tab";
+    const back = selectedTab === "summary" ? returnTo
+      : `${returnTo.replace(/&section=(?:summary|changes|checks)$/, "")}${returnTo.includes("?") ? "&" : "?"}${viewParam}=${selectedTab}`;
     if (body.get("intent") === "revise") {
       const result = requestResultChanges(store, evidenceRoot, {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
@@ -1477,7 +1546,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (found === null || !visible(taskRepoOf(found.taskRef))) {
       return refuse(response, who, 404, "no such run");
     }
-    const back = resultReturnTarget(body.get("return"), id);
+    const back = resultReturnTarget(body.get("return"), id, runTasks(found.taskRef));
     const result = createResultRevision(store, evidenceRoot, {
       run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
       repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
@@ -1497,8 +1566,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const found = store.getRun(id);
     if (found === null || !visible(taskRepoOf(found.taskRef))) return refuse(response, who, 404, "no such run");
     // The task page that offered Run checks in place is a return target too: this run's own task, or its family's root.
-    const runTask = store.externalIdFor(found.taskRef);
-    const back = resultReturnTarget(body.get("return"), id, runTask === null ? [] : [runTask, familyOf(runTask)?.root.id ?? runTask]);
+    const back = resultReturnTarget(body.get("return"), id, runTasks(found.taskRef));
     if (who.via !== "cookie") return refuse(response, who, 403, "Sign in with a browser session to do this.", back);
     if (op === "checks") {
       if (who.role !== "approver") return refuse(response, who, 403, "An approver runs checks.", back);
@@ -2404,6 +2472,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           const status = approved.reason === "changed" || approved.reason === "unrouted" ? 409 : 403;
           return approvalProblem(approveRefusalWords(approved.reason), status);
         }
+        // Approve & build again (the plan was rewritten after a build): the same yes requeues, only for the build the
+        // sheet named, and only while it is still the task's latest result, made to an earlier plan than this one.
+        const rebuildRaw = body.get("rebuild") ?? "";
+        if (rebuildRaw !== "") {
+          const named = /^[0-9]{1,15}$/.test(rebuildRaw) ? store.getRun(Number(rebuildRaw)) : null;
+          // Built to an earlier plan than the one just approved (the scope this approval sealed, scopeRow.digest);
+          // requeueTask re-proves, in its own transaction, that it is still the latest result and that scope approved.
+          const offered = named != null && named.taskRef === ref.id && named.role === "builder" && !!named.scopeDigest && named.scopeDigest !== scopeRow.digest;
+          const requeued = offered ? store.requeueTask(taskId, who.name, now, { run: named.id, scopeDigest: scopeRow.digest }) : null;
+          if (requeued === null || (!requeued.ok && requeued.reason === "moved")) return approvalProblem("Approved. The task changed while this page was open, so it wasn't built again — check its status.", 200);
+          if (!requeued.ok) return approvalProblem(`Approved, but building again didn't start (${requeued.reason}). Use Build again.`, 200);
+        }
         return redirect(response, approvalBack);
       }
       case "accept-proof": {
@@ -2478,7 +2558,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         }
         const completed = checkAssignmentAsOperator(store, taskId, digest, principal, now, evidenceRoot);
         if (!completed.ok) return taskScreen(response, who, taskId, completed.message, 409);
-        return redirect(response, reviewHref(taskId, Number(namedRun)));
+        // Back where it was completed (the task page's Result tab, or the result page), as Accept and finish does.
+        return redirect(response, body.get("return") === null ? reviewHref(taskId, Number(namedRun)) : safeReturn(body.get("return")));
       }
       case "retry-review": {
         return taskScreen(response, who, taskId, "Separate agent reviews have retired. Open the saved result to mark it complete or request a revision.", 410);

@@ -162,6 +162,7 @@ export function taskChatApproval(focus: TaskChatFocus, csrf: string): Html {
       coordinator: approval.coordinator,
       origin: approval.origin ?? null,
       deliverable: approval.deliverable,
+      rebuild: focus.assignment?.need != null && "key" in focus.assignment.need && focus.assignment.need.key === "replan" ? focus.assignment.need.build : null,
       // Edit plan opens the task page's sheet with its fields open for editing.
       editHref: `${taskHref(focus.id)}?edit=plan#plan-editor`,
       notNowHref: "/chat",
@@ -188,12 +189,15 @@ export function taskChatLiveRegion(focus: TaskChatFocus, csrf: string, fragment 
       : fragment && focus.approval !== null && focus.plan !== "requested"
         ? html`<section class="card chat-action-card chat-refresh-action"><a class="button-link" href="${approvalHref}" data-primary-action>Approve plan</a></section>`
         : taskChatApproval(focus, csrf));
-  const approvalCard = focus.approval !== null && focus.dispatch?.action !== "approve-scope"
+  // The approval leads when dispatch waits on it or the plan was rewritten after a build (the assignment's one action).
+  const approvalLeads = focus.dispatch?.action === "approve-scope" ||
+    (focus.assignment?.primaryAction?.code === "approve-scope" && focus.assignment.primaryAction.target.taskId === focus.executionId);
+  const approvalCard = focus.approval !== null && !approvalLeads
     ? html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approvalContent}</details>` : approvalContent;
   const polling = !inert && ((focus.approval === null || focus.plan === "requested") && focus.state !== "done" && focus.state !== "cancelled" || focus.control.kind === "stopping" || focus.control.kind === "stop");
   const status = focus.assignment !== null
-    ? html`${assignmentSummaryHtml(focus.assignment, { workStatus: focus.status, hideAction: focus.approval !== null && focus.dispatch?.action === "approve-scope", sentence: chatStatusSentence(focus), ...(receiptLeads ? { resultHref: chatResultHref(focus.id, focus.result!.runId) } : {}) })}${receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status, focus.assignment, false) : ""}`
-    : receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status) : taskStatusCard(focus.status, focus.id, focus.dispatch, focus.liveRun?.id ?? null, focus.approval !== null && focus.dispatch?.action === "approve-scope");
+    ? html`${assignmentSummaryHtml(focus.assignment, { workStatus: focus.status, hideAction: focus.approval !== null && approvalLeads, sentence: chatStatusSentence(focus), ...(receiptLeads ? { resultHref: chatResultHref(focus.id, focus.result!.runId) } : {}) })}${receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status, focus.assignment, false) : ""}`
+    : receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status) : taskStatusCard(focus.status, focus.id, focus.dispatch, focus.liveRun?.id ?? null, focus.approval !== null && approvalLeads);
   const publication = focus.publication;
   const prUrl = publication === null ? null : safePrUrl(publication.prUrl);
   return html`<section id="task-chat-live" aria-live="polite" data-task="${focus.id}" data-execution="${focus.executionId}" data-source="/chat/task-status?task=${encodeURIComponent(focus.id)}" data-poll="${polling ? "1" : "0"}" data-approval="${focus.approval?.digest ?? ""}" data-plan="${focus.plan ?? ""}">${
@@ -989,6 +993,8 @@ export type LeadThreadRows = {
   focusTask: TaskChatFocus | null;
   /** The lead's open question to this reader, drawn as buttons under its reply. */
   ask?: LeadAsk | null;
+  /** The turn whose question the task has moved past: shown without buttons, marked out of date. */
+  staleAsk?: number | null;
   /** Every question the lead asked in these messages, by turn: answered ones show their words without buttons. */
   asks?: Map<number, LeadAsk>;
   /** The person's lead queue rows for these messages, by message id (docs/plans/lead-message-queue.md). */
@@ -1011,7 +1017,8 @@ function queuedStateHtml(row: LeadQueueRow, back: string | null): Html {
 
 /** The lead's question as buttons: each option sends itself as the next message (the same POST as a typed one);
  * "Something else" moves to the composer. Nothing shows while a reply is running. */
-export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project: string | null }, composer: string, open = true): Html {
+export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project: string | null }, composer: string, open = true, stale = false): Html {
+  if (stale) return html`<div class="so-owner-ask" data-ask="${ask.turn}" data-ask-stale><p class="so-owner-ask-question"><strong>${ask.question}</strong></p><p class="so-owner-ask-stale">Out of date: the task changed after this was asked. Its status above says what it needs now.</p></div>`;
   if (!open) return html`<div class="so-owner-ask" data-ask="${ask.turn}"><p class="so-owner-ask-question"><strong>${ask.question}</strong></p></div>`;
   const hidden = target.task !== null ? { task: target.task } : target.project !== null ? { project: target.project } : {};
   return html`<div class="so-owner-ask" data-ask="${ask.turn}"><p class="so-owner-ask-question"><strong>${ask.question}</strong></p><div class="so-owner-ask-options" role="group" aria-label="Answer options">${
@@ -1021,11 +1028,11 @@ export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project
 /** The thread's messages as the React conversation renders them, each
  * with the proposal cards its turn produced; `back` is where a card's
  * confirm or dismiss returns. */
-export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "asks" | "queue">, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
+export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "staleAsk" | "asks" | "queue">, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
   const open = rows.pending === null ? rows.ask?.turn ?? null : null;
   const asked = (turn: number | null): Html | "" => {
     const ask = turn === null ? undefined : rows.asks?.get(turn);
-    return ask === undefined ? "" : leadAskHtml(ask, target, target.task === null ? "lead-message" : "task-message", ask.turn === open);
+    return ask === undefined ? "" : leadAskHtml(ask, target, target.task === null ? "lead-message" : "task-message", ask.turn === open, ask.turn === rows.staleAsk);
   };
   // The owner's message each reply answers: when it asked for ids, the reply keeps them.
   const askedBy = new Map<number, string>();

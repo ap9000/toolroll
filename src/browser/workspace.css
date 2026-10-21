@@ -550,6 +550,9 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-owner-ask-options form { margin: 0; }
 .so-owner-ask-options .so-suggestion { display: inline-flex; align-items: center; min-height: 36px; }
 .so-owner-ask-other { margin: 0; color: var(--so-muted); }
+/* A question the task has moved past: its words, quieter, and one line saying so. */
+.so-owner-ask[data-ask-stale] .so-owner-ask-question { color: var(--so-muted); }
+.so-owner-ask-stale { margin: 0; font-size: 13px; color: var(--so-muted); }
 @media (max-width: 900px) { .so-owner-ask-options .so-suggestion { min-height: 44px; } }
 @media (max-width: 1150px) and (min-width: 901px) { .so-workspace.so-workspace--docked { grid-template-columns: 178px minmax(0, 1fr) minmax(300px, 340px); } }
 @media (max-width: 900px) {

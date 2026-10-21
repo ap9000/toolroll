@@ -67,7 +67,7 @@ export function MismatchHeadline({ headline }: { headline: string }) {
 
 /** The status card: the headline, one sentence, the facts rows, then any caveat as one line of its own.
  * No acts here: the result's acts sit together in the decision row. */
-function StatusCard({ selected, acts, answers }: { selected: Selected; acts: ResultActs; answers: Answers }) {
+function StatusCard({ selected, acts, answers, bare = false }: { selected: Selected; acts: ResultActs; answers: Answers; bare?: boolean }) {
   const { panel, checks } = selected;
   // A fact row's action that only reopens this same page is dropped; links to its Checks tab or a section stay.
   const same = (href: string | null): boolean => {
@@ -96,6 +96,29 @@ function StatusCard({ selected, acts, answers }: { selected: Selected; acts: Res
     ...(panel?.attention ?? []),
   ])].filter(one => mismatch === null || !mismatch.said.includes(one));
   const failed = status?.headline === "Failed";
+  // On a task page the task's header already says the status, its sentence and facts: what is the result's own —
+  // that its report doesn't match its changes, each disagreement, and every caveat — still shows, and only that.
+  if (bare) {
+    if (mismatch === null && caveats.length === 0) return null;
+    return <Card data-result-warnings aria-label="What to know about this result">
+      {mismatch?.headline != null && <MismatchHeadline headline={mismatch.headline} />}
+      {mismatch !== null && mismatch.rows.length > 0 && <ul aria-label="What doesn't match" className="flex flex-col gap-1.5 text-body" data-mismatches={mismatch.rows.length}>
+        {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="flex gap-2">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
+          <span className="min-w-0 [overflow-wrap:anywhere]">
+            {one.text}{one.path !== null && one.absent && <> <code className="font-mono text-xs">{one.path}</code> <span className="text-muted-foreground" data-mismatch-absent>— not in the saved changes</span></>}
+            {one.href !== null && (one.path !== null || one.noteLabel !== null) && <> · <a href={one.href} data-mismatch-lines className={cn("font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground", one.path !== null && "font-mono text-xs")}>{one.path !== null ? `${one.path}${one.lines === null ? "" : `, ${one.lines}`}` : one.noteLabel}</a></>}
+          </span>
+        </li>)}
+      </ul>}
+      {caveats.length > 0 && <ul className="flex flex-col gap-1 text-body" aria-label="Caveats" data-result-attention={caveats.length}>
+        {caveats.map(one => <li key={one} data-caveat className="flex gap-2">
+          <AlertTriangle className={cn("mt-0.5 size-3.5 shrink-0", failed ? "text-destructive" : "text-warning")} aria-hidden="true" />
+          <span className="min-w-0 [overflow-wrap:anywhere]">{one}</span>
+        </li>)}
+      </ul>}
+    </Card>;
+  }
   return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status">
     <div className="min-w-0">
       {/* The blocking fact is the headline: the report doesn't match the changes. */}
@@ -256,6 +279,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
           {complete !== null ? <>
             <input type="hidden" name="receipt" value={complete.receipt} />
             {complete.accept != null && <input type="hidden" name="accept" value="1" />}
+            {complete.returnTo !== undefined && <input type="hidden" name="return" value={complete.returnTo} />}
           </> : accept !== null && <input type="hidden" name="return" value={accept.returnTo} />}
           {reason !== null && <>
             <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
@@ -406,9 +430,14 @@ function openRecord(event: MouseEvent<HTMLAnchorElement>) {
   history.replaceState(history.state, "", "#run-record");
 }
 
+/** The acts a task page's own header already offers for its current result (one mounted form each, never two). */
+const HEADER_OWNED: ReadonlySet<ResultActKind> = new Set(["retry", "rebuild", "confirm-stopped"]);
+
 /** One result: the status, the evidence, the person's own checks, then the decision. The answers to
- * "You check this one" live here, so the Requirements row and the decision follow each one at once. */
-function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }) {
+ * "You check this one" live here, so the Requirements row and the decision follow each one at once. On a task page's
+ * Result tab (`inTask`) the task's header already says the current result's status and holds its Retry, Build again and
+ * Confirm it stopped: those aren't repeated here. */
+export function SelectedResult({ selected, csrf, inTask }: { selected: Selected; csrf: string; inTask?: { current: boolean } }) {
   const [answers, setAnswers] = useState<Answers>(new Map());
   const answer = (id: string, to: Answer | null) => setAnswers(previous => { const next = new Map(previous); if (to === null) next.delete(id); else next.set(id, to); return next; });
   const items = checkItemsOf(selected.panel);
@@ -416,12 +445,14 @@ function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }
   const notRight = items.filter(item => answers.get(item.id) === "not-right");
   const words = { unanswered: unanswered.map(wordsOf), notRight: notRight.map(wordsOf) };
   const decision = selected.decision === null ? null : { ...selected.decision, ...acceptWithChecksOf(selected.decision.base ?? selected.decision, words) };
-  const acts = selected.actFacts === undefined ? selected.acts
+  const chosen = selected.actFacts === undefined ? selected.acts
     : resultActsOf({ ...selected.actFacts, ...(selected.actFacts.accept === null ? {} : { accept: { ready: decision?.ready ?? false } }), unanswered: unanswered.length, notRight: notRight.length });
+  const owned = (kind: ResultActKind | null): ResultActKind | null => inTask?.current === true && kind !== null && HEADER_OWNED.has(kind) ? null : kind;
+  const acts = inTask?.current === true ? { ...chosen, primary: owned(chosen.primary), secondary: owned(chosen.secondary) } : chosen;
   const checks = selected.panel?.youCheck != null ? <CheckItems panel={selected.panel} chatHref={selected.chatHref} answers={answers} answer={answer} /> : null;
   const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} />;
   return <>
-    <StatusCard selected={selected} acts={acts} answers={answers} />
+    <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the
         decision itself, so it can never rise over the status or the Summary facts above them. */}
     {selected.panel !== null ? <Panel panel={selected.panel}><div className="flex flex-col gap-4">{checks}{decide}</div></Panel> : <div className="flex flex-col gap-4">{checks}{decide}</div>}

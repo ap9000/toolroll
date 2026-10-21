@@ -1163,10 +1163,12 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
     const suggestion = "Before handing off, make sure no reference to LEGACY remains in the codebase.";
     const page = `/review?result=t-fail&run=${run}`;
-    // The task card names the miss, its evidence line and the build's page; Retry's note starts with the suggestion.
+    // The task card names the miss, its evidence line and the build's result — on the task's own Result tab (one page
+    // per task); Retry's note starts with the suggestion.
     const task = workspaceOf(await (await fetch(url("/t/t-fail"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
     expect(task.failure).toEqual({ line: `Missed a requirement: ${statement}`, evidence: "The agent's own note says: src/admin.ts still reads LEGACY for the override toggle.",
-      suggestion, link: { label: `See build #${run}`, href: page } });
+      suggestion, link: { label: `See build #${run}`, href: `/t/t-fail?tab=result&run=${run}` } });
+    expect(task.result).toMatchObject({ selected: { build: run, failure: { line: `Missed a requirement: ${statement}` } } });
     expect(task.retry).toEqual({ action: "/t/t-fail/requeue", note: suggestion });
     // No status row leads to Chat: Run checks is in place, posting here and coming back here.
     expect(JSON.stringify(task.status)).not.toContain("/chat?");
@@ -1206,6 +1208,13 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(resultReturnTarget("/t/t-fail", run, ["t-fail"])).toBe("/t/t-fail");
     expect(resultReturnTarget("/t/t-other", run, ["t-fail"])).toBe(`/r/${run}`);
     expect(resultReturnTarget("/t/t-fail", run)).toBe(`/r/${run}`);
+    // That task page's Result tab at this very run (one page per task), its version and the result's view kept; never
+    // another run, another task, or a shape with anything added.
+    expect(resultReturnTarget(`/t/t-fail?tab=result&run=${run}`, run, ["t-fail"])).toBe(`/t/t-fail?tab=result&run=${run}`);
+    expect(resultReturnTarget(`/t/t-fail?version=t-fail-r1&tab=result&run=${run}&section=changes`, run, ["t-fail"])).toBe(`/t/t-fail?version=t-fail-r1&tab=result&run=${run}&section=changes`);
+    expect(resultReturnTarget(`/t/t-fail?tab=result&run=${run + 1}`, run, ["t-fail"])).toBe(`/r/${run}`);
+    expect(resultReturnTarget(`/t/t-other?tab=result&run=${run}`, run, ["t-fail"])).toBe(`/r/${run}`);
+    expect(resultReturnTarget(`/t/t-fail?tab=result&run=${run}&next=//evil`, run, ["t-fail"])).toBe(`/r/${run}`);
 
     // Retried, the task moves on; the build's page still opens, now without Retry.
     expect((await post(cookie, "/t/t-fail/requeue", { csrf })).status).toBe(303);

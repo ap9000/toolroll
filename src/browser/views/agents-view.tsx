@@ -5,11 +5,11 @@
  * one composer at the bottom — Reply while it asks, otherwise a note that
  * steers it. The page follows the workspace and the opened agent's own room,
  * so it updates in place; forms keep what is being typed. */
-import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
+import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentLane, BrowserAgentLanes, BrowserAgentRow, BrowserAgentsView, BrowserLaneSegment } from "../../browser-workspace.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
-import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger, Textarea, cn } from "../components/ui/index.js";
+import { Button, Textarea, cn } from "../components/ui/index.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { ConversationPane } from "./agent-conversation.js";
 import { useLiveRoom } from "../live.js";
@@ -106,15 +106,10 @@ function useLiveChanges(url: string | null, open: boolean): string | null {
   return fragment;
 }
 
-function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
-  const [open, setOpen] = useState(false);
+function ChangesPane({ detail, open }: { detail: BrowserAgentDetail; open: boolean }) {
+  // Its own tab now: the live look at the checkout is read only while the tab is in front.
   const fragment = useLiveChanges(detail.peek, open);
-  return <Collapsible open={open} onOpenChange={setOpen} data-agent-changes>
-    <CollapsibleTrigger className="group flex min-h-9 w-full items-center gap-1.5 rounded-md text-left text-caption font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring phone:min-h-11">
-      <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 motion-safe:transition-transform group-data-[state=open]:rotate-90" />
-      Changes<span className="font-normal tabular-nums">{detail.diff ?? ""}</span>
-    </CollapsibleTrigger>
-    <CollapsibleContent className="pt-1.5 pl-5">
+  return <div data-agent-changes>
     {detail.live
       ? detail.peek === null ? <p className="text-body text-muted-foreground">Output from other computers isn't shown yet.</p>
         : fragment === null ? <p className="text-body text-muted-foreground">Looking at the checkout…</p>
@@ -126,8 +121,7 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
           <span className="shrink-0 tabular-nums text-danger">{file.removed === null ? "" : `−${file.removed}`}</span></li>)}
         {detail.filesMore > 0 && <li className="text-muted-foreground">{detail.filesMore} more in the result</li>}
       </ul>}
-    </CollapsibleContent>
-  </Collapsible>;
+  </div>;
 }
 
 /** This running attempt's files, on this computer (cockpit E): the words first, then the path, "Copy the command"
@@ -204,6 +198,41 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
   </PostForm>;
 }
 
+/** The task this agent works on, as its page heads it: where it stands, and its one action — a way to the task page,
+ * whose own form acts (docs/plans/one-page-task-and-agent.md). The same words on both pages. */
+function TaskHead({ task }: { task: NonNullable<BrowserAgentDetail["task"]> }) {
+  const attention = task.headline === "Needs you";
+  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border px-3.5 py-3", attention ? "border-attention/40 bg-attention-soft" : "border-border bg-card")} data-agent-task={task.headline}>
+    <div className="min-w-0 flex-1 basis-56">
+      <p className="text-caption font-medium text-muted-foreground">Task · <span className={cn(attention ? "text-attention" : task.headline === "Failed" ? "text-destructive" : "text-foreground")}>{task.headline}</span></p>
+      <p className="mt-0.5 text-body break-words">{task.sentence}</p>
+    </div>
+    <Button asChild variant={attention ? "attention" : "outline"} className="h-10 shrink-0 phone:h-11 phone:w-full"><a href={task.action.href} data-agent-task-action>{task.action.label}<ArrowUpRight /></a></Button>
+  </div>;
+}
+
+/** The agent's own tabs: Activity (its conversation, with the terminal view inside it) and its changes, both kept mounted. */
+function AgentTabs({ detail }: { detail: BrowserAgentDetail }) {
+  const [tab, setTab] = useState<"conversation" | "changes">("conversation");
+  const keys = [{ key: "conversation" as const, label: "Activity" }, { key: "changes" as const, label: detail.diff === null ? "Changes" : `Changes · ${detail.diff}` }];
+  return <div className="flex min-w-0 flex-col gap-3">
+    <div role="tablist" aria-label="Agent" className="flex gap-1 border-b border-border" data-agent-tabs>
+      {keys.map(one => <button key={one.key} type="button" role="tab" id={`agent-tab-${one.key}`} aria-controls={`agent-panel-${one.key}`} aria-selected={tab === one.key} tabIndex={tab === one.key ? 0 : -1}
+        onClick={() => setTab(one.key)} data-agent-tab={one.key}
+        onKeyDown={event => { if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); const next = one.key === "conversation" ? "changes" : "conversation"; setTab(next); document.getElementById(`agent-tab-${next}`)?.focus(); } }}
+        className="-mb-px inline-flex min-h-10 items-center border-b-2 border-transparent px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground aria-selected:border-primary aria-selected:text-foreground phone:min-h-11">{one.label}</button>)}
+    </div>
+    <div role="tabpanel" id="agent-panel-conversation" aria-labelledby="agent-tab-conversation" hidden={tab !== "conversation"}><ConversationPane url={detail.transcript} live={detail.live} /></div>
+    {/* The panel itself carries no layout class: `hidden` must win (a display class would show it). */}
+    <div role="tabpanel" id="agent-panel-changes" aria-labelledby="agent-tab-changes" hidden={tab !== "changes"}>
+      <div className="flex flex-col gap-4">
+        <ChangesPane detail={detail} open={tab === "changes"} />
+        {detail.checkout != null && detail.canAct && <CheckoutActions checkout={detail.checkout} />}
+      </div>
+    </div>
+  </div>;
+}
+
 function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
   return <section aria-labelledby="agent-title" data-agent-detail={detail.runId}
     className="flex min-w-0 flex-col gap-4 desk:sticky desk:top-4 phone:fixed phone:inset-0 phone:z-40 phone:gap-0 phone:bg-background">
@@ -211,7 +240,7 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       <div className="flex min-w-0 items-center gap-1">
         <Button asChild variant="ghost" size="icon" className="desk:hidden"><a href="/agents" aria-label="Back to all agents"><ArrowLeft /></a></Button>
         <h2 id="agent-title" className="min-w-0 flex-1 truncate text-headline font-semibold tracking-[-0.01em] phone:text-title">{detail.title}</h2>
-        <Button asChild variant="ghost" size="sm" className="shrink-0"><a href={detail.resultHref ?? detail.taskHref}>{detail.resultHref === null ? "Task" : "Result"}<ArrowUpRight /></a></Button>
+        <Button asChild variant="ghost" size="sm" className="shrink-0"><a href={detail.open?.href ?? detail.taskHref} data-agent-open={detail.open?.label ?? "Task"}>{detail.open?.label ?? "Task"}<ArrowUpRight /></a></Button>
       </div>
       <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption text-muted-foreground phone:px-2.5">
         <StateChip row={detail} />
@@ -222,13 +251,12 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
     </header>
     <div data-agent-scroll className="flex min-w-0 flex-col gap-4 phone:min-h-0 phone:flex-1 phone:overflow-y-auto phone:overscroll-contain phone:px-4 phone:py-3">
       {detail.said && <Alert tone={detail.said.tone} data-agent-said>{detail.said.text}</Alert>}
+      {detail.task != null && <TaskHead task={detail.task} />}
       {detail.question !== null ? <div className="rounded-card border border-border bg-attention-soft px-3.5 py-3" data-agent-question={detail.question.key}>
         <p className="text-caption font-medium text-attention">The agent asks</p>
         <p className="mt-1 text-body-reading break-words text-foreground">{detail.question.text}</p>
       </div> : detail.line !== null && <p className={cn("text-body break-words", detail.group === "stuck" ? "text-warning" : "text-muted-foreground")} data-agent-line>{detail.line}</p>}
-      <ConversationPane url={detail.transcript} live={detail.live} />
-      <ChangesPane detail={detail} />
-      {detail.checkout != null && detail.canAct && <CheckoutActions checkout={detail.checkout} />}
+      <AgentTabs detail={detail} />
     </div>
     {/* One footer, pinned on a desk: what the agent takes and its controls, then the composer (never one over the other). */}
     <div className="flex flex-col desk:sticky desk:bottom-0 desk:bg-card phone:shrink-0" data-agent-footer>

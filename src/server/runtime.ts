@@ -9,7 +9,8 @@ import type { TaskRooms } from '../task-live.js';
 /** Captured server state and shared guards. Getters preserve live state across requests. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { type AssignmentSnapshot } from '../assignment.js';
-import { type BrowserPhoneCard,type BrowserUpdates } from '../browser-workspace.js';
+import { type BrowserPhoneCard,type BrowserResultView,type BrowserTaskTab,type BrowserUpdates } from '../browser-workspace.js';
+import type { Html } from '../html.js';
 import { CodingWorkspace } from '../coding-workspace.js';
 import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import type { DemoLead } from "../demo.js";
@@ -87,7 +88,7 @@ export interface ServerRuntime {
   taskRooms: TaskRooms;
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
   liveCeiling: () => { repos: string[]; roots: readonly string[]; };
-  taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean) => void;
+  taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean, page?: TaskPageExtras) => void;
   runVisible: (run: Run) => boolean;
   runIsLive: (run: Pick<Run, "outcome" | "leaseId" | "taskRef">) => boolean;
   options: ServeOptions;
@@ -195,3 +196,9 @@ export interface ServerRuntime {
   revisionLedgerOf: (taskRef: number) => PlanRevisionLedgerView;
   firstTasks: Map<string, { until: number; found: FirstTaskSuggestion[] | null; reading: boolean; }>;
 }
+
+/** What the task page's GET adds (docs/plans/one-page-task-and-agent.md): the tab its address names, and the Result tab's
+ * selected result (its no-script HTML and its view), whether it is the task's current one. Refusals re-render without. */
+export type TaskPageExtras = { tab?: BrowserTaskTab; result?: { html: Html; selected: NonNullable<BrowserResultView["selected"]>; current: boolean } | null;
+  /** The result runs the attempt picker may offer (the Result tab would show each); absent: every finished result run. */
+  admissible?: ReadonlySet<number> };

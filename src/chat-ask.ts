@@ -14,6 +14,19 @@ import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-deli
 import { chatHash, partContent, savedChatPart } from "./chat-delivery-state.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type Store } from "./store.js";
 
+/** Whether a task (the execution shown, never only its family's root) moved past a lead's question asked at `since`:
+ * its plan was rewritten or approved, or a new attempt of it started. The options answered a state that is gone. A run
+ * that merely finishes, or a review beside it, answers nothing, so it never takes the question's buttons. */
+export function taskMovedSince(store: Store, taskId: string, since: string): boolean {
+  const at = new Date(since).getTime();
+  if (Number.isNaN(at)) return false;
+  const after = (iso: string | null | undefined): boolean => iso != null && new Date(iso).getTime() > at;
+  const scope = store.getScope(taskId);
+  if (scope !== null && (after(scope.proposedAt) || after(scope.approvedAt))) return true;
+  const ref = store.lookupRef(taskId);
+  return ref !== null && store.runsFor(ref.id).some(run => run.role !== "reviewer" && after(run.startedAt));
+}
+
 /** The question as text with its options, where no buttons are drawn. */
 export function chatAskText(ask: Pick<LeadAsk, "question" | "options">): string {
   return [ask.question, ...ask.options.map(one => `• ${one}`), `• ${LEAD_ASK_OTHER}: say it in your own words`].join("\n");

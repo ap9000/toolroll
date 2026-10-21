@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
+import { BANNED_WORDS, CODE_NEED, NEEDS, WAITS, hasInternalWords, needSentence, processNeedOf, type NeedKey, type WaitKey } from "./needs-you.js";
 import { stageOfCode, taskStatusOf } from "./task-status.js";
 import { assignmentActionHref } from "./assignment-ui.js";
 import { browserWorkActionHref } from "./browser-crew.js";
@@ -28,6 +28,9 @@ import { htmlString } from "./html.js";
 import type { WorkAction } from "./work-summary.js";
 import type { WorkIndexItem } from "./work-index.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
+import { taskMovedSince } from "./chat-ask.js";
+import { leadBrowserMessages } from "./server/render-chat.js";
+import { approvalIdentity } from "./browser/views/task-view.js";
 
 const NEED_KEYS = Object.keys(NEEDS) as NeedKey[];
 const WAIT_KEYS = Object.keys(WAITS) as WaitKey[];
@@ -306,6 +309,113 @@ describe("Confirm it stopped, end to end", () => {
     expect(assignmentPresentationOf(assignment("exited-quietly")).taskStatus.headline).toBe("Ready for review");
   });
 
+  /** Built and not accepted (its check failed), then its plan rewritten and not approved yet: the yes comes first and
+   * builds again, never the old result. Cancelled after its test, so it never crowds the shared lists below. */
+  const replanned = (id: string): number => {
+    const run = built(id, "Release check");
+    ended(run);
+    store.raw().prepare("DELETE FROM proof_verdict WHERE run = ?").run(run);
+    propose(store, { taskId: id, goal: "Release check on the newer commit", touches: ["src/"], acceptance: [{ id: "c1", statement: "The check passes", how: null, evidence: ["check"] }], now: NOW });
+    return run;
+  };
+
+  test("a plan rewritten after its build leads with Approve plan, shown open, and the one yes builds again", async () => {
+    const id = "replanned", run = replanned(id);
+    const read = assignment(id);
+    expect(read.need).toEqual({ key: "replan", build: run });
+    expect(read.primaryAction).toMatchObject({ code: "approve-scope", label: "Approve plan" });
+    expect(assignmentPresentationOf(read).taskStatus).toMatchObject({ headline: "Needs you",
+      sentence: `The plan changed after build #${run}. Approve the new plan, then build it again.` });
+    // The Tasks list says the same, under Decide with the Plan changed chip.
+    const row = listed().items.find(one => one.rootId === id)!;
+    expect(row.status.detail).toBe("The plan changed after this was built. Approve the new plan, then build it again.");
+    // On the page: the approval is open under the status (never folded as "Updated approval terms"), its yes names the rebuild.
+    const html = await page(`/t/${id}`);
+    const task = workspaceOf(html).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
+    expect(task.approval).toContain('aria-label="Approve the plan"');
+    expect(task.approval).not.toContain("Updated approval terms");
+    expect(task.approval).toContain("Approve & build again");
+    expect(task.approval).toContain(`name="rebuild" value="${run}"`);
+    expect(task.status?.action).toBeNull();
+    // The page keys this region by what it is, read from the server's own markup.
+    expect(approvalIdentity(task.approval)).toBe(`open:${store.getScope(id)!.digest}`);
+    const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(task.approval)?.[1] ?? "";
+    const yes = await post(`/t/${id}/approve`, { csrf: csrfOf(html), nonce: field("nonce"), digest: field("digest"), token: password, rebuild: String(run) });
+    expect(yes.status).toBe(303);
+    expect(store.getTask(id)?.state).toBe("queued");
+    expect(assignment(id).need ?? null).not.toMatchObject({ key: "replan" });
+    store.setTaskState(id, "cancelled", NOW);
+  });
+
+  test("replan never outranks an open question, and the store requeues only the exact build under the approved plan", () => {
+    const asked = "replanned-asked", run = replanned(asked);
+    store.raw().prepare("INSERT INTO decision (run, urgency, state, recap, question, options, recommendation, created_at) VALUES (?, 'blocking', 'open', ?, ?, '[]', 'one', ?)")
+      .run(run, "Two commits fit.", "Which commit?", NOW.toISOString());
+    expect(assignment(asked).need ?? null).not.toMatchObject({ key: "replan" });
+    store.setTaskState(asked, "cancelled", NOW);
+    // A scout's report is never built again: no Approve & build again for it.
+    const scout = "replanned-scout", report = replanned(scout);
+    store.raw().prepare("UPDATE run SET role = 'scout' WHERE id = ?").run(report);
+    expect(assignment(scout).need ?? null).not.toMatchObject({ key: "replan" });
+    store.setTaskState(scout, "cancelled", NOW);
+
+    const id = "replanned-exact", built = replanned(id);
+    const scope = store.getScope(id)!;
+    // Not approved yet: the expectation refuses ("moved"), and so does a different build or a different plan.
+    expect(store.requeueTask(id, "sam", NOW, { run: built, scopeDigest: scope.digest })).toMatchObject({ ok: false, reason: "moved" });
+    expect(approve(store, id, "sam", NOW, scope.digest, password).ok).toBe(true);
+    expect(store.requeueTask(id, "sam", NOW, { run: built + 1000, scopeDigest: scope.digest })).toMatchObject({ ok: false, reason: "moved" });
+    expect(store.requeueTask(id, "sam", NOW, { run: built, scopeDigest: "f".repeat(32) })).toMatchObject({ ok: false, reason: "moved" });
+    expect(store.getTask(id)?.state).toBe("done");
+    expect(store.requeueTask(id, "sam", NOW, { run: built, scopeDigest: scope.digest })).toMatchObject({ ok: true, rejectedRun: built });
+    store.setTaskState(id, "cancelled", NOW);
+  });
+
+  test("Approve & build again approves but never rebuilds a build the page didn't offer", async () => {
+    const id = "replanned-moved", run = replanned(id);
+    const html = await page(`/t/${id}`);
+    const task = workspaceOf(html).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
+    const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(task.approval)?.[1] ?? "";
+    // A forged or stale build number: the yes stands, the task is not requeued.
+    const yes = await post(`/t/${id}/approve`, { csrf: csrfOf(html), nonce: field("nonce"), digest: field("digest"), token: password, rebuild: String(run + 1000) });
+    expect(yes.status).toBe(200);
+    expect(await yes.text()).toContain("so it wasn&#39;t built again");
+    expect(store.getTask(id)?.state).toBe("done");
+    expect(assignment(id).need).toMatchObject({ key: "rebuild", build: run });
+    store.setTaskState(id, "cancelled", NOW);
+  });
+
+  test("a lead's question about a task goes out of date once the task moves: its words stay, its buttons go", () => {
+    const id = "asked-about";
+    const run = built(id, "Pick the release");
+    const minutes = (n: number) => new Date(NOW.getTime() + n * 60_000).toISOString();
+    // Asked after everything the task did: still current.
+    expect(taskMovedSince(store, id, minutes(1))).toBe(false);
+    // Asked before its attempt started (or its plan was written): the task moved past it.
+    expect(taskMovedSince(store, id, minutes(-1))).toBe(true);
+    // A run that merely finishes after the question answers nothing.
+    store.raw().prepare("UPDATE run SET finished_at = ? WHERE id = ?").run(minutes(3), run);
+    expect(taskMovedSince(store, id, minutes(1))).toBe(false);
+    // The plan rewritten after the question: out of date.
+    propose(store, { taskId: id, goal: "Pick the newer release", touches: ["src/"], acceptance: [{ id: "c1", statement: "Picked", how: null, evidence: ["changed-path"] }], now: new Date(minutes(2)) });
+    expect(taskMovedSince(store, id, minutes(1))).toBe(true);
+    expect(taskMovedSince(store, "no-such-task", minutes(1))).toBe(false);
+    expect(taskMovedSince(store, id, "not a time")).toBe(false);
+    store.setTaskState(id, "cancelled", NOW);
+    expect(run).toBeGreaterThan(0);
+
+    const ask = { turn: 7, thread: 1, question: "What should happen with this release check?", options: ["Run the checks again", "Fix the CI failure first"], createdAt: minutes(0) };
+    const messages = [{ id: 1, thread: 1, turn: 7, role: "assistant" as const, text: "The check failed.", activity: null, createdAt: minutes(0) }];
+    const rows = { messages, proposals: [], decisions: new Map(), pending: null, asks: new Map([[7, ask]]) };
+    // (An open question's buttons are posting forms, drawn only inside a console request.)
+    const stale = leadBrowserMessages({ ...rows, ask: null, staleAsk: 7 }, null, { task: id, project: null })[0]!.html;
+    expect(stale).toContain("What should happen with this release check?");
+    expect(stale).toContain("data-ask-stale");
+    expect(stale).toContain("Out of date: the task changed after this was asked.");
+    expect(stale).not.toContain("Run the checks again");
+    expect(stale).not.toContain("<button");
+  });
+
   test("on the result itself, the action is never a link back to the same page", async () => {
     // Built to an earlier plan: accepting would leave it stuck. Both pages lead with Build again, in place.
     const stale = assignment("unverified");
@@ -395,4 +505,10 @@ describe("Confirm it stopped, end to end", () => {
       expect(ledger, id).toMatchObject({ actor: "sam" });
     }
   });
+});
+
+test("a blocker's reason that already says what to do is said once (never \"Fix or remove it…\" twice)", () => {
+  const once = "design-tokens was cancelled before it finished. Fix or remove it so this one can start.";
+  expect(needSentence("fix-dependency", once)).toBe(once);
+  expect(needSentence("fix-dependency", "design-tokens was cancelled before it finished")).toBe(once);
 });

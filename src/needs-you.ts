@@ -10,7 +10,7 @@
 export type NeedKey =
   | "approval" | "card" | "answer" | "questions" | "sign-in" | "confirm-stopped" | "check-stopped" | "hold"
   | "choose-project" | "define-task" | "fix-request" | "choose-agent" | "fix-dependency" | "add-requirement"
-  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "earlier-version" | "other";
+  | "connect-builder" | "start-builder" | "vanished" | "review-result" | "rebuild" | "replan" | "earlier-version" | "other";
 /** What the work waits for when no person can act. */
 export type WaitKey = "build-stopping" | "build-finishing" | "other-computer" | "card-reply" | "card-time" | "card-ci";
 
@@ -49,7 +49,11 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
     useReason: reason => /the planner can carry at most/.test(reason) },
   "choose-agent": { sentence: () => "Choose an agent to build this.", action: { code: "select-agent", label: "Choose an agent" } },
   "fix-dependency": { sentence: () => "A task this one waits on didn't finish. Fix or remove it so this one can start.", action: { code: "repair-dependency", label: "Fix the required task" },
-    useReason: reason => /didn't finish|did not finish|before it finished/i.test(reason), withReason: reason => `${reason.replace(/[.\s]*$/, ".")} Fix or remove it so this one can start.` },
+    useReason: reason => /didn't finish|did not finish|before it finished/i.test(reason), withReason: reason => {
+      // A reason that already says what to do is said once.
+      const said = reason.replace(/[.\s]*$/, ".");
+      return /Fix or remove it so this one can start\.$/.test(said) ? said : `${said} Fix or remove it so this one can start.`;
+    } },
   "add-requirement": { sentence: () => "This project is missing something the task needs. Add it so a builder can start.", action: { code: "repair-capability", label: "Add the requirement" } },
   "connect-builder": { sentence: () => "No builder works on this project yet. Connect one so the task can start.", action: { code: "start-worker", label: "Connect a builder" } },
   "start-builder": { sentence: () => "The builder for this project is offline. Start it and the task begins on its own.", action: { code: "start-worker", label: "Start the builder" } },
@@ -57,6 +61,8 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   "review-result": { sentence: () => "Check the result, then accept it or ask for changes.", action: { code: "open-result", label: "Open result" } },
   // Accepting it would not help: it was built to terms that are no longer the plan.
   rebuild: { sentence: context => `${Build(context)} was made to an earlier plan. Build it again to the current plan.`, action: { code: "retry-task", label: "Build again" } },
+  // The plan was rewritten after the build and not yet approved: the yes comes first, then Build again.
+  replan: { sentence: context => `The plan changed after ${build(context)}. Approve the new plan, then build it again.`, action: { code: "approve-scope", label: "Approve plan" } },
   "earlier-version": { sentence: () => "An earlier version of this task still needs you. Finish it first.", action: { code: "inspect-task", label: "Open earlier version" } },
   other: { sentence: () => "Open the task to see what it needs from you.", action: { code: "inspect-task", label: "Open the task" }, useReason: always },
 };
@@ -73,7 +79,7 @@ export type AskChip = "Plan" | "Result" | "Mismatch" | "Plan changed" | "Failed"
 /** `mismatch`: the saved report doesn't match its changes; `planChanged`: the plan changed after it was built. */
 export function askChipOf(read: { headline: string; need?: NeedKey | null; mismatch?: boolean; planChanged?: boolean; ask?: Ask | null }): AskChip | null {
   if (read.headline === "Failed") return "Failed";
-  if (read.planChanged === true || read.need === "rebuild") return "Plan changed";
+  if (read.planChanged === true || read.need === "rebuild" || read.need === "replan") return "Plan changed";
   if (read.mismatch === true) return "Mismatch";
   if (read.headline === "Ready for review" || read.need === "review-result" || read.ask === "review") return "Result";
   if (read.need === "approval") return "Plan";
@@ -88,7 +94,8 @@ export type ResultHoldUp = { hold: string | null; planChanged: boolean; unapprov
 export function resultHoldUpSentence(facts: Partial<ResultHoldUp>): string {
   if (facts.hold != null && facts.hold.trim() !== "" && !hasInternalWords(facts.hold)) return `On hold: ${facts.hold.trim().replace(/[.\s]*$/, "")}. Release the hold to accept it.`;
   if (facts.hold != null) return "A hold is on this result. Release it to accept the result.";
-  if (facts.planChanged) return "The plan changed after this was built. Build it again to the current plan.";
+  if (facts.planChanged) return facts.unapproved ? "The plan changed after this was built. Approve the new plan, then build it again."
+    : "The plan changed after this was built. Build it again to the current plan.";
   if (facts.unapproved) return "The current plan isn't approved. Approve it, then review the result.";
   if (facts.question) return "A question is still open. Answer it, then review the result.";
   if (facts.running) return "A build is still running on this task.";
@@ -100,7 +107,7 @@ export function resultHoldUpSentence(facts: Partial<ResultHoldUp>): string {
 export const NEED_ASK: Readonly<Record<NeedKey, Ask>> = {
   approval: "decide", card: "decide", answer: "decide", questions: "decide", "choose-project": "decide", "define-task": "decide",
   "fix-request": "decide", "choose-agent": "decide",
-  "review-result": "review", rebuild: "review",
+  "review-result": "review", rebuild: "review", replan: "decide",
   "sign-in": "unblock", "confirm-stopped": "unblock", "check-stopped": "unblock", hold: "unblock", "fix-dependency": "unblock",
   "add-requirement": "unblock", "connect-builder": "unblock", "start-builder": "unblock", vanished: "unblock", "earlier-version": "unblock", other: "unblock",
 };

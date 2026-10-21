@@ -305,7 +305,27 @@ export type BrowserTaskView = {
   details?: BrowserTaskDetailGroup[];
   /** Where to message the agent when this page carries no conversation (null: messaging isn't available here). */
   chatHref?: string | null;
+  /** One page per task (docs/plans/one-page-task-and-agent.md): the tab the address names (Activity when none). */
+  tab?: BrowserTaskTab;
+  /** The Result tab: the selected attempt's result exactly as its result page shows it, whether it is the task's
+   * current one (the header then owns its status and ceremonies), and every result attempt to pick from. Null: none yet. */
+  result?: { selected: NonNullable<BrowserResultView["selected"]>; current: boolean; attempts: { label: string; href: string; current: boolean }[];
+    /** What the result shows, as one stamp (every check, note and control in it; never a form's fresh request token): the
+     * page holds the result it loaded and says when a newer one is ready, so its evidence and decision always agree. */
+    revision: string } | null;
+  /** Where the approval sits: under the header when it is the thing to do now, else at the top of the Plan tab. */
+  approvalPlacement?: "lead" | "plan";
+  /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */
+  more?: BrowserTaskMore[];
 };
+export type BrowserTaskTab = "activity" | "result" | "plan";
+/** One ⋯ item: a plain link, a copy of this page's address, a one-click POST (never a ceremony), or a go-to that switches
+ * to the tab holding the item's own form, opens it and focuses it (`target`: that element's id). */
+export type BrowserTaskMore = { group: "work" | "share" | "danger"; label: string } & (
+  | { kind: "link"; href: string }
+  | { kind: "copy" }
+  | { kind: "post"; action: string; fields: Record<string, string> }
+  | { kind: "goto"; tab: BrowserTaskTab; target: string });
 /** One project on the Projects page; opening it is a POST to /projects/open. */
 export type BrowserProjectRow = {
   name: string; path: string; shortPath: string; open: boolean;
@@ -397,7 +417,7 @@ export type BrowserResultView = {
     next: { kind: string; title: string; detail: string; control: string } | null;
     /** Accept and finish: the exact receipt read; `accept` when the one request also records the person's acceptance
      * (`note`: the words over the reason field it asks for, or null for none). */
-    complete: { action: string; receipt: string; run: number; accept?: { note: string | null } | null } | null;
+    complete: { action: string; receipt: string; run: number; accept?: { note: string | null } | null; returnTo?: string } | null;
     /** Words for the result's Accept: Accept and finish when offered, else the Needs you acceptance. */
     decision: BrowserResultDecision | null;
     checks: { detail: string; problem: boolean; logHref: string | null } | null;
@@ -619,6 +639,12 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   canAct: boolean;
   /** The task, and once finished the run's own page (its result page when it built one). */
   taskHref: string; resultHref: string | null;
+  /** The task this agent works on, as its page heads it: the status words, and its one action as a way to the task page's
+   * tab that holds it (never a form here: the task page's own form is the one that acts). Null when it can't be read. */
+  task?: { headline: string; sentence: string; tone: string; action: { label: string; href: string } } | null;
+  /** Where this run opens on its task's page: a result → its Result tab at this run, a plan → the Plan tab, anything
+   * else (a review, an attempt that isn't a result) → its own record. Null while it runs. */
+  open?: { label: string; href: string } | null;
   /** The exact-run live room: updates, and a watch that keeps this person's pings quiet. */
   room: string;
   said: { tone: 'info' | 'error'; text: string } | null;
