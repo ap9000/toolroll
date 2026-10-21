@@ -1,58 +1,74 @@
 # Run efficiency view — plan
 
-Status: v1 draft (2026-10-20), for Codex review. Third in Alex's order (after the lead queue and deferred tools).
+Status: **v2** (2026-10-21). v1 NO-GO (2 High, 3 Medium): it promised measurements the stored data doesn't hold, treated a
+display-only, short-lived transcript as a source of truth, and wrote flags that could claim more than the evidence.
+v2 shows only what is recorded, says what isn't, and starts recording the rest from now on. One Codex implementation
+review at the end of the build (Alex 2026-10-21: no per-round plan loops).
 
 ## What and why
 
-Laminar's lesson (Ramp, 2026-10-20): great agents come from reading the traces — "excess tool calls, wasted turns,
-bloated context, and unexpected errors" — so they built an agent-first session view: per-turn latency, cache hit
-ratio, and how much of each request each part takes.
+Laminar's lesson (Ramp, 2026-10-20): read the traces — excess tool calls, wasted turns, bloated context, errors. A
+person reviewing a Toolroll result can't see how the run went: the result's Details show tokens and cost, nothing about
+where the time went, how much came from cache, or what the agent kept doing.
 
-Toolroll records most of the raw facts but shows almost none of them. The task's Details says *Usage: not reported*
-for most runs. Claude's stream-json already reports per-message usage, which `cumulativeLiveResult` (src/exec.ts)
-sums (input, output, cache creation, cache read tokens, `num_turns`) and the store keeps as
-`run.agent_reported_usage_json` (never priced). Transcripts exist for live runs. Nothing turns these into an answer
-to "was this run efficient, and where did the time go?"
+## What is recorded today (the source matrix)
+
+| Fact | Where | Claude | Codex | ACP (OpenCode…) | Retained |
+|---|---|---|---|---|---|
+| Wall times: started, provider started, finished | `run` | yes | yes | yes | with the run |
+| Tokens in / out, cost | `run.tokens_*`, `cost_usd` | yes | yes (no cost) | agent's own report, unpriced | with the run |
+| Cache read / write tokens | `run.usage_json` (provider's raw usage) | `cache_read_input_tokens`, `cache_creation_input_tokens` | `cached_input_tokens` (read only) | — | with the run |
+| Agent turns | provider envelope `num_turns` | parsed, **not stored** | — | — | — |
+| Tool steps with observed times | live records `<evidence>/live/<run>.jsonl` (normalized, display-only, no digest) | yes | start+end often synthetic | may arrive late | 24 h, 4 MiB, 500 files |
+| Command text | live records, only when the project opted into command detail | opt-in | opt-in | opt-in | as above |
+| Check start / end | — (the receipt has none) | — | — | — | — |
+
+Anything not recorded renders as **—**, never 0. Old runs show what their `run` row holds; nothing is backfilled from
+expired live files.
 
 ## Behaviour
 
-On the result page (and the Result tab once the one-page task lands), a **How it ran** section, open by default when
-something looks wasteful, otherwise one line:
+On the result (its page and the task's Result tab), one row in the result's record: **How it ran**.
 
-> 14 min · 38 agent turns · 212 tool calls · 1.9M tokens in (81% from cache) · 41k out
+> 14 min · 38 turns · 1.9M tokens in, 81% from cache · 41k out · 212 steps
 
-Expanded, three small blocks — no charts library, plain rows and one bar per turn:
+Open, three short blocks, each saying where its numbers come from:
 
-1. **Where the time went**: phases (setup, agent, checks, review) with durations; the slowest 5 tool calls.
-2. **Turns**: one thin bar per agent turn, width = duration, shade = cache share; a turn that only read files,
-   or repeated the same command, is marked. Click a bar → that point in the transcript.
-3. **Waste flags** (plain words, each with its evidence): *the same command ran 7 times* · *12 reads of the same file*
-   · *context grew past 150k tokens at turn 30* · *3 tool calls failed and were retried identically* · *the check ran
-   4 times*.
+1. **Time** — waiting to start (started → provider started), the agent (provider started → finished). No check or
+   review phase is invented: checks have no recorded times, so they are not split out.
+2. **Steps** — counts by kind (Read, Edit, Bash, Search, other), how many failed, and the five longest steps with an
+   **observed** interval (a step whose start or end the recorder synthesised says "duration unknown"). While the
+   live records are kept (24 h) the block says so; after that it says the step detail has expired.
+3. **Repeated activity** — neutral words: "the same Bash step 7 times", only when the recorded inputs are complete
+   and comparable (command detail on, not shortened); otherwise "repeats can't be told apart (command detail is off)".
+   Never "wasted", never a claim about intent.
 
-For lead turns: the same one-liner on each lead reply's "details" (tokens in/out, cached, tool calls, rounds), which
-also shows the deferred-tools saving from plan 3.
+Lead replies: their details line gains cache: "12k in · 74% cached · 900 out · 3 steps".
 
 ## Design
 
-- **Collect** (no new provider calls): parse what is already saved — the run's transcript/stream file (Claude
-  stream-json: per-message `usage`, tool_use/tool_result pairs with timestamps), the run's phase timestamps
-  (claimed, provider_started, finished, check start/end), check receipts. Codex/OpenCode/ACP runs: whatever their
-  transcript format carries; missing fields render as a dash, never zero.
-- **Store** a derived `run_efficiency` row per finished run (additive migration): totals + top tool calls + flags as
-  JSON, computed once at disposition (and lazily for older runs on first view, bounded). Derived data only; the
-  transcript stays the source of truth.
-- **Flags** are deterministic rules over the parsed events (repeat command ≥ 3, same-file reads ≥ 5, failed-retry
-  identical, context ≥ 75% of the model window, check runs ≥ 3), each carrying the event indexes it points at.
-- **Render** in render-results (server) and the React result view; the turn bar list is HTML with inline widths.
-- **Lead turns**: `lead_turn_evidence` gains tokens/cache/tool-call counts recorded by `runLeadTurn` (direct API
-  usage blocks; subscription runner usage where `claude -p` reports it).
+- **Record from now on (no new provider calls).** Store the envelope's turn count (`run.agent_turns`, when reported).
+  Lead requests store cache read/write tokens (`chat_turn.cache_read_tokens`, `cache_write_tokens`; already measured
+  by `settleWithCache`, never stored). Additive v129 columns, saved values NULL (unknown), never 0.
+- **Derive at view, bounded and cached.** A `run_efficiency` row per finished run, written the first time its result is
+  viewed (and refreshed only while its live records are still kept): parser version, sources used and their
+  completeness (`usage`: reported/absent; `steps`: complete/truncated/expired/absent + reason), counts by kind, failed
+  count, up to five longest observed steps (kind, observed ms — **no command text stored**), repeat groups (kind,
+  count; only from complete comparable inputs). Budgets: read ≤ 4 MiB through the existing descriptor-safe live
+  reader (never a transcript-supplied path), ≤ 20 000 records, ≤ 200 repeat groups, stored row ≤ 16 KiB; over a
+  budget → completeness "truncated" with the bound named.
+- **Display only.** The derived row never changes completion, approval, billing or a check verdict. It is shown under
+  the same access as the result.
+- **Cache share** = cache read ÷ (input + cache read + cache write) for Claude (its input excludes cached); cache read ÷
+  input for Codex (its input includes cached); "—" when a part is unreported.
 
 ## Tests
 
-Parser fixtures from real (scrubbed) stream-json transcripts; each flag on a crafted transcript; missing usage →
-dashes; migration additive; result page renders the one-liner and opens on a flag.
+Usage parsing per provider (Claude, Codex, absent, malformed); a live-records fixture per provider (synthetic start/end,
+late step, unfinished step); budgets (oversize file, too many records → truncated, named); repeat grouping only with
+complete inputs; expired live file → no step detail, said; migration additive (v128 → v129, NULLs); render: one-liner,
+dashes for unknown; lead reply details line with cache share. Journey: the result's How it ran row.
 
 ## Out of scope
 
-Pricing (usage is never priced here); cross-run dashboards; editing anything from this view.
+Pricing changes; cross-run dashboards; check timings (needs check-side recording, its own change); acting on flags.
