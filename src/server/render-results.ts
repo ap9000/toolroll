@@ -15,6 +15,7 @@ import { qualityModeTitle } from "../quality.js";
 import { acceptWithChecksOf,type ResultActFacts,resultActsOf } from "../result-acts.js";
 import { SCREENSHOT_CAPTURE,structuredHandoffView,type StructuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
 import { ADD_TESTS_ACTION,type FollowUpCheck,followUpChecksOf } from "../result-follow-ups.js";
+import type { RunEfficiency } from "../run-efficiency.js";
 import { evidenceHealthOf,evidenceProblemDetailsOf,evidenceResultStatusOf,isRevisionFeedback,RESULT_REVIEW_SCRIPT,RESULT_TABS,resultFactsAttributeMap,resultLeadOf,type ResultScreenshot,type ResultTab,revisionBatchOf,revisionSourceOf,type SharedResultFacts } from "../result-review.js";
 import { type BuildReviewView,findingWords } from "../review-switch.js";
 import { type AcceptanceCriterion,type approvalOf } from "../scope.js";
@@ -442,6 +443,8 @@ export type RankedReviewRow = CompletedWorkRow & { ciFailing: boolean; priority:
  * scope, plan, run, artifact, verdict, and publication records,
  * each read through the verifier the run page already uses. */
 export type ReviewCockpitView = {
+  /** How the result's run went (docs/plans/run-efficiency.md): display only, its sources and their gaps said. */
+  efficiency?: RunEfficiency | null;
   taskId: string;
   title: string;
   repo: string | null;
@@ -772,6 +775,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     problem: view.detail === null ? view.historyProblem : null,
     next: reviewNextActionOf(view, csrf, host.kind === "task" && run !== null ? `${host.base}&run=${run.id}` : undefined), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null,
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
+    efficiency: view.efficiency ?? null,
     acts: { primary: null, secondary: null, line: null }, runChecks: null, mismatch: null,
     // The raw run record lives under Details now (2026-10-02): /r/<id> for this result redirects here.
     record: run === null ? null : { build: run.id, href: `/r/${run.id}?record=1`, facts: [

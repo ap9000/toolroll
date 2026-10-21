@@ -36,9 +36,9 @@ test.each([125, -125])("v%s: signed-webhook receipts and task sources are added;
 
   expect(updateSafeSchema(125)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(126);
-  expect(SCHEMA_VERSION).toBe(128);
+  expect(SCHEMA_VERSION).toBe(129);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(128);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(129);
   for (const [table, columns] of Object.entries(V126_ADDED_COLUMNS)) expect(columnsOf(store, table)).toEqual(expect.arrayContaining(Object.keys(columns)));
   expect(store.handle.prepare("SELECT count(*) AS n FROM task_source").get()?.["n"]).toBe(0);
   expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'flow_trigger_event_accepted'").get()).toBeDefined();

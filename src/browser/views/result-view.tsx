@@ -373,6 +373,62 @@ function Panel({ panel, children }: { panel: BrowserResultPanel; children?: Reac
   </div>;
 }
 
+type Efficiency = NonNullable<Selected["efficiency"]>;
+const KIND_WORD: Record<string, string> = { edit: "edits", command: "commands", read: "reads", search: "searches", lookup: "web lookups", plan: "plans", delegate: "delegations", tool: "other tools" };
+/** "38 s", "14 min", "1 h 12 min". */
+export function durationWords(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 === 0 ? "" : ` ${minutes % 60} min`}`;
+}
+/** "41k", "1.9M": token counts a person can read at a glance. */
+export function tokenWords(count: number): string {
+  return count >= 1_000_000 ? `${(count / 1_000_000).toFixed(count >= 10_000_000 ? 0 : 1)}M` : count >= 1_000 ? `${Math.round(count / 1_000)}k` : String(count);
+}
+const DASH = "—";
+/** The one line: time, turns, tokens in (and from cache), out, steps. Unknown reads as a dash, never zero. */
+export function efficiencyLine(one: Efficiency): string {
+  const time = one.time.agentMs === null ? DASH : durationWords(one.time.agentMs);
+  const tokensIn = one.usage.in === null ? `${DASH} tokens in` : `${tokenWords(one.usage.in)} tokens in${one.usage.cacheShare === null ? "" : `, ${Math.round(one.usage.cacheShare * 100)}% from cache`}`;
+  return [time, one.turns === null ? null : `${one.turns} turn${one.turns === 1 ? "" : "s"}`, tokensIn,
+    `${one.usage.out === null ? DASH : tokenWords(one.usage.out)} out`, one.steps.total === null ? null : `${one.steps.total} step${one.steps.total === 1 ? "" : "s"}`]
+    .filter((part): part is string => part !== null).join(" · ");
+}
+
+/** How it ran (docs/plans/run-efficiency.md): where the time went, what the agent did, what it repeated — only what was
+ * recorded, each block saying when its source can't say more. */
+function EfficiencyBody({ one }: { one: Efficiency }) {
+  const kinds = Object.entries(one.steps.byKind).filter(([, count]) => (count ?? 0) > 0).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  return <div className="flex flex-col gap-3 text-body" data-run-efficiency={one.steps.state}>
+    <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Time</h3>
+      <p>Waiting to start {one.time.waitMs === null ? DASH : durationWords(one.time.waitMs)} · The agent {one.time.agentMs === null ? DASH : durationWords(one.time.agentMs)}</p>
+      <p className="text-caption text-muted-foreground">Checks aren't timed separately; they're inside the agent's time.</p>
+    </div>
+    <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Tokens</h3>
+      <p>{one.usage.in === null ? DASH : tokenWords(one.usage.in)} in{one.usage.cacheRead === null ? "" : ` · ${tokenWords(one.usage.cacheRead)} read from cache`}{one.usage.cacheWrite === null ? "" : ` · ${tokenWords(one.usage.cacheWrite)} written to it`} · {one.usage.out === null ? DASH : tokenWords(one.usage.out)} out</p>
+      <p className="text-caption text-muted-foreground">As {one.usage.provider}{one.usage.model === null ? "" : ` · ${one.usage.model}`} reported them{one.usage.cacheShare === null ? "; it didn't report its cache" : ""}.</p>
+    </div>
+    <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Steps</h3>
+      {one.steps.total === null ? <p className="text-muted-foreground" data-run-efficiency-steps={one.steps.state}>{one.steps.reason}</p> : <>
+        <p>{one.steps.total} step{one.steps.total === 1 ? "" : "s"}{kinds.length === 0 ? "" : `: ${kinds.map(([kind, count]) => `${count} ${KIND_WORD[kind] ?? kind}`).join(", ")}`}{(one.steps.failed ?? 0) > 0 ? ` · ${one.steps.failed} failed` : ""}</p>
+        {one.steps.longest.length > 0 && <p className="text-muted-foreground">Longest: {one.steps.longest.map(step => `${KIND_WORD[step.kind]?.replace(/s$/, "") ?? step.kind} ${durationWords(step.ms)}`).join(" · ")}{(one.steps.unknownDuration ?? 0) > 0 ? ` · ${one.steps.unknownDuration} without a measured time` : ""}</p>}
+        {one.steps.reason !== null && <p className="text-caption text-muted-foreground">{one.steps.reason}</p>}
+      </>}
+    </div>
+    {one.steps.total !== null && <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Repeated activity</h3>
+      {one.steps.repeats === null ? <p className="text-muted-foreground">{one.steps.repeatsReason}</p>
+        : one.steps.repeats.length === 0 ? <p className="text-muted-foreground">No step ran three times or more with the same input.</p>
+        : <ul className="flex flex-col gap-0.5" data-run-repeats={one.steps.repeats.length}>{one.steps.repeats.map((group, index) => <li key={index}>The same {KIND_WORD[group.kind]?.replace(/s$/, "") ?? group.kind} step {group.count} times</li>)}</ul>}
+      {one.steps.repeats !== null && one.steps.repeatsReason !== null && <p className="text-caption text-muted-foreground">{one.steps.repeatsReason}</p>}
+    </div>}
+  </div>;
+}
+
 /** Secondary detail, one tap away: the scope, the notes, the recorded reasons, what was shortened,
  * review history, and the raw run record (what /r/<id> used to open on its own). */
 function Details({ selected }: { selected: Selected }) {
@@ -392,6 +448,7 @@ function Details({ selected }: { selected: Selected }) {
       body: <ul className="flex flex-col gap-1 text-body text-muted-foreground">{panel.limits.map(one => <li key={one}>{one}</li>)}</ul> }]),
     ...(panel?.reviewHistory == null ? [] : [{ id: "review-history", title: "Review history", hint: null,
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
+    ...(selected.efficiency == null ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
       body: <div className="flex flex-col gap-3 text-body">
         <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">

@@ -418,6 +418,8 @@ export type BrowserResultView = {
     /** Accept and finish: the exact receipt read; `accept` when the one request also records the person's acceptance
      * (`note`: the words over the reason field it asks for, or null for none). */
     complete: { action: string; receipt: string; run: number; accept?: { note: string | null } | null; returnTo?: string } | null;
+    /** How its run went (docs/plans/run-efficiency.md): recorded numbers only, unknowns null. */
+    efficiency?: import("./run-efficiency.js").RunEfficiency | null;
     /** Words for the result's Accept: Accept and finish when offered, else the Needs you acceptance. */
     decision: BrowserResultDecision | null;
     checks: { detail: string; problem: boolean; logHref: string | null } | null;

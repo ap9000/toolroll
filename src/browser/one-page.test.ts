@@ -84,3 +84,16 @@ test("the current result on a task page drops only its duplicate status: what do
   act(() => root!.render(createElement(SelectedResult, { selected, csrf: "c", inTask: { current: false } })));
   expect(host.querySelector("[data-result-status]")).not.toBeNull();
 });
+
+test("How it ran: the result's record says time, turns, tokens and cache in one line, unknowns as a dash, and why steps are missing", () => {
+  const efficiency = { version: 1, time: { waitMs: 12_000, agentMs: 14 * 60_000 }, turns: 38,
+    usage: { in: 1_900_000, out: 41_000, cacheRead: 1_539_000, cacheWrite: null, cacheShare: 0.81, provider: "claude", model: "sonnet" },
+    steps: { state: "expired" as const, reason: "Step details are kept for a day after a run; this one's have expired.", total: null, failed: null, unknownDuration: null, byKind: {}, longest: [], repeats: null, repeatsReason: null } };
+  act(() => root!.render(createElement(SelectedResult, { selected: selectedOf(5, { efficiency }), csrf: "c" })));
+  const row = host.querySelector("#how-it-ran")!;
+  expect(row.querySelector("summary")?.textContent).toContain("14 min · 38 turns · 1.9M tokens in, 81% from cache · 41k out");
+  expect(row.querySelector("[data-run-efficiency-steps]")?.textContent).toContain("have expired");
+  const unknown = { ...efficiency, turns: null, usage: { ...efficiency.usage, in: null, out: null, cacheShare: null } };
+  act(() => root!.render(createElement(SelectedResult, { selected: selectedOf(6, { efficiency: unknown }), csrf: "c" })));
+  expect(host.querySelector("#how-it-ran summary")?.textContent).toContain("14 min · — tokens in · — out");
+});

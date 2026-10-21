@@ -576,6 +576,9 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
   const panel = page.locator("[data-task-panel=\"result\"] [data-result-panel]").first();
   await panel.waitFor({ timeout: 20_000 });
+  // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
+  const ran = await page.locator('[data-task-panel="result"] #how-it-ran summary').first().innerText();
+  if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
   // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
   // accepting does (plain Accept when every requirement is met; the planner may have left one for a person to check).
   const status = await page.locator('[data-task-status] [data-status-detail="checks"]').first().innerText();
