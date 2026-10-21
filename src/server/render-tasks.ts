@@ -9,7 +9,7 @@ import { type AssignmentCard,assignmentCardOf,assignmentStatusOf,assignmentSumma
 import { type AssignmentSnapshot } from "../assignment.js";
 import { holdOwnerWords } from "../board.js";
 import { baseStandingWords, type TaskBaseView } from "../task-base.js";
-import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
+import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskMore,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
@@ -2750,6 +2750,21 @@ export function taskBodyParts(data: {
     attempts: [...earlierStopped].sort((a, b) => a.id - b.id).map(run => ({ label: `${runNoun(run)[0]!.toUpperCase()}${runNoun(run).slice(1)} #${run.id}`, href: `/r/${run.id}`,
       text: run.outcome === null ? "Never finished." : run.outcome === "failed" ? failedAttemptSentence(run.reason) : run.reason === null ? null : (words => `${words.charAt(0).toUpperCase()}${words.slice(1)}.`)(reasonWords(run.reason)) })),
   };
+  // ⋯ More actions (docs/plans/one-page-task-and-agent.md): each secondary act once, in one place — Work, Share & reuse,
+  // then Danger last. A ceremony is never cloned here: its item goes to the tab that holds its one form.
+  const sectionIds = new Set(sectionParts.map(one => one.id));
+  const rootOf = data.rootId ?? task.id;
+  const more: BrowserTaskMore[] = [
+    ...(runChecks !== null && data.csrf !== "" ? [{ group: "work" as const, label: "Run checks", kind: "post" as const, action: runChecks.action, fields: { level: runChecks.level, return: runChecks.returnTo } }] : []),
+    ...(sectionIds.has("scope") && data.csrf !== "" ? [{ group: "work" as const, label: approval.approved || finished ? "Plan and agents" : "Edit plan", kind: "goto" as const, tab: "plan" as const, target: "scope" }] : []),
+    ...(sectionIds.has("waits-for") ? [{ group: "work" as const, label: "Dependencies", kind: "goto" as const, tab: "plan" as const, target: "waits-for" }] : []),
+    ...(sectionIds.has("holds") ? [{ group: "work" as const, label: "Holds", kind: "goto" as const, tab: "plan" as const, target: "holds" }] : []),
+    ...(data.csrf !== "" ? [{ group: "work" as const, label: "Task options", kind: "goto" as const, tab: "plan" as const, target: "task-diagnostics" }] : []),
+    { group: "share", label: "Copy link", kind: "copy" },
+    ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Evidence pack", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
+    ...(data.repo !== null && data.scope !== null ? [{ group: "share" as const, label: "Reuse as recipe", kind: "link" as const, href: `/recipes/from-task?task=${encodeURIComponent(task.id)}` }] : []),
+    ...(cancelForm !== "" ? [{ group: "danger" as const, label: "Cancel task", kind: "goto" as const, tab: "plan" as const, target: "cancel-task" }] : []),
+  ];
   const view: BrowserTaskView = {
     kind: "task",
     id: task.id,
@@ -2778,6 +2793,8 @@ export function taskBodyParts(data: {
     record,
     earlier,
     approval: fragmentString(approvalHtml),
+    approvalPlacement: approvalLeads ? "lead" : "plan",
+    more,
     confirmStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "confirm-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/confirm-stopped`, run: data.assignment.primaryAction.target.runId, checked: needsCheck(data.assignment) } : null,
     rebuild,

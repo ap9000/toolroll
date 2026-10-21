@@ -3,7 +3,7 @@ import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
-import { html,joinHtml,type Html } from "../html.js";
+import { html,htmlString,joinHtml,type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
 import { assignmentOf,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
@@ -53,6 +53,11 @@ import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import type { TaskPageExtras } from "./runtime.js";
+import type { BrowserTaskView } from "../browser-workspace.js";
+import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
+import { SENSITIVE_INPUT } from "./chrome.js";
+import { reviewEvidenceScript } from "./render-results.js";
 import { budgetHoldWords,budgetLabel,monthOf } from "../spend.js";
 import type { PlanRevision,TaskRef } from "../store.js";
 import {
@@ -749,6 +754,50 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     return { action: `/r/${runId}/checks`, level: followUps.full ? "full" : "quick", returnTo };
   }
 
+  /**
+   * One page per task (docs/plans/one-page-task-and-agent.md): the tab the address named, the Result tab's result with
+   * every result attempt to pick from, and every link that would open a result page of this family (its /review deep
+   * link, a build's /r/<n>) pointed at this page's Result tab instead — the person stays on the task.
+   */
+  function onePageView(view: BrowserTaskView, family: TaskFamily | null, runs: readonly (Run & { taskId: string })[], extras: TaskPageExtras): BrowserTaskView {
+    const root = family?.root.id ?? view.id;
+    const current = family?.current.id ?? view.id;
+    const versions = new Set(family?.versions.map(one => one.id) ?? [view.id]);
+    const results = new Map(runs.filter(runIsTaskResult).map(run => [run.id, run.taskId] as const));
+    const tabHref = (taskId: string, run: number | null, section: string | null, hash: string): string =>
+      `${taskHref(root)}?${taskId !== current ? `version=${encodeURIComponent(taskId)}&` : ""}tab=result${run === null ? "" : `&run=${run}`}${section === null || section === "summary" ? "" : `&section=${section}`}${hash}`;
+    const toTab = (href: string): string => {
+      const review = /^\/review\?result=([A-Za-z0-9._~%-]{1,200})(?:&run=([0-9]{1,15}))?(?:&tab=(summary|changes|checks))?(#[A-Za-z0-9_-]{1,120})?$/.exec(href);
+      if (review !== null) {
+        const taskId = decodeURIComponent(review[1]!);
+        if (versions.has(taskId)) return tabHref(taskId, review[2] === undefined ? null : Number(review[2]), review[3] ?? null, review[4] ?? "");
+      }
+      const record = /^\/r\/([0-9]{1,15})$/.exec(href);
+      if (record !== null && results.has(Number(record[1]))) return tabHref(results.get(Number(record[1]))!, Number(record[1]), null, "");
+      return href;
+    };
+    const link = <T extends { href: string | null }>(one: T | null): T | null => one === null ? null : { ...one, href: one.href === null ? null : toTab(one.href) };
+    const status = view.status === null ? null : { ...view.status, action: view.status.action === null ? null : link(view.status.action),
+      status: { ...view.status.status, details: view.status.status.details.map(one => ({ ...one, href: one.href === null ? null : toTab(one.href), action: one.action === null ? null : link(one.action) })) } };
+    const selected = extras.result?.selected ?? null;
+    const attempts = [...results.entries()].sort((a, b) => b[0] - a[0]).map(([id, taskId]) => {
+      const run = runs.find(one => one.id === id)!;
+      const outcome = run.outcome === "built" ? "result" : run.outcome === "no-change" ? "no change" : run.outcome === null ? "never finished" : run.outcome;
+      return { label: `${run.role === "scout" ? "Report" : "Build"} #${id} · ${outcome}`, href: tabHref(taskId, id, null, ""), current: selected?.build === id };
+    });
+    return {
+      ...view,
+      status,
+      ...(view.failure == null ? {} : { failure: { ...view.failure, link: link(view.failure.link) } }),
+      ...(view.earlier == null ? {} : { earlier: { ...view.earlier, attempts: view.earlier.attempts.map(one => ({ ...one, href: toTab(one.href) })) } }),
+      ...(view.thread === undefined ? {} : { thread: view.thread.map(one => ({ ...one, link: link(one.link) })) }),
+      // The previous result's fold moves to the Result tab when there is one.
+      sections: selected === null ? view.sections : view.sections.filter(one => one.id !== "result"),
+      tab: extras.tab ?? "activity",
+      result: selected === null ? null : { selected, current: extras.result!.current, attempts },
+    };
+  }
+
   function taskScreen(
     response: ServerResponse,
     who: Who,
@@ -758,6 +807,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     scopeDraft?: URLSearchParams,
     cancelDraft?: string,
     editPlan = false,
+    extras: TaskPageExtras = {},
   ): void {
     const admittedFamily = runtime.familyOf(taskId);
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
@@ -799,8 +849,15 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }),
       // A signed-in page hears the moment the task changes, and who else has it open.
       ...(who.via === "cookie" ? { live: { room: `task:${encodeURIComponent(family?.root.id ?? taskId)}`, at: (() => { try { return taskFingerprint(runtime.store, family?.root.id ?? taskId, runtime.clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
-    if (docked !== null) page.workspace = { ...page.workspace, ...(taskView === undefined ? {} : { view: taskView }), conversation: docked, pageHtml: page.body };
-    else if (taskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: taskView };
+    const oneTaskView = taskView?.kind === "task" ? onePageView(taskView, family, presentedData.family?.runs ?? data.runs.map(run => ({ ...run, taskId: data.task.id })), extras) : taskView;
+    // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
+    if (extras.result != null) {
+      page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
+      // A page carrying a password field ships no script of its own (the sensitive-page rule): the result's included.
+      if (!SENSITIVE_INPUT.test(htmlString(page.body))) page.functional = { script: `${page.functional?.script ?? ""}${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, fetches: page.functional?.fetches ?? false };
+    }
+    if (docked !== null) page.workspace = { ...page.workspace, ...(oneTaskView === undefined ? {} : { view: oneTaskView }), conversation: docked, pageHtml: page.body };
+    else if (oneTaskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: oneTaskView };
     page.refreshSeconds = runtime.liveRefreshSeconds();
     return runtime.sendScreen(response, status, page);
   }

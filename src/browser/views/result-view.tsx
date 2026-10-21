@@ -256,6 +256,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
           {complete !== null ? <>
             <input type="hidden" name="receipt" value={complete.receipt} />
             {complete.accept != null && <input type="hidden" name="accept" value="1" />}
+            {complete.returnTo !== undefined && <input type="hidden" name="return" value={complete.returnTo} />}
           </> : accept !== null && <input type="hidden" name="return" value={accept.returnTo} />}
           {reason !== null && <>
             <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
@@ -406,9 +407,14 @@ function openRecord(event: MouseEvent<HTMLAnchorElement>) {
   history.replaceState(history.state, "", "#run-record");
 }
 
+/** The acts a task page's own header already offers for its current result (one mounted form each, never two). */
+const HEADER_OWNED: ReadonlySet<ResultActKind> = new Set(["retry", "rebuild", "confirm-stopped"]);
+
 /** One result: the status, the evidence, the person's own checks, then the decision. The answers to
- * "You check this one" live here, so the Requirements row and the decision follow each one at once. */
-function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }) {
+ * "You check this one" live here, so the Requirements row and the decision follow each one at once. On a task page's
+ * Result tab (`inTask`) the task's header already says the current result's status and holds its Retry, Build again and
+ * Confirm it stopped: those aren't repeated here. */
+export function SelectedResult({ selected, csrf, inTask }: { selected: Selected; csrf: string; inTask?: { current: boolean } }) {
   const [answers, setAnswers] = useState<Answers>(new Map());
   const answer = (id: string, to: Answer | null) => setAnswers(previous => { const next = new Map(previous); if (to === null) next.delete(id); else next.set(id, to); return next; });
   const items = checkItemsOf(selected.panel);
@@ -416,12 +422,14 @@ function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }
   const notRight = items.filter(item => answers.get(item.id) === "not-right");
   const words = { unanswered: unanswered.map(wordsOf), notRight: notRight.map(wordsOf) };
   const decision = selected.decision === null ? null : { ...selected.decision, ...acceptWithChecksOf(selected.decision.base ?? selected.decision, words) };
-  const acts = selected.actFacts === undefined ? selected.acts
+  const chosen = selected.actFacts === undefined ? selected.acts
     : resultActsOf({ ...selected.actFacts, ...(selected.actFacts.accept === null ? {} : { accept: { ready: decision?.ready ?? false } }), unanswered: unanswered.length, notRight: notRight.length });
+  const owned = (kind: ResultActKind | null): ResultActKind | null => inTask?.current === true && kind !== null && HEADER_OWNED.has(kind) ? null : kind;
+  const acts = inTask?.current === true ? { ...chosen, primary: owned(chosen.primary), secondary: owned(chosen.secondary) } : chosen;
   const checks = selected.panel?.youCheck != null ? <CheckItems panel={selected.panel} chatHref={selected.chatHref} answers={answers} answer={answer} /> : null;
   const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} />;
   return <>
-    <StatusCard selected={selected} acts={acts} answers={answers} />
+    {inTask?.current !== true && <StatusCard selected={selected} acts={acts} answers={answers} />}
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the
         decision itself, so it can never rise over the status or the Summary facts above them. */}
     {selected.panel !== null ? <Panel panel={selected.panel}><div className="flex flex-col gap-4">{checks}{decide}</div></Panel> : <div className="flex flex-col gap-4">{checks}{decide}</div>}

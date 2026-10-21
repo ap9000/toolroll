@@ -137,10 +137,15 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
       if (id === "live") expect(view.pause).toMatchObject({ run: liveRun, state: null });
       // The page's own fallback is the server's task body; the rebuilt view holds every one of its forms.
       expect(data.pageHtml).not.toBeNull();
-      const serverForms = formsOf(data.pageHtml!);
+      // The Result tab's no-script part is the result page's own HTML (the same builder as /review), carried in the view
+      // as that page's data: the task's own forms are compared here, the result's on the review page's tests.
+      const [taskHtml, resultHtml = ""] = data.pageHtml!.split('<section class="task-result-tab"');
+      expect(resultHtml === "").toBe(view.result == null);
+      if (id === "finished") expect(view.result).toMatchObject({ current: true, selected: { taskId: "finished", build: doneRun } });
+      const serverForms = formsOf(taskHtml!);
       expect(serverForms.length).toBeGreaterThan(0);
       expect(formsOf(viewForms(view))).toEqual(serverForms);
-      expect(stepUps(viewForms(view))).toBe(stepUps(data.pageHtml!));
+      expect(stepUps(viewForms(view))).toBe(stepUps(taskHtml!));
       // The thread starts with the filing.
       expect(view.thread?.[0]?.kind).toBe("filed");
       // The conversation is the thread's: no Ask tab, and the composer posts to /chat for this task.
@@ -154,10 +159,26 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     expect(formsOf(question.html).length).toBeGreaterThan(0);
     // The result is a thread entry with the agent's handoff, and its receipt one tap away.
     const finished = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
-    expect(finished.thread!.find(one => one.kind === "result")).toMatchObject({ title: "Result ready", text: "Images now use responsive sizes.", link: { href: `/r/${doneRun}` } });
+    expect(finished.thread!.find(one => one.kind === "result")).toMatchObject({ title: "Result ready", text: "Images now use responsive sizes.", link: { href: `/t/finished?tab=result&run=${doneRun}` } });
     // A live build is a progress entry in the machine's words, never the model's.
     const live = (await workspace(cookie, "/t/live")).view as BrowserTaskView;
     expect(live.thread!.find(one => one.kind === "progress")).toMatchObject({ title: "Building", text: "Writing the change." });
+    // One page per task: Activity unless the address names a tab; the Result tab holds the result itself, its run exact.
+    expect(finished.tab).toBe("activity");
+    expect(finished.result).toMatchObject({ current: true, selected: { build: doneRun }, attempts: [{ href: `/t/finished?tab=result&run=${doneRun}`, current: true }] });
+    expect(((await workspace(cookie, "/t/finished?tab=result")).view as BrowserTaskView).tab).toBe("result");
+    expect(((await workspace(cookie, "/t/finished?tab=plan")).view as BrowserTaskView).tab).toBe("plan");
+    // The latest result named by its run is still the current one (the header keeps its forms; never twice).
+    expect(((await workspace(cookie, `/t/finished?tab=result&run=${doneRun}`)).view as BrowserTaskView).result).toMatchObject({ current: true, selected: { build: doneRun } });
+    // A run that isn't this task's result, or isn't a run at all, is no result of it: never the latest instead.
+    for (const bad of [`run=${liveRun}`, "run=999", "run=abc"]) expect((await fetch(url(`/t/finished?tab=result&${bad}`), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
+    // Its result's forms come back to this tab, never to the review page.
+    expect(finished.result!.selected.panel?.attributes["data-result-param"]).toBe("section");
+    // ⋯ More actions: each secondary act once, Danger last, nothing a ceremony.
+    const groups = (finished.more ?? []).map(one => one.group);
+    expect(groups).toEqual([...groups].sort((a, b) => ["work", "share", "danger"].indexOf(a) - ["work", "share", "danger"].indexOf(b)));
+    expect(finished.more).toContainEqual({ group: "share", label: "Copy link", kind: "copy" });
+    expect((finished.more ?? []).every(one => one.kind !== "post" || !/approve|confirm|cancel|complete/.test(one.action))).toBe(true);
   });
 
   test("c3: the composer's mode is fixed server words for one turn; it never stands in for a confirmation", async () => {

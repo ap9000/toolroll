@@ -346,8 +346,10 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
     cli(["task", "hold", id, "--reason", "e2e: approval rules only", ...auth]);
     cli(["task", "scope", id, "--goal", "Rename the helper in src/math.js.", "--acceptance", "the helper is renamed|check", ...auth]);
     await page.goto(`${base}/t/${id}`);
+    // Held, the approval isn't the thing to do now: it heads the Plan tab (one page per task).
+    if (await page.locator("form#approve").isHidden() && await page.locator('[data-task-tab="plan"]').count() > 0) await page.locator('[data-task-tab="plan"]').click();
     const review = page.locator("summary", { hasText: /Approve plan|Review plan|Updated approval terms/ }).first();
-    if (await review.count() > 0) await review.click();
+    if (await review.count() > 0 && await review.isVisible()) await review.click();
     const form = page.locator("form#approve");
     await form.waitFor({ timeout: 15_000 });
     await form.locator('input[name="token"]').fill(w.passwords.alex);
@@ -562,17 +564,22 @@ await journey("task", SCRIPTED, "File a task in the console; the planner (Claude
   return { task: firstTask, plan: planned.plan, goal: scope.goal.slice(0, 160) };
 });
 
-await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, and the result shows what changed; mark it complete", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
+await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, and the result shows what changed on the task's own page; mark it complete", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
   const run = await builtAndChecked(firstTask);
   const diff = execFileSync("git", ["-C", repo, "diff", "main", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${run.id}`)[0].branch}`, "--", "src/math.js"], { encoding: "utf8" });
   if (!/subtract/.test(diff)) throw new Error(`the build's branch doesn't add subtract: ${diff.slice(0, 300)}`);
-  await page.goto(`${base}/review?result=${encodeURIComponent(firstTask)}&run=${run.id}`);
-  const panel = page.locator("[data-result-panel]").first();
+  // One page per task: the status's one action opens the Result tab in place — the result never leaves the task.
+  await page.goto(`${base}/t/${encodeURIComponent(firstTask)}`);
+  const opened = page.url();
+  await page.locator("[data-task-status] a[data-primary-action]").first().click();
+  await until("the Result tab", async () => await page.locator('[data-task-tab="result"][aria-selected="true"]').count() === 1, { timeoutMs: 10_000, everyMs: 200 });
+  if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
+  const panel = page.locator("[data-task-panel=\"result\"] [data-result-panel]").first();
   await panel.waitFor({ timeout: 20_000 });
-  // What a person sees: checks passed on the result, and the decision after the evidence says what accepting does
-  // (plain Accept when every requirement is met; the planner may have left one for a person to check).
-  const status = await page.locator('[data-result-status] [data-status-detail="checks"]').first().innerText();
-  if (!/Passed/.test(status)) throw new Error(`the result's checks say: ${status.slice(0, 200)}`);
+  // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
+  // accepting does (plain Accept when every requirement is met; the planner may have left one for a person to check).
+  const status = await page.locator('[data-task-status] [data-status-detail="checks"]').first().innerText();
+  if (!/Passed/.test(status)) throw new Error(`the task's checks say: ${status.slice(0, 200)}`);
   const checks = "passed";
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
   for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
@@ -588,7 +595,9 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   await Promise.all([page.waitForNavigation(), page.locator(`[data-result-decision] form[action="/t/${firstTask}/complete"] button[data-accept-result]`).click()]);
   page.off("request", counted);
   if (posts.length !== 1 || posts[0] !== `/t/${firstTask}/complete`) throw new Error(`accepting took ${posts.length} requests: ${posts.join(", ")}`);
-  await until("the result to read complete", async () => (await page.locator('[data-result-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
+  // Back on the task's own Result tab, which now reads complete.
+  if (!/\/t\/[^?]+\?(?:.*&)?tab=result/.test(page.url())) throw new Error(`accepting didn't come back to the task's Result tab: ${page.url()}`);
+  await until("the task to read complete", async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
   const ledger = rows(`SELECT action, source FROM action_ledger WHERE task_id = '${firstTask}' AND action = 'assignment handoff checked'`);
   if (ledger.length !== 1) throw new Error(`the ledger has ${ledger.length} completion rows`);
   return { run: run.id, checks };
@@ -612,7 +621,7 @@ async function sendBack(id, note) {
 }
 const branchFile = (runId, file) => execFileSync("git", ["-C", repo, "show", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${runId}`)[0].branch}:${file}`], { encoding: "utf8" });
 
-await journey("task", SCRIPTED, "Send it back with a note: the revision is approved again and rebuilt with the fix", ["Claude builds it, the project's checks pass, and the result shows what changed; mark it complete"], async () => {
+await journey("task", SCRIPTED, "Send it back with a note: the revision is approved again and rebuilt with the fix", ["Claude builds it, the project's checks pass, and the result shows what changed on the task's own page; mark it complete"], async () => {
   script(
     { role: "planner", when: [/subtract\(2, 5\) is -3/], unless: [/Also add multiply/], answer: { plan: { goal: "Add a subtract function to src/math.js, with a test that also checks a negative result: subtract(2, 5) is -3.", amendment: "The note asks the test to check a negative result." } } },
     { role: "builder", when: [/subtract\(2, 5\) is -3/], unless: [/multiply\(a, b\)/], answer: { files: mathFiles({ negative: true }), conclusion: "The subtract test also checks subtract(2, 5) is -3." } },
