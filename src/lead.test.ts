@@ -6,6 +6,7 @@ import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverSta
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
 import { leadToolLabel } from "./lead-progress.js";
 import { settleWithCache } from "./converse.js";
+import { LEAD_QUEUE_EXPIRY_MS, LEAD_QUEUE_MAX_MESSAGES, PersonalQueue, type LeadQueueContext } from "./lead-queue.js";
 import { chatAckPage } from "./server/render-chat.js";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
@@ -582,6 +583,107 @@ describe("the lead's turn", () => {
       const shown = scripted([answer([call("find_tools", { query: "show the settings page" })]), answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
       expect(reply(await turn("where are settings?", shown.fetcher))).toBe("Here's the link to Settings.");
       expect(shown.bodies).toHaveLength(3);
+    });
+  });
+
+  describe("the personal queue (docs/plans/lead-message-queue.md)", () => {
+    /** A personal lead turn of alex's, running (what makes a send wait). */
+    const busy = (live = session(), where = thread()) => {
+      const opened = store.openLeadTurn({ approver: "alex", session: live.id, thread: where.id, credentialKey: CREDENTIAL, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+      if (!opened.ok) throw new Error(opened.reason);
+      expect(store.startLeadTurn(opened.id, clock()).ok).toBe(true);
+      return opened.id;
+    };
+    const send = (queue: PersonalQueue, live: ReturnType<typeof session>, where: ReturnType<typeof thread>, text: string, request: string, context: LeadQueueContext | null = null) =>
+      queue.sendOrQueue({ approver: "alex", approverGeneration: who.generation, session: live.id, ceilingDigest: who.ceilingDigest, thread: where.id, text, requestId: request, context }, clock());
+
+    test("send runs now when nothing of the person's runs or waits; otherwise it waits — the same request is the same message", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      expect(send(queue, live, where, "first", "a".repeat(32))).toEqual({ kind: "run" });
+      busy(live, where);
+      const waiting = send(queue, live, where, "second", "b".repeat(32), { task: "t-1", mode: "build" });
+      expect(waiting).toMatchObject({ kind: "queued", already: false, row: { status: "queued", text: "second" } });
+      if (waiting.kind !== "queued") throw new Error("unreachable");
+      expect(store.handle.prepare("SELECT pending, turn FROM lead_message WHERE id = ?").get(waiting.row.message)).toEqual({ pending: 1, turn: null });
+      // A retry of the same request is that message; the same request with other words or context is refused.
+      expect(send(queue, live, where, "second", "b".repeat(32), { mode: "build", task: "t-1" })).toMatchObject({ kind: "queued", already: true, row: { message: waiting.row.message } });
+      expect(send(queue, live, where, "second, edited", "b".repeat(32), { task: "t-1", mode: "build" })).toEqual({ kind: "conflict" });
+      // Removed, it stays that message (never sent twice, never resurrected) and keeps no words.
+      expect(queue.remove("alex", waiting.row.message, clock())).toBe("removed");
+      expect(send(queue, live, where, "second", "b".repeat(32), { task: "t-1", mode: "build" })).toMatchObject({ kind: "queued", already: true, row: { status: "cancelled", text: "" } });
+    });
+
+    test("bounds: ten waiting messages, then a refusal in words", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      for (let index = 0; index < LEAD_QUEUE_MAX_MESSAGES; index++) expect(send(queue, live, where, `m${index}`, index.toString(16).padStart(32, "0")).kind).toBe("queued");
+      expect(send(queue, live, where, "one too many", "f".repeat(32))).toMatchObject({ kind: "full", message: expect.stringContaining("10 messages are already waiting") });
+    });
+
+    test("while something waits, the only personal turn admitted is the backlog's oldest claim — claimed-but-unbound included", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const a = send(queue, live, where, "A", "a".repeat(32)), b = send(queue, live, where, "B", "b".repeat(32));
+      if (a.kind !== "queued" || b.kind !== "queued") throw new Error("unreachable");
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const open = (claim?: { message: number; runner: string; generation: number }) => store.openLeadTurn({ approver: "alex", session: live.id, thread: where.id, credentialKey: CREDENTIAL,
+        reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000, ...(claim === undefined ? {} : { queueClaim: claim }) }, clock());
+      // A follow pass, a channel turn or another send: held behind the backlog.
+      expect(open()).toEqual({ ok: false, reason: "backlog" });
+      const claimA = queue.claimNext("runner-1", clock())!;
+      expect(claimA.message).toBe(a.row.message);
+      // Claimed but not yet bound: still the backlog. Overtaking is refused; B can't go first; a stale claim can't either.
+      expect(open()).toEqual({ ok: false, reason: "backlog" });
+      expect(open({ message: b.row.message, runner: "runner-1", generation: claimA.generation })).toEqual({ ok: false, reason: "backlog" });
+      expect(open({ message: claimA.message, runner: "runner-1", generation: claimA.generation - 1 })).toEqual({ ok: false, reason: "backlog" });
+      expect(queue.claimNext("runner-2", clock())).toBeNull();
+      // A's own exact claim is admitted.
+      expect(open({ message: claimA.message, runner: "runner-1", generation: claimA.generation })).toMatchObject({ ok: true });
+    });
+
+    test("a queued message runs as its own turn: admission binds it and clears pending in one statement; until then the model never reads it", async () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const queued = send(queue, live, where, "what changed in the release?", "c".repeat(32));
+      const removed = send(queue, live, where, "never mind that", "d".repeat(32));
+      if (queued.kind !== "queued" || removed.kind !== "queued") throw new Error("unreachable");
+      expect(queue.remove("alex", removed.row.message, clock())).toBe("removed");
+      // Waiting and removed messages are out of the model's history.
+      expect(historyFor(store, where.id).map(one => one.text).join("|")).not.toMatch(/what changed|never mind/);
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const claim = queue.claimNext("runner-1", clock())!;
+      const script = scripted([text("Here is what changed.")]);
+      const outcome = await turn(claim.text, script.fetcher, { session: live, thread: where, requestId: claim.requestId, queuedMessageId: claim.message,
+        queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation }, onAdmitted: id => { if (!queue.bindTurn(claim, id)) throw new Error("fence"); } });
+      expect(outcome).toMatchObject({ ok: true, reply: "Here is what changed." });
+      if (!outcome.ok || outcome.replayed) throw new Error("unreachable");
+      // The person's own words, not "From alex:" (that is a team room's attribution).
+      expect(script.bodies[0]).toContain("what changed in the release?");
+      expect(script.bodies[0]).not.toContain("From alex:");
+      expect(script.bodies[0]).not.toContain("never mind that");
+      expect(store.handle.prepare("SELECT pending, turn FROM lead_message WHERE id = ?").get(claim.message)).toEqual({ pending: 0, turn: outcome.turn });
+      expect(queue.get(claim.message)).toMatchObject({ status: "running", turnId: outcome.turn });
+      expect(queue.reconcile(clock(), 60_000)).toBeGreaterThanOrEqual(1);
+      expect(queue.get(claim.message)).toMatchObject({ status: "answered" });
+      expect(historyFor(store, where.id).map(one => one.text)).toContain("what changed in the release?");
+    });
+
+    test("a claim that never bound is uncertain after the turn deadline (never resent); a week-old waiting message expires without its words", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      const a = send(queue, live, where, "A", "a".repeat(32));
+      if (a.kind !== "queued") throw new Error("unreachable");
+      store.handle.prepare("UPDATE mate_turn SET state = 'answered'").run();
+      const claim = queue.claimNext("runner-1", clock())!;
+      queue.reconcile(new Date(clock().getTime() + 120_000), 60_000);
+      expect(queue.get(claim.message)).toMatchObject({ status: "uncertain" });
+      // Uncertain holds nothing back: with no turn running, the next message runs now; with one running, it waits.
+      expect(send(queue, live, where, "next", "e".repeat(32))).toEqual({ kind: "run" });
+      busy(live, where);
+      const b = send(queue, live, where, "B", "b".repeat(32));
+      if (b.kind !== "queued") throw new Error("expected B to wait behind the running turn");
+      queue.reconcile(new Date(clock().getTime() + LEAD_QUEUE_EXPIRY_MS + 1), 60_000);
+      expect(queue.get(b.row.message)).toMatchObject({ status: "failed", error: "Not sent: it waited too long.", text: "" });
     });
   });
 

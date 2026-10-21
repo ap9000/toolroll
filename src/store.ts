@@ -19361,9 +19361,11 @@ export class Store {
    * approver serializes the console and the CLI.
    */
   openLeadTurn(
-    args: { approver: string; session: number; thread: number; credentialKey: string; reservedMicrousd: number; dailyTurns: number; weeklyCeilingMicrousd: number; deadlineMs: number; provider?: string },
+    args: { approver: string; session: number; thread: number; credentialKey: string; reservedMicrousd: number; dailyTurns: number; weeklyCeilingMicrousd: number; deadlineMs: number; provider?: string;
+      /** The personal queue claim this turn runs (lead-queue.ts): the only admission the backlog lets through. */
+      queueClaim?: { message: number; runner: string; generation: number } },
     now: Date,
-  ): { ok: true; id: number } | { ok: false; reason: "latched" | "concurrent" | "daily-cap" | "session-exhausted" | "session-ended" | "not-yours" | "thread-closed" | "over-budget" | "monthly-budget" } {
+  ): { ok: true; id: number } | { ok: false; reason: "latched" | "concurrent" | "backlog" | "daily-cap" | "session-exhausted" | "session-ended" | "not-yours" | "thread-closed" | "over-budget" | "monthly-budget" } {
     return this.transact(() => {
       // The binding (slice-1 review, finding 2): the session and the thread
       // are THIS approver's, under THIS credential, under one ceiling, and
@@ -19394,6 +19396,17 @@ export class Store {
         : this.db.prepare("SELECT 1 FROM mate_turn WHERE approver=? AND state IN ('queued','running') AND NOT EXISTS (SELECT 1 FROM team_conversation tc WHERE tc.thread=mate_turn.thread) LIMIT 1").get(args.approver);
       const liveChat = this.db.prepare("SELECT 1 FROM chat_turn WHERE approver=? AND state IN ('queued','running') AND mate_turn IS NULL LIMIT 1").get(args.approver);
       if (live !== undefined || liveChat !== undefined) return { ok: false as const, reason: "concurrent" as const };
+      // v128: while something of this person's waits in the personal queue (or is claimed but not yet bound), the only
+      // personal turn admitted is the one carrying the exact claim of the backlog's oldest message — a follow pass, a
+      // channel turn or another send waits behind it. Team turns are counted per thread and are not held.
+      if (!teamBinding) {
+        const oldest = this.db.prepare("SELECT message, runner, generation, status FROM lead_queue WHERE approver = ? AND (status = 'queued' OR (status = 'running' AND turn_id IS NULL)) ORDER BY message LIMIT 1").get(args.approver);
+        if (oldest !== undefined) {
+          const claim = args.queueClaim;
+          const own = claim !== undefined && Number(oldest["message"]) === claim.message && oldest["status"] === "running" && oldest["runner"] === claim.runner && Number(oldest["generation"]) === claim.generation;
+          if (!own) return { ok: false as const, reason: "backlog" as const };
+        }
+      }
       if (this.chatTurnsToday(args.approver, now) >= args.dailyTurns) return { ok: false as const, reason: "daily-cap" as const };
       if (session.endedAt !== null) {
         return { ok: false as const, reason: "session-ended" as const };
