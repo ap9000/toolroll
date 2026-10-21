@@ -29,7 +29,8 @@ const repoWith = (dir: string, base: Record<string, string>, change: Record<stri
 };
 const script = resolve(import.meta.dirname, "../scripts/release-check.mjs");
 /** These fixture repositories have no origin: compare with their own tags. */
-const LOCAL_TAGS = { ...process.env, TOOLROLL_RELEASE_LOCAL_TAGS: "1" };
+// The machine the check budgets for, made exact (24 quiet cores: 9 unit workers, 4 app and 2 flows lanes, 3 upgrade workers).
+const LOCAL_TAGS = { ...process.env, TOOLROLL_RELEASE_LOCAL_TAGS: "1", TOOLROLL_CHECK_CORES: "24", TOOLROLL_CHECK_LOAD: "0", TOOLROLL_UPGRADE_WORKERS: "" };
 
 describe("a release's version bump", () => {
 
@@ -185,11 +186,11 @@ console.log(JSON.stringify(process.argv.at(-1).includes('/attempts/')
     const env = { ...LOCAL_TAGS, PATH: `${join(at, "tools")}:${process.env.PATH}` };
     const normal = execFileSync(process.execPath, [script, "--base", base], { cwd: at, env, encoding: "utf8" });
     expect(normal).toContain("unit suite reused:");
-    if (process.platform === "darwin") expect(normal).toContain('LOCAL_UNITS ["--run","--reporter=dot","src/native.test.ts"]');
+    if (process.platform === "darwin") expect(normal).toContain('LOCAL_UNITS ["--run","--reporter=dot","--maxWorkers=9","src/native.test.ts"]');
     else expect(normal).not.toContain("LOCAL_UNITS");
     const full = execFileSync(process.execPath, [script, "--base", base, "--full"], { cwd: at, env, encoding: "utf8" });
     expect(full).not.toContain("unit suite reused:");
-    expect(full).toContain('LOCAL_UNITS ["--run","--reporter=dot"]');
+    expect(full).toContain('LOCAL_UNITS ["--run","--reporter=dot","--maxWorkers=9"]');
   });
 
   /** A checkout with journey scripts and a stand-in runner that logs how it is asked to run (and whether it was handed
