@@ -266,6 +266,8 @@ export function approvalSheetHtml(input: {
   /** v126: where the work came from: an outside event's one line of context (never a term the approval agrees to). */
   origin?: TaskOrigin | null;
   deliverable: "branch" | "report";
+  /** The plan was rewritten after this build: the yes builds again to it (the approve POST requeues). */
+  rebuild?: number | null;
   editHref: string;
   notNowHref: string;
   sticky: boolean;
@@ -331,10 +333,13 @@ export function approvalSheetHtml(input: {
     allowing.length === 0 ? "" : html`<p class="approval-allowing" data-approval-allowing>You’re allowing: ${allowing.join(" · ")}</p>`,
     yoursToCheck.length === 0 ? "" : html`<p class="approval-you-check" data-approval-you-check>You’ll check: ${yoursToCheck.join("; ")}</p>`,
   ]);
-  const after = input.deliverable === "report"
+  const rebuild = input.rebuild ?? null;
+  const after = rebuild !== null
+    ? html`Build #${rebuild} was made to the earlier plan. Approving builds it again to this one.`
+    : input.deliverable === "report"
     ? html`An agent investigates without changing the repository. You'll hear when its report is ready.`
     : html`An agent starts in its own branch. You'll hear when it's ready to review.`;
-  const submit = html`Approve & start`;
+  const submit = rebuild !== null ? html`Approve & build again` : html`Approve & start`;
 
   // Everything else the digest binds, one tap away.
   const detail = (title: string, body: Html, attrs: Html = html``): Html => isEmptyHtml(body) ? html`` : html`<section class="approval-detail"${attrs}><h3>${title}</h3>${body}</section>`;
@@ -464,7 +469,7 @@ export function approvalSheetHtml(input: {
       details,
     ]), {
       attrs: { class: "approve-form approval-sheet", id: input.surface === "task" ? "approve" : null, "data-sticky": input.sticky },
-      hidden: { nonce: input.nonce, digest: input.digest },
+      hidden: { nonce: input.nonce, digest: input.digest, ...(rebuild === null ? {} : { rebuild: String(rebuild) }) },
       returnTo: input.returnTo,
     }),
     editorForm,
@@ -2011,6 +2016,10 @@ export function taskBodyParts(data: {
   const revisionInApproval = scope !== null && !approval.approved && data.plan !== "requested" &&
     scope.profileState !== "unresolved" && consentDoor.open && data.dispatch?.action !== "repair-dependency" &&
     (data.revision == null || !("problem" in data.revision));
+  // The approval is the next step when dispatch waits on it, or when the plan was rewritten after a build (the
+  // assignment's one action): then it is shown open under the status, never folded.
+  const approvalLeads = data.dispatch?.action === "approve-scope" ||
+    (data.assignment?.primaryAction?.code === "approve-scope" && data.assignment.primaryAction.target.taskId === task.id);
   const approveForm =
     scope === null || approval.approved || data.plan === "requested"
       ? ""
@@ -2038,9 +2047,10 @@ export function taskBodyParts(data: {
           coordinator: data.coordinator ?? null,
           origin: data.origin ?? null,
           deliverable: data.deliverable ?? "branch",
+          rebuild: data.assignment?.need != null && "key" in data.assignment.need && data.assignment.need.key === "replan" ? data.assignment.need.build : null,
           editHref: data.csrf !== "" && data.planSha != null && data.planDocument !== null ? "#plan-edit" : "#scope",
           notNowHref: "/work",
-          sticky: data.dispatch?.action === "approve-scope",
+          sticky: approvalLeads,
           earlier: { active: data.assignment?.earlierActive ?? 0, running: data.assignment?.earlierRunning ?? 0 },
           edit: data.csrf === "" ? null
             : { action: `${taskHref(task.id)}/scope`, draft: inlineScopeDraft ? data.scopeDraft ?? null : null, problem: inlineScopeDraft ? data.problem : null,
@@ -2426,14 +2436,14 @@ export function taskBodyParts(data: {
   // A pull request that can be merged (or opened) owns the one primary action; the result stays in its section.
   const pullRequestActs = data.csrf !== "" && (data.pullRequest?.view?.canMerge === true || (data.pullRequest?.view == null && data.pullRequest?.offer != null));
   const pullRequestFact = data.pullRequest?.fact != null && data.pullRequest.view?.runId === data.assignment?.receipt?.runId ? data.pullRequest.fact : undefined;
-  const assignmentOptions = data.assignment == null ? null : { workStatus: status, hideAction: (approveForm !== "" && data.dispatch?.action === "approve-scope") || pullRequestActs, problem: status.tone === "problem",
+  const assignmentOptions = data.assignment == null ? null : { workStatus: status, hideAction: (approveForm !== "" && approvalLeads) || pullRequestActs, problem: status.tone === "problem",
     planning: data.dispatch?.code === "running" && data.dispatch.role === "planner", ...(pullRequestFact === undefined ? {} : { pullRequest: pullRequestFact }),
     diagnostics: [...((status as WorkStatus).diagnostics ?? []), ...(status.tone === "problem" && status.detail !== data.assignment.detail ? [status] : [])] };
   // Say it once: a pull request that couldn't open, or merged, is the status
   // card's own row (its reason or merge commit under Details), not a second card.
   const pullRequestCard = data.pullRequest == null || (pullRequestFact !== undefined && (data.pullRequest.view?.state === "failed" || data.pullRequest.view?.state === "merged")) ? "" : pullRequestCardHtml(data.pullRequest, data.csrf);
   // The result takes over from the task status as soon as it is ready.
-  const statusHtml = html`${data.assignment != null && assignmentOptions !== null ? assignmentSummaryHtml(data.assignment, assignmentOptions) : receiptLeads ? completionReceiptCard(data.completion!.receipt!, task.id, "task", status) : taskStatusCard(status, task.id, data.dispatch ?? null, liveRunId, approveForm !== "" && data.dispatch?.action === "approve-scope")}${checkProgressHtml(data.checkProgress ?? null)}`;
+  const statusHtml = html`${data.assignment != null && assignmentOptions !== null ? assignmentSummaryHtml(data.assignment, assignmentOptions) : receiptLeads ? completionReceiptCard(data.completion!.receipt!, task.id, "task", status) : taskStatusCard(status, task.id, data.dispatch ?? null, liveRunId, approveForm !== "" && approvalLeads)}${checkProgressHtml(data.checkProgress ?? null)}`;
   // The exact-run control (v52), directly under the scheduler's answer:
   // the one place a person stops or resumes THIS attempt.
   const controlHtml = taskControlDetailsHtml(data.control ?? { kind: "none" }, task.id, data.csrf, "task", false, false, data.livePause ?? null);
@@ -2486,7 +2496,7 @@ export function taskBodyParts(data: {
         ? html`<div class="card"><p><strong>This task is waiting on you: an agent filed it, and it has no scope.</strong></p><p class="meta">Filed by <span class="mono">${data.coordinator.label}</span> — nothing plans, claims, or runs until you write a scope below and sign it. Your signature runs their request.</p></div>`
         : html`<div class="card task-scope-needed"><p><strong>No approved scope yet</strong></p><p class="meta"><strong>Plan first</strong> drafts it from the repository, or <a href="#scope">write it yourself</a>.</p></div>`
       : "";
-  const approvalHtml = dependencyChoiceNeeded || approveForm === "" ? "" : data.dispatch?.action === "approve-scope"
+  const approvalHtml = dependencyChoiceNeeded || approveForm === "" ? "" : approvalLeads
     ? html`<section class="task-plan-review" aria-label="Approve the plan">${approveForm}</section>`
     : html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approveForm}</details>`;
   const optionsHtml = html`${identity}${dispatchStatus}${dependencyChoiceNeeded ? "" : actsBar}`;

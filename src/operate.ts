@@ -4606,6 +4606,8 @@ async function requeueTask(
       claimed: `a runner holds ${id} right now — wait for the attempt to end, or stop it`,
       "accepted-result": `${id}'s last result was accepted; change it through a revision, not a rerun`,
       published: `${id}'s last result is published; revise it through its pull request`,
+      // Only an Approve & build again asks for an exact build; the CLI never does.
+      moved: `${id} changed since its page was read; read it again`,
     };
     return fail(write, json, "task requeue", result.reason, why[result.reason], EXIT.refused);
   }

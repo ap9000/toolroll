@@ -117,7 +117,7 @@ export function ConfirmStoppedForm({ form, csrf, label = "Confirm it stopped" }:
       <input type="checkbox" name="checked" value="yes" required className="size-4" />Nothing from build #{form.run} is running
     </label>}
     <Reauth><Input type="password" name="token" autoComplete="current-password" required aria-label="Your password" placeholder="Your password" className="h-9 w-44 phone:h-11 phone:w-full" /></Reauth>
-    <Button type="submit" variant="attention" className="phone:w-full">{label}</Button>
+    <Button type="submit" variant="attention" className="phone:w-full" data-primary-action>{label}</Button>
   </PostForm>;
 }
 

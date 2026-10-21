@@ -9,7 +9,7 @@ import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from "react";
 import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskSection, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
@@ -197,10 +197,9 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
     <StatusDetails status={card.status} runChecks={view.runChecks ?? null} csrf={csrf} />
     {(card.notices !== null || card.reasons.length > 0 || card.diagnostics.length > 0 || card.status.why.length > 0 || card.status.details.some(one => one.why !== null)) &&
       <div className="flex flex-col gap-1 border-t border-border pt-3 text-body phone:pt-2 phone:leading-[1.35]">
-      <StatusWhy status={card.status} extra={[...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`)]} />
-      {card.notices !== null && <Fold summary={card.notices.summary} quiet>
-        {card.notices.lines.map(line => <p key={line} className="text-muted-foreground">{line}</p>)}
-      </Fold>}
+      {/* One fold, never a stack of them: the notices' lines join the recorded reasons under More (their row above
+          already says what they are about). */}
+      <StatusWhy status={card.status} extra={[...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`), ...(card.notices?.lines ?? [])]} />
     </div>}
     {view.earlier != null && <div className="border-t border-border pt-1 text-body" data-earlier-attempts={view.earlier.attempts.length}>
       <Fold summary={view.earlier.summary} quiet>
@@ -214,8 +213,11 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
 }
 
 /** A quiet in-card disclosure (native details: content stays in the page). */
-function Fold({ summary, quiet, children }: { summary: ReactNode; quiet?: boolean; children: ReactNode }) {
-  return <details className="group">
+function Fold({ summary, quiet, flatten, children }: { summary: ReactNode; quiet?: boolean; flatten?: boolean; children: ReactNode }) {
+  // `flatten`: never a fold inside a fold; opening this one opens every fold in it, so one tap shows it all.
+  return <details className="group" {...(flatten ? { onToggle: (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (event.currentTarget.open) event.currentTarget.querySelectorAll("details").forEach(one => { one.open = true; });
+  } } : {})}>
     <summary className={cn("flex cursor-pointer list-none items-center gap-1.5 py-1.5 font-medium phone:min-h-11 [&::-webkit-details-marker]:hidden", quiet && "text-muted-foreground hover:text-foreground")}>
       <ChevronRight className="size-4 transition-transform group-open:rotate-90" aria-hidden="true" />{summary}
     </summary>
@@ -284,7 +286,7 @@ function ThreadEntry({ item }: { item: BrowserTaskThreadItem }) {
         item.who === "person" && "w-fit max-w-full rounded-xl bg-user-bubble px-3 py-2")}>{item.text}</p>}
       {item.link !== null && <a href={item.link.href} className="mt-1 inline-flex text-body underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:min-h-11 phone:items-center font-medium">{item.link.label}</a>}
       {item.html !== "" && <div className="mt-2"><Html html={item.html} className="so-thread-card" /></div>}
-      {item.more !== null && <div className="mt-1 text-body"><Fold summary={item.more.summary} quiet><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
+      {item.more !== null && <div className="mt-1 text-body"><Fold summary={item.more.summary} quiet flatten><Html html={item.more.html} className="so-thread-card" /></Fold></div>}
     </div>
   </li>;
 }
@@ -372,6 +374,62 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
   </div>;
 }
 
+/** The approval region's identity: whether it leads open or sits folded, and the digest it signs. The nonce (new on
+ * every render) is deliberately not part of it. */
+export function approvalIdentity(approval: string): string {
+  // Read from the region's own wrapper and its hidden field, never from text inside it: the server escapes every quote
+  // in the plan's words, so an attribute with its quotes can only be markup.
+  const folded = /^\s*<details class="task-secondary-approval"/.test(approval);
+  const digest = /<input type="hidden" name="digest" value="([^"]*)"/.exec(approval)?.[1] ?? "";
+  return `${folded ? "folded" : "open"}:${digest}`;
+}
+
+/** Where the one thing that waits on a person lives: the status card's action (Confirm it stopped, Build again, Retry
+ * and the rest), or the approval under it. A button inside a closed fold is never the one action. */
+const PRIMARY_ACTION = "[data-task-status] [data-primary-action], .so-task-approval [data-primary-action]";
+const primaryActionNow = (): HTMLElement | null =>
+  [...document.querySelectorAll<HTMLElement>(PRIMARY_ACTION)].find(one => one.closest("details:not([open])") === null && (one.textContent?.trim() ?? "") !== "") ?? null;
+
+/** The one action, never out of reach: while something waits on the person and its button has scrolled out of
+ * view, a bar pinned to the foot of the page names it. A tap brings the button back into view (opening any fold
+ * around it) and puts the cursor where it starts (its password, when it asks for one); it never acts by itself.
+ * The button is found again after every render, so a live update that swaps it (Retry appearing, a new approval)
+ * is followed. */
+function PinnedAction({ waiting }: { waiting: boolean }) {
+  const [action, setAction] = useState<{ element: HTMLElement; label: string } | null>(null);
+  const [hidden, setHidden] = useState(true);
+  const tracked = useRef<{ element: HTMLElement | null; label: string; observer: IntersectionObserver | null }>({ element: null, label: "", observer: null });
+  useEffect(() => {
+    const element = waiting ? primaryActionNow() : null;
+    const label = element?.textContent?.trim() ?? "";
+    const now = tracked.current;
+    if (element === now.element && label === now.label) return;
+    now.observer?.disconnect();
+    now.element = element; now.label = label; now.observer = null;
+    setHidden(true);
+    if (element === null || typeof IntersectionObserver === "undefined") { setAction(null); return; }
+    now.observer = new IntersectionObserver(entries => setHidden(entries.some(one => one.isIntersecting)));
+    now.observer.observe(element);
+    setAction({ element, label });
+  });
+  useEffect(() => () => tracked.current.observer?.disconnect(), []);
+  if (action === null || hidden) return null;
+  const reach = () => {
+    for (let node = action.element.parentElement; node !== null; node = node.parentElement) if (node instanceof HTMLDetailsElement) node.open = true;
+    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    action.element.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
+    const field = action.element.closest("form")?.querySelector<HTMLInputElement>("input[type=password], textarea, input[type=text]:not([tabindex='-1'])");
+    (field ?? action.element).focus({ preventScroll: true });
+  };
+  return <div data-pinned-action role="region" aria-label="What this task needs from you"
+    className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+    <span className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
+      <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-attention" />Needs you
+    </span>
+    <Button type="button" variant="attention" onClick={reach} className="shrink-0">{action.label}<ArrowRight /></Button>
+  </div>;
+}
+
 /** The page: title, status card, what needs a person, then the thread. With
  * `details` (no Details panel beside it, e.g. a page without the shell's
  * panel), the Details content follows the thread. */
@@ -412,7 +470,9 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
       : <Html html={view.statusHtml} />}
 
     {/* The approval is its own section under the status, never a card inside it. */}
-    {view.approval !== "" && <Html html={view.approval} className="so-task-approval" />}
+    {/* Installed once (a refresh's new nonce never wipes a password being typed), but a new region when what it is
+        changes: folded under Updated approval terms or leading open, and the exact plan it signs. */}
+    {view.approval !== "" && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
 
     {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
 
@@ -421,5 +481,7 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
     <div className="mt-2 phone:mt-1"><Thread items={view.thread ?? []} chat={chat} chatHref={view.tabs.length > 0 ? null : view.chatHref ?? null} /></div>
 
     {details && <div className="border-t border-border pt-2"><TaskDetails view={view} /></div>}
+
+    <PinnedAction waiting={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed"} />
   </div>;
 }

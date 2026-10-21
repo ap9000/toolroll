@@ -2404,6 +2404,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           const status = approved.reason === "changed" || approved.reason === "unrouted" ? 409 : 403;
           return approvalProblem(approveRefusalWords(approved.reason), status);
         }
+        // Approve & build again (the plan was rewritten after a build): the same yes requeues, only for the build the
+        // sheet named, and only while it is still the task's latest result, made to an earlier plan than this one.
+        const rebuildRaw = body.get("rebuild") ?? "";
+        if (rebuildRaw !== "") {
+          const named = /^[0-9]{1,15}$/.test(rebuildRaw) ? store.getRun(Number(rebuildRaw)) : null;
+          // Built to an earlier plan than the one just approved (the scope this approval sealed, scopeRow.digest);
+          // requeueTask re-proves, in its own transaction, that it is still the latest result and that scope approved.
+          const offered = named != null && named.taskRef === ref.id && named.role === "builder" && !!named.scopeDigest && named.scopeDigest !== scopeRow.digest;
+          const requeued = offered ? store.requeueTask(taskId, who.name, now, { run: named.id, scopeDigest: scopeRow.digest }) : null;
+          if (requeued === null || (!requeued.ok && requeued.reason === "moved")) return approvalProblem("Approved. The task changed while this page was open, so it wasn't built again — check its status.", 200);
+          if (!requeued.ok) return approvalProblem(`Approved, but building again didn't start (${requeued.reason}). Use Build again.`, 200);
+        }
         return redirect(response, approvalBack);
       }
       case "accept-proof": {
