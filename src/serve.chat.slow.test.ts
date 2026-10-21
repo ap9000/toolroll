@@ -866,6 +866,8 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     let entered!: () => void;
     const waiting = new Promise<void>(resolve => { entered = resolve; });
     script.push(
+      // get_flows is found first (lead tools on demand); the two calls run in the next step.
+      () => answer([{ type: 'tool_use', id: 'ft', name: 'find_tools', input: { query: 'read the flows' } }]),
       () => answer([
         { type: 'tool_use', id: 'f1', name: 'get_flows', input: { flow: 999 } },
         { type: 'tool_use', id: 'f2', name: 'get_flows', input: {} },
@@ -877,20 +879,20 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     // A page that opens while the reply runs hears where it stands at once.
     const page = await chatRoom(cookie);
     try {
-      const [snapshot] = await page.until(() => page.turns.length > 0);
+      const [snapshot] = await page.until(() => page.turns.length > 0 && (page.turns.at(-1)?.steps.length ?? 0) >= 2);
       expect(snapshot!.done).toBe(false);
-      expect(snapshot!.steps[0]!.tools).toEqual(['Reading the flows', 'Reading the flows']);
-      expect(snapshot!.steps[0]!.toolCalls).toEqual([
+      expect(snapshot!.steps[1]!.tools).toEqual(['Reading the flows', 'Reading the flows']);
+      expect(snapshot!.steps[1]!.toolCalls).toEqual([
         { id: expect.any(String), label: 'Reading the flows', state: 'failed', reason: 'No such flow in your projects.' },
         { id: expect.any(String), label: 'Reading the flows', state: 'succeeded' },
       ]);
-      expect(snapshot!.steps[0]!.toolCalls[0]!.id).not.toBe(snapshot!.steps[0]!.toolCalls[1]!.id);
+      expect(snapshot!.steps[1]!.toolCalls[0]!.id).not.toBe(snapshot!.steps[1]!.toolCalls[1]!.id);
     } finally {
       finish(answer([{ type: 'text', text: 'That flow is unavailable. I checked the list.' }]));
       await page.until(() => page.turns.at(-1)?.done === true);
       page.close();
     }
-    expect(page.turns.at(-1)).toMatchObject({ done: true, ok: true, steps: [{ toolCalls: [{ state: 'failed', reason: 'No such flow in your projects.' }, { state: 'succeeded' }] }, { tools: [] }] });
+    expect(page.turns.at(-1)).toMatchObject({ done: true, ok: true, steps: [{ toolCalls: [{ state: 'succeeded' }] }, { toolCalls: [{ state: 'failed', reason: 'No such flow in your projects.' }, { state: 'succeeded' }] }, { tools: [] }] });
     await settle();
   });
 

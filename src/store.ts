@@ -19593,6 +19593,8 @@ export class Store {
     return this.db.prepare("SELECT * FROM chat_turn WHERE mate_turn = ? ORDER BY id ASC").all(leadTurn).map(readChatTurn);
   }
 
+
+
   // ---- projects ------------------------------------------------------------
 
   /** Remember a project was opened. Upsert keeps added_at; recency always moves.
@@ -22409,6 +22411,18 @@ export class Store {
         WHERE refs.ref IS NOT ? AND c.lease_generation = (SELECT MAX(lease_generation) FROM claim WHERE task_ref = refs.ref))
       SELECT COUNT(DISTINCT root) AS n FROM latest WHERE released_at IS NULL AND expires_at > ?`).get(sweep, BUILT_IN, BUILT_IN, except, stamp);
     return Number(row?.["n"] ?? 0);
+  }
+
+  /** Whether a request of this lead turn ended with its cost unknown and that cost is still unconfirmed — the turn is
+   * what keeps chat paused on its credential. Once confirmed, it no longer is. */
+  leadTurnCostUnconfirmed(leadTurn: number): boolean {
+    return this.db.prepare("SELECT 1 AS hit FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1 AND acknowledged_at IS NULL LIMIT 1").get(leadTurn) !== undefined;
+  }
+
+  /** The lead turn a chat step belongs to (a lead reply's request), or null for a standalone chat turn. */
+  leadTurnOfStep(step: number): LeadTurn | null {
+    const row = this.db.prepare("SELECT mate_turn FROM chat_turn WHERE id = ?").get(step);
+    return row === undefined || row["mate_turn"] === null ? null : this.getLeadTurn(Number(row["mate_turn"]));
   }
 }
 

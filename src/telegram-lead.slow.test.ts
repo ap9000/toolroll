@@ -465,6 +465,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
   test("the lead delegates (D5): a message naming a subagent reaches the lead, which asks it with a card; once confirmed it lands on the subagent's desk and its answer comes back in Telegram", async () => {
     const maya = store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, now);
     answers.push(
+      // Subagent tools are found first (lead tools on demand), then called from the next step.
+      { text: "", calls: [{ id: "f1", name: "find_tools", args: { query: "ask a subagent" } }] },
       { text: "Asking Maya.", calls: [{ id: "a1", name: "propose_subagent", args: { operation: "ask", subagent: maya, text: "Where's order 2201?" } }] },
       { text: "I'll ask Maya once you confirm." },
     );
@@ -780,7 +782,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     now = new Date(T0.getTime() + TURN_WALL_CLOCK_MS + CONVERSATION_CLAIM_MS + 60_000);
     expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
     expect(requests).toHaveLength(1);
-    expect(script.texts()).toEqual([leadFailureText("crashed")]);
+    // The crashed step's cost is unknown, so chat is paused: the phone is told to confirm it, not to send again.
+    expect(script.texts()).toEqual([leadFailureText("crashed", true)]);
     expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "replayed:crashed" });
   });
 
@@ -1012,7 +1015,8 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
       expect(requests).toHaveLength(1);
       // Ending the session from the console superseded the running turn; that is the word the phone gets, not a silent restart.
-      expect(script.texts()).toEqual([LEAD_FAILURE_COPY.stopped]);
+      // Its in-flight step's cost is unknown, so the word also says chat is paused until that cost is confirmed.
+      expect(script.texts()).toEqual([leadFailureText("superseded", true)]);
       expect(store.listTelegramConversations(BOT)[0]).toMatchObject({ state: "failed", outcome: "replayed:superseded", session: original.id });
       expect(store.handle.prepare("SELECT COUNT(*) AS n FROM mate_turn").get()?.["n"]).toBe(1);
       expect(store.listTelegramConversationParts(store.listTelegramConversations(BOT)[0]!.id)).toEqual([]);

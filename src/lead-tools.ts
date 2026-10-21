@@ -101,6 +101,9 @@ export type LeadToolContext = {
   checkedCapabilities?: Map<string, number>;
   /** Records this turn's one question to its owner; false when it already asked one. Absent: this surface cannot ask. */
   ask?: (question: string, options: readonly string[]) => boolean;
+  /** This turn's tool discovery (find_tools): how many searches it made and which deferred tools it found, which the
+   * conversation loop advertises from its next request. Absent (a direct call outside a turn): nothing to add to. */
+  findTools?: { searches: number; found: Set<string> };
 };
 
 export type LeadToolResult = { ok: true; body: unknown } | { ok: false; message: string };
@@ -449,7 +452,101 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
   };
 }
 
+/**
+ * The tools every request advertises (docs/plans/lead-deferred-tools.md): the ones most replies use, and every tool a
+ * guard requires read in an earlier step (search_project_memory before any proposal, get_capabilities before work that
+ * needs an agent, get_result before propose_review, get_decision before propose_answer). The rest are found with
+ * find_tools and advertised from the next request of the same reply.
+ */
+export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
+  "find_tools", "get_brief", "recap", "list_repos", "get_project_context", "search_project_memory", "get_capabilities",
+  "list_tasks", "get_task", "get_result", "get_diff", "get_check_log", "list_decisions", "get_decision",
+  "get_actions", "get_action_status", "propose_action", "propose_task", "propose_scope", "propose_steer",
+  "propose_answer", "propose_review", "remember", "ask_owner", "commit_to",
+  // The lead's queue verbs: basic, and small enough that deferring them saves almost nothing.
+  "queue", "propose_next", "propose_reserve", "propose_hold", "propose_unhold", "propose_cancel",
+  // Task and result acts a reply uses often (links to a control, a result's images and evidence, the task's own acts):
+  // small, so deferral is kept for the large, occasional families (flows, subagents, sweeps, project tools).
+  "show_control", "get_controls", "get_result_images", "get_acceptance_evidence", "offer_approval", "propose_task_action", "propose_agents",
+  "get_agents", "propose_dependency_repair",
+]);
+
+/** Words a deferred tool is found by, beyond its name and description. */
+const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
+  propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
+  get_flows: ["flow", "automation", "workflow", "running", "card"],
+  get_flow_insights: ["flow", "insights", "stats", "how flows"],
+  propose_subagent: ["subagent", "assistant", "rep", "support", "sales", "teammate", "rules", "persona"],
+  get_subagents: ["subagent", "assistant", "teammate", "rules"],
+  propose_sweep: ["sweep", "fan-out", "many", "parallel", "batch", "each", "list of"],
+  get_sweep: ["sweep", "fan-out", "batch", "table", "verdict"],
+  propose_sweep_cancel: ["sweep", "cancel", "stop the rest"],
+  get_models: ["model", "models", "provider", "price"],
+  get_project_tools: ["tools", "mcp", "server", "integration", "connect", "stripe", "notion", "linear", "sentry", "jira"],
+  get_integrations: ["integration", "slack", "telegram", "discord", "teams", "email", "connected"],
+  get_skills: ["skill", "skills", "guide"],
+  get_project_knowledge: ["knowledge", "docs", "notes", "memory"],
+  get_task_conversation: ["conversation", "chat", "history", "messages"],
+  release_commitment: ["promise", "commitment", "release", "forget"],
+  get_person: ["person", "people", "who", "member", "teammate"],
+};
+
+/** At most this many find_tools searches per reply, results per search, and bytes of found tool schemas per reply. */
+export const FIND_TOOLS_PER_TURN = 3;
+export const FIND_TOOLS_MAX_RESULTS = 6;
+export const FIND_TOOLS_SCHEMA_BYTES = 48_000;
+const FIND_TOOLS_NONE = "Nothing matched. The other tools cover flows, subagents, sweeps, agents and models, project tools and integrations, controls and settings pages, holds and the queue, task actions (retry, stop, merge), result images and evidence, people, and promises — search again with one of those words.";
+
+const MAKE_WORDS = new Set(["make", "add", "create", "set", "draft", "new", "start", "change", "edit", "build", "run", "hold", "cancel", "release", "move", "switch", "turn"]);
+const LOOK_WORDS = new Set(["show", "list", "see", "what", "which", "how", "check", "read", "look", "find", "open", "where"]);
+
+/** The deferred tools a query finds, best first: an exact name, then words in the name, keywords and description. */
+export function findLeadTools(query: string): { name: string; summary: string }[] {
+  // A plural matches its singular ("sweeps" finds sweep tools).
+  const words = query.toLowerCase().split(/[^a-z0-9-]+/).filter(one => one.length >= 3).map(one => one.length > 4 && one.endsWith("s") && !one.endsWith("ss") ? one.slice(0, -1) : one);
+  const exact = query.trim().toLowerCase();
+  const scored = LEAD_TOOLS.filter(tool => !LEAD_CORE_TOOLS.has(tool.name)).map(tool => {
+    const name = tool.name.toLowerCase(), keywords = (LEAD_TOOL_KEYWORDS[tool.name as LeadToolName] ?? []).join(" ").toLowerCase();
+    const description = tool.description.toLowerCase();
+    let score = name === exact ? 100 : 0;
+    for (const word of words) score += (name.includes(word) ? 5 : 0) + (keywords.includes(word) ? 3 : 0) + (description.includes(word) ? 1 : 0);
+    // What the person wants done leans the match: making or changing something → a proposal; looking → a read.
+    if (score > 0 && words.some(word => MAKE_WORDS.has(word))) score += name.startsWith("propose_") ? 4 : 0;
+    if (score > 0 && words.some(word => LOOK_WORDS.has(word))) score += name.startsWith("get_") || name === "show_control" ? 4 : 0;
+    return { tool, score };
+  }).filter(one => one.score > 0).sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
+  return scored.slice(0, FIND_TOOLS_MAX_RESULTS).map(({ tool }) => ({ name: tool.name, summary: summaryLine(tool.description) }));
+}
+
+/** A description's first sentence, at most 160 characters. */
+function summaryLine(description: string): string {
+  const first = /^(.+?[.!?])(\s|$)/.exec(description)?.[1] ?? description;
+  return first.length <= 160 ? first : `${first.slice(0, 157).trimEnd()}…`;
+}
+
 const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
+  find_tools: {
+    // Counted before the call is read, so an invalid search still uses one of the reply's three.
+    prepare: (ctx, raw) => { if (ctx.findTools !== undefined) ctx.findTools.searches++; return raw; },
+    description: "Find the lead's other tools by what you want to do — flows, subagents, sweeps, agents and models, project tools and integrations, controls and settings pages, holds and the queue, task actions (retry, stop, merge), result images and evidence, people, promises. Search before saying something can't be done. Matching tools become available from your next step in this reply: call them then, not in the same step.",
+    handle: (ctx, args) => {
+      const state = ctx.findTools;
+      if (state === undefined) return { ok: false, message: "find_tools works inside a conversation reply." };
+      if (state.searches > FIND_TOOLS_PER_TURN) return { ok: false, message: `You have searched ${FIND_TOOLS_PER_TURN} times this reply. Use the tools you found, or answer with what you have.` };
+      const bytesOf = (name: string): number => Buffer.byteLength(JSON.stringify(LEAD_TOOL_SCHEMAS.find(one => one.name === name) ?? {}), "utf8");
+      let used = [...state.found].reduce((sum, name) => sum + bytesOf(name), 0);
+      const tools: { name: string; summary: string }[] = [];
+      for (const one of findLeadTools(args.query)) {
+        if (!state.found.has(one.name)) {
+          if (used + bytesOf(one.name) > FIND_TOOLS_SCHEMA_BYTES) continue;
+          used += bytesOf(one.name);
+          state.found.add(one.name);
+        }
+        tools.push(one);
+      }
+      return { ok: true, body: { tools, next: tools.length === 0 ? FIND_TOOLS_NONE : "These are available from your next step in this reply: call one then." } };
+    },
+  },
   get_brief: {
     description: 'Read current tasks, decisions, results and project knowledge from the local database. No model or mutation.',
     handle: (ctx, args) => {

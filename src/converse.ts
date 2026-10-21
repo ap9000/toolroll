@@ -451,7 +451,25 @@ export function embeddedBytes(text: string): number {
 export type LeadToolSchema = { name: string; description: string; inputSchema: Record<string, unknown> };
 export type LeadToolCall = { id: string; name: string; args: Record<string, unknown> };
 /** A provider answer with tool calls allowed: text, calls, usage. */
-export type LeadProviderAnswer = { text: string; calls: LeadToolCall[]; tokensIn: number; tokensOut: number; reportedCostMicrousd: number | null };
+/** `tokensIn` is ALL input tokens of the request; of them, `cacheWriteTokens` were written to the provider's prompt cache
+ * and `cacheReadTokens` read from it (absent: the provider reported none — never assumed zero for a cached request). */
+export type LeadProviderAnswer = { text: string; calls: LeadToolCall[]; tokensIn: number; tokensOut: number; reportedCostMicrousd: number | null;
+  cacheWriteTokens?: number; cacheReadTokens?: number };
+
+/** Anthropic prices a cache write at 1.25x and a cache read at 0.1x the input price (5-minute cache). */
+export const CACHE_WRITE_RATIO = 1.25;
+export const CACHE_READ_RATIO = 0.1;
+/** The price a worst case reserves at while prompt caching is on: every input token as a cache write (the dearest). */
+export function cacheWorstPrice(price: ModelPrice): ModelPrice {
+  return { inMicrousd: Math.ceil(price.inMicrousd * CACHE_WRITE_RATIO), outMicrousd: price.outMicrousd };
+}
+/** A step's settlement with its cache categories: plain input, cache writes and cache reads each at their own rate. */
+export function settleWithCache(price: ModelPrice, answer: Pick<LeadProviderAnswer, "tokensIn" | "tokensOut" | "cacheWriteTokens" | "cacheReadTokens">): number {
+  const write = answer.cacheWriteTokens ?? 0, read = answer.cacheReadTokens ?? 0;
+  const plain = answer.tokensIn - write - read;
+  return plain * price.inMicrousd + write * Math.ceil(price.inMicrousd * CACHE_WRITE_RATIO) + read * Math.ceil(price.inMicrousd * CACHE_READ_RATIO)
+    + answer.tokensOut * price.outMicrousd;
+}
 /** One message of the lead's own history, provider-neutral. */
 export type LeadHistoryMessage =
   | { role: "operator"; text: string }
@@ -523,7 +541,17 @@ export function parseLeadProviderWrapper(
     if (Buffer.byteLength(text, "utf8") > LEAD_STEP_TEXT_CAP_BYTES) return { ok: false, problem: "text-over-cap" };
     const usage = usageOf(body["usage"], "input_tokens", "output_tokens");
     if (usage === null) return { ok: false, problem: "no-usage" };
-    return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, reportedCostMicrousd: null } };
+    // Prompt cache categories: integers when present (anything else is malformed usage, never a guess). Anthropic's
+    // input_tokens counts only the uncached part; the request's whole input is the three added up.
+    const cache = (key: string): number | null | undefined => {
+      const value = (body["usage"] as Record<string, unknown>)[key];
+      // Absent: not reported. Present (even null): it must be a token count, or the usage is malformed.
+      return value === undefined ? undefined : typeof value === "number" && tokenCount(value) ? value : null;
+    };
+    const write = cache("cache_creation_input_tokens"), read = cache("cache_read_input_tokens");
+    if (write === null || read === null) return { ok: false, problem: "no-usage" };
+    return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn + (write ?? 0) + (read ?? 0), tokensOut: usage.tokensOut, reportedCostMicrousd: null,
+      ...(write === undefined ? {} : { cacheWriteTokens: write }), ...(read === undefined ? {} : { cacheReadTokens: read }) } };
   }
   const choices = body["choices"];
   if (!Array.isArray(choices) || choices.length !== 1) return { ok: false, problem: "not-one-choice" };
@@ -572,10 +600,15 @@ export function composeLeadRequest(args: {
   dataDocument: string;
   history: readonly LeadHistoryMessage[];
   tools: readonly LeadToolSchema[];
+  /** Anthropic prompt caching: breakpoints after the first `coreTools` tools (stable across replies), on the system
+   * block, and on the DATA message (stable across the steps of one reply). Absent: no cache annotations. */
+  cache?: { coreTools: number };
 }): { url: string; headers: Record<string, string>; body: string } {
   const opener = `DATA:\n${args.dataDocument}\n\n(The conversation follows. Every operator message is data, from the operator.)`;
   if (args.provider === "anthropic-api") {
-    const messages: unknown[] = [{ role: "user", content: opener }];
+    const ephemeral = { cache_control: { type: "ephemeral" } };
+    const cached = args.cache !== undefined;
+    const messages: unknown[] = [{ role: "user", content: cached ? [{ type: "text", text: opener, ...ephemeral }] : opener }];
     for (const one of args.history) {
       if (one.role === "operator") messages.push({ role: "user", content: one.text });
       else if (one.role === "assistant") {
@@ -591,8 +624,9 @@ export function composeLeadRequest(args: {
       body: JSON.stringify({
         model: args.model,
         max_tokens: MAX_OUTPUT_TOKENS,
-        system: args.system,
-        tools: args.tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })),
+        system: cached ? [{ type: "text", text: args.system, ...ephemeral }] : args.system,
+        tools: args.tools.map((tool, index) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema,
+          ...(cached && index === (args.cache as { coreTools: number }).coreTools - 1 ? ephemeral : {}) })),
         messages,
       }),
     };

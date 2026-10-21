@@ -378,7 +378,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // The one nonce in chat — this screen restates exact financial terms
     // and re-enables spend, which is precisely what nonces are for.
     const nonce = mintApprovalNonce(who.name, `chat-ack-${turn.id}`, String(turn.reservedMicrousd));
-    return sendScreen(response, 200, chatAckPage(chromeFor(project, "chat"), turn, nonce));
+    return sendScreen(response, 200, chatAckPage(chromeFor(project, "chat"), turn, nonce, store.leadTurnOfStep(turn.id)));
   }
   async function sharedActionReview(ctx: HandlerContext): Promise<void> {
     const { url, response } = ctx;

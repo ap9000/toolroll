@@ -4,9 +4,16 @@ import { fileTaskProposal } from "./proposal.js";
 import { propose } from "./scope.js";
 import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
+import { leadToolLabel } from "./lead-progress.js";
+import { settleWithCache } from "./converse.js";
+import { chatAckPage } from "./server/render-chat.js";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
+import { chatMoney } from "./server/chrome.js";
+import { leadFailureText } from "./lead.js";
 import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
-import { LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, executeLeadTool, redactForLead } from "./lead-tools.js";
+import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, LEAD_TOOL_SCHEMAS, executeLeadTool, findLeadTools, redactForLead } from "./lead-tools.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import * as leadProgress from "./lead-progress.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
@@ -255,10 +262,16 @@ describe("the lead's turn", () => {
       step++;
       if (step === 1) {
         request.onText?.("Let me look.");
+        // get_flows is found first (tools on demand), then called from the next step.
+        expect(request.tools.map(one => one.name)).not.toContain("get_flows");
         return { ok: true, answer: { text: "Let me look.", calls: [
           { id: "r1", name: "recap", args: {} },
-          { id: "r1", name: "get_flows", args: { flow: 999 } },
+          { id: "f1", name: "find_tools", args: { query: "flows" } },
         ], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
+      }
+      if (step === 2) {
+        expect(request.tools.map(one => one.name)).toContain("get_flows");
+        return { ok: true, answer: { text: "", calls: [{ id: "r1", name: "get_flows", args: { flow: 999 } }], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
       }
       request.onText?.("One decision");
       request.onText?.("sk-ant-api03-" + "A".repeat(90));
@@ -269,21 +282,25 @@ describe("the lead's turn", () => {
     expect(outcome).toMatchObject({ ok: true, reply: "One decision needs you." });
     if (!outcome.ok) throw new Error("unreachable");
     expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `text:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
-      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", "tool:Reading the flows", "result:failed", "step:2", "text:2:One decision", "text:2:One decision needs you.",
+      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", `tool:${leadToolLabel("find_tools")}`, "result:succeeded",
+      "step:2", "tool:Reading the flows", "result:failed", "step:3", "text:3:One decision", "text:3:One decision needs you.",
     ]);
     const starts = events.filter(event => event.kind === "tool");
     const results = events.filter(event => event.kind === "tool-result");
-    expect(new Set(starts.map(event => event.id)).size).toBe(2);
+    expect(new Set(starts.map(event => event.id)).size).toBe(3);
     expect(results.map(event => event.id)).toEqual(starts.map(event => event.id));
-    expect(results[1]).toMatchObject({ step: 1, outcome: { state: "failed", reason: "No such flow in your projects." } });
+    expect(results[2]).toMatchObject({ step: 2, outcome: { state: "failed", reason: "No such flow in your projects." } });
     expect(events.every(event => event.turn === outcome.turn)).toBe(true);
   });
 
   test('project knowledge reads are counted without granting a write tool',async()=>{
-    const script=scripted([answer([call('get_project_knowledge',{repo:'r1'})]),text('Project knowledge is unavailable; no changes made.')]);
+    // Found first (tools on demand), then read in the next step: exactly one read, and no write tool is ever advertised.
+    const script=scripted([answer([call('find_tools',{query:'project knowledge'})]),answer([call('get_project_knowledge',{repo:'r1'})]),text('Project knowledge is unavailable; no changes made.')]);
     const outcome=await turn('Read project knowledge',script.fetcher);
     expect(outcome).toMatchObject({ok:true,activity:expect.stringContaining('read 1'),proposals:0});
-    expect(script.bodies[0]).toContain('get_project_knowledge');expect(script.bodies[0]).not.toContain('save_project_knowledge');
+    expect(script.bodies[0]).not.toContain('"name":"get_project_knowledge"');expect(script.bodies[1]).toContain('"name":"get_project_knowledge"');
+    expect(script.bodies[2]).not.toContain("get_project_knowledge isn't available");
+    for(const body of script.bodies)expect(body).not.toContain('save_project_knowledge');
   });
 
   test.each([
@@ -322,10 +339,12 @@ describe("the lead's turn", () => {
     // Exercise the stream guard even if a future copy mapping introduces unsafe text.
     const format = vi.spyOn(leadProgress, "leadToolFailureReason").mockReturnValue("Couldn't read sk-ant-api03-" + "A".repeat(90));
     const events: leadProgress.LeadProgress[] = [];
-    const script = scripted([answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
+    // get_flows is found first, so the failure below is the tool's own (no such flow), not the advertisement refusal.
+    const script = scripted([answer([call("find_tools", { query: "read the flows" })]), answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
     try {
       expect(await turn("Read the flow", script.fetcher, { onProgress: event => events.push(event) })).toMatchObject({ ok: true });
-      expect(events.filter(event => event.kind === "tool-result")).toEqual([
+      expect(script.bodies[2]).toContain("No such flow in your projects.");
+      expect(events.filter(event => event.kind === "tool-result" && event.outcome.state === "failed")).toEqual([
         expect.objectContaining({ outcome: { state: "failed", reason: "That step didn't work (Reading the flows)." } }),
       ]);
       expect(JSON.stringify(events)).not.toContain("sk-ant-api03-");
@@ -560,9 +579,160 @@ describe("the lead's turn", () => {
       const linked = scripted([text("Here's the link to the task: https://so.example.com/chat?task=in-1")]);
       expect(reply(await turn("link me the task", linked.fetcher))).toBe("Here's the link to the task: https://so.example.com/chat?task=in-1");
       expect(linked.bodies).toHaveLength(1);
-      const shown = scripted([answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
+      const shown = scripted([answer([call("find_tools", { query: "show the settings page" })]), answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
       expect(reply(await turn("where are settings?", shown.fetcher))).toBe("Here's the link to Settings.");
-      expect(shown.bodies).toHaveLength(2);
+      expect(shown.bodies).toHaveLength(3);
+    });
+  });
+
+  describe("tools on demand (docs/plans/lead-deferred-tools.md)", () => {
+    /** A provider reporting every byte it was sent as a cache-write token, plus the full output allowance: within the
+     * bytes-sent sanity check, beyond the reservation's one-token-per-three-bytes estimate. */
+    const overReporting = () => {
+      const bodies: string[] = [];
+      const fetcher = (async (_url: unknown, init?: { body?: unknown }) => {
+        const body = String(init?.body ?? ""); bodies.push(body);
+        return answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: Buffer.byteLength(body, "utf8"), cache_read_input_tokens: 0, output_tokens: MAX_OUTPUT_TOKENS });
+      }) as unknown as typeof fetch;
+      return { fetcher, bodies };
+    };
+    const toolNames = (body: string): string[] => (JSON.parse(body) as { tools: { name: string }[] }).tools.map(one => one.name);
+    test("a request advertises the core tools; a tool found by find_tools is advertised from the next request, after the core", async () => {
+      const script = scripted([answer([call("find_tools", { query: "make a flow that sorts my inbox" })]), text("I can draft that flow.")]);
+      expect(await turn("set up a flow", script.fetcher)).toMatchObject({ ok: true });
+      const first = toolNames(script.bodies[0]!), second = toolNames(script.bodies[1]!);
+      expect(first).toEqual(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)).map(one => one.name));
+      expect(first).not.toContain("propose_flow");
+      expect(second.slice(0, first.length)).toEqual(first);
+      expect(second.slice(first.length)).toContain("propose_flow");
+    });
+    test("a tool found in a response can't be called in that same response; it works from the next step, and the reply goes on", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "read the flows" }), call("get_flows", {})]),
+        answer([call("get_flows", {})]),
+        text("No flows yet."),
+      ]);
+      const outcome = await turn("what flows do I have?", script.fetcher);
+      expect(outcome).toMatchObject({ ok: true });
+      expect(script.bodies[1]).toContain("get_flows isn't available in this step. Call find_tools");
+      // Refused once (step 1); the history carries that refusal forward, and the step-2 call ran (no second refusal).
+      const refusals = (body: string) => body.split("get_flows isn't available in this step").length - 1;
+      expect(refusals(script.bodies[1]!)).toBe(1);
+      expect(refusals(script.bodies[2]!)).toBe(1);
+    });
+    test("an unadvertised, registered tool is refused before it runs — nothing is drafted", async () => {
+      const script = scripted([answer([call("propose_flow", { name: "x" })]), text("I'll search for it first.")]);
+      const outcome = await turn("make a flow", script.fetcher);
+      expect(outcome).toMatchObject({ ok: true, proposals: 0 });
+      expect(script.bodies[1]).toContain("propose_flow isn't available in this step");
+    });
+    test("find_tools is bounded: three searches per reply, then a refusal; an empty search names what can be found", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "zzzz qqqq" })]),
+        answer([call("find_tools", { query: "flows" }), call("find_tools", { query: "sweeps" })]),
+        answer([call("find_tools", { query: "subagents" })]),
+        text("done"),
+      ]);
+      expect(await turn("look around", script.fetcher)).toMatchObject({ ok: true });
+      expect(script.bodies[1]).toContain("Nothing matched. The other tools cover flows, subagents, sweeps");
+      expect(script.bodies[3]).toContain("You have searched 3 times this reply");
+    });
+    test("find_tools ranks by what you want to do, and never returns a core tool", () => {
+      expect(findLeadTools("make a flow")[0]?.name).toBe("propose_flow");
+      expect(findLeadTools("add a sales rep subagent")[0]?.name).toBe("propose_subagent");
+      expect(findLeadTools("run these eleven bug reports in parallel").map(one => one.name)).toContain("propose_sweep");
+      expect(findLeadTools("get_models")[0]?.name).toBe("get_models");
+      expect(findLeadTools("qqqq")).toEqual([]);
+      for (const query of ["task", "project", "memory", "decision", "result"]) for (const found of findLeadTools(query)) expect(LEAD_CORE_TOOLS.has(found.name), found.name).toBe(false);
+    });
+    test("prompt caching (Anthropic): breakpoints after the core tools, on the system block and on DATA; found tools come after the first", async () => {
+      const script = scripted([answer([call("find_tools", { query: "make a flow" })]), text("ok")]);
+      expect(await turn("set up a flow", script.fetcher)).toMatchObject({ ok: true });
+      const bodies = script.bodies.map(one => JSON.parse(one) as { system: unknown; tools: { name: string; cache_control?: unknown }[]; messages: { content: unknown }[] });
+      const core = LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)).length;
+      for (const body of bodies) {
+        expect(body.tools.flatMap((one, index) => one.cache_control === undefined ? [] : [index])).toEqual([core - 1]);
+        expect(body.system).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral" } })]);
+        expect(body.messages[0]!.content).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral" } })]);
+      }
+      // The second request's prefix up to the first breakpoint is byte-identical to the first's; propose_flow follows it.
+      expect(JSON.stringify(bodies[1]!.tools.slice(0, core))).toBe(JSON.stringify(bodies[0]!.tools.slice(0, core)));
+      expect(bodies[1]!.tools.slice(core).map(one => one.name)).toContain("propose_flow");
+    });
+    test("cache usage is read and settled per category; the reservation (at the cache-write rate) covers the worst settlement", async () => {
+      const cached = { input_tokens: 10, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 2_000, output_tokens: 20 };
+      const script = scripted([answer([{ type: "text", text: "hi" }], cached)]);
+      const live = session();
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      expect(outcome).toMatchObject({ ok: true });
+      if (!outcome.ok || outcome.replayed) throw new Error("unreachable");
+      const expected = settleWithCache(PRICE, { tokensIn: 3_010, tokensOut: 20, cacheWriteTokens: 1_000, cacheReadTokens: 2_000 });
+      expect(expected).toBe(10 * PRICE.inMicrousd + 1_000 * Math.ceil(PRICE.inMicrousd * 1.25) + 2_000 * Math.ceil(PRICE.inMicrousd * 0.1) + 20 * PRICE.outMicrousd);
+      expect(outcome.settledMicrousd).toBe(expected);
+      expect(store.getLeadTurn(outcome.turn)!.reservedMicrousd).toBeGreaterThanOrEqual(settleWithCache(PRICE, { tokensIn: 3_010, tokensOut: 20, cacheWriteTokens: 3_010 }));
+      // A cache count that isn't a token count is malformed usage: unknown cost, never a guess.
+      const bad = scripted([answer([{ type: "text", text: "hi" }], { ...cached, cache_read_input_tokens: "2000" })]);
+      expect(await turn("hello", bad.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
+    });
+    test("a reply is never charged past its reservation: usage reported beyond it ends the turn with its cost unknown", async () => {
+      // Every byte reported as a token and as a cache write: more than the reservation's estimate allows.
+      // A tight ceiling leaves room for one step, so the reservation is one step's worst case (as in Codex's probe).
+      const live = session(300_000);
+      const script = overReporting();
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      expect(script.bodies).toHaveLength(1);
+      expect(outcome).toMatchObject({ ok: false, failed: "over-reservation", unknownSpend: true, message: LEAD_FAILURE_COPY.overReserved });
+      if (outcome.ok) throw new Error("unreachable");
+      const row = store.getLeadTurn(outcome.turn)!;
+      // Unknown cost settles the reservation itself: never more than it, never past the session's ceiling.
+      expect(row.settledMicrousd).toBe(row.reservedMicrousd);
+      expect(store.getLeadSession(live.id)!.spentMicrousd).toBeLessThanOrEqual(live.ceilingMicrousd);
+    });
+    test("an explicit null cache count is malformed usage (unknown cost), never zero", async () => {
+      const script = scripted([answer([{ type: "text", text: "hi" }], { input_tokens: 10, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 5 })]);
+      expect(await turn("hello", script.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
+    });
+    test("an invalid find_tools call still uses one of the reply's three searches; a plural finds its tools", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "" }), call("find_tools", {}), call("find_tools", { nope: 1 })]),
+        answer([call("find_tools", { query: "sweeps" })]),
+        text("done"),
+      ]);
+      expect(await turn("look", script.fetcher)).toMatchObject({ ok: true });
+      expect(script.bodies[2]).toContain("You have searched 3 times this reply");
+      expect(findLeadTools("sweeps").map(one => one.name)).toEqual(expect.arrayContaining(["propose_sweep", "get_sweep", "propose_sweep_cancel"]));
+    });
+    test("the person paused by an unknown cost is told to confirm it, and the confirmation names the reply's real charge", async () => {
+      const live = session(300_000);
+      const outcome = await turn("hello", overReporting().fetcher, { session: live });
+      if (outcome.ok || !("failed" in outcome) || outcome.failed !== "over-reservation") throw new Error("expected the over-reservation path: " + JSON.stringify(outcome));
+      expect(store.leadTurnCostUnconfirmed(outcome.turn)).toBe(true);
+      // Replayed later (a restart, a channel delivery retry): the same true words while the cost is unconfirmed.
+      expect(leadFailureText("over-reservation", true)).toBe(LEAD_FAILURE_COPY.overReserved);
+      expect(leadFailureText("timeout", true)).toBe("The reply took too long and was stopped. Its cost isn't known, so chat is paused. Confirm the cost on the Chat page to turn chat back on.");
+      expect(leadFailureText("timeout", true)).not.toContain("Nothing it proposed was kept");
+      const reply = store.getLeadTurn(outcome.turn)!;
+      const stepRow = store.handle.prepare("SELECT id FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1").get(outcome.turn) as { id: number };
+      expect(store.leadTurnOfStep(stepRow.id)?.id).toBe(reply.id);
+      // The page's body (its frame is drawn around it when it is served).
+      const page = htmlString(withFormToken("csrf", () => chatAckPage(undefined as never, store.getChatTurn(stepRow.id)!, "n", store.leadTurnOfStep(stepRow.id)).body));
+      expect(page).toContain(`This lead reply's worst case, ${chatMoney(reply.settledMicrousd!)}, has already been counted`);
+      expect(page).not.toContain("charges the reserved worst case, $0.00");
+      // Once the cost is confirmed, the turn no longer keeps chat paused: a replay says what happened, not "confirm".
+      expect(store.acknowledgeChatTurn(stepRow.id, "alex", clock())).toBe(true);
+      expect(store.leadTurnCostUnconfirmed(outcome.turn)).toBe(false);
+    });
+    test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
+      const names = LEAD_TOOL_SCHEMAS.map(one => one.name);
+      expect(new Set(names).size).toBe(names.length);
+      expect(names).toContain("find_tools");
+      for (const core of LEAD_CORE_TOOLS) expect(names, core).toContain(core);
+      // Read in an earlier step before a proposal (memory), work needing an agent (capabilities), a review (result) and
+      // an answer (decision): a prerequisite is never behind find_tools.
+      for (const prerequisite of ["search_project_memory", "get_capabilities", "get_result", "get_decision", "find_tools"]) expect(LEAD_CORE_TOOLS.has(prerequisite), prerequisite).toBe(true);
+      const bytes = (list: readonly unknown[]) => list.reduce<number>((sum, one) => sum + JSON.stringify(one).length, 0);
+      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(26_000);
+      expect(bytes(LEAD_TOOL_SCHEMAS)).toBeGreaterThan(60_000);
     });
   });
 
@@ -836,7 +1006,11 @@ describe("the lead's turn", () => {
     const good = await turn("hello", script.fetcher, { session: live });
     expect(good).toMatchObject({ ok: true });
     if (!good.ok) throw new Error("unreachable");
-    expect(store.getLeadTurn(good.turn)?.reservedMicrousd).toBe(leadWorstCaseForPrice(PRICE, Buffer.byteLength(script.bodies[0]!, "utf8")));
+    // The reservation covers the FULL tool registry (tools found later in the reply are already paid for); what is sent
+    // advertises only the core tools, so the reservation is above the sent body's own worst case.
+    expect(script.bodies[0]).not.toContain(`"name":"propose_flow"`);
+    expect(script.bodies[0]).toContain(`"name":"find_tools"`);
+    expect(store.getLeadTurn(good.turn)!.reservedMicrousd).toBeGreaterThan(leadWorstCaseForPrice(PRICE, Buffer.byteLength(script.bodies[0]!, "utf8")));
     // The day counts lead turns as one turn each, and closes chat and mate alike.
     expect(await turn("hello", scripted([text("hi")]).fetcher, { session: live, config: { ...CONFIG, dailyTurns: 1 } })).toMatchObject({ ok: false, refused: "daily-cap" });
     expect(store.chatTurnsToday("alex", clock())).toBe(1);
