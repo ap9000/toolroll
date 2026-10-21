@@ -505,7 +505,9 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
           continue;
         }
       }
-      if (now.getTime() - Date.parse(row.createdAt) > DELIVERY_MAX_AGE_MS) {
+      // A day from when this part was planned (its card's tokens were minted then), not from the message's arrival: an
+      // answer that waited out a registry outage still gets its full day to go out.
+      if (now.getTime() - Date.parse(part.createdAt) > DELIVERY_MAX_AGE_MS) {
         report.problems.push(`telegram chat reply for update ${row.updateId} was not sent within a day: ${part.lastError ?? "unsent"}`);
         await notify(couldNotAnswerText("my reply couldn't be sent for a day"));
         finish({ state: "failed", outcome: `unsent:gave-up:${part.lastError ?? "unsent"}` });

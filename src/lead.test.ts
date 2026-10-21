@@ -726,6 +726,12 @@ describe("the lead's turn", () => {
       expect(outcome).toMatchObject({ ok: true });
       expect(found("replacementcanary")).toBe(1);
       expect(found("originalcanary")).toBe(0);
+      // Indexed a second time (the admitted pass started over, as after an update): still one hit.
+      store.setServiceCursor("memory-search:admitted", 0, clock());
+      expect(found("replacementcanary")).toBe(1);
+      // Words kept exactly as stored are found, whatever whitespace surrounds them.
+      store.appendLeadMessage({ thread: where.id, turn: null, role: "assistant", text: "\u00a0\u2003nbspcanary reply\ufeff\u000c" }, clock());
+      expect(found("nbspcanary")).toBe(1);
       // An admitted message the store later deletes (retention, after its conversation ended) is no longer found either.
       expect(queue.reconcile(clock(), 60_000)).toBeGreaterThanOrEqual(1);
       expect(queue.remove("alex", dropped.row.message, clock())).toBe("removed");

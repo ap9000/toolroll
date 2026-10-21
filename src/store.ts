@@ -1063,6 +1063,7 @@ CREATE TABLE IF NOT EXISTS lead_queue (
 );
 CREATE INDEX IF NOT EXISTS lead_queue_backlog ON lead_queue (approver, status, message);
 CREATE UNIQUE INDEX IF NOT EXISTS lead_queue_one_running ON lead_queue (approver) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS lead_queue_admitted ON lead_queue (turn_id) WHERE turn_id IS NOT NULL;
 `;
 
 /** v126: the outside source a task was filed from, kept with the task (a card's own task link moves on; this never
@@ -5007,6 +5008,8 @@ function initializeStore(db: Database, file: string): Store {
   }
   db.exec("CREATE INDEX IF NOT EXISTS lead_message_history ON lead_message (thread, pending, id)");
   db.exec(LEAD_QUEUE_SCHEMA);
+  // v128: the memory search indexes a waiting message when a turn takes it, found by the turn that took it.
+  db.exec("CREATE INDEX IF NOT EXISTS team_message_admitted ON team_message (turn_id) WHERE turn_id IS NOT NULL");
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);

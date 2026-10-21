@@ -1178,7 +1178,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "failed", outcome: "busy:gave-up" });
   });
 
-  test("an answered, receipted turn is delivered after a registry outage, however long it lasts — never abandoned", async () => {
+  test("an answered, receipted turn is delivered after a registry outage, however long it lasts (a day and more) — never abandoned", async () => {
     const me = who();
     const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
     const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
@@ -1194,7 +1194,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(store.finalizeLeadTurn(running.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1, message: { text: "Release 0.9.9 shipped.", activity: "" } }, now)).toBe(true);
     readProjects.mockRejectedValue(new Error("registry down"));
     try {
-      now = new Date(now.getTime() + 3 * 60 * 60_000);
+      now = new Date(now.getTime() + 25 * 60 * 60_000);
       expect((await pass()).report).not.toMatchObject({ chatRefused: 1 });
       expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "registry-unavailable:admitted" });
     } finally { readProjects.mockReset(); }
