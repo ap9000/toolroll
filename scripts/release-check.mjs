@@ -8,6 +8,7 @@
  * node scripts/release-check.mjs [--full] [--real] [--base <ref>] [--plan]
  */
 import { execFileSync } from "node:child_process";
+import { availableParallelism, loadavg } from "node:os";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gateWords, openGate } from "./provider-gate.mjs";
@@ -157,6 +158,46 @@ export function journeyEnv(kind, gate, env = process.env) {
   };
 }
 
+/**
+ * One concurrency budget for the whole check (docs/plans/heavy-jobs.md v2): the machine's cores, less what is already
+ * running on it, shared out — half to the unit suite's workers, the rest to browser lanes and upgrade workers — so the
+ * check never makes its own load (the 2026-10-20 release failed twice on a machine at load 21/24). It changes how fast
+ * the check runs, never what passes: every part still must pass, nothing is retried to hide a failure. `load` NaN
+ * (not measured: Windows reports 0 and is treated as unmeasured) budgets from the cores alone.
+ */
+export function checkBudget(cores, load = Number.NaN, upgradeLimit = Number.POSITIVE_INFINITY) {
+  const busy = Number.isFinite(load) && load > 0 ? Math.floor(load) : 0;
+  const free = Math.max(2, Math.floor(cores * 0.75) - busy);
+  // Shared out of one remaining total, so the shares never add up to more than the budget: one for the typecheck
+  // (it may still run beside everything else), half the rest to the units, then half of what is left to the app's
+  // browser lanes, then the flows' lanes, the rest to upgrade workers (never more than an explicitly stricter
+  // TOOLROLL_UPGRADE_WORKERS).
+  const shared = free - 1;
+  const unitWorkers = Math.max(1, Math.floor(shared / 2));
+  let left = shared - unitWorkers;
+  const app = Math.max(1, Math.min(LANES.app, Math.floor(left / 2))); left -= app;
+  const flows = Math.max(1, Math.min(LANES.flows, Math.floor(left / 2))); left -= flows;
+  const upgradeWorkers = Math.max(1, Math.min(4, upgradeLimit, left));
+  // Each part needs at least one: when even that doesn't fit, the parts run one after another instead of together.
+  const sequential = 1 + unitWorkers + app + flows + upgradeWorkers > free;
+  return { free, unitWorkers, lanes: { app, flows }, upgradeWorkers, sequential };
+}
+
+/** The machine's one-minute load, or NaN where it isn't measured (Windows always reports 0). */
+export const machineLoad = (platform = process.platform, read = loadavg) => platform === "win32" ? Number.NaN : read()[0];
+
+/** Busy: the load is past 85% of the cores. Unmeasured is never busy. */
+export const machineBusy = (load, cores) => Number.isFinite(load) && load / cores > 0.85;
+
+/** The load the check ran under, in one line: what it started at, its peak and mean, and the budget it chose. */
+export function loadWords(samples, cores, budget) {
+  const measured = samples.filter(Number.isFinite);
+  const shares = `budget ${budget.free} of ${cores} cores: ${budget.unitWorkers} unit workers, ${budget.lanes.app} app and ${budget.lanes.flows} flows browser lanes, ${budget.upgradeWorkers} upgrade workers${budget.sequential ? ", one part after another" : ""}`;
+  if (measured.length === 0) return `load: not measured on this platform; ${shares}`;
+  const peak = Math.max(...measured), mean = measured.reduce((a, b) => a + b, 0) / measured.length;
+  return `load: ${measured[0].toFixed(1)} at start, peak ${peak.toFixed(1)}, mean ${mean.toFixed(1)} on ${cores} cores; ${shares}`;
+}
+
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
 export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000 } = {}) {
@@ -219,12 +260,26 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   console.log(`Release check against ${base === null ? "nothing (no reachable v* release tag)" : base} (${changed.length} changed files): ${plan.why}${upgrade ? full ? "; the upgrade path from every release since 0.5.0" : "; upgrade path: last five release tags, baseline and 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
 
+  // A busy machine first gets up to five minutes to quieten (said, never silently): the check's own load comes on top.
+  // TOOLROLL_CHECK_CORES / TOOLROLL_CHECK_LOAD stand in for the machine (tests make the budget exact with them).
+  const cores = Number(process.env.TOOLROLL_CHECK_CORES) > 0 ? Number(process.env.TOOLROLL_CHECK_CORES) : availableParallelism();
+  const loadNow = () => process.env.TOOLROLL_CHECK_LOAD !== undefined && process.env.TOOLROLL_CHECK_LOAD !== "" ? Number(process.env.TOOLROLL_CHECK_LOAD) : machineLoad();
+  for (const waitStarted = Date.now(); machineBusy(loadNow(), cores) && Date.now() - waitStarted < 5 * 60_000;) {
+    console.log(`The machine is busy (load ${loadNow().toFixed(1)} on ${cores} cores); waiting for it to quieten before starting (up to 5 min).`);
+    await new Promise(resolve => setTimeout(resolve, 30_000));
+  }
+  const explicitUpgrade = Number(process.env.TOOLROLL_UPGRADE_WORKERS);
+  const budget = checkBudget(cores, loadNow(), Number.isInteger(explicitUpgrade) && explicitUpgrade > 0 ? explicitUpgrade : Number.POSITIVE_INFINITY);
+  const samples = [loadNow()];
+  const sampler = setInterval(() => samples.push(loadNow()), 15_000);
+  sampler.unref();
+  console.log(loadWords(samples, cores, budget));
   // Each journey run: a script, scripted or real-model, in every group with journeys of that kind.
   const journeyRuns = !scripts ? [] : [
     ["flows", "scripted", plan.checks], ["app", "scripted", plan.checks], ["flows-real", "real", plan.real], ["app-real", "real", plan.real],
   ].filter(([, , runs]) => runs).map(([label, kind]) => {
     const script = label.replace(/-real$/, "");
-    return { label, kind, argv: [`scripts/${script}-e2e.mjs`, ...(script === "app" ? ["--skip-build"] : []), "--journeys", kind, "--at-once", String(LANES[script])] };
+    return { label, kind, argv: [`scripts/${script}-e2e.mjs`, ...(script === "app" ? ["--skip-build"] : []), "--journeys", kind, "--at-once", String(budget.lanes[script])] };
   });
   // The logs and the build's outcome; removed when the check ends, however it ends.
   const ci = plan.checks ? passedCandidateCI({ full, git }) : { passed: false, why: "no unit suite selected" };
@@ -252,20 +307,31 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     return one;
   });
   const units = plan.checks && (!ci.passed || localUnits.length > 0)
-    ? [run("unit", "npm", ["run", "test:all", "--", "--run", "--reporter=dot", ...localUnits], { TOOLROLL_RELEASE_BUILD: built })] : [];
+    ? [run("unit", "npm", ["run", "test:all", "--", "--run", "--reporter=dot", `--maxWorkers=${budget.unitWorkers}`, ...localUnits], { TOOLROLL_RELEASE_BUILD: built })] : [];
   // The journeys need the built console; they don't start when the build (or a typecheck already done) failed.
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });
-  const journeys = build.then(one => {
+  const journeys = build.then(async one => {
+    // Too little room for every part at once: the journeys wait for the typecheck and the units.
+    if (budget.sequential) { await typecheck; await Promise.all(units); }
     held = journeyRuns.length > 0 && (parts.signal.aborted || one.code !== 0 || (typed !== null && typed.code !== 0));
     if (held) return [];
-    return Promise.all(journeyRuns.map(each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)], journeyEnv(each.kind, gate))));
+    const journey = each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)], journeyEnv(each.kind, gate));
+    // Two waves: the scripted journeys (and the units beside them) first, then the real-model ones, which wait mostly on
+    // the provider and need the least of the machine.
+    return Promise.all(journeyRuns.filter(each => each.kind === "scripted").map(journey)).then(async scripted => {
+      await Promise.all(units);
+      if (parts.signal.aborted) return scripted;
+      return [...scripted, ...await Promise.all(journeyRuns.filter(each => each.kind === "real").map(journey))];
+    });
   });
   // The upgrade path packs the built candidate: it starts once the build passed.
   let upgradeHeld = false;
-  const upgraded = build.then(one => {
+  const upgraded = build.then(async one => {
+    // …and the upgrade path waits for the journeys.
+    if (budget.sequential) await journeys;
     upgradeHeld = upgrade && (parts.signal.aborted || one.code !== 0);
-    return upgrade && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs", ...(full ? ["--full"] : [])])] : [];
+    return upgrade && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs", ...(full ? ["--full"] : [])], { TOOLROLL_UPGRADE_WORKERS: String(budget.upgradeWorkers) })] : [];
   }).then(list => Promise.all(list));
   const first = await Promise.all([typecheck, build]);
   const results = [...await Promise.all(units), ...await journeys, ...await upgraded];
@@ -284,6 +350,9 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   if (held) console.log("browser journeys not run: the typecheck or build failed");
   if (upgradeHeld) console.log("upgrade path not run: the build failed");
   if (results.length === 0 && first.every(one => one.code === 0)) console.log("typecheck and build passed; nothing else to run");
+  // The load it ran under, so a failure on a busy machine can be judged — never used to excuse one.
+  clearInterval(sampler);
+  console.log(loadWords(samples, cores, budget));
   console.log(`took: ${[...first, ...results].map(one => `${one.label} ${took(one.ms)}`).join(", ")}; whole check ${took(Date.now() - started)}`);
   if (gate !== null) { console.log(gateWords(gate.facts())); gate.close(); }
   process.exitCode = parts.failure() !== null || [...first, ...results].some(one => one.code !== 0) ? 1 : 0;
