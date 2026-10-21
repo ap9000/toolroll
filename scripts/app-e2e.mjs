@@ -39,7 +39,7 @@ const GROUPS = {
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
-  maya: { journeys: 5, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help; messages that wait for the lead" },
+  maya: { journeys: 6, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help; messages that wait for the lead; the chat box above a phone's keyboard" },
   rosa: { journeys: 4, real: 1, shared: 1, about: "A subagent that acts with a real tool: its rules, routine, week and undo" },
   memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },
@@ -1320,6 +1320,50 @@ await journey("maya", SCRIPTED, "The lead queue: a message sent while the lead a
   if (statuses.length !== 1 || statuses[0] !== "answered") throw new Error(`lead queue rows: ${JSON.stringify(statuses)}`);
   await shot("lead-queue-answered");
   return { order };
+});
+
+await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboard: the box and Send stay in view while typing, the newest message sits just above them, and the full screen comes back when the keyboard goes", ["The lead queue: a message sent while the lead answers is saved, shows Queued with Remove, and runs next by itself, in order"], async () => {
+  const phone = await alexPhone("light");
+  await phone.goto(`${base}/chat`);
+  const box = phone.locator("[data-workspace-composer] textarea");
+  await waitFor(box, "the chat box");
+  // A software keyboard as iOS Safari makes it: the page keeps its height and only the visible area shrinks (336px),
+  // optionally panned down by Safari to show the field. No physical keyboard or Safari is claimed.
+  const keyboard = (height, top) => phone.evaluate(([height, top]) => {
+    if (height === 0) { delete visualViewport.height; delete visualViewport.offsetTop; }
+    else { Object.defineProperty(visualViewport, "height", { configurable: true, get: () => innerHeight - height }); Object.defineProperty(visualViewport, "offsetTop", { configurable: true, get: () => top }); }
+    visualViewport.dispatchEvent(new Event("resize"));
+  }, [height, top]);
+  const measure = () => phone.evaluate(() => {
+    const form = document.activeElement.closest("form"), area = document.querySelector(".so-composer-area").getBoundingClientRect();
+    const last = [...document.querySelectorAll("#chat-thread [data-message-id]")].at(-1)?.getBoundingClientRect();
+    const shell = document.querySelector(".so-workspace").getBoundingClientRect();
+    return { visible: visualViewport.offsetTop + visualViewport.height, box: document.activeElement.getBoundingClientRect().bottom, send: form.querySelector('button[type="submit"]').getBoundingClientRect().bottom,
+      areaTop: area.top, lastBottom: last?.bottom ?? null, shellTop: shell.top, shellHeight: shell.height };
+  });
+  try {
+    await box.focus();
+    await box.fill("A first line\nand a second\nand a third");
+    await keyboard(336, 0);
+    await phone.waitForFunction(() => document.documentElement.hasAttribute("data-mobile-keyboard"));
+    await phone.waitForTimeout(100);
+    const typing = await measure();
+    await phone.screenshot({ path: join(w.out, "chat-keyboard-phone.png") });
+    if (typing.box > typing.visible + 0.5 || typing.send > typing.visible + 0.5) throw new Error(`the chat box sits under the keyboard: ${JSON.stringify(typing)}`);
+    if (typing.lastBottom === null || typing.lastBottom > typing.areaTop + 1 || typing.lastBottom < 0) throw new Error(`the newest message isn't just above the box: ${JSON.stringify(typing)}`);
+    await keyboard(336, 120);
+    await phone.waitForFunction(() => getComputedStyle(document.querySelector(".so-workspace")).top === "120px");
+    const panned = await measure();
+    if (Math.round(panned.shellTop) !== 120 || panned.box > panned.visible + 0.5) throw new Error(`the screen doesn't follow Safari's pan: ${JSON.stringify(panned)}`);
+    if (await box.inputValue() !== "A first line\nand a second\nand a third") throw new Error("the draft changed while the keyboard moved");
+    await keyboard(0, 0);
+    await box.fill("");
+    await box.blur();
+    await phone.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-keyboard"));
+    const rested = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
+    if (Math.round(rested) !== 844) throw new Error(`the screen didn't come back to full height: ${rested}`);
+    return { typing, panned };
+  } finally { await putPhoneDown(); }
 });
 
 await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {

@@ -24,6 +24,9 @@
   #standing-orders-workspace[data-workspace-unavailable] > * { animation: none !important; }
 }
 body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); overflow: hidden; }
+/* The home indicator's strip, which a phone's keyboard covers while it is up (mobile-viewport.ts says when). */
+:root { --safe-bottom: env(safe-area-inset-bottom, 0px); }
+html[data-mobile-keyboard] { --safe-bottom: 0px; }
 #standing-orders-workspace { min-width: 0; }
 .so-workspace, .so-navigation-dialog { -webkit-tap-highlight-color: transparent; box-sizing: border-box; color: var(--so-ink); font: 13px/1.5 var(--so-font); -webkit-font-smoothing: antialiased; }
 .so-workspace *, .so-navigation-dialog * { box-sizing: border-box; }
@@ -343,7 +346,14 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 }
 
 @media (max-width: 900px) {
-  .so-workspace, .so-workspace:has(.so-supporting-panel--detail) { display: flex; height: 100dvh; min-height: 360px; padding: 0; background: var(--so-paper); }
+  /* The shell is the visible area, not 100dvh: an iPhone's keyboard covers the page without resizing it, so a
+     shell of the full height keeps every composer under the keys. Fixed at the visible top, it also follows
+     Safari when it pans the page to show the field being typed in. */
+  .so-workspace, .so-workspace:has(.so-supporting-panel--detail) { display: flex; position: fixed; left: 0; right: 0; top: var(--viewport-top, 0px); height: var(--viewport-height, 100dvh); min-height: 360px; padding: 0; background: var(--so-paper); }
+  html[data-mobile-keyboard] .so-workspace { min-height: 0; }
+  /* While typing, the thread and the box get the room: the settings fold waits for the keyboard to go. */
+  html[data-mobile-keyboard] .so-conversation-settings { display: none; }
+  html[data-mobile-keyboard] .so-composer-area { padding-top: 6px; padding-bottom: 8px; }
   .so-sidebar { display: none; }
   .so-main-column { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }
   .so-supporting-panel { display: none; width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
@@ -377,7 +387,7 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
   .ui-conversation-empty p { max-width: 34ch; }
   .ui-message-content { font-size: 15px; line-height: 1.7; }
   .ui-message--user { max-width: 94%; }
-  .so-composer-area { padding: 8px 12px max(12px, env(safe-area-inset-bottom)); }
+  .so-composer-area { padding: 8px 12px max(12px, var(--safe-bottom)); }
   .so-composer-area .ui-textarea { font-size: 16px; }
   .so-composer-area form[data-workspace-composer] { padding: 11px; }
   .so-composer-actions .ui-button { min-height: 42px; }
@@ -449,7 +459,7 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 .so-team-room-list { display: grid; margin-bottom: var(--so-space-xl); }
 .so-team-room-list a { padding: var(--so-space-md) 0; border-bottom: 1px solid var(--so-line); display: flex; justify-content: space-between; gap: var(--so-space-lg); min-height: 44px; overflow-wrap: anywhere; }
 .so-team-room-list a span { color: var(--so-muted); font-size: 12px; }
-.so-team-composer { flex: 0 0 auto; padding: 14px 24px max(16px, env(safe-area-inset-bottom)); border-top: 1px solid var(--so-line); background: var(--so-paper); }
+.so-team-composer { flex: 0 0 auto; padding: 14px 24px max(16px, var(--safe-bottom)); border-top: 1px solid var(--so-line); background: var(--so-paper); }
 .so-team-composer textarea { resize: vertical; min-height: 80px; max-height: 220px; }
 .so-team-compose-actions { display: flex; justify-content: flex-end; gap: var(--so-space-sm); padding-top: var(--so-space-sm); }
 .so-team-settings { margin-top: var(--so-space-2xl); }
@@ -457,7 +467,7 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
 @media (max-width: 640px) {
   .so-team-toolbar { padding: var(--so-space-md) var(--so-space-lg); }
   .so-team-content { padding: 18px var(--so-space-lg); }
-  .so-team-composer { padding: 12px 16px max(12px, env(safe-area-inset-bottom)); }
+  .so-team-composer { padding: 12px 16px max(12px, var(--safe-bottom)); }
   .so-team-audience[open] { max-width: 100%; flex-basis: 100%; }
   .so-team-toolbar:has(.so-team-audience[open]) { flex-wrap: wrap; max-height: 45dvh; overflow-y: auto; }
   .so-team-chat textarea, .so-team-chat input, .so-team-chat select { font-size: 16px; }
@@ -787,7 +797,7 @@ body:has(.so-workspace) { margin: 0; padding: 0; background: var(--so-ground); o
   .so-workspace[data-workspace-phone-view="work"] .so-details-panel { display: flex; }
   .so-details-header { min-height: 60px; padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top)); }
   .so-details-header h2 { font-size: 16px; }
-  .so-task-composer { padding-bottom: env(safe-area-inset-bottom); }
+  .so-task-composer { padding-bottom: var(--safe-bottom); }
 }
 @media (max-width: 760px) {
   .so-details-header { min-height: 52px; padding-top: max(var(--so-space-xs), env(safe-area-inset-top)); padding-bottom: var(--so-space-xs); }

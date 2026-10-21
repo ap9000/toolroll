@@ -330,7 +330,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
   const hasMore = tucked !== null || line !== null || next !== null || effect !== null;
   const rest = more ? "" : "phone:hidden";
   return <Card data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
-    className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,env(safe-area-inset-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
+    className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,var(--safe-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
     {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-body", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />{line}</p>}
     {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-body" data-failure-suggestion>
