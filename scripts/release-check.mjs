@@ -168,16 +168,18 @@ export function journeyEnv(kind, gate, env = process.env) {
 export function checkBudget(cores, load = Number.NaN, upgradeLimit = Number.POSITIVE_INFINITY) {
   const busy = Number.isFinite(load) && load > 0 ? Math.floor(load) : 0;
   const free = Math.max(2, Math.floor(cores * 0.75) - busy);
-  // Shared out of one remaining total, so the shares never add up to more than the budget: half to the units, then
-  // half of what is left to the app's browser lanes, then the flows' lanes, the rest to upgrade workers (never more
-  // than an explicitly stricter TOOLROLL_UPGRADE_WORKERS).
-  const unitWorkers = Math.max(1, Math.floor(free / 2));
-  let left = free - unitWorkers;
+  // Shared out of one remaining total, so the shares never add up to more than the budget: one for the typecheck
+  // (it may still run beside everything else), half the rest to the units, then half of what is left to the app's
+  // browser lanes, then the flows' lanes, the rest to upgrade workers (never more than an explicitly stricter
+  // TOOLROLL_UPGRADE_WORKERS).
+  const shared = free - 1;
+  const unitWorkers = Math.max(1, Math.floor(shared / 2));
+  let left = shared - unitWorkers;
   const app = Math.max(1, Math.min(LANES.app, Math.floor(left / 2))); left -= app;
   const flows = Math.max(1, Math.min(LANES.flows, Math.floor(left / 2))); left -= flows;
   const upgradeWorkers = Math.max(1, Math.min(4, upgradeLimit, left));
   // Each part needs at least one: when even that doesn't fit, the parts run one after another instead of together.
-  const sequential = unitWorkers + app + flows + upgradeWorkers > free;
+  const sequential = 1 + unitWorkers + app + flows + upgradeWorkers > free;
   return { free, unitWorkers, lanes: { app, flows }, upgradeWorkers, sequential };
 }
 
@@ -310,8 +312,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });
   const journeys = build.then(async one => {
-    // Too little room for every part at once: the journeys wait for the units.
-    if (budget.sequential) await Promise.all(units);
+    // Too little room for every part at once: the journeys wait for the typecheck and the units.
+    if (budget.sequential) { await typecheck; await Promise.all(units); }
     held = journeyRuns.length > 0 && (parts.signal.aborted || one.code !== 0 || (typed !== null && typed.code !== 0));
     if (held) return [];
     const journey = each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)], journeyEnv(each.kind, gate));

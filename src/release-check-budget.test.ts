@@ -3,11 +3,12 @@
 import { expect, test } from "vitest";
 import { checkBudget, loadWords, machineBusy, machineLoad } from "../scripts/release-check.mjs";
 
-const total = (budget: ReturnType<typeof checkBudget>) => budget.unitWorkers + budget.lanes.app + budget.lanes.flows + budget.upgradeWorkers;
+// The typecheck's one, then every share: never past the budget.
+const total = (budget: ReturnType<typeof checkBudget>) => 1 + budget.unitWorkers + budget.lanes.app + budget.lanes.flows + budget.upgradeWorkers;
 
 test("a quiet machine shares three quarters of its cores, and the shares add up to the budget, never more", () => {
-  expect(checkBudget(24, 2)).toEqual({ free: 16, unitWorkers: 8, lanes: { app: 4, flows: 2 }, upgradeWorkers: 2, sequential: false });
-  expect(checkBudget(8, 0)).toEqual({ free: 6, unitWorkers: 3, lanes: { app: 1, flows: 1 }, upgradeWorkers: 1, sequential: false });
+  expect(checkBudget(24, 2)).toEqual({ free: 16, unitWorkers: 7, lanes: { app: 4, flows: 2 }, upgradeWorkers: 2, sequential: false });
+  expect(checkBudget(8, 0)).toEqual({ free: 6, unitWorkers: 2, lanes: { app: 1, flows: 1 }, upgradeWorkers: 1, sequential: false });
   for (const [cores, load] of [[24, 2], [8, 0], [16, 4], [64, 0], [12, 3]] as const) {
     const budget = checkBudget(cores, load);
     expect(total(budget)).toBeLessThanOrEqual(budget.free);
@@ -35,7 +36,7 @@ test("unmeasured load (Windows reports 0) budgets from the cores alone and is ne
 });
 
 test("the summary names the load the check ran under and the budget it chose", () => {
-  expect(loadWords([2, 9.4, 6], 24, checkBudget(24, 2))).toBe("load: 2.0 at start, peak 9.4, mean 5.8 on 24 cores; budget 16 of 24 cores: 8 unit workers, 4 app and 2 flows browser lanes, 2 upgrade workers");
+  expect(loadWords([2, 9.4, 6], 24, checkBudget(24, 2))).toBe("load: 2.0 at start, peak 9.4, mean 5.8 on 24 cores; budget 16 of 24 cores: 7 unit workers, 4 app and 2 flows browser lanes, 2 upgrade workers");
   expect(loadWords([21], 24, checkBudget(24, 21))).toMatch(/one part after another$/);
   expect(loadWords([Number.NaN], 8, checkBudget(8))).toMatch(/^load: not measured on this platform; budget 6 of 8 cores/);
 });
