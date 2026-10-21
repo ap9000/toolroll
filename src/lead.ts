@@ -201,7 +201,14 @@ export const LEAD_FAILURE_COPY = {
 } as const;
 
 /** A failed turn's saved reason as plain words, for a surface that reads the turn back later (a restart, a delivery retry). */
-export function leadFailureText(reason: string | null): string {
+export function leadFailureText(reason: string | null, unknownSpend = false): string {
+  // A turn whose cost is unknown paused chat: say what happened (its reason's first sentence), then that the person must
+  // confirm the cost before chat runs again — never "send it again", which would only meet the pause.
+  if (unknownSpend) {
+    if (reason === "malformed-reply") return LEAD_FAILURE_COPY.unreadableUnknownCost;
+    const happened = /^[^.]*\./.exec(leadFailureText(reason))?.[0] ?? "The lead's reply didn't finish.";
+    return `${happened} Its cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.`;
+  }
   switch (reason) {
     case "timeout": case "crashed": return LEAD_FAILURE_COPY.tooLong;
     case "malformed-reply": return LEAD_FAILURE_COPY.unreadable;
@@ -638,7 +645,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           ? reason : `That step didn't work (${leadToolLabel(call.name)}).` };
       }
       progress({ kind: "tool-result", turn: turnId, step: steps, id: progressId, outcome: displayOutcome });
-      if (READ_TOOLS.has(call.name)) reads++;
+      // A call refused because this request did not advertise it read nothing.
+      if (READ_TOOLS.has(call.name) && advertisedNames.has(call.name)) reads++;
       if (call.name === "show_control" && outcome.ok) shownControl = true;
       // Opt-in, local diagnostics for end-to-end runs: what the lead asked of each tool and what came back (its start), keys
       // blanked. Each line stays whole JSON so a run can assert on what a tool returned rather than on the model's words.

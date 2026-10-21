@@ -6,6 +6,11 @@ import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverSta
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
 import { leadToolLabel } from "./lead-progress.js";
 import { settleWithCache } from "./converse.js";
+import { chatAckPage } from "./server/render-chat.js";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
+import { chatMoney } from "./server/chrome.js";
+import { leadFailureText } from "./lead.js";
 import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
 import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, LEAD_TOOL_SCHEMAS, executeLeadTool, findLeadTools, redactForLead } from "./lead-tools.js";
@@ -289,10 +294,13 @@ describe("the lead's turn", () => {
   });
 
   test('project knowledge reads are counted without granting a write tool',async()=>{
-    const script=scripted([answer([call('get_project_knowledge',{repo:'r1'})]),text('Project knowledge is unavailable; no changes made.')]);
+    // Found first (tools on demand), then read in the next step: exactly one read, and no write tool is ever advertised.
+    const script=scripted([answer([call('find_tools',{query:'project knowledge'})]),answer([call('get_project_knowledge',{repo:'r1'})]),text('Project knowledge is unavailable; no changes made.')]);
     const outcome=await turn('Read project knowledge',script.fetcher);
     expect(outcome).toMatchObject({ok:true,activity:expect.stringContaining('read 1'),proposals:0});
-    expect(script.bodies[0]).toContain('get_project_knowledge');expect(script.bodies[0]).not.toContain('save_project_knowledge');
+    expect(script.bodies[0]).not.toContain('"name":"get_project_knowledge"');expect(script.bodies[1]).toContain('"name":"get_project_knowledge"');
+    expect(script.bodies[2]).not.toContain("get_project_knowledge isn't available");
+    for(const body of script.bodies)expect(body).not.toContain('save_project_knowledge');
   });
 
   test.each([
@@ -331,10 +339,12 @@ describe("the lead's turn", () => {
     // Exercise the stream guard even if a future copy mapping introduces unsafe text.
     const format = vi.spyOn(leadProgress, "leadToolFailureReason").mockReturnValue("Couldn't read sk-ant-api03-" + "A".repeat(90));
     const events: leadProgress.LeadProgress[] = [];
-    const script = scripted([answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
+    // get_flows is found first, so the failure below is the tool's own (no such flow), not the advertisement refusal.
+    const script = scripted([answer([call("find_tools", { query: "read the flows" })]), answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
     try {
       expect(await turn("Read the flow", script.fetcher, { onProgress: event => events.push(event) })).toMatchObject({ ok: true });
-      expect(events.filter(event => event.kind === "tool-result")).toEqual([
+      expect(script.bodies[2]).toContain("No such flow in your projects.");
+      expect(events.filter(event => event.kind === "tool-result" && event.outcome.state === "failed")).toEqual([
         expect.objectContaining({ outcome: { state: "failed", reason: "That step didn't work (Reading the flows)." } }),
       ]);
       expect(JSON.stringify(events)).not.toContain("sk-ant-api03-");
@@ -682,6 +692,22 @@ describe("the lead's turn", () => {
       expect(await turn("look", script.fetcher)).toMatchObject({ ok: true });
       expect(script.bodies[2]).toContain("You have searched 3 times this reply");
       expect(findLeadTools("sweeps").map(one => one.name)).toEqual(expect.arrayContaining(["propose_sweep", "get_sweep", "propose_sweep_cancel"]));
+    });
+    test("the person paused by an unknown cost is told to confirm it, and the confirmation names the reply's real charge", async () => {
+      const live = session();
+      const script = scripted([answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: 70_000, cache_read_input_tokens: 0, output_tokens: 2_048 })]);
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      if (outcome.ok) throw new Error("expected the unknown-cost path");
+      expect(store.leadTurnCostUnknown(outcome.turn)).toBe(true);
+      expect(leadFailureText("malformed-reply", true)).toContain("Confirm the cost on the Chat page");
+      expect(leadFailureText("malformed-reply", false)).not.toContain("Confirm the cost");
+      const reply = store.getLeadTurn(outcome.turn)!;
+      const stepRow = store.handle.prepare("SELECT id FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1").get(outcome.turn) as { id: number };
+      expect(store.leadTurnOfStep(stepRow.id)?.id).toBe(reply.id);
+      // The page's body (its frame is drawn around it when it is served).
+      const page = htmlString(withFormToken("csrf", () => chatAckPage(undefined as never, store.getChatTurn(stepRow.id)!, "n", store.leadTurnOfStep(stepRow.id)).body));
+      expect(page).toContain(`This lead reply's worst case, ${chatMoney(reply.settledMicrousd!)}, has already been counted`);
+      expect(page).not.toContain("charges the reserved worst case, $0.00");
     });
     test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
       const names = LEAD_TOOL_SCHEMAS.map(one => one.name);

@@ -577,7 +577,7 @@ export async function processChatEvent(
         event.id,
         [
           {
-            text: leadFailureText(turn?.failureReason ?? null),
+            text: leadFailureText(turn?.failureReason ?? null, turn != null && store.leadTurnCostUnknown(turn.id)),
           },
         ],
         nowOf(options),

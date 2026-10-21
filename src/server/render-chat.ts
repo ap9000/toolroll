@@ -587,12 +587,17 @@ export function chatPage(chrome: Chrome, data: {
   return screen("chat", chatWorkspace(joinHtml(parts, "\n"), data.projects, true, data.focusTask, data.resultPanel ?? null), { chrome, functional: { script: CHAT_UI_SCRIPT + (data.focusTask === null ? "" : RESULT_REVIEW_SCRIPT), fetches: data.focusTask !== null } });
 }
 
-export function chatAckPage(chrome: Chrome, turn: ChatTurn, nonce: string): Screen {
+export function chatAckPage(chrome: Chrome, turn: ChatTurn, nonce: string, reply: LeadTurn | null = null): Screen {
+  // A lead reply's step reserves nothing itself: the reply set the money aside, and a reply whose cost is unknown has
+  // already counted that whole amount against its conversation. Say that amount, never the step's zero.
+  const replyCharge = reply === null ? null : reply.settledMicrousd ?? reply.reservedMicrousd;
   return screen("chat", joinHtml([
     html`<h1>Unknown spend</h1>`,
     html`<div class="card">`,
     html`<p>Turn <span class="mono">#${turn.id}</span> on <span class="mono">${turn.provider} · ${turn.model}</span> may have started before it failed (${turn.failureReason ?? "crashed"}), and its cost could not be measured.</p>`,
-    html`<p><strong>Acknowledging charges the reserved worst case, ${chatMoney(turn.reservedMicrousd)}, to the ledger and re-enables chat on this credential.</strong></p>`,
+    replyCharge === null
+      ? html`<p><strong>Acknowledging charges the reserved worst case, ${chatMoney(turn.reservedMicrousd)}, to the ledger and re-enables chat on this credential.</strong></p>`
+      : html`<p><strong>This lead reply's worst case, ${chatMoney(replyCharge)}, has already been counted against its conversation. Acknowledging adds nothing more and re-enables chat on this credential.</strong></p>`,
     html`<p class="meta">Check the provider's own usage dashboard if you want the exact figure first; the ledger keeps whichever is known.</p>`,
     postForm(`/chat/ack/${turn.id}`, joinHtml([
       html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
