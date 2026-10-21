@@ -9,7 +9,7 @@ import { HEADLINES, HEADLINE_TONE } from "../../task-status.js";
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, ArrowRight, Check, ChevronRight, CircleDot, FilePlus2, ListChecks, MessageCircleQuestion, Repeat, X } from "lucide-react";
-import { useEffect, useState, type ReactNode, type SyntheticEvent } from "react";
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from "react";
 import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskSection, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
@@ -374,33 +374,45 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
   </div>;
 }
 
-/** Where the one thing that waits on a person lives: the status card's action, or the approval under it. */
+/** Where the one thing that waits on a person lives: the status card's action (Confirm it stopped, Build again, Retry
+ * and the rest), or the approval under it. A button inside a closed fold is never the one action. */
 const PRIMARY_ACTION = "[data-task-status] [data-primary-action], .so-task-approval [data-primary-action]";
+const primaryActionNow = (): HTMLElement | null =>
+  [...document.querySelectorAll<HTMLElement>(PRIMARY_ACTION)].find(one => one.closest("details:not([open])") === null && (one.textContent?.trim() ?? "") !== "") ?? null;
 
 /** The one action, never out of reach: while something waits on the person and its button has scrolled out of
- * view, a bar pinned to the foot of the page names it. A tap brings the button back into view and puts the cursor
- * where it starts (its password, when it asks for one); it never acts by itself. */
-function PinnedAction({ waiting, version }: { waiting: boolean; version: string }) {
+ * view, a bar pinned to the foot of the page names it. A tap brings the button back into view (opening any fold
+ * around it) and puts the cursor where it starts (its password, when it asks for one); it never acts by itself.
+ * The button is found again after every render, so a live update that swaps it (Retry appearing, a new approval)
+ * is followed. */
+function PinnedAction({ waiting }: { waiting: boolean }) {
   const [action, setAction] = useState<{ element: HTMLElement; label: string } | null>(null);
   const [hidden, setHidden] = useState(true);
+  const tracked = useRef<{ element: HTMLElement | null; label: string; observer: IntersectionObserver | null }>({ element: null, label: "", observer: null });
   useEffect(() => {
-    if (!waiting) { setAction(null); return; }
-    const element = document.querySelector<HTMLElement>(PRIMARY_ACTION);
+    const element = waiting ? primaryActionNow() : null;
     const label = element?.textContent?.trim() ?? "";
-    if (element === null || label === "") { setAction(null); return; }
+    const now = tracked.current;
+    if (element === now.element && label === now.label) return;
+    now.observer?.disconnect();
+    now.element = element; now.label = label; now.observer = null;
+    setHidden(true);
+    if (element === null || typeof IntersectionObserver === "undefined") { setAction(null); return; }
+    now.observer = new IntersectionObserver(entries => setHidden(entries.some(one => one.isIntersecting)));
+    now.observer.observe(element);
     setAction({ element, label });
-    const observer = new IntersectionObserver(entries => setHidden(entries.some(one => one.isIntersecting)));
-    observer.observe(element);
-    return () => observer.disconnect();
-    // Found again whenever what the page shows changes (a live update can replace the button).
-  }, [waiting, version]);
+  });
+  useEffect(() => () => tracked.current.observer?.disconnect(), []);
   if (action === null || hidden) return null;
   const reach = () => {
-    action.element.scrollIntoView({ block: "center", behavior: "smooth" });
+    for (let node = action.element.parentElement; node !== null; node = node.parentElement) if (node instanceof HTMLDetailsElement) node.open = true;
+    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    action.element.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
     const field = action.element.closest("form")?.querySelector<HTMLInputElement>("input[type=password], textarea, input[type=text]:not([tabindex='-1'])");
     (field ?? action.element).focus({ preventScroll: true });
   };
-  return <div data-pinned-action className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+  return <div data-pinned-action role="region" aria-label="What this task needs from you"
+    className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
     <span className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
       <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-attention" />Needs you
     </span>
@@ -458,7 +470,6 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
 
     {details && <div className="border-t border-border pt-2"><TaskDetails view={view} /></div>}
 
-    <PinnedAction waiting={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed"}
-      version={`${view.status?.status.headline ?? ""}|${view.status?.action?.label ?? ""}|${view.approval.length}|${view.rebuild?.action ?? ""}`} />
+    <PinnedAction waiting={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed"} />
   </div>;
 }

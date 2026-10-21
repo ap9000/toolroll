@@ -12151,9 +12151,12 @@ export class Store {
     taskId: string,
     by: string,
     now: Date,
+    /** Approve & build again: requeue only while this exact build is the finished task's latest result and the scope
+     * is still the one just approved, read inside this transaction ("moved" otherwise). */
+    expect?: { run: number; scopeDigest: string },
   ):
     | { ok: true; resolvedIncidents: number; rejectedRun: number | null }
-    | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" } {
+    | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "moved" } {
     return this.transact(() => {
       const ref = this.db
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
@@ -12196,6 +12199,11 @@ export class Store {
         }
       } else if (incidents.length === 0 && state !== "failed") {
         return { ok: false as const, reason: "not-stalled" as const };
+      }
+      if (expect !== undefined) {
+        const scope = this.db.prepare("SELECT digest, approved_digest FROM task_scope WHERE task_id = ?").get(taskId);
+        if (state !== "done" || rejectedRun !== expect.run || scope === undefined || String(scope["digest"]) !== expect.scopeDigest ||
+          scope["approved_digest"] !== scope["digest"]) return { ok: false as const, reason: "moved" as const };
       }
 
       for (const incident of incidents) this.resolveIncidentLocked(incident, by, now);

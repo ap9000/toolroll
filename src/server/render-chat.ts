@@ -189,7 +189,8 @@ export function taskChatLiveRegion(focus: TaskChatFocus, csrf: string, fragment 
         ? html`<section class="card chat-action-card chat-refresh-action"><a class="button-link" href="${approvalHref}" data-primary-action>Approve plan</a></section>`
         : taskChatApproval(focus, csrf));
   // The approval leads when dispatch waits on it or the plan was rewritten after a build (the assignment's one action).
-  const approvalLeads = focus.dispatch?.action === "approve-scope" || focus.assignment?.primaryAction?.code === "approve-scope";
+  const approvalLeads = focus.dispatch?.action === "approve-scope" ||
+    (focus.assignment?.primaryAction?.code === "approve-scope" && focus.assignment.primaryAction.target.taskId === focus.executionId);
   const approvalCard = focus.approval !== null && !approvalLeads
     ? html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approvalContent}</details>` : approvalContent;
   const polling = !inert && ((focus.approval === null || focus.plan === "requested") && focus.state !== "done" && focus.state !== "cancelled" || focus.control.kind === "stopping" || focus.control.kind === "stop");

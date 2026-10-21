@@ -338,7 +338,9 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
     }
     // Rewritten after the build and not approved yet: Build again can't start an unapproved plan, so the yes is the
     // one action (approve-scope opens the approval on the task page); Build again follows it.
-    else if (current.state === "done" && result !== null && scope !== null && scope.termsProblem == null && !approvalOf(scope).approved && !!result.scopeDigest && scope.digest !== result.scopeDigest &&
+    // Builds only (a scout's report is not built again), and never ahead of an open question: approving answers neither.
+    else if (current.state === "done" && result !== null && result.role === "builder" && questions.length === 0 &&
+      scope !== null && scope.termsProblem == null && !approvalOf(scope).approved && !!result.scopeDigest && scope.digest !== result.scopeDigest &&
       store.activeHolds(current.refId, now).length === 0 && unfinished === null && store.currentLiveLease(current.refId, now) === null && store.finalResultReason(result.id) === null) {
       detail = NEEDS.replan.sentence({ build: result.id });
       primaryAction = { code: "approve-scope", label: NEEDS.replan.action.label, target: { taskId: current.id, runId: null, decisionId: null },
@@ -352,6 +354,8 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
       state = "needs-decision";
       detail = "Earlier work is still active. Resolve it before completing this assignment.";
       const earlier = earlierActive[0]!;
+      // The earlier version's act replaces this one's, and with it this version's need (its rebuild or replan).
+      need = null;
       primaryAction = taskWorkSummaryOf(store, earlier.id, now, access)?.primaryAction ?? {
         code: "inspect-task", label: "Review active work", target: { taskId: earlier.id, runId: null, decisionId: null }, access: "read", retry: "read-again",
       };

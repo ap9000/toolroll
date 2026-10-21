@@ -2018,7 +2018,8 @@ export function taskBodyParts(data: {
     (data.revision == null || !("problem" in data.revision));
   // The approval is the next step when dispatch waits on it, or when the plan was rewritten after a build (the
   // assignment's one action): then it is shown open under the status, never folded.
-  const approvalLeads = data.dispatch?.action === "approve-scope" || data.assignment?.primaryAction?.code === "approve-scope";
+  const approvalLeads = data.dispatch?.action === "approve-scope" ||
+    (data.assignment?.primaryAction?.code === "approve-scope" && data.assignment.primaryAction.target.taskId === task.id);
   const approveForm =
     scope === null || approval.approved || data.plan === "requested"
       ? ""

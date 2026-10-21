@@ -38,7 +38,8 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { if (root !== null) await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; vi.unstubAllGlobals(); });
-const show = (view: BrowserTaskView) => act(() => root!.render(createElement(TaskView, { view, details: false, csrf: "csrf" })));
+/** `key`: a new server render of the page (its native regions install once; a new render mounts them afresh). */
+const show = (view: BrowserTaskView, key = "page") => act(() => root!.render(createElement(TaskView, { key, view, details: false, csrf: "csrf" })));
 const bar = () => host.querySelector<HTMLElement>("[data-pinned-action]");
 
 test("while the action is on screen there is no bar; scrolled away, the bar names it and brings it back", () => {
@@ -67,6 +68,40 @@ test("when the approval is the action, the bar names its yes and puts the cursor
   expect((document.activeElement as HTMLInputElement | null)?.name).toBe("token");
   // Focus only: nothing was submitted.
   expect(host.querySelector<HTMLInputElement>('input[name="token"]')!.value).toBe("");
+});
+
+test("Confirm it stopped is the one action too", () => {
+  show(viewOf(cardOf("Needs you", { label: "Confirm it stopped", href: "#confirm-stopped" }), { confirmStopped: { action: "/t/t-1/confirm-stopped", run: 12 } }));
+  seen(false);
+  expect(bar()!.querySelector("button")!.textContent).toContain("Confirm it stopped");
+  act(() => bar()!.querySelector("button")!.click());
+  expect((document.activeElement as HTMLInputElement | null)?.name).toBe("token");
+});
+
+test("a button inside a closed fold is never the one action, and the bar follows a live update that swaps it", () => {
+  const folded = '<details class="task-secondary-approval"><summary>Updated approval terms</summary>' + APPROVAL + "</details>";
+  show(viewOf(cardOf("Needs you", null), { approval: folded }));
+  seen(false);
+  expect(bar()).toBeNull();
+  // The same page, live-updated: the approval now leads, open.
+  show(viewOf(cardOf("Needs you", null), { approval: APPROVAL }), "second");
+  seen(false);
+  expect(bar()!.querySelector("button")!.textContent).toContain("Approve & build again");
+  // Updated again: the approval is gone and the status card leads with Build again.
+  show(viewOf(cardOf("Needs you", { label: "Build again", href: "/t/t-1" }), { approval: "" }), "third");
+  seen(false);
+  expect(bar()!.querySelector("button")!.textContent).toContain("Build again");
+  expect(observed).toHaveLength(1);
+});
+
+test("the status card's own action changing in place (no new render of the page) moves the bar with it", () => {
+  show(viewOf(cardOf("Needs you", { label: "Open result", href: "/review" })));
+  seen(false);
+  expect(bar()!.querySelector("button")!.textContent).toContain("Open result");
+  show(viewOf(cardOf("Needs you", { label: "Check the build", href: "/r/12" })));
+  seen(false);
+  expect(bar()!.querySelector("button")!.textContent).toContain("Check the build");
+  expect(observed).toHaveLength(1);
 });
 
 test("nothing waits on the person: no bar, however far the page scrolls", () => {
