@@ -25,6 +25,7 @@ import { bridgePass, createTransport, followBridge, hashPairingCode, mintPairing
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { subscriptionCredentialKey } from "./converse.js";
 import { LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, leadFailureText } from "./lead.js";
+import { PersonalQueue } from "./lead-queue.js";
 import { knowledgeView } from './project-knowledge.js';
 import { mintSharedActionReview, prepareSharedAction } from './chat-actions.js';
 import { assignmentOf } from './assignment.js';
@@ -39,7 +40,7 @@ import { acquire } from "./claim.js";
 import { runOperate, EXIT } from "./operate.js";
 import { saveRepos } from "./repos.js";
 import { run as exec } from "./exec.js";
-import { CONVERSATION_CLAIM_MS, NO_PHONE_LINK, NO_TASK_LINK, PART_RETRY_MS, TELEGRAM_ACTION_PARITY, mintCardTokens, parityGaps, proposalPreview, telegramRequestId } from "./telegram-lead.js";
+import { CONVERSATION_CLAIM_MS, NO_PHONE_LINK, NO_TASK_LINK, PART_RETRY_MS, TELEGRAM_ACTION_PARITY, mintCardTokens, parityGaps, proposalPreview, telegramRequestId, CONVERSATION_WAIT_MAX_AGE_MS } from "./telegram-lead.js";
 import { saveConsoleUrl, CONSOLE_URL_ENV } from "./webhooks.js";
 import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
 import type { SubscriptionLeadRequest, SubscriptionLeadRunner } from "./subscription-chat.js";
@@ -1112,7 +1113,10 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     if (!stuckTurn.ok || !store.startLeadTurn(stuckTurn.id, now).ok) throw new Error("start");
     script.updates.push([textUpdate(5, "still there?")]);
     expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
+    // Waiting for the lead itself is bounded at two hours from arrival (the lead queue's bound), not ten minutes.
     now = new Date(now.getTime() + 11 * 60_000);
+    expect((await pass()).report).not.toMatchObject({ chatRefused: 1 });
+    now = new Date(now.getTime() + CONVERSATION_WAIT_MAX_AGE_MS);
     expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
     expect(script.texts().at(-1)).toBe("I couldn't answer that just now: the assistant stayed busy with another message. Ask again, or open the console.");
     expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "failed", outcome: "busy:gave-up" });
@@ -1140,6 +1144,35 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1 } });
     expect(script.texts().at(-1)).toBe("Hi.");
     expect(store.listLeadMessages(thread.id, 10).map(one => one.role)).toEqual(["operator", "assistant"]);
+  });
+
+  test("behind the person's lead queue the phone's message waits (said once), and ten waiting messages per chat is the bound", async () => {
+    const me = who();
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
+    const running = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60_000 }, now);
+    if (!running.ok) throw new Error(running.reason);
+    expect(store.startLeadTurn(running.id, now).ok).toBe(true);
+    // A console message waits in alex's lead queue; then the console turn ends — the queue's message is next, not the phone's.
+    const queued = new PersonalQueue(store).sendOrQueue({ approver: "alex", approverGeneration: me.generation, session, ceilingDigest: me.ceilingDigest, thread: thread.id, text: "from the console", requestId: "e".repeat(32), context: null }, now);
+    expect(queued.kind).toBe("queued");
+    store.handle.prepare("UPDATE mate_turn SET state = 'answered' WHERE id = ?").run(running.id);
+    script.updates.push([textUpdate(30, "from the phone")]);
+    expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
+    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "backlog" });
+    expect(script.texts().at(-1)).toBe("Queued behind your earlier messages. It goes to the lead once they're answered.");
+    // Still behind it on the next pass: nothing said again.
+    const said = script.texts().length;
+    now = new Date(now.getTime() + 6_000);
+    await pass();
+    expect(script.texts()).toHaveLength(said);
+    // Nine more wait; the eleventh is answered at once instead of queued.
+    for (let update = 31; update < 40; update++) script.updates.push([textUpdate(update, `more ${update}`)]);
+    await pass();
+    script.updates.push([textUpdate(40, "one too many")]);
+    await pass();
+    expect(script.texts().at(-1)).toBe("10 messages are already waiting for the lead. Wait for a reply, then send this again.");
+    expect(store.listTelegramConversations(BOT).filter(one => one.state === "queued" || one.state === "running")).toHaveLength(10);
   });
 
   test("a direct-API configuration is never spent from the phone", async () => {

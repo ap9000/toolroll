@@ -5,6 +5,7 @@
  * and re-checked before every model step. A refusal before admission waits with its words and wakes when what refused
  * it changes; anything after admission is settled from the turn's own record and never sent again.
  */
+import { AsyncResource } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { runLeadTurn, type LeadTurnInput, type LeadTurnOutcome } from "./lead.js";
 import { PersonalQueue, type LeadQueueClaim, type LeadQueueContext, type LeadQueueRow } from "./lead-queue.js";
@@ -60,6 +61,10 @@ export function createPersonalQueueRuntime(options: PersonalQueueRuntimeOptions)
   /** A deferred message's admission stamp: it is not tried again until something that refused it changes. */
   const waiting = new Map<number, string>();
   let timer: ReturnType<typeof setInterval> | null = null, closed = false, passing = false;
+  /** The server's own async context, captured at start (no request in it). A wake from inside a browser request runs
+   * its pass from here, so no request's session facts (its actor, form token or Passwordless session) ever reach a
+   * queued turn — the queue re-proves each message's person itself. */
+  let detached: AsyncResource | null = null;
   const active = new Set<Promise<void>>();
 
   /** Everything openLeadTurn checks for this person (and a minute bucket, the belt): a change wakes a waiting message. */
@@ -143,9 +148,18 @@ export function createPersonalQueueRuntime(options: PersonalQueueRuntimeOptions)
 
   return {
     queue,
-    /** Look now (a turn just ended, a message was just queued): the next message of each person may start. */
-    kick(): void { void pass(); },
-    start(): void { if (timer === null && !closed) { timer = setInterval(() => { void pass(); }, options.everyMs ?? 2_000); timer.unref(); } },
+    /** Look now (a turn just ended, a message was just queued): the next message of each person may start. Safe to call
+     * from a request: the pass runs in the server's own context, never the caller's. Before start, the timer will look. */
+    kick(): void {
+      const scope = detached;
+      if (scope === null || closed) return;
+      scope.runInAsyncScope(() => { setImmediate(() => { void pass(); }); });
+    },
+    start(): void {
+      if (timer !== null || closed) return;
+      detached = new AsyncResource("lead-queue-runtime");
+      detached.runInAsyncScope(() => { timer = setInterval(() => { void pass(); }, options.everyMs ?? 2_000); timer.unref(); });
+    },
     async close(): Promise<void> { closed = true; if (timer !== null) clearInterval(timer); timer = null; await Promise.allSettled([...active]); },
   };
 }

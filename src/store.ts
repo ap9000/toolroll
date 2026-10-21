@@ -21561,6 +21561,7 @@ export class Store {
   // ---- the conversation queue (v62) ------------------------------------------
 
   enqueueTelegramConversation(...args: Parameters<ChatMessages["enqueueMessage"]>): ReturnType<ChatMessages["enqueueMessage"]> { return this.telegramChat().enqueueMessage(...args); }
+  telegramMessagesWaiting(binding: number): number { return this.telegramChat().messagesWaiting(binding); }
 
   telegramConversationWaitingOn(...args: Parameters<ChatMessages["messageWaitingOn"]>): ReturnType<ChatMessages["messageWaitingOn"]> { return this.telegramChat().messageWaitingOn(...args); }
 

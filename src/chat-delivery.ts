@@ -537,11 +537,12 @@ export async function processChatEvent(
       if (
         !outcome.ok &&
         "refused" in outcome &&
-        outcome.refused === "concurrent"
+        (outcome.refused === "concurrent" || outcome.refused === "backlog")
       ) {
+        // The lead is answering, or messages sent earlier wait in the person's lead queue: this one waits its turn.
         state.defer(
           event.id,
-          "Assistant is answering another message",
+          outcome.refused === "backlog" ? "Waiting behind earlier messages" : "Assistant is answering another message",
           new Date(nowOf(options).getTime() + 5000),
         );
         return true;

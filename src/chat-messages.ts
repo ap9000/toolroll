@@ -465,6 +465,11 @@ export class ChatMessages extends ChatCore {
     return row.updateId;
   }
 
+  /** How many of this chat's messages wait for, or are being answered by, the lead (the lead queue's bound per chat). */
+  messagesWaiting(binding: number): number {
+    return Number(this.prepare("SELECT COUNT(*) AS n FROM chat_event WHERE provider = :provider AND kind = 'message' AND binding = ? AND state IN ('queued', 'running')").get(binding)?.["n"] ?? 0);
+  }
+
   /** Whether a message from this chat is already waiting on, or being answered from, this bot message (a tapped question). */
   messageWaitingOn(binding: number, messageId: string): boolean {
     return this.prepare("SELECT 1 AS hit FROM chat_event WHERE provider = :provider AND kind = 'message' AND binding = ? AND ts = ? AND state IN ('queued', 'running') LIMIT 1").get(binding, messageId) !== undefined;
