@@ -212,7 +212,7 @@ describe("the agent fence", () => {
     const folders = runFolders(null, dir);
     const argv = codexFenceArgv([], true, { readOnly: [], readable: [], lookup: [], runFolders: folders });
     const filesystem = argv.find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
-    for (const prefix of ["so-tools-", "so-codex-"]) {
+    for (const prefix of ["so-tools-", "so-codex-", "so-net-"]) {
       expect(filesystem).toContain(`"${dir}/${prefix}*"="deny"`);
       expect(filesystem).toContain(`"${dir}/${prefix}*/**"="deny"`);
     }
@@ -615,7 +615,7 @@ describe("what the fence gives back", () => {
       "(allow default)",
       '(deny file-read* file-write* (subpath "/s/secret"))',
       '(deny file-write* (subpath "/r/meta"))',
-      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-)"))',
+      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-)"))',
       '(allow file-read-metadata (literal "/r/checkout"))',
       `(allow file-read* file-write* (subpath "${own}"))`,
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',

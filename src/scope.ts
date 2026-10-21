@@ -39,6 +39,7 @@ export { isAcpProfile };
  */
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { networkFromValue, networkWords, type NetworkProfile } from "./egress.js";
 import { z } from "zod";
 import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
@@ -157,6 +158,9 @@ export type ClaudeProfile = {
   /** Exact model for repairs, or the stable literal "inherit" (= the
    * build model, which is itself exact). */
   repairModel: string;
+  /** What the build may reach (egress.ts), resolved when the scope was written; absent on approvals sealed before
+   * network policies, which run narrowed (egress.ts legacyNetwork). */
+  network?: NetworkProfile;
 };
 
 export type CodexShapedProfile = {
@@ -174,6 +178,7 @@ export type CodexShapedProfile = {
   timeoutKind?: "idle";
   repairTimeoutSeconds: number;
   repairModel: string;
+  network?: NetworkProfile;
 };
 
 export type GeminiProfile = {
@@ -193,6 +198,7 @@ export type GeminiProfile = {
   timeoutKind?: "idle";
   repairTimeoutSeconds: number;
   repairModel: string;
+  network?: NetworkProfile;
 };
 
 /**
@@ -213,6 +219,7 @@ export type AcpProfile = {
   repairTimeoutSeconds: number;
   repairIdleTimeoutSeconds: number;
   repairModel: string;
+  network?: NetworkProfile;
 };
 
 export type ExecutionProfile = ClaudeProfile | CodexShapedProfile | GeminiProfile | AcpProfile;
@@ -453,9 +460,13 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   const num = (v: unknown): v is number => safePositiveInteger(v);
   const clock = (v: unknown): v is number => timerSafeSeconds(v);
   const PROVIDER_KEYS = ["provider", "model", "maxTurns", "repairMaxTurns", "timeoutSeconds", "repairTimeoutSeconds", "repairModel"] as const;
+  // The network a scope was written with: present and exact, or absent (an approval from before network policies).
+  const network = p["network"] === undefined ? undefined : networkFromValue(p["network"]);
+  if (network === null) return null;
+  const withNetwork = network === undefined ? {} : { network };
   if (p["provider"] === "claude") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network"]) &&
       str(p["model"]) &&
       (p["permissionArgv"] === "auto" || p["permissionArgv"] === "acceptEdits" || p["permissionArgv"] === "bypassPermissions") &&
       num(p["maxTurns"]) && num(p["repairMaxTurns"]) &&
@@ -472,13 +483,14 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
         ...(p["timeoutKind"] === "idle" ? { timeoutKind: "idle" as const } : {}),
         repairTimeoutSeconds: p["repairTimeoutSeconds"],
         repairModel: p["repairModel"],
+        ...withNetwork,
       };
     }
     return null;
   }
   if (p["provider"] === "codex" || p["provider"] === "openrouter") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network"]) &&
       str(p["model"]) &&
       (p["sandboxMode"] === "workspace-write" || p["sandboxMode"] === "danger-full-access") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -495,13 +507,14 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
         ...(p["timeoutKind"] === "idle" ? { timeoutKind: "idle" as const } : {}),
         repairTimeoutSeconds: p["repairTimeoutSeconds"],
         repairModel: p["repairModel"],
+        ...withNetwork,
       };
     }
     return null;
   }
   if (p["provider"] === "gemini") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network"]) &&
       str(p["model"]) &&
       (p["approvalArgv"] === "auto_edit" || p["approvalArgv"] === "yolo") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -518,13 +531,14 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
         ...(p["timeoutKind"] === "idle" ? { timeoutKind: "idle" as const } : {}),
         repairTimeoutSeconds: p["repairTimeoutSeconds"],
         repairModel: p["repairModel"],
+        ...withNetwork,
       };
     }
     return null;
   }
   if (typeof p["provider"] === "string" && isAcpProvider(p["provider"])) {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], []) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network"]) &&
       str(p["model"]) &&
       p["permission"] === "full" &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -542,6 +556,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
         repairTimeoutSeconds: p["repairTimeoutSeconds"],
         repairIdleTimeoutSeconds: p["repairIdleTimeoutSeconds"],
         repairModel: p["repairModel"],
+        ...withNetwork,
       };
     }
     return null;
@@ -1659,6 +1674,8 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     // The ROUTE, in the words the yes agrees to (v47): posture and every
     // leg with its reason and readiness — before anyone signs.
     ...scopeRouteWords(scope, readiness),
+    // What the build may reach (egress.ts), part of what the yes agrees to.
+    ...(scope.profile === null || scope.profile === undefined ? [] : [`  network      ${networkWords(scope.profile.network ?? null).replace(/^Network: /, "")}`]),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];

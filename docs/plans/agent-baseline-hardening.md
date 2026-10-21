@@ -189,6 +189,24 @@ Per-action authorization inside a build; sender-constrained credentials (AUT-09)
 (OBS-03/04); a component blocklist across agents (RES-02); TLS-inspecting egress (method/upload control); scanning
 before install scripts run; a signing key for the ledger (off-machine anchors are the proof).
 
+## Arc 1 as built (2026-10-21)
+
+Where the build departs from the text above, and why:
+
+- **Loopback on macOS is all or none.** Seatbelt admits a local port an allow names whatever a later or narrower deny
+  says (checked natively: deny-after-allow, `require-not` and `remote tcp` all fail), so "any local service but
+  Toolroll's own and the proxy/debugger ports" can't be enforced. The setting is `proxy-only` (the default: the run's
+  proxy and broker only) or `any` (every local service, an approver's explicit choice, said on the approval card).
+  Linux builds have a loopback of their own either way.
+- **Ecosystems are read from the project's own folder** (a bounded walk, no process started), not with git: filing a
+  scope must start no process (the demo promises none), and the registered checkout is outside every build's reach.
+- **Modes are `allowlist` and `open`.** A launch nothing sealed (a planner, a check) gets its provider's hosts only;
+  a scout keeps its public-web proxy and browser as its only reachable ports (`via`).
+- **Tool servers** keep their own reach for now (arc 2 gives them a trusted working directory and a policy of their
+  own); the agent's network rules never apply to them.
+- Natively proved: macOS (Seatbelt) and Linux (Ubuntu 26.04, bubblewrap 0.11) attack tests, and a real Claude build
+  whose eight connections all went to api.anthropic.com through its proxy (its Datadog telemetry refused).
+
 ## Order and shipping
 
 Arc 1 → 5. Each: build → full unit + slow + scripted journeys + the native adversarial tests above → one Codex review →

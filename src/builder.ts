@@ -1,3 +1,5 @@
+import { legacyNetwork, repositoryEcosystems } from "./egress.js";
+import type { LaunchNetwork } from "./invoke.js";
 import type { ProviderId } from "./contracts/provider.js";
 import { isAcpProvider } from "./acp-agents.js";
 import { OBSERVATION_MAILBOX, observationBrief, parseObservationCases, collectObservations } from "./observations.js";
@@ -459,6 +461,14 @@ function providerVersionOf(provider: string): string | null {
   }
   PROVIDER_VERSIONS.set(provider, version);
   return version;
+}
+
+/** A build's network (egress.ts): the one its approval sealed, or — sealed before network policies existed — the
+ * narrowed legacy one (provider hosts and the repository's registries, nothing added since). */
+export function launchNetworkOf(store: Store, taskRef: number, profile: ExecutionProfile): LaunchNetwork {
+  if (profile.network !== undefined) return { policy: profile.network };
+  const repo = store.refForId(taskRef)?.repo ?? null;
+  return { policy: legacyNetwork(profile.provider, repo === null ? [] : repositoryEcosystems(repo)) };
 }
 
 export function proveApprovedProfile(
@@ -1553,6 +1563,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         // snapshots carry no timeoutKind and retain their wall-clock terms.
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
+        network: launchNetworkOf(store, request.taskRef, effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -2985,6 +2996,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         cwd: worktree,
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
+        network: launchNetworkOf(store, request.taskRef, effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3228,6 +3240,7 @@ async function ingestPark(args: {
           ? watchdogsOf(args.profile, args.profile.repairTimeoutSeconds * 1000, true)
           : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
+        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile) }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,

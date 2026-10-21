@@ -1,3 +1,4 @@
+import { PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
@@ -790,7 +791,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // provider reports it (run.agent_turns), a lead request's cache read and write tokens (chat_turn.cache_read_tokens,
 // cache_write_tokens), each NULL (unknown) on saved rows, and the derived, display-only run_efficiency row a result's
 // How it ran reads (a cache of the run's own records, written on first view, never a verdict).
-export const SCHEMA_VERSION = 129;
+// v130 adds, and changes no saved row: what a project's builds may reach on the network (project_network; egress.ts,
+// docs/plans/agent-baseline-hardening.md arc 1) and whether this installation lets an agent run with no OS confinement
+// (confinement_setting, one row; off unless an instance operator turns it on).
+export const SCHEMA_VERSION = 130;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -928,7 +932,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1048,6 +1052,23 @@ export const V129_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     cache_write_tokens: { definition: "INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0)", saved: "NULL" },
   },
 });
+/** v130: a project's network (an approver's setting, egress.ts ProjectNetwork as JSON) and the installation's choice
+ * whether an agent may run where no OS confinement exists (one row; 0 until an instance operator turns it on). */
+export const CONFINEMENT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS project_network (
+  repo          TEXT PRIMARY KEY,
+  network_json  TEXT NOT NULL CHECK (length(network_json) <= 16384),
+  updated_at    TEXT NOT NULL,
+  updated_by    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS confinement_setting (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  unfenced_allowed INTEGER NOT NULL DEFAULT 0 CHECK (unfenced_allowed IN (0, 1)),
+  updated_at       TEXT,
+  updated_by       TEXT
+);
+INSERT OR IGNORE INTO confinement_setting (id, unfenced_allowed) VALUES (1, 0);
+`;
 /** v129: a finished run's How it ran, derived from its own records on first view (display only: never a verdict). Its
  * parser version says when to derive again; `steps` says how complete the step detail was, and why not. */
 export const RUN_EFFICIENCY_SCHEMA = `
@@ -5042,6 +5063,8 @@ function initializeStore(db: Database, file: string): Store {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
   db.exec(RUN_EFFICIENCY_SCHEMA);
+  // v130: a project's network and whether an agent may run unconfined (new tables only).
+  db.exec(CONFINEMENT_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -19189,6 +19212,21 @@ export class Store {
       ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.fence', json(?))`).run(run, JSON.stringify(fence), now.toISOString(), JSON.stringify(fence));
   }
 
+  /** What one attempt's network was and what its proxy saw (egress.ts), kept beside its fence. */
+  recordRunNetwork(run: number, network: RunNetworkRecord, now: Date): void {
+    const json = JSON.stringify(network);
+    this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('network', json(?)), ?)
+      ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.network', json(?))`).run(run, json, now.toISOString(), json);
+  }
+
+  runNetwork(run: number): RunNetworkRecord | null {
+    const row = this.db.prepare("SELECT json_extract(tools_json, '$.network') AS network FROM run_tool WHERE run = ?").get(run);
+    if (row === undefined || row["network"] === null) return null;
+    let parsed: unknown;
+    try { parsed = JSON.parse(String(row["network"])); } catch { return null; }
+    return runNetworkFromValue(parsed);
+  }
+
   runFence(run: number): { method: string; paths: number } | null {
     const row = this.db.prepare("SELECT json_extract(tools_json, '$.fence') AS fence FROM run_tool WHERE run = ?").get(run);
     if (row === undefined || row["fence"] === null) return null;
@@ -21588,6 +21626,43 @@ export class Store {
   }
 
   /** A project's build concurrency changed (project-concurrency.ts): the ledger keeps before → after. */
+  /** A project's network (egress.ts): its saved setting, or the default when none is saved or it doesn't read. */
+  projectNetwork(repo: string): ProjectNetwork {
+    const row = this.db.prepare("SELECT network_json FROM project_network WHERE repo = ?").get(repo);
+    if (row === undefined) return PROJECT_NETWORK_DEFAULT;
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(String(row["network_json"])); } catch { parsed = null; }
+    // A damaged row reads as the narrowest setting, never a wider one.
+    return projectNetworkFromValue(parsed) ?? { mode: "allowlist", hosts: [], loopback: "proxy-only" };
+  }
+
+  /** An approver changed a project's network: saved, and in the ledger as before → after. */
+  setProjectNetwork(repo: string, network: ProjectNetwork, by: string, now: Date): { before: ProjectNetwork; after: ProjectNetwork } {
+    return this.transact(() => {
+      const before = this.projectNetwork(repo);
+      const json = JSON.stringify({ mode: network.mode, hosts: [...new Set(network.hosts)].sort(), loopback: network.loopback });
+      this.db.prepare(`INSERT INTO project_network (repo, network_json, updated_at, updated_by) VALUES (?, ?, ?, ?)
+        ON CONFLICT (repo) DO UPDATE SET network_json = excluded.network_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, json, now.toISOString(), by);
+      const after = this.projectNetwork(repo);
+      const words = (one: ProjectNetwork) => `${one.mode}${one.hosts.length === 0 ? "" : ` +${one.hosts.join(",")}`}${one.loopback === "proxy-only" ? " no-local" : ""}`;
+      this.recordPolicy(by, repo, "network", words(before), words(after), now);
+      return { before, after };
+    });
+  }
+
+  /** Whether this installation lets an agent run where no OS confinement exists (off unless an operator said so). */
+  unfencedAgentsAllowed(): boolean {
+    return Number(this.db.prepare("SELECT unfenced_allowed FROM confinement_setting WHERE id = 1").get()?.["unfenced_allowed"] ?? 0) === 1;
+  }
+
+  setUnfencedAgentsAllowed(allowed: boolean, by: string, now: Date): void {
+    this.transact(() => {
+      const before = this.unfencedAgentsAllowed();
+      this.db.prepare("UPDATE confinement_setting SET unfenced_allowed = ?, updated_at = ?, updated_by = ? WHERE id = 1").run(allowed ? 1 : 0, now.toISOString(), by);
+      this.recordPolicy(by, null, "unconfined agents", before ? "allowed" : "refused", allowed ? "allowed" : "refused", now);
+    });
+  }
+
   recordProjectConcurrency(by: string, repo: string, before: number, after: number, now: Date): void {
     this.recordPolicy(by, repo, "builds at once", String(before), String(after), now);
   }
