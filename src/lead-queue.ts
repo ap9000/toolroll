@@ -202,8 +202,8 @@ export class PersonalQueue {
     });
   }
 
-  /** A message that never ran keeps no words: its lead_message is blanked (it stays pending, so never history). */
+  /** A message that never ran keeps no words, context or search copy (it stays pending, so never history). */
   private forgetWords(message: number): void {
-    this.db.prepare("UPDATE lead_message SET text = '' WHERE id = ? AND pending = 1").run(message);
+    this.store.forgetQueuedLeadMessage(message);
   }
 }

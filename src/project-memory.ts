@@ -209,7 +209,8 @@ export function reindexProjectMemory(store: Store, repo: string): void {
   });
 }
 
-/** Index conversation messages incrementally: private threads under their person, team conversations under their id and each project they cover. */
+/** Index conversation messages incrementally: private threads under their person, team conversations under their id and each project they cover.
+ * A message still waiting for a turn is indexed too but never found (the search skips pending messages until a turn takes it). */
 export function reindexConversations(store: Store): void {
   const key = 'memory-search:messages';
   const cursor = store.serviceCursor(key);
@@ -253,7 +254,9 @@ export function searchMemory(store: Store, args: { actor: string; repos: readonl
   const match = ftsQuery(query);
   if (!match) return [];
   const rows = store.handle.prepare(`SELECT kind, ref, repo, scope, title, snippet(memory_search, 5, '[', ']', '…', 24) AS snippet FROM memory_search
-    WHERE memory_search MATCH ? AND scope IN (SELECT value FROM json_each(?)) AND (repo='' OR repo IN (SELECT value FROM json_each(?))) ORDER BY bm25(memory_search) LIMIT ?`)
+    WHERE memory_search MATCH ? AND scope IN (SELECT value FROM json_each(?)) AND (repo='' OR repo IN (SELECT value FROM json_each(?)))
+      AND NOT (kind='conversation' AND EXISTS (SELECT 1 FROM lead_message m WHERE m.id=CAST(substr(memory_search.ref, 9) AS INTEGER) AND m.pending=1))
+    ORDER BY bm25(memory_search) LIMIT ?`)
     .all(match, JSON.stringify(scopes), JSON.stringify(repos), Math.min(50, Math.max(1, args.limit ?? 12)));
   return rows.map(row => ({ kind: row['kind'] as MemoryHit['kind'], ref: String(row['ref']), repo: String(row['repo']), title: String(row['title']).slice(0, 200), snippet: String(row['snippet']).slice(0, 400) }));
 }

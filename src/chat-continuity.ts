@@ -63,7 +63,7 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
     var carry=JSON.parse(sessionStorage.getItem(carryKey)||'null');sessionStorage.removeItem(carryKey);
     if(!draft&&carry&&user&&carry.owner===user&&carry.task===task&&typeof carry.text==='string'&&carry.text.length<=2000&&typeof carry.at==='number'&&carry.at>Date.now()-86400000){box.value=carry.text;draft={text:carry.text,request:request.value,submitted:false,at:Date.now()};save();}
   }catch(e){storage=false;}
-  function buttons(){document.querySelectorAll('form[action="/chat"] button[type="submit"]').forEach(function(button){button.disabled=busy||sending||stale||offline;});}
+  function buttons(){document.querySelectorAll('form[action="/chat"] button[type="submit"]').forEach(function(button){button.disabled=sending||stale||offline;});}
   function showReconnect(on){if(reconnect)reconnect.hidden=!on;}
   function lostAuthority(){stale=true;buttons();showReconnect(true);say('Sign in again to reconnect. Your draft stays in this tab.');}
   function changed(){stale=true;buttons();showReconnect(true);say('This conversation changed or ended. Your draft stays in this tab; reconnect to continue.');}
@@ -97,7 +97,8 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
     if(!(one instanceof HTMLFormElement))return;
     var action=one.getAttribute('action')||'';
     if(action==='/chat'){
-      if(busy||sending||stale||offline){event.preventDefault();return;}
+      // A reply in progress no longer holds the composer: a message sent now waits its turn (the lead queue).
+      if(sending||stale||offline){event.preventDefault();return;}
       bind(one);
       if(one===form){
         if(!box.value.trim()){event.preventDefault();return;}
@@ -125,7 +126,7 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
         var data=got.data||{};
         if(data.ok===true){
           if(String(data.session)!==session){changed();return;}
-          say('Sent. Waiting for the reply…');later(300);return;
+          say(data.queued===true?'Queued. It goes to the lead after the reply in progress.':'Sent. Waiting for the reply…');later(300);return;
         }
         // Refused, so nothing was received: the draft stays, editable and
         // resendable under its own key; the words are the server's.
@@ -302,7 +303,7 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
       }
       settleLive();
       busy=data.pending;buttons();
-      say(busy?'Reply in progress. You can draft your next message or come back later.':sent?'Message not confirmed. Check the conversation before retrying.':'');
+      say(busy?'Reply in progress. A message you send now waits its turn.':sent?'Message not confirmed. Check the conversation before retrying.':'');
       later(busy?2500:5000);
     }catch(e){say('Connection lost. Reconnecting… Your existing work is not cancelled.');later(10000);}
     finally{polling=false;}

@@ -39,7 +39,7 @@ const GROUPS = {
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
-  maya: { journeys: 4, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help" },
+  maya: { journeys: 5, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help; messages that wait for the lead" },
   rosa: { journeys: 4, real: 1, shared: 1, about: "A subagent that acts with a real tool: its rules, routine, week and undo" },
   memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },

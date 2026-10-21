@@ -876,6 +876,15 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(second.status).toBe(202);
     const queued = await second.json() as { ok: boolean; queued: boolean; request: string; message: number };
     expect(queued).toMatchObject({ ok: true, queued: true, request: 'b'.repeat(32) });
+    // A queued send counts as received: an acknowledgement lost on the way never holds the draft.
+    expect(await (await fetch(url(`/chat/mate/status?request=${'b'.repeat(32)}`), { headers: { cookie } })).json()).toMatchObject({ received: true });
+    // A message with a key in it never waits: nothing is saved, and the engine refuses it as when the lead is free.
+    const secret = await sendJson(cookie, { csrf, message: `Use AKIA${'Q'.repeat(16)} for this.`, request: 'e'.repeat(32), 'request-session': '1' });
+    expect(secret.status).toBe(202);
+    expect(await secret.json()).not.toHaveProperty('queued');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_message WHERE text LIKE '%AKIA%'").get()).toEqual({ n: 0 });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_queue WHERE request_id = ?").get('e'.repeat(32))).toEqual({ n: 0 });
     // A retry of the same request is the same message, not a second one.
     expect(await (await sendJson(cookie, { csrf, message: 'Second question.', request: 'b'.repeat(32), 'request-session': '1' })).json()).toMatchObject({ queued: true, message: queued.message });
     const third = await (await sendJson(cookie, { csrf, message: 'Never mind that.', request: 'c'.repeat(32), 'request-session': '1' })).json() as { message: number };

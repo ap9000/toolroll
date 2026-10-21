@@ -700,7 +700,22 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   // 2. Parts already planned: the turn answered; only the sending remains.
   if (store.listTelegramConversationParts(row.id).length > 0) { await deliver(row.outcome === ANSWERED_SENDING ? "answered" : "replayed"); return; }
 
-  // 3. The ceiling, reloaded now.
+  // 3. A turn already admitted for it and still working: wait for that turn's own outcome. Nothing here needs the
+  // project records, so a registry that can't be read never fails a message whose turn is running.
+  if (row.session !== null) {
+    const admitted = store.leadRequestReceipt(row.session, row.request);
+    if (admitted !== null) {
+      store.sweepStaleLeadTurns(clock());
+      const turn = store.getLeadTurn(admitted.turn);
+      if (turn !== null && (turn.state === "queued" || turn.state === "running")) {
+        store.bindTelegramConversationTurn(row.id, owner, row.session, admitted.turn);
+        await requeue("replayed:running");
+        return;
+      }
+    }
+  }
+
+  // The ceiling, reloaded now.
   let registry: readonly string[];
   try {
     registry = await readProjects();
@@ -717,6 +732,10 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     const receipt = store.leadRequestReceipt(row.session, row.request);
     if (receipt !== null) { await recover(row.session, receipt.turn, repos); return; }
   }
+
+  // It waited (for the lead, or behind earlier messages), was never admitted, and is past the wait from its arrival:
+  // it is never sent this late, even when the lead is free now.
+  if ((row.outcome === "busy" || row.outcome === "backlog") && ageMs > CONVERSATION_WAIT_MAX_AGE_MS) { await requeue(row.outcome); return; }
 
   // 5. The session and thread — shared with the console and the CLI.
   const resolved = resolveTelegramLead(store, binding, repos, clock());

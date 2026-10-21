@@ -1112,7 +1112,10 @@ export function leadThreadHtml(data: LeadThreadRows & { csrf: string; now: Date;
   for (const message of data.messages) {
     if (message.role === "operator") {
       asked = message.text;
-      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}"><p style="white-space:pre-wrap">${message.text}</p></div>`);
+      // A message that waits its turn (the lead queue) says so, with Remove while it still waits — as in the React thread.
+      const queued = data.queue?.get(message.id);
+      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}">${message.text === "" ? "" : html`<p style="white-space:pre-wrap">${message.text}</p>`}${
+        queued === undefined ? "" : queuedStateHtml(queued, returnTo)}</div>`);
       continue;
     }
     const cards = message.turn === null ? [] : (byTurn.get(message.turn) ?? []);
@@ -1207,7 +1210,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     html`<div class="chat-new-update-holder"><button type="button" class="chat-new-update" id="chat-new-update" hidden>New update ↓</button></div>`,
     postForm("/chat", joinHtml([
       html`<label>Message<textarea id="chat-message" name="message" rows="1" maxlength="${LEAD_MESSAGE_MAX_CHARS}" placeholder="${data.focusTask !== null ? "Ask about this task…" : chatProject !== null ? `Ask about ${projectName(chatProject)}…` : "Describe what you want done…"}"></textarea></label>`,
-      html`<button type="submit" aria-label="${data.pending === null ? "send message" : "wait for the current reply before sending"}"${data.pending === null ? "" : html` disabled`}>Send</button>`,
+      html`<button type="submit" aria-label="${data.pending === null ? "send message" : "send message — it waits for the current reply"}">Send</button>`,
     ], "\n"), {
       attrs: { class: "card composer", id: latestReply === null && data.pending === null ? "latest" : "chat-composer", "aria-label": "message the lead", "data-chat-session": data.session.id, "data-chat-task": data.focusTask?.id ?? "", "data-chat-user": data.session.approver, "data-chat-busy": data.pending === null ? "0" : "1", "data-chat-version": leadChatVersion(data), "data-chat-approval": data.focusTask?.approval?.digest ?? "" },
       hidden: { request: randomBytes(16).toString("hex"), "request-session": data.session.id, task: data.focusTask?.id, project: chatProject, result: data.resultRunId },
@@ -1215,7 +1218,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     // Concise pass (2026-09-13): the status line speaks only when there is
     // a state to report — a reply in progress here, the connection from
     // the continuity script — and the composer carries no second intro.
-    html`<p class="meta composer-hint" id="chat-connection" role="status" aria-live="polite">${data.pending === null ? "" : "Reply in progress. You can draft your next message or come back later."}</p>`,
+    html`<p class="meta composer-hint" id="chat-connection" role="status" aria-live="polite">${data.pending === null ? "" : "Reply in progress. A message you send now waits its turn."}</p>`,
     // The explicit reconnection (package 2): shown only once the session
     // or sign-in changed under this page; it reloads on the reader's act.
     html`<p class="meta composer-hint" id="chat-reconnect" hidden><button type="button" class="quiet">Reconnect</button></p>`,

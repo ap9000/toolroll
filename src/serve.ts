@@ -1412,7 +1412,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),
         refreshUrl: path.pathname + path.search,
         receipt: conversation !== null && request && REQUEST_TOKEN.test(request)
-          ? { request, received: store.leadRequestReceipt(conversation.sessionId, request) !== null } : null,
+          ? { request, received: store.leadRequestReceived(conversation.sessionId, request) } : null,
         projects: browserProjectsOf(s.chrome.projects ?? []), ...crew,
         // The sidebar's project states: never on a sensitive page (no rail, no summary stream there).
         ...(() => { if (sensitive) return {}; try { return { projectStates: projectSummary() }; } catch { return {}; } })(),

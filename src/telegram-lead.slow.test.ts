@@ -1146,6 +1146,38 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     expect(store.listLeadMessages(thread.id, 10).map(one => one.role)).toEqual(["operator", "assistant"]);
   });
 
+  test("a phone message that waited past two hours is never sent, even once the lead is free; a receipted turn still running is waited for even when the projects can't be read", async () => {
+    const me = who();
+    const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);
+    const thread = store.openLeadThread("alex", me.ceilingDigest, now).thread;
+    const running = store.openLeadTurn({ approver: "alex", session, thread: thread.id, credentialKey: subscriptionCredentialKey("claude-subscription"), reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 4 * 60 * 60_000 }, now);
+    if (!running.ok) throw new Error(running.reason);
+    const started = store.startLeadTurn(running.id, now);
+    if (!started.ok) throw new Error("start");
+    script.updates.push([textUpdate(3, "late one")]);
+    expect(await pass()).toMatchObject({ ok: true, report: { chatQueued: 1 } });
+    const row = store.listTelegramConversations(BOT).at(-1)!;
+    expect(row).toMatchObject({ state: "queued", outcome: "busy" });
+    // Its turn was admitted under the session (a receipt names the running turn): an unreadable registry eleven
+    // minutes on keeps it waiting for that turn, not failed.
+    store.handle.prepare("UPDATE chat_event SET session = ? WHERE substr(id, 2) = ?").run(session, String(row.id));
+    store.replay({ idempotencyKey: `mate-send:${session}:${row.request}`, actor: "alex", at: now }, "mate-send", () => ({ digest: "d".repeat(64), turn: running.id }));
+    readProjects.mockRejectedValueOnce(new Error("registry down"));
+    now = new Date(now.getTime() + 11 * 60_000);
+    expect((await pass()).report).not.toMatchObject({ chatRefused: 1 });
+    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "queued", outcome: "replayed:running" });
+    readProjects.mockReset();
+    // A second message waits for the lead; the lead is free only after two hours: it is never sent that late.
+    store.handle.prepare("DELETE FROM mutation WHERE idempotency_key = ?").run(`mate-send:${session}:${row.request}`);
+    store.handle.prepare("UPDATE chat_event SET session = NULL, turn = NULL, result = 'busy' WHERE substr(id, 2) = ?").run(String(row.id));
+    expect(store.finalizeLeadTurn(running.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now)).toBe(true);
+    answers.push({ text: "Too late to say." });
+    now = new Date(now.getTime() + CONVERSATION_WAIT_MAX_AGE_MS);
+    expect(await pass()).toMatchObject({ ok: true, report: { chatRefused: 1 } });
+    expect(script.texts()).not.toContain("Too late to say.");
+    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ state: "failed", outcome: "busy:gave-up" });
+  });
+
   test("behind the person's lead queue the phone's message waits (said once), and ten waiting messages per chat is the bound", async () => {
     const me = who();
     const session = store.mintLeadSession({ approver: "alex", approverGeneration: me.generation, credentialKey: subscriptionCredentialKey("claude-subscription"), ceilingMicrousd: 0, ceilingDigest: me.ceilingDigest, termsDigest: "t".repeat(64) }, now);

@@ -7,6 +7,7 @@ import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL
 import { leadToolLabel } from "./lead-progress.js";
 import { settleWithCache } from "./converse.js";
 import { retentionPlan } from "./retention.js";
+import { searchMemory } from "./project-memory.js";
 import { LEAD_QUEUE_EXPIRY_MS, LEAD_QUEUE_MAX_MESSAGES, PersonalQueue, type LeadQueueContext } from "./lead-queue.js";
 import { chatAckPage } from "./server/render-chat.js";
 import { htmlString } from "./html.js";
@@ -681,6 +682,55 @@ describe("the lead's turn", () => {
       expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
       expect(queue.get(waiting.row.message)).toMatchObject({ status: "cancelled", error: "Not sent: this conversation ended before it ran.", text: "" });
     });
+    test("search never finds a message still waiting or removed; forgetting drops its context and its search copy; a queued request counts as received", async () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const kept = send(queue, live, where, "zebracrossing roadmap question", "a".repeat(32));
+      const gone = send(queue, live, where, "quokkaburrow private aside", "b".repeat(32), { task: "t-1", mode: "build" });
+      if (kept.kind !== "queued" || gone.kind !== "queued") throw new Error("unreachable");
+      expect(store.leadRequestReceived(live.id, "a".repeat(32))).toBe(true);
+      expect(store.leadRequestReceived(live.id, "c".repeat(32))).toBe(false);
+      const found = (word: string) => searchMemory(store, { actor: "alex", repos: [INSIDE], query: word }).length;
+      // Indexed or not, a waiting message is never a search result.
+      expect(found("zebracrossing")).toBe(0);
+      expect(found("quokkaburrow")).toBe(0);
+      expect(queue.remove("alex", gone.row.message, clock())).toBe("removed");
+      expect(store.handle.prepare("SELECT context_json FROM lead_queue WHERE message = ?").get(gone.row.message)).toEqual({ context_json: null });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_search WHERE body LIKE '%quokkaburrow%'").get()).toEqual({ n: 0 });
+      expect(store.leadRequestReceived(live.id, "b".repeat(32))).toBe(true);
+      // Once a turn takes it, it is history like any other message, and search finds it.
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const claim = queue.claimNext("runner-1", clock())!;
+      const outcome = await turn(claim.text, scripted([text("Answered.")]).fetcher, { session: live, thread: where, requestId: claim.requestId, queuedMessageId: claim.message,
+        queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation }, onAdmitted: id => { if (!queue.bindTurn(claim, id)) throw new Error("fence"); } });
+      expect(outcome).toMatchObject({ ok: true });
+      expect(found("zebracrossing")).toBe(1);
+      expect(found("quokkaburrow")).toBe(0);
+    });
+
+    test("a removed message's request stays a tombstone while its conversation is open: retention keeps it, so the same request never sends again", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      const gone = send(queue, live, where, "remove me", "a".repeat(32));
+      if (gone.kind !== "queued") throw new Error("unreachable");
+      expect(queue.remove("alex", gone.row.message, clock())).toBe("removed");
+      store.setRetentionPeriod("chat", 30, "alex", clock());
+      const later = new Date(clock().getTime() + 40 * 86_400_000);
+      expect(retentionPlan(store, "/nowhere", later).items.chat.map(one => one.id)).not.toContain(gone.row.message);
+      expect(send(queue, live, where, "remove me", "a".repeat(32))).toMatchObject({ kind: "queued", already: true, row: { status: "cancelled" } });
+      // The conversation over, its requests can't be sent under it again: the tombstone may go.
+      expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
+      expect(retentionPlan(store, "/nowhere", later).items.chat.map(one => one.id)).toContain(gone.row.message);
+    });
+
+    test("a queued turn's history keeps a mirrored channel exchange (an operator message no turn took is history unless still pending)", () => {
+      const where = thread();
+      store.appendLeadMessage({ thread: where.id, turn: null, role: "operator", text: "mirrored question from the phone" }, clock());
+      store.appendLeadMessage({ thread: where.id, turn: null, role: "assistant", text: "mirrored answer" }, clock());
+      const texts = historyFor(store, where.id, 999_999, false).map(one => one.text);
+      expect(texts).toEqual(["mirrored question from the phone", "mirrored answer"]);
+    });
+
     test("a claim that never bound is uncertain after the turn deadline (never resent); a week-old waiting message expires without its words", () => {
       const queue = new PersonalQueue(store), live = session(), where = thread();
       busy(live, where);

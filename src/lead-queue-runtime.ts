@@ -35,6 +35,7 @@ export function leadTurnContext(store: Store, context: LeadQueueContext | null, 
 /** Refusals before admission that wait (with their words) rather than end the message: what wakes each one is in its
  * stamp (a turn ends, the day or week or month rolls, the cost is confirmed, a budget is raised). */
 const WAITS = new Set(["concurrent", "backlog", "daily-cap", "over-budget", "monthly-budget", "latched"]);
+const UPDATE_WAIT = "Waiting: Toolroll is updating. It runs once the update is done.";
 
 export type PersonalQueueRuntimeOptions = {
   store: Store;
@@ -67,7 +68,8 @@ export function createPersonalQueueRuntime(options: PersonalQueueRuntimeOptions)
   let detached: AsyncResource | null = null;
   const active = new Set<Promise<void>>();
 
-  /** Everything openLeadTurn checks for this person (and a minute bucket, the belt): a change wakes a waiting message. */
+  /** What openLeadTurn checks for this person, and the chat configuration (its caps and budget), with a minute bucket
+   * as the belt for what is not named here (weekly and monthly spend roll over within it): a change wakes a waiting message. */
   function stamp(row: LeadQueueRow): string {
     const now = clock();
     const live = store.handle.prepare("SELECT id, state FROM mate_turn WHERE approver = ? AND state IN ('queued','running') ORDER BY id").all(row.approver);
@@ -75,7 +77,7 @@ export function createPersonalQueueRuntime(options: PersonalQueueRuntimeOptions)
     const session = store.getLeadSession(row.session);
     const latched = store.handle.prepare("SELECT COUNT(*) AS n FROM chat_turn WHERE approver = ? AND unknown_spend = 1 AND acknowledged_at IS NULL").get(row.approver);
     return createHash("sha256").update(JSON.stringify([live, liveChat, store.chatTurnsToday(row.approver, now), session?.spentMicrousd ?? null,
-      session?.ceilingMicrousd ?? null, latched?.["n"] ?? 0, updateAdmissionPaused(store.raw()), Math.floor(now.getTime() / 60_000)])).digest("hex");
+      session?.ceilingMicrousd ?? null, latched?.["n"] ?? 0, updateAdmissionPaused(store.raw()), options.provider()?.config ?? null, Math.floor(now.getTime() / 60_000)])).digest("hex");
   }
 
   /** The person as the row was sent: same generation, same session (live, theirs), same projects. Null: it can't run. */
@@ -100,24 +102,36 @@ export function createPersonalQueueRuntime(options: PersonalQueueRuntimeOptions)
       if (!proof.ok) { queue.finish(claim, { status: "failed", error: proof.why }, clock()); return; }
       const provider = options.provider();
       if (provider === null) { if (queue.defer(claim, "Waiting: chat is off. It runs once chat is on again.")) waiting.set(claim.message, stamp(claim)); return; }
+      // An update is being installed (or the console is stopping): the message waits for the next start, words kept.
+      const holding = () => closed || updateAdmissionPaused(store.raw());
+      if (holding()) { if (queue.defer(claim, UPDATE_WAIT)) waiting.set(claim.message, stamp(claim)); return; }
+      let held = false;
       const session = store.getLeadSession(claim.session)!, thread = store.getLeadThread(claim.thread)!;
-      progress = options.live?.begin(claim.thread);
       const context = leadTurnContext(store, claim.context, options.names);
       outcome = await runLeadTurn({
         store, who: proof.who, session, thread, config: provider.config, key: provider.key, message: claim.text, requestId: claim.requestId,
         queuedMessageId: claim.message, queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation },
-        onAdmitted: turn => { if (!queue.bindTurn(claim, turn)) throw new Error("The queued message changed before admission."); },
+        // The live reply display starts only once this message holds the turn: a refused attempt never blanks the display
+        // of a turn that is still running in the same conversation.
+        onAdmitted: turn => {
+          if (!queue.bindTurn(claim, turn)) throw new Error("The queued message changed before admission.");
+          progress = options.live?.begin(claim.thread);
+        },
         ...(context === undefined ? {} : { context }), channel: "console", clock, evidenceRoot: options.evidenceRoot,
-        ...(progress === undefined ? {} : { onProgress: progress }),
+        ...(options.live === undefined ? {} : { onProgress: (event: LeadProgress) => progress?.(event) }),
         // Before every step: still this claim, still this person at this generation and session, still the same projects.
-        revalidate: async () => !closed && !updateAdmissionPaused(store.raw()) && queue.current(claim) && standing(claim).ok
-          ? { ok: true as const } : { ok: false as const, reason: "access-changed" as const },
+        revalidate: async () => {
+          if (holding()) { held = true; return { ok: false as const, reason: "access-changed" as const }; }
+          return queue.current(claim) && standing(claim).ok ? { ok: true as const } : { ok: false as const, reason: "access-changed" as const };
+        },
         ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
         ...(options.subscriptionRunner === undefined ? {} : { subscriptionRunner: options.subscriptionRunner }),
       });
       if (outcome.ok) { queue.finish(claim, { status: "answered", turnId: outcome.turn }, clock()); return; }
       if ("refused" in outcome) {
-        if (WAITS.has(outcome.refused)) { if (queue.defer(claim, `Waiting: ${outcome.message}`)) waiting.set(claim.message, stamp(claim)); }
+        // Refused before admission because an update paused it: that is a wait too (the words stay; the pause ending wakes it).
+        if (outcome.refused === "channel" && held) { if (queue.defer(claim, UPDATE_WAIT)) waiting.set(claim.message, stamp(claim)); }
+        else if (WAITS.has(outcome.refused)) { if (queue.defer(claim, `Waiting: ${outcome.message}`)) waiting.set(claim.message, stamp(claim)); }
         else queue.finish(claim, { status: "failed", error: `Not sent: ${outcome.message}` }, clock());
         return;
       }

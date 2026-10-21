@@ -86,16 +86,17 @@ export function createChatHandlers(runtime: ServerRuntime) {
     }
     store.sweepStaleLeadTurns(now);
     const request = url.searchParams.get("request") ?? "";
-    const receipt = /^[a-f0-9]{32}$/.test(request) ? store.leadRequestReceipt(session.id, request) : null;
+    // Received: the engine took it, or the lead queue holds it (a queued acknowledgement lost on the way still frees the draft).
+    const received = /^[a-f0-9]{32}$/.test(request) && store.leadRequestReceived(session.id, request);
     const requestedTask = url.searchParams.get("task");
     const focusTask = requestedTask === null || requestedTask === "" ? null : taskChatFocus(requestedTask, now, who, { mintNonce: false });
     if (requestedTask !== null && requestedTask !== "" && focusTask === null) {
       // The lens's task is gone or no longer admitted: the page keeps its
       // draft and says so; it never falls back to the unified thread.
-      return respond(response, 200, "application/json", JSON.stringify({ session: session.id, task: requestedTask, unavailable: true, received: receipt !== null }));
+      return respond(response, 200, "application/json", JSON.stringify({ session: session.id, task: requestedTask, unavailable: true, received }));
     }
     const chatProject = focusTask !== null ? null : chatProjectOf(url.searchParams.getAll("project").filter(one => one !== ""));
-    if (chatProject === undefined) return respond(response, 200, "application/json", JSON.stringify({ session: session.id, unavailable: true, received: receipt !== null }));
+    if (chatProject === undefined) return respond(response, 200, "application/json", JSON.stringify({ session: session.id, unavailable: true, received }));
     const rows = leadConversationRows(who, principal, focusTask, now, chatProject);
     const version = leadChatVersion({ ...rows, focusTask });
     const known = url.searchParams.get("version") ?? "";
@@ -112,7 +113,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       task: focusTask?.id ?? "",
       version,
       pending: rows.pending !== null,
-      received: receipt !== null,
+      received,
       approval: focusTask?.approval?.digest ?? "",
       ...(fragments === null ? {} : { fragments }),
     }));
@@ -865,7 +866,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
         : chatProject !== null ? { project: chatProject } : null;
       const queueIt = () => runtime.personalQueue.queue.sendOrQueue({ approver: who.name, approverGeneration: principal.generation, session: leadSession.id,
         ceilingDigest: principal.ceilingDigest, thread: opened.thread.id, text: message, requestId, context: queueContext }, clock());
-      if (store.leadRequestReceipt(leadSession.id, requestId) === null) {
+      // A message the engine would refuse for a secret never waits (nothing stored): it goes straight to the engine,
+      // which refuses it before any row exists, exactly as when the lead is free.
+      if (scanForSecrets(message).length === 0 && store.leadRequestReceipt(leadSession.id, requestId) === null) {
         const decided = queueIt();
         if (decided.kind === "conflict") return said(409, "This message was already sent with different words. Reload the conversation to see it.", leadSession.id);
         if (decided.kind === "full") return said(409, decided.message, leadSession.id);

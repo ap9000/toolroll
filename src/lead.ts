@@ -243,7 +243,7 @@ function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
 const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
-export function historyFor(store: Store, thread: number, queuedMessageId?: number): LeadHistoryMessage[] {
+export function historyFor(store: Store, thread: number, queuedMessageId?: number, named = queuedMessageId !== undefined): LeadHistoryMessage[] {
   // Admitted messages only (v128): a queued message — this one, a teammate's, or one removed while waiting — never
   // reaches the model before its own turn takes it.
   const rows = store.listLeadHistory(thread, LEAD_HISTORY_MAX_MESSAGES);
@@ -251,12 +251,12 @@ export function historyFor(store: Store, thread: number, queuedMessageId?: numbe
   let bytes = 0;
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]!;
-    // Other teammates may have already queued later messages. They do not
-    // enter model history until admitted, and the current message appears once.
-    if (queuedMessageId !== undefined && (row.id === queuedMessageId || row.role === 'operator' && row.turn === null)) continue;
+    // The current message appears once (it is added after the history). Messages still waiting — a teammate's or this
+    // person's — are already left out by listLeadHistory (pending); a mirrored channel question is history like any other.
+    if (row.id === queuedMessageId) continue;
     bytes += Buffer.byteLength(row.text, "utf8");
     if (bytes > LEAD_HISTORY_CAP_BYTES) break;
-    const author = queuedMessageId !== undefined && row.role === 'operator' && row.turn !== null ? store.getLeadTurn(row.turn)?.approver : undefined;
+    const author = named && row.role === 'operator' && row.turn !== null ? store.getLeadTurn(row.turn)?.approver : undefined;
     kept.unshift(row.role === "operator" ? { role: "operator", text: author ? `From ${author}:\n${row.text}` : row.text } : { role: "assistant", text: row.text, calls: [] });
   }
   // A history must open with the operator: a leading assistant reply without its question is dropped.
@@ -340,7 +340,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   // A team room names who wrote each message; a person's own queued message is just theirs.
   const authoredMessage = input.queuedMessageId === undefined || personalQueued ? message : `From ${who.name}:\n${message}`;
   const historyMessage = input.context === undefined ? authoredMessage : `${redactForLead(input.context, view)}\n\n${authoredMessage}`;
-  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId), { role: "operator", text: historyMessage }];
+  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId, input.queuedMessageId !== undefined && !personalQueued), { role: "operator", text: historyMessage }];
   // Tools on demand (docs/plans/lead-deferred-tools.md): a request advertises the core tools, then the ones find_tools
   // found earlier in this reply, in that order (so the core prefix stays the same as tools are found).
   const findTools = { searches: 0, found: new Set<string>() };

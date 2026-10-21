@@ -18157,7 +18157,7 @@ export class Store {
         const waiting = this.db.prepare("SELECT message FROM lead_queue WHERE session = ? AND status = 'queued'").all(id).map(row => Number(row["message"]));
         for (const message of waiting) {
           this.db.prepare("UPDATE lead_queue SET status = 'cancelled', error = 'Not sent: this conversation ended before it ran.', revision = revision + 1, settled_at = ? WHERE message = ?").run(now.toISOString(), message);
-          this.db.prepare("UPDATE lead_message SET text = '' WHERE id = ? AND pending = 1").run(message);
+          this.forgetQueuedLeadMessage(message);
         }
       }
       return Number(changed.changes) === 1;
@@ -22522,6 +22522,22 @@ export class Store {
   leadTurnOfStep(step: number): LeadTurn | null {
     const row = this.db.prepare("SELECT mate_turn FROM chat_turn WHERE id = ?").get(step);
     return row === undefined || row["mate_turn"] === null ? null : this.getLeadTurn(Number(row["mate_turn"]));
+  }
+
+  /** A waiting message that will never run keeps nothing of what it said (v128 lead queue): its words, the context it was
+   * sent with, and any copy the memory search made of it. Only while it is still pending — a message a turn took stays. */
+  /** Whether a send of this session reached the plane: the engine took it, or the lead queue holds it (waiting, run,
+   * removed or expired — any of those means the composer's draft was accepted and must not be sent again). */
+  leadRequestReceived(session: number, request: string): boolean {
+    return this.leadRequestReceipt(session, request) !== null
+      || this.db.prepare("SELECT 1 FROM lead_queue WHERE session = ? AND request_id = ?").get(session, request) !== undefined;
+  }
+
+  forgetQueuedLeadMessage(message: number): void {
+    const blanked = this.db.prepare("UPDATE lead_message SET text = '' WHERE id = ? AND pending = 1").run(message);
+    if (Number(blanked.changes) !== 1) return;
+    this.db.prepare("UPDATE lead_queue SET context_json = NULL WHERE message = ?").run(message);
+    this.db.prepare("DELETE FROM memory_search WHERE kind = 'conversation' AND ref = ?").run(`message:${message}`);
   }
 }
 

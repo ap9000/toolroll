@@ -118,12 +118,12 @@ function fileSources(repo: string, kind: 'claude' | 'codex', home: string): Memo
 /** The plane's own sessions: lead threads that touched the project, and finished crew runs with their handoff and check output. */
 function planeSources(store: Store, repo: string, evidenceRoot: string | undefined): MemorySource[] {
   const out: MemorySource[] = [];
-  const threads = store.handle.prepare(`SELECT c.thread AS thread, c.id AS conversation, MAX(m.id) AS last, MAX(m.created_at) AS at FROM team_conversation c JOIN lead_message m ON m.thread=c.thread
+  const threads = store.handle.prepare(`SELECT c.thread AS thread, c.id AS conversation, MAX(m.id) AS last, MAX(m.created_at) AS at FROM team_conversation c JOIN lead_message m ON m.thread=c.thread AND m.pending=0
     WHERE EXISTS (SELECT 1 FROM json_each(c.projects_json) WHERE value=?) GROUP BY c.thread`).all(repo);
   for (const row of threads) {
     const thread = Number(row['thread']);
     out.push({ id: `lead:${thread}:${Number(row['last'])}`, repo, kind: 'lead', source: `conversation:${String(row['conversation'])}`, at: String(row['at']), trace: () => redact(
-      store.handle.prepare('SELECT role,text FROM lead_message WHERE thread=? ORDER BY id LIMIT 400').all(thread).map(m => `${m['role']}: ${clip(String(m['text']), 4000)}`).join('\n')) });
+      store.handle.prepare('SELECT role,text FROM lead_message WHERE thread=? AND pending=0 ORDER BY id LIMIT 400').all(thread).map(m => `${m['role']}: ${clip(String(m['text']), 4000)}`).join('\n')) });
   }
   const runs = store.handle.prepare(`SELECT r.id, r.role, r.finished_at, r.handoff, t.external_id FROM run r JOIN task_ref t ON t.id=r.task_ref WHERE t.repo=? AND r.role IN ('builder','repair') AND r.outcome IS NOT NULL ORDER BY r.id DESC LIMIT 100`).all(repo);
   for (const row of runs) {
