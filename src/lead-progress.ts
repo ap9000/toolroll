@@ -50,6 +50,7 @@ const TOOL_LABELS: Record<string, string> = {
   release_commitment: "Updating what I promised",
   remember: "Preparing a card for you to confirm",
   get_person: "Looking them up",
+  find_tools: "Finding the right tool",
 };
 
 export function leadToolLabel(name: string): string {

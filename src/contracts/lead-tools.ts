@@ -86,6 +86,7 @@ export const LEAD_TOOL_INPUTS = {
   }),
   recap: z.strictObject({ since: text("recapSince").optional() }),
   list_repos: z.strictObject({}),
+  find_tools: z.strictObject({ query: z.string().min(1).max(200).describe("What you want to do, in a few words (\"make a flow\", \"add a subagent\", \"hold a task\").") }),
   get_project_tools: z.strictObject({ repo: repoId }),
   get_flows: z.strictObject({ repo: repoId.optional(), flow: id.optional(), card: id.optional() }),
   // The flow contract's own schema (src/contracts/flow-propose.ts), never a second one here.
@@ -234,6 +235,7 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_review: proposed("review", { operation: z.enum(["note", "revise"]) }),
   recap: recapOutput,
   list_repos: z.looseObject({ repos: rows({ repo: str }) }),
+  find_tools: z.looseObject({ tools: rows({ name: str, summary: str }), next: str }),
   get_project_tools: z.looseObject({ rule: str, tools: rows({ name: str }), connectBySigningIn: list, commonTools: list, foundOnThisComputer: list, notice: str }),
   get_flows: z.union([
     z.looseObject({ flow: int, name: str, steps: rows({ id: str, title: str, kind: str }), cards: rows({ card: int, title: str }), scripts: list, triggers: list, rule: str }),

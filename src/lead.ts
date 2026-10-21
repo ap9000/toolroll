@@ -38,11 +38,12 @@ import {
   settleForPrice,
   subscriptionCredentialKey,
   type LeadHistoryMessage,
+  type LeadToolSchema,
 } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { redactSecretAssignments } from "./builder.js";
 import { LEAD_CONTRACT } from "./lead-contract.js";
-import { LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOL_SCHEMAS, executeLeadTool, isLeadTool, leadViewContextFor, projectLabelForLead, redactForLead, toolResultBytes } from "./lead-tools.js";
+import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOL_SCHEMAS, executeLeadTool, isLeadTool, leadViewContextFor, projectLabelForLead, redactForLead, toolResultBytes } from "./lead-tools.js";
 import type { ReviewSnapshot } from "./chat-review.js";
 import { composeSubscriptionLeadPrompt, performSubscriptionLeadRequest, type SubscriptionLeadRunner } from "./subscription-chat.js";
 import { LEAD_REPLY_LIMITS, leadContext, type LeadChannel } from './lead-context.js';
@@ -315,15 +316,23 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const authoredMessage = input.queuedMessageId === undefined ? message : `From ${who.name}:\n${message}`;
   const historyMessage = input.context === undefined ? authoredMessage : `${redactForLead(input.context, view)}\n\n${authoredMessage}`;
   const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId), { role: "operator", text: historyMessage }];
-  const composeDirect = (key: string): { url: string; headers: Record<string, string>; body: string } => {
+  // Tools on demand (docs/plans/lead-deferred-tools.md): a request advertises the core tools, then the ones find_tools
+  // found earlier in this reply, in that order (so the core prefix stays the same as tools are found).
+  const findTools = { searches: 0, found: new Set<string>() };
+  const advertisedTools = (): LeadToolSchema[] => [
+    ...LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)),
+    ...[...findTools.found].map(name => LEAD_TOOL_SCHEMAS.find(one => one.name === name)).filter((one): one is LeadToolSchema => one !== undefined),
+  ];
+  const composeDirect = (key: string, tools: readonly LeadToolSchema[]): { url: string; headers: Record<string, string>; body: string } => {
     if (!direct) throw new Error("not a direct chat provider");
-    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools: LEAD_TOOL_SCHEMAS });
+    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools });
   };
-  const composeSubscription = (): string =>
-    composeSubscriptionLeadPrompt({ system: LEAD_CONTRACT, dataDocument: document, history, tools: LEAD_TOOL_SCHEMAS });
-  // The exact outbound base is scanned whole. Only direct API traffic needs
-  // a worst-case dollar reservation; subscription traffic records zero.
-  const base = direct ? composeDirect("").body : composeSubscription();
+  const composeSubscription = (tools: readonly LeadToolSchema[]): string =>
+    composeSubscriptionLeadPrompt({ system: LEAD_CONTRACT, dataDocument: document, history, tools });
+  // The reservation-only base: the FULL registry, serialized as a request would be, so any tool found later in this
+  // reply is already covered by the worst case. What is sent each round is smaller (the advertised set) and is scanned
+  // whole before every dispatch. Only direct API traffic needs a dollar reservation; subscription traffic records zero.
+  const base = direct ? composeDirect("", LEAD_TOOL_SCHEMAS).body : composeSubscription(LEAD_TOOL_SCHEMAS);
   if (scanForSecrets(base).length > 0) return refuse("secret-in-context");
   // Fit the bounded tool loop to the already-authorized remaining allowance.
   // Context/history growth must not demand a larger budget for a simple reply.
@@ -465,7 +474,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     now = clock();
     const remainingMs = TURN_WALL_CLOCK_MS - (now.getTime() - turnStartedAt);
     if (remainingMs <= 0) return timedOut(false);
-    const request = direct ? composeDirect(input.key as string) : composeSubscription();
+    // This request's advertised tools: fixed for the request; a tool found in its reply is advertised from the next one.
+    const advertised = advertisedTools();
+    const advertisedNames = new Set(advertised.map(one => one.name));
+    const request = direct ? composeDirect(input.key as string, advertised) : composeSubscription(advertised);
     // Tool results join the outbound body: scanned again before every dispatch.
     const outbound = typeof request === "string" ? request : request.body;
     if (scanForSecrets(outbound).length > 0) {
@@ -504,7 +516,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           system: LEAD_CONTRACT,
           dataDocument: document,
           history,
-          tools: LEAD_TOOL_SCHEMAS,
+          tools: advertised,
           timeoutMs: remainingMs,
           signal: controller.signal,
           // The reply as it is written; text that looks like a secret is
@@ -600,7 +612,11 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       // Position within this turn is unique even if a provider reuses call ids.
       const progressId = `${turnId}:${steps}:${index}`;
       progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: leadToolLabel(call.name) });
-      const outcome = executeLeadTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
+      // A registered tool this request did not advertise is refused before it is read or run (the only production
+      // caller of executeLeadTool): the model learns the road (find_tools, then the next step) and the reply goes on.
+      const outcome = !advertisedNames.has(call.name)
+        ? { ok: false as const, message: `${call.name} isn't available in this step. Call find_tools with what you want to do; tools it finds can be called from your next step.` }
+        : executeLeadTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
       let displayOutcome: LeadToolOutcome = { state: "succeeded" };
       if (!outcome.ok) {
         const reason = leadToolFailureReason(call.name, outcome.message);

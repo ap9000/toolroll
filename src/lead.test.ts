@@ -4,9 +4,10 @@ import { fileTaskProposal } from "./proposal.js";
 import { propose } from "./scope.js";
 import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
+import { leadToolLabel } from "./lead-progress.js";
 import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
-import { LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, executeLeadTool, redactForLead } from "./lead-tools.js";
+import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, LEAD_TOOL_SCHEMAS, executeLeadTool, findLeadTools, redactForLead } from "./lead-tools.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import * as leadProgress from "./lead-progress.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
@@ -255,10 +256,16 @@ describe("the lead's turn", () => {
       step++;
       if (step === 1) {
         request.onText?.("Let me look.");
+        // get_flows is found first (tools on demand), then called from the next step.
+        expect(request.tools.map(one => one.name)).not.toContain("get_flows");
         return { ok: true, answer: { text: "Let me look.", calls: [
           { id: "r1", name: "recap", args: {} },
-          { id: "r1", name: "get_flows", args: { flow: 999 } },
+          { id: "f1", name: "find_tools", args: { query: "flows" } },
         ], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
+      }
+      if (step === 2) {
+        expect(request.tools.map(one => one.name)).toContain("get_flows");
+        return { ok: true, answer: { text: "", calls: [{ id: "r1", name: "get_flows", args: { flow: 999 } }], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
       }
       request.onText?.("One decision");
       request.onText?.("sk-ant-api03-" + "A".repeat(90));
@@ -269,13 +276,14 @@ describe("the lead's turn", () => {
     expect(outcome).toMatchObject({ ok: true, reply: "One decision needs you." });
     if (!outcome.ok) throw new Error("unreachable");
     expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `text:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
-      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", "tool:Reading the flows", "result:failed", "step:2", "text:2:One decision", "text:2:One decision needs you.",
+      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", `tool:${leadToolLabel("find_tools")}`, "result:succeeded",
+      "step:2", "tool:Reading the flows", "result:failed", "step:3", "text:3:One decision", "text:3:One decision needs you.",
     ]);
     const starts = events.filter(event => event.kind === "tool");
     const results = events.filter(event => event.kind === "tool-result");
-    expect(new Set(starts.map(event => event.id)).size).toBe(2);
+    expect(new Set(starts.map(event => event.id)).size).toBe(3);
     expect(results.map(event => event.id)).toEqual(starts.map(event => event.id));
-    expect(results[1]).toMatchObject({ step: 1, outcome: { state: "failed", reason: "No such flow in your projects." } });
+    expect(results[2]).toMatchObject({ step: 2, outcome: { state: "failed", reason: "No such flow in your projects." } });
     expect(events.every(event => event.turn === outcome.turn)).toBe(true);
   });
 
@@ -560,9 +568,73 @@ describe("the lead's turn", () => {
       const linked = scripted([text("Here's the link to the task: https://so.example.com/chat?task=in-1")]);
       expect(reply(await turn("link me the task", linked.fetcher))).toBe("Here's the link to the task: https://so.example.com/chat?task=in-1");
       expect(linked.bodies).toHaveLength(1);
-      const shown = scripted([answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
+      const shown = scripted([answer([call("find_tools", { query: "show the settings page" })]), answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
       expect(reply(await turn("where are settings?", shown.fetcher))).toBe("Here's the link to Settings.");
-      expect(shown.bodies).toHaveLength(2);
+      expect(shown.bodies).toHaveLength(3);
+    });
+  });
+
+  describe("tools on demand (docs/plans/lead-deferred-tools.md)", () => {
+    const toolNames = (body: string): string[] => (JSON.parse(body) as { tools: { name: string }[] }).tools.map(one => one.name);
+    test("a request advertises the core tools; a tool found by find_tools is advertised from the next request, after the core", async () => {
+      const script = scripted([answer([call("find_tools", { query: "make a flow that sorts my inbox" })]), text("I can draft that flow.")]);
+      expect(await turn("set up a flow", script.fetcher)).toMatchObject({ ok: true });
+      const first = toolNames(script.bodies[0]!), second = toolNames(script.bodies[1]!);
+      expect(first).toEqual(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)).map(one => one.name));
+      expect(first).not.toContain("propose_flow");
+      expect(second.slice(0, first.length)).toEqual(first);
+      expect(second.slice(first.length)).toContain("propose_flow");
+    });
+    test("a tool found in a response can't be called in that same response; it works from the next step, and the reply goes on", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "show the settings page" }), call("show_control", { control: "settings" })]),
+        answer([call("show_control", { control: "settings" })]),
+        text("Here's the link to Settings."),
+      ]);
+      const outcome = await turn("where are settings?", script.fetcher);
+      expect(outcome).toMatchObject({ ok: true });
+      expect(script.bodies[1]).toContain("show_control isn't available in this step. Call find_tools");
+      // Refused once (step 1); the history carries that refusal forward, and the step-2 call ran (no second refusal).
+      const refusals = (body: string) => body.split("show_control isn't available in this step").length - 1;
+      expect(refusals(script.bodies[1]!)).toBe(1);
+      expect(refusals(script.bodies[2]!)).toBe(1);
+    });
+    test("an unadvertised, registered tool is refused before it runs — nothing is drafted", async () => {
+      const script = scripted([answer([call("propose_flow", { name: "x" })]), text("I'll search for it first.")]);
+      const outcome = await turn("make a flow", script.fetcher);
+      expect(outcome).toMatchObject({ ok: true, proposals: 0 });
+      expect(script.bodies[1]).toContain("propose_flow isn't available in this step");
+    });
+    test("find_tools is bounded: three searches per reply, then a refusal; an empty search names what can be found", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "zzzz qqqq" })]),
+        answer([call("find_tools", { query: "flows" }), call("find_tools", { query: "sweeps" })]),
+        answer([call("find_tools", { query: "subagents" })]),
+        text("done"),
+      ]);
+      expect(await turn("look around", script.fetcher)).toMatchObject({ ok: true });
+      expect(script.bodies[1]).toContain("Nothing matched. The other tools cover flows, subagents, sweeps");
+      expect(script.bodies[3]).toContain("You have searched 3 times this reply");
+    });
+    test("find_tools ranks by what you want to do, and never returns a core tool", () => {
+      expect(findLeadTools("make a flow")[0]?.name).toBe("propose_flow");
+      expect(findLeadTools("add a sales rep subagent")[0]?.name).toBe("propose_subagent");
+      expect(findLeadTools("run these eleven bug reports in parallel").map(one => one.name)).toContain("propose_sweep");
+      expect(findLeadTools("propose_agents")[0]?.name).toBe("propose_agents");
+      expect(findLeadTools("qqqq")).toEqual([]);
+      for (const query of ["task", "project", "memory", "decision", "result"]) for (const found of findLeadTools(query)) expect(LEAD_CORE_TOOLS.has(found.name), found.name).toBe(false);
+    });
+    test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
+      const names = LEAD_TOOL_SCHEMAS.map(one => one.name);
+      expect(new Set(names).size).toBe(names.length);
+      expect(names).toContain("find_tools");
+      for (const core of LEAD_CORE_TOOLS) expect(names, core).toContain(core);
+      // Read in an earlier step before a proposal (memory), work needing an agent (capabilities), a review (result) and
+      // an answer (decision): a prerequisite is never behind find_tools.
+      for (const prerequisite of ["search_project_memory", "get_capabilities", "get_result", "get_decision", "find_tools"]) expect(LEAD_CORE_TOOLS.has(prerequisite), prerequisite).toBe(true);
+      const bytes = (list: readonly unknown[]) => list.reduce<number>((sum, one) => sum + JSON.stringify(one).length, 0);
+      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(22_000);
+      expect(bytes(LEAD_TOOL_SCHEMAS)).toBeGreaterThan(60_000);
     });
   });
 
@@ -836,7 +908,11 @@ describe("the lead's turn", () => {
     const good = await turn("hello", script.fetcher, { session: live });
     expect(good).toMatchObject({ ok: true });
     if (!good.ok) throw new Error("unreachable");
-    expect(store.getLeadTurn(good.turn)?.reservedMicrousd).toBe(leadWorstCaseForPrice(PRICE, Buffer.byteLength(script.bodies[0]!, "utf8")));
+    // The reservation covers the FULL tool registry (tools found later in the reply are already paid for); what is sent
+    // advertises only the core tools, so the reservation is above the sent body's own worst case.
+    expect(script.bodies[0]).not.toContain(`"name":"propose_flow"`);
+    expect(script.bodies[0]).toContain(`"name":"find_tools"`);
+    expect(store.getLeadTurn(good.turn)!.reservedMicrousd).toBeGreaterThan(leadWorstCaseForPrice(PRICE, Buffer.byteLength(script.bodies[0]!, "utf8")));
     // The day counts lead turns as one turn each, and closes chat and mate alike.
     expect(await turn("hello", scripted([text("hi")]).fetcher, { session: live, config: { ...CONFIG, dailyTurns: 1 } })).toMatchObject({ ok: false, refused: "daily-cap" });
     expect(store.chatTurnsToday("alex", clock())).toBe(1);
