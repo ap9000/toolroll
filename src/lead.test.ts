@@ -586,6 +586,16 @@ describe("the lead's turn", () => {
   });
 
   describe("tools on demand (docs/plans/lead-deferred-tools.md)", () => {
+    /** A provider reporting every byte it was sent as a cache-write token, plus the full output allowance: within the
+     * bytes-sent sanity check, beyond the reservation's one-token-per-three-bytes estimate. */
+    const overReporting = () => {
+      const bodies: string[] = [];
+      const fetcher = (async (_url: unknown, init?: { body?: unknown }) => {
+        const body = String(init?.body ?? ""); bodies.push(body);
+        return answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: Buffer.byteLength(body, "utf8"), cache_read_input_tokens: 0, output_tokens: MAX_OUTPUT_TOKENS });
+      }) as unknown as typeof fetch;
+      return { fetcher, bodies };
+    };
     const toolNames = (body: string): string[] => (JSON.parse(body) as { tools: { name: string }[] }).tools.map(one => one.name);
     test("a request advertises the core tools; a tool found by find_tools is advertised from the next request, after the core", async () => {
       const script = scripted([answer([call("find_tools", { query: "make a flow that sorts my inbox" })]), text("I can draft that flow.")]);
@@ -666,13 +676,12 @@ describe("the lead's turn", () => {
     });
     test("a reply is never charged past its reservation: usage reported beyond it ends the turn with its cost unknown", async () => {
       // Every byte reported as a token and as a cache write: more than the reservation's estimate allows.
-      const live = session();
-      const script = scripted([(() => {
-        const body = (requestBytes: number) => answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: requestBytes, cache_read_input_tokens: 0, output_tokens: 2_048 });
-        return body(70_000);
-      })()]);
+      // A tight ceiling leaves room for one step, so the reservation is one step's worst case (as in Codex's probe).
+      const live = session(300_000);
+      const script = overReporting();
       const outcome = await turn("hello", script.fetcher, { session: live });
-      expect(outcome).toMatchObject({ ok: false, failed: "malformed-reply", unknownSpend: true });
+      expect(script.bodies).toHaveLength(1);
+      expect(outcome).toMatchObject({ ok: false, failed: "over-reservation", unknownSpend: true, message: LEAD_FAILURE_COPY.overReserved });
       if (outcome.ok) throw new Error("unreachable");
       const row = store.getLeadTurn(outcome.turn)!;
       // Unknown cost settles the reservation itself: never more than it, never past the session's ceiling.
@@ -694,13 +703,14 @@ describe("the lead's turn", () => {
       expect(findLeadTools("sweeps").map(one => one.name)).toEqual(expect.arrayContaining(["propose_sweep", "get_sweep", "propose_sweep_cancel"]));
     });
     test("the person paused by an unknown cost is told to confirm it, and the confirmation names the reply's real charge", async () => {
-      const live = session();
-      const script = scripted([answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: 70_000, cache_read_input_tokens: 0, output_tokens: 2_048 })]);
-      const outcome = await turn("hello", script.fetcher, { session: live });
-      if (outcome.ok) throw new Error("expected the unknown-cost path");
-      expect(store.leadTurnCostUnknown(outcome.turn)).toBe(true);
-      expect(leadFailureText("malformed-reply", true)).toContain("Confirm the cost on the Chat page");
-      expect(leadFailureText("malformed-reply", false)).not.toContain("Confirm the cost");
+      const live = session(300_000);
+      const outcome = await turn("hello", overReporting().fetcher, { session: live });
+      if (outcome.ok || !("failed" in outcome) || outcome.failed !== "over-reservation") throw new Error("expected the over-reservation path: " + JSON.stringify(outcome));
+      expect(store.leadTurnCostUnconfirmed(outcome.turn)).toBe(true);
+      // Replayed later (a restart, a channel delivery retry): the same true words while the cost is unconfirmed.
+      expect(leadFailureText("over-reservation", true)).toBe(LEAD_FAILURE_COPY.overReserved);
+      expect(leadFailureText("timeout", true)).toBe("The reply took too long and was stopped. Its cost isn't known, so chat is paused. Confirm the cost on the Chat page to turn chat back on.");
+      expect(leadFailureText("timeout", true)).not.toContain("Nothing it proposed was kept");
       const reply = store.getLeadTurn(outcome.turn)!;
       const stepRow = store.handle.prepare("SELECT id FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1").get(outcome.turn) as { id: number };
       expect(store.leadTurnOfStep(stepRow.id)?.id).toBe(reply.id);
@@ -708,6 +718,9 @@ describe("the lead's turn", () => {
       const page = htmlString(withFormToken("csrf", () => chatAckPage(undefined as never, store.getChatTurn(stepRow.id)!, "n", store.leadTurnOfStep(stepRow.id)).body));
       expect(page).toContain(`This lead reply's worst case, ${chatMoney(reply.settledMicrousd!)}, has already been counted`);
       expect(page).not.toContain("charges the reserved worst case, $0.00");
+      // Once the cost is confirmed, the turn no longer keeps chat paused: a replay says what happened, not "confirm".
+      expect(store.acknowledgeChatTurn(stepRow.id, "alex", clock())).toBe(true);
+      expect(store.leadTurnCostUnconfirmed(outcome.turn)).toBe(false);
     });
     test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
       const names = LEAD_TOOL_SCHEMAS.map(one => one.name);

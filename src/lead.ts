@@ -138,7 +138,7 @@ export type LeadRefusal =
   | "request-changed"
   | "channel";
 
-export type LeadFailure = "provider-error" | "timeout" | "malformed-reply" | "secret-refused" | "latched" | "revoked" | "superseded";
+export type LeadFailure = "provider-error" | "timeout" | "malformed-reply" | "secret-refused" | "latched" | "revoked" | "superseded" | "over-reservation";
 
 export type LeadTurnOutcome =
   | { ok: true; replayed?: false; turn: number; reply: string; activity: string; proposals: number; steps: number; stoppedAtCap: boolean; settledMicrousd: number }
@@ -206,10 +206,13 @@ export function leadFailureText(reason: string | null, unknownSpend = false): st
   // confirm the cost before chat runs again — never "send it again", which would only meet the pause.
   if (unknownSpend) {
     if (reason === "malformed-reply") return LEAD_FAILURE_COPY.unreadableUnknownCost;
+    if (reason === "over-reservation") return LEAD_FAILURE_COPY.overReserved;
+    // Whether proposals were kept depends on how it ended (a timeout keeps what it drafted): this says nothing about them.
     const happened = /^[^.]*\./.exec(leadFailureText(reason))?.[0] ?? "The lead's reply didn't finish.";
-    return `${happened} Its cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.`;
+    return `${happened} Its cost isn't known, so chat is paused. Confirm the cost on the Chat page to turn chat back on.`;
   }
   switch (reason) {
+    case "over-reservation": return "This reply reported more use than was set aside for it, so it was stopped and its cost counted. Send your message again.";
     case "timeout": case "crashed": return LEAD_FAILURE_COPY.tooLong;
     case "malformed-reply": return LEAD_FAILURE_COPY.unreadable;
     case "secret-refused": return LEAD_FAILURE_COPY.secretReply;
@@ -585,8 +588,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     // settles the whole reservation and pauses chat until the cost is confirmed — never a debit past the reservation
     // or the session's ceiling.
     if (direct && settled + stepSettled > reserved) {
-      finishStep({ state: "failed", failureReason: "malformed-reply", settledMicrousd: null, unknownSpend: true });
-      return fail("malformed-reply", LEAD_FAILURE_COPY.overReserved, true);
+      finishStep({ state: "failed", failureReason: "over-budget", settledMicrousd: null, unknownSpend: true });
+      return fail("over-reservation", LEAD_FAILURE_COPY.overReserved, true);
     }
     finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8") });
     tokensIn += answer.tokensIn;
