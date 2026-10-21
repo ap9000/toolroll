@@ -6,6 +6,7 @@ import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverSta
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
 import { leadToolLabel } from "./lead-progress.js";
 import { settleWithCache } from "./converse.js";
+import { retentionPlan } from "./retention.js";
 import { LEAD_QUEUE_EXPIRY_MS, LEAD_QUEUE_MAX_MESSAGES, PersonalQueue, type LeadQueueContext } from "./lead-queue.js";
 import { chatAckPage } from "./server/render-chat.js";
 import { htmlString } from "./html.js";
@@ -668,6 +669,18 @@ describe("the lead's turn", () => {
       expect(historyFor(store, where.id).map(one => one.text)).toContain("what changed in the release?");
     });
 
+    test("ending the session ends its waiting messages (Not sent, no words); retention never deletes a message still waiting", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      const waiting = send(queue, live, where, "keep me", "a".repeat(32));
+      if (waiting.kind !== "queued") throw new Error("unreachable");
+      // Retention's chat sweep leaves a waiting message alone, however old.
+      store.setRetentionPeriod("chat", 30, "alex", clock());
+      const later = new Date(clock().getTime() + 40 * 86_400_000);
+      expect(retentionPlan(store, "/nowhere", later).items.chat.map(one => one.id)).not.toContain(waiting.row.message);
+      expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
+      expect(queue.get(waiting.row.message)).toMatchObject({ status: "cancelled", error: "Not sent: this conversation ended before it ran.", text: "" });
+    });
     test("a claim that never bound is uncertain after the turn deadline (never resent); a week-old waiting message expires without its words", () => {
       const queue = new PersonalQueue(store), live = session(), where = thread();
       busy(live, where);

@@ -186,6 +186,7 @@ export function retentionPlan(store: Store, evidenceRoot: string, now: Date, per
     const rows = db.prepare(`SELECT m.id AS id, length(m.text) + COALESCE(length(m.activity), 0) + 64 AS bytes FROM lead_message m JOIN lead_thread th ON th.id = m.thread
       WHERE m.created_at < ?
         AND NOT EXISTS (SELECT 1 FROM team_message tm WHERE tm.message = m.id AND tm.status IN ('queued', 'running', 'uncertain'))
+        AND NOT EXISTS (SELECT 1 FROM lead_queue lq WHERE lq.message = m.id AND lq.status IN ('queued', 'running', 'uncertain'))
         AND NOT EXISTS (SELECT 1 FROM mate_turn turn WHERE turn.id = m.turn AND turn.state IN ('queued', 'running'))
         AND NOT (th.scope_kind = 'task' AND NOT EXISTS (SELECT 1 FROM task_ref r WHERE r.external_id = th.scope_key AND ${finishedTask("r")}))
       ORDER BY m.id LIMIT ?`).all(cutoff(now, periods.chat), SWEEP_BATCH + 1);

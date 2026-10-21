@@ -248,7 +248,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
       if (!(form instanceof HTMLFormElement) || form.dataset.workspaceComposer !== undefined || form.getAttribute("action") !== "/chat") return;
       const current = state.current;
       if (!current.workspace.conversation) return;
-      if (current.stale || sendLatch.current || current.draft.pending || navigator.onLine === false || current.workspace.conversation.pendingTurnId !== null) {
+      if (current.stale || sendLatch.current || current.draft.pending || navigator.onLine === false) {
         event.preventDefault();
         setNotice("Wait for the current message before sending another.");
         return;
@@ -701,7 +701,8 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
   // Watch once the send has returned (the server has begun the turn), or
   // while a turn is known to be running.
   const live = useLiveReply(chat, busy || (draft.pending !== null && !sending), () => { void controller.check(); });
-  const disabled = sending || stale || offline || busy || draft.pending !== null || !draft.text.trim();
+  // A reply in progress doesn't disable sending: the next message waits in the lead queue.
+  const disabled = sending || stale || offline || draft.pending !== null || !draft.text.trim();
   // A phone starts the box at one line (Send sits beside it); a desk keeps its two.
   useLayoutEffect(() => { const el = box.current; if (el) { const phone = matchMedia("(max-width: 760px)").matches; el.style.height = phone ? "0px" : "auto"; el.style.height = `${Math.min(180, Math.max(phone ? 44 : 48, el.scrollHeight))}px`; } }, [draft.text]);
   const delivery = offline ? "Offline. Your draft stays in this tab." : sending ? "Sending…" : notice;
@@ -788,7 +789,8 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
   const live = useLiveReply(chat, active && (busy || (draft.pending !== null && !sending)), () => { void controller.check(); });
   useLayoutEffect(() => { const el = box.current; if (el) { const phone = matchMedia("(max-width: 760px)").matches; el.style.height = phone ? "0px" : "auto"; el.style.height = `${Math.min(180, Math.max(phone ? 44 : 48, el.scrollHeight))}px`; } }, [draft.text]);
   if (!active || chat === null) return null;
-  const disabled = sending || stale || offline || busy || draft.pending !== null || !draft.text.trim();
+  // A reply in progress doesn't disable sending: the next message waits in the lead queue.
+  const disabled = sending || stale || offline || draft.pending !== null || !draft.text.trim();
   const delivery = offline ? "Offline. Your draft stays in this tab." : sending ? "Sending…" : notice;
   const hint = TASK_MODES.find(one => one.id === mode)!.hint;
   return {

@@ -995,16 +995,17 @@ export type LeadThreadRows = {
   queue?: Map<number, LeadQueueRow>;
 };
 
-/** A queued message's state under its words: waiting (with Remove), or why it was not sent. Nothing for one that ran. */
+/** A queued message's state under its words: waiting (with Remove), or why it was not sent. Nothing for one that ran.
+ * A div, not a p: the Remove form can't sit inside a paragraph (the parser would close it first). */
 function queuedStateHtml(row: LeadQueueRow, back: string | null): Html {
   if (row.status === "queued") {
     const waiting = row.error?.startsWith("Waiting: ") === true ? row.error.slice("Waiting: ".length) : "It goes to the lead when it finishes.";
-    return html`<p class="so-queued" data-queued="${row.message}" data-queue-state="queued"><span class="so-queued-state">Queued</span> · ${waiting}${
-      postForm(`/chat/queued/${row.message}/remove`, html`<button type="submit" class="so-queued-remove quiet">Remove</button>`, { attrs: { class: "inline" }, ...(back === null ? {} : { returnTo: back }) })}</p>`;
+    return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="queued"><span class="so-queued-state">Queued</span> · ${waiting}${
+      postForm(`/chat/queued/${row.message}/remove`, html`<button type="submit" class="so-queued-remove quiet">Remove</button>`, { attrs: { class: "inline" }, ...(back === null ? {} : { returnTo: back }) })}</div>`;
   }
-  if (row.status === "running" && row.turnId === null) return html`<p class="so-queued" data-queued="${row.message}" data-queue-state="starting"><span class="so-queued-state">Starting</span></p>`;
-  if (row.status === "cancelled" || row.status === "failed") return html`<p class="so-queued" data-queued="${row.message}" data-queue-state="${row.status}"><span class="so-queued-state">Not sent</span> · ${row.error ?? "It was not sent."}</p>`;
-  if (row.status === "uncertain") return html`<p class="so-queued" data-queued="${row.message}" data-queue-state="uncertain"><span class="so-queued-state">Not confirmed</span> · ${row.error ?? "Delivery could not be confirmed. Nothing was sent again."}</p>`;
+  if (row.status === "running" && row.turnId === null) return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="starting"><span class="so-queued-state">Starting</span></div>`;
+  if (row.status === "cancelled" || row.status === "failed") return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="${row.status}"><span class="so-queued-state">Not sent</span> · ${row.error ?? "It was not sent."}</div>`;
+  if (row.status === "uncertain") return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="uncertain"><span class="so-queued-state">Not confirmed</span> · ${row.error ?? "Delivery could not be confirmed. Nothing was sent again."}</div>`;
   return html``;
 }
 

@@ -18147,18 +18147,31 @@ export class Store {
   }
 
   endLeadSession(id: number, by: string, now: Date): boolean {
-    const changed = this.db
-      .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL")
-      .run(now.toISOString(), by, id);
-    return Number(changed.changes) === 1;
+    return this.transact(() => {
+      const changed = this.db
+        .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL")
+        .run(now.toISOString(), by, id);
+      // Its waiting messages can never run under it (each is bound to the session it was sent in): they end now, Not
+      // sent, and keep no words (v128 lead queue).
+      if (Number(changed.changes) === 1) {
+        const waiting = this.db.prepare("SELECT message FROM lead_queue WHERE session = ? AND status = 'queued'").all(id).map(row => Number(row["message"]));
+        for (const message of waiting) {
+          this.db.prepare("UPDATE lead_queue SET status = 'cancelled', error = 'Not sent: this conversation ended before it ran.', revision = revision + 1, settled_at = ? WHERE message = ?").run(now.toISOString(), message);
+          this.db.prepare("UPDATE lead_message SET text = '' WHERE id = ? AND pending = 1").run(message);
+        }
+      }
+      return Number(changed.changes) === 1;
+    });
   }
 
   /** Revocation's companion (ruling 10): an approver's standing ends every session it minted. */
   endLeadSessionsFor(approver: string, by: string, now: Date): number {
-    const changed = this.db
-      .prepare("UPDATE lead_session SET ended_at = ?, ended_by = ? WHERE approver = ? AND ended_at IS NULL")
-      .run(now.toISOString(), by, approver);
-    return Number(changed.changes);
+    return this.transact(() => {
+      const ending = this.db.prepare("SELECT id FROM lead_session WHERE approver = ? AND ended_at IS NULL").all(approver).map(row => Number(row["id"]));
+      // Each ends as endLeadSession ends one: its waiting messages too (v128 lead queue).
+      for (const id of ending) this.endLeadSession(id, by, now);
+      return ending.length;
+    });
   }
 
   /** The live thread for this approver and scope under THIS ceiling; a
