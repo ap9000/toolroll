@@ -374,6 +374,14 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
   </div>;
 }
 
+/** The approval region's identity: whether it leads open or sits folded, and the digest it signs. The nonce (new on
+ * every render) is deliberately not part of it. */
+export function approvalIdentity(approval: string): string {
+  const folded = approval.includes("task-secondary-approval");
+  const digest = /name="digest" value="([^"]*)"/.exec(approval)?.[1] ?? "";
+  return `${folded ? "folded" : "open"}:${digest}`;
+}
+
 /** Where the one thing that waits on a person lives: the status card's action (Confirm it stopped, Build again, Retry
  * and the rest), or the approval under it. A button inside a closed fold is never the one action. */
 const PRIMARY_ACTION = "[data-task-status] [data-primary-action], .so-task-approval [data-primary-action]";
@@ -460,7 +468,9 @@ export function TaskView({ view, chat = null, details = true, csrf = "" }: { vie
       : <Html html={view.statusHtml} />}
 
     {/* The approval is its own section under the status, never a card inside it. */}
-    {view.approval !== "" && <Html html={view.approval} className="so-task-approval" />}
+    {/* Installed once (a refresh's new nonce never wipes a password being typed), but a new region when what it is
+        changes: folded under Updated approval terms or leading open, and the exact plan it signs. */}
+    {view.approval !== "" && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
 
     {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
 

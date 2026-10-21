@@ -19,8 +19,10 @@ const viewOf = (card: AssignmentCard, extra: Partial<BrowserTaskView> = {}): Bro
   kind: "task", id: "t-1", title: "Release check", project: null, scout: false, tabs: [], version: null,
   status: card, statusHtml: "", approval: "", lead: [], questions: "", facts: [], sections: [], manage: [], cancel: null, thread: [], ...extra,
 });
-const APPROVAL = '<section class="task-plan-review"><form method="post" action="/t/t-1/approve"><input type="text" name="username" tabindex="-1">'
+const approvalOf = (nonce: string, digest = "d1") => '<section class="task-plan-review"><form method="post" action="/t/t-1/approve">'
+  + `<input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="digest" value="${digest}"><input type="text" name="username" tabindex="-1">`
   + '<input type="password" name="token"><button type="submit" data-primary-action>Approve &amp; build again</button></form></section>';
+const APPROVAL = approvalOf("n1");
 
 let root: Root | null = null, host: HTMLElement;
 let observed: { callback: IntersectionObserverCallback; target: Element | null }[] = [];
@@ -83,12 +85,12 @@ test("a button inside a closed fold is never the one action, and the bar follows
   show(viewOf(cardOf("Needs you", null), { approval: folded }));
   seen(false);
   expect(bar()).toBeNull();
-  // The same page, live-updated: the approval now leads, open.
-  show(viewOf(cardOf("Needs you", null), { approval: APPROVAL }), "second");
+  // The same page, live-updated in place (no remount): the approval now leads, open.
+  show(viewOf(cardOf("Needs you", null), { approval: APPROVAL }));
   seen(false);
   expect(bar()!.querySelector("button")!.textContent).toContain("Approve & build again");
   // Updated again: the approval is gone and the status card leads with Build again.
-  show(viewOf(cardOf("Needs you", { label: "Build again", href: "/t/t-1" }), { approval: "" }), "third");
+  show(viewOf(cardOf("Needs you", { label: "Build again", href: "/t/t-1" }), { approval: "" }));
   seen(false);
   expect(bar()!.querySelector("button")!.textContent).toContain("Build again");
   expect(observed).toHaveLength(1);
@@ -102,6 +104,18 @@ test("the status card's own action changing in place (no new render of the page)
   seen(false);
   expect(bar()!.querySelector("button")!.textContent).toContain("Check the build");
   expect(observed).toHaveLength(1);
+});
+
+test("a refresh that only re-mints the approval's nonce keeps the region (and a password being typed)", () => {
+  show(viewOf(cardOf("Needs you", null), { approval: approvalOf("n1") }));
+  const field = host.querySelector<HTMLInputElement>('input[name="token"]')!;
+  field.value = "typed";
+  show(viewOf(cardOf("Needs you", null), { approval: approvalOf("n2") }));
+  expect(host.querySelector<HTMLInputElement>('input[name="token"]')).toBe(field);
+  expect(field.value).toBe("typed");
+  // A different plan to sign is a new region.
+  show(viewOf(cardOf("Needs you", null), { approval: approvalOf("n3", "d2") }));
+  expect(host.querySelector<HTMLInputElement>('input[name="digest"]')!.value).toBe("d2");
 });
 
 test("nothing waits on the person: no bar, however far the page scrolls", () => {
