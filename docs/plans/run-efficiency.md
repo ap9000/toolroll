@@ -39,9 +39,9 @@ Open, three short blocks, each saying where its numbers come from:
 2. **Steps** — counts by kind (Read, Edit, Bash, Search, other), how many failed, and the five longest steps with an
    **observed** interval (a step whose start or end the recorder synthesised says "duration unknown"). While the
    live records are kept (24 h) the block says so; after that it says the step detail has expired.
-3. **Repeated activity** — neutral words: "the same Bash step 7 times", only when the recorded inputs are complete
-   and comparable (command detail on, not shortened); otherwise "repeats can't be told apart (command detail is off)".
-   Never "wasted", never a claim about intent.
+3. **Repeated activity** — not claimed (implementation review): the step records keep a short form of each step (a
+   file name, a host, a command with its shell wrapper taken off), so two different steps can read alike. The block
+   says so; a future change that records a digest of each step's whole input could count repeats honestly.
 
 Lead replies: their details line gains cache: "12k in · 74% cached · 900 out · 3 steps".
 
@@ -53,9 +53,8 @@ Lead replies: their details line gains cache: "12k in · 74% cached · 900 out �
 - **Derive at view, bounded and cached.** A `run_efficiency` row per finished run, written the first time its result is
   viewed (and refreshed only while its live records are still kept): parser version, sources used and their
   completeness (`usage`: reported/absent; `steps`: complete/truncated/expired/absent + reason), counts by kind, failed
-  count, up to five longest observed steps (kind, observed ms — **no command text stored**), repeat groups (kind,
-  count; only from complete comparable inputs). Budgets: read ≤ 4 MiB through the existing descriptor-safe live
-  reader (never a transcript-supplied path), ≤ 20 000 records, ≤ 200 repeat groups, stored row ≤ 16 KiB; over a
+  count, up to five longest observed steps (kind, observed ms — **no command text stored**), no repeat groups. Budgets: one descriptor-safe read (no link followed, measured once, never more than 4 MiB read
+  whatever the file does), ≤ 20 000 records, stored row ≤ 16 KiB; lines that don't read are counted and said; over a
   budget → completeness "truncated" with the bound named.
 - **Display only.** The derived row never changes completion, approval, billing or a check verdict. It is shown under
   the same access as the result.

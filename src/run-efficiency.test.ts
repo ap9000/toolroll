@@ -50,16 +50,11 @@ test("steps: counts by kind, failures, observed times only; made-up or unclosed 
   expect(stepsOf(records, null, false)).toMatchObject({ longest: [], unknownDuration: 6, total: 6 });
 });
 
-test("repeated activity counts only steps recorded whole, and never stores their words", () => {
+test("repeated activity is never claimed: the records keep a short form of each step, so different steps can read alike", () => {
   const same = (id: string, s: number, target: string): LiveRecord[] => [{ k: "step", at: at(s), id, kind: "command", target }, { k: "done", at: at(s + 1), id, ok: true }];
-  const records = steps("commands", [...same("1", 1, "npm test"), ...same("2", 3, "npm test"), ...same("3", 5, "npm test"), ...same("4", 7, "npm run build"),
-    // Shortened by the recorder: not comparable, left out and said.
-    ...same("5", 9, "node -e …"), ...same("6", 11, "node -e …"), ...same("7", 13, "node -e …")]);
-  const edits: LiveRecord[] = [1, 2, 3].flatMap(n => [{ k: "step", at: at(20 + n), id: `e${n}`, kind: "edit", target: "src/app.ts" } as LiveRecord, { k: "done", at: at(21 + n), id: `e${n}`, ok: true } as LiveRecord]);
-  const got = stepsOf([...records, ...edits], null);
-  // Three edits to one file are three different edits as far as the record knows: only commands are compared.
-  expect(got.repeats).toEqual([{ kind: "command", count: 3 }]);
-  expect(got.repeatsReason).toMatch(/some were shortened or hidden/);
+  const got = stepsOf(steps("commands", [...same("1", 1, "npm test"), ...same("2", 3, "npm test"), ...same("3", 5, "npm test")]), null);
+  expect(got.repeats).toBeNull();
+  expect(got.repeatsReason).toMatch(/short form of each step/);
   expect(JSON.stringify(got)).not.toContain("npm test");
 });
 
@@ -119,6 +114,9 @@ test("the reader says what it couldn't read: too large, an older text format, no
   expect(derive()).toMatchObject({ state: "truncated", total: null, reason: expect.stringMatching(/couldn't be read/) });
   writeLive(run, [{ k: "open", at: at(0), detail: "base" }, { k: "cut", at: "" }, { k: "step", at: at(1), id: "s1", kind: "read" }].map(one => `${serializeLiveRecord(one as LiveRecord)}\n`).join(""));
   expect(derive()).toMatchObject({ state: "truncated", total: 1, reason: expect.stringMatching(/too long to keep/) });
+  // A good opening and then lines that don't read: incomplete, and how much was lost is said.
+  writeLive(run, `${serializeLiveRecord({ k: "open", at: at(0), detail: "base" })}\n{"k":"step",broken\nnot json\n`);
+  expect(derive()).toMatchObject({ state: "truncated", total: 0, reason: "2 step records couldn't be read" });
 });
 
 test("a store that can't save the row still shows what was derived", () => {

@@ -9,18 +9,16 @@
  * times. No command text is ever stored here: repeats are counted, never quoted.
  */
 import type { Run, Store } from "./store.js";
-import { lstatSync } from "node:fs";
-import { LIVE_RETAIN_MS, legacyLiveLogPath, liveLogPath, liveWindowRecords, readLiveWindow } from "./live.js";
-import { HIDDEN_TARGET, type LiveActivityKind, type LiveRecord } from "./live-records.js";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
+import { LIVE_RETAIN_MS, legacyLiveLogPath, liveLogPath, liveWindowRecords } from "./live.js";
+import type { LiveActivityKind, LiveRecord } from "./live-records.js";
 
-export const RUN_EFFICIENCY_VERSION = 2;
-/** Budgets for one derivation: never more than the live file's own cap, a bounded record count and repeat groups. */
+export const RUN_EFFICIENCY_VERSION = 3;
+/** Budgets for one derivation: never more than the live file's own cap, and a bounded record count. */
 export const EFFICIENCY_READ_BYTES = 4 * 1024 * 1024;
 export const EFFICIENCY_RECORDS = 20_000;
-export const EFFICIENCY_REPEAT_GROUPS = 200;
 const LONGEST = 5;
-/** Repeated activity starts at this many of the same step. */
-const REPEAT_AT = 3;
 
 export type StepsState = "complete" | "truncated" | "expired" | "absent";
 export type RunEfficiency = {
@@ -76,31 +74,17 @@ export function usageOf(run: Pick<Run, "provider" | "model" | "tokensIn" | "toke
  * duration is claimed for them. */
 export function stepsOf(records: Iterable<LiveRecord>, truncated: string | null, measured = true): RunEfficiency["steps"] {
   let detail: "base" | "commands" = "base";
-  const open = new Map<string, { kind: LiveActivityKind; at: string; target: string | null; once: boolean }>();
+  const open = new Map<string, { kind: LiveActivityKind; at: string; once: boolean }>();
   const byKind: Partial<Record<LiveActivityKind, number>> = {};
   const longest: { kind: LiveActivityKind; ms: number }[] = [];
-  const groups = new Map<string, { kind: LiveActivityKind; count: number }>();
-  let total = 0, failed = 0, unknown = 0, comparable = true, groupsFull = false;
+  let total = 0, failed = 0, unknown = 0;
   for (const record of records) {
     if (record.k === "open") detail = record.detail;
     else if (record.k === "step") {
       if (record.kind === "session" || record.kind === "message") continue;
       total++;
       byKind[record.kind] = (byKind[record.kind] ?? 0) + 1;
-      const target = record.target ?? null;
-      open.set(record.id, { kind: record.kind, at: record.at, target, once: record.once === true });
-      // Only a command's input is recorded whole (with command detail on, and not shortened: the recorder's caps end a
-      // cut one with an ellipsis); every other kind keeps only a label (a file name, a host), which can't show that two
-      // steps did the same thing. So repeats are counted over commands alone.
-      if (record.kind !== "command") continue;
-      if (target === null || target === HIDDEN_TARGET || target.endsWith("…")) comparable = false;
-      else {
-        const key = `${record.kind}\u0000${target}`;
-        const group = groups.get(key);
-        if (group !== undefined) group.count++;
-        else if (groups.size < EFFICIENCY_REPEAT_GROUPS) groups.set(key, { kind: record.kind, count: 1 });
-        else groupsFull = true;
-      }
+      open.set(record.id, { kind: record.kind, at: record.at, once: record.once === true });
     } else if (record.k === "done") {
       const started = open.get(record.id);
       if (started === undefined) continue;
@@ -117,51 +101,63 @@ export function stepsOf(records: Iterable<LiveRecord>, truncated: string | null,
   }
   // Steps that never closed (the run ended, or the file was cut) have no measured time.
   unknown += open.size;
-  const repeatsReason = detail !== "commands" ? "Repeats can't be told apart: this project doesn't record step details."
-    : !comparable ? "Only commands recorded in full are compared; some were shortened or hidden and aren't counted."
-    : groupsFull ? `Repeats were counted over the first ${EFFICIENCY_REPEAT_GROUPS} distinct commands only.` : null;
-  const repeats = detail !== "commands" ? null
-    : [...groups.values()].filter(one => one.count >= REPEAT_AT).sort((a, b) => b.count - a.count).slice(0, 10);
+  // Repeats are never claimed: the step records keep a display form of each step (a file name, a host, a command with
+  // its shell wrapper taken off), so two different steps can read alike. Said, not guessed.
+  const repeatsReason = detail === "commands"
+    ? "Repeats can't be told apart: the step records keep a short form of each step, not its whole input."
+    : "Repeats can't be told apart: this project doesn't record step details.";
+  const repeats = null;
   return { state: truncated === null ? "complete" : "truncated", reason: truncated, total, failed, unknownDuration: unknown, byKind, longest, repeats, repeatsReason };
 }
 
 const noSteps = (state: "expired" | "absent" | "truncated", reason: string): RunEfficiency["steps"] =>
   ({ state, reason, total: null, failed: null, unknownDuration: null, byKind: {}, longest: [], repeats: null, repeatsReason: null });
 
-/** Read the run's live records once, within the budgets; null when there is no records file. The file's size is read
- * first and one larger than the budget is not read at all (the live reader's own scan past an over-long line stops at
- * the file's end, so a file within the budget bounds every read); a cut line, a size cap, a legacy text file or a file
- * with no record that reads all say the steps are incomplete. */
+/** Read the run's live records once, strictly bounded: its own descriptor (no link followed, in a real live
+ * directory), measured once, and never more than the budget read whatever the file does meanwhile; then parsed line by
+ * line. A file over the budget, in the older text format, with lines that don't read, or cut or capped while the agent
+ * ran, says its steps are incomplete. Null when there is no step file at all. */
 function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord[]; truncated: string | null } | { unreadable: string } | null {
-  let size: number;
   try {
-    const stat = lstatSync(liveLogPath(evidenceRoot, runId));
-    if (!stat.isFile()) return { unreadable: "The step records aren't a plain file, so they weren't read." };
-    size = stat.size;
-  } catch {
+    const dir = lstatSync(join(evidenceRoot, "live"));
+    if (!dir.isDirectory() || dir.isSymbolicLink()) return null;
+  } catch { return null; }
+  let fd: number;
+  try { fd = openSync(liveLogPath(evidenceRoot, runId), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { unreadable: "The step records couldn't be read." };
     // No records file: an older run's plain text file has no step detail; with neither, there is nothing.
     try { lstatSync(legacyLiveLogPath(evidenceRoot, runId)); return { unreadable: "This run's steps were recorded in an older format that has no step detail." }; }
     catch { return null; }
   }
-  if (size > EFFICIENCY_READ_BYTES) return { unreadable: "The step records are larger than they can be read here." };
-  const records: LiveRecord[] = [];
+  let text: string;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return { unreadable: "The step records aren't a plain file, so they weren't read." };
+    if (stat.size > EFFICIENCY_READ_BYTES) return { unreadable: "The step records are larger than they can be read here." };
+    // At most what it measured, and never past the budget: growth after the measure is not read.
+    const buffer = Buffer.alloc(stat.size);
+    let at = 0;
+    while (at < buffer.length) { const got = readSync(fd, buffer, at, buffer.length - at, at); if (got <= 0) break; at += got; }
+    text = buffer.subarray(0, at).toString("utf8");
+  } catch { return { unreadable: "The step records couldn't be read." }; }
+  finally { closeSync(fd); }
+  const lines = text.split("\n");
+  // The last line may be unfinished (the agent's final write): it is read when it parses, never counted as a loss.
+  const unfinished = lines.at(-1) ?? "";
+  const whole = lines.slice(0, -1).filter(line => line.trim() !== "");
+  if (whole.length > EFFICIENCY_RECORDS) whole.length = EFFICIENCY_RECORDS;
   const keys = { inKey: false };
-  let from = 0, truncated: string | null = null;
-  for (;;) {
-    const read = readLiveWindow(evidenceRoot, runId, from, true);
-    if (!read.ok) return from === 0 ? { unreadable: "The step records couldn't be read." } : { records, truncated: "the step records changed while they were read" };
-    if (read.format !== "records") return { unreadable: "This run's steps were recorded in an older format that has no step detail." };
-    for (const record of liveWindowRecords(read, keys)) {
-      if (records.length >= EFFICIENCY_RECORDS) { truncated = `only the first ${EFFICIENCY_RECORDS.toLocaleString("en-US")} records were read`; break; }
-      records.push(record);
-    }
-    if (records.some(one => one.k === "cap")) truncated ??= "the step records reached their size limit while the agent ran";
-    if (records.some(one => one.k === "cut")) truncated ??= "a step record was too long to keep";
-    if (truncated !== null || read.eof || read.nextOffset === from) break;
-    if (read.nextOffset > size || read.nextOffset >= EFFICIENCY_READ_BYTES) { truncated = "the step records grew while they were read"; break; }
-    from = read.nextOffset;
-  }
-  if (records.length === 0 && size > 0) return { unreadable: "The step records couldn't be read." };
+  // One record per line: a whole line that doesn't read is a record lost.
+  const read = liveWindowRecords({ text: whole.length === 0 ? "" : `${whole.join("\n")}\n`, format: "records" }, keys);
+  const lost = whole.length - read.length;
+  const records = unfinished.trim() === "" ? read : [...read, ...liveWindowRecords({ text: `${unfinished}\n`, format: "records" }, keys)];
+  if (records.length === 0 && text.trim() !== "") return { unreadable: "The step records couldn't be read." };
+  const truncated = lines.length - 1 > EFFICIENCY_RECORDS ? `only the first ${EFFICIENCY_RECORDS.toLocaleString("en-US")} records were read`
+    : records.some(one => one.k === "cap") ? "the step records reached their size limit while the agent ran"
+    : records.some(one => one.k === "cut") ? "a step record was too long to keep"
+    : lost > 0 ? `${lost} step record${lost === 1 ? "" : "s"} couldn't be read`
+    : null;
   return { records, truncated };
 }
 
