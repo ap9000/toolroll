@@ -17,7 +17,7 @@
  * skipped or failed never merges. merge
  * squash-merges with the head pinned to the gated commit, tree proves main's new commit has exactly the gated tree,
  * and only then tag pushes the version tag, whose macOS matrix must pass before npm publication (publish.yml). publish
- * waits for npm, the GitHub release and the macOS checks; homebrew updates the tap's formula and merges it.
+ * waits for npm, the GitHub release and the macOS checks; homebrew updates the tap's formula and merges it (after its checks, when the tap runs any).
  *
  * A private journal (mode 0600, written whole then renamed) records what each step is about to do before it does
  * anything outside this machine, and what it saw after. A stop — a time limit, a failure, a crash, Ctrl-C — leaves the
@@ -51,7 +51,8 @@ type WaitingStep = "approval" | "check" | "quiet" | "deploy" | "ci" | "publish" 
 export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
 const POLL_MS = 15_000;
 
-export type CheckRun = { name: string; status: string; conclusion: string | null };
+/** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known. */
+export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null };
 export type PullRequest = { number: number; state: "open" | "closed" | "merged"; head: string; base: string; mergeCommit: string | null };
 /** The release task as Toolroll records it (`task show --json`). */
 export type GateState = {
@@ -123,6 +124,10 @@ export type ReleaseAdapters = {
   registry: { published(name: string, version: string): Promise<boolean> };
   homebrew: {
     repo: string;
+    /** Whether any of the tap's workflows, at the change or its base, runs on a change; if none does, no checks are owed. */
+    checked(head: string): Promise<boolean>;
+    /** The change's commit statuses, as check runs oldest first. */
+    statuses(head: string): Promise<CheckRun[]>;
     state(version: string): Promise<HomebrewState>;
     propose(version: string): Promise<{ pr: number; head: string }>;
     merge(pr: number, head: string): Promise<void>;
@@ -518,13 +523,24 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             const proposed = state;
             j.homebrew = { pr: proposed.pr, head: proposed.head, merged: false };
             save();
+            // Whatever checks do register are always judged; an empty set passes only for a tap whose workflows never run
+            // on a change, and only when it's still empty a poll later.
+            const checked = await brew.checked(proposed.head);
+            let emptyLooks = 0;
             await waitFor("homebrew", `the Homebrew change's checks (${brew.repo} #${proposed.pr})`, async () => {
-              const runs = await adapters.github.checks(brew.repo, proposed.head);
+              // Check runs and commit statuses are judged apart, so neither stands in for the other or hides its failure.
+              // Two apps may name a check alike; each app's attempts stand for themselves.
+              const runs = (await adapters.github.checks(brew.repo, proposed.head)).map(run => ({ ...run, name: `${run.app ?? "unknown app"}: ${run.name}` }));
+              const statuses = await brew.statuses(proposed.head);
+              const verdicts = [runs, statuses].filter(one => one.length > 0).map(one => checksVerdict(one, [...new Set(one.map(run => run.name))]));
+              const failed = verdicts.flatMap(one => one.state === "failed" ? one.failed : []);
+              if (failed.length > 0) throw new Stop("homebrew-failed", `The Homebrew change's checks failed: ${failed.join(", ")}.`);
+              if (verdicts.some(one => one.state === "pending")) return null;
               // GitHub registers checks asynchronously; an empty set says nothing about success.
-              if (runs.length === 0) return null;
-              const verdict = checksVerdict(runs, [...new Set(runs.map(one => one.name))]);
-              if (verdict.state === "failed") throw new Stop("homebrew-failed", `The Homebrew change's checks failed: ${verdict.failed.join(", ")}.`);
-              return verdict.state === "passed" ? true : null;
+              // A workflow is owed: only its own run counts, not another app's green check.
+              if (checked && !runs.some(run => run.app === "github-actions")) return null;
+              if (runs.length === 0 && statuses.length === 0) return ++emptyLooks >= 2 ? true : null;
+              return true;
             });
             await brew.merge(proposed.pr, proposed.head);
           }

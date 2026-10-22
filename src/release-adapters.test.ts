@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { installUpdateGate } from "./desktop-update-gate.js";
-import { bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, type Exec } from "./release-adapters.js";
+import { bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec } from "./release-adapters.js";
 import { openStore, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -226,14 +226,14 @@ describe("the release adapters", () => {
       calls.push([command, ...args]);
       const joined = args.join(" ");
       if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "m".repeat(40), merged: true }), stderr: "" };
-      if (joined.includes("check-runs")) return { code: 0, stdout: `{"id":9,"name":"x","status":"completed","conclusion":"success"}\n{"id":3,"name":"x","status":"completed","conclusion":"failure"}\n`, stderr: "" };
+      if (joined.includes("check-runs")) return { code: 0, stdout: `{"id":9,"name":"x","status":"completed","conclusion":"success","app":"github-actions"}\n{"id":3,"name":"x","status":"completed","conclusion":"failure","app":null}\n`, stderr: "" };
       if (joined.includes("git/ref/tags/v0.9.52")) return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
     const adapters = releaseAdapters({ checkout: "/rv", run });
     expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("m".repeat(40));
     expect(calls[0]).toEqual(["gh", "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
-    expect((await adapters.github.checks("ap9000/toolroll", SHA)).map(one => one.conclusion)).toEqual(["failure", "success"]);
+    expect((await adapters.github.checks("ap9000/toolroll", SHA)).map(one => [one.conclusion, one.app])).toEqual([["failure", null], ["success", "github-actions"]]);
     expect(await adapters.github.tag("ap9000/toolroll", "v0.9.52")).toBeNull();
   });
 
@@ -255,6 +255,86 @@ describe("the release adapters", () => {
     else await deletion;
     expect(calls.filter(one => one.includes("push"))).toEqual(head === SHA
       ? [["-C", "/rv", "push", `--force-with-lease=refs/heads/release-me:${SHA}`, "origin", ":refs/heads/release-me"]] : []);
+  });
+
+  test.each([[null, "resolves"], [SHA, "rejects"]] as const)("a failed delete is fine only when the branch is gone after it (%s)", async (after, outcome) => {
+    let looks = 0;
+    const run: Exec = async (_command, args) => {
+      if (args.includes("push")) return { code: 1, stderr: "error: unable to delete 'release-me': remote ref does not exist", stdout: "" };
+      looks += 1;
+      const head = looks === 1 ? SHA : after;
+      return { code: 0, stderr: "", stdout: head === null ? "" : `${head}\trefs/heads/release-me\n` };
+    };
+    const deletion = releaseAdapters({ checkout: "/rv", run }).repo.deleteBranch("release-me", SHA);
+    if (outcome === "resolves") await deletion;
+    else await expect(deletion).rejects.toThrow(/deleting merged branch release-me failed: error: unable to delete/);
+    expect(looks).toBe(2);
+  });
+
+  test.each([
+    ["on:\n  schedule:\n    - cron: \"17 */6 * * *\"\n  workflow_dispatch:\njobs:\n  bump:\n    steps:\n      - run: git push\n", false],
+    ["on: [push, workflow_dispatch]\n", true],
+    ["on: pull_request\n", true],
+    ["\"on\":\n  pull_request_target:\n    branches: [main]\n", true],
+    ["on:\n  schedule: # not a push\n    - cron: x\n", false],
+    ["on:\n  merge_group:\n", true],
+    ["name: nothing here\njobs: {}\n", true],
+    ["on:\n- pull_request\n- push\n", true],
+    ["on:\n  workflow_dispatch:\n    inputs:\n      why:\n        description: push the formula\n", false],
+    ["on: [unclosed\n", true],
+    ["on:\n  - 3\n", true],
+  ] as const)("reads a workflow's own triggers, never its steps (%#)", (yaml, runs) => {
+    expect(workflowRunsOnChange(yaml)).toBe(runs);
+  });
+
+  const SCHEDULED = "on:\n  schedule:\n    - cron: x\njobs:\n  a:\n    steps:\n      - run: git push\n";
+  /** A tap whose workflow folder, per ref, holds these files (null: no folder at that ref). */
+  const tapWith = (refs: Record<string, Record<string, string> | null>, calls: (readonly string[])[] = []): Exec => async (_command, args) => {
+    calls.push(args);
+    const url = args.find(one => one.startsWith("repos/")) ?? "";
+    if (url === "repos/ap9000/homebrew-toolroll") return { code: 0, stderr: "", stdout: "main\n" };
+    const [path, query] = url.split("?") as [string, string];
+    const files = refs[decodeURIComponent(query.replace(/^ref=/, ""))];
+    if (files === null || files === undefined) return { code: 1, stderr: "gh: Not Found (HTTP 404)", stdout: "" };
+    if (path.endsWith("/contents/.github/workflows")) return { code: 0, stderr: "", stdout: Object.keys(files).map(one => `.github/workflows/${one}\n`).join("") };
+    const name = path.split("/").pop()!;
+    return { code: 0, stderr: "", stdout: `${Buffer.from(files[name] ?? "").toString("base64")}\n` };
+  };
+
+  test.each([
+    ["the real tap: a scheduled bump only", { [SHA]: { "bump.yml": SCHEDULED }, main: { "bump.yml": SCHEDULED } }, false],
+    ["no workflows anywhere", { [SHA]: null, main: null }, false],
+    ["the change itself adds a pull_request workflow", { [SHA]: { "bump.yml": SCHEDULED, "ci.yml": "on: pull_request\n" }, main: { "bump.yml": SCHEDULED } }, true],
+    ["the base has a pull_request_target workflow", { [SHA]: { "bump.yml": SCHEDULED }, main: { "t.yaml": "on:\n  pull_request_target:\n" } }, true],
+    ["a non-workflow file is skipped", { [SHA]: { "README.md": "push pull_request" }, main: null }, false],
+  ] as const)("a tap owes checks only when a workflow at the change or its base runs on a change (%s)", async (_name, refs, checked) => {
+    expect(await releaseAdapters({ checkout: "/rv", run: tapWith(refs as never) }).homebrew.checked(SHA)).toBe(checked);
+  });
+
+  test("a tap whose workflows can't be listed stops; one it can't read counts as checked", async () => {
+    const unlisted: Exec = async (_command, args) => args.includes("repos/ap9000/homebrew-toolroll") ? { code: 0, stderr: "", stdout: "main\n" } : { code: 1, stderr: "HTTP 502", stdout: "" };
+    await expect(releaseAdapters({ checkout: "/rv", run: unlisted }).homebrew.checked(SHA)).rejects.toThrow(/listing .*workflows at/);
+    const unreadable: Exec = async (_command, args) => {
+      const url = args.find(one => one.startsWith("repos/")) ?? "";
+      if (url.includes("/contents/.github/workflows?")) return { code: 0, stderr: "", stdout: ".github/workflows/x.yml\n" };
+      return url === "repos/ap9000/homebrew-toolroll" ? { code: 0, stderr: "", stdout: "main\n" } : { code: 1, stderr: "HTTP 500", stdout: "" };
+    };
+    expect(await releaseAdapters({ checkout: "/rv", run: unreadable }).homebrew.checked(SHA)).toBe(true);
+  });
+
+  test("reads the change's commit statuses as check runs, oldest first", async () => {
+    const calls: (readonly string[])[] = [];
+    const run: Exec = async (_command, args) => {
+      calls.push(args);
+      return { code: 0, stderr: "", stdout: ['{"context":"ci","state":"failure"}', '{"context":"ci","state":"pending"}', '{"context":"lint","state":"success"}', '{"context":"x","state":"error"}'].join("\n") };
+    };
+    expect(await releaseAdapters({ checkout: "/rv", run }).homebrew.statuses(SHA)).toEqual([
+      { name: "status: x", status: "completed", conclusion: "failure" },
+      { name: "status: lint", status: "completed", conclusion: "success" },
+      { name: "status: ci", status: "in_progress", conclusion: null },
+      { name: "status: ci", status: "completed", conclusion: "failure" },
+    ]);
+    expect(calls[0]).toEqual(expect.arrayContaining(["--paginate", `repos/ap9000/homebrew-toolroll/commits/${SHA}/statuses?per_page=100`]));
   });
 
   test("a successful HTTP response that refuses the tap merge is not a completed release", async () => {

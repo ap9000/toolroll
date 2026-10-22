@@ -33,7 +33,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
     gateId: null as string | null,
     /** What a person or the worker does while the release waits: applied on each sleep. */
     onSleep: [] as ((state: typeof s) => void)[],
-    checks: new Map<string, CheckRun[]>([[SHA, passing(REQUIRED_PR_CHECKS)], [`brew:${OTHER}`, passing(["brew test"])]]),
+    checks: new Map<string, CheckRun[]>([[SHA, passing(REQUIRED_PR_CHECKS)], [`brew:${OTHER}`, passing(["brew test"]).map(run => ({ ...run, app: "github-actions" }))]]),
     installed: { services: [OLD], clis: [{ name: "toolroll", runtime: OLD as string | null }, { name: "standing-orders", runtime: OLD as string | null }] },
     /** Where each CLI name's link points, and whether moving them fails its check. */
     links: new Map<string, string | null>([["/usr/local/bin/toolroll", `${OLD}/bin.js`], ["/usr/local/bin/standing-orders", `${OLD}/bin.js`]]),
@@ -44,6 +44,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     published: false,
     released: false,
     brew: { kind: "missing" } as HomebrewState,
+    brewChecked: true,
+    brewStatuses: [] as CheckRun[],
     calls: [] as string[],
     said: [] as string[],
   };
@@ -128,6 +130,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     registry: { published: async () => s.published },
     homebrew: {
       repo: "ap9000/homebrew-toolroll",
+      checked: async () => s.brewChecked,
+      statuses: async () => structuredClone(s.brewStatuses),
       state: async () => structuredClone(s.brew),
       propose: async () => { s.brew = { kind: "proposed", pr: 12, head: OTHER }; landed("propose"); return { pr: 12, head: OTHER }; },
       merge: async () => { s.brew = { kind: "current" }; landed("brewMerge"); },
@@ -466,8 +470,8 @@ describe("toolroll release", () => {
       expect(state.calls).not.toContain("brewMerge");
       waits += 1;
       state.checks.set(`brew:${OTHER}`, waits === 1
-        ? [...passing(["lint"]), { name: "brew test", status: "in_progress", conclusion: null }]
-        : passing(["lint", "brew test"]));
+        ? [...passing(["lint"]), { name: "brew test", status: "in_progress", conclusion: null, app: "github-actions" }]
+        : passing(["lint", "brew test"]).map(run => ({ ...run, app: "github-actions" })));
     });
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
     expect(waits).toBe(2);
@@ -477,6 +481,71 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, []);
     expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("a tap that runs no checks is merged without waiting for any", async () => {
+    const { s, adapters } = world();
+    s.brewChecked = false;
+    s.checks.set(`brew:${OTHER}`, []);
+    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true });
+    expect(s.calls).toContain("brewMerge");
+  });
+
+  test("a tap that runs no checks still stops on a failed commit status", async () => {
+    const { s, adapters } = world();
+    s.brewChecked = false;
+    s.checks.set(`brew:${OTHER}`, []);
+    s.brewStatuses = [{ name: "status: external", status: "completed", conclusion: "failure" }];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("a green status doesn't stand in for the checks a tap's workflow owes", async () => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, []);
+    s.brewStatuses = [{ name: "status: lint", status: "completed", conclusion: "success" }];
+    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("another app's green check doesn't stand in for the tap's own workflow", async () => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, [{ name: "Vercel", status: "completed", conclusion: "success", app: "vercel" }]);
+    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("another app's green check never hides the workflow's failed one of the same name", async () => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, [
+      { name: "brew test", status: "completed", conclusion: "failure", app: "github-actions" },
+      { name: "brew test", status: "completed", conclusion: "success", app: "vercel" },
+    ]);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("a green status never hides a failed check that shares its name", async () => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, [{ name: "status: external", status: "completed", conclusion: "failure" }]);
+    s.brewStatuses = [{ name: "status: external", status: "completed", conclusion: "success" }];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("a pending status holds the merge even when the checks passed", async () => {
+    const { s, adapters } = world();
+    s.brewStatuses = [{ name: "status: external", status: "in_progress", conclusion: null }];
+    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("a tap that runs no checks still stops on a check some app did register and fail", async () => {
+    const { s, adapters } = world();
+    s.brewChecked = false;
+    s.checks.set(`brew:${OTHER}`, [{ name: "external CI", status: "completed", conclusion: "failure" }]);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
     expect(s.calls).not.toContain("brewMerge");
   });
 
