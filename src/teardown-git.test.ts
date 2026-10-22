@@ -35,7 +35,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkoutGit, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { checkoutGit, runsCheckoutFiles, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
 import { WorktreePool } from "./worktree.js";
 import { openStore } from "./store.js";
 
@@ -181,4 +181,12 @@ test("a global filter whose command is a relative path (the checkout's own file)
   expect(refusal(added)).toMatch(/filter\.fmt\.clean/);
   expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test.each([
+  ["./tools/filter.sh", true], ["tools/filter.sh", true], ["node tools/x.js", true], ["sh -c 'fmt'", true], ["make fmt", true],
+  ["npx prettier --stdin", true], ["/usr/bin/env python3 x.py", true], ["foo --config=./x", true],
+  ["git-lfs clean -- %f", false], ["git-lfs filter-process", false], ["/opt/homebrew/bin/delta", false], ["less -R", false],
+])("a global setting %j can run the checkout's files: %s", (value, runs) => {
+  expect(runsCheckoutFiles(value)).toBe(runs);
 });

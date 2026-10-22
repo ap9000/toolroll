@@ -56,8 +56,8 @@ export function commandSetting(listing: string): string | null {
 }
 
 /**
- * A command-running setting in any scope (the operator's global config included) whose command is a relative path —
- * `./tools/filter.sh` runs from the checkout, so its bytes are the build's. Null when there is none.
+ * A command-running setting in any scope (the operator's global config included) that could run a file of the
+ * checkout's (runsCheckoutFiles): `./tools/filter.sh` or `node tools/x.js` runs the build's own bytes. Null when none.
  */
 export function relativeCommandSetting(listing: string): string | null {
   const fields = listing.split("\0");
@@ -67,10 +67,29 @@ export function relativeCommandSetting(listing: string): string | null {
     if (newline < 0) continue;
     const key = entry.slice(0, newline).toLowerCase();
     if (key === "core.fsmonitor" ? BOOLEAN.test(entry.slice(newline + 1).trim()) : !COMMAND_KEYS.some(pattern => pattern.test(key))) continue;
-    const command = entry.slice(newline + 1).trim().replace(/^!/, "").split(/\s+/)[0] ?? "";
-    if (command !== "" && !command.startsWith("/") && !command.startsWith("~") && command.includes("/")) return key;
+    if (runsCheckoutFiles(entry.slice(newline + 1))) return key;
   }
   return null;
+}
+
+/** Programs that run a script or a recipe named by their arguments (or found in the working folder): a setting run by
+ * one of them, from a checkout, can run the build's own files. */
+const RUNNERS = new Set(["sh", "bash", "zsh", "dash", "fish", "env", "node", "deno", "bun", "python", "python3", "ruby", "perl", "php", "npx", "npm",
+  "pnpm", "yarn", "make", "just", "task", "rake", "cargo", "go", "uv", "uvx", "pipx", "poetry"]);
+
+/**
+ * Whether a command-running setting's value could run a file of the checkout's: a relative path anywhere in it (`./x`,
+ * `tools/x`, `../x`), or a program that runs scripts or recipes (a shell, an interpreter, a package or task runner).
+ * An absolute or bare program with plain arguments (`git-lfs clean -- %f`) doesn't.
+ */
+export function runsCheckoutFiles(value: string): boolean {
+  const tokens = value.trim().replace(/^!/, "").split(/[\s'"`;|&()]+/).filter(Boolean);
+  const program = (tokens[0] ?? "").split("/").pop() ?? "";
+  if (RUNNERS.has(program)) return true;
+  return tokens.some(token => {
+    const path = token.replace(/^--?[\w-]+=/, "");
+    return path.startsWith("./") || path.startsWith("../") || (path.includes("/") && !path.startsWith("/") && !path.startsWith("~") && !/^[a-z]+:\/\//i.test(path));
+  });
 }
 
 /** Why a teardown command was refused, or null when `result` isn't a refusal. */
@@ -148,7 +167,7 @@ export function checkoutGit(inner: Runner = run): Runner {
     const key = commandSetting(listing.stdout);
     if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
     const relative = relativeCommandSetting(listing.stdout);
-    if (relative !== null) return refused(`git config sets ${relative} to a command in the checkout, which the build could have written`);
+    if (relative !== null) return refused(`git config sets ${relative} to a command that can run the checkout's own files, which the build could have written`);
     // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
     const safeArgs = [...args];
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");

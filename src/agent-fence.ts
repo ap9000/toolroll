@@ -363,10 +363,11 @@ export function grantFolder(path: string, create = true): string | null {
   }
 }
 
-/** Configuration file and folder names ACP agents read from their own folders (MCP servers, hooks, plugins and the like). */
-const ACP_CONFIG_FILES = ["settings.json", "settings.local.json", "mcp.json", "cli-config.json", "config.json", "config.yaml", "config.yml",
-  "opencode.json", "opencode.jsonc", "permissions.json", "hooks.json", ".env", "AGENTS.md", "QWEN.md", "GEMINI.md"] as const;
-const ACP_CONFIG_FOLDERS = ["hooks", "plugins", "plugin", "agents", "agent", "commands", "command", "extensions", "mode", "modes", "skills", "tools", "rules"] as const;
+/** Data folders an ACP agent may write below a home folder that also holds its configuration (sessions, logs,
+ * caches, temp); never one it reads as configuration. */
+const ACP_DATA_FOLDERS = ["tmp", "sessions", "logs", "log", "cache", "history", "projects", "chats", "state", "data", "storage"] as const;
+/** Data roots an ACP agent keeps outside the folders its row names (Goose's sessions and state). */
+const ACP_DATA_ROOTS: Readonly<Record<string, readonly string[]>> = { goose: [".local/share/goose", ".local/state/goose"] };
 
 /** The suffix Claude Code gives a transcript folder whose name it shortened: `-` and a hash, nothing else. */
 const CLAUDE_SHORTENED = "-[a-z0-9]+(/|$)";
@@ -428,15 +429,17 @@ export function writeAllowlist(options: { provider: string; home: string; worktr
     for (const name of ["history", "tmp"]) grant(join(home, ".gemini", name));
     prefixes.set("gemini", { path: join(home, ".gemini", "projects.json"), suffix: ATOMIC_NAMES });
   } else if (Object.hasOwn(ACP_AGENTS, options.provider)) {
+    // An ACP agent's configuration folders stay read-only whole (its MCP servers, hooks, plugins, agents and commands
+    // could otherwise be planted for the operator's next session of it); only its data folders are written: a data
+    // root (~/.local/share/<agent>, ~/.local/state/<agent>) whole, and in a folder that mixes both, only the
+    // conventional data folders below it, made first.
     for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) {
       const root = join(home, name);
-      grant(root);
-      // What the agent reads as configuration — its MCP servers, hooks, plugins, agents, commands — stays as it is, so a
-      // build can't plant something that runs in the operator's next session of that agent. Folders are made first
-      // (a Linux bind needs them); a missing file is held read-only where the sandbox can name it (macOS, Codex).
-      for (const file of ACP_CONFIG_FILES) readOnly.add(join(real(root), file));
-      for (const folder of ACP_CONFIG_FOLDERS) readOnly.add(made(join(root, folder)));
+      if (/^\.local\/(share|state)\//.test(name)) { grant(root); continue; }
+      if (name.startsWith(".config/")) continue;
+      for (const folder of ACP_DATA_FOLDERS) grant(join(root, folder));
     }
+    for (const name of ACP_DATA_ROOTS[options.provider] ?? []) grant(join(home, name));
   }
   return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes.values()].sort((a, b) => a.path.localeCompare(b.path)) }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
 }

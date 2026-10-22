@@ -144,10 +144,11 @@ describe("attack: writing outside the workspace (macOS)", () => {
     const config = join(w.home, ".config", "opencode");
     const result = underSeatbelt([
       `echo '{"mcp":{"evil":{"command":["sh"]}}}' > ${config}/opencode.json 2>/dev/null || echo config-refused`,
-      `touch ${config}/plugins/evil.js 2>/dev/null || echo plugin-refused`,
+      `mkdir -p ${config}/plugins 2>/dev/null; touch ${config}/plugins/evil.js 2>/dev/null || echo plugin-refused`,
+      `touch ${config}/tui.json 2>/dev/null || echo new-config-refused`,
       `touch ${w.home}/.local/share/opencode/session.db && echo data-ok`,
     ].join("\n"), w.fence, w.grants, { cwd: w.worktree });
-    expect(lines(result), result.stderr).toEqual(["config-refused", "plugin-refused", "data-ok"]);
+    expect(lines(result), result.stderr).toEqual(["config-refused", "plugin-refused", "new-config-refused", "data-ok"]);
   });
 
   test("Gemini writes its history, temp and project list (and its atomic-rename names), never its settings", ctx => {
