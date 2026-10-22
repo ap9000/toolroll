@@ -92,9 +92,9 @@ parseWorkView
 import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
-import { oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
+import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { boardBody,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
@@ -431,8 +431,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       });
     });
     const laneCards = [...cards, ...unverifiedCards];
+    // The worker strip: the workers this board's work can go to — bound to
+    // this project, or (rolled up) to any project the ceiling admits.
+    const workers = boardWorkers(store.listRunners(), { all, project, visible });
     const body = boardBody(
-      { cards: laneCards, done: verifiedDone, saturated: snapshot.saturated, now, all, project, delta },
+      { cards: laneCards, workers, done: verifiedDone, saturated: snapshot.saturated, now, all, project, delta },
       pr => store.ciFailureObserved(pr),
     );
     if (url.searchParams.get("fragment") === "1") {
@@ -465,7 +468,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       200,
       screen("board", regionBody, {
         chrome: chromeFor(project, "board", undefined, all ? "board-all" : undefined),
-        functional: { script: regionScript("board-region", "1"), fetches: true },
+        functional: { script: regionScript("board-region", "1", undefined, { animate: true }) + boardTickScript(), fetches: true },
       }),
     );
   }

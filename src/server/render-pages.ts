@@ -348,14 +348,80 @@ export function systemPage(chrome: Chrome, data: {
 }
 
 /**
+ * A build's stage as one of three steps — set up, writing, checking and
+ * committing — read from the machine's own phase, never a percent. The
+ * steps only move forward: evidence and proof checks run both before and
+ * after the commit (builder.ts), so everything after the agent's turn is
+ * one step, and the stage words say which part. Null for runs that are not
+ * builds (planning, review, investigation): those have no honest steps.
+ */
+export const BUILD_STEPS = ["setting up", "writing", "checking and committing"] as const;
+export function buildStepOf(claim: NonNullable<BoardCard["claim"]>): number | null {
+  if (claim.role === "planner" || claim.role === "reviewer" || claim.role === "scout") return null;
+  if (claim.model === null) return 0;
+  if (claim.phase === null || claim.phase === "agent-running") return 1;
+  return 2;
+}
+
+/** A clock that ticks in the page (boardTickScript) from the server's own start time; the text is the no-script answer. */
+function tickingClock(startedIso: string, now: Date): Html {
+  const minutes = Math.max(0, Math.round((now.getTime() - new Date(startedIso).getTime()) / 60_000));
+  return html`<time class="clock" datetime="${startedIso}" data-tick>${minutes}m</time>`;
+}
+
+/**
+ * The workers a board's strip may show: not retired, bound to at least one
+ * project the server's ceiling admits (never a runner serving only projects
+ * this server must not speak about), and — on a one-project board — bound to
+ * that project.
+ */
+export function boardWorkers(runners: readonly Runner[], scope: { all: boolean; project: string | null; visible: (repo: string) => boolean }): Runner[] {
+  return runners.filter(runner =>
+    runner.retiredAt === null &&
+    runner.repos.some(repo => scope.visible(repo)) &&
+    (scope.all || scope.project === null || runner.repos.includes(scope.project)));
+}
+
+/**
+ * The worker strip across the top of the board: every worker this board's
+ * work can go to, what it is building here, and its stage and clock. Only
+ * builds the board already shows are named — a worker busy in a project
+ * this reader cannot see reads "no build on this board", never "free".
+ */
+function workerStrip(runners: readonly Runner[], cards: readonly BoardCard[], now: Date): Html {
+  if (runners.length === 0) return html`<p class="meta crew-empty">No workers yet — work waits in the queue until one joins.</p>`;
+  const tiles = runners.map(runner => {
+    const builds = cards
+      .filter(card => card.lane === "building" && card.claim !== null && card.claim.runner === runner.name)
+      .sort((a, b) => (a.claim as NonNullable<BoardCard["claim"]>).claimedAt.localeCompare((b.claim as NonNullable<BoardCard["claim"]>).claimedAt));
+    const online = runnerAlive(runner, now);
+    const state = !online ? "offline" : builds.length > 0 ? "busy" : "idle";
+    const dot = state === "busy" ? html`<span class="dot dot-ok pulse"></span>` : html`<span class="dot dot-off"></span>`;
+    const jobs = builds.length > 0
+      ? builds.map(card => {
+          const claim = card.claim as NonNullable<BoardCard["claim"]>;
+          const words = claim.model === null ? "preparing workspace" : claim.phase === null ? "the agent is working" : phaseWords(claim.phase);
+          return html`<a class="worker-job" href="${card.href}"><span class="t">${card.title}</span><span class="sub"><span>${words}</span>${tickingClock(claim.claimedAt, now)}</span></a>`;
+        })
+      : html`<p class="worker-job idle">${online ? "no build on this board" : html`offline since ${whenTime(runner.heartbeatAt)}`}</p>`;
+    return html`<div class="worker worker-${state}" data-flash="${runner.name}" data-flash-value="${builds.map(card => card.taskId).join(" ")}"><div class="worker-head">${dot}<span class="name">${runner.name}</span><span class="kind">${runner.agents.join(" · ")}</span>${runner.capacity > 1 ? html`<span class="slots">${builds.length}/${runner.capacity}</span>` : null}</div>${jobs}</div>`;
+  });
+  return html`<section class="crew" aria-label="Workers">${tiles}</section>`;
+}
+
+/**
  * The board: the pipeline as lanes, position as meaning — attention, then
- * queued, then waiting, then building, then recently done. Read-only by
- * construction (every card is a link, no forms, no nonces), which is what
- * makes it safe to re-render itself while somebody watches.
+ * queued, then waiting, then building, then recently done — under a strip
+ * of the workers doing it. Read-only by construction (every card is a link,
+ * no forms, no nonces), which is what makes it safe to re-render itself
+ * while somebody watches; a card that changes lane slides there
+ * (regionScript's animate swap, keyed by data-vt).
  */
 export function boardBody(
   data: {
     cards: BoardCard[];
+    /** The workers this board's work can go to (retired ones left out). */
+    workers: readonly Runner[];
     done: ReturnType<Store["listCompletedWorkScoped"]>;
     saturated: boolean;
     now: Date;
@@ -423,7 +489,7 @@ export function boardBody(
   };
 
   const plain = (card: BoardCard): Html =>
-    html`<a class="lane-card" href="${card.href}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
+    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
       ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince)] as [string, string]]),
     ])}${chips([
       chip(card.repo),
@@ -442,7 +508,7 @@ export function boardBody(
     return heads;
   })();
   const queuedCard = (card: BoardCard): Html =>
-    html`<a class="lane-card" href="${card.href}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
+    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
       ["worker", card.assignedRunner === null ? "any free worker" : card.assignedRunner],
     ])}${chips([
       queuedHeads.get(`${card.assignedRunner ?? ""}|${card.repo ?? ""}`) === card.taskId
@@ -455,14 +521,19 @@ export function boardBody(
   const building = (card: BoardCard): Html => {
     const claim = card.claim;
     if (claim === null) return plain(card);
-    const minutes = Math.max(1, Math.round((data.now.getTime() - new Date(claim.claimedAt).getTime()) / 60_000));
     const workspace = claim.worktree === null ? null : (claim.worktree.split("/").pop() ?? claim.worktree);
     // Chip copy: unknown phases show nothing rather than raw tokens.
     const phase = claim.phase === null ? undefined : PHASE_WORDS[claim.phase];
     // The live strip is the run's own phase and clock — never a percent:
     // a build has no honest progress figure, only a stage and an elapsed.
     const live = claim.model === null ? "preparing workspace" : (phase ?? "the agent is working");
-    return html`<a class="lane-card building" href="${card.href}"><span class="id">${card.taskId}</span><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span><span class="live-line"><span class="stage">${live}</span><span class="clock">${minutes}m</span></span>${facts([
+    // The steps: where the build is among set up → writing → checking →
+    // committing, from its phase — a stage, never a percent.
+    const step = buildStepOf(claim);
+    const steps = step === null
+      ? null
+      : html`<span class="steps" role="img" aria-label="${`step ${step + 1} of ${BUILD_STEPS.length}: ${BUILD_STEPS[step]}`}">${BUILD_STEPS.map((_, index) => html`<i class="${index < step ? "on" : index === step ? "now" : ""}"></i>`)}</span>`;
+    return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span>${facts([
       ["worker", claim.runner],
       ...(claim.model === null
         ? []
@@ -482,7 +553,7 @@ export function boardBody(
             row.prNumber === null
               ? null
               : html`<span class="badge badge-open">PR #${row.prNumber}</span>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
-          return html`<a class="lane-card" href="${taskHref(row.taskId)}"><span class="id">${row.taskId}</span><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}${facts([
+          return html`<a class="lane-card" href="${taskHref(row.taskId)}" data-vt="${row.taskId}"><span class="id">${row.taskId}</span><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}${facts([
             ...(row.ranMinutes === null ? [] : [["ran", `${row.ranMinutes}m`] as [string, string]]),
             ["usage", runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })],
           ])}${chips([
@@ -524,7 +595,8 @@ export function boardBody(
     data.all ? null : html`<p class="meta board-view"><strong>State</strong> · <a href="/board?view=order">order →</a> <span class="meta">drag to reorder, or to reserve a task for one worker</span></p>`,
     deltaLine,
     toggle,
-    html`<div class="board">`,
+    workerStrip(data.workers, data.cards, data.now),
+    html`<div class="board" data-now="${String(data.now.getTime())}">`,
     lane("attention", "needs you", "these wait for a person", plain),
     lane("queued", "queued", "starts when a worker is free", queuedCard),
     lane("waiting", "waiting", "paused until a time, another task, or a requirement is ready", plain),
