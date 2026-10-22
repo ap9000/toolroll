@@ -142,3 +142,25 @@ describe("the plane's git on a build's checkout (checkoutGit)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+test("checkoutGit's status never enters a submodule whose config would run a command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-sub-"));
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const inner = join(dir, "inner");
+  mkdirSync(inner);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: inner, env });
+  writeFileSync(join(inner, "f"), "x\n");
+  execFileSync("git", ["add", "f"], { cwd: inner, env });
+  execFileSync("git", ["commit", "-q", "-m", "x"], { cwd: inner, env });
+  const outer = join(dir, "outer");
+  mkdirSync(outer);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: outer, env });
+  execFileSync("git", ["-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "sub"], { cwd: outer, env });
+  const marker = join(dir, "ran");
+  execFileSync("git", ["config", "core.fsmonitor", `touch ${marker}; true`], { cwd: join(outer, "sub") });
+  writeFileSync(join(outer, "sub", "f"), "changed\n");
+  const status = await checkoutGit()("git", ["status", "--porcelain"], { cwd: outer, env });
+  expect(status.code).toBe(0);
+  expect(existsSync(marker)).toBe(false);
+  rmSync(dir, { recursive: true, force: true });
+});

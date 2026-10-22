@@ -119,7 +119,8 @@ export function teardownGit(runner: Runner = run): Git {
  * work): the same fixed hardening as teardown (no hooks, fsmonitor, ext transport, credential helpers or automatic
  * maintenance, no submodule recursion), and refused outright when the checkout's own config (local or worktree scope,
  * read with includes off) names a command — a filter, an external diff, a textconv, a pager — which a build could have
- * planted. The operator's own global configuration (their identity, a git-lfs install) still applies.
+ * planted. It never enters a submodule or nested repository (whose config it never read). The operator's own global
+ * configuration (their identity, a git-lfs install) still applies.
  */
 export function checkoutGit(inner: Runner = run): Runner {
   return async (file, args, options) => {
@@ -128,6 +129,10 @@ export function checkoutGit(inner: Runner = run): Runner {
     if (listing.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(listing.stdout);
     if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
-    return inner("git", [...TEARDOWN_FLAGS, ...args], options);
+    // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
+    const safeArgs = [...args];
+    const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
+    if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
+    return inner("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", ...safeArgs], options);
   };
 }

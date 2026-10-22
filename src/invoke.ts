@@ -32,8 +32,9 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR } from "./agent-fence.js";
@@ -1013,7 +1014,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -1046,6 +1047,35 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
   }
+}
+
+/**
+ * A build's setup and check commands, run in its fence (arc 2): the same denies as its agent's (Toolroll's state,
+ * credentials, other projects and runs), its write allowlist when its approval sealed one (its checkout and Git data,
+ * its project's caches, and a temp folder of the command's own), and its package managers pointed at those caches.
+ * Their network stays as it was. A machine without an OS fence runs them as before; a fence that can't be prepared
+ * (a checkout whose binding no longer proves) runs nothing.
+ */
+export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner): Runner {
+  return async (file, args, options) => {
+    if (!macosFenceAvailable() && !linuxFenceAvailable()) return inner(file, args, options);
+    const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
+    try {
+      const temp = join(own, "tmp");
+      mkdirSync(temp, { mode: 0o700 });
+      const fenced = runFence(store, runId, "command", undefined, own, writes);
+      if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
+      if (fenced.fence.length === 0) return inner(file, args, options);
+      return await inner(file, args, {
+        ...options,
+        fence: fenced.fence,
+        fenceGrants: fenced.grants,
+        env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)) },
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  };
 }
 
 /** The operator's own model choices a build routed with no model keeps (provider-home.ts). */

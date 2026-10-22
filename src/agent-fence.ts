@@ -301,7 +301,7 @@ export function taskBoundary(options: { worktree: string; provider: string; home
 export type RunFolders = { root: string; own: string | null };
 /** The prefixes of every launch's private folders: its tools' config, a Codex build's own home, and a Linux build's
  * network bridge (egress-bridge.ts). */
-export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-"] as const;
+export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd-"] as const;
 
 export function runFolders(own: string | null, root: string = tmpdir()): RunFolders {
   return { root: real(root), own: own === null ? null : real(own) };

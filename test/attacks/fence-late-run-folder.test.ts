@@ -11,7 +11,7 @@ import { agentFence, codexFenceArgv, fenceGrants, macosFenced, runFolders, RUN_F
 import { spawnSync } from "node:child_process";
 import { codexSandbox, expectNoMarker, lines, marker, needs, q, seatbelt, underCodex, useScratch, write } from "./harness.js";
 
-describe("attack: reading another run's so-tools-*/so-codex-*/so-net-* folder created after launch", () => {
+describe("attack: reading another run's so-tools-*/so-codex-*/so-net-*/so-cmd-* folder created after launch", () => {
   const scratch = useScratch("runfolder");
   const setup = () => {
     const dir = scratch();
@@ -54,7 +54,7 @@ describe("attack: reading another run's so-tools-*/so-codex-*/so-net-* folder cr
     later(root, secret);
     const result = spawnSync(file, args, { cwd: worktree, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined } });
     expectNoMarker(result, secret);
-    expect(lines(result), result.stderr).toEqual(["so-tools-denied", "so-codex-denied", "so-net-denied", "temp-listed", "own-tools", "own-written", "temp-written"]);
+    expect(lines(result), result.stderr).toEqual(["so-tools-denied", "so-codex-denied", "so-net-denied", "so-cmd-denied", "temp-listed", "own-tools", "own-written", "temp-written"]);
     expect(readFileSync(join(own, "scratch"), "utf8")).toBe("x\n");
   });
 
@@ -69,7 +69,7 @@ describe("attack: reading another run's so-tools-*/so-codex-*/so-net-* folder cr
         "echo mine > mine.txt && cat mine.txt",
       ].join("\n"), fence, fullAccess, grants, { cwd: worktree, codexHome: join(dir, "codex-home") });
       expectNoMarker(result, secret);
-      expect(lines(result), result.stderr).toEqual(["so-tools-denied", "so-codex-denied", "so-net-denied", "mine"]);
+      expect(lines(result), result.stderr).toEqual(["so-tools-denied", "so-codex-denied", "so-net-denied", "so-cmd-denied", "mine"]);
     }
   });
 });
