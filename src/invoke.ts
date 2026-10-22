@@ -40,7 +40,7 @@ import { BRIDGE_DIR } from "./agent-fence.js";
 import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
-import { startEgressBridge, type EgressBridge } from "./egress-bridge.js";
+import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
 
@@ -520,8 +520,10 @@ export async function invokeAgent(
       }
       if (fenced.method === "linux-bubblewrap" && grants.network.mode === "allowlist") {
         const database = store.databaseFile();
-        bridge = await startEgressBridge([grants.network.proxyPort, ...grants.network.brokerPorts],
-          database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR));
+        // The plane's own fenced folder, unless a socket there would be too long a path (a unix socket's path is capped
+        // near 100 bytes): then the system temp folder, which a confined Linux build doesn't see (its /tmp is its own).
+        const fenced = database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR);
+        bridge = await startEgressBridge([grants.network.proxyPort, ...grants.network.brokerPorts], fenced !== undefined && bridgeFits(fenced) ? fenced : undefined);
         grants.network.bridge = { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath };
         // Its private /tmp gives back only its own folders: its checkout and its launch folder (its temp is inside).
         grants.network.keep = [...(workspace === null ? [] : [realpathSync(workspace)]), ...(ownTools === null ? [] : [ownTools]), ...(fenceOf.gitPaths ?? [])];

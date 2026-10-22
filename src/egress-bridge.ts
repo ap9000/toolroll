@@ -52,6 +52,13 @@ function start() {
 }
 `;
 
+/** The longest a unix socket's path may be here (macOS 104 bytes, Linux 108, with room to spare). */
+const SOCKET_PATH_MAX = 100;
+/** Whether a bridge made under `root` keeps every socket path within the limit (its folder and `<port>.sock`). */
+export function bridgeFits(root: string): boolean {
+  return join(root, `${BRIDGE_PREFIX}XXXXXX`, "65535.sock").length <= SOCKET_PATH_MAX;
+}
+
 export type EgressBridge = { folder: string; forwarder: string; close: () => Promise<void> };
 
 /**
@@ -65,6 +72,7 @@ export async function startEgressBridge(ports: readonly number[], root: string =
   if (held.isSymbolicLink() || !held.isDirectory() || (process.getuid !== undefined && held.uid !== process.getuid()) || (root !== tmpdir() && (held.mode & 0o077) !== 0)) {
     throw new Error(`the bridge folder ${root} isn't a private folder of this user's`);
   }
+  if (!bridgeFits(root)) throw new Error(`the bridge folder ${root} is too deep for a socket path`);
   const folder = mkdtempSync(join(root, BRIDGE_PREFIX));
   chmodSync(folder, 0o700);
   const forwarder = join(folder, "forward.mjs");
