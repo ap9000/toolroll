@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`toolroll release` finishes when GitHub deletes the merged branch
+  itself.** A delete that fails because the branch is already gone counts as
+  done; one that fails while the branch is still there still stops.
+- **`toolroll release` merges a Homebrew tap that runs no checks on a
+  change.** It no longer waits out its time limit for checks that will never
+  come. Any check run or commit status that does appear is still judged (each
+  app on its own), and a tap whose workflows run on pull requests still needs
+  its own GitHub Actions run to pass.
+
 ## 0.9.65 — 2026-10-22
 
 0.9.64 was tagged but never published: a macOS check failed on Node 24.

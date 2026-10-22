@@ -11,6 +11,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { parse as parseYaml } from "yaml";
 // Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullRequest, ReleaseAdapters } from "./release.js";
@@ -221,7 +222,12 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const current = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
         if (current === null) return;
         if (current !== head) throw new Error(`${branch} moved after merging; its new head was not deleted.`);
-        await must(git("push", `--force-with-lease=${ref}:${head}`, "origin", `:${ref}`), `deleting merged branch ${branch}`);
+        const pushed = await git("push", `--force-with-lease=${ref}:${head}`, "origin", `:${ref}`);
+        if (pushed.code === 0) return;
+        // GitHub may delete a merged branch itself between the look and the push; gone is what was wanted.
+        const after = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
+        if (after === null) return;
+        throw new Error(`deleting merged branch ${branch} failed: ${pushed.stderr.trim() || `exit ${pushed.code}`}`);
       },
       async tree(sha) { return (await must(git("rev-parse", `${sha}^{tree}`), `git rev-parse ${sha.slice(0, 7)}^{tree}`)).trim(); },
       async fileAt(sha, path) {
@@ -313,10 +319,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return prs.find(one => one.state === "open") ?? prs.filter(one => one.state === "merged").sort((a, b) => b.number - a.number)[0] ?? null;
       },
       async checks(repo, sha) {
-        const out = await must(gh("api", "--paginate", `repos/${repo}/commits/${sha}/check-runs?per_page=100`, "--jq", ".check_runs[] | {id, name, status, conclusion}"), "gh api check-runs");
+        const out = await must(gh("api", "--paginate", `repos/${repo}/commits/${sha}/check-runs?per_page=100`, "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug}"), "gh api check-runs");
         const runs = out.split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
         // Oldest first, so a rerun's attempt is the last one listed for its name.
-        return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]) }));
+        return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]) }));
       },
       async merge(repo, pr, head) {
         const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`));
@@ -349,6 +355,33 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     },
     homebrew: {
       repo: tap,
+      async checked(head) {
+        // Only a workflow that runs on pull requests (or pushes) puts checks on the tap's change; apps that open a
+        // check suite and never run it don't count. Workflows are read as the change has them and as the tap's default
+        // branch has them (pull_request_target runs from there); a file this can't read counts as checking.
+        for (const ref of [head, await defaultBranch()]) {
+          const listed = await gh("api", `repos/${tap}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`, "--jq", ".[] | select(.type == \"file\") | .path");
+          if (listed.code !== 0) {
+            if (/Not Found|HTTP 404/.test(listed.stderr + listed.stdout)) continue;
+            throw new Error(`listing ${tap}'s workflows at ${ref}: ${listed.stderr.trim()}`);
+          }
+          for (const path of listed.stdout.split("\n").filter(Boolean)) {
+            if (!/\.ya?ml$/.test(path)) continue;
+            const file = await gh("api", `repos/${tap}/contents/${path}?ref=${encodeURIComponent(ref)}`, "--jq", ".content");
+            if (file.code !== 0) return true;
+            if (workflowRunsOnChange(Buffer.from(file.stdout.replace(/\\n|\s/g, ""), "base64").toString("utf8"))) return true;
+          }
+        }
+        return false;
+      },
+      async statuses(head) {
+        // The older commit-status API, which some CI reports through instead of checks; newest first, so reversed.
+        const out = await must(gh("api", "--paginate", `repos/${tap}/commits/${head}/statuses?per_page=100`, "--jq", ".[] | {context, state}"), "gh api statuses");
+        return out.split("\n").filter(Boolean).map(line => object(JSON.parse(line))).reverse().map((one): CheckRun => {
+          const state = String(one["state"]);
+          return { name: `status: ${String(one["context"])}`, status: state === "pending" ? "in_progress" : "completed", conclusion: state === "pending" ? null : state === "success" ? "success" : "failure" };
+        });
+      },
       async state(version): Promise<HomebrewState> {
         const branch = await defaultBranch();
         const current = await formulaAt(branch);
@@ -396,6 +429,29 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 }
 
 const brewBranch = (version: string) => `toolroll-${version}`;
+
+/** The events that put checks on a change. */
+const CHANGE_EVENTS = new Set(["pull_request", "pull_request_target", "push", "merge_group"]);
+
+/**
+ * Whether a workflow's triggers (its top-level `on:` as a name, a list or a map) include a change to the repository.
+ * A file that doesn't parse, or whose triggers aren't one of those shapes, counts as running, so the release waits
+ * rather than skipping checks it owes.
+ */
+export function workflowRunsOnChange(text: string): boolean {
+  let parsed: unknown;
+  try { parsed = parseYaml(text); } catch { return true; }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return true;
+  const workflow = parsed as Record<string, unknown>;
+  // YAML 1.1 readers take a bare `on` for true; either key names the triggers.
+  const on = "on" in workflow ? workflow["on"] : workflow["true"];
+  const events = typeof on === "string" ? [on]
+    : Array.isArray(on) ? on
+    : on !== null && typeof on === "object" ? Object.keys(on)
+    : null;
+  if (events === null || !events.every(one => typeof one === "string")) return true;
+  return events.some(one => CHANGE_EVENTS.has(one));
+}
 
 /** The formula with its first `url` and `sha256` replaced; anything else is left exactly as it was. */
 export function bumpFormula(text: string, url: string, sha256: string): string {
