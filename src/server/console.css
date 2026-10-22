@@ -1825,7 +1825,7 @@
      building, then the rest. A header is a 2.75rem tap; a drawn chevron
      says which way it folds. */
   @media (max-width: 760px) {
-    .board { display: flex; flex-direction: column; gap: .5rem; padding-bottom: 0; }
+    .board { display: flex; flex-direction: column; align-items: stretch; gap: .5rem; padding-bottom: 0; }
     .board .lane { min-height: 0; padding: 0 .625rem .125rem; }
     .board .lane > summary {
       cursor: pointer; display: flex; align-items: center; min-height: 2.75rem; margin: 0;
@@ -1864,7 +1864,7 @@
   }
   .lane-attention h2::before { background: var(--brand); opacity: 1; }
   .lane-building h2::before { background: var(--running); opacity: 1; }
-  .lane-done h2::before { background: var(--success); opacity: 1; }
+  .lane-done h2::before { background: var(--muted-foreground); opacity: 1; }
   .lane-card {
     display: block; text-decoration: none; color: inherit;
     background: var(--card); border: 1px solid var(--border);
@@ -1891,6 +1891,37 @@
     font-family: var(--font-mono); font-size: .6875rem; color: var(--running); font-variant-numeric: tabular-nums;
   }
   .lane-card .live-line .clock { color: var(--muted-foreground); }
+  /* The build's steps — set up, writing, checking, committing: four quiet
+     ticks, the current one in the running hue. A stage, never a percent. */
+  .lane-card .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .1875rem; margin-top: .5rem; }
+  .lane-card .steps i { height: .1875rem; border-radius: 999px; background: var(--border); }
+  .lane-card .steps i.on { background: color-mix(in srgb, var(--running) 45%, var(--border)); }
+  .lane-card .steps i.now { background: var(--running); }
+
+  /* The worker strip: one quiet tile per worker above the lanes — what it is
+     building here, the stage, the clock. Ink and lines only; the running dot
+     is the one hue. */
+  .crew { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: .625rem; margin: .25rem 0 .875rem; }
+  .crew-empty { margin: .25rem 0 .875rem; }
+  .worker {
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--card);
+    padding: .625rem .75rem; min-width: 0; display: flex; flex-direction: column; gap: .375rem;
+  }
+  .worker-busy { border-color: color-mix(in srgb, var(--running) 30%, var(--border)); }
+  .worker-offline { opacity: .6; }
+  .worker-head { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+  .worker-head .name { font-family: var(--font-mono); font-size: .75rem; font-weight: 500; }
+  .worker-head .kind { font-size: .6875rem; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .worker-head .slots { font-family: var(--font-mono); font-size: .6875rem; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  .worker-job { display: flex; flex-direction: column; gap: .0625rem; text-decoration: none; color: inherit; min-width: 0; margin: 0; }
+  .worker-job .t { font-size: .8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .worker-job .sub { display: flex; justify-content: space-between; gap: .5rem; font-family: var(--font-mono); font-size: .6875rem; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  .worker-job.idle { font-size: .75rem; color: var(--muted-foreground); }
+  @media (hover: hover) and (pointer: fine) { a.worker-job:hover .t { text-decoration: underline; } }
+  @media (max-width: 760px) {
+    .crew { grid-template-columns: minmax(0, 1fr); gap: .375rem; }
+    .worker { padding: .5rem .625rem; }
+  }
   .lane-empty { margin: .75rem 0 .25rem; }
   .plan-doc { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8125rem; max-height: 24rem; overflow-y: auto; }
   .lane-more { display: block; margin-top: .5rem; font-size: .75rem; }
@@ -2674,8 +2705,10 @@ button { min-height: 44px; }
 @media (hover: hover) and (pointer: fine) { .next-pager .skip:hover { border-color: color-mix(in srgb, var(--border) 60%, var(--muted-foreground)); } }
 
 /* Motion: only where a human caused the change — navigation, presses,
-   overlays. Liveness swaps stay instant; the pulse dot is the one "alive"
-   signal. Everything dies under prefers-reduced-motion; auto-refresh pages
+   overlays — and one exception, the live board: a card that changes lane
+   slides there and a worker that picks up work flashes once (the board's
+   swap, html.so-swap, below). Every other liveness swap stays instant; the
+   pulse dot is the one "alive" signal. Everything dies under prefers-reduced-motion; auto-refresh pages
    opt out of the navigation cross-fade separately (see shell()). */
 @view-transition { navigation: auto; }
 /* A page change fades THROUGH, not across: the old page leaves before the new
@@ -2775,4 +2808,22 @@ button.pick-file { min-height: 1.75rem; padding: 0 .55rem; font-size: .75rem; }
   .problem { padding: .5rem .625rem; margin: var(--so-phone-row) 0; }
   .meta, .hint { line-height: 1.35; }
   details { margin: var(--so-phone-row) 0; }
+}
+
+/* The live board's swap (regionScript animate): only cards move — the page
+   itself does not fade — a short slide for a card that changed lane, a drop
+   for a new one, a fade for one that left. Transform and opacity only, and
+   the reduce block kills it with everything else (the script also skips the
+   transition under reduced motion). */
+html.so-swap::view-transition-old(root), html.so-swap::view-transition-new(root) { animation: none; }
+html.so-swap::view-transition-group(*) { animation-duration: 320ms; animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
+html.so-swap::view-transition-new(*):only-child { animation: so-card-in 240ms ease-out both; }
+html.so-swap::view-transition-old(*):only-child { animation: so-card-out 160ms ease-in both; }
+@keyframes so-card-in { from { opacity: 0; transform: translateY(-.375rem); } }
+@keyframes so-card-out { to { opacity: 0; } }
+.worker.flash { animation: so-worker-claim 900ms ease-out; }
+@keyframes so-worker-claim { from { background: color-mix(in srgb, var(--running) 14%, var(--card)); } }
+@media (prefers-reduced-motion: reduce) {
+  html.so-swap::view-transition-group(*), html.so-swap::view-transition-new(*), html.so-swap::view-transition-old(*) { animation: none !important; }
+  .worker.flash { animation: none; }
 }
