@@ -164,3 +164,21 @@ test("checkoutGit's status never enters a submodule whose config would run a com
   expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a global filter whose command is a relative path (the checkout's own file) is refused, and never runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-global-"));
+  const global = join(dir, "global.gitconfig");
+  writeFileSync(global, "[filter \"fmt\"]\n\tclean = ./tools/filter.sh\n");
+  const repoDir = join(dir, "r");
+  mkdirSync(join(repoDir, "tools"), { recursive: true });
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: global, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoDir, env });
+  const marker = join(dir, "ran");
+  writeFileSync(join(repoDir, "tools", "filter.sh"), `#!/bin/sh\ntouch ${marker}\ncat\n`, { mode: 0o755 });
+  writeFileSync(join(repoDir, ".gitattributes"), "* filter=fmt\n");
+  writeFileSync(join(repoDir, "a.txt"), "a\n");
+  const added = await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env });
+  expect(refusal(added)).toMatch(/filter\.fmt\.clean/);
+  expect(existsSync(marker)).toBe(false);
+  rmSync(dir, { recursive: true, force: true });
+});

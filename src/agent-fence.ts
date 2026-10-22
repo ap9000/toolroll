@@ -345,6 +345,29 @@ export function claudeProjectFolder(home: string, cwd: string): { path: string; 
   return slug.length > 200 ? { path: join(home, ".claude", "projects", slug.slice(0, 200)), byPrefix: true } : { path: join(home, ".claude", "projects", slug), byPrefix: false };
 }
 
+/**
+ * A folder a write grant may name: made when absent, then only as the real folder it is — never a link, nor reached
+ * through one (its real path is its parent's real path and its own name). A build can rewrite what it may write, so a
+ * folder it was given could otherwise come back as a link to anywhere and be granted, followed, on its next launch.
+ * Null when it isn't such a folder: nothing is granted, and the write it was for fails.
+ */
+export function grantFolder(path: string, create = true): string | null {
+  if (create) { try { mkdirSync(path, { recursive: true, mode: 0o700 }); } catch { /* checked below */ } }
+  try {
+    const held = lstatSync(path);
+    if (held.isSymbolicLink() || !held.isDirectory()) return null;
+    const at = realpathSync(path);
+    return at === join(realpathSync(dirname(path)), basename(path)) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Configuration file and folder names ACP agents read from their own folders (MCP servers, hooks, plugins and the like). */
+const ACP_CONFIG_FILES = ["settings.json", "settings.local.json", "mcp.json", "cli-config.json", "config.json", "config.yaml", "config.yml",
+  "opencode.json", "opencode.jsonc", "permissions.json", "hooks.json", ".env", "AGENTS.md", "QWEN.md", "GEMINI.md"] as const;
+const ACP_CONFIG_FOLDERS = ["hooks", "plugins", "plugin", "agents", "agent", "commands", "command", "extensions", "mode", "modes", "skills", "tools", "rules"] as const;
+
 /** The suffix Claude Code gives a transcript folder whose name it shortened: `-` and a hash, nothing else. */
 const CLAUDE_SHORTENED = "-[a-z0-9]+(/|$)";
 /** A file and the temporary names it is replaced through (`name.tmp-1`, `name.json.12345`), never a folder below it. */
@@ -355,7 +378,7 @@ const ATOMIC_NAMES = "([.~][^/]*)?$";
 function commitGitData(common: string): { subpaths: string[]; prefixes: WritePrefix[]; readOnly: string[] } {
   const made = (path: string): string => { try { mkdirSync(path, { recursive: true }); } catch { /* granted as named */ } return real(path); };
   return {
-    subpaths: ["objects", "refs", "logs"].map(name => made(join(common, name))),
+    subpaths: ["objects", "refs", "logs"].map(name => grantFolder(join(common, name))).filter((path): path is string => path !== null),
     prefixes: [{ path: join(common, "packed-refs"), suffix: ATOMIC_NAMES }],
     // Alternates there would let objects come from anywhere.
     readOnly: [made(join(common, "objects", "info"))],
@@ -378,10 +401,11 @@ export function writeAllowlist(options: { provider: string; home: string; worktr
   const readOnly = new Set<string>();
   const deny = new Set<string>();
   const made = (path: string): string => { try { mkdirSync(path, { recursive: true, mode: 0o700 }); } catch { /* granted as named either way */ } return real(path); };
+  const grant = (path: string, create = true) => { const at = grantFolder(path, create); if (at !== null) subpaths.add(at); };
   if (options.binding !== null) {
     const common = real(join(options.binding.main, ".git"));
     const gitdir = real(options.binding.gitdir);
-    subpaths.add(gitdir);
+    grant(gitdir, false);
     // The shared Git data a commit writes, and nothing Git reads as commands or settings: the shared config (filters,
     // hooks path, fsmonitor), hooks, info (attributes, excludes), other worktrees' data and submodules' stay as they are.
     const data = commitGitData(common);
@@ -393,18 +417,26 @@ export function writeAllowlist(options: { provider: string; home: string; worktr
     try { if (!existsSync(own)) writeFileSync(own, "", { mode: 0o644, flag: "wx" }); } catch { /* held read-only by name */ }
     readOnly.add(own);
   }
-  if (options.launchFolder !== null) subpaths.add(real(options.launchFolder));
-  if (options.cache !== null) subpaths.add(made(options.cache));
+  if (options.launchFolder !== null) grant(options.launchFolder, false);
+  if (options.cache !== null) grant(options.cache);
   if (options.provider === "claude") {
     const folder = claudeProjectFolder(home, worktree);
     if (folder.byPrefix) { made(dirname(folder.path)); prefixes.set(folder.path, { path: folder.path, suffix: CLAUDE_SHORTENED }); }
-    else subpaths.add(made(folder.path));
+    else grant(folder.path);
     deny.add(join(home, ".claude", "sessions"));
   } else if (options.provider === "gemini") {
-    for (const name of ["history", "tmp"]) subpaths.add(made(join(home, ".gemini", name)));
+    for (const name of ["history", "tmp"]) grant(join(home, ".gemini", name));
     prefixes.set("gemini", { path: join(home, ".gemini", "projects.json"), suffix: ATOMIC_NAMES });
   } else if (Object.hasOwn(ACP_AGENTS, options.provider)) {
-    for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) subpaths.add(made(join(home, name)));
+    for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) {
+      const root = join(home, name);
+      grant(root);
+      // What the agent reads as configuration — its MCP servers, hooks, plugins, agents, commands — stays as it is, so a
+      // build can't plant something that runs in the operator's next session of that agent. Folders are made first
+      // (a Linux bind needs them); a missing file is held read-only where the sandbox can name it (macOS, Codex).
+      for (const file of ACP_CONFIG_FILES) readOnly.add(join(real(root), file));
+      for (const folder of ACP_CONFIG_FOLDERS) readOnly.add(made(join(root, folder)));
+    }
   }
   return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes.values()].sort((a, b) => a.path.localeCompare(b.path)) }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
 }
@@ -735,6 +767,8 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(grants.writes === undefined ? [] : [
       "(deny file-write*)",
       `(allow file-write* (subpath "/dev")${grants.writes.subpaths.length === 0 ? "" : ` ${paths("subpath", grants.writes.subpaths)}`}${grants.writes.prefixes.map(one => ` (regex #"^${seatbeltRegex(one.path)}${one.suffix}")`).join("")})`,
+      // A granted folder itself can't be renamed, removed or replaced (by a link to anywhere, say): only what is in it.
+      ...(grants.writes.subpaths.length === 0 ? [] : [`(deny file-write* ${paths("literal", grants.writes.subpaths)})`]),
     ]),
     ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
     ...(pool?.own == null ? [] : [
@@ -756,6 +790,12 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     "(deny mach-task-name)",
     ...(above.length === 0 ? [] : [`(deny file-write* ${paths("literal", above)})`]),
     ...macosNetworkRules(grants.network),
+    // A workspace build reaches no unix socket but its own (a container engine's, an agent's, a database's would act
+    // outside its limits for it), whatever its network: a confined network has its own rule for this already.
+    ...(grants.writes === undefined || grants.network?.mode === "allowlist" ? [] : [
+      "(deny network-outbound (remote unix-socket))",
+      ...(grants.writes.subpaths.length === 0 ? [] : [`(allow network-outbound ${grants.writes.subpaths.map(root => `(remote unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`]),
+    ]),
   ].join("\n");
 }
 
@@ -864,10 +904,15 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const writes = grants.writes;
   const root = writes === undefined ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev", "/dev"];
   const writable = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes.map(one => one.path)].filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]);
-  const privateTmp = network === null && writes === undefined ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
+  // What a private /tmp gives back is read-only for a workspace build (its writable part is bound again after): the
+  // checkout's whole shared Git data among it must not come back writable.
+  const privateTmp = network === null && writes === undefined ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => [writes === undefined ? "--bind" : "--ro-bind", path, path])];
+  // A workspace build never reaches the host's own services either (a container engine would write anywhere for it),
+  // whatever its network: confined networks mask them below already.
+  const services = writes === undefined || network !== null ? [] : linuxHostSockets().flatMap(mask);
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...services, ...isolated, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container

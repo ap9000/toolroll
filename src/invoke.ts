@@ -32,13 +32,13 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR } from "./agent-fence.js";
-import { agentFence, buildCacheEnv, buildCacheFolder, writeAllowlist, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
@@ -411,13 +411,15 @@ export async function invokeAgent(
   // The project's tools (v80): exactly its MCP servers, and none of the
   // operator's global or a repository's own, served by this launch's broker
   // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
+  // What the build writes (its checkout, its project's caches): a tool server never runs from there, nor reads it at all.
+  const serverUntrusted = workspace === null ? [] : toolUntrusted(store, workspace, keyHome);
   const launchTools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
     env: { ...process.env, ...(runOptions.env ?? {}) },
     omitEnv: [...(runOptions.omitEnv ?? []), ...ALL_CREDENTIAL_ENV],
     pass: childDatabaseEnv(isolatedDb.file),
     // A tool server starts in a folder the build can't write, and never runs the build's own bytes (arc 2).
     cwd: keyHome ?? homedir(),
-    ...(workspace === null ? {} : { untrusted: toolUntrusted(store, workspace, keyHome) }),
+    untrusted: serverUntrusted,
     wrap: () => serverFence,
   });
   if (launchTools !== null && "refused" in launchTools) {
@@ -486,8 +488,10 @@ export async function invokeAgent(
     // A tool server keeps its own reach (it holds its tool's secrets, not the agent's code): never the agent's network,
     // nor its write allowlist (a server keeps its own state where it always has).
     const serverGrants = (): FenceGrants => { const { network: _agentOnly, writes: _agentWrites, ...rest } = grants; return rest; };
-    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, fence, serverGrants());
-    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, fence, serverGrants());
+    // Nor read what the build wrote: however its arguments are spelled, no byte of the checkout or caches can load.
+    const serverDenies = [...fence, ...serverUntrusted.filter(path => existsSync(path)).map(path => realpathSync(path))];
+    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, serverDenies, serverGrants());
+    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, serverDenies, serverGrants());
   }
   // No silent fallback (arc 1): a build this machine can't confine at the OS — Claude reduced to its own file-tool
   // rules, Gemini to nothing — doesn't start unless the instance operator allowed unconfined agents here. An injected
@@ -1058,9 +1062,13 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
  * Their network stays as it was. A machine without an OS fence runs them as before; a fence that can't be prepared
  * (a checkout whose binding no longer proves) runs nothing.
  */
-export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner): Runner {
+export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
   return async (file, args, options) => {
-    if (!macosFenceAvailable() && !linuxFenceAvailable()) return inner(file, args, options);
+    // As a build itself: where nothing can confine them, they run only when an instance operator allowed unconfined agents.
+    if (!available()) {
+      if (store.unfencedAgentsAllowed()) return inner(file, args, options);
+      return { code: 1, stdout: "", stderr: "This machine can't confine the build's commands (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
+    }
     const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
     try {
       const temp = join(own, "tmp");
@@ -1068,11 +1076,59 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
       const fenced = runFence(store, runId, "command", undefined, own, writes);
       if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
       if (fenced.fence.length === 0) return inner(file, args, options);
+      // A self-hosted check's own database (child-database.ts) is the command's to write too.
+      const database = options?.env?.["TOOLROLL_DB"];
+      const checkData = database === undefined || fenced.grants.writes === undefined ? null : grantFolder(dirname(database), false);
+      const grants: FenceGrants = checkData === null ? fenced.grants : { ...fenced.grants, writes: { ...fenced.grants.writes!, subpaths: [...fenced.grants.writes!.subpaths, checkData] } };
       return await inner(file, args, {
         ...options,
         fence: fenced.fence,
-        fenceGrants: fenced.grants,
+        fenceGrants: grants,
         env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)) },
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  };
+}
+
+/**
+ * A project's checks run in a checkout of a result's commit made for them (result-follow-ups.ts, batch-checks.ts), in
+ * the same fence as a build's commands: Toolroll's state, credentials, other projects and runs denied; under the
+ * project's writes setting, only that checkout, its Git data, its own temp folder, the project's caches and its check
+ * database writable. Where nothing can confine them, they run only when an instance operator allowed unconfined agents.
+ */
+export function fencedCheckoutCommands(store: Store, repo: string, checkout: string, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+  return async (file, args, options) => {
+    if (!available()) {
+      if (store.unfencedAgentsAllowed()) return inner(file, args, options);
+      return { code: 1, stdout: "", stderr: "This machine can't confine the project's checks (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
+    }
+    const databaseFile = store.databaseFile();
+    if (databaseFile === null) return inner(file, args, options);
+    const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
+    try {
+      const temp = join(own, "tmp");
+      mkdirSync(temp, { mode: 0o700 });
+      let binding: WorktreeBinding;
+      try { binding = trustedWorktreeBinding(repo, checkout); } catch {
+        return { code: 1, stdout: "", stderr: "The check's checkout couldn't be bound to its project, so nothing ran.\n", timedOut: false, notFound: false };
+      }
+      const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+      const boundary = taskBoundary({ worktree: checkout, provider: "command", binding });
+      const folders = runFolders(own);
+      const cache = buildCacheFolder(repo);
+      const allowed = store.projectWrites(repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home: homedir(), worktree: checkout, binding, launchFolder: own, cache });
+      const database = options?.env?.["TOOLROLL_DB"];
+      const checkData = allowed === null || database === undefined ? null : grantFolder(dirname(database), false);
+      const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, binding, poolRoots });
+      const grants: FenceGrants = allowed === null ? base
+        : { ...base, readOnly: [...new Set([...base.readOnly, ...allowed.readOnly])].sort(), writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] } };
+      return await inner(file, args, {
+        ...options,
+        fence: agentFence({ databaseFile, worktree: checkout, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] }),
+        fenceGrants: grants,
+        env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)) },
       });
     } finally {
       rmSync(own, { recursive: true, force: true });

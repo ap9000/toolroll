@@ -8,11 +8,12 @@
  * Codex's profile each enforce it.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { claudeProjectFolder, linuxFenced, NO_GRANTS, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
+import { claudeProjectFolder, linuxFenced, macosFenced, NO_GRANTS, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
 import { codexSandbox, git, GIT_ENV, lines, needs, repository, seatbelt, underCodex, underSeatbelt, useScratch } from "./harness.js";
 
 type World = { home: string; main: string; worktree: string; launch: string; cache: string; fence: string[]; grants: FenceGrants; transcript: string };
@@ -76,6 +77,8 @@ function untouched(w: World): void {
 
 describe("attack: writing outside the workspace (macOS)", () => {
   const scratch = useScratch("writes");
+  const cleanup: string[] = [];
+  afterEach(() => { for (const one of cleanup.splice(0)) rmSync(one, { recursive: true, force: true }); });
 
   test("a workspace build writes its checkout, commits, its temp, its caches and its transcript, and nothing of the operator's", ctx => {
     needs(ctx, seatbelt());
@@ -86,6 +89,65 @@ describe("attack: writing outside the workspace (macOS)", () => {
     expect(lines(result), result.stderr).toEqual([...REFUSED, "sessions-refused", "shared-temp-refused", ...ALLOWED, "transcript-ok"]);
     untouched(w);
     expect(git(w.worktree, "log", "-1", "--format=%s")).toBe("feature");
+  });
+
+  test("a granted folder a build swapped for a link is never granted again, and a granted folder can't be swapped", ctx => {
+    needs(ctx, seatbelt());
+    const dir = scratch();
+    const w = world(dir, "claude");
+    // Inside the sandbox: the cache folder itself can't be moved away or replaced.
+    const swap = underSeatbelt([
+      `mv ${w.cache} ${w.cache}-moved 2>/dev/null || echo rename-refused`,
+      `rm -rf ${w.cache} 2>/dev/null; test -d ${w.cache} && echo still-there`,
+    ].join("\n"), w.fence, w.grants, { cwd: w.worktree });
+    expect(lines(swap), swap.stderr).toEqual(["rename-refused", "still-there"]);
+    // Had it been swapped (outside any sandbox, as an earlier anywhere build could), the next launch grants nothing there.
+    const agents = join(w.home, "Library", "LaunchAgents");
+    rmSync(w.cache, { recursive: true, force: true });
+    symlinkSync(agents, w.cache);
+    const next = writeAllowlist({ provider: "claude", home: w.home, worktree: w.worktree, binding: { main: w.main, gitdir: realpathSync(join(w.main, ".git", "worktrees", "task-1")) }, launchFolder: w.launch, cache: w.cache });
+    expect(next.writes.subpaths).not.toContain(realpathSync(agents));
+    const result = underSeatbelt(`touch ${w.cache}/evil.plist 2>/dev/null || echo planted-refused`, next.deny, { ...NO_GRANTS, writes: next.writes, readOnly: next.readOnly }, { cwd: w.worktree });
+    expect(lines(result), result.stderr).toEqual(["planted-refused"]);
+  });
+
+  test("a workspace build reaches no unix socket outside its own folders, even with an open network", async ctx => {
+    needs(ctx, seatbelt());
+    // A unix socket's path is capped near 104 bytes: this world lives in a short folder of its own.
+    const short = realpathSync(mkdtempSync("/tmp/sw-"));
+    cleanup.push(short);
+    const w = world(short, "claude");
+    const socket = join(w.home, "engine.sock");
+    const server = createNetServer(connection => connection.end("engine\n"));
+    await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(socket, done); });
+    try {
+      const own = join(w.launch, "tmp", "own.sock");
+      const mine = createNetServer(connection => connection.end("mine\n"));
+      await new Promise<void>((done, fail) => { mine.once("error", fail); mine.listen(own, done); });
+      const run = (path: string) => `python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.connect('${path}'); print(s.recv(10).decode().strip())" 2>/dev/null || echo refused`;
+      const result = await new Promise<{ stdout: string; stderr: string }>(done => {
+        const { file, args } = macosFenced("/bin/sh", ["-c", [run(socket), run(own)].join("\n")], w.fence, { ...w.grants, network: { mode: "open" } });
+        const child = spawn(file, args, { cwd: w.worktree });
+        let stdout = "", stderr = "";
+        child.stdout.on("data", chunk => { stdout += String(chunk); });
+        child.stderr.on("data", chunk => { stderr += String(chunk); });
+        child.on("close", () => done({ stdout, stderr }));
+      });
+      mine.close();
+      expect(lines(result), result.stderr).toEqual(["refused", "mine"]);
+    } finally { server.close(); }
+  });
+
+  test("an ACP agent writes its own data, never its configuration", ctx => {
+    needs(ctx, seatbelt());
+    const w = world(scratch(), "opencode");
+    const config = join(w.home, ".config", "opencode");
+    const result = underSeatbelt([
+      `echo '{"mcp":{"evil":{"command":["sh"]}}}' > ${config}/opencode.json 2>/dev/null || echo config-refused`,
+      `touch ${config}/plugins/evil.js 2>/dev/null || echo plugin-refused`,
+      `touch ${w.home}/.local/share/opencode/session.db && echo data-ok`,
+    ].join("\n"), w.fence, w.grants, { cwd: w.worktree });
+    expect(lines(result), result.stderr).toEqual(["config-refused", "plugin-refused", "data-ok"]);
   });
 
   test("Gemini writes its history, temp and project list (and its atomic-rename names), never its settings", ctx => {

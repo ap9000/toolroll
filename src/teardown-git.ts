@@ -55,6 +55,24 @@ export function commandSetting(listing: string): string | null {
   return null;
 }
 
+/**
+ * A command-running setting in any scope (the operator's global config included) whose command is a relative path —
+ * `./tools/filter.sh` runs from the checkout, so its bytes are the build's. Null when there is none.
+ */
+export function relativeCommandSetting(listing: string): string | null {
+  const fields = listing.split("\0");
+  for (let at = 0; at + 1 < fields.length; at += 2) {
+    const entry = fields[at + 1]!;
+    const newline = entry.indexOf("\n");
+    if (newline < 0) continue;
+    const key = entry.slice(0, newline).toLowerCase();
+    if (key === "core.fsmonitor" ? BOOLEAN.test(entry.slice(newline + 1).trim()) : !COMMAND_KEYS.some(pattern => pattern.test(key))) continue;
+    const command = entry.slice(newline + 1).trim().replace(/^!/, "").split(/\s+/)[0] ?? "";
+    if (command !== "" && !command.startsWith("/") && !command.startsWith("~") && command.includes("/")) return key;
+  }
+  return null;
+}
+
 /** Why a teardown command was refused, or null when `result` isn't a refusal. */
 export function refusal(result: ExecResult): string | null {
   return result.code === REFUSED_CODE && result.stderr.startsWith(REFUSED_PREFIX) ? result.stderr.slice(REFUSED_PREFIX.length).trim() : null;
@@ -129,6 +147,8 @@ export function checkoutGit(inner: Runner = run): Runner {
     if (listing.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(listing.stdout);
     if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+    const relative = relativeCommandSetting(listing.stdout);
+    if (relative !== null) return refused(`git config sets ${relative} to a command in the checkout, which the build could have written`);
     // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
     const safeArgs = [...args];
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");

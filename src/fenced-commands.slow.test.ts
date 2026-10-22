@@ -4,12 +4,13 @@
  * which their package managers are pointed at.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { run } from "./exec.js";
-import { fencedCommands } from "./invoke.js";
+import { fencedCheckoutCommands, fencedCommands } from "./invoke.js";
 import { register } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { WorktreePool } from "./worktree.js";
@@ -76,5 +77,35 @@ describe.skipIf(!FENCED)("a build's setup and check commands", () => {
       `echo x >> ${outside} && echo outside-ok`,
     ].join("\n")], { cwd: worktree });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["state-refused", "outside-ok"]);
+  });
+
+  test("a self-hosted check's own database folder is writable", async () => {
+    const { runId, worktree } = await build();
+    const db = realpathSync(mkdtempSync(join(homedir(), ".so-check-db-")));
+    try {
+      const result = await fencedCommands(store, runId, "workspace", run)("/bin/sh", ["-c", `touch "$(dirname "$TOOLROLL_DB")/orders.db" && echo db-ok`], { cwd: worktree, env: { TOOLROLL_DB: join(db, "orders.db") } });
+      expect(result.stdout.trim(), result.stderr).toBe("db-ok");
+    } finally { rmSync(db, { recursive: true, force: true }); }
+  });
+
+  test("a follow-up check's own checkout of the commit runs in the same fence", async () => {
+    await build();
+    const checkout = join(dir, "check-checkout");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "--detach", checkout, "main"]);
+    const outside = join(dir, "outside.txt");
+    const result = await fencedCheckoutCommands(store, repo, realpathSync(checkout), run)("/bin/sh", ["-c", probe(realpathSync(checkout), outside)], { cwd: checkout });
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["state-refused", "outside-refused", "worktree-ok", "temp-ok", "cache-ok"]);
+  });
+});
+
+describe("commands where nothing can confine them", () => {
+  test("don't run unless an instance operator allowed unconfined agents", async () => {
+    const { runId, worktree } = await build();
+    const nowhere = () => false;
+    const refused = await fencedCommands(store, runId, "workspace", run, nowhere)("/bin/sh", ["-c", "echo ran"], { cwd: worktree });
+    expect(refused).toMatchObject({ code: 1, stdout: "" });
+    expect(refused.stderr).toMatch(/can't confine the build's commands/);
+    store.setUnfencedAgentsAllowed(true, "alex", T0);
+    expect((await fencedCommands(store, runId, "workspace", run, nowhere)("/bin/sh", ["-c", "echo ran"], { cwd: worktree })).stdout.trim()).toBe("ran");
   });
 });
