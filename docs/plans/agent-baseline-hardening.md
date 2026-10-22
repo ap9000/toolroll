@@ -232,7 +232,9 @@ Where the build departs from the text above, and why:
 - **Claude keeps its home, narrowed** (measured): writable are its checkout, the run's temp (`TMPDIR`,
   `CLAUDE_CODE_TMPDIR`) and its transcript folder for this checkout (by exact name; a shortened name only with
   Claude's `-<hash>` suffix); `~/.claude/sessions` is unreadable. Gemini: history, tmp, and projects.json with its
-  atomic-rename names. ACP agents: their own folders whole (narrowing them is a follow-up). Proved with a real Claude
+  atomic-rename names. ACP agents: only known data folders (OpenCode's and Goose's ~/.local/share|state roots,
+  Qwen's history and temp); their configuration stays read-only whole, and Cursor and Cline write nothing of their
+  own until measured (a project using them chooses `anywhere`). Proved with a real Claude
   build: edit, commit, and a refused `~/.zshrc` append.
 - **Git data: only what a commit writes.** objects, refs, logs and packed refs of the shared repository plus the
   worktree's own folder; never config, hooks, info, `objects/info` (alternates), other worktrees' data or modules.

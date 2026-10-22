@@ -363,11 +363,16 @@ export function grantFolder(path: string, create = true): string | null {
   }
 }
 
-/** Data folders an ACP agent may write below a home folder that also holds its configuration (sessions, logs,
- * caches, temp); never one it reads as configuration. */
-const ACP_DATA_FOLDERS = ["tmp", "sessions", "logs", "log", "cache", "history", "projects", "chats", "state", "data", "storage"] as const;
-/** Data roots an ACP agent keeps outside the folders its row names (Goose's sessions and state). */
-const ACP_DATA_ROOTS: Readonly<Record<string, readonly string[]>> = { goose: [".local/share/goose", ".local/state/goose"] };
+/**
+ * The data folders an ACP agent writes besides a ~/.local/share|state root, per agent, only where known: Goose's
+ * sessions and state; Qwen Code (a Gemini CLI fork) its history and temp, as Gemini measured. An agent not listed
+ * (Cursor, Cline: their settings sit among their data) writes nothing of its own under a workspace build until its
+ * layout is measured; a project using one chooses `anywhere`.
+ */
+const ACP_DATA: Readonly<Record<string, readonly string[]>> = {
+  goose: [".local/share/goose", ".local/state/goose"],
+  qwen: [".qwen/tmp", ".qwen/history"],
+};
 
 /** The suffix Claude Code gives a transcript folder whose name it shortened: `-` and a hash, nothing else. */
 const CLAUDE_SHORTENED = "-[a-z0-9]+(/|$)";
@@ -429,17 +434,10 @@ export function writeAllowlist(options: { provider: string; home: string; worktr
     for (const name of ["history", "tmp"]) grant(join(home, ".gemini", name));
     prefixes.set("gemini", { path: join(home, ".gemini", "projects.json"), suffix: ATOMIC_NAMES });
   } else if (Object.hasOwn(ACP_AGENTS, options.provider)) {
-    // An ACP agent's configuration folders stay read-only whole (its MCP servers, hooks, plugins, agents and commands
-    // could otherwise be planted for the operator's next session of it); only its data folders are written: a data
-    // root (~/.local/share/<agent>, ~/.local/state/<agent>) whole, and in a folder that mixes both, only the
-    // conventional data folders below it, made first.
-    for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) {
-      const root = join(home, name);
-      if (/^\.local\/(share|state)\//.test(name)) { grant(root); continue; }
-      if (name.startsWith(".config/")) continue;
-      for (const folder of ACP_DATA_FOLDERS) grant(join(root, folder));
-    }
-    for (const name of ACP_DATA_ROOTS[options.provider] ?? []) grant(join(home, name));
+    // An ACP agent's configuration stays read-only whole (its MCP servers, hooks, plugins, agents and commands could
+    // otherwise be planted for the operator's next session of it); only its known data folders are written (ACP_DATA).
+    for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) if (/^\.local\/(share|state)\//.test(name)) grant(join(home, name));
+    for (const name of ACP_DATA[options.provider] ?? []) grant(join(home, name));
   }
   return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes.values()].sort((a, b) => a.path.localeCompare(b.path)) }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
 }
