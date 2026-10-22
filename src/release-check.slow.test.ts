@@ -470,6 +470,9 @@ describe("release check speed without weakening checks", () => {
     expect(selectedVersions(tags, 107, schema)).toEqual(["0.5.0", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7"]);
     expect(selectedVersions(tags, 108, schema)).toEqual(["0.5.0", "0.9.1", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7"]);
     expect(selectedVersions(tags, 107, schema, { full: true })).toHaveLength(9);
+    // A tag that never reached npm is skipped, and the newest five published releases still count.
+    const unpublished = tags.map(tag => tag.replace(/^v/, "")).filter(version => version !== "0.9.7");
+    expect(selectedVersions(tags, 107, schema, { published: unpublished })).toEqual(["0.5.0", "0.9.2", "0.9.3", "0.9.4", "0.9.5", "0.9.6"]);
     expect(() => selectedVersions(tags, 999, schema)).toThrow("No release tag");
     expect(upgradeLanes("8", 4)).toBe(3);
     expect(upgradeLanes("8", 1)).toBe(1);

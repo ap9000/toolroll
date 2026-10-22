@@ -96,8 +96,9 @@ export function upgradeVersions(published) {
 }
 
 /** Recent release tags plus a release that creates the current baseline, and the first release. */
-export function selectedVersions(tags, baselineVersion, schemaAt, { full = false } = {}) {
-  const versions = upgradeVersions(tags.map(tag => tag.replace(/^v/, "")));
+export function selectedVersions(tags, baselineVersion, schemaAt, { full = false, published = null } = {}) {
+  // A tag whose release never reached npm (its publish stopped) is no version anyone can upgrade from.
+  const versions = upgradeVersions(tags.map(tag => tag.replace(/^v/, "")).filter(version => published === null || published.includes(version)));
   if (full) return versions;
   const baseline = versions.find(version => schemaAt(`v${version}`) === baselineVersion);
   if (!baseline) throw Error(`No release tag has baseline schema v${baselineVersion}`);
@@ -126,8 +127,9 @@ function versionsFor(candidate) {
     try {
       const git = (...argv) => execFileSync("git", ["-C", candidate, ...argv], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
       const baseline = Number(/BASELINE_SCHEMA_VERSION\s*=\s*(\d+)/.exec(readFileSync(join(candidate, "src/store-baseline.ts"), "utf8"))?.[1]);
+      const published = JSON.parse(must(sh("npm", ["view", "toolroll", "versions", "--json"]), "npm view toolroll versions"));
       return selectedVersions(git("tag", "--merged", "HEAD", "--list", "v*").trim().split("\n"), baseline,
-        tag => historicalSchema(candidate, tag));
+        tag => historicalSchema(candidate, tag), { published });
     } catch (error) { console.log(`Upgrade selection unreadable; checking every published release: ${error.message}`); }
   }
   return upgradeVersions(JSON.parse(must(sh("npm", ["view", "toolroll", "versions", "--json"]), "npm view toolroll versions")));

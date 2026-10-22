@@ -6,6 +6,8 @@
 0.9.65 is the first published release with everything listed under 0.9.64
 below, plus:
 
+- **The release check's upgrade test** skips a tagged release that never
+  reached npm, instead of failing to install it.
 - **A Linux build's network bridge always fits a socket path.** When the
   plane's own folder is too deep for one, the bridge goes in the system temp
   folder, which a confined Linux build never sees (its `/tmp` is its own).
