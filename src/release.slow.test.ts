@@ -90,7 +90,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
       busy: async () => ({ running: s.running, tasks: [] }),
       recoverDeploy: async () => ({ ok: true }),
       deploy: async () => {
-        s.commits.set(NEW, s.gate.candidate!);
+        // The deployer stamps the runtime with the commit the passing build recorded (deploy-browser.mjs).
+        s.commits.set(NEW, s.gate.result?.head ?? s.gate.candidate!);
         // The deployer swaps the service; the CLI names are the release's link step.
         s.installed = { ...s.installed, services: [NEW] };
         landed("deploy");
@@ -243,6 +244,26 @@ describe("toolroll release", () => {
       else state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" };
     }];
     for (let i = 0; i < 2; i += 1) expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
+    expect(s.calls).toEqual(["fileGate"]);
+  });
+
+  test("a prepared candidate built as a commit of its own with exactly the candidate's files releases, and deploys to that commit", async () => {
+    const dir = stateDir();
+    const { s, adapters } = world();
+    const BUILT = "e".repeat(40);
+    s.trees.set(BUILT, TREE);
+    s.onSleep.push(state => { if (state.gate.result) state.gate.result.head = BUILT; });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(s.commits.get(NEW)).toBe(BUILT);
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "done", check: { head: BUILT }, merge: { tree: TREE } });
+  });
+
+  test("a build whose commit holds other files than the candidate's never deploys", async () => {
+    const { s, adapters } = world();
+    const BUILT = "e".repeat(40);
+    s.trees.set(BUILT, OTHER);
+    s.onSleep.push(state => { if (state.gate.result) state.gate.result.head = BUILT; });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "check", reason: "drift", message: expect.stringContaining("doesn't hold exactly") });
     expect(s.calls).toEqual(["fileGate"]);
   });
 

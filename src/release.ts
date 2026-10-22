@@ -143,7 +143,9 @@ export type ReleaseJournal = {
   step: ReleaseStep;
   task: { id: string; scopeDigest: string | null };
   approval: { by: string; at: string } | null;
-  check: { run: number; receipt: string; worktree: string } | null;
+  /** The passing result: its run, receipt and checkout, and the commit it built (`head`), which a prepared candidate
+   * records as a commit of its own with exactly the candidate's tree (absent in a journal from before that was known). */
+  check: { run: number; receipt: string; worktree: string; head?: string } | null;
   completion: { actor: string; at: string } | null;
   deploy: { runtime: string; at: string } | null;
   /** Saved before launching deploy, so a killed coordinator can recover that exact attempt first. */
@@ -311,9 +313,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (gate.result?.level !== "full") throw new Stop("check-level", `A Full check is required for this release (run ${gate.result?.run ?? "unknown"}: ${gate.result?.level ?? "unknown"}). Quick and Off checks cannot release a build.`);
       if (gate.result.check !== "passed") throw new Stop("check-failed", `The Full release check of ${j.candidate.sha.slice(0, 7)} did not pass (run ${gate.result.run}: ${gate.result.check}). It stays as it is: fix the branch and release the new commit with --new.`);
     };
+    /** The commit the passing build recorded: what the deployed runtime is stamped with. */
+    const builtHead = () => j.check?.head ?? j.candidate.sha;
     const checked = (gate: GateState) => {
       approved(gate);
-      if (gate.result?.head !== j.candidate.sha || gate.result?.receipt !== j.check?.receipt) throw new Stop("drift", `Task ${j.task.id}'s result changed since its check passed.`);
+      if (gate.result?.head !== builtHead() || gate.result?.receipt !== j.check?.receipt) throw new Stop("drift", `Task ${j.task.id}'s result changed since its check passed.`);
       fullCheck(gate);
     };
 
@@ -360,10 +364,15 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             approved(gate);
             if (gate.failed !== null) throw new Stop("check-failed", `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`);
             if (gate.result === null || gate.result.check === "running" || gate.result.check === "pending") return null;
-            if (gate.result.head !== j.candidate.sha) throw new Stop("drift", `The release result is for ${gate.result.head?.slice(0, 7) ?? "no commit"}, not ${j.candidate.sha.slice(0, 7)}.`);
+            // The build records a prepared candidate as a commit of its own (its message names the task): it must hold
+            // exactly the candidate's tree, or it isn't the release.
+            const head = gate.result.head;
+            if (head === null || (head !== j.candidate.sha && await adapters.repo.tree(head) !== await adapters.repo.tree(j.candidate.sha))) {
+              throw new Stop("drift", `The release result is for ${head?.slice(0, 7) ?? "no commit"}, which doesn't hold exactly ${j.candidate.sha.slice(0, 7)}'s files.`);
+            }
             fullCheck(gate);
             if (gate.result.worktree === null) throw new Stop("worktree", `Run ${gate.result.run} names no checkout to deploy from.`);
-            return { run: gate.result.run, receipt: gate.result.receipt, worktree: gate.result.worktree };
+            return { run: gate.result.run, receipt: gate.result.receipt, worktree: gate.result.worktree, head };
           });
           j.check = result;
           say(`  run ${result.run} passed on ${j.candidate.sha.slice(0, 7)}`);
@@ -398,7 +407,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await recoverDeploy();
           checked(await adapters.toolroll.gate(j.task.id));
           // A deployment that finished but whose answer was lost: the services already run a runtime of this commit.
-          let runtime = await served(adapters, j.candidate.sha);
+          let runtime = await served(adapters, builtHead());
           if (runtime === null) {
             await pinned();
             j.deployAttempt = { stage: join(options.stateDir, "staged-upgrades", `browser-${j.candidate.sha.slice(0, 7)}-${randomUUID()}`) };
@@ -412,7 +421,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             save();
           }
           const want = runtime;
-          await waitFor("deploy", `the console and worker to run the gated commit from ${want}`, async () => (await served(adapters, j.candidate.sha)) === want ? true : null);
+          await waitFor("deploy", `the console and worker to run the gated commit from ${want}`, async () => (await served(adapters, builtHead())) === want ? true : null);
           j.deploy = { runtime: want, at: j.deploy?.runtime === want ? j.deploy.at : adapters.now().toISOString() };
           j.deployAttempt = null;
           delete j.intents.deploy;
@@ -422,14 +431,14 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         }
         case "link": {
           const runtime = j.deploy!.runtime;
-          if (await served(adapters, j.candidate.sha) !== runtime) throw new Stop("drift", `The console and worker no longer run ${runtime}; the CLI names were not moved.`);
+          if (await served(adapters, builtHead()) !== runtime) throw new Stop("drift", `The console and worker no longer run ${runtime}; the CLI names were not moved.`);
           if (j.links === undefined || j.links === null) {
             j.links = await adapters.toolroll.cliLinks();
             intend("link");
           }
           try { await adapters.toolroll.switchLinks(j.links, join(runtime, "bin.js"), j.packageVersion); }
           catch (error) { throw new Stop("link", `The CLI names were not moved to ${runtime} (they point where they did): ${(error as Error).message}. The service already runs the new build; rerun to try again.`); }
-          const everywhere = await deployed(adapters, j.candidate.sha);
+          const everywhere = await deployed(adapters, builtHead());
           if (everywhere !== runtime) throw new Stop("mixed-runtime", `After relinking, the console, worker and both CLI names don't all run ${runtime} at ${j.candidate.sha.slice(0, 7)}.`);
           say(`  toolroll and standing-orders run ${join(runtime, "bin.js")}`);
           advance("ci");
