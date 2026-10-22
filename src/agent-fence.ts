@@ -957,9 +957,35 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
     if (socket !== undefined) { try { masks.add(realpathSync(socket)); } catch { /* not there */ } }
   }
   const agent = env["SSH_AUTH_SOCK"];
-  if (agent !== undefined && isAbsolute(agent)) { try { masks.add(realpathSync(agent)); } catch { /* not there */ } }
-  // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
-  void tmp;
+  if (agent !== undefined && isAbsolute(agent)) {
+    try {
+      const socket = realpathSync(agent);
+      masks.add(socket);
+      // The folder an agent makes for its socket (ssh-XXXX in /tmp) too, so a socket it makes next is out of reach.
+      if (inside(socket, real(tmp)) && dirname(socket) !== real(tmp) && !lstatSync(dirname(socket)).isSymbolicLink()) masks.add(dirname(socket));
+    } catch { /* not there */ }
+  }
+  // A build that shares /tmp (a workspace build with an open network) reaches none of the sockets there either: every
+  // socket two levels down (a multiplexer's, an agent's, a display's, an editor's), and the folder that holds it, taken
+  // as it is (never through a link). Toolroll's own launch folders are fenced by name already.
+  if (followLinks) {
+    const socketIn = (folder: string, depth: number): boolean => {
+      let found = false;
+      let entries: string[] = [];
+      try { entries = readdirSync(folder); } catch { return false; }
+      for (const entry of entries) {
+        const path = join(folder, entry);
+        if (RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))) continue;
+        let held;
+        try { held = lstatSync(path); } catch { continue; }
+        if (held.isSocket()) { masks.add(path); found = true; }
+        else if (held.isDirectory() && !held.isSymbolicLink() && depth > 0 && socketIn(path, depth - 1)) { masks.add(path); found = true; }
+      }
+      return found;
+    };
+    socketIn(tmp, 1);
+  }
+
   return [...masks].sort();
 }
 

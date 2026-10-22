@@ -56,3 +56,22 @@ test("a workspace build masks an engine the operator moved (a link in home) and 
     expect(linuxHostSockets(501, home, "/tmp", false, env)).toEqual(expect.arrayContaining([named]));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a workspace build sharing /tmp has every socket there masked, with the folder that holds it", async () => {
+  const { createServer } = await import("node:net");
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "so-tmpsockets-")));
+  const servers: import("node:net").Server[] = [];
+  try {
+    mkdirSync(join(tmp, "tmux-501"));
+    for (const path of [join(tmp, "top.sock"), join(tmp, "tmux-501", "default")]) {
+      const server = createServer();
+      await new Promise<void>(done => server.listen(path, done));
+      servers.push(server);
+    }
+    mkdirSync(join(tmp, "plain"));
+    const masks = linuxHostSockets(501, join(tmp, "nohome"), tmp, true, {});
+    expect(masks).toEqual(expect.arrayContaining([join(tmp, "top.sock"), join(tmp, "tmux-501")]));
+    expect(masks).not.toContain(join(tmp, "plain"));
+    expect(linuxHostSockets(501, join(tmp, "nohome"), tmp, false, {})).not.toContain(join(tmp, "top.sock"));
+  } finally { for (const one of servers) one.close(); rmSync(tmp, { recursive: true, force: true }); }
+});
