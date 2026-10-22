@@ -114,6 +114,17 @@ the release, not a user's build.
 - **Docs** (README, SECURITY.md, docs/guide/security.md) generated from one table in code (`fenceSummary()`), with a
   test that they match.
 
+**Measured before building (2026-10-22, Claude Code 2.1.290, macOS):**
+- A per-run `CLAUDE_CONFIG_DIR` loses the subscription sign-in: Claude keys its keychain item by the config folder
+  ("Claude Code-credentials-<hash>"), and copying the credential would let a build's refresh rotate the operator's
+  token. So Claude keeps its home, narrowed: a full build (edits, Bash, git) runs with **only** the worktree, the run's
+  own temp folder (`TMPDIR` and `CLAUDE_CODE_TMPDIR`, which moves Claude's own working folder out of the shared
+  `/tmp/claude-<uid>`), and its own transcript folder `~/.claude/projects/<worktree as a slug>` writable;
+  `~/.claude.json`, settings, hooks, plugins, `shell-snapshots` (sourced by interactive sessions), other sessions'
+  transcripts, `backups` and `cache` read-only; and `~/.claude/sessions` (live sessions' peer keys) unreadable.
+- Gemini writes `~/.gemini/{projects.json and its temp names, history/, tmp/}`; its `settings.json` (MCP servers)
+  stays read-only.
+
 **Native tests**: Full access can't write `~/.zshrc`, `~/Library/LaunchAgents`, `~/.claude/settings.json` or the repo's
 `.git/config`; a `.gitattributes` clean filter planted by the agent runs fenced (can't read the state folder) when the
 plane commits; a check command can't read the fenced state folder; a tool server configured as `node ./server.js` is
