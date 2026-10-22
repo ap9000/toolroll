@@ -242,3 +242,27 @@ for (const kind of ["never-settles", "never-runs"] as const) {
     await vi.waitFor(() => expect(document.documentElement.classList.contains("so-swap")).toBe(false), { timeout: 3_000 });
   }, 15_000);
 }
+
+test("an update that arrives after its transition was let go applies nothing — never an old fragment over a newer one", async () => {
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  const updates: (() => void)[] = [];
+  (document as unknown as { startViewTransition: unknown }).startViewTransition = (update: () => void) => {
+    updates.push(update);
+    return { finished: new Promise(() => {}) };
+  };
+  page(`<a data-vt="t-1"></a>`, [`<a data-vt="t-1" class="one"></a>`, `<a data-vt="t-1" class="two"></a>`]);
+  let applied = 0;
+  new MutationObserver(records => { applied += records.filter(one => one.addedNodes.length > 0).length; }).observe(region(), { childList: true });
+  change();
+  await vi.waitFor(() => expect(region().querySelector("a")!.className).toBe("one"), { timeout: 3_000 });
+  change();
+  await vi.waitFor(() => expect(region().querySelector("a")!.className).toBe("two"), { timeout: 3_000 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(applied).toBe(2);
+  // The browser runs the first transition's update late: the first fragment must not come back, nor be applied again.
+  updates[0]!();
+  updates[1]!();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(region().querySelector("a")!.className).toBe("two");
+  expect(applied).toBe(2);
+}, 10_000);
