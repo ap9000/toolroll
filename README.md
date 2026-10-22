@@ -595,11 +595,12 @@ profile, login items, `~/.claude` settings and everything else stay as they
 are; Claude's other live sessions aren't even readable. A project whose tools
 must write elsewhere can choose `anywhere` (outside the fence, as before);
 approvals from before this setting keep writing anywhere, as they were approved.
-The build's setup and check commands run in the same fence. The plane's own Git
-on a build's checkout runs hardened (no hooks, fsmonitor or submodules) and
-refuses a checkout whose config names a command (a filter, an external diff);
-a project's tool servers start outside the checkout and are refused if their
-command or a path they're given is something the build wrote.
+The build's setup, check, follow-up and batch commands run in the same fence.
+Toolroll's own Git on a build's checkout runs hardened (no hooks, fsmonitor,
+submodules or signing), reads none of your global Git config but its plain values
+(identity, line endings, a standard git-lfs install), and refuses a checkout
+whose config includes a file or names a command; a project's tool servers can't
+read the checkout and never run a file the build wrote.
 
 **The network.** Each approved scope says what its build may reach: the
 agent's provider, the package registries the project uses (npm, PyPI,

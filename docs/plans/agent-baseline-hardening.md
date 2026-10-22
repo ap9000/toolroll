@@ -246,17 +246,24 @@ Where the build departs from the text above, and why:
   place, not renamed over (residual).
 - **Plane-launched code, by a different route than the plan said.** Rather than running the plane's `git add`/`status`
   inside the fence, the plane's Git on a build's checkout runs teardown's hardening (no hooks, fsmonitor, ext,
-  credential helpers, maintenance; submodules ignored) and refuses a checkout whose local or worktree config names
-  a command. Under `workspace` a build can't write that config at all; under `anywhere` the refusal holds. The
-  operator's own global config (identity, git-lfs) still applies.
-- **Setup, check and observation commands** run in the build's fence (filesystem and writes) with a temp folder of
-  their own (`so-cmd-*`) and the project's caches; their network is unchanged (follow-up: route them through a run
-  proxy too). Batch checks are not yet covered.
-- **Tool servers** start in the operator's home folder, not the checkout, and are refused (as the tool's answer)
-  when their command, a path argument, a flag's value or any text in an argument names the checkout or caches, or
-  is a relative path. Their own network policy is a follow-up.
+  credential helpers, maintenance, signing; submodules ignored), reads **no global or system config** (only values are
+  carried: identity, line endings, ignore and case settings, and git-lfs's filters exactly as git-lfs installs them),
+  and refuses a checkout whose own config includes a file (read without git, then by git's own parser on that file
+  alone; the `.git` pointer read exactly as git does), names a command, or sets any `lfs.*` key but inert ones (here
+  and in a `.lfsconfig`). Judging the operator's command settings one bypass at a time could not be won.
+- **Setup, check, observation, follow-up and batch commands** run in the build's fence (filesystem and writes) with a
+  temp folder of their own (`so-cmd-*`), the project's caches and their check database, under the approval the build
+  runs under (follow-up and batch checks: the project's setting); where nothing can confine them they run only when
+  unconfined agents are allowed. Their network is unchanged (follow-up: route them through a run proxy too).
+- **Tool servers** start in the operator's home folder, can't read the build's checkout or caches at all (and are
+  refused early when their command or arguments name them, or a relative path), and never start unfenced for a fenced
+  build unless unconfined agents are allowed. Their own network policy is a follow-up.
+- **Grants never follow a link** of the user's at or above the folder; on macOS a granted folder itself can't be
+  renamed or replaced. A workspace build reaches no host service socket (container engines, DOCKER_HOST's), whatever
+  its network.
 - **Docs:** README's fence table is `FENCE_SUMMARY` in code (a test holds them equal).
-- Review: three background security reviews during the build (whole common Git dir writable; prefix grant too wide;
+- **Codex: five rounds** (10 findings → 5 open + 1 new → 1 open + 1 new → 1 new → GO at 9bfc8baa), alongside the
+  background security reviews. Review: background security reviews during the build (whole common Git dir writable; prefix grant too wide;
   submodules entered; tool-path parser differential and case folding) — all fixed with tests.
 
 ## Order and shipping
