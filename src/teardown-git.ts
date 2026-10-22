@@ -10,6 +10,7 @@
  * any of them the command never runs. The refusal is a failed git result, so every caller's existing doubt applies and
  * nothing is removed.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
@@ -181,6 +182,11 @@ export function checkoutIncludes(checkout: string): boolean {
     if (!existsSync(path) && path.endsWith("config.worktree")) continue;
     const text = regular(path);
     if (text === null || /^\s*\[\s*include(if)?\b/im.test(text)) return true;
+    // And as git itself parses it, includes not followed (only this one regular file, from a neutral folder, with no
+    // other config read): an include git sees by any spelling is refused.
+    const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+      { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    if (parsed.status !== 0 || parsed.stdout.split("\0").some(name => /^(include\.path|includeif\..*\.path)$/i.test(name))) return true;
   }
   return false;
 }

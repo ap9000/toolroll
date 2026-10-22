@@ -247,3 +247,14 @@ test.each(["gitdir:/x", "gitdir: x\ngitdir: y", "gitdir:  /x", "not a pointer"])
   expect(seen).toEqual([]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test.each(['[include]\n\tpath = /dev/zero', '[Include]\n path=/dev/zero', '[includeIf "gitdir:/"]\n\tpath = /dev/zero', '[core]\n\tbare = false\n[include]path = /dev/zero'])("an include in any spelling git reads is refused before git runs (%#)", async config => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-spell-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  writeFileSync(join(dir, ".git", "config"), `[core]\n\trepositoryformatversion = 0\n${config}\n`);
+  const seen: string[][] = [];
+  const result = await checkoutGit(async (file, args, options) => { seen.push([...args]); return run(file, args, options); })("git", ["status"], { cwd: dir });
+  expect(refusal(result)).toMatch(/includes another file/);
+  expect(seen).toEqual([]);
+  rmSync(dir, { recursive: true, force: true });
+});
