@@ -15,6 +15,12 @@
   or submodules) and refuses a checkout whose config names a command.
 - **Tool servers start outside the checkout** and never run a file the build
   wrote.
+- **A live terminal comes back as its screen.** The server keeps each
+  terminal's screen (a headless xterm), so a page that reconnects gets the
+  screen, its last 5,000 lines and its modes — a full-screen program like
+  Claude Code or Codex redraws whole, never from a raw replay cut mid-sequence.
+- **Terminals draw on the GPU** where the browser allows (falling back when it
+  doesn't), with Unicode 11 widths for emoji and wide characters.
 - **`toolroll release` finishes when GitHub deletes the merged branch
   itself.** A delete that fails because the branch is already gone counts as
   done; one that fails while the branch is still there still stops.
