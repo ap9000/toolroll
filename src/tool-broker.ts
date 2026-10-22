@@ -106,18 +106,26 @@ export function serverEnv(base: NodeJS.ProcessEnv, omit: readonly string[], pass
 export function workspaceBytes(command: string, args: readonly string[], cwd: string | undefined, path: string | undefined, untrusted: readonly string[]): string | null {
   if (untrusted.length === 0) return null;
   const base = cwd ?? process.cwd();
-  const real = (one: string): string => { try { return realpathSync(one); } catch { return resolve(one); } };
+  // Canonical on-disk names, folded where the filesystem ignores case (macOS, Windows), so `/Users/a/CHECKOUT` is the checkout.
+  const fold = process.platform === "darwin" || process.platform === "win32" ? (one: string) => one.toLowerCase() : (one: string) => one;
+  const real = (one: string): string => { try { return fold(realpathSync.native(one)); } catch { return fold(resolve(one)); } };
   const roots = untrusted.map(real);
   const within = (one: string): boolean => { const at = real(one); return roots.some(root => at === root || at.startsWith(`${root}${sep}`)); };
+  // A root's name anywhere in an argument (inline code, a list of paths) counts, however it's spelled.
+  const mentions = (arg: string): boolean => { const text = fold(arg); return roots.some(root => text.includes(root)) || untrusted.some(root => text.includes(fold(root))); };
   const located = command.includes("/") || command.includes(sep) ? resolve(base, command)
     : (path ?? "").split(delimiter).filter(Boolean).map(dir => resolve(base, dir, command)).find(one => { try { accessSync(one, constants.X_OK); return true; } catch { return false; } }) ?? null;
   if (located !== null && within(located)) return located;
   // A relative path once meant "in the checkout" (servers started there): it is refused rather than read elsewhere.
   if (!isAbsolute(command) && (command.includes("/") || command.includes(sep))) return `${command} (a relative path)`;
   for (const arg of args) {
-    if (arg.startsWith("./") || arg.startsWith("../")) return `${arg} (a relative path)`;
-    const candidate = resolve(base, arg);
-    if ((isAbsolute(arg) || existsSync(candidate)) && within(candidate)) return candidate;
+    if (mentions(arg)) return `${arg} (names what this build writes)`;
+    // A flag's value (`--config=x`, `-c=x`) is checked as its own argument.
+    for (const piece of [arg, ...(arg.startsWith("-") && arg.includes("=") ? [arg.slice(arg.indexOf("=") + 1)] : [])]) {
+      if (piece.startsWith("./") || piece.startsWith("../")) return `${piece} (a relative path)`;
+      const candidate = resolve(base, piece);
+      if ((isAbsolute(piece) || existsSync(candidate)) && within(candidate)) return candidate;
+    }
   }
   return null;
 }

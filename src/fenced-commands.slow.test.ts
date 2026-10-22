@@ -4,7 +4,7 @@
  * which their package managers are pointed at.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
@@ -23,7 +23,8 @@ let store: Store;
 let pool: WorktreePool;
 
 beforeEach(async () => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "so-fenced-commands-")));
+  // Outside /tmp, as homes and checkouts are: a Linux command's /tmp is its own, so a world there would be out of sight.
+  dir = realpathSync(mkdtempSync(join(homedir(), ".so-fenced-commands-")));
   state = join(dir, "toolroll");
   mkdirSync(state);
   writeFileSync(join(state, "up-login.txt"), "secret\n");

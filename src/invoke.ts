@@ -1080,7 +1080,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
   };
 }
 
-/** What a build writes that a tool server must never run from: its checkout and its project's caches. */
+/** What a build writes that a tool server must never run from: its checkout and its project's caches. A checkout with
+ * no record never gets this far: its fence refuses the launch (runFence) before any tool server can start. */
 function toolUntrusted(store: Store, workspace: string, keyHome: string | undefined): string[] {
   const row = store.getWorktree(workspace);
   return [workspace, ...(row === null ? [] : [buildCacheFolder(row.repo, keyHome ?? homedir())])];

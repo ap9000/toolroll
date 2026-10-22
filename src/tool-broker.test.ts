@@ -446,10 +446,14 @@ describe("a tool server never runs the build's own bytes (arc 2)", () => {
     const check = (command: string, args: string[], path = "/usr/bin:/bin") => workspaceBytes(command, args, home, path, untrusted);
     expect(check("node", ["./server.js"])).toMatch(/relative path/);
     expect(check("./server.js", [])).toMatch(/relative path/);
-    expect(check("node", [join(checkout, "server.js")])).toBe(join(checkout, "server.js"));
+    expect(check("node", [join(checkout, "server.js")])).toContain(join(checkout, "server.js"));
     expect(check(join(bin, "evil"), [])).toBe(join(bin, "evil"));
     expect(check("evil", [], `${bin}:/usr/bin`)).toBe(join(bin, "evil"));
-    expect(check("node", [join(cache, "x.js")])).toBe(join(cache, "x.js"));
+    expect(check("node", [join(cache, "x.js")])).toContain(join(cache, "x.js"));
+    expect(check("node", [`--require=${join(checkout, "server.js")}`])).toMatch(/names what this build writes/);
+    expect(check("node", ["-e", `require(${JSON.stringify(join(checkout, "server.js"))})`])).toMatch(/names what this build writes/);
+    expect(check("node", ["--import=./x.mjs"])).toMatch(/relative path/);
+    if (process.platform === "darwin") expect(check("node", [join(checkout, "SERVER.JS").toUpperCase()])).not.toBeNull();
     expect(check("sh", ["-c", "echo hi"])).toBeNull();
     expect(check("npx", ["-y", "@modelcontextprotocol/server-everything"])).toBeNull();
     rmSync(root, { recursive: true, force: true });

@@ -8,9 +8,10 @@
  * Codex's profile each enforce it.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { claudeProjectFolder, linuxFenced, NO_GRANTS, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
 import { codexSandbox, git, GIT_ENV, lines, needs, repository, seatbelt, underCodex, underSeatbelt, useScratch } from "./harness.js";
 
@@ -136,7 +137,11 @@ function underBubblewrap(text: string, fence: readonly string[], grants: FenceGr
 }
 
 describe("attack: writing outside the workspace (Linux)", () => {
-  const scratch = useScratch("writes-linux");
+  // Outside /tmp, as homes and checkouts are: a build's /tmp is its own, so a world there would be out of its sight.
+  let dir: string | null = null;
+  beforeEach(() => { dir = realpathSync(mkdtempSync(join(homedir(), ".so-attack-writes-"))); });
+  afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
+  const scratch = () => dir!;
 
   test("a read-only root with the allowlist bound back; its /tmp is its own", async ctx => {
     needs(ctx, bubblewrap());
