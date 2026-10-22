@@ -666,7 +666,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.ledgerChain@176": 1,
     "src/store.ts#Store.ledgerChain@176>recent@1": 2,
     "src/store.ts#Store.recordApprovalVote@171": 2,
-    "src/store.ts#Store.seedPushPairs@1017": 2,
+    "src/store.ts#Store.seedPushPairs@1019": 2,
     "src/store.ts#initializeStore@42": 3,
     "src/telegram-flow.ts#applyFlowReply@16": 3,
     "src/telegram-lead.ts#applyProposalTap@8": 2,

@@ -43,6 +43,7 @@
 import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -324,7 +325,83 @@ function otherRunFolders(folders: RunFolders): string[] {
  * `pool` denies the plane's checkout pools whole and gives this build's own
  * checkout back (CheckoutPool).
  */
-export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence };
+export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist };
+
+export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
+
+/**
+ * The only places a `workspace` build writes: `subpaths`, each a folder (or file) writable whole, and `prefixes`, a file
+ * with the temporary names it is atomically replaced through (a regex prefix on macOS; elsewhere the file alone, when it
+ * exists). Everything else is read-only to the build; its fence's denies and read-only grants still hold inside these.
+ */
+export type WriteAllowlist = { subpaths: string[]; prefixes: string[] };
+
+/** Claude's transcript folder for a working folder: its path with every character but a letter or digit made `-`
+ * (Claude Code's own naming; a name over 200 characters gets a suffix, so it is granted by prefix). */
+export function claudeProjectFolder(home: string, cwd: string): { path: string; byPrefix: boolean } {
+  const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  return slug.length > 200 ? { path: join(home, ".claude", "projects", slug.slice(0, 200)), byPrefix: true } : { path: join(home, ".claude", "projects", slug), byPrefix: false };
+}
+
+/**
+ * What a `workspace` build writes and what it loses (arc 2): its checkout, its checkout's Git data (less the shared
+ * repository's config, hooks and info, which Git runs or reads as commands), its own launch folder (its temp is there),
+ * its project's cache folder, the terminal devices, and only the provider state its CLI must write (measured: Claude's
+ * transcript folder for this checkout; Gemini's history, temp and project list; an ACP agent's own folders). The
+ * folders named here are made first, so the provider never has to make them where it can't. `deny` is what this
+ * provider must not even read (Claude's live sessions' keys).
+ */
+export function writeAllowlist(options: { provider: string; home: string; worktree: string; binding: WorktreeBinding | null; launchFolder: string | null; cache: string | null }): { writes: WriteAllowlist; readOnly: string[]; deny: string[] } {
+  const home = real(options.home);
+  const worktree = real(options.worktree);
+  const subpaths = new Set<string>([worktree]);
+  const prefixes = new Set<string>();
+  const readOnly = new Set<string>();
+  const deny = new Set<string>();
+  const made = (path: string): string => { try { mkdirSync(path, { recursive: true, mode: 0o700 }); } catch { /* granted as named either way */ } return real(path); };
+  if (options.binding !== null) {
+    const common = real(join(options.binding.main, ".git"));
+    subpaths.add(real(options.binding.gitdir));
+    subpaths.add(common);
+    // What Git reads as commands or settings: the shared config (filters, hooks path, fsmonitor), its hooks and its
+    // info (attributes, excludes). Made first, so a build can't be the one to make them.
+    for (const name of ["hooks", "info"]) readOnly.add(made(join(common, name)));
+    readOnly.add(real(join(common, "config")));
+    readOnly.add(join(real(options.binding.gitdir), "config.worktree"));
+  }
+  if (options.launchFolder !== null) subpaths.add(real(options.launchFolder));
+  if (options.cache !== null) subpaths.add(made(options.cache));
+  if (options.provider === "claude") {
+    const folder = claudeProjectFolder(home, worktree);
+    if (folder.byPrefix) { made(dirname(folder.path)); prefixes.add(folder.path); }
+    else subpaths.add(made(folder.path));
+    deny.add(join(home, ".claude", "sessions"));
+  } else if (options.provider === "gemini") {
+    for (const name of ["history", "tmp"]) subpaths.add(made(join(home, ".gemini", name)));
+    prefixes.add(join(home, ".gemini", "projects.json"));
+  } else if (Object.hasOwn(ACP_AGENTS, options.provider)) {
+    for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) subpaths.add(made(join(home, name)));
+  }
+  return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes].sort() }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
+}
+
+/** Where a project's builds keep their package caches: one folder per project (one trust domain), never used by the
+ * plane's own tools, below the user's cache folder. */
+export function buildCacheFolder(repo: string, home: string = homedir(), platform: NodeJS.Platform = process.platform, env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const root = platform === "darwin" ? join(home, "Library", "Caches") : env["XDG_CACHE_HOME"] !== undefined && isAbsolute(env["XDG_CACHE_HOME"]) ? env["XDG_CACHE_HOME"] : join(home, ".cache");
+  return join(root, "toolroll-builds", createHash("sha256").update(real(repo)).digest("hex").slice(0, 16));
+}
+
+/** The environment that points a build's package managers at its project's cache folder, not the user's own. */
+export function buildCacheEnv(folder: string): Record<string, string> {
+  const at = (name: string) => join(folder, name);
+  return {
+    npm_config_cache: at("npm"), npm_config_store_dir: at("pnpm"), YARN_CACHE_FOLDER: at("yarn"), BUN_INSTALL_CACHE_DIR: at("bun"),
+    COREPACK_HOME: at("corepack"), npm_config_devdir: at("node-gyp"), PIP_CACHE_DIR: at("pip"), UV_CACHE_DIR: at("uv"),
+    GOCACHE: at("go-build"), GOMODCACHE: at("go-mod"), CARGO_HOME: at("cargo"), GRADLE_USER_HOME: at("gradle"),
+    DENO_DIR: at("deno"), XDG_CACHE_HOME: at("xdg"),
+  };
+}
 
 /**
  * A launch's network confinement (egress.ts, docs/plans/agent-baseline-hardening.md arc 1). `open`: the network as it
@@ -482,7 +559,12 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   // Codex lets the more specific path win: no read grant inside a pool, but the build's own checkout.
   const pooled = (path: string) => pool !== undefined && pool.deny.some(one => path === one || inside(path, one))
     && !(pool.own !== null && (path === pool.own || inside(path, pool.own)));
-  if (fullAccess) access.set("/", "write");
+  // Full access writes anywhere its fence allows, unless the build writes only its workspace (arc 2): then exactly its
+  // allowlist, in either mode, beside the workspace Codex's own profile gives.
+  // Codex's own workspace profile also writes the shared temp folders; a workspace build starts from its read-only
+  // profile instead, with exactly the allowlist (its checkout among it) written back.
+  if (grants.writes !== undefined) for (const path of grants.writes.subpaths) access.set(real(path), "write");
+  else if (fullAccess) access.set("/", "write");
   for (const path of readOnly) if (!pooled(real(path))) access.set(real(path), "read");
   if (pool !== undefined) {
     const held = codexPool(pool);
@@ -496,7 +578,7 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
     "-c", 'default_permissions="standing-orders"',
-    "-c", 'permissions.standing-orders.extends=":workspace"',
+    "-c", `permissions.standing-orders.extends=${grants.writes === undefined ? '":workspace"' : '":read-only"'}`,
     "-c", `permissions.standing-orders.filesystem={${filesystem.join(",")}}`,
     // Codex's command sandbox can't route through a proxy: its commands reach the network only when the run's sealed
     // network is open (and Full access asked for it), and are offline otherwise.
@@ -624,6 +706,12 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
   return [
     "(version 1)",
     "(allow default)",
+    // A workspace build writes only its allowlist (and the terminal devices); every deny and read-only rule after this
+    // still holds inside it.
+    ...(grants.writes === undefined ? [] : [
+      "(deny file-write*)",
+      `(allow file-write* (subpath "/dev")${grants.writes.subpaths.length === 0 ? "" : ` ${paths("subpath", grants.writes.subpaths)}`}${grants.writes.prefixes.map(path => ` (regex #"^${seatbeltRegex(path)}")`).join("")})`,
+    ]),
     ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
     ...(pool?.own == null ? [] : [
       `(allow file-read* file-write* ${paths("subpath", [pool.own])})`,
@@ -747,10 +835,15 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   ];
   // A confined build gets a /tmp of its own (other programs' sockets, other runs' folders and anything planted there
   // all out of sight at once), with only its own folders there given back; every mask and grant below still applies.
-  const privateTmp = network === null ? [] : ["--tmpfs", "/tmp", ...(network.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
+  // A workspace build (arc 2) sees the whole filesystem read-only, a /dev of its own and a /tmp of its own, with only
+  // its allowlist bound back writable; its own checkout's Git data is in that list.
+  const writes = grants.writes;
+  const root = writes === undefined ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev", "/dev"];
+  const writable = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes].filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]);
+  const privateTmp = network === null && writes === undefined ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...privateTmp, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container

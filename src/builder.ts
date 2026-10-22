@@ -1,4 +1,5 @@
 import { legacyNetwork, repositoryEcosystems } from "./egress.js";
+import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
 import type { ProviderId } from "./contracts/provider.js";
 import { isAcpProvider } from "./acp-agents.js";
@@ -469,6 +470,12 @@ export function launchNetworkOf(store: Store, taskRef: number, profile: Executio
   if (profile.network !== undefined) return { policy: profile.network };
   const repo = store.refForId(taskRef)?.repo ?? null;
   return { policy: legacyNetwork(profile.provider, repo === null ? [] : repositoryEcosystems(repo)) };
+}
+
+/** Where a build may write (writes-mode.ts): what its approval sealed, or — sealed before write allowlists — anywhere
+ * its fence allows, as it was approved. */
+export function launchWritesOf(profile: ExecutionProfile): WritesMode {
+  return profile.writes ?? "anywhere";
 }
 
 export function proveApprovedProfile(
@@ -1564,6 +1571,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
+        writes: launchWritesOf(effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -2997,6 +3005,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
+        writes: launchWritesOf(effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3240,7 +3249,7 @@ async function ingestPark(args: {
           ? watchdogsOf(args.profile, args.profile.repairTimeoutSeconds * 1000, true)
           : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
-        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile) }),
+        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile) }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
