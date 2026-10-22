@@ -293,10 +293,14 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     `var generation=0;` +
     `function swap(t){var calm=!window.matchMedia||matchMedia("(prefers-reduced-motion: reduce)").matches;` +
     `if(!animate||calm||document.hidden||typeof document.startViewTransition!=="function"){apply(t);return Promise.resolve();}` +
-    `var root=document.documentElement;var mine=++generation;var applied=false;nameAll();root.classList.add("so-swap");` +
-    `var end=function(){if(!applied)apply(t);if(mine!==generation)return;root.classList.remove("so-swap");region.querySelectorAll("[data-vt]").forEach(function(e){e.style.removeProperty("view-transition-name");});};` +
-    `var vt;try{vt=document.startViewTransition(function(){applied=true;apply(t);nameAll();});}catch(e){end();return Promise.resolve();}` +
-    `return Promise.resolve(vt.finished).then(end,end);}` +
+    // Bounded: a transition that never settles (or never runs its update) is let go after 1.5 s — the fragment is
+    // applied exactly once either way, so the board can never stop refreshing behind an animation.
+    `var root=document.documentElement;var mine=++generation;var applied=false;var settled=false;nameAll();root.classList.add("so-swap");` +
+    `var once=function(){if(applied)return false;applied=true;apply(t);return true;};` +
+    `var end=function(){if(settled)return;settled=true;once();if(mine!==generation)return;root.classList.remove("so-swap");region.querySelectorAll("[data-vt]").forEach(function(e){e.style.removeProperty("view-transition-name");});};` +
+    `var vt;try{vt=document.startViewTransition(function(){if(once())nameAll();});}catch(e){end();return Promise.resolve();}` +
+    `return new Promise(function(done){var timer=setTimeout(function(){end();done();},1500);` +
+    `var fin=function(){clearTimeout(timer);end();done();};try{Promise.resolve(vt&&vt.finished).then(fin,fin);}catch(e){fin();}});}` +
     `function refresh(){if(stopped)return;if(busy){again=true;return;}busy=true;again=false;` +
     `var q=location.search?location.search+"&fragment="+${JSON.stringify(fragmentName)}:"?fragment="+${JSON.stringify(fragmentName)};` +
     `fetch(${target},{redirect:"manual",cache:"no-store"})` +

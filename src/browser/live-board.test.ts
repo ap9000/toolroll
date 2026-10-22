@@ -200,3 +200,45 @@ test("a focused worker link keeps focus through a swap — not the lane card wit
   await vi.waitFor(() => expect(region().querySelector("a.worker-job")!.textContent).toBe("w2"));
   expect(document.activeElement).toBe(region().querySelector("a.worker-job"));
 });
+
+/** A transition that misbehaves in one of the ways a browser (or a polyfill) might. */
+function misbehaving(kind: "rejects" | "throws" | "no-update" | "never-settles" | "never-runs") {
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  const calls: number[] = [];
+  (document as unknown as { startViewTransition: unknown }).startViewTransition = (update: () => void) => {
+    calls.push(1);
+    if (kind === "throws") throw new Error("no");
+    if (kind === "rejects") { setTimeout(update, 0); return { finished: Promise.reject(new Error("skipped")) }; }
+    if (kind === "no-update") return { finished: Promise.resolve() };
+    if (kind === "never-settles") { setTimeout(update, 0); return { finished: new Promise(() => {}) }; }
+    return { finished: new Promise(() => {}) };
+  };
+  return calls;
+}
+
+for (const kind of ["rejects", "throws", "no-update"] as const) {
+  test(`a transition that ${kind === "no-update" ? "never runs its update but settles" : kind} still applies the fragment once and lets the next refresh through`, async () => {
+    misbehaving(kind);
+    const fetched = page(`<a data-vt="t-1"></a>`, [`<a data-vt="t-1" class="one"></a>`, `<a data-vt="t-1" class="two"></a>`]);
+    change();
+    await vi.waitFor(() => expect(region().querySelector("a")!.className).toBe("one"));
+    change();
+    await vi.waitFor(() => expect(region().querySelector("a")!.className).toBe("two"));
+    expect(fetched).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(document.documentElement.classList.contains("so-swap")).toBe(false));
+    expect(region().querySelectorAll("a")).toHaveLength(1);
+  });
+}
+
+for (const kind of ["never-settles", "never-runs"] as const) {
+  test(`a transition that ${kind === "never-runs" ? "never runs its update nor settles" : "never settles"} is let go: the board keeps refreshing`, async () => {
+    misbehaving(kind);
+    const fetched = page(`<a data-vt="t-1"></a>`, [`<a data-vt="t-1" class="one"></a>`, `<a data-vt="t-1" class="two"></a>`]);
+    change();
+    await vi.waitFor(() => expect(region().querySelector("a")!.className).toBe("one"), { timeout: 3_000 });
+    change();
+    await vi.waitFor(() => expect(region().querySelector("a")!.className).toBe("two"), { timeout: 5_000 });
+    expect(fetched).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(document.documentElement.classList.contains("so-swap")).toBe(false), { timeout: 3_000 });
+  }, 15_000);
+}
