@@ -459,3 +459,15 @@ describe("a tool server never runs the build's own bytes (arc 2)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+test("a server that may not start unwrapped answers with why, and nothing starts", async () => {
+  const marker = join(realpathSync(mkdtempSync(join(tmpdir(), "so-broker-unwrapped-"))), "ran");
+  const spec = { name: "probe", transport: "stdio", command: "/bin/sh", args: ["-c", `touch ${marker}`], secrets: [] } as unknown as ToolSpec;
+  const broker = await startToolBroker([{ spec, values: {} }], { wrap: () => null, unwrapped: () => "No fence for it here." });
+  try {
+    const answer = await fetch(broker.url("probe"), { method: "POST", headers: { authorization: `Bearer ${broker.token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) });
+    expect(await answer.text()).toContain("No fence for it here.");
+    expect(existsSync(marker)).toBe(false);
+  } finally { await broker.close(); }
+});

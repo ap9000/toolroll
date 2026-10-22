@@ -66,6 +66,8 @@ export function relativeCommandSetting(listing: string): string | null {
     const newline = entry.indexOf("\n");
     if (newline < 0) continue;
     const key = entry.slice(0, newline).toLowerCase();
+    // An include names a config file, read relative to the file that includes it: not a command.
+    if (key === "include.path" || key.startsWith("includeif.")) continue;
     if (key === "core.fsmonitor" ? BOOLEAN.test(entry.slice(newline + 1).trim()) : !COMMAND_KEYS.some(pattern => pattern.test(key))) continue;
     if (runsCheckoutFiles(entry.slice(newline + 1))) return key;
   }
@@ -74,7 +76,7 @@ export function relativeCommandSetting(listing: string): string | null {
 
 /** Programs that run a script or a recipe named by their arguments (or found in the working folder): a setting run by
  * one of them, from a checkout, can run the build's own files. */
-const RUNNERS = new Set(["sh", "bash", "zsh", "dash", "fish", "env", "node", "deno", "bun", "python", "python3", "ruby", "perl", "php", "npx", "npm",
+const RUNNERS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "env", "exec", "eval", "source", "node", "nodejs", "deno", "bun", "python", "ruby", "perl", "php", "lua", "osascript", "npx", "npm",
   "pnpm", "yarn", "make", "just", "task", "rake", "cargo", "go", "uv", "uvx", "pipx", "poetry"]);
 
 /**
@@ -83,9 +85,9 @@ const RUNNERS = new Set(["sh", "bash", "zsh", "dash", "fish", "env", "node", "de
  * An absolute or bare program with plain arguments (`git-lfs clean -- %f`) doesn't.
  */
 export function runsCheckoutFiles(value: string): boolean {
-  const tokens = value.trim().replace(/^!/, "").split(/[\s'"`;|&()]+/).filter(Boolean);
-  const program = (tokens[0] ?? "").split("/").pop() ?? "";
-  if (RUNNERS.has(program)) return true;
+  const tokens = value.trim().replace(/^!/, "").split(/[\s'"`;|&()<>{}$]+/).filter(Boolean);
+  // Any word that names a runner, wherever it stands (`true; sh x`) and however it's versioned (`python3.12`).
+  if (tokens.some(token => RUNNERS.has((token.split("/").pop() ?? "").replace(/[\d.]+$/, "")))) return true;
   return tokens.some(token => {
     const path = token.replace(/^--?[\w-]+=/, "");
     return path.startsWith("./") || path.startsWith("../") || (path.includes("/") && !path.startsWith("/") && !path.startsWith("~") && !/^[a-z]+:\/\//i.test(path));

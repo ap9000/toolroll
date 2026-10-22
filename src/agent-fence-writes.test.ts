@@ -1,10 +1,10 @@
 /** The Linux fence's arguments for a workspace build (agent-fence.ts linuxFenced): what /tmp gives back is read-only,
  * the allowlist is bound writable after it, and the host's own services are masked whatever the network. */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { linuxFenced, linuxHostSockets, NO_GRANTS, type FenceGrants } from "./agent-fence.js";
+import { grantFolder, linuxFenced, linuxHostSockets, NO_GRANTS, type FenceGrants } from "./agent-fence.js";
 
 test("a workspace build's private /tmp gives its kept paths back read-only, then its allowlist writable", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-args-")));
@@ -30,4 +30,28 @@ test("a workspace build with an open network still has the host's own sockets ma
   for (const path of sockets) expect(args.join("\0")).toContain(path);
   const anywhere = linuxFenced("true", [], [], { ...NO_GRANTS, network: { mode: "open" } }).args;
   expect(anywhere.slice(0, 3)).toEqual(["--dev-bind", "/", "/"]);
+});
+
+test("a grant is never made through a link of this user's, at the folder or anywhere above it", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-grant-")));
+  try {
+    const target = join(dir, "LaunchAgents");
+    mkdirSync(target);
+    symlinkSync(target, join(dir, "linked"));
+    expect(grantFolder(join(dir, "linked"))).toBeNull();
+    expect(grantFolder(join(dir, "linked", "cache"))).toBeNull();
+    expect(grantFolder(join(dir, "real", "cache"))).toBe(join(dir, "real", "cache"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a workspace build masks an engine the operator moved (a link in home) and one the environment names", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-engines-")));
+  try {
+    const home = join(dir, "home"), moved = join(dir, "elsewhere", "docker"), named = join(dir, "custom.sock");
+    mkdirSync(home); mkdirSync(moved, { recursive: true }); mkdirSync(named);
+    symlinkSync(moved, join(home, ".docker"));
+    const env = { DOCKER_HOST: `unix://${named}` };
+    expect(linuxHostSockets(501, home, "/tmp", true, env)).toEqual(expect.arrayContaining([moved, named]));
+    expect(linuxHostSockets(501, home, "/tmp", false, env)).not.toEqual(expect.arrayContaining([moved]));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

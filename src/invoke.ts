@@ -411,6 +411,8 @@ export async function invokeAgent(
   // The project's tools (v80): exactly its MCP servers, and none of the
   // operator's global or a repository's own, served by this launch's broker
   // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
+  // Set once the fence is known: a fenced build's servers never start outside a fence.
+  let serverMustBeFenced = false;
   // What the build writes (its checkout, its project's caches): a tool server never runs from there, nor reads it at all.
   const serverUntrusted = workspace === null ? [] : toolUntrusted(store, workspace, keyHome);
   const launchTools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
@@ -421,6 +423,9 @@ export async function invokeAgent(
     cwd: keyHome ?? homedir(),
     untrusted: serverUntrusted,
     wrap: () => serverFence,
+    // A fenced build's tool servers start only in a fence too, unless an instance operator allowed unconfined agents.
+    unwrapped: () => serverMustBeFenced && !store.unfencedAgentsAllowed()
+      ? "This machine can't confine the tool's server (no macOS sandbox, no working bubblewrap), so it was not started." : null,
   });
   if (launchTools !== null && "refused" in launchTools) {
     removeAgentDatabase(isolatedDb.dir);
@@ -492,6 +497,7 @@ export async function invokeAgent(
     const serverDenies = [...fence, ...serverUntrusted.filter(path => existsSync(path)).map(path => realpathSync(path))];
     if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, serverDenies, serverGrants());
     else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, serverDenies, serverGrants());
+    serverMustBeFenced = true;
   }
   // No silent fallback (arc 1): a build this machine can't confine at the OS — Claude reduced to its own file-tool
   // rules, Gemini to nothing — doesn't start unless the instance operator allowed unconfined agents here. An injected

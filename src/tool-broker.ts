@@ -39,6 +39,8 @@ export type BrokerOptions = {
   /** Folders the build writes (its checkout, its caches): a server whose command, or a path it's given, resolves inside
    * one is never started, since it would run the build's own bytes outside the build's limits. */
   untrusted?: readonly string[];
+  /** Why a local server may not start unwrapped (no fence for it here), read when it would; null when it may. */
+  unwrapped?: () => string | null;
   /** How a local server is started inside its run's fence, read when it starts (the fence is fixed after the tools). */
   wrap?: () => ((file: string, args: readonly string[]) => { file: string; args: string[] }) | null;
 };
@@ -148,6 +150,10 @@ class LocalServer {
     const planted = workspaceBytes(this.tool.spec.command!, this.tool.spec.args, this.options.cwd, env["PATH"], this.options.untrusted ?? []);
     if (planted !== null) { this.refusal = `The tool's server would run ${planted}, inside what this build can write, so it was not started.`; return null; }
     const wrap = this.options.wrap?.() ?? null;
+    if (wrap === null) {
+      const why = this.options.unwrapped?.() ?? null;
+      if (why !== null) { this.refusal = why; return null; }
+    }
     const { file, args } = wrap === null ? { file: this.tool.spec.command!, args: [...this.tool.spec.args] } : wrap(this.tool.spec.command!, this.tool.spec.args);
     const child = spawn(file, args, { env, ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }), stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32" });
     this.child = child;

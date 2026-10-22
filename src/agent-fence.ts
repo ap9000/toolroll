@@ -356,6 +356,12 @@ export function grantFolder(path: string, create = true): string | null {
   try {
     const held = lstatSync(path);
     if (held.isSymbolicLink() || !held.isDirectory()) return null;
+    // Nor through a link of this user's anywhere above it (a system alias, /var → /private/var, is root's and fine).
+    const uid = process.getuid?.();
+    for (let folder = dirname(resolve(path)); folder !== dirname(folder); folder = dirname(folder)) {
+      const above = lstatSync(folder);
+      if (above.isSymbolicLink() && (uid === undefined || above.uid === uid)) return null;
+    }
     const at = realpathSync(path);
     return at === join(realpathSync(dirname(path)), basename(path)) ? at : null;
   } catch {
@@ -895,7 +901,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
   const isolated = network === null ? [] : [
     "--unshare-net", "--unshare-pid", "--proc", "/proc",
-    ...linuxHostSockets().flatMap(mask),
+    ...linuxHostSockets(undefined, undefined, undefined, grants.writes !== undefined).flatMap(mask),
     "--ro-bind", network.bridge!.folder, network.bridge!.folder,
   ];
   // A confined build gets a /tmp of its own (other programs' sockets, other runs' folders and anything planted there
@@ -910,7 +916,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const privateTmp = network === null && writes === undefined ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => [writes === undefined ? "--bind" : "--ro-bind", path, path])];
   // A workspace build never reaches the host's own services either (a container engine would write anywhere for it),
   // whatever its network: confined networks mask them below already.
-  const services = writes === undefined || network !== null ? [] : linuxHostSockets().flatMap(mask);
+  const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
   return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...services, ...isolated, "--die-with-parent", "--", ...command] };
@@ -918,7 +924,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
  * engines), wherever they exist here. */
-export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp"): string[] {
+export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp", followLinks = false, env: Readonly<Record<string, string | undefined>> = process.env): string[] {
   // The system's own, root-owned: resolved (/var/run is a link to /run) so bubblewrap mounts over the real path, once.
   const system = [
     ...(uid === undefined ? [] : [`/run/user/${uid}`]), "/run/dbus", "/var/run/dbus", "/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/podman",
@@ -936,7 +942,17 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
   const owned = (path: string): boolean => {
     try { const held = lstatSync(path); return !held.isSymbolicLink() && (held.isDirectory() || held.isSocket()); } catch { return false; }
   };
-  for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) if (owned(path)) masks.add(path);
+  for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) {
+    if (owned(path)) masks.add(path);
+    // A workspace build can't plant a link in the home folder, so a link there is the operator's own: its target is
+    // masked too (an engine moved elsewhere).
+    else if (followLinks) { try { if (lstatSync(path).isSymbolicLink()) masks.add(realpathSync(path)); } catch { /* dangling */ } }
+  }
+  // An engine the environment points at, wherever it is.
+  for (const name of ["DOCKER_HOST", "CONTAINER_HOST"]) {
+    const socket = /^unix:\/\/(\/.+)$/.exec(env[name] ?? "")?.[1];
+    if (followLinks && socket !== undefined) { try { masks.add(realpathSync(socket)); } catch { /* not there */ } }
+  }
   // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
   void tmp;
   return [...masks].sort();

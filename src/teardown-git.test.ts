@@ -186,7 +186,23 @@ test("a global filter whose command is a relative path (the checkout's own file)
 test.each([
   ["./tools/filter.sh", true], ["tools/filter.sh", true], ["node tools/x.js", true], ["sh -c 'fmt'", true], ["make fmt", true],
   ["npx prettier --stdin", true], ["/usr/bin/env python3 x.py", true], ["foo --config=./x", true],
+  ["true; sh filter.sh", true], ["/usr/bin/python3.12 filter.py", true], ["exec bash", true],
   ["git-lfs clean -- %f", false], ["git-lfs filter-process", false], ["/opt/homebrew/bin/delta", false], ["less -R", false],
 ])("a global setting %j can run the checkout's files: %s", (value, runs) => {
   expect(runsCheckoutFiles(value)).toBe(runs);
+});
+
+test("a global include (a config file, not a command) never blocks the plane's git", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-include-"));
+  const global = join(dir, "global.gitconfig");
+  mkdirSync(join(dir, "git"));
+  writeFileSync(join(dir, "git", "common.inc"), "[core]\n\tautocrlf = false\n");
+  writeFileSync(global, "[include]\n\tpath = git/common.inc\n");
+  const repoDir = join(dir, "r");
+  mkdirSync(repoDir);
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: global };
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoDir, env });
+  writeFileSync(join(repoDir, "a.txt"), "a\n");
+  expect((await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env })).code).toBe(0);
+  rmSync(dir, { recursive: true, force: true });
 });
