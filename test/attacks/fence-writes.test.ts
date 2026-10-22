@@ -49,6 +49,9 @@ function script(w: World, shared: string): string {
     `echo '[core]' >> ${w.main}/.git/config 2>/dev/null || echo git-config-refused`,
     `touch ${w.main}/.git/hooks/post-checkout 2>/dev/null || echo git-hooks-refused`,
     `echo '* filter=evil' > ${w.main}/.git/info/attributes 2>/dev/null || echo git-info-refused`,
+    `mkdir -p ${w.main}/.git/modules/evil 2>/dev/null || echo git-modules-refused`,
+    `echo /elsewhere > ${w.main}/.git/objects/info/alternates 2>/dev/null || echo git-alternates-refused`,
+    `touch ${w.main}/.git/worktrees/other 2>/dev/null || echo git-worktrees-refused`,
     `cat ${w.home}/.claude/sessions/peer.json >/dev/null 2>&1 || echo sessions-refused`,
     `touch ${shared} 2>/dev/null || echo shared-temp-refused`,
     `echo work > ${w.worktree}/feature.txt && echo worktree-ok`,
@@ -59,7 +62,8 @@ function script(w: World, shared: string): string {
   ].join("\n");
 }
 
-const REFUSED = ["zshrc-refused", "launchagent-refused", "claude-settings-refused", "git-config-refused", "git-hooks-refused", "git-info-refused"];
+const REFUSED = ["zshrc-refused", "launchagent-refused", "claude-settings-refused", "git-config-refused", "git-hooks-refused", "git-info-refused",
+  "git-modules-refused", "git-alternates-refused", "git-worktrees-refused"];
 const ALLOWED = ["worktree-ok", "commit-ok", "temp-ok", "cache-ok", "devnull-ok"];
 
 /** The operator's files are exactly as they were. */

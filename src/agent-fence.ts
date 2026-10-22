@@ -44,7 +44,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -331,16 +331,35 @@ export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js"
 
 /**
  * The only places a `workspace` build writes: `subpaths`, each a folder (or file) writable whole, and `prefixes`, a file
- * with the temporary names it is atomically replaced through (a regex prefix on macOS; elsewhere the file alone, when it
- * exists). Everything else is read-only to the build; its fence's denies and read-only grants still hold inside these.
+ * with the temporary names it is atomically replaced through, or a folder named by a pattern (a regex on macOS;
+ * elsewhere the path alone, when it exists). Everything else is read-only to the build; its fence's denies and read-only grants still hold inside these.
  */
-export type WriteAllowlist = { subpaths: string[]; prefixes: string[] };
+export type WriteAllowlist = { subpaths: string[]; prefixes: WritePrefix[] };
+/** A file or folder named by `path` followed by what `suffix` (a regular expression, anchored at its end) allows. */
+export type WritePrefix = { path: string; suffix: string };
 
 /** Claude's transcript folder for a working folder: its path with every character but a letter or digit made `-`
  * (Claude Code's own naming; a name over 200 characters gets a suffix, so it is granted by prefix). */
 export function claudeProjectFolder(home: string, cwd: string): { path: string; byPrefix: boolean } {
   const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   return slug.length > 200 ? { path: join(home, ".claude", "projects", slug.slice(0, 200)), byPrefix: true } : { path: join(home, ".claude", "projects", slug), byPrefix: false };
+}
+
+/** The suffix Claude Code gives a transcript folder whose name it shortened: `-` and a hash, nothing else. */
+const CLAUDE_SHORTENED = "-[a-z0-9]+(/|$)";
+/** A file and the temporary names it is replaced through (`name.tmp-1`, `name.json.12345`), never a folder below it. */
+const ATOMIC_NAMES = "([.~][^/]*)?$";
+
+/** The parts of a repository's shared Git data a commit in a worktree writes: objects, refs and their logs (and the
+ * packed refs). Its config, hooks, info, other worktrees' data and submodules' are never among them. */
+function commitGitData(common: string): { subpaths: string[]; prefixes: WritePrefix[]; readOnly: string[] } {
+  const made = (path: string): string => { try { mkdirSync(path, { recursive: true }); } catch { /* granted as named */ } return real(path); };
+  return {
+    subpaths: ["objects", "refs", "logs"].map(name => made(join(common, name))),
+    prefixes: [{ path: join(common, "packed-refs"), suffix: ATOMIC_NAMES }],
+    // Alternates there would let objects come from anywhere.
+    readOnly: [made(join(common, "objects", "info"))],
+  };
 }
 
 /**
@@ -355,34 +374,39 @@ export function writeAllowlist(options: { provider: string; home: string; worktr
   const home = real(options.home);
   const worktree = real(options.worktree);
   const subpaths = new Set<string>([worktree]);
-  const prefixes = new Set<string>();
+  const prefixes = new Map<string, WritePrefix>();
   const readOnly = new Set<string>();
   const deny = new Set<string>();
   const made = (path: string): string => { try { mkdirSync(path, { recursive: true, mode: 0o700 }); } catch { /* granted as named either way */ } return real(path); };
   if (options.binding !== null) {
     const common = real(join(options.binding.main, ".git"));
-    subpaths.add(real(options.binding.gitdir));
-    subpaths.add(common);
-    // What Git reads as commands or settings: the shared config (filters, hooks path, fsmonitor), its hooks and its
-    // info (attributes, excludes). Made first, so a build can't be the one to make them.
-    for (const name of ["hooks", "info"]) readOnly.add(made(join(common, name)));
-    readOnly.add(real(join(common, "config")));
-    readOnly.add(join(real(options.binding.gitdir), "config.worktree"));
+    const gitdir = real(options.binding.gitdir);
+    subpaths.add(gitdir);
+    // The shared Git data a commit writes, and nothing Git reads as commands or settings: the shared config (filters,
+    // hooks path, fsmonitor), hooks, info (attributes, excludes), other worktrees' data and submodules' stay as they are.
+    const data = commitGitData(common);
+    for (const path of data.subpaths) subpaths.add(path);
+    for (const one of data.prefixes) prefixes.set(`${one.path}\0${one.suffix}`, one);
+    for (const path of data.readOnly) readOnly.add(path);
+    // This worktree's own settings file, present (empty) so it is held read-only everywhere, a bind included.
+    const own = join(gitdir, "config.worktree");
+    try { if (!existsSync(own)) writeFileSync(own, "", { mode: 0o644, flag: "wx" }); } catch { /* held read-only by name */ }
+    readOnly.add(own);
   }
   if (options.launchFolder !== null) subpaths.add(real(options.launchFolder));
   if (options.cache !== null) subpaths.add(made(options.cache));
   if (options.provider === "claude") {
     const folder = claudeProjectFolder(home, worktree);
-    if (folder.byPrefix) { made(dirname(folder.path)); prefixes.add(folder.path); }
+    if (folder.byPrefix) { made(dirname(folder.path)); prefixes.set(folder.path, { path: folder.path, suffix: CLAUDE_SHORTENED }); }
     else subpaths.add(made(folder.path));
     deny.add(join(home, ".claude", "sessions"));
   } else if (options.provider === "gemini") {
     for (const name of ["history", "tmp"]) subpaths.add(made(join(home, ".gemini", name)));
-    prefixes.add(join(home, ".gemini", "projects.json"));
+    prefixes.set("gemini", { path: join(home, ".gemini", "projects.json"), suffix: ATOMIC_NAMES });
   } else if (Object.hasOwn(ACP_AGENTS, options.provider)) {
     for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) subpaths.add(made(join(home, name)));
   }
-  return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes].sort() }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
+  return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes.values()].sort((a, b) => a.path.localeCompare(b.path)) }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
 }
 
 /** Where a project's builds keep their package caches: one folder per project (one trust domain), never used by the
@@ -710,7 +734,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     // still holds inside it.
     ...(grants.writes === undefined ? [] : [
       "(deny file-write*)",
-      `(allow file-write* (subpath "/dev")${grants.writes.subpaths.length === 0 ? "" : ` ${paths("subpath", grants.writes.subpaths)}`}${grants.writes.prefixes.map(path => ` (regex #"^${seatbeltRegex(path)}")`).join("")})`,
+      `(allow file-write* (subpath "/dev")${grants.writes.subpaths.length === 0 ? "" : ` ${paths("subpath", grants.writes.subpaths)}`}${grants.writes.prefixes.map(one => ` (regex #"^${seatbeltRegex(one.path)}${one.suffix}")`).join("")})`,
     ]),
     ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
     ...(pool?.own == null ? [] : [
@@ -839,7 +863,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // its allowlist bound back writable; its own checkout's Git data is in that list.
   const writes = grants.writes;
   const root = writes === undefined ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev", "/dev"];
-  const writable = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes].filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]);
+  const writable = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes.map(one => one.path)].filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]);
   const privateTmp = network === null && writes === undefined ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];

@@ -132,6 +132,7 @@ import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from
 import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
+import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
@@ -424,6 +425,10 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]
                                         what the project's builds may reach on the network; an approver changes it
                                         (new scopes seal it; approved ones keep theirs)
+  toolroll project writes --repo <p> [workspace|anywhere]
+                                        where the project's builds may write: only their checkout, caches and temp
+                                        (workspace, the default), or anywhere outside Toolroll's fenced folders;
+                                        an approver changes it (new scopes seal it; approved ones keep theirs)
   toolroll config unconfined-agents [allow|refuse]
                                         whether builds run where this machine can't confine them (instance operator)
   toolroll project concurrency [<n>] --repo <p>
@@ -1415,6 +1420,7 @@ async function dispatch(
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
       if (positional[0] === "network") return projectNetworkCommand(positional, flags, context);
+      if (positional[0] === "writes") return projectWritesCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
@@ -12061,6 +12067,40 @@ async function projectNetworkCommand(positional: readonly string[], flags: Map<s
   return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after }, () => [
     ...words(changed.after),
     "Scopes written from now on use this; scopes already approved keep the network they were approved with.",
+  ]);
+}
+
+/**
+ * `project writes --repo <p> [workspace|anywhere]`: where the project's builds may write (writes-mode.ts). `workspace`:
+ * only their checkout and its Git data, their caches, their temp folder and the provider state their CLI needs;
+ * `anywhere`: anywhere outside Toolroll's fenced folders. New scopes seal it; approved ones keep theirs. Changing it is
+ * an approver's act with a password typed now, kept in the ledger as before → after.
+ */
+async function projectWritesCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project writes";
+  const allowed = new Set(["repo", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project writes option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = positional[1];
+  if (positional.length > 2 || repoFlag === undefined || (wanted !== undefined && !isWritesMode(wanted))) {
+    return fail(context.write, context.json, command, "usage", "Use project writes --repo <project path> [workspace | anywhere].", EXIT.usage);
+  }
+  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
+  const known = [...new Set([...context.store.knownRepos(), ...context.store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])];
+  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const words = (one: WritesMode): string[] => [`${repo}: builds write ${writesWords(one)}.`];
+  const current = context.store.projectWrites(repo);
+  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, writes: current }, () => words(current));
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project changes where its builds may write, with their password: pass --as and --token.", EXIT.refused);
+  }
+  const changed = context.store.setProjectWrites(repo, wanted, acting.name, context.clock());
+  return succeed(context.write, context.json, command, { repo, before: changed.before, writes: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep what they were approved with.",
   ]);
 }
 
