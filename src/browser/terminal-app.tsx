@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { createRoot } from "react-dom/client";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import "./terminal.css";
 
@@ -48,7 +50,7 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
   useEffect(() => {
     const term = new Terminal({
       fontFamily: '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: window.matchMedia("(max-width: 720px)").matches ? 12 : 13,
-      cursorBlink: true, allowProposedApi: false, scrollback: 5000, macOptionIsMeta: true,
+      cursorBlink: true, allowProposedApi: true, scrollback: 5000, macOptionIsMeta: true,
       theme: { background: "#0C0E12", foreground: "#E6E8EC", cursor: "#E6E8EC", selectionBackground: "#2A3140",
         black: "#14171D", brightBlack: "#5B6372", blue: "#5B9DFF", brightBlue: "#8AB8FF", green: "#3FB97F", brightGreen: "#6BD9A2",
         red: "#F06464", brightRed: "#FF8F8F", yellow: "#F5A524", brightYellow: "#FFC266", cyan: "#4FC4CF", brightCyan: "#7FDDE5",
@@ -56,7 +58,18 @@ function TerminalPane({ session, onLink, keys }: { session: Session; onLink: (li
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Emoji and wide characters measured as current terminals measure them (Unicode 11 widths).
+    const unicode = new Unicode11Addon();
+    term.loadAddon(unicode);
+    term.unicode.activeVersion = "11";
     term.open(box.current!);
+    // Drawn on the GPU where the browser allows it; a lost context (a backgrounded phone tab) falls back to the DOM.
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => { webgl?.dispose(); webgl = null; });
+      term.loadAddon(webgl);
+    } catch { webgl = null; }
     let socket: WebSocket | null = null;
     let stopped = false, ended = false, retry = 0, timer: number | undefined, busyTimer: number | undefined;
     const send = (frame: object) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame)); };

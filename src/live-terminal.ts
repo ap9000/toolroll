@@ -22,8 +22,6 @@ export const MAX_LIVE_TERMINALS = 8;
 export const MAX_KEPT_TERMINALS = 16;
 /** At most this many pages attached to one session (a desktop, a phone, a spare tab or two). */
 export const MAX_VIEWERS = 4;
-/** Raw output kept per session for a page that attaches later. */
-export const SCROLLBACK_BYTES = 1024 * 1024;
 /** After SIGHUP, the terminal's processes have this long before SIGKILL. */
 export const CLOSE_GRACE_MS = 2_000;
 /** Typed input not yet read by the program, per terminal: past this, more is refused until it reads. */
@@ -89,24 +87,41 @@ export function loadPtySpawn(): PtySpawn | null {
   }
 }
 
-/** Raw output, oldest dropped first, never more than `cap` bytes. */
-export class Scrollback {
-  private chunks: Buffer[] = [];
-  private size = 0;
-  constructor(private readonly cap = SCROLLBACK_BYTES) {}
-  push(chunk: Buffer): void {
-    if (chunk.length >= this.cap) { this.chunks = [chunk.subarray(chunk.length - this.cap)]; this.size = this.cap; return; }
-    this.chunks.push(chunk);
-    this.size += chunk.length;
-    while (this.size > this.cap) {
-      const first = this.chunks[0]!;
-      const over = this.size - this.cap;
-      if (first.length <= over) { this.chunks.shift(); this.size -= first.length; }
-      else { this.chunks[0] = first.subarray(over); this.size -= over; }
-    }
+/** How many lines above the screen a terminal keeps for a page that attaches later. */
+export const SCREEN_SCROLLBACK_LINES = 5000;
+
+type HeadlessTerminal = {
+  write(data: string, callback?: () => void): void;
+  resize(cols: number, rows: number): void;
+  loadAddon(addon: unknown): void;
+  dispose(): void;
+};
+type Serializer = { serialize(options?: { scrollback?: number }): string };
+const require = createRequire(import.meta.url);
+
+/**
+ * The terminal as a page would see it now: every byte the program writes is parsed by a headless xterm here, so a page
+ * that attaches later gets the screen, its scrollback and its modes (the alternate screen of a full-screen program, the
+ * cursor, colours, bracketed paste, mouse reporting) — never a replay of raw output cut at an arbitrary byte, which
+ * could split an escape sequence or redraw a full-screen program garbled.
+ */
+export class ScreenMirror {
+  private readonly terminal: HeadlessTerminal;
+  private readonly serializer: Serializer;
+  constructor(cols: number, rows: number, private readonly lines = SCREEN_SCROLLBACK_LINES) {
+    const { Terminal } = require("@xterm/headless") as { Terminal: new (options: Record<string, unknown>) => HeadlessTerminal };
+    const { SerializeAddon } = require("@xterm/addon-serialize") as { SerializeAddon: new () => Serializer };
+    this.terminal = new Terminal({ cols, rows, scrollback: lines, allowProposedApi: true });
+    this.serializer = new SerializeAddon();
+    this.terminal.loadAddon(this.serializer);
   }
-  bytes(): Buffer { return Buffer.concat(this.chunks, this.size); }
-  get length(): number { return this.size; }
+  write(data: string): void { this.terminal.write(data); }
+  resize(cols: number, rows: number): void { try { this.terminal.resize(cols, rows); } catch { /* sizes are clamped before this */ } }
+  /** The screen as of this call (after everything written before it), handed to `done` once parsed. */
+  snapshot(done: (screen: string) => void): void {
+    this.terminal.write("", () => { let screen = ""; try { screen = this.serializer.serialize({ scrollback: this.lines }); } catch { screen = ""; } done(screen); });
+  }
+  dispose(): void { try { this.terminal.dispose(); } catch { /* already */ } }
 }
 
 /** One attached page. The host never waits on it. */
@@ -157,7 +172,8 @@ type Session = TerminalSummary & {
   residentsSeen: Map<number, string>;
   cols: number;
   rows: number;
-  scrollback: Scrollback;
+  /** What a page that attaches later is shown (ScreenMirror). */
+  screen: ScreenMirror;
   viewers: Set<TerminalViewer>;
   closing: Promise<void> | null;
   exited: Promise<void>;
@@ -194,7 +210,8 @@ export type TerminalHostOptions = {
   /** Start, close and remove, for the event log (never input or output). */
   record?: (event: "start" | "close" | "remove" | "exit", session: TerminalSummary) => void;
   maxSessions?: number;
-  scrollbackBytes?: number;
+  /** Lines above the screen a terminal keeps for a page that attaches later (SCREEN_SCROLLBACK_LINES). */
+  scrollbackLines?: number;
   closeGraceMs?: number;
   ledger?: TerminalLedger;
   /** The process table (tests stand a failing one in); null when it can't be read. */
@@ -315,7 +332,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, scrollback: new Scrollback(this.options.scrollbackBytes), viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -324,7 +341,7 @@ export class TerminalHost {
       pty.onData(data => {
         this.noteSoon();
         const chunk = Buffer.from(data, "utf8");
-        session.scrollback.push(chunk);
+        session.screen.write(data);
         for (const viewer of session.viewers) { try { viewer.output(chunk); } catch { /* the viewer's own close handles it */ } }
       });
       pty.onExit(({ exitCode, signal }) => {
@@ -346,17 +363,33 @@ export class TerminalHost {
     }
   }
 
-  /** Attach a page: it gets the scrollback, then `hello`, then live output. Returns its detach. */
+  /**
+   * Attach a page: it gets the screen as it is now (ScreenMirror), then `hello`, then live output — what the program
+   * writes meanwhile is held and sent after the screen, in order. Returns its detach.
+   */
   attach(id: string, viewer: TerminalViewer): () => void {
     const session = this.sessions.get(id);
     if (session === undefined) throw new TerminalError("No such terminal.");
     if (session.viewers.size >= MAX_VIEWERS) throw new TerminalError(`This terminal is open in ${MAX_VIEWERS} places already. Close one of them.`);
-    const replay = session.scrollback.bytes();
-    if (replay.length > 0) viewer.output(replay);
-    viewer.control({ t: "hello", cols: session.cols, rows: session.rows, program: session.program, ended: session.endedAt !== null });
-    if (session.exit !== null) viewer.control({ t: "exit", code: session.exit.code, signal: session.exit.signal });
-    session.viewers.add(viewer);
-    return () => { session.viewers.delete(viewer); };
+    const held: ({ output: Buffer } | { control: TerminalControl })[] = [];
+    let live = false;
+    const gate: TerminalViewer = {
+      output: data => { if (live) viewer.output(data); else held.push({ output: data }); },
+      control: message => { if (live) viewer.control(message); else held.push({ control: message }); },
+    };
+    session.viewers.add(gate);
+    session.screen.snapshot(screen => {
+      if (!session.viewers.has(gate)) return;
+      try {
+        if (screen !== "") viewer.output(Buffer.from(screen, "utf8"));
+        viewer.control({ t: "hello", cols: session.cols, rows: session.rows, program: session.program, ended: session.endedAt !== null });
+        if (session.exit !== null && !held.some(one => "control" in one && one.control.t === "exit")) viewer.control({ t: "exit", code: session.exit.code, signal: session.exit.signal });
+        for (const one of held) { if ("output" in one) viewer.output(one.output); else viewer.control(one.control); }
+      } catch { /* the viewer's own close handles it */ }
+      held.length = 0;
+      live = true;
+    });
+    return () => { session.viewers.delete(gate); };
   }
 
   /** How many pages are attached now. */
@@ -378,6 +411,7 @@ export class TerminalHost {
     session.cols = clamp(cols, COLS);
     session.rows = clamp(rows, ROWS);
     try { session.pty.resize(session.cols, session.rows); } catch { /* it exited between */ }
+    session.screen.resize(session.cols, session.rows);
   }
 
   private noteTimer: NodeJS.Timeout | null = null;
@@ -499,6 +533,7 @@ export class TerminalHost {
     this.ledger.forget(id);
     for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit?.code ?? null, signal: session.exit?.signal ?? null }); } catch { /* gone */ } }
     session.viewers.clear();
+    session.screen.dispose();
     const result = await (this.options.git ?? teardownGit())(session.repo, ["worktree", "remove", "--force", "--", session.worktree]);
     this.options.record?.("remove", this.summary(session));
     if (result.code !== 0 && existsSync(session.worktree)) {

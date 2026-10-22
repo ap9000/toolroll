@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, Scrollback, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 
 const ALEX = { name: "alex", generation: 1 };
 let spawn: PtySpawn | null = null;
@@ -28,14 +28,17 @@ describe("frames", () => {
   });
 });
 
-describe("scrollback", () => {
-  test("keeps the newest bytes under its cap", () => {
-    const ring = new Scrollback(10);
-    ring.push(Buffer.from("abcdef"));
-    ring.push(Buffer.from("ghijkl"));
-    expect(ring.bytes().toString()).toBe("cdefghijkl");
-    ring.push(Buffer.from("0123456789XY"));
-    expect(ring.bytes().toString()).toBe("23456789XY");
+describe("the screen a later page gets", () => {
+  test("is the screen and its kept lines, with an escape sequence written in pieces whole", async () => {
+    const mirror = new ScreenMirror(20, 3, 10);
+    for (let n = 0; n < 30; n += 1) mirror.write(`row-${n}\r\n`);
+    mirror.write("\u001b[3");
+    mirror.write("1mred\u001b[0m");
+    const screen = await new Promise<string>(done => mirror.snapshot(done));
+    expect(screen).toContain("row-29");
+    expect(screen).not.toContain("row-5\r");
+    expect(screen).toContain("\u001b[31mred");
+    mirror.dispose();
   });
 });
 
@@ -70,13 +73,14 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(execFileSync("git", ["-C", started.worktree, "branch", "--show-current"]).toString().trim()).toBe(started.branch);
     const { seen, viewer } = watcher();
     host.attach(started.id, viewer);
+    await until(() => seen.controls.length > 0);
     expect(seen.controls[0]).toMatchObject({ t: "hello", program: "claude", ended: false });
     host.input(started.id, "hello there\r");
     await until(() => seen.out.includes("hello there"));
     expect(events).toEqual(["start:claude"]);
   });
 
-  test("a page that attaches later gets the scrollback first", async () => {
+  test("a page that attaches later gets the screen first, then hello", async () => {
     const started = await host.start(ALEX, repo, "shell");
     host.input(started.id, "echo mark-$((6*7))\n");
     const first = watcher();
@@ -84,8 +88,27 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     await until(() => first.seen.out.includes("mark-42"));
     const late = watcher();
     host.attach(started.id, late.viewer);
+    await until(() => late.seen.controls.length > 0);
     expect(late.seen.out).toContain("mark-42");
     expect(late.seen.controls[0]?.t).toBe("hello");
+  });
+
+  test("a full-screen program comes back as its screen: alternate screen and modes, nothing cut mid-sequence", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const first = watcher();
+    host.attach(started.id, first.viewer);
+    // Lots of history, then a full-screen program's alternate screen with bracketed paste on.
+    host.input(started.id, "i=0; while [ $i -lt 3000 ]; do echo history-line-$i; i=$((i+1)); done; printf '\\033[?1049h\\033[2J\\033[Hfull-screen-app\\033[?2004h'\n");
+    await until(() => first.seen.out.includes("full-screen-app"), 10_000);
+    const late = watcher();
+    host.attach(started.id, late.viewer);
+    await until(() => late.seen.controls.length > 0);
+    expect(late.seen.out).toContain("\u001b[?1049h");
+    expect(late.seen.out).toContain("full-screen-app");
+    expect(late.seen.out).toContain("\u001b[?2004h");
+    expect(late.seen.out).toContain("history-line-2999");
+    // Never a raw megabyte: the screen and its kept lines only.
+    expect(late.seen.out.length).toBeLessThan(first.seen.out.length);
   });
 
   test("close ends the whole process group, and says so", async () => {
