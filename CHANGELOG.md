@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.66 — 2026-10-22
 
 - **The board is live to watch.** A strip of workers sits above the lanes:
   what each is building on this board, its stage and a running clock (or
