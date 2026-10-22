@@ -258,3 +258,15 @@ test.each(['[include]\n\tpath = /dev/zero', '[Include]\n path=/dev/zero', '[incl
   expect(seen).toEqual([]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a git-lfs extension in the checkout's config or its .lfsconfig is refused before git runs", async () => {
+  for (const where of ["config", "lfsconfig"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "so-checkout-lfs-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+    if (where === "config") execFileSync("git", ["config", "lfs.extension.evil.clean", "sh payload.sh"], { cwd: dir });
+    else writeFileSync(join(dir, ".lfsconfig"), "[lfs \"extension.evil\"]\n\tclean = sh payload.sh\n");
+    const result = await checkoutGit()("git", ["add", "-A"], { cwd: dir });
+    expect(refusal(result), where).toMatch(/lfs/);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
