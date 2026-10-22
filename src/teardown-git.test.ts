@@ -270,3 +270,15 @@ test("a git-lfs extension in the checkout's config or its .lfsconfig is refused 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test.each([
+  ["lfs.customtransfer.evil.path", "sh", true], ["lfs.standalonetransferagent", "evil", true], ["lfs.https://x.standalonetransferagent", "evil", true],
+  ["lfs.extension.evil.clean", "sh p.sh", true], ["lfs.url", "https://lfs.example.com", false], ["lfs.fetchinclude", "assets/*", false],
+])("the checkout's own %s is refused only when it could name a program", async (key, value, refusedOne) => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-lfskeys-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  execFileSync("git", ["config", key, value], { cwd: dir });
+  const result = await checkoutGit()("git", ["status", "--porcelain"], { cwd: dir });
+  expect(refusal(result) !== null).toBe(refusedOne);
+  rmSync(dir, { recursive: true, force: true });
+});

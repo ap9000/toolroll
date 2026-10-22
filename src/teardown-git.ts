@@ -36,9 +36,12 @@ const COMMAND_KEYS: readonly RegExp[] = [
   "core.worktree", "gpg.ssh.defaultkeycommand", "trailer.*.command", "trailer.*.cmd", "submodule.*.update", "sequence.editor", "diff.external", "credential.helper", "credential.*.helper", "filter.*.clean", "filter.*.smudge", "filter.*.process",
   "diff.*.command", "diff.*.textconv", "merge.*.driver", "gpg.program", "gpg.*.program", "uploadpack.packobjectshook",
   "remote.*.uploadpack", "remote.*.receivepack", "remote.*.vcs", "pager.*", "include.path", "includeif.*.path",
-  // git-lfs runs an extension's clean and smudge commands from its own filter.
-  "lfs.extension.*.clean", "lfs.extension.*.smudge", "lfs.extension.*.priority",
 ].map(key => new RegExp(`^${key.replace(/\./g, "\\.").replace(/\*/g, ".+")}$`));
+/** git-lfs settings that name no program (where it fetches, what, whether it checks locks, how it signs in); any other
+ * `lfs.*` key in a checkout's own config could (extensions, custom and standalone transfer agents), so it's refused. */
+const INERT_LFS = /^lfs\.(url|pushurl|fetchinclude|fetchexclude|locksverify|repositoryformatversion|.+\.access|.+\.locksverify|setlockablereadonly|skipdownloaderrors|concurrenttransfers)$/;
+const lfsCommand = (key: string): boolean => key.startsWith("lfs.") && !INERT_LFS.test(key);
+
 /** core.fsmonitor as a boolean is git's own daemon; anything else is a command to run. */
 const BOOLEAN = /^(|true|false|yes|no|on|off|-?\d+)$/i;
 
@@ -53,7 +56,7 @@ export function commandSetting(listing: string): string | null {
     const newline = entry.indexOf("\n");
     const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
     const value = newline < 0 ? "" : entry.slice(newline + 1);
-    if (key === "core.fsmonitor" ? !BOOLEAN.test(value.trim()) : COMMAND_KEYS.some(pattern => pattern.test(key))) return key;
+    if (key === "core.fsmonitor" ? !BOOLEAN.test(value.trim()) : COMMAND_KEYS.some(pattern => pattern.test(key)) || lfsCommand(key)) return key;
   }
   return null;
 }
@@ -193,14 +196,15 @@ export function checkoutIncludes(checkout: string): boolean {
   return false;
 }
 
-/** Whether the checkout's .lfsconfig (read as git parses it, that file only) names a git-lfs extension. A file that
+/** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
+ * program (anything but INERT_LFS). A file that
  * isn't a plain one, or doesn't parse, counts as naming one. */
 export function lfsExtensionIn(checkout: string): boolean {
   const path = join(checkout, ".lfsconfig");
   try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
   const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
     { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
-  return parsed.status !== 0 || parsed.stdout.split("\0").some(name => /^lfs\.extension\./i.test(name) || /^include(if)?\./i.test(name));
+  return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name.toLowerCase()) || /^include(if)?\./i.test(name));
 }
 
 export function checkoutGit(inner: Runner = run): Runner {
@@ -209,7 +213,7 @@ export function checkoutGit(inner: Runner = run): Runner {
     const cwd = options?.cwd;
     if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
     // git-lfs also reads .lfsconfig from the checkout: one that names an extension (a command it would run) is refused.
-    if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig names a git-lfs extension, which can run a command");
+    if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
     // The checkout's own config may name no command.
     const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], options);
     if (own.code !== 0) return refused("its config couldn't be read");
