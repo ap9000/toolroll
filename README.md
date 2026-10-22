@@ -581,8 +581,25 @@ and launch tools remain available.
 
 | | Auto | Full access |
 |---|---|---|
-| **Codex / OpenRouter** (any OS) | Codex's workspace sandbox (workspace writes, no network) with the fence | Codex's sandbox widened to write anywhere, with the fence; its commands reach the network only when the project's network is open |
-| **Claude, Gemini, ACP agents** | macOS: the agent runs inside a Seatbelt sandbox that denies the fence. Linux: inside bubblewrap. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents | same |
+| **Codex / OpenRouter** (any OS) | Codex's sandbox with the fence: writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same writes, with the fence; its commands reach the network only when the project's network is open |
+| **Claude, Gemini, ACP agents** | macOS: inside a Seatbelt sandbox that denies the fence and writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files. Linux: the same in bubblewrap, with a /tmp of its own. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents | same |
+
+**Where a build writes.** Each approved scope also seals where its build may
+write. By default (Settings → Project → **Where builds write**, or `toolroll
+project writes --repo <p> workspace`) a build writes only its checkout, its
+checkout's commit data (never the repository's Git config, hooks or info, other
+checkouts' data or submodules), the project's own package caches (npm, pnpm,
+yarn, pip, uv, Go, Cargo, Gradle: its package managers are pointed there), the
+run's temp folder, and the session files its agent CLI must keep. Your shell
+profile, login items, `~/.claude` settings and everything else stay as they
+are; Claude's other live sessions aren't even readable. A project whose tools
+must write elsewhere can choose `anywhere` (outside the fence, as before);
+approvals from before this setting keep writing anywhere, as they were approved.
+The build's setup and check commands run in the same fence. The plane's own Git
+on a build's checkout runs hardened (no hooks, fsmonitor or submodules) and
+refuses a checkout whose config names a command (a filter, an external diff);
+a project's tool servers start outside the checkout and are refused if their
+command or a path they're given is something the build wrote.
 
 **The network.** Each approved scope says what its build may reach: the
 agent's provider, the package registries the project uses (npm, PyPI,

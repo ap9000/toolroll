@@ -895,3 +895,25 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
   void tmp;
   return [...masks].sort();
 }
+
+/**
+ * What each agent's fence gives it, by permission mode: the one table README's "What an agent can reach" shows
+ * (fenceSummaryMarkdown; a test holds them equal).
+ */
+export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string }[] = [
+  {
+    agent: "**Codex / OpenRouter** (any OS)",
+    auto: "Codex's sandbox with the fence: writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network",
+    full: "the same writes, with the fence; its commands reach the network only when the project's network is open",
+  },
+  {
+    agent: "**Claude, Gemini, ACP agents**",
+    auto: "macOS: inside a Seatbelt sandbox that denies the fence and writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files. Linux: the same in bubblewrap, with a /tmp of its own. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents",
+    full: "same",
+  },
+];
+
+/** FENCE_SUMMARY as README's markdown table. */
+export function fenceSummaryMarkdown(): string {
+  return ["| | Auto | Full access |", "|---|---|---|", ...FENCE_SUMMARY.map(row => `| ${row.agent} | ${row.auto} | ${row.full} |`)].join("\n");
+}

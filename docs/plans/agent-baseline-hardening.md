@@ -224,6 +224,39 @@ Where the build departs from the text above, and why:
 - Natively proved: macOS (Seatbelt) and Linux (Ubuntu 26.04, bubblewrap 0.11) attack tests, and a real Claude build
   whose eight connections all went to api.anthropic.com through its proxy (its Datadog telemetry refused).
 
+## Arc 2 as built (2026-10-22)
+
+- **A setting, not a mandate.** Where builds write is per project and sealed per approval like the network:
+  `workspace` (the default for new scopes) or `anywhere` (outside the fence, as before). Approvals sealed before
+  write allowlists keep `anywhere`, as they were approved. Settings → Project → Where builds write, `project writes`.
+- **Claude keeps its home, narrowed** (measured): writable are its checkout, the run's temp (`TMPDIR`,
+  `CLAUDE_CODE_TMPDIR`) and its transcript folder for this checkout (by exact name; a shortened name only with
+  Claude's `-<hash>` suffix); `~/.claude/sessions` is unreadable. Gemini: history, tmp, and projects.json with its
+  atomic-rename names. ACP agents: their own folders whole (narrowing them is a follow-up). Proved with a real Claude
+  build: edit, commit, and a refused `~/.zshrc` append.
+- **Git data: only what a commit writes.** objects, refs, logs and packed refs of the shared repository plus the
+  worktree's own folder; never config, hooks, info, `objects/info` (alternates), other worktrees' data or modules.
+  The worktree's `config.worktree` is made empty and held read-only (so a Linux bind exists).
+- **Codex:** a workspace build's profile extends `:read-only` with the allowlist written back (its `:workspace` also
+  writes the shared temp folders, which an explicit read entry doesn't override).
+- **Linux:** a read-only root, a /dev and /tmp of its own, the allowlist bound back. Proved in Ubuntu 26.04
+  (bubblewrap 0.11). A file granted by prefix is bound only when it exists, so Gemini's projects.json is written in
+  place, not renamed over (residual).
+- **Plane-launched code, by a different route than the plan said.** Rather than running the plane's `git add`/`status`
+  inside the fence, the plane's Git on a build's checkout runs teardown's hardening (no hooks, fsmonitor, ext,
+  credential helpers, maintenance; submodules ignored) and refuses a checkout whose local or worktree config names
+  a command. Under `workspace` a build can't write that config at all; under `anywhere` the refusal holds. The
+  operator's own global config (identity, git-lfs) still applies.
+- **Setup, check and observation commands** run in the build's fence (filesystem and writes) with a temp folder of
+  their own (`so-cmd-*`) and the project's caches; their network is unchanged (follow-up: route them through a run
+  proxy too). Batch checks are not yet covered.
+- **Tool servers** start in the operator's home folder, not the checkout, and are refused (as the tool's answer)
+  when their command, a path argument, a flag's value or any text in an argument names the checkout or caches, or
+  is a relative path. Their own network policy is a follow-up.
+- **Docs:** README's fence table is `FENCE_SUMMARY` in code (a test holds them equal).
+- Review: three background security reviews during the build (whole common Git dir writable; prefix grant too wide;
+  submodules entered; tool-path parser differential and case folding) — all fixed with tests.
+
 ## Order and shipping
 
 Arc 1 → 5. Each: build → full unit + slow + scripted journeys + the native adversarial tests above → one Codex review →
