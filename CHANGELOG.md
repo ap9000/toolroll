@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.64 — 2026-10-22
+
+**Upgrading:** builds now reach only the network their approval allows
+(below). On a Mac, a project whose tests start a local server needs
+**Settings → Project → Network → local services** turned on. A machine with
+no OS sandbox (Windows, Linux without bubblewrap) no longer runs builds
+unless an instance operator allows it (`toolroll config unconfined-agents`).
+
+- **Builds reach only their approved network.** Each approved task seals
+  what its build may reach: the agent's provider, the package registries
+  the project uses, and hosts you add in **Settings → Project → Network**
+  (or `toolroll project network`). The OS sandbox refuses everything else,
+  name lookups included; a result's **Network** row shows what the build
+  connected to and what was refused.
+- **Agents you can watch.** A light cockpit with each task's agent lanes,
+  the live conversation in time order, and real terminals for running
+  builds.
+- **ACP agents.** OpenCode, Cursor, Cline, Qwen and Goose can build, each
+  checked on this machine before it takes work.
+- **Passwordless mode.** Signing in is the only password; credential
+  changes still ask for it.
+- **One page per task and agent**, with Activity, Result and Plan tabs and
+  one ⋯ menu.
+- **Lead sweeps.** One card and one yes start many isolated tasks, tracked
+  in one table.
+- **The lead queue.** Messages sent while the lead answers wait their turn.
+- **Lead tools on demand**, with prompt caching: smaller, cheaper turns.
+- **How it ran.** Every result shows time, turns, tokens and cache use.
+- **Signed webhooks become tasks.**
+- **Phone keyboard.** Chat and text boxes stay above it; Return writes a
+  new line on a phone.
+- **A calmer UI**: one button style, theme tokens, status glyphs and a Crew
+  rail.
+- **Release check** sizes itself to the machine; deploys keep hidden table
+  ids and find dependencies behind macOS's temp-folder link.
+
 ## 0.9.63 — 2026-10-13
 
 - **Scheduled flows run on their own.** Sign a flow once with limits
