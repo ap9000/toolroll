@@ -1891,9 +1891,9 @@
     font-family: var(--font-mono); font-size: .6875rem; color: var(--running); font-variant-numeric: tabular-nums;
   }
   .lane-card .live-line .clock { color: var(--muted-foreground); }
-  /* The build's steps — set up, writing, checking, committing: four quiet
+  /* The build's steps — set up, writing, checking and committing: three quiet
      ticks, the current one in the running hue. A stage, never a percent. */
-  .lane-card .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .1875rem; margin-top: .5rem; }
+  .lane-card .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .1875rem; margin-top: .5rem; }
   .lane-card .steps i { height: .1875rem; border-radius: 999px; background: var(--border); }
   .lane-card .steps i.on { background: color-mix(in srgb, var(--running) 45%, var(--border)); }
   .lane-card .steps i.now { background: var(--running); }

@@ -248,7 +248,7 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     `function keep(){var data={lanes:[],focus:null,pager:-1,fold:{}};` +
     `region.querySelectorAll("details.lane").forEach(function(d){var k=laneKey(d);if(k)data.fold[k]=d.open;});` +
     `var act=document.activeElement;` +
-    `if(act&&region.contains(act)&&act.matches&&act.matches("a.row, a.lane-card"))data.focus=act.getAttribute("href");` +
+    `if(act&&region.contains(act)&&act.matches&&act.matches("a.row, a.lane-card, a.worker-job")){data.focus=act.getAttribute("href");data.focusKind=act.matches("a.worker-job")?"a.worker-job":"a.row, a.lane-card";}` +
     `var board=region.querySelector(".board");` +
     `if(board&&board.scrollLeft>0){var lanes=board.querySelectorAll(".lane");` +
     `var bc=board.getBoundingClientRect();var mid=bc.left+bc.width/2;var best=-1,bd=1e9;` +
@@ -272,7 +272,7 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     `if(board){var lanes=board.querySelectorAll(".lane");var at=Math.min(data.pager,lanes.length-1);` +
     `if(at>=0){var br=board.getBoundingClientRect();var lr=lanes[at].getBoundingClientRect();` +
     `board.scrollLeft=board.scrollLeft+(lr.left+lr.width/2)-(br.left+br.width/2);}}}` +
-    `if(data.focus!==null){var links=region.querySelectorAll("a.row, a.lane-card");` +
+    `if(data.focus!==null){var links=region.querySelectorAll(data.focusKind);` +
     `for(var i=0;i<links.length;i++){if(links[i].getAttribute("href")===data.focus){links[i].focus({preventScroll:true});break;}}}}` +
     `function tell(){if(!stamp||stopped)return;var s=Math.round((Date.now()-last)/1000);` +
     `stamp.textContent=failed?"stale — retrying ("+s+"s old)":"updated "+s+"s ago";}` +
@@ -282,23 +282,27 @@ export function regionScript(regionId: string, fragmentName: string, path?: stri
     // (data-flash). Never under reduced motion, in a hidden tab, or where the browser lacks view transitions — there
     // the swap is the plain instant one. Names are set only for the swap and cleared after it.
     `var animate=${options.animate === true ? "true" : "false"};` +
-    `function vtName(v){var h=5381;for(var i=0;i<v.length;i++){h=((h*33)^v.charCodeAt(i))|0;}return "so-c"+(h>>>0).toString(36);}` +
+    // A name spells the whole key in hex — two tasks can never share one, so a card's identity never jumps to another.
+    `function vtName(v){var n="so-c";for(var i=0;i<v.length;i++){n+=("000"+v.charCodeAt(i).toString(16)).slice(-4);}return n;}` +
     `function nameAll(){var seen={};region.querySelectorAll("[data-vt]").forEach(function(e){var n=vtName(e.getAttribute("data-vt"));if(seen[n])return;seen[n]=1;e.style.setProperty("view-transition-name",n);});}` +
     `function flashes(){var m={};region.querySelectorAll("[data-flash]").forEach(function(e){m[e.getAttribute("data-flash")]=e.getAttribute("data-flash-value");});return m;}` +
     `function apply(t){var before=animate?flashes():{};var kept=keep();region.innerHTML=t;restore(kept);` +
     `if(animate)region.querySelectorAll("[data-flash]").forEach(function(e){var k=e.getAttribute("data-flash"),v=e.getAttribute("data-flash-value");if(k in before&&before[k]!==v&&v!=="")e.classList.add("flash");});}` +
+    // The swap resolves when its transition has finished, and the next fetch waits for it (refresh holds busy), so
+    // one transition runs at a time; each cleans up only its own (the generation), never a later one's.
+    `var generation=0;` +
     `function swap(t){var calm=!window.matchMedia||matchMedia("(prefers-reduced-motion: reduce)").matches;` +
-    `if(!animate||calm||document.hidden||typeof document.startViewTransition!=="function"){apply(t);return;}` +
-    `var root=document.documentElement;nameAll();root.classList.add("so-swap");` +
-    `var vt;try{vt=document.startViewTransition(function(){apply(t);nameAll();});}catch(e){root.classList.remove("so-swap");apply(t);return;}` +
-    `var end=function(){root.classList.remove("so-swap");region.querySelectorAll("[data-vt]").forEach(function(e){e.style.removeProperty("view-transition-name");});};` +
-    `vt.finished.then(end,end);}` +
+    `if(!animate||calm||document.hidden||typeof document.startViewTransition!=="function"){apply(t);return Promise.resolve();}` +
+    `var root=document.documentElement;var mine=++generation;var applied=false;nameAll();root.classList.add("so-swap");` +
+    `var end=function(){if(!applied)apply(t);if(mine!==generation)return;root.classList.remove("so-swap");region.querySelectorAll("[data-vt]").forEach(function(e){e.style.removeProperty("view-transition-name");});};` +
+    `var vt;try{vt=document.startViewTransition(function(){applied=true;apply(t);nameAll();});}catch(e){end();return Promise.resolve();}` +
+    `return Promise.resolve(vt.finished).then(end,end);}` +
     `function refresh(){if(stopped)return;if(busy){again=true;return;}busy=true;again=false;` +
     `var q=location.search?location.search+"&fragment="+${JSON.stringify(fragmentName)}:"?fragment="+${JSON.stringify(fragmentName)};` +
     `fetch(${target},{redirect:"manual",cache:"no-store"})` +
     `.then(function(r){if(r.type==="opaqueredirect"||r.status===401||r.status===403){location.href="/login";return null;}` +
     `return r.ok?r.text():null;})` +
-    `.then(function(t){if(t){swap(t);last=Date.now();failed=false;}else{failed=true;}})` +
+    `.then(function(t){if(t){return swap(t).then(function(){last=Date.now();failed=false;});}failed=true;})` +
     `.catch(function(){failed=true;})` +
     // A fragment that marks itself final stops: a finished or abandoned build is not fetched again.
     `.then(function(){busy=false;tell();if(region.querySelector("[data-region-stop]")){stopped=true;if(stamp)stamp.textContent="";return;}if(again)refresh();});}` +
@@ -950,15 +954,16 @@ export function oneLineOf(text: string, cap: number): string {
  * so a skewed device clock cannot run them backwards. The server-rendered
  * minutes are the answer without script.
  */
-export function boardTickScript(): string {
+export function boardTickScript(regionId = "board-region"): string {
   return (
-    `(function(){var seen=null,offset=0;` +
+    `(function(){var seen=null,offset=0;var region=document.getElementById(${JSON.stringify(regionId)});` +
     `function fmt(s){if(s<0)s=0;var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return h>0?h+"h "+(m<10?"0":"")+m+"m":m+":"+(x<10?"0":"")+x;}` +
-    `function run(){var anchor=document.querySelector("[data-now]");var v=anchor?anchor.getAttribute("data-now"):null;` +
+    `function run(){var scope=region||document;var anchor=scope.querySelector("[data-now]");var v=anchor?anchor.getAttribute("data-now"):null;` +
     `if(v!==null&&v!==seen){seen=v;var n=Number(v);offset=isFinite(n)?n-Date.now():0;}` +
-    `var now=Date.now()+offset;document.querySelectorAll("time[data-tick]").forEach(function(t){var at=Date.parse(t.getAttribute("datetime")||"");if(isNaN(at))return;var text=fmt(Math.floor((now-at)/1000));if(t.textContent!==text)t.textContent=text;});}` +
-    // A swapped region brings back the server's minutes: tick again at once, so a clock never flickers back to them.
-    // A clock writes only when its text changes, so its own writes settle the observer instead of feeding it.
-    `run();setInterval(run,1000);if(typeof MutationObserver==="function")new MutationObserver(run).observe(document.body,{childList:true,subtree:true});})();`
+    `var now=Date.now()+offset;scope.querySelectorAll("time[data-tick]").forEach(function(t){var at=Date.parse(t.getAttribute("datetime")||"");if(isNaN(at))return;var text=fmt(Math.floor((now-at)/1000));if(t.textContent!==text)t.textContent=text;});}` +
+    // A swapped region brings back the server's minutes, so a swap (the region's children replaced — never a clock's
+    // own text) ticks at once and no clock flickers back to them. Hidden tabs do not tick.
+    `run();setInterval(function(){if(!document.hidden)run();},1000);document.addEventListener("visibilitychange",function(){if(!document.hidden)run();});` +
+    `if(region&&typeof MutationObserver==="function")new MutationObserver(run).observe(region,{childList:true});})();`
   );
 }

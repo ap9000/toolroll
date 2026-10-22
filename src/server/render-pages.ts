@@ -348,17 +348,18 @@ export function systemPage(chrome: Chrome, data: {
 }
 
 /**
- * A build's stage as one of four steps — set up, writing, checking,
- * committing — read from the machine's own phase, never a percent. Null for
- * runs that are not builds (planning, review, investigation): those have no
- * honest steps, only their words.
+ * A build's stage as one of three steps — set up, writing, checking and
+ * committing — read from the machine's own phase, never a percent. The
+ * steps only move forward: evidence and proof checks run both before and
+ * after the commit (builder.ts), so everything after the agent's turn is
+ * one step, and the stage words say which part. Null for runs that are not
+ * builds (planning, review, investigation): those have no honest steps.
  */
-export const BUILD_STEPS = ["setting up", "writing", "checking", "committing"] as const;
+export const BUILD_STEPS = ["setting up", "writing", "checking and committing"] as const;
 export function buildStepOf(claim: NonNullable<BoardCard["claim"]>): number | null {
   if (claim.role === "planner" || claim.role === "reviewer" || claim.role === "scout") return null;
   if (claim.model === null) return 0;
   if (claim.phase === null || claim.phase === "agent-running") return 1;
-  if (claim.phase === "committing") return 3;
   return 2;
 }
 
@@ -366,6 +367,19 @@ export function buildStepOf(claim: NonNullable<BoardCard["claim"]>): number | nu
 function tickingClock(startedIso: string, now: Date): Html {
   const minutes = Math.max(0, Math.round((now.getTime() - new Date(startedIso).getTime()) / 60_000));
   return html`<time class="clock" datetime="${startedIso}" data-tick>${minutes}m</time>`;
+}
+
+/**
+ * The workers a board's strip may show: not retired, bound to at least one
+ * project the server's ceiling admits (never a runner serving only projects
+ * this server must not speak about), and — on a one-project board — bound to
+ * that project.
+ */
+export function boardWorkers(runners: readonly Runner[], scope: { all: boolean; project: string | null; visible: (repo: string) => boolean }): Runner[] {
+  return runners.filter(runner =>
+    runner.retiredAt === null &&
+    runner.repos.some(repo => scope.visible(repo)) &&
+    (scope.all || scope.project === null || runner.repos.includes(scope.project)));
 }
 
 /**

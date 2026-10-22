@@ -6,8 +6,8 @@
   what each is building on this board, its stage and a running clock (or
   offline, or no build here). A card that changes lane slides there, a new one
   drops in, and a worker that picks up work lights up once — all off under
-  reduced motion. Building cards show four quiet steps (setting up, writing,
-  checking, committing) from the run's own phase, never a percent. On a phone
+  reduced motion. Building cards show three quiet steps (setting up, writing,
+  checking and committing) from the run's own phase, never a percent. On a phone
   the lane sections now use the full width.
 - **Builds write only their workspace.** A new per-project setting (Settings →
   Project → Where builds write, `toolroll project writes`), sealed into each

@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { type BoardCard } from "../board.js";
 import { htmlString } from "../html.js";
 import { type Runner } from "../runner.js";
-import { boardBody, buildStepOf } from "./render-pages.js";
+import { boardBody, boardWorkers, buildStepOf } from "./render-pages.js";
 
 const now = new Date("2026-10-22T12:00:00.000Z");
 const runner = (name: string, over: Partial<Runner> = {}): Runner => ({
@@ -20,14 +20,32 @@ const card = (over: Partial<BoardCard>): BoardCard => ({
 const render = (cards: BoardCard[], workers: Runner[]) =>
   htmlString(boardBody({ cards, workers, done: [], saturated: false, now, all: false, project: "/r/toolroll", delta: null }, () => false));
 
-test("a build's step comes from its own phase — set up, writing, checking, committing — and non-builds have none", () => {
+test("a build's step comes from its own phase and only moves forward — set up, writing, then checking and committing", () => {
   expect(buildStepOf(claim({ model: null, phase: null }))).toBe(0);
   expect(buildStepOf(claim({ phase: null }))).toBe(1);
   expect(buildStepOf(claim({ phase: "agent-running" }))).toBe(1);
-  expect(buildStepOf(claim({ phase: "validating-handoff" }))).toBe(2);
-  expect(buildStepOf(claim({ phase: "capturing-evidence" }))).toBe(2);
-  expect(buildStepOf(claim({ phase: "committing" }))).toBe(3);
+  // The builder's order after the agent: handoff, evidence and proof checks, the commit, then evidence and proof
+  // again (builder.ts) — every one of them is the last step, so the bar never runs backwards.
+  for (const phase of ["validating-handoff", "capturing-evidence", "verifying-proof", "correcting-proof", "committing", "capturing-evidence", "verifying-proof"]) {
+    expect(buildStepOf(claim({ phase }))).toBe(2);
+  }
   for (const role of ["planner", "reviewer", "scout"]) expect(buildStepOf(claim({ role }))).toBeNull();
+});
+
+test("the strip shows only workers bound to a project the ceiling admits — and on a one-project board, to that project", () => {
+  const visible = (repo: string) => repo !== "/r/secret";
+  const runners = [
+    runner("here", { repos: ["/r/toolroll"] }),
+    runner("elsewhere", { repos: ["/r/other"] }),
+    runner("secret-only", { repos: ["/r/secret"] }),
+    runner("both", { repos: ["/r/secret", "/r/toolroll"] }),
+    runner("retired", { retiredAt: "2026-10-01T00:00:00.000Z" }),
+  ];
+  const names = (scope: { all: boolean; project: string | null }) => boardWorkers(runners, { ...scope, visible }).map(one => one.name);
+  expect(names({ all: false, project: "/r/toolroll" })).toEqual(["here", "both"]);
+  expect(names({ all: true, project: null })).toEqual(["here", "elsewhere", "both"]);
+  // No project chosen (a bearer request without one) still never shows a runner that serves only excluded projects.
+  expect(names({ all: false, project: null })).toEqual(["here", "elsewhere", "both"]);
 });
 
 test("the strip names each worker's build on this board, its stage and a ticking clock from the claim", () => {
@@ -57,7 +75,7 @@ test("the building card carries its steps, and every card a stable key for the s
     card({ lane: "queued", taskId: "t-8" }),
     card({ lane: "attention", taskId: "t-9", stalledSince: "2026-10-22T11:00:00.000Z" }),
   ], [runner("mac-1")]);
-  expect(out).toContain(`<span class="steps" role="img" aria-label="step 4 of 4: committing"><i class="on"></i><i class="on"></i><i class="on"></i><i class="now"></i></span>`);
+  expect(out).toContain(`<span class="steps" role="img" aria-label="step 3 of 3: checking and committing"><i class="on"></i><i class="on"></i><i class="now"></i></span>`);
   for (const id of ["t-7", "t-8", "t-9"]) expect(out).toContain(`data-vt="${id}"`);
   expect(out).toContain(`<div class="board" data-now="${now.getTime()}">`);
 });
