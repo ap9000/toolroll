@@ -55,52 +55,33 @@ export function commandSetting(listing: string): string | null {
   return null;
 }
 
+
 /**
- * A command-running setting in any scope (the operator's global config, and what it includes) that names anything but
- * a known, safe program with plain arguments (runsCheckoutFiles): `sh filter.sh`, `awk -f x`, `./tools/x` could run the
- * build's own bytes. Null when none.
+ * What the plane's git on a build's checkout keeps of the operator's own (global and system) configuration: values,
+ * never commands — identity, line endings, ignore and case settings — and git-lfs's filters only as git-lfs itself
+ * installs them, exactly. Everything else there (filters, diff drivers, fsmonitor, signing and its key commands,
+ * whatever an include brings in) is left out, so nothing in it can run a file of the checkout's.
  */
-export function relativeCommandSetting(listing: string): string | null {
+const CARRIED_VALUES = new Set(["user.name", "user.email", "core.autocrlf", "core.eol", "core.safecrlf", "core.excludesfile", "core.ignorecase",
+  "core.precomposeunicode", "core.quotepath", "core.filemode", "core.symlinks", "core.longpaths"]);
+const LFS_FILTER: Readonly<Record<string, string>> = {
+  "filter.lfs.clean": "git-lfs clean -- %f", "filter.lfs.smudge": "git-lfs smudge -- %f", "filter.lfs.process": "git-lfs filter-process", "filter.lfs.required": "true",
+};
+
+/** The `-c` settings that carry the operator's own values (CARRIED_VALUES, LFS_FILTER) from a global/system listing. */
+export function carriedSettings(listing: string): string[] {
   const fields = listing.split("\0");
+  const carried = new Map<string, string>();
   for (let at = 0; at + 1 < fields.length; at += 2) {
+    if (fields[at] !== "global" && fields[at] !== "system") continue;
     const entry = fields[at + 1]!;
     const newline = entry.indexOf("\n");
     if (newline < 0) continue;
     const key = entry.slice(0, newline).toLowerCase();
-    // An include names a config file, read relative to the file that includes it: not a command.
-    if (key === "include.path" || key.startsWith("includeif.")) continue;
-    if (key === "core.fsmonitor" ? BOOLEAN.test(entry.slice(newline + 1).trim()) : !OPERATION_KEYS.some(pattern => pattern.test(key))) continue;
-    if (runsCheckoutFiles(entry.slice(newline + 1))) return key;
+    const value = entry.slice(newline + 1);
+    if (CARRIED_VALUES.has(key) || LFS_FILTER[key] === value) carried.set(key, value);
   }
-  return null;
-}
-
-/** The command-running settings the plane's add, status, commit and diff can run: filters, diff drivers, fsmonitor,
- * commit signing (credential helpers, pagers, editors and transports aren't run by them here). */
-const OPERATION_KEYS: readonly RegExp[] = ["filter.*.clean", "filter.*.smudge", "filter.*.process", "diff.*.command", "diff.*.textconv", "diff.external",
-  "core.fsmonitor", "gpg.program", "gpg.*.program", "core.alternaterefscommand"].map(key => new RegExp(`^${key.replace(/\./g, "\\.").replace(/\*/g, ".+")}$`));
-
-/** Programs a command-running git setting may name, whatever its scope: none runs a file it is pointed at as code. */
-const SAFE_PROGRAMS = new Set(["git-lfs", "git-crypt", "gpg", "gpg2", "ssh", "ssh-keygen", "less", "more", "cat", "delta", "diff-so-fancy",
-  "vim", "nvim", "vi", "nano", "emacs", "code", "cursor", "subl", "zed", "mate", "true", "false",
-  "git-credential-osxkeychain", "git-credential-libsecret", "git-credential-manager", "git-credential-manager-core"]);
-
-/**
- * Whether a command-running setting's value could run anything but a known, safe program with plain arguments
- * (an allowlist: a shell, an interpreter, `awk -f`, a quoted or piped command, a relative path all fail it). Its
- * program is the first word, bare or absolute; every word is plain text (no quotes, separators, substitutions or
- * redirections) and none is a relative path.
- */
-export function runsCheckoutFiles(value: string): boolean {
-  const words = value.trim().replace(/^!/, "").split(/\s+/).filter(Boolean);
-  if (words.length === 0) return false;
-  if (!words.every(word => /^[\w%@=:,.+\/~-]+$/.test(word))) return true;
-  const program = words[0]!;
-  if (!(program.startsWith("/") || !program.includes("/")) || !SAFE_PROGRAMS.has(program.split("/").pop()!)) return true;
-  return words.slice(1).some(word => {
-    const path = word.replace(/^--?[\w-]+=/, "");
-    return path.startsWith("./") || path.startsWith("../") || (path.includes("/") && !path.startsWith("/") && !path.startsWith("~") && !/^[a-z]+:\/\//i.test(path));
-  });
+  return [...carried].flatMap(([key, value]) => ["-c", `${key}=${value}`]);
 }
 
 /** Why a teardown command was refused, or null when `result` isn't a refusal. */
@@ -165,10 +146,10 @@ export function teardownGit(runner: Runner = run): Git {
 /**
  * Git on a build's checkout, as the plane runs it outside every fence (staging, committing and inspecting the build's
  * work): the same fixed hardening as teardown (no hooks, fsmonitor, ext transport, credential helpers or automatic
- * maintenance, no submodule recursion), and refused outright when the checkout's own config (local or worktree scope,
- * read with includes off) names a command — a filter, an external diff, a textconv, a pager — which a build could have
- * planted. It never enters a submodule or nested repository (whose config it never read). The operator's own global
- * configuration (their identity, a git-lfs install) still applies.
+ * maintenance, no submodule recursion, no signing), refused outright when the checkout's own config includes a file
+ * or names a command — a filter, an external diff, a textconv, a pager — which a build could have planted. It reads no
+ * global or system config: only their values (identity, line endings, a standard git-lfs install) are carried over.
+ * It never enters a submodule or nested repository (whose config it never read).
  */
 /**
  * Whether a checkout's own git config (its repository's config and its worktree's config.worktree) includes another
@@ -187,8 +168,11 @@ export function checkoutIncludes(checkout: string): boolean {
   let gitdir = join(checkout, ".git");
   try {
     if (!lstatSync(gitdir).isDirectory()) {
-      const pointer = /^gitdir:\s*(.+)$/m.exec(regular(gitdir) ?? "")?.[1]?.trim();
-      if (pointer === undefined) return true;
+      // As git reads a .git file: "gitdir: " then the path, one line; anything else (more lines, stray space) refused.
+      const text = (regular(gitdir) ?? "").replace(/\r?\n$/, "");
+      if (!text.startsWith("gitdir: ") || /[\r\n]/.test(text)) return true;
+      const pointer = text.slice("gitdir: ".length);
+      if (pointer === "" || pointer !== pointer.trim()) return true;
       gitdir = resolve(checkout, pointer);
     }
   } catch { return true; }
@@ -206,20 +190,18 @@ export function checkoutGit(inner: Runner = run): Runner {
     if (file !== "git") return inner(file, args, options);
     const cwd = options?.cwd;
     if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
-    // Then as written: the checkout's own config may name no command.
-    const own = await inner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options);
+    // The checkout's own config may name no command.
+    const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], options);
     if (own.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(own.stdout);
     if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
-    // Then as git will run (only the operator's own includes are left to follow): what they bring in is judged too.
-    const listing = await inner("git", ["--no-optional-locks", "config", "--list", "--includes", "--show-scope", "-z"], options);
-    if (listing.code !== 0) return refused("its config couldn't be read");
-    const relative = relativeCommandSetting(listing.stdout);
-    if (relative !== null) return refused(`git config sets ${relative} to a command that can run the checkout's own files, which the build could have written`);
+    // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
+    const carried = carriedSettings(own.stdout);
+    const env = { ...(options?.env ?? {}), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
     // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
     const safeArgs = [...args];
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
     if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
-    return inner("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", ...safeArgs], options);
+    return inner("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
   };
 }

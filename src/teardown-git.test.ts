@@ -36,7 +36,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
-import { checkoutGit, runsCheckoutFiles, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { carriedSettings, checkoutGit, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
 import { WorktreePool } from "./worktree.js";
 import { openStore } from "./store.js";
 
@@ -166,7 +166,7 @@ test("checkoutGit's status never enters a submodule whose config would run a com
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a global filter whose command is a relative path (the checkout's own file) is refused, and never runs", async () => {
+test("a global filter that would run the checkout's own file never runs: global config contributes values only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-global-"));
   const global = join(dir, "global.gitconfig");
   writeFileSync(global, "[filter \"fmt\"]\n\tclean = ./tools/filter.sh\n");
@@ -179,19 +179,20 @@ test("a global filter whose command is a relative path (the checkout's own file)
   writeFileSync(join(repoDir, ".gitattributes"), "* filter=fmt\n");
   writeFileSync(join(repoDir, "a.txt"), "a\n");
   const added = await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env });
-  expect(refusal(added)).toMatch(/filter\.fmt\.clean/);
+  expect(added.code).toBe(0);
   expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });
 
-test.each([
-  ["./tools/filter.sh", true], ["tools/filter.sh", true], ["node tools/x.js", true], ["sh -c 'fmt'", true], ["make fmt", true],
-  ["npx prettier --stdin", true], ["/usr/bin/env python3 x.py", true], ["foo --config=./x", true],
-  ["true; sh filter.sh", true], ["/usr/bin/python3.12 filter.py", true], ["exec bash", true], ["awk -f filter.awk", true], ['s"h" filter.sh', true],
-  ["$(cat x)", true], ["mytool --x", true],
-  ["git-lfs clean -- %f", false], ["git-lfs filter-process", false], ["/opt/homebrew/bin/delta", false], ["less -R", false], ["/opt/homebrew/bin/git-lfs smudge -- %f", false],
-])("a global setting %j can run the checkout's files: %s", (value, runs) => {
-  expect(runsCheckoutFiles(value)).toBe(runs);
+test("the operator's config carries values only: identity, line endings, a standard git-lfs install", () => {
+  const listing = [
+    ["global", "user.name\nAlex"], ["global", "user.email\na@b"], ["system", "core.autocrlf\ninput"],
+    ["global", "filter.lfs.clean\ngit-lfs clean -- %f"], ["global", "filter.lfs.process\ngit-lfs filter-process"],
+    ["global", "filter.fmt.clean\nsh filter.sh"], ["global", "filter.lfs.smudge\n/checkout/git-lfs smudge -- %f"],
+    ["global", "gpg.ssh.defaultkeycommand\nsh key.sh"], ["global", "diff.x.textconv\nvim -S x.vim"], ["local", "user.name\nBuild"],
+  ].map(([scope, entry]) => `${scope}\0${entry}\0`).join("");
+  expect(carriedSettings(listing)).toEqual(["-c", "user.name=Alex", "-c", "user.email=a@b", "-c", "core.autocrlf=input",
+    "-c", "filter.lfs.clean=git-lfs clean -- %f", "-c", "filter.lfs.process=git-lfs filter-process"]);
 });
 
 test("a global include (a config file, not a command) never blocks the plane's git", async () => {
@@ -209,7 +210,7 @@ test("a global include (a config file, not a command) never blocks the plane's g
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a command an include brings into global config is judged like any other", async () => {
+test("a command an include brings into global config never runs either", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-included-"));
   const global = join(dir, "global.gitconfig");
   writeFileSync(join(dir, "more.inc"), "[filter \"fmt\"]\n\tclean = sh filter.sh\n");
@@ -221,7 +222,7 @@ test("a command an include brings into global config is judged like any other", 
   const marker = join(dir, "ran");
   writeFileSync(join(repoDir, "filter.sh"), `touch ${marker}\ncat\n`);
   writeFileSync(join(repoDir, ".gitattributes"), "* filter=fmt\n");
-  expect(refusal(await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env }))).toMatch(/filter\.fmt\.clean/);
+  expect((await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env })).code).toBe(0);
   expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });
@@ -233,6 +234,16 @@ test("a checkout's own include is refused before git follows it", async () => {
   const seen: string[][] = [];
   const result = await checkoutGit(async (file, args, options) => { seen.push([...args]); return run(file, args, options); })("git", ["status"], { cwd: dir });
   expect(refusal(result)).toMatch(/includes another file/);
+  expect(seen).toEqual([]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test.each(["gitdir:/x", "gitdir: x\ngitdir: y", "gitdir:  /x", "not a pointer"])("a .git file git wouldn't read exactly so is refused (%j)", async pointer => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-pointer-"));
+  writeFileSync(join(dir, ".git"), `${pointer}\n`);
+  const seen: string[][] = [];
+  const result = await checkoutGit(async (file, args, options) => { seen.push([...args]); return run(file, args, options); })("git", ["status"], { cwd: dir });
+  expect(refusal(result)).toMatch(/includes another file|couldn't be read/);
   expect(seen).toEqual([]);
   rmSync(dir, { recursive: true, force: true });
 });
