@@ -10,7 +10,7 @@
  * any of them the command never runs. The refusal is a failed git result, so every caller's existing doubt applies and
  * nothing is removed.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
@@ -170,15 +170,50 @@ export function teardownGit(runner: Runner = run): Git {
  * planted. It never enters a submodule or nested repository (whose config it never read). The operator's own global
  * configuration (their identity, a git-lfs install) still applies.
  */
+/**
+ * Whether a checkout's own git config (its repository's config and its worktree's config.worktree) includes another
+ * file, read without git: every git command follows includes as it starts, so an include of the build's could point
+ * git at any file, a pipe that never ends among them. Each file is read only as the regular file it is, bounded; one
+ * that can't be read so counts as including.
+ */
+export function checkoutIncludes(checkout: string): boolean {
+  const regular = (path: string): string | null => {
+    try {
+      const held = lstatSync(path);
+      if (!held.isFile() || held.size > 1024 * 1024) return null;
+      return readFileSync(path, "utf8");
+    } catch { return null; }
+  };
+  let gitdir = join(checkout, ".git");
+  try {
+    if (!lstatSync(gitdir).isDirectory()) {
+      const pointer = /^gitdir:\s*(.+)$/m.exec(regular(gitdir) ?? "")?.[1]?.trim();
+      if (pointer === undefined) return true;
+      gitdir = resolve(checkout, pointer);
+    }
+  } catch { return true; }
+  const common = (() => { const named = regular(join(gitdir, "commondir"))?.trim(); return named === undefined || named === "" ? gitdir : resolve(gitdir, named); })();
+  for (const path of [join(common, "config"), join(gitdir, "config.worktree")]) {
+    if (!existsSync(path) && path.endsWith("config.worktree")) continue;
+    const text = regular(path);
+    if (text === null || /^\s*\[\s*include(if)?\b/im.test(text)) return true;
+  }
+  return false;
+}
+
 export function checkoutGit(inner: Runner = run): Runner {
   return async (file, args, options) => {
     if (file !== "git") return inner(file, args, options);
-    // Read as git will run (includes followed): a setting an include brings in is judged like any other. A local
-    // include itself is refused below, so no file of the checkout's is trusted as configuration.
+    const cwd = options?.cwd;
+    if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
+    // Then as written: the checkout's own config may name no command.
+    const own = await inner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options);
+    if (own.code !== 0) return refused("its config couldn't be read");
+    const key = commandSetting(own.stdout);
+    if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+    // Then as git will run (only the operator's own includes are left to follow): what they bring in is judged too.
     const listing = await inner("git", ["--no-optional-locks", "config", "--list", "--includes", "--show-scope", "-z"], options);
     if (listing.code !== 0) return refused("its config couldn't be read");
-    const key = commandSetting(listing.stdout);
-    if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
     const relative = relativeCommandSetting(listing.stdout);
     if (relative !== null) return refused(`git config sets ${relative} to a command that can run the checkout's own files, which the build could have written`);
     // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.

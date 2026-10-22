@@ -35,6 +35,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { run } from "./exec.js";
 import { checkoutGit, runsCheckoutFiles, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
 import { WorktreePool } from "./worktree.js";
 import { openStore } from "./store.js";
@@ -222,5 +223,16 @@ test("a command an include brings into global config is judged like any other", 
   writeFileSync(join(repoDir, ".gitattributes"), "* filter=fmt\n");
   expect(refusal(await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env }))).toMatch(/filter\.fmt\.clean/);
   expect(existsSync(marker)).toBe(false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a checkout's own include is refused before git follows it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-own-include-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  execFileSync("git", ["config", "include.path", "/dev/zero"], { cwd: dir });
+  const seen: string[][] = [];
+  const result = await checkoutGit(async (file, args, options) => { seen.push([...args]); return run(file, args, options); })("git", ["status"], { cwd: dir });
+  expect(refusal(result)).toMatch(/includes another file/);
+  expect(seen).toEqual([]);
   rmSync(dir, { recursive: true, force: true });
 });
