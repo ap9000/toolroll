@@ -206,12 +206,11 @@ describe("attack: writing outside the workspace (Linux)", () => {
   afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
   const scratch = () => dir!;
 
-  test("a read-only root with the allowlist bound back; its /tmp is its own", async ctx => {
+  test("a read-only root with the allowlist bound back; the shared /tmp is read-only to it", async ctx => {
     needs(ctx, bubblewrap());
     const w = world(scratch(), "claude");
-    const result = await underBubblewrap([script(w, "/tmp/so-writes-probe"), "test -e /tmp/so-writes-probe && echo private-tmp-ok"].join("\n"), w.fence, w.grants, w.worktree);
-    // The build's /tmp is its own: what it leaves there is gone with it, so the shared one is never written.
-    expect(lines(result), result.stderr).toEqual([...REFUSED, "sessions-refused", ...ALLOWED, "private-tmp-ok"]);
+    const result = await underBubblewrap(script(w, "/tmp/so-writes-probe"), w.fence, w.grants, w.worktree);
+    expect(lines(result), result.stderr).toEqual([...REFUSED, "sessions-refused", "shared-temp-refused", ...ALLOWED]);
     untouched(w);
     expect(spawnSync("test", ["-e", "/tmp/so-writes-probe"]).status).not.toBe(0);
   });

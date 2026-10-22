@@ -50,7 +50,7 @@ test("a workspace build masks an engine the operator moved (a link in home) and 
     const home = join(dir, "home"), moved = join(dir, "elsewhere", "docker"), named = join(dir, "custom.sock");
     mkdirSync(home); mkdirSync(moved, { recursive: true }); mkdirSync(named);
     symlinkSync(moved, join(home, ".docker"));
-    const env = { DOCKER_HOST: `unix://${named}` };
+    const env = { DOCKER_HOST: `unix://${named}`, SSH_AUTH_SOCK: named };
     expect(linuxHostSockets(501, home, "/tmp", true, env)).toEqual(expect.arrayContaining([moved, named]));
     expect(linuxHostSockets(501, home, "/tmp", false, env)).not.toEqual(expect.arrayContaining([moved]));
     expect(linuxHostSockets(501, home, "/tmp", false, env)).toEqual(expect.arrayContaining([named]));

@@ -913,7 +913,9 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const writable = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes.map(one => one.path)].filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]);
   // What a private /tmp gives back is read-only for a workspace build (its writable part is bound again after): the
   // checkout's whole shared Git data among it must not come back writable.
-  const privateTmp = network === null && writes === undefined ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => [writes === undefined ? "--bind" : "--ro-bind", path, path])];
+  // A confined network brings a /tmp of its own (arc 1); a workspace build with an open network sees the shared /tmp
+  // read-only like the rest of the root, its own folders there bound back writable.
+  const privateTmp = network === null ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => [writes === undefined ? "--bind" : "--ro-bind", path, path])];
   // A workspace build never reaches the host's own services either (a container engine would write anywhere for it),
   // whatever its network: confined networks mask them below already.
   const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
@@ -948,11 +950,14 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
     // masked too (an engine moved elsewhere).
     else if (followLinks) { try { if (lstatSync(path).isSymbolicLink()) masks.add(realpathSync(path)); } catch { /* dangling */ } }
   }
-  // An engine Toolroll's own environment points at, wherever it is (never the build's to choose): always masked.
+  // An engine Toolroll's own environment points at, wherever it is (never the build's to choose): always masked. So is
+  // the SSH agent it names (it signs as you), which a shared /tmp would otherwise leave in reach.
   for (const name of ["DOCKER_HOST", "CONTAINER_HOST"]) {
     const socket = /^unix:\/\/(\/.+)$/.exec(env[name] ?? "")?.[1];
     if (socket !== undefined) { try { masks.add(realpathSync(socket)); } catch { /* not there */ } }
   }
+  const agent = env["SSH_AUTH_SOCK"];
+  if (agent !== undefined && isAbsolute(agent)) { try { masks.add(realpathSync(agent)); } catch { /* not there */ } }
   // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
   void tmp;
   return [...masks].sort();

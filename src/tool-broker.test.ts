@@ -6,6 +6,7 @@
  * builds each get their own. (The macOS proof that a fenced shell can't read
  * the secrets by file, descriptor or process listing is in agent-fence.slow.test.ts.)
  */
+import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -297,7 +298,7 @@ describe("through the gateway", () => {
     worktree = join(dir, "state", "worktrees", "repo", "task");
     for (const path of [home, repo, worktree]) mkdirSync(path, { recursive: true });
     writeFileSync(join(dir, "notes.mjs"), NOTES_SERVER);
-    store = openStore(join(dir, "state", "orders.db"));
+    store = allowWhereUnfenced(openStore(join(dir, "state", "orders.db")));
     // The checkout is a recorded linked worktree of the project, as the pool hands one over: a fenced launch trusts nothing else.
     boundCheckout(store, repo, worktree);
     register(store, { name: "builder-1", host: "test", capacity: 9, repos: [repo], now: T0, newToken: () => "tok" });

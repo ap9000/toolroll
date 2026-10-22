@@ -8,6 +8,7 @@
  * was given and answers in the CLI's output envelope.
  */
 
+import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
@@ -87,6 +88,7 @@ describe("tick, against real git", () => {
    * and returns their tokens. */
   const credentials = async () => {
     const runnerToken = registerRunner(db, "builder-1", repo);
+    allowWhereUnfenced(openStore(db)).close();
     await run(["approver", "add", "alex", "--json"]);
     const approverToken = payload().token as string;
     // v24: approvals bind exact routing — the install names its model once.
@@ -176,7 +178,7 @@ describe("tick, against real git", () => {
       // The skip is BEFORE the claim: no run rows, no worktree lease, no
       // strike — the queue idles instead of churning (round-2 finding on
       // the hot loop).
-      const store = openStore(db);
+      const store = allowWhereUnfenced(openStore(db));
       expect(store.raw().prepare("SELECT COUNT(*) AS n FROM run").get()?.["n"]).toBe(0);
       expect(store.raw().prepare("SELECT COUNT(*) AS n FROM claim").get()?.["n"]).toBe(0);
       await run(["task", "show", "t-gem-skip", "--json"]);
@@ -198,7 +200,7 @@ describe("tick, against real git", () => {
       await queueApproved("t-not-gemini", approverToken);
       expect(await tick(runnerToken)).toBe(EXIT.ok);
       expect(payload().dispatched[0]).toMatchObject({ id: "t-not-gemini", outcome: "built" });
-      const store = openStore(db);
+      const store = allowWhereUnfenced(openStore(db));
       const row = store.raw().prepare("SELECT provider FROM run WHERE task_ref IN (SELECT id FROM task_ref WHERE external_id = 't-not-gemini')").get();
       expect(row).toMatchObject({ provider: "claude" });
       store.close();
@@ -216,7 +218,7 @@ describe("tick, against real git", () => {
       expect(await tick(runnerToken, [], geminiAgent)).toBe(EXIT.ok);
       expect(payload().dispatched[0]).toMatchObject({ id: "t-gem-build", outcome: "built" });
 
-      const store = openStore(db);
+      const store = allowWhereUnfenced(openStore(db));
       const row = store.raw().prepare("SELECT provider, provider_version, session_id, tokens_in, tokens_out, cost_usd, outcome FROM run LIMIT 1").get();
       expect(row).toMatchObject({ provider: "gemini", provider_version: "0.57.0", tokens_in: 120, tokens_out: 30, cost_usd: null, outcome: "built" });
       // The minted identity survived the round trip: the row's session is a
@@ -547,7 +549,7 @@ describe("tick, against real git", () => {
     expect(payload().dispatch).toMatchObject({ code: "signed-out", summary: "Claude needs you to sign in again" });
     await run(["task", "show", failedId]);
     expect(lines.join("\n")).toContain("dispatch: Claude needs you to sign in again — This task starts again on its own once Claude works.");
-    const store = openStore(db);
+    const store = allowWhereUnfenced(openStore(db));
     try {
       expect(store.lookupRef(failedId)?.strikes).toBe(0);
       // The console's task list says the same, not "Ready to run" (the attempted task's scripted
@@ -583,7 +585,7 @@ describe("tick, against real git", () => {
       built.push(...(payload().dispatched as { id: string; outcome: string }[]).filter(one => one.outcome === "built").map(one => one.id));
     }
     expect(built.sort()).toEqual(["t-1", "t-2"]);
-    const after = openStore(db);
+    const after = allowWhereUnfenced(openStore(db));
     try {
       expect(after.handle.prepare("SELECT subject FROM notification WHERE kind IN ('auth-expired', 'auth-restored') ORDER BY id").all().map(one => one["subject"]))
         .toEqual(["Claude needs you to sign in again", "Claude is signed in again, 1 task resumed"]);
@@ -593,7 +595,7 @@ describe("tick, against real git", () => {
   test("a sign-in pause on one provider never holds another provider's work", async () => {
     const { runnerToken, approverToken } = await credentials();
     await queueApproved("t-1", approverToken);
-    const store = openStore(db);
+    const store = allowWhereUnfenced(openStore(db));
     try {
       store.createTask({ id: "elsewhere", title: "a codex task" }, T0);
       const ref = store.refFor("built-in", "elsewhere").id;
@@ -608,10 +610,10 @@ describe("tick, against real git", () => {
     const { runnerToken, approverToken } = await credentials();
     await queueApproved("t-1", approverToken);
     const trialTime = () => {
-      const read = openStore(db);
+      const read = allowWhereUnfenced(openStore(db));
       try { return read.handle.prepare("SELECT last_trial_at FROM provider_auth_pause WHERE provider = 'claude'").get()?.["last_trial_at"]; } finally { read.close(); }
     };
-    const store = openStore(db);
+    const store = allowWhereUnfenced(openStore(db));
     try {
       pauseForAuth(store, { provider: "claude", authMode: "subscription", runId: 0, taskRef: store.refFor("built-in", "t-1").id, now: T0 });
       store.recordProviderReadiness("builder-1", [{ provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "version" }], T0);
@@ -622,7 +624,7 @@ describe("tick, against real git", () => {
     expect(payload().dispatched).toMatchObject([{ id: "t-1", outcome: "skipped", reason: "provider-unavailable" }]);
     expect(trialTime()).toBeNull();
     // Seconds later the provider is back: the trial runs now, not ten minutes on.
-    const back = openStore(db);
+    const back = allowWhereUnfenced(openStore(db));
     try {
       back.recordProviderReadiness("builder-1", [{ provider: "claude", state: "unknown", reason: "installed; no non-spending login check exists", probe: "version" }], due);
     } finally { back.close(); }
@@ -635,7 +637,7 @@ describe("tick, against real git", () => {
     await queueApproved("t-built", approverToken);
     // A planner: no approved terms name its provider; configuration does.
     await run(["task", "add", "plan it first", "--id", "t-plan", "--repo", repo]);
-    const store = openStore(db);
+    const store = allowWhereUnfenced(openStore(db));
     try {
       store.requestPlan(store.refFor("built-in", "t-plan").id, T0);
       pauseForAuth(store, { provider: "claude", authMode: "subscription", runId: 0, taskRef: store.refFor("built-in", "t-built").id, now: T0 });
@@ -645,7 +647,7 @@ describe("tick, against real git", () => {
     const skipped = (payload().dispatched as { id: string; reason?: string }[]).filter(one => one.reason === "signed-out").map(one => one.id);
     expect(skipped.sort()).toEqual(["t-built", "t-plan"]);
     expect(agentRan).toEqual([]);
-    const after = openStore(db);
+    const after = allowWhereUnfenced(openStore(db));
     try {
       const items = workIndexPage(after, T0, { principal: "operator", repos: null, includeUnplaced: true }).items;
       for (const id of skipped) {
@@ -657,7 +659,7 @@ describe("tick, against real git", () => {
 
     // Resumed: the gate's note no longer holds anything.
     await run(["providers", "resume", "claude", "--json"]);
-    const resumed = openStore(db);
+    const resumed = allowWhereUnfenced(openStore(db));
     try {
       const items = workIndexPage(resumed, T0, { principal: "operator", repos: null, includeUnplaced: true }).items;
       // Waiting for a worker to draft its plan: Queued, and the sentence says what for.

@@ -3,6 +3,7 @@
  * checks and Add tests work on any result; Merge waits for the full check.
  * Real HTTP against an ephemeral port, the real CLI, and a real git
  * repository for checks on an exact commit. No GitHub, no model. */
+import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -116,7 +117,7 @@ beforeAll(async () => {
   HEAD = git(REPO, "rev-parse", "HEAD");
   databaseFile = join(dir, "orders.db");
   root = join(dir, "evidence");
-  store = openStore(databaseFile);
+  store = allowWhereUnfenced(openStore(databaseFile));
   register(store, { name: "builder-1", host: "test", capacity: 4, repos: [REPO], now: NOW, newToken: () => "tok-builder-1" });
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", ago(600));
   const sam = addApprover(store, "sam", ago(600));

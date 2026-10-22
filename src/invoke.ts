@@ -1069,6 +1069,8 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
  * (a checkout whose binding no longer proves) runs nothing.
  */
 export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+  // An injected runner (tests) starts no real command, as an injected agent starts no real agent (invokeAgent).
+  if (inner !== runCommand) return inner;
   return async (file, args, options) => {
     // As a build itself: where nothing can confine them, they run only when an instance operator allowed unconfined agents.
     if (!available()) {
@@ -1105,6 +1107,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
  * database writable. Where nothing can confine them, they run only when an instance operator allowed unconfined agents.
  */
 export function fencedCheckoutCommands(store: Store, repo: string, checkout: string, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+  if (inner !== runCommand) return inner;
   return async (file, args, options) => {
     if (!available()) {
       if (store.unfencedAgentsAllowed()) return inner(file, args, options);

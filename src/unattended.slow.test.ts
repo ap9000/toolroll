@@ -16,6 +16,7 @@
  * backoff); this stretch answers its park through the CLI.
  */
 
+import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { existsSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
@@ -162,7 +163,7 @@ describe("the night: twelve tasks, one fake clock", () => {
     // runner and require each task's placed repo in its registered repos
     // list — the CLI register cannot bind repos, so builder-1 enrolls
     // directly against the store, and every task is placed when filed.
-    const boot = openStore(db);
+    const boot = allowWhereUnfenced(openStore(db));
     register(boot, { name: "builder-1", host: "test", capacity: 12, repos: [repo], now: T0, newToken: () => "tok-builder-1" });
     boot.close();
     const runnerToken = "tok-builder-1";
@@ -202,7 +203,7 @@ describe("the night: twelve tasks, one fake clock", () => {
     await tick(12);     // whatever backoff remains lapses; nothing for t-07 — it is held, not looping
 
     // The stall is a typed incident, not a mystery.
-    const mid = openStore(db);
+    const mid = allowWhereUnfenced(openStore(db));
     const stalled = mid.openIncidents().find(one => one.taskId === "t-07");
     expect(stalled?.kind).toBe("attempts-exhausted");
     mid.close();
@@ -222,7 +223,7 @@ describe("the night: twelve tasks, one fake clock", () => {
     expect(await tick(21)).toBe(EXIT.refused);
 
     // -- Morning. Every task finished; the ledger can say how.
-    const store = openStore(db);
+    const store = allowWhereUnfenced(openStore(db));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -325,7 +326,7 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
   });
 
   test("a chain drafted (via the real trigger, no mode) dispatches nothing on the next tick — it waits for a person", async () => {
-    const boot = openStore(db);
+    const boot = allowWhereUnfenced(openStore(db));
     register(boot, { name: "builder-1", host: "test", capacity: 4, repos: [repo], now: T0, newToken: () => "tok-builder-1" });
     boot.close();
     await run(["approver", "add", "alex", "--json"], T0);
@@ -336,7 +337,7 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
     // Seed a short-verdict run and let the REAL trigger draft a repair —
     // the same function a review pass calls, exercised directly here so
     // the test stays about the tick's spend, not about faking a reviewer.
-    const store = openStore(db);
+    const store = allowWhereUnfenced(openStore(db));
     store.createTask({ id: "t-guard", title: "guard the thing" }, T0);
     const ref = store.refFor("built-in", "t-guard");
     store.placeTask(ref.id, repo);
@@ -392,7 +393,7 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
     await writeFile(join(repo, "value.ts"), "export const value = 'map';\n");
     await writeFile(join(repo, "gate-count.cjs"), `const fs = require('node:fs'); const log = ${JSON.stringify(log)}; fs.writeFileSync(log, String(Number(fs.readFileSync(log,'utf8'))+1));`);
     await git(["add", "."]); await git(["commit", "-qm", "original value and verification"]);
-    const store = openStore(db), who = addApprover(store, "alex", T0);
+    const store = allowWhereUnfenced(openStore(db)), who = addApprover(store, "alex", T0);
     if (!who.ok) throw Error("approver");
     for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
     register(store, { name: "builder-1", host: "test", capacity: 4, repos: [repo], now: T0, newToken: () => "tok-builder-1" });
@@ -426,7 +427,7 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
       return JSON.parse(output.join("\n"));
     };
     await tick(at(1));
-    const first = openStore(db);
+    const first = allowWhereUnfenced(openStore(db));
     const runs = first.runsFor(first.lookupRef("t-observe")!.id);
     expect(runs).toHaveLength(1);
     const result = runs[0]!;
@@ -444,7 +445,7 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
     first.close();
     expect((await tick(at(2), EXIT.refused)).dispatched).toHaveLength(0);
     expect((await tick(at(3), EXIT.refused)).dispatched).toHaveLength(0);
-    const final = openStore(db);
+    const final = allowWhereUnfenced(openStore(db));
     expect(final.runsFor(final.lookupRef("t-observe")!.id)).toEqual(runs);
     expect(final.proofVerdictFor(result.id)).toEqual(proof);
     expect(final.repairChainForRoot("t-observe")).toHaveLength(0);
@@ -474,7 +475,7 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
 `);
       await git(["add", "."]);
       await git(["commit", "-qm", "synthetic verification fixture"]);
-      const store = openStore(db);
+      const store = allowWhereUnfenced(openStore(db));
       const who = addApprover(store, "alex", T0);
       if (!who.ok) throw Error("approver");
       for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
@@ -514,7 +515,7 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
         return JSON.parse(output.join("\n"));
       };
       await tick(at(1));
-      const first = openStore(db);
+      const first = allowWhereUnfenced(openStore(db));
       const runs = first.runsFor(ref.id);
       expect(runs).toHaveLength(1);
       const result = runs[0]!;
@@ -535,7 +536,7 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
       first.close();
       if (scenario === "changed-evidence") {
         await writeFile(join(evidenceRoot, failedLog.key), "changed after the failed check was saved");
-        const damaged = openStore(db);
+        const damaged = allowWhereUnfenced(openStore(db));
         const current = assignmentOf(damaged, "t-check", at(2), { principal: "operator", repos: [repo] }, evidenceRoot)!;
         expect(current).toMatchObject({ state: "ready-to-check", receipt: { checks: { status: "unavailable" } } });
         expect(current.attention).toContainEqual(expect.stringContaining("unavailable or changed"));
@@ -543,7 +544,7 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
         damaged.close();
       }
       expect((await tick(at(2), EXIT.refused)).dispatched).toHaveLength(0);
-      const final = openStore(db);
+      const final = allowWhereUnfenced(openStore(db));
       expect(final.runsFor(ref.id)).toEqual(runs);
       expect(final.proofVerdictFor(result.id)).toEqual(proof);
       expect(final.repairChainForRoot("t-check")).toHaveLength(0);
