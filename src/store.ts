@@ -1,3 +1,4 @@
+import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
@@ -794,7 +795,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v130 adds, and changes no saved row: what a project's builds may reach on the network (project_network; egress.ts,
 // docs/plans/agent-baseline-hardening.md arc 1) and whether this installation lets an agent run with no OS confinement
 // (confinement_setting, one row; off unless an instance operator turns it on).
-export const SCHEMA_VERSION = 130;
+// v131 adds, and changes no saved row: where a project's builds may write (project_writes; agent-fence.ts, docs/plans/
+// agent-baseline-hardening.md arc 2) — only their workspace unless an approver chose anywhere.
+export const SCHEMA_VERSION = 131;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -932,7 +935,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1068,6 +1071,15 @@ CREATE TABLE IF NOT EXISTS confinement_setting (
   updated_by       TEXT
 );
 INSERT OR IGNORE INTO confinement_setting (id, unfenced_allowed) VALUES (1, 0);
+`;
+/** v131: where a project's builds may write (an approver's setting, agent-fence.ts WritesMode). */
+export const PROJECT_WRITES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS project_writes (
+  repo        TEXT PRIMARY KEY,
+  mode        TEXT NOT NULL CHECK (mode IN ('workspace', 'anywhere')),
+  updated_at  TEXT NOT NULL,
+  updated_by  TEXT NOT NULL
+);
 `;
 /** v129: a finished run's How it ran, derived from its own records on first view (display only: never a verdict). Its
  * parser version says when to derive again; `steps` says how complete the step detail was, and why not. */
@@ -5065,6 +5077,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(RUN_EFFICIENCY_SCHEMA);
   // v130: a project's network and whether an agent may run unconfined (new tables only).
   db.exec(CONFINEMENT_SCHEMA);
+  // v131: where a project's builds may write (a new table only).
+  db.exec(PROJECT_WRITES_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -21646,6 +21660,25 @@ export class Store {
       const after = this.projectNetwork(repo);
       const words = (one: ProjectNetwork) => `${one.mode}${one.hosts.length === 0 ? "" : ` +${one.hosts.join(",")}`}${one.loopback === "proxy-only" ? " no-local" : ""}`;
       this.recordPolicy(by, repo, "network", words(before), words(after), now);
+      return { before, after };
+    });
+  }
+
+  /** Where a project's builds may write (agent-fence.ts): its saved setting, or only their workspace. */
+  projectWrites(repo: string): WritesMode {
+    const mode = this.db.prepare("SELECT mode FROM project_writes WHERE repo = ?").get(repo)?.["mode"];
+    // A damaged row reads as the narrower setting, never the wider one.
+    return mode === "anywhere" ? "anywhere" : WRITES_DEFAULT;
+  }
+
+  /** An approver changed where a project's builds may write: saved, and in the ledger as before → after. */
+  setProjectWrites(repo: string, mode: WritesMode, by: string, now: Date): { before: WritesMode; after: WritesMode } {
+    return this.transact(() => {
+      const before = this.projectWrites(repo);
+      this.db.prepare(`INSERT INTO project_writes (repo, mode, updated_at, updated_by) VALUES (?, ?, ?, ?)
+        ON CONFLICT (repo) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, mode, now.toISOString(), by);
+      const after = this.projectWrites(repo);
+      this.recordPolicy(by, repo, "build writes", before, after, now);
       return { before, after };
     });
   }

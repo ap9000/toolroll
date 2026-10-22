@@ -10,7 +10,8 @@
  * any of them the command never runs. The refusal is a failed git result, so every caller's existing doubt applies and
  * nothing is removed.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
@@ -36,6 +37,11 @@ const COMMAND_KEYS: readonly RegExp[] = [
   "diff.*.command", "diff.*.textconv", "merge.*.driver", "gpg.program", "gpg.*.program", "uploadpack.packobjectshook",
   "remote.*.uploadpack", "remote.*.receivepack", "remote.*.vcs", "pager.*", "include.path", "includeif.*.path",
 ].map(key => new RegExp(`^${key.replace(/\./g, "\\.").replace(/\*/g, ".+")}$`));
+/** git-lfs settings that name no program (where it fetches, what, whether it checks locks, how it signs in); any other
+ * `lfs.*` key in a checkout's own config could (extensions, custom and standalone transfer agents), so it's refused. */
+const INERT_LFS = /^lfs\.(url|pushurl|fetchinclude|fetchexclude|locksverify|repositoryformatversion|.+\.access|.+\.locksverify|setlockablereadonly|skipdownloaderrors|concurrenttransfers)$/;
+const lfsCommand = (key: string): boolean => key.startsWith("lfs.") && !INERT_LFS.test(key);
+
 /** core.fsmonitor as a boolean is git's own daemon; anything else is a command to run. */
 const BOOLEAN = /^(|true|false|yes|no|on|off|-?\d+)$/i;
 
@@ -50,9 +56,38 @@ export function commandSetting(listing: string): string | null {
     const newline = entry.indexOf("\n");
     const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
     const value = newline < 0 ? "" : entry.slice(newline + 1);
-    if (key === "core.fsmonitor" ? !BOOLEAN.test(value.trim()) : COMMAND_KEYS.some(pattern => pattern.test(key))) return key;
+    if (key === "core.fsmonitor" ? !BOOLEAN.test(value.trim()) : COMMAND_KEYS.some(pattern => pattern.test(key)) || lfsCommand(key)) return key;
   }
   return null;
+}
+
+
+/**
+ * What the plane's git on a build's checkout keeps of the operator's own (global and system) configuration: values,
+ * never commands — identity, line endings, ignore and case settings — and git-lfs's filters only as git-lfs itself
+ * installs them, exactly. Everything else there (filters, diff drivers, fsmonitor, signing and its key commands,
+ * whatever an include brings in) is left out, so nothing in it can run a file of the checkout's.
+ */
+const CARRIED_VALUES = new Set(["user.name", "user.email", "core.autocrlf", "core.eol", "core.safecrlf", "core.excludesfile", "core.ignorecase",
+  "core.precomposeunicode", "core.quotepath", "core.filemode", "core.symlinks", "core.longpaths"]);
+const LFS_FILTER: Readonly<Record<string, string>> = {
+  "filter.lfs.clean": "git-lfs clean -- %f", "filter.lfs.smudge": "git-lfs smudge -- %f", "filter.lfs.process": "git-lfs filter-process", "filter.lfs.required": "true",
+};
+
+/** The `-c` settings that carry the operator's own values (CARRIED_VALUES, LFS_FILTER) from a global/system listing. */
+export function carriedSettings(listing: string): string[] {
+  const fields = listing.split("\0");
+  const carried = new Map<string, string>();
+  for (let at = 0; at + 1 < fields.length; at += 2) {
+    if (fields[at] !== "global" && fields[at] !== "system") continue;
+    const entry = fields[at + 1]!;
+    const newline = entry.indexOf("\n");
+    if (newline < 0) continue;
+    const key = entry.slice(0, newline).toLowerCase();
+    const value = entry.slice(newline + 1);
+    if (CARRIED_VALUES.has(key) || LFS_FILTER[key] === value) carried.set(key, value);
+  }
+  return [...carried].flatMap(([key, value]) => ["-c", `${key}=${value}`]);
 }
 
 /** Why a teardown command was refused, or null when `result` isn't a refusal. */
@@ -111,5 +146,86 @@ export function teardownGit(runner: Runner = run): Git {
       safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     }
     return runner("git", [...TEARDOWN_FLAGS, ...safeArgs], options(cwd));
+  };
+}
+
+/**
+ * Git on a build's checkout, as the plane runs it outside every fence (staging, committing and inspecting the build's
+ * work): the same fixed hardening as teardown (no hooks, fsmonitor, ext transport, credential helpers or automatic
+ * maintenance, no submodule recursion, no signing), refused outright when the checkout's own config includes a file
+ * or names a command — a filter, an external diff, a textconv, a pager — which a build could have planted. It reads no
+ * global or system config: only their values (identity, line endings, a standard git-lfs install) are carried over.
+ * It never enters a submodule or nested repository (whose config it never read).
+ */
+/**
+ * Whether a checkout's own git config (its repository's config and its worktree's config.worktree) includes another
+ * file, read without git: every git command follows includes as it starts, so an include of the build's could point
+ * git at any file, a pipe that never ends among them. Each file is read only as the regular file it is, bounded; one
+ * that can't be read so counts as including.
+ */
+export function checkoutIncludes(checkout: string): boolean {
+  const regular = (path: string): string | null => {
+    try {
+      const held = lstatSync(path);
+      if (!held.isFile() || held.size > 1024 * 1024) return null;
+      return readFileSync(path, "utf8");
+    } catch { return null; }
+  };
+  let gitdir = join(checkout, ".git");
+  try {
+    if (!lstatSync(gitdir).isDirectory()) {
+      // As git reads a .git file: "gitdir: " then the path, one line; anything else (more lines, stray space) refused.
+      const text = (regular(gitdir) ?? "").replace(/\r?\n$/, "");
+      if (!text.startsWith("gitdir: ") || /[\r\n]/.test(text)) return true;
+      const pointer = text.slice("gitdir: ".length);
+      if (pointer === "" || pointer !== pointer.trim()) return true;
+      gitdir = resolve(checkout, pointer);
+    }
+  } catch { return true; }
+  const common = (() => { const named = regular(join(gitdir, "commondir"))?.trim(); return named === undefined || named === "" ? gitdir : resolve(gitdir, named); })();
+  for (const path of [join(common, "config"), join(gitdir, "config.worktree")]) {
+    if (!existsSync(path) && path.endsWith("config.worktree")) continue;
+    const text = regular(path);
+    if (text === null || /^\s*\[\s*include(if)?\b/im.test(text)) return true;
+    // And as git itself parses it, includes not followed (only this one regular file, from a neutral folder, with no
+    // other config read): an include git sees by any spelling is refused.
+    const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+      { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    if (parsed.status !== 0 || parsed.stdout.split("\0").some(name => /^(include\.path|includeif\..*\.path)$/i.test(name))) return true;
+  }
+  return false;
+}
+
+/** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
+ * program (anything but INERT_LFS). A file that
+ * isn't a plain one, or doesn't parse, counts as naming one. */
+export function lfsExtensionIn(checkout: string): boolean {
+  const path = join(checkout, ".lfsconfig");
+  try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
+  const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+    { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name.toLowerCase()) || /^include(if)?\./i.test(name));
+}
+
+export function checkoutGit(inner: Runner = run): Runner {
+  return async (file, args, options) => {
+    if (file !== "git") return inner(file, args, options);
+    const cwd = options?.cwd;
+    if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
+    // git-lfs also reads .lfsconfig from the checkout: one that names an extension (a command it would run) is refused.
+    if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+    // The checkout's own config may name no command.
+    const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], options);
+    if (own.code !== 0) return refused("its config couldn't be read");
+    const key = commandSetting(own.stdout);
+    if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+    // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
+    const carried = carriedSettings(own.stdout);
+    const env = { ...(options?.env ?? {}), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+    // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
+    const safeArgs = [...args];
+    const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
+    if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
+    return inner("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
   };
 }

@@ -43,7 +43,8 @@
 import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -300,7 +301,7 @@ export function taskBoundary(options: { worktree: string; provider: string; home
 export type RunFolders = { root: string; own: string | null };
 /** The prefixes of every launch's private folders: its tools' config, a Codex build's own home, and a Linux build's
  * network bridge (egress-bridge.ts). */
-export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-"] as const;
+export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd-"] as const;
 
 export function runFolders(own: string | null, root: string = tmpdir()): RunFolders {
   return { root: real(root), own: own === null ? null : real(own) };
@@ -324,7 +325,146 @@ function otherRunFolders(folders: RunFolders): string[] {
  * `pool` denies the plane's checkout pools whole and gives this build's own
  * checkout back (CheckoutPool).
  */
-export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence };
+export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist };
+
+export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
+
+/**
+ * The only places a `workspace` build writes: `subpaths`, each a folder (or file) writable whole, and `prefixes`, a file
+ * with the temporary names it is atomically replaced through, or a folder named by a pattern (a regex on macOS;
+ * elsewhere the path alone, when it exists). Everything else is read-only to the build; its fence's denies and read-only grants still hold inside these.
+ */
+export type WriteAllowlist = { subpaths: string[]; prefixes: WritePrefix[] };
+/** A file or folder named by `path` followed by what `suffix` (a regular expression, anchored at its end) allows. */
+export type WritePrefix = { path: string; suffix: string };
+
+/** Claude's transcript folder for a working folder: its path with every character but a letter or digit made `-`
+ * (Claude Code's own naming; a name over 200 characters gets a suffix, so it is granted by prefix). */
+export function claudeProjectFolder(home: string, cwd: string): { path: string; byPrefix: boolean } {
+  const slug = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  return slug.length > 200 ? { path: join(home, ".claude", "projects", slug.slice(0, 200)), byPrefix: true } : { path: join(home, ".claude", "projects", slug), byPrefix: false };
+}
+
+/**
+ * A folder a write grant may name: made when absent, then only as the real folder it is — never a link, nor reached
+ * through one (its real path is its parent's real path and its own name). A build can rewrite what it may write, so a
+ * folder it was given could otherwise come back as a link to anywhere and be granted, followed, on its next launch.
+ * Null when it isn't such a folder: nothing is granted, and the write it was for fails.
+ */
+export function grantFolder(path: string, create = true): string | null {
+  if (create) { try { mkdirSync(path, { recursive: true, mode: 0o700 }); } catch { /* checked below */ } }
+  try {
+    const held = lstatSync(path);
+    if (held.isSymbolicLink() || !held.isDirectory()) return null;
+    // Nor through a link of this user's anywhere above it (a system alias, /var → /private/var, is root's and fine).
+    const uid = process.getuid?.();
+    for (let folder = dirname(resolve(path)); folder !== dirname(folder); folder = dirname(folder)) {
+      const above = lstatSync(folder);
+      if (above.isSymbolicLink() && (uid === undefined || above.uid === uid)) return null;
+    }
+    const at = realpathSync(path);
+    return at === join(realpathSync(dirname(path)), basename(path)) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The data folders an ACP agent writes besides a ~/.local/share|state root, per agent, only where known: Goose's
+ * sessions and state; Qwen Code (a Gemini CLI fork) its history and temp, as Gemini measured. An agent not listed
+ * (Cursor, Cline: their settings sit among their data) writes nothing of its own under a workspace build until its
+ * layout is measured; a project using one chooses `anywhere`.
+ */
+const ACP_DATA: Readonly<Record<string, readonly string[]>> = {
+  goose: [".local/share/goose", ".local/state/goose"],
+  qwen: [".qwen/tmp", ".qwen/history"],
+};
+
+/** The suffix Claude Code gives a transcript folder whose name it shortened: `-` and a hash, nothing else. */
+const CLAUDE_SHORTENED = "-[a-z0-9]+(/|$)";
+/** A file and the temporary names it is replaced through (`name.tmp-1`, `name.json.12345`), never a folder below it. */
+const ATOMIC_NAMES = "([.~][^/]*)?$";
+
+/** The parts of a repository's shared Git data a commit in a worktree writes: objects, refs and their logs (and the
+ * packed refs). Its config, hooks, info, other worktrees' data and submodules' are never among them. */
+function commitGitData(common: string): { subpaths: string[]; prefixes: WritePrefix[]; readOnly: string[] } {
+  const made = (path: string): string => { try { mkdirSync(path, { recursive: true }); } catch { /* granted as named */ } return real(path); };
+  return {
+    subpaths: ["objects", "refs", "logs"].map(name => grantFolder(join(common, name))).filter((path): path is string => path !== null),
+    prefixes: [{ path: join(common, "packed-refs"), suffix: ATOMIC_NAMES }],
+    // Alternates there would let objects come from anywhere.
+    readOnly: [made(join(common, "objects", "info"))],
+  };
+}
+
+/**
+ * What a `workspace` build writes and what it loses (arc 2): its checkout, its checkout's Git data (less the shared
+ * repository's config, hooks and info, which Git runs or reads as commands), its own launch folder (its temp is there),
+ * its project's cache folder, the terminal devices, and only the provider state its CLI must write (measured: Claude's
+ * transcript folder for this checkout; Gemini's history, temp and project list; an ACP agent's own folders). The
+ * folders named here are made first, so the provider never has to make them where it can't. `deny` is what this
+ * provider must not even read (Claude's live sessions' keys).
+ */
+export function writeAllowlist(options: { provider: string; home: string; worktree: string; binding: WorktreeBinding | null; launchFolder: string | null; cache: string | null }): { writes: WriteAllowlist; readOnly: string[]; deny: string[] } {
+  const home = real(options.home);
+  const worktree = real(options.worktree);
+  const subpaths = new Set<string>([worktree]);
+  const prefixes = new Map<string, WritePrefix>();
+  const readOnly = new Set<string>();
+  const deny = new Set<string>();
+  const made = (path: string): string => { try { mkdirSync(path, { recursive: true, mode: 0o700 }); } catch { /* granted as named either way */ } return real(path); };
+  const grant = (path: string, create = true) => { const at = grantFolder(path, create); if (at !== null) subpaths.add(at); };
+  if (options.binding !== null) {
+    const common = real(join(options.binding.main, ".git"));
+    const gitdir = real(options.binding.gitdir);
+    grant(gitdir, false);
+    // The shared Git data a commit writes, and nothing Git reads as commands or settings: the shared config (filters,
+    // hooks path, fsmonitor), hooks, info (attributes, excludes), other worktrees' data and submodules' stay as they are.
+    const data = commitGitData(common);
+    for (const path of data.subpaths) subpaths.add(path);
+    for (const one of data.prefixes) prefixes.set(`${one.path}\0${one.suffix}`, one);
+    for (const path of data.readOnly) readOnly.add(path);
+    // This worktree's own settings file, present (empty) so it is held read-only everywhere, a bind included.
+    const own = join(gitdir, "config.worktree");
+    try { if (!existsSync(own)) writeFileSync(own, "", { mode: 0o644, flag: "wx" }); } catch { /* held read-only by name */ }
+    readOnly.add(own);
+  }
+  if (options.launchFolder !== null) grant(options.launchFolder, false);
+  if (options.cache !== null) grant(options.cache);
+  if (options.provider === "claude") {
+    const folder = claudeProjectFolder(home, worktree);
+    if (folder.byPrefix) { made(dirname(folder.path)); prefixes.set(folder.path, { path: folder.path, suffix: CLAUDE_SHORTENED }); }
+    else grant(folder.path);
+    deny.add(join(home, ".claude", "sessions"));
+  } else if (options.provider === "gemini") {
+    for (const name of ["history", "tmp"]) grant(join(home, ".gemini", name));
+    prefixes.set("gemini", { path: join(home, ".gemini", "projects.json"), suffix: ATOMIC_NAMES });
+  } else if (Object.hasOwn(ACP_AGENTS, options.provider)) {
+    // An ACP agent's configuration stays read-only whole (its MCP servers, hooks, plugins, agents and commands could
+    // otherwise be planted for the operator's next session of it); only its known data folders are written (ACP_DATA).
+    for (const name of ACP_AGENTS[options.provider as keyof typeof ACP_AGENTS].home) if (/^\.local\/(share|state)\//.test(name)) grant(join(home, name));
+    for (const name of ACP_DATA[options.provider] ?? []) grant(join(home, name));
+  }
+  return { writes: { subpaths: [...subpaths].sort(), prefixes: [...prefixes.values()].sort((a, b) => a.path.localeCompare(b.path)) }, readOnly: [...readOnly].sort(), deny: [...deny].sort() };
+}
+
+/** Where a project's builds keep their package caches: one folder per project (one trust domain), never used by the
+ * plane's own tools, below the user's cache folder. */
+export function buildCacheFolder(repo: string, home: string = homedir(), platform: NodeJS.Platform = process.platform, env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const root = platform === "darwin" ? join(home, "Library", "Caches") : env["XDG_CACHE_HOME"] !== undefined && isAbsolute(env["XDG_CACHE_HOME"]) ? env["XDG_CACHE_HOME"] : join(home, ".cache");
+  return join(root, "toolroll-builds", createHash("sha256").update(real(repo)).digest("hex").slice(0, 16));
+}
+
+/** The environment that points a build's package managers at its project's cache folder, not the user's own. */
+export function buildCacheEnv(folder: string): Record<string, string> {
+  const at = (name: string) => join(folder, name);
+  return {
+    npm_config_cache: at("npm"), npm_config_store_dir: at("pnpm"), YARN_CACHE_FOLDER: at("yarn"), BUN_INSTALL_CACHE_DIR: at("bun"),
+    COREPACK_HOME: at("corepack"), npm_config_devdir: at("node-gyp"), PIP_CACHE_DIR: at("pip"), UV_CACHE_DIR: at("uv"),
+    GOCACHE: at("go-build"), GOMODCACHE: at("go-mod"), CARGO_HOME: at("cargo"), GRADLE_USER_HOME: at("gradle"),
+    DENO_DIR: at("deno"), XDG_CACHE_HOME: at("xdg"),
+  };
+}
 
 /**
  * A launch's network confinement (egress.ts, docs/plans/agent-baseline-hardening.md arc 1). `open`: the network as it
@@ -482,7 +622,12 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   // Codex lets the more specific path win: no read grant inside a pool, but the build's own checkout.
   const pooled = (path: string) => pool !== undefined && pool.deny.some(one => path === one || inside(path, one))
     && !(pool.own !== null && (path === pool.own || inside(path, pool.own)));
-  if (fullAccess) access.set("/", "write");
+  // Full access writes anywhere its fence allows, unless the build writes only its workspace (arc 2): then exactly its
+  // allowlist, in either mode, beside the workspace Codex's own profile gives.
+  // Codex's own workspace profile also writes the shared temp folders; a workspace build starts from its read-only
+  // profile instead, with exactly the allowlist (its checkout among it) written back.
+  if (grants.writes !== undefined) for (const path of grants.writes.subpaths) access.set(real(path), "write");
+  else if (fullAccess) access.set("/", "write");
   for (const path of readOnly) if (!pooled(real(path))) access.set(real(path), "read");
   if (pool !== undefined) {
     const held = codexPool(pool);
@@ -496,7 +641,7 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
     "-c", 'default_permissions="standing-orders"',
-    "-c", 'permissions.standing-orders.extends=":workspace"',
+    "-c", `permissions.standing-orders.extends=${grants.writes === undefined ? '":workspace"' : '":read-only"'}`,
     "-c", `permissions.standing-orders.filesystem={${filesystem.join(",")}}`,
     // Codex's command sandbox can't route through a proxy: its commands reach the network only when the run's sealed
     // network is open (and Full access asked for it), and are offline otherwise.
@@ -624,6 +769,14 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
   return [
     "(version 1)",
     "(allow default)",
+    // A workspace build writes only its allowlist (and the terminal devices); every deny and read-only rule after this
+    // still holds inside it.
+    ...(grants.writes === undefined ? [] : [
+      "(deny file-write*)",
+      `(allow file-write* (subpath "/dev")${grants.writes.subpaths.length === 0 ? "" : ` ${paths("subpath", grants.writes.subpaths)}`}${grants.writes.prefixes.map(one => ` (regex #"^${seatbeltRegex(one.path)}${one.suffix}")`).join("")})`,
+      // A granted folder itself can't be renamed, removed or replaced (by a link to anywhere, say): only what is in it.
+      ...(grants.writes.subpaths.length === 0 ? [] : [`(deny file-write* ${paths("literal", grants.writes.subpaths)})`]),
+    ]),
     ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
     ...(pool?.own == null ? [] : [
       `(allow file-read* file-write* ${paths("subpath", [pool.own])})`,
@@ -644,6 +797,12 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     "(deny mach-task-name)",
     ...(above.length === 0 ? [] : [`(deny file-write* ${paths("literal", above)})`]),
     ...macosNetworkRules(grants.network),
+    // A workspace build reaches no unix socket but its own (a container engine's, an agent's, a database's would act
+    // outside its limits for it), whatever its network: a confined network has its own rule for this already.
+    ...(grants.writes === undefined || grants.network?.mode === "allowlist" ? [] : [
+      "(deny network-outbound (remote unix-socket))",
+      ...(grants.writes.subpaths.length === 0 ? [] : [`(allow network-outbound ${grants.writes.subpaths.map(root => `(remote unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`]),
+    ]),
   ].join("\n");
 }
 
@@ -742,20 +901,32 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
   const isolated = network === null ? [] : [
     "--unshare-net", "--unshare-pid", "--proc", "/proc",
-    ...linuxHostSockets().flatMap(mask),
+    ...linuxHostSockets(undefined, undefined, undefined, grants.writes !== undefined).flatMap(mask),
     "--ro-bind", network.bridge!.folder, network.bridge!.folder,
   ];
   // A confined build gets a /tmp of its own (other programs' sockets, other runs' folders and anything planted there
   // all out of sight at once), with only its own folders there given back; every mask and grant below still applies.
-  const privateTmp = network === null ? [] : ["--tmpfs", "/tmp", ...(network.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => ["--bind", path, path])];
+  // A workspace build (arc 2) sees the whole filesystem read-only, a /dev of its own and a /tmp of its own, with only
+  // its allowlist bound back writable; its own checkout's Git data is in that list.
+  const writes = grants.writes;
+  const root = writes === undefined ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", "--dev", "/dev"];
+  const writable = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes.map(one => one.path)].filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]);
+  // What a private /tmp gives back is read-only for a workspace build (its writable part is bound again after): the
+  // checkout's whole shared Git data among it must not come back writable.
+  // A confined network brings a /tmp of its own (arc 1); a workspace build with an open network sees the shared /tmp
+  // read-only like the rest of the root, its own folders there bound back writable.
+  const privateTmp = network === null ? [] : ["--tmpfs", "/tmp", ...(network?.keep ?? []).filter(path => inside(path, "/tmp") && existsSync(path)).flatMap(path => [writes === undefined ? "--bind" : "--ro-bind", path, path])];
+  // A workspace build never reaches the host's own services either (a container engine would write anywhere for it),
+  // whatever its network: confined networks mask them below already.
+  const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: ["--dev-bind", "/", "/", ...privateTmp, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...services, ...isolated, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
  * engines), wherever they exist here. */
-export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp"): string[] {
+export function linuxHostSockets(uid: number | undefined = process.getuid?.(), home: string = homedir(), tmp: string = "/tmp", followLinks = false, env: Readonly<Record<string, string | undefined>> = process.env): string[] {
   // The system's own, root-owned: resolved (/var/run is a link to /run) so bubblewrap mounts over the real path, once.
   const system = [
     ...(uid === undefined ? [] : [`/run/user/${uid}`]), "/run/dbus", "/var/run/dbus", "/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/podman",
@@ -773,8 +944,69 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
   const owned = (path: string): boolean => {
     try { const held = lstatSync(path); return !held.isSymbolicLink() && (held.isDirectory() || held.isSocket()); } catch { return false; }
   };
-  for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) if (owned(path)) masks.add(path);
-  // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
-  void tmp;
+  for (const path of [".docker", ".colima", ".orbstack", ".lima", ".rd", ".local/share/containers"].map(name => join(home, name))) {
+    if (owned(path)) masks.add(path);
+    // A workspace build can't plant a link in the home folder, so a link there is the operator's own: its target is
+    // masked too (an engine moved elsewhere).
+    else if (followLinks) { try { if (lstatSync(path).isSymbolicLink()) masks.add(realpathSync(path)); } catch { /* dangling */ } }
+  }
+  // An engine Toolroll's own environment points at, wherever it is (never the build's to choose): always masked. So is
+  // the SSH agent it names (it signs as you), which a shared /tmp would otherwise leave in reach.
+  for (const name of ["DOCKER_HOST", "CONTAINER_HOST"]) {
+    const socket = /^unix:\/\/(\/.+)$/.exec(env[name] ?? "")?.[1];
+    if (socket !== undefined) { try { masks.add(realpathSync(socket)); } catch { /* not there */ } }
+  }
+  const agent = env["SSH_AUTH_SOCK"];
+  if (agent !== undefined && isAbsolute(agent)) {
+    try {
+      const socket = realpathSync(agent);
+      masks.add(socket);
+      // The folder an agent makes for its socket (ssh-XXXX in /tmp) too, so a socket it makes next is out of reach.
+      if (inside(socket, real(tmp)) && dirname(socket) !== real(tmp) && !lstatSync(dirname(socket)).isSymbolicLink()) masks.add(dirname(socket));
+    } catch { /* not there */ }
+  }
+  // A build that shares /tmp (a workspace build with an open network) reaches none of the sockets there either: every
+  // socket two levels down (a multiplexer's, an agent's, a display's, an editor's), and the folder that holds it, taken
+  // as it is (never through a link). Toolroll's own launch folders are fenced by name already.
+  if (followLinks) {
+    const socketIn = (folder: string, depth: number): boolean => {
+      let found = false;
+      let entries: string[] = [];
+      try { entries = readdirSync(folder); } catch { return false; }
+      for (const entry of entries) {
+        const path = join(folder, entry);
+        if (RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))) continue;
+        let held;
+        try { held = lstatSync(path); } catch { continue; }
+        if (held.isSocket()) { masks.add(path); found = true; }
+        else if (held.isDirectory() && !held.isSymbolicLink() && depth > 0 && socketIn(path, depth - 1)) { masks.add(path); found = true; }
+      }
+      return found;
+    };
+    socketIn(tmp, 1);
+  }
+
   return [...masks].sort();
+}
+
+/**
+ * What each agent's fence gives it, by permission mode: the one table README's "What an agent can reach" shows
+ * (fenceSummaryMarkdown; a test holds them equal).
+ */
+export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string }[] = [
+  {
+    agent: "**Codex / OpenRouter** (any OS)",
+    auto: "Codex's sandbox with the fence: writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network",
+    full: "the same writes, with the fence; its commands reach the network only when the project's network is open",
+  },
+  {
+    agent: "**Claude, Gemini, ACP agents**",
+    auto: "macOS: inside a Seatbelt sandbox that denies the fence and writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files. Linux: the same in bubblewrap, with a /tmp of its own. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents",
+    full: "same",
+  },
+];
+
+/** FENCE_SUMMARY as README's markdown table. */
+export function fenceSummaryMarkdown(): string {
+  return ["| | Auto | Full access |", "|---|---|---|", ...FENCE_SUMMARY.map(row => `| ${row.agent} | ${row.auto} | ${row.full} |`)].join("\n");
 }

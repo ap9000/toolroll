@@ -88,6 +88,7 @@ import { policyHtml } from "../policy-ui.js";
 import { checkPolicy,parseList,policyParts } from "../policy.js";
 import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concurrency.js";
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
+import { isWritesMode } from "../writes-mode.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
@@ -2151,6 +2152,7 @@ ${modeWords(terms)
     "settings.project-concurrency": projectConcurrency,
     "settings.project-live-view": projectLiveView,
     "settings.project-network": projectNetwork,
+    "settings.project-writes": projectWrites,
     "settings.project-delete": projectDelete,
     "settings.policy-send": policySave,
     "settings.approval-send": approvalSave,
@@ -2234,5 +2236,21 @@ ${modeWords(terms)
     "edge.google-callback": googleCallback,
     "edge.connect-callback": connectCallback,
   });
+  // Settings → Project → Where builds write (writes-mode.ts). An approver for the project changes it with their password
+  // typed now; the ledger keeps before → after. New scopes use it; approved ones keep theirs.
+  async function projectWrites(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectWrites);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes where its builds may write.", "/settings/project");
+    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#writes`);
+    const wanted = body.get("writes");
+    if (!isWritesMode(wanted)) return back("problem", "Choose where builds may write. Nothing changed.");
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change where builds may write.");
+    const changed = store.setProjectWrites(repo, wanted, who.name, now);
+    return back("said", changed.before === changed.after ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
+  }
+
   return { registrations, modelsView };
 }

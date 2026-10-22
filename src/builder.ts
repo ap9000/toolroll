@@ -1,4 +1,6 @@
 import { legacyNetwork, repositoryEcosystems } from "./egress.js";
+import { checkoutGit } from "./teardown-git.js";
+import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
 import type { ProviderId } from "./contracts/provider.js";
 import { isAcpProvider } from "./acp-agents.js";
@@ -44,9 +46,9 @@ import { PREPARED_EVIDENCE_FILE, PREPARED_EVIDENCE_GIT, preparedScreenshotMatche
  * repair remains narrowly time-bounded because its job is narrowly scoped.
  */
 
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { run, runClaudeStreamJsonl, runOwnerTag, streamsInput, type ExecResult, type RunOptions } from "./exec.js";
 import { stopRequestedFor, stopWords, underStopWatch } from "./task-control.js";
 import { witnessedRunner } from "./process-custody.js";
@@ -62,7 +64,7 @@ import { heartbeat as runnerHeartbeat } from "./runner.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
 import { parseDecision, parseHandoff, repairPrompt, HEADLESS_RULE, HANDOFF_CONCLUSION_CAP, HANDOFF_ITEM_CAP, HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, type ParsedDecision, type Problem } from "./decision.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { invokeAgent, type AgentOutcome, type InvokeResult } from "./invoke.js";
+import { fencedCommands, invokeAgent, type AgentOutcome, type InvokeResult } from "./invoke.js";
 import { TELEGRAM_TOKEN_ENVS } from "./names.js";
 import { OPENROUTER_ENV_KEY, auditOf, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { liveLogContext } from "./live-detail.js";
@@ -471,6 +473,41 @@ export function launchNetworkOf(store: Store, taskRef: number, profile: Executio
   return { policy: legacyNetwork(profile.provider, repo === null ? [] : repositoryEcosystems(repo)) };
 }
 
+/** Asking a checkout which branch it is on: reads no file a build wrote and runs nothing. */
+const BRANCH_QUERIES: readonly (readonly string[])[] = [
+  ["--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"], ["--no-optional-locks", "symbolic-ref", "--short", "-q", "HEAD"],
+];
+
+/**
+ * The plane's git as a build runs it: hardened (teardown-git.ts checkoutGit) for every call, failing closed, but one —
+ * asking the project's own main checkout which branch it is on (its config is the operator's, and the query runs
+ * nothing). An injected runner (`request.git`: tests only; production always runs git itself) is used as given.
+ */
+function buildCheckoutGit(given: Runner, worktree: string, mainCheckout: string | null = null): Runner {
+  if (given !== run) return given;
+  const hardened = checkoutGit(given);
+  const real = (path: string): string | null => { try { return realpathSync(resolve(path)); } catch { return null; } };
+  const trusted = mainCheckout === null ? null : real(mainCheckout);
+  const own = real(worktree);
+  return (file, args, options) => {
+    const at = options?.cwd === undefined ? null : real(options.cwd);
+    const query = BRANCH_QUERIES.some(one => one.length === args.length && one.every((word, index) => args[index] === word));
+    return trusted !== null && at === trusted && at !== own && query ? given(file, args, options) : hardened(file, args, options);
+  };
+}
+
+/** A run's setup and check commands, in its build's fence, writing where the approval this build runs under sealed
+ * (never the scope as it may since have been rewritten; invoke.ts fencedCommands). */
+function commandRunner(store: Store, runId: number, profile: ExecutionProfile, inner: Runner): Runner {
+  return fencedCommands(store, runId, launchWritesOf(profile), inner);
+}
+
+/** Where a build may write (writes-mode.ts): what its approval sealed, or — sealed before write allowlists — anywhere
+ * its fence allows, as it was approved. */
+export function launchWritesOf(profile: ExecutionProfile): WritesMode {
+  return profile.writes ?? "anywhere";
+}
+
 export function proveApprovedProfile(
   scope: Scope | null,
   given: {
@@ -596,8 +633,10 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     maxTurns = DEFAULT_MAX_TURNS,
     timeoutMs = DEFAULT_BUILD_TIMEOUT_MS,
     agent,
-    git = run,
+    git: givenGit = run,
   } = request;
+  // The plane's own git on this build's checkout runs hardened, and never where the checkout's config names a command.
+  const git = buildCheckoutGit(givenGit, worktree, store.getWorktree(worktree)?.repo ?? null);
 
   const scope = store.getScope(taskId);
   const approval = approvalOf(scope);
@@ -890,7 +929,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
       // Setup runs under the stop watch (v52), owned by this run: an
       // operator's stop ends the setup's process group and the attempt
       // settles as interrupted below, never as a setup failure.
-      const made = await underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, request.clock ?? (() => now), runSetup), shell.file, shell.args, {
+      const made = await underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, request.clock ?? (() => now), commandRunner(store, request.runId, effective.profile, runSetup)), shell.file, shell.args, {
         cwd: worktree,
         timeoutMs: setupWanted.timeoutMs,
         processGroup: true,
@@ -1564,6 +1603,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
+        writes: launchWritesOf(effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -2095,7 +2135,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
           return current.ok && current.digest === observation.gateDigest && !stopRequestedFor(store, request.runId, request.shouldStop) && store.proveRunnerCustodyForSpawn(request.runId, clock());
         };
         if (!eligible()) throw Error("The observation source or execution authority changed.");
-        const execute: Runner = (file, args, options) => underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, clock, request.verify ?? run), file, args, {
+        const execute: Runner = (file, args, options) => underStopWatch(store, request.runId, () => runWithIsolatedDatabase(witnessedRunner(store, request.runId, clock, commandRunner(store, request.runId, captured.effective.profile, request.verify ?? run)), file, args, {
           ...options, processGroup: true, owner: runOwnerTag(store, request.runId), beforeSpawn: eligible,
           onSpawn: pid => request.onProviderSpawn?.(pid), envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST,
         }));
@@ -2580,7 +2620,7 @@ async function settleProof(
     const runVerification = async (label: string): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };
       // The check runs under the stop watch (v52), owned by this run.
-      const result = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, verifyRunner), verifyShell.file, verifyShell.args, {
+      const result = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
         cwd: worktree,
         timeoutMs: configured.timeoutMs,
         processGroup: true,
@@ -2620,7 +2660,7 @@ async function settleProof(
       detachShared(worktree, depsRoot);
       const label = "Own install · approved project setup (package.json or lockfile changed)";
       const setupShell = approvedCommandShell(live.command);
-      const installed = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, request.setup ?? run), setupShell.file, setupShell.args, {
+      const installed = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, request.setup ?? run)), setupShell.file, setupShell.args, {
         cwd: worktree,
         timeoutMs: live.timeoutMs,
         processGroup: true,
@@ -2637,7 +2677,7 @@ async function settleProof(
       noteCheckSuite(label, installed);
       checkLog.push(attemptLog(label, live.command, installed));
       if (installed.notFound || installed.timedOut || installed.code !== 0) return "own-install-failed";
-      return await sealedTreeState(request.git ?? run) === "clean" ? null : "setup-changed-files";
+      return await sealedTreeState(buildCheckoutGit(request.git ?? run, worktree)) === "clean" ? null : "setup-changed-files";
     };
     const ownInstall = await ownInstallIfChanged();
     const first = ownInstall === null ? await runVerification("Project check · attempt 1") : null;
@@ -2674,7 +2714,7 @@ async function settleProof(
       } else if (!store.proveRunnerCustodyForSpawn(runId, now())) {
         verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
       } else {
-        const gitRunner = request.git ?? run;
+        const gitRunner = buildCheckoutGit(request.git ?? run, worktree);
         const beforeSetup = await sealedTreeState(gitRunner);
         if (beforeSetup === "head-moved") {
           verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "checkout-moved" };
@@ -2696,7 +2736,7 @@ async function settleProof(
           } else {
             const setupRunner = request.setup ?? run;
             const setupShell = approvedCommandShell(liveBeforeSetup.command);
-            const restored = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, setupRunner), setupShell.file, setupShell.args, {
+            const restored = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, setupRunner)), setupShell.file, setupShell.args, {
               cwd: worktree,
               timeoutMs: liveBeforeSetup.timeoutMs,
               processGroup: true,
@@ -2997,6 +3037,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
+        writes: launchWritesOf(effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3240,7 +3281,7 @@ async function ingestPark(args: {
           ? watchdogsOf(args.profile, args.profile.repairTimeoutSeconds * 1000, true)
           : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
-        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile) }),
+        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile) }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,

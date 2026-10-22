@@ -1,3 +1,4 @@
+import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import * as projectSkills from "./project-skills.js";
 import { disposeBuildOutcome } from "./dispose.js";
 import { presetTerms, modeTermsJson, modeDigestOf } from "./modes.js";
@@ -163,7 +164,7 @@ describe("the builder's gates", () => {
   });
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -922,7 +923,7 @@ describe("what the builder tells the agent", () => {
   };
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -1169,7 +1170,7 @@ describe("what the builder does afterwards", () => {
   };
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -1387,7 +1388,7 @@ describe("the gates cannot be talked around", () => {
   };
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -1492,7 +1493,7 @@ describe("scope text is data, not instructions", () => {
   let prompt: string;
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -1718,7 +1719,7 @@ describe("the lease marker never reaches a commit", () => {
   const gitCalls: string[][] = [];
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -1799,7 +1800,7 @@ describe("the commit message", () => {
   let committed: string[] = [];
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -1902,7 +1903,7 @@ describe("the pulse", () => {
   const committed = () => gitCalls.some(args => args.includes("commit"));
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -2525,7 +2526,7 @@ describe("the park", () => {
   });
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -2748,7 +2749,7 @@ describe("bounded repair", () => {
   });
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v24: approvals bind exact routing
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -3057,7 +3058,7 @@ describe("the gemini repair road: native resume since S1 (Phase 3 A8/B8/C4, upda
   };
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "gemini", "gemini-2.5-pro", "test", T0);
     store.setPhaseConfig("installation", "plan", "gemini", "gemini-2.5-pro", "test", T0); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", T0);
@@ -3213,7 +3214,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   });
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -4373,7 +4374,7 @@ describe("adaptive execution plans", () => {
   });
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
@@ -4596,7 +4597,7 @@ describe("adaptive execution plans", () => {
   test("a task with no plan is never offered the protocol at all", async () => {
     // Every task filed before this feature: no plan, no milestones, no
     // revision to name — and a build that behaves exactly as it always did.
-    const bare = openStore(":memory:");
+    const bare = allowWhereUnfenced(openStore(":memory:"));
     try {
       bare.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
       bare.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z")); // v47: every phase names an exact model
@@ -4690,7 +4691,7 @@ describe("an agent that stops before its handoff keeps its work (run 2085)", () 
   const promptOf = (args: readonly string[]): string => args[args.indexOf("-p") + 1] ?? "";
 
   beforeEach(() => {
-    store = openStore(":memory:");
+    store = allowWhereUnfenced(openStore(":memory:"));
     store.setPhaseConfig("installation", "build", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
     store.setPhaseConfig("installation", "plan", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));
     store.setPhaseConfig("installation", "review", "claude", "sonnet", "test", new Date("2026-08-11T00:00:00.000Z"));

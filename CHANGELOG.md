@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Builds write only their workspace.** A new per-project setting (Settings →
+  Project → Where builds write, `toolroll project writes`), sealed into each
+  approval: by default a build writes only its checkout and commit data, the
+  project's package caches, its temp folder and its agent's session files —
+  never your shell profile, login items, agent settings or the repository's Git
+  config and hooks. `anywhere` keeps the old behaviour; approvals from before
+  keep it too. Enforced by Seatbelt, bubblewrap and Codex's own profile.
+- **Setup and check commands run in the build's fence**, with their own temp
+  folder and the project's caches.
+- **The plane's Git on a build's checkout runs hardened** (no hooks, fsmonitor
+  or submodules) and refuses a checkout whose config names a command.
+- **Tool servers start outside the checkout** and never run a file the build
+  wrote.
 - **`toolroll release` finishes when GitHub deletes the merged branch
   itself.** A delete that fails because the branch is already gone counts as
   done; one that fails while the branch is still there still stops.

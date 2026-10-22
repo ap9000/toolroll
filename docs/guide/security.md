@@ -38,6 +38,20 @@ that Mac. `--open` lifts the rule for a project. New scopes use the setting;
 approved ones keep the network they were approved with. A result's **Network**
 row shows what the build connected to and what was refused.
 
+## Builds write only their workspace
+
+Each approved scope also seals where its build may write. By default a build
+writes only its checkout and commit data, the project's package caches, its temp
+folder and its agent's session files; your shell profile, login items, agent
+settings and the repository's Git config and hooks stay read-only to it. Its
+setup and check commands run in the same fence. A project whose tools must write
+elsewhere in your home folder can choose otherwise:
+
+    toolroll project writes --repo ~/code/shop anywhere
+
+or **Settings → Project → Where builds write**. New scopes use the setting;
+approved ones keep what they were approved with.
+
 ## Sign in with your identity provider
 
 **Settings → Sign-in** (instance operators) connects Toolroll to

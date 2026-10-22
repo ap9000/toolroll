@@ -5,6 +5,7 @@
  * sign-in with the identity provider). The repository itself stays.
  */
 import type { ProjectNetwork } from "./egress.js";
+import type { WritesMode } from "./writes-mode.js";
 import { html, postForm, type Html, reauth } from "./html.js";
 import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
 
@@ -36,7 +37,27 @@ export type ProjectSettingsView = {
   liveView?: { commands: boolean; canChange: boolean; nonce?: string };
   /** What its builds may reach on the network (egress.ts), and whether this person may change it. */
   network?: { setting: ProjectNetwork; canChange: boolean };
+  /** Where its builds may write (writes-mode.ts), and whether this person may change it. */
+  writes?: { setting: WritesMode; canChange: boolean };
 };
+
+/** Where builds may write, said plainly; an approver changes it with their password. */
+function writesHtml(view: ProjectSettingsView): Html | "" {
+  const writes = view.writes;
+  if (writes === undefined) return "";
+  const said = writes.setting === "workspace"
+    ? html`<p>Builds write <strong>only their own checkout</strong>, its caches and its temp folder. Your shell profile, login items, agent settings and the repository's Git config and hooks stay as they are.</p>`
+    : html`<p>Builds may write <strong>anywhere</strong> outside Toolroll's own folders, your credentials and other projects.</p>`;
+  if (!writes.canChange) return html`<section class="build-access writes-setting" id="writes" aria-labelledby="writes-title"><h2 id="writes-title">Where builds write</h2>${said}<p class="meta">An approver for this project can change this.</p></section>`;
+  const option = (value: WritesMode, label: string, detail: string) => html`<label class="check"><input type="radio" name="writes" value="${value}"${writes.setting === value ? html` checked` : ""}> ${label}</label><p class="meta">${detail}</p>`;
+  const form = postForm("/settings/project/writes", html`
+    ${option("workspace", "Only their workspace (recommended)", "The checkout and its Git data, the project's own package caches, the build's temp folder, and what its agent needs to keep its session.")}
+    ${option("anywhere", "Anywhere outside Toolroll's fenced folders", "For a project whose tools must write elsewhere in your home folder or the shared temp folder. Credentials, Toolroll's own folders and other projects stay fenced.")}
+    <p class="meta">Tasks scoped from now on use this; tasks already approved keep what they were approved with.</p>
+    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
+  return html`<section class="build-access writes-setting" id="writes" aria-labelledby="writes-title"><h2 id="writes-title">Where builds write</h2>${said}<details><summary>Change</summary>${form}</details></section>`;
+}
 
 /** Network: what the project's builds may reach, said plainly; an approver changes it with their password. */
 function networkHtml(view: ProjectSettingsView): Html | "" {
@@ -116,7 +137,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: 
   const remote = html`<section class="build-access recorded-remote" aria-labelledby="recorded-remote-title"><h2 id="recorded-remote-title">Recorded remote</h2>${view.remoteUrl
     ? html`<p class="path">${view.remoteUrl}</p>`
     : html`<p>No remote recorded. Landed work waits for your review.</p>`}<details><summary>Change remote</summary><p>An owner or instance operator can run:</p><p class="path">toolroll repos add &lt;project&gt; --remote &lt;url&gt;</p></details></section>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${liveViewHtml(view)}`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${writesHtml(view)}${liveViewHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`

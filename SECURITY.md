@@ -30,6 +30,16 @@ user. What it promises:
   working bubblewrap) a build doesn't start, unless an instance operator
   allows unconfined agents (`config unconfined-agents allow`; each such run
   says "Not confined"). The README's "What an agent can reach" has the table.
+- **A build writes only its workspace.** Each scope seals where its build may
+  write (`project writes`, default `workspace`): its checkout and commit data,
+  the project's package caches, its temp folder and its agent's session files.
+  The operator's shell profile, login items, agent settings and the
+  repository's Git config, hooks and info are read-only to it, enforced by the
+  same sandbox (Seatbelt, bubblewrap, Codex's profile); `anywhere` is an
+  approver's explicit choice. Setup and check commands run in the build's
+  fence. Toolroll's own Git on a build's checkout skips hooks, fsmonitor and
+  submodules and refuses config that names a command; tool servers never run
+  from what a build wrote.
 - **The network a build reaches is approved with it.** Each scope seals its
   network: the agent's provider, the package registries the project uses, and
   hosts an approver added (`project network --allow`), or `open`. The

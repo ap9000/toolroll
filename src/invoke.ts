@@ -32,12 +32,13 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR } from "./agent-fence.js";
-import { agentFence, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
@@ -191,7 +192,7 @@ export async function invokeAgent(
   runId: number,
   spec: AgentSpec,
   invocation: Omit<Invocation, "model">,
-  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork },
+  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork; writes?: WritesMode },
 ): Promise<InvokeResult> {
   const clock = options.clock ?? (() => new Date());
   if (options.accumulateUsage && (invocation.phase !== "review" || invocation.resumeSession === null)) {
@@ -346,6 +347,7 @@ export async function invokeAgent(
     liveInput: _liveInput,
     acpCheck: _acpCheck,
     network: launchNetwork,
+    writes: launchWrites,
     ...runOptions
   } = options;
   // The live setting is read STRICTLY (atomic authority closure): a
@@ -409,12 +411,21 @@ export async function invokeAgent(
   // The project's tools (v80): exactly its MCP servers, and none of the
   // operator's global or a repository's own, served by this launch's broker
   // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
+  // Set once the fence is known: a fenced build's servers never start outside a fence.
+  let serverMustBeFenced = false;
+  // What the build writes (its checkout, its project's caches): a tool server never runs from there, nor reads it at all.
+  const serverUntrusted = workspace === null ? [] : toolUntrusted(store, workspace, keyHome);
   const launchTools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
     env: { ...process.env, ...(runOptions.env ?? {}) },
     omitEnv: [...(runOptions.omitEnv ?? []), ...ALL_CREDENTIAL_ENV],
     pass: childDatabaseEnv(isolatedDb.file),
-    ...(workspace === null ? {} : { cwd: workspace }),
+    // A tool server starts in a folder the build can't write, and never runs the build's own bytes (arc 2).
+    cwd: keyHome ?? homedir(),
+    untrusted: serverUntrusted,
     wrap: () => serverFence,
+    // A fenced build's tool servers start only in a fence too, unless an instance operator allowed unconfined agents.
+    unwrapped: () => serverMustBeFenced && !store.unfencedAgentsAllowed()
+      ? "This machine can't confine the tool's server (no macOS sandbox, no working bubblewrap), so it was not started." : null,
   });
   if (launchTools !== null && "refused" in launchTools) {
     removeAgentDatabase(isolatedDb.dir);
@@ -440,7 +451,7 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
@@ -479,10 +490,14 @@ export async function invokeAgent(
   // A tool server the broker starts is fenced by what this platform supports, whatever the provider: Codex's own
   // profile fences only its agent's commands, and the broker starts servers outside it.
   if (fence.length > 0) {
-    // A tool server keeps its own reach (it holds its tool's secrets, not the agent's code): never the agent's network.
-    const serverGrants = (): FenceGrants => { const { network: _agentOnly, ...rest } = grants; return rest; };
-    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, fence, serverGrants());
-    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, fence, serverGrants());
+    // A tool server keeps its own reach (it holds its tool's secrets, not the agent's code): never the agent's network,
+    // nor its write allowlist (a server keeps its own state where it always has).
+    const serverGrants = (): FenceGrants => { const { network: _agentOnly, writes: _agentWrites, ...rest } = grants; return rest; };
+    // Nor read what the build wrote: however its arguments are spelled, no byte of the checkout or caches can load.
+    const serverDenies = [...fence, ...serverUntrusted.filter(path => existsSync(path)).map(path => realpathSync(path))];
+    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, serverDenies, serverGrants());
+    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, serverDenies, serverGrants());
+    serverMustBeFenced = true;
   }
   // No silent fallback (arc 1): a build this machine can't confine at the OS — Claude reduced to its own file-tool
   // rules, Gemini to nothing — doesn't start unless the instance operator allowed unconfined agents here. An injected
@@ -558,6 +573,10 @@ export async function invokeAgent(
     ...(egress === null || !("policy" in network) ? {} : proxyEnv(egress, network.policy.loopback)),
     // Its own temp folder, where its tools' sockets may live (the only one its fence admits besides its checkout).
     ...(runTemp === null ? {} : { TMPDIR: runTemp, TMP: runTemp, TEMP: runTemp }),
+    // Claude's own working folder goes there too (it is otherwise the shared /tmp/claude-<uid>).
+    ...(runTemp === null || spec.provider !== "claude" ? {} : { CLAUDE_CODE_TMPDIR: runTemp }),
+    // A workspace build's package managers keep their caches in its project's own folder (arc 2).
+    ...(fenceOf.cache === undefined || grants.writes === undefined ? {} : buildCacheEnv(fenceOf.cache)),
     // This key is deliberately last: no caller may point an agent back at
     // the live control database through a generic RunOptions override.
     ...childDatabaseEnv(isolatedDb.file),
@@ -1007,7 +1026,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"], keyHome: string | undefined, ownTools: string | null): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; problem?: string } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -1020,20 +1039,117 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"], 
     const binding = worktree === null || row === null ? null : trustedWorktreeBinding(row.repo, worktree, poolRoots);
     const boundary = worktree === null ? null : taskBoundary({ worktree, provider, ...home, binding });
     const folders = runFolders(ownTools);
+    // A build with a checkout writes only its workspace unless its approval said anywhere (arc 2): its checkout and
+    // Git data, its launch folder, its project's caches and the provider state its CLI must write.
+    const allowed = worktree === null || row === null || writes !== "workspace" ? null
+      : writeAllowlist({ provider, home: keyHome ?? homedir(), worktree, binding, launchFolder: ownTools, cache: buildCacheFolder(row.repo, keyHome ?? homedir()) });
+    const fence = agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] });
+    const grants = fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home, poolRoots });
     return {
-      fence: agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders }),
+      fence,
       fileTools: boundary?.fileTools ?? [],
       // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
       // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
       // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
-      grants: fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home,
-        poolRoots }),
+      grants: allowed === null ? grants : { ...grants, writes: allowed.writes, readOnly: [...new Set([...grants.readOnly, ...allowed.readOnly])].sort() },
       // The checkout's own Git data, which a private /tmp gives back beside the checkout (agent-fence.ts linuxFenced).
       gitPaths: binding === null ? [] : [binding.gitdir, join(binding.main, ".git")],
+      ...(allowed === null || row === null ? {} : { cache: buildCacheFolder(row.repo, keyHome ?? homedir()) }),
     };
   } catch (error) {
     return { fence: [], fileTools: [], grants: NO_GRANTS, problem: error instanceof CheckoutBindingError ? error.message : "The build fence could not be prepared." };
   }
+}
+
+/**
+ * A build's setup and check commands, run in its fence (arc 2): the same denies as its agent's (Toolroll's state,
+ * credentials, other projects and runs), its write allowlist when its approval sealed one (its checkout and Git data,
+ * its project's caches, and a temp folder of the command's own), and its package managers pointed at those caches.
+ * Their network stays as it was. A machine without an OS fence runs them as before; a fence that can't be prepared
+ * (a checkout whose binding no longer proves) runs nothing.
+ */
+export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+  // An injected runner (tests) starts no real command, as an injected agent starts no real agent (invokeAgent).
+  if (inner !== runCommand) return inner;
+  return async (file, args, options) => {
+    // As a build itself: where nothing can confine them, they run only when an instance operator allowed unconfined agents.
+    if (!available()) {
+      if (store.unfencedAgentsAllowed()) return inner(file, args, options);
+      return { code: 1, stdout: "", stderr: "This machine can't confine the build's commands (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
+    }
+    const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
+    try {
+      const temp = join(own, "tmp");
+      mkdirSync(temp, { mode: 0o700 });
+      const fenced = runFence(store, runId, "command", undefined, own, writes);
+      if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
+      if (fenced.fence.length === 0) return inner(file, args, options);
+      // A self-hosted check's own database (child-database.ts) is the command's to write too.
+      const database = options?.env?.["TOOLROLL_DB"];
+      const checkData = database === undefined || fenced.grants.writes === undefined ? null : grantFolder(dirname(database), false);
+      const grants: FenceGrants = checkData === null ? fenced.grants : { ...fenced.grants, writes: { ...fenced.grants.writes!, subpaths: [...fenced.grants.writes!.subpaths, checkData] } };
+      return await inner(file, args, {
+        ...options,
+        fence: fenced.fence,
+        fenceGrants: grants,
+        env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)) },
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  };
+}
+
+/**
+ * A project's checks run in a checkout of a result's commit made for them (result-follow-ups.ts, batch-checks.ts), in
+ * the same fence as a build's commands: Toolroll's state, credentials, other projects and runs denied; under the
+ * project's writes setting, only that checkout, its Git data, its own temp folder, the project's caches and its check
+ * database writable. Where nothing can confine them, they run only when an instance operator allowed unconfined agents.
+ */
+export function fencedCheckoutCommands(store: Store, repo: string, checkout: string, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+  if (inner !== runCommand) return inner;
+  return async (file, args, options) => {
+    if (!available()) {
+      if (store.unfencedAgentsAllowed()) return inner(file, args, options);
+      return { code: 1, stdout: "", stderr: "This machine can't confine the project's checks (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
+    }
+    const databaseFile = store.databaseFile();
+    if (databaseFile === null) return inner(file, args, options);
+    const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
+    try {
+      const temp = join(own, "tmp");
+      mkdirSync(temp, { mode: 0o700 });
+      let binding: WorktreeBinding;
+      try { binding = trustedWorktreeBinding(repo, checkout); } catch {
+        return { code: 1, stdout: "", stderr: "The check's checkout couldn't be bound to its project, so nothing ran.\n", timedOut: false, notFound: false };
+      }
+      const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+      const boundary = taskBoundary({ worktree: checkout, provider: "command", binding });
+      const folders = runFolders(own);
+      const cache = buildCacheFolder(repo);
+      const allowed = store.projectWrites(repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home: homedir(), worktree: checkout, binding, launchFolder: own, cache });
+      const database = options?.env?.["TOOLROLL_DB"];
+      const checkData = allowed === null || database === undefined ? null : grantFolder(dirname(database), false);
+      const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, binding, poolRoots });
+      const grants: FenceGrants = allowed === null ? base
+        : { ...base, readOnly: [...new Set([...base.readOnly, ...allowed.readOnly])].sort(), writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] } };
+      return await inner(file, args, {
+        ...options,
+        fence: agentFence({ databaseFile, worktree: checkout, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] }),
+        fenceGrants: grants,
+        env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)) },
+      });
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  };
+}
+
+/** What a build writes that a tool server must never run from: its checkout and its project's caches. A checkout with
+ * no record never gets this far: its fence refuses the launch (runFence) before any tool server can start. */
+function toolUntrusted(store: Store, workspace: string, keyHome: string | undefined): string[] {
+  const row = store.getWorktree(workspace);
+  return [workspace, ...(row === null ? [] : [buildCacheFolder(row.repo, keyHome ?? homedir())])];
 }
 
 /** The operator's own model choices a build routed with no model keeps (provider-home.ts). */

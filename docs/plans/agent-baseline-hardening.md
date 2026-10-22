@@ -114,6 +114,17 @@ the release, not a user's build.
 - **Docs** (README, SECURITY.md, docs/guide/security.md) generated from one table in code (`fenceSummary()`), with a
   test that they match.
 
+**Measured before building (2026-10-22, Claude Code 2.1.290, macOS):**
+- A per-run `CLAUDE_CONFIG_DIR` loses the subscription sign-in: Claude keys its keychain item by the config folder
+  ("Claude Code-credentials-<hash>"), and copying the credential would let a build's refresh rotate the operator's
+  token. So Claude keeps its home, narrowed: a full build (edits, Bash, git) runs with **only** the worktree, the run's
+  own temp folder (`TMPDIR` and `CLAUDE_CODE_TMPDIR`, which moves Claude's own working folder out of the shared
+  `/tmp/claude-<uid>`), and its own transcript folder `~/.claude/projects/<worktree as a slug>` writable;
+  `~/.claude.json`, settings, hooks, plugins, `shell-snapshots` (sourced by interactive sessions), other sessions'
+  transcripts, `backups` and `cache` read-only; and `~/.claude/sessions` (live sessions' peer keys) unreadable.
+- Gemini writes `~/.gemini/{projects.json and its temp names, history/, tmp/}`; its `settings.json` (MCP servers)
+  stays read-only.
+
 **Native tests**: Full access can't write `~/.zshrc`, `~/Library/LaunchAgents`, `~/.claude/settings.json` or the repo's
 `.git/config`; a `.gitattributes` clean filter planted by the agent runs fenced (can't read the state folder) when the
 plane commits; a check command can't read the fenced state folder; a tool server configured as `node ./server.js` is
@@ -212,6 +223,48 @@ Where the build departs from the text above, and why:
   (fails closed). Known: a long-running Linux build can see a later run's launch folder outside /tmp (arc 2).
 - Natively proved: macOS (Seatbelt) and Linux (Ubuntu 26.04, bubblewrap 0.11) attack tests, and a real Claude build
   whose eight connections all went to api.anthropic.com through its proxy (its Datadog telemetry refused).
+
+## Arc 2 as built (2026-10-22)
+
+- **A setting, not a mandate.** Where builds write is per project and sealed per approval like the network:
+  `workspace` (the default for new scopes) or `anywhere` (outside the fence, as before). Approvals sealed before
+  write allowlists keep `anywhere`, as they were approved. Settings → Project → Where builds write, `project writes`.
+- **Claude keeps its home, narrowed** (measured): writable are its checkout, the run's temp (`TMPDIR`,
+  `CLAUDE_CODE_TMPDIR`) and its transcript folder for this checkout (by exact name; a shortened name only with
+  Claude's `-<hash>` suffix); `~/.claude/sessions` is unreadable. Gemini: history, tmp, and projects.json with its
+  atomic-rename names. ACP agents: only known data folders (OpenCode's and Goose's ~/.local/share|state roots,
+  Qwen's history and temp); their configuration stays read-only whole, and Cursor and Cline write nothing of their
+  own until measured (a project using them chooses `anywhere`). Proved with a real Claude
+  build: edit, commit, and a refused `~/.zshrc` append.
+- **Git data: only what a commit writes.** objects, refs, logs and packed refs of the shared repository plus the
+  worktree's own folder; never config, hooks, info, `objects/info` (alternates), other worktrees' data or modules.
+  The worktree's `config.worktree` is made empty and held read-only (so a Linux bind exists).
+- **Codex:** a workspace build's profile extends `:read-only` with the allowlist written back (its `:workspace` also
+  writes the shared temp folders, which an explicit read entry doesn't override).
+- **Linux:** a read-only root, a /dev and /tmp of its own, the allowlist bound back. Proved in Ubuntu 26.04
+  (bubblewrap 0.11). A file granted by prefix is bound only when it exists, so Gemini's projects.json is written in
+  place, not renamed over (residual).
+- **Plane-launched code, by a different route than the plan said.** Rather than running the plane's `git add`/`status`
+  inside the fence, the plane's Git on a build's checkout runs teardown's hardening (no hooks, fsmonitor, ext,
+  credential helpers, maintenance, signing; submodules ignored), reads **no global or system config** (only values are
+  carried: identity, line endings, ignore and case settings, and git-lfs's filters exactly as git-lfs installs them),
+  and refuses a checkout whose own config includes a file (read without git, then by git's own parser on that file
+  alone; the `.git` pointer read exactly as git does), names a command, or sets any `lfs.*` key but inert ones (here
+  and in a `.lfsconfig`). Judging the operator's command settings one bypass at a time could not be won.
+- **Setup, check, observation, follow-up and batch commands** run in the build's fence (filesystem and writes) with a
+  temp folder of their own (`so-cmd-*`), the project's caches and their check database, under the approval the build
+  runs under (follow-up and batch checks: the project's setting); where nothing can confine them they run only when
+  unconfined agents are allowed. Their network is unchanged (follow-up: route them through a run proxy too).
+- **Tool servers** start in the operator's home folder, can't read the build's checkout or caches at all (and are
+  refused early when their command or arguments name them, or a relative path), and never start unfenced for a fenced
+  build unless unconfined agents are allowed. Their own network policy is a follow-up.
+- **Grants never follow a link** of the user's at or above the folder; on macOS a granted folder itself can't be
+  renamed or replaced. A workspace build reaches no host service socket (container engines, DOCKER_HOST's), whatever
+  its network.
+- **Docs:** README's fence table is `FENCE_SUMMARY` in code (a test holds them equal).
+- **Codex: five rounds** (10 findings → 5 open + 1 new → 1 open + 1 new → 1 new → GO at 9bfc8baa), alongside the
+  background security reviews. Review: background security reviews during the build (whole common Git dir writable; prefix grant too wide;
+  submodules entered; tool-path parser differential and case folding) — all fixed with tests.
 
 ## Order and shipping
 

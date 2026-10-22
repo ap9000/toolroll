@@ -40,6 +40,7 @@ export { isAcpProfile };
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { networkFromValue, networkWords, type NetworkProfile } from "./egress.js";
+import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { z } from "zod";
 import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
@@ -161,6 +162,9 @@ export type ClaudeProfile = {
   /** What the build may reach (egress.ts), resolved when the scope was written; absent on approvals sealed before
    * network policies, which run narrowed (egress.ts legacyNetwork). */
   network?: NetworkProfile;
+  /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
+   * write allowlists, which keep writing anywhere their fence allows. */
+  writes?: WritesMode;
 };
 
 export type CodexShapedProfile = {
@@ -179,6 +183,9 @@ export type CodexShapedProfile = {
   repairTimeoutSeconds: number;
   repairModel: string;
   network?: NetworkProfile;
+  /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
+   * write allowlists, which keep writing anywhere their fence allows. */
+  writes?: WritesMode;
 };
 
 export type GeminiProfile = {
@@ -199,6 +206,9 @@ export type GeminiProfile = {
   repairTimeoutSeconds: number;
   repairModel: string;
   network?: NetworkProfile;
+  /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
+   * write allowlists, which keep writing anywhere their fence allows. */
+  writes?: WritesMode;
 };
 
 /**
@@ -220,6 +230,9 @@ export type AcpProfile = {
   repairIdleTimeoutSeconds: number;
   repairModel: string;
   network?: NetworkProfile;
+  /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
+   * write allowlists, which keep writing anywhere their fence allows. */
+  writes?: WritesMode;
 };
 
 export type ExecutionProfile = ClaudeProfile | CodexShapedProfile | GeminiProfile | AcpProfile;
@@ -463,10 +476,12 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   // The network a scope was written with: present and exact, or absent (an approval from before network policies).
   const network = p["network"] === undefined ? undefined : networkFromValue(p["network"]);
   if (network === null) return null;
-  const withNetwork = network === undefined ? {} : { network };
+  const writes = p["writes"];
+  if (writes !== undefined && !isWritesMode(writes)) return null;
+  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }) };
   if (p["provider"] === "claude") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes"]) &&
       str(p["model"]) &&
       (p["permissionArgv"] === "auto" || p["permissionArgv"] === "acceptEdits" || p["permissionArgv"] === "bypassPermissions") &&
       num(p["maxTurns"]) && num(p["repairMaxTurns"]) &&
@@ -490,7 +505,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "codex" || p["provider"] === "openrouter") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes"]) &&
       str(p["model"]) &&
       (p["sandboxMode"] === "workspace-write" || p["sandboxMode"] === "danger-full-access") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -514,7 +529,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "gemini") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes"]) &&
       str(p["model"]) &&
       (p["approvalArgv"] === "auto_edit" || p["approvalArgv"] === "yolo") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -538,7 +553,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (typeof p["provider"] === "string" && isAcpProvider(p["provider"])) {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes"]) &&
       str(p["model"]) &&
       p["permission"] === "full" &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -1676,6 +1691,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     ...scopeRouteWords(scope, readiness),
     // What the build may reach (egress.ts), part of what the yes agrees to.
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  network      ${networkWords(scope.profile.network ?? null).replace(/^Network: /, "")}`]),
+    ...(scope.profile === null || scope.profile === undefined ? [] : [`  writes       ${writesWords(scope.profile.writes)}`]),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];

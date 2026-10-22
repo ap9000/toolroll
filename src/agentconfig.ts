@@ -21,6 +21,7 @@
  */
 
 import { PROJECT_NETWORK_DEFAULT, repositoryEcosystems, resolveNetwork } from "./egress.js";
+import { WRITES_DEFAULT } from "./writes-mode.js";
 import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId } from "./provider.js";
 import type { Store, TaskRef } from "./store.js";
 import { ACP_LIMITS, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
@@ -236,7 +237,9 @@ export function resolveScopeProfile(
   // What the build may reach (egress.ts): resolved now, from the project's setting, the provider's own hosts and the
   // registries the repository's own HEAD names, and sealed with the rest of the profile.
   const network = resolveNetwork(provider, repo === null ? PROJECT_NETWORK_DEFAULT : store.projectNetwork(repo), repo === null ? [] : repositoryEcosystems(repo));
-  return { ok: true, profile: { ...profile, network }, provenance: { resolvedFrom: build.source, repairFrom } };
+  // Where the build may write (writes-mode.ts): the project's setting, sealed likewise.
+  const writes = repo === null ? WRITES_DEFAULT : store.projectWrites(repo);
+  return { ok: true, profile: { ...profile, network, writes }, provenance: { resolvedFrom: build.source, repairFrom } };
 }
 
 // ---- route candidates (v47, phase routing) --------------------------------

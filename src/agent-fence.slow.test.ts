@@ -615,7 +615,7 @@ describe("what the fence gives back", () => {
       "(allow default)",
       '(deny file-read* file-write* (subpath "/s/secret"))',
       '(deny file-write* (subpath "/r/meta"))',
-      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-)"))',
+      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-|so-cmd-)"))',
       '(allow file-read-metadata (literal "/r/checkout"))',
       `(allow file-read* file-write* (subpath "${own}"))`,
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',

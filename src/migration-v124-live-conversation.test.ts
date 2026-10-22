@@ -35,9 +35,9 @@ test.each([123, -123])("v%s: the live conversation's setting and note history ar
 
   expect(updateSafeSchema(123)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(124);
-  expect(SCHEMA_VERSION).toBe(130);
+  expect(SCHEMA_VERSION).toBe(131);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(130);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(131);
   for (const table of V124_TABLES) expect(store.handle.prepare("SELECT count(*) AS n FROM " + table).get()?.["n"]).toBe(0);
   for (const index of V124_INDEXES) expect(store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(index)).toBeDefined();
   expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -50,5 +50,5 @@ test.each([123, -123])("v%s: the live conversation's setting and note history ar
   } finally { after.close(); }
   // Opening again changes nothing: the file is current.
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(130);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(131);
 });
