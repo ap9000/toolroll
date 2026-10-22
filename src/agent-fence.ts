@@ -948,10 +948,10 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
     // masked too (an engine moved elsewhere).
     else if (followLinks) { try { if (lstatSync(path).isSymbolicLink()) masks.add(realpathSync(path)); } catch { /* dangling */ } }
   }
-  // An engine the environment points at, wherever it is.
+  // An engine Toolroll's own environment points at, wherever it is (never the build's to choose): always masked.
   for (const name of ["DOCKER_HOST", "CONTAINER_HOST"]) {
     const socket = /^unix:\/\/(\/.+)$/.exec(env[name] ?? "")?.[1];
-    if (followLinks && socket !== undefined) { try { masks.add(realpathSync(socket)); } catch { /* not there */ } }
+    if (socket !== undefined) { try { masks.add(realpathSync(socket)); } catch { /* not there */ } }
   }
   // /tmp's sockets (the display's, an SSH agent's, a multiplexer's, editors') go with the build's private /tmp.
   void tmp;
