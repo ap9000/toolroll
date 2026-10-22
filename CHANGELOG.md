@@ -33,6 +33,9 @@ unless an instance operator allows it (`toolroll config unconfined-agents`).
   new line on a phone.
 - **A calmer UI**: one button style, theme tokens, status glyphs and a Crew
   rail.
+- **`toolroll release` finishes**: a release build is recorded as a commit of
+  its own holding exactly the candidate's files; the release now accepts it
+  by its files and deploys to it, instead of stopping at the check.
 - **Release check** sizes itself to the machine; deploys keep hidden table
   ids and find dependencies behind macOS's temp-folder link.
 
