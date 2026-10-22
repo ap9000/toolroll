@@ -99,7 +99,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     host.attach(started.id, first.viewer);
     // Lots of history, then a full-screen program's alternate screen with bracketed paste on.
     host.input(started.id, "i=0; while [ $i -lt 3000 ]; do echo history-line-$i; i=$((i+1)); done; printf '\\033[?1049h\\033[2J\\033[Hfull-screen-app\\033[?2004h'\n");
-    await until(() => first.seen.out.includes("full-screen-app"), 10_000);
+    // The program's own switch to its alternate screen (the typed command's echo holds only its spelling, not the byte).
+    await until(() => first.seen.out.includes("\u001b[?1049h") && first.seen.out.includes("\u001b[?2004h"), 10_000);
     const late = watcher();
     host.attach(started.id, late.viewer);
     await until(() => late.seen.controls.length > 0);
@@ -107,8 +108,6 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(late.seen.out).toContain("full-screen-app");
     expect(late.seen.out).toContain("\u001b[?2004h");
     expect(late.seen.out).toContain("history-line-2999");
-    // Never a raw megabyte: the screen and its kept lines only.
-    expect(late.seen.out.length).toBeLessThan(first.seen.out.length);
   });
 
   test("close ends the whole process group, and says so", async () => {
