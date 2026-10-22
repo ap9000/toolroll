@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { createServer, request, type Server } from "node:http";
 import { connect } from "node:net";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -206,7 +206,8 @@ describe("the Linux bridge's forwarder", () => {
   test("is made only in a private folder of this user's: never through a link planted where the folder should be", async () => {
     const { startEgressBridge } = await import("./egress-bridge.js");
     const { chmodSync, symlinkSync } = await import("node:fs");
-    const dir = mkdtempSync(join(tmpdir(), "so-bridge-"));
+    // A short folder: a socket's whole path must stay under ~100 bytes.
+    const dir = realpathSync(mkdtempSync("/tmp/sob-"));
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
     const elsewhere = join(dir, "elsewhere"), planted = join(dir, "bridge-secrets"), open = join(dir, "open");
     mkdirSync(elsewhere, { mode: 0o700 });
@@ -215,6 +216,10 @@ describe("the Linux bridge's forwarder", () => {
     symlinkSync(elsewhere, planted);
     await expect(startEgressBridge([], planted)).rejects.toThrow(/isn't a private folder/);
     await expect(startEgressBridge([], open)).rejects.toThrow(/isn't a private folder/);
+    // A private folder too deep for a socket path is refused in words, never truncated.
+    const deep = join(elsewhere, "x".repeat(90));
+    mkdirSync(deep, { mode: 0o700 });
+    await expect(startEgressBridge([], deep)).rejects.toThrow(/too deep for a socket path/);
     const own = await startEgressBridge([], elsewhere);
     closers.push(() => own.close());
     expect(own.folder.startsWith(elsewhere)).toBe(true);
