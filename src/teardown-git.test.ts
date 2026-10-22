@@ -35,7 +35,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { checkoutGit, teardownGit, TEARDOWN_FLAGS } from "./teardown-git.js";
 import { WorktreePool } from "./worktree.js";
 import { openStore } from "./store.js";
 
@@ -108,4 +108,37 @@ test("removal from the shared repository refuses the target worktree's fsmonitor
     expect(existsSync(target)).toBe(true);
     expect(existsSync(marker)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+describe("the plane's git on a build's checkout (checkoutGit)", () => {
+  const repo = () => {
+    const dir = mkdtempSync(join(tmpdir(), "so-checkout-git-"));
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, env });
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    return { dir, env };
+  };
+
+  test("a filter a build planted in the checkout's config never runs: the add is refused", async () => {
+    const { dir, env } = repo();
+    const marker = join(dir, "..", `${dir.split("/").pop()}-ran`);
+    execFileSync("git", ["config", "filter.evil.clean", `touch ${marker}; cat`], { cwd: dir });
+    writeFileSync(join(dir, ".gitattributes"), "* filter=evil\n");
+    const added = await checkoutGit()("git", ["add", "-A"], { cwd: dir, env });
+    expect(refusal(added)).toMatch(/filter\.evil\.clean/);
+    expect(existsSync(marker)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a hook a build planted never runs, and an ordinary checkout commits", async () => {
+    const { dir, env } = repo();
+    const marker = join(dir, "hook-ran");
+    mkdirSync(join(dir, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(dir, ".git", "hooks", "pre-commit"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    const git = checkoutGit();
+    expect((await git("git", ["add", "-A"], { cwd: dir, env })).code).toBe(0);
+    expect((await git("git", ["commit", "-q", "-m", "x"], { cwd: dir, env })).code).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

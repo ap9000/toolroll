@@ -1,4 +1,5 @@
 import { legacyNetwork, repositoryEcosystems } from "./egress.js";
+import { checkoutGit } from "./teardown-git.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
 import type { ProviderId } from "./contracts/provider.js";
@@ -603,8 +604,10 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     maxTurns = DEFAULT_MAX_TURNS,
     timeoutMs = DEFAULT_BUILD_TIMEOUT_MS,
     agent,
-    git = run,
+    git: givenGit = run,
   } = request;
+  // The plane's own git on this build's checkout runs hardened, and never where the checkout's config names a command.
+  const git = checkoutGit(givenGit);
 
   const scope = store.getScope(taskId);
   const approval = approvalOf(scope);
@@ -2645,7 +2648,7 @@ async function settleProof(
       noteCheckSuite(label, installed);
       checkLog.push(attemptLog(label, live.command, installed));
       if (installed.notFound || installed.timedOut || installed.code !== 0) return "own-install-failed";
-      return await sealedTreeState(request.git ?? run) === "clean" ? null : "setup-changed-files";
+      return await sealedTreeState(checkoutGit(request.git ?? run)) === "clean" ? null : "setup-changed-files";
     };
     const ownInstall = await ownInstallIfChanged();
     const first = ownInstall === null ? await runVerification("Project check · attempt 1") : null;
@@ -2682,7 +2685,7 @@ async function settleProof(
       } else if (!store.proveRunnerCustodyForSpawn(runId, now())) {
         verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
       } else {
-        const gitRunner = request.git ?? run;
+        const gitRunner = checkoutGit(request.git ?? run);
         const beforeSetup = await sealedTreeState(gitRunner);
         if (beforeSetup === "head-moved") {
           verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "checkout-moved" };

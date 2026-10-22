@@ -113,3 +113,21 @@ export function teardownGit(runner: Runner = run): Git {
     return runner("git", [...TEARDOWN_FLAGS, ...safeArgs], options(cwd));
   };
 }
+
+/**
+ * Git on a build's checkout, as the plane runs it outside every fence (staging, committing and inspecting the build's
+ * work): the same fixed hardening as teardown (no hooks, fsmonitor, ext transport, credential helpers or automatic
+ * maintenance, no submodule recursion), and refused outright when the checkout's own config (local or worktree scope,
+ * read with includes off) names a command — a filter, an external diff, a textconv, a pager — which a build could have
+ * planted. The operator's own global configuration (their identity, a git-lfs install) still applies.
+ */
+export function checkoutGit(inner: Runner = run): Runner {
+  return async (file, args, options) => {
+    if (file !== "git") return inner(file, args, options);
+    const listing = await inner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options);
+    if (listing.code !== 0) return refused("its config couldn't be read");
+    const key = commandSetting(listing.stdout);
+    if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+    return inner("git", [...TEARDOWN_FLAGS, ...args], options);
+  };
+}
