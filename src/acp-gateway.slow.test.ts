@@ -74,14 +74,14 @@ function check(): void {
 }
 
 function run(mode: string, extra: { idleTimeoutMs?: number; timeoutMs?: number; onControl?: (control: AcpControl) => void; handshakeMs?: number } = {}): Promise<InvokeResult> {
-  const env = { FAKE_ACP: mode, FAKE_ACP_LOG: join(dir, "agent.log"), FAKE_ACP_RAN: join(dir, "ran") };
+  const env = { FAKE_ACP: mode, FAKE_ACP_LOG: join(worktree, ".agent.log"), FAKE_ACP_RAN: join(worktree, ".ran") };
   return invokeAgent(store, runId, SPEC, ASK, {
     keyHome: home, env, idleTimeoutMs: extra.idleTimeoutMs ?? 20_000, timeoutMs: extra.timeoutMs ?? 60_000,
     ...(extra.onControl === undefined && extra.handshakeMs === undefined ? {} : { acp: { prompt: "", model: "", expect: null, ...(extra.onControl === undefined ? {} : { onControl: extra.onControl }), ...(extra.handshakeMs === undefined ? {} : { handshakeMs: extra.handshakeMs }) } }),
   });
 }
-const ran = () => existsSync(join(dir, "ran"));
-const agentLog = () => existsSync(join(dir, "agent.log")) ? readFileSync(join(dir, "agent.log"), "utf8").trim().split("\n") : [];
+const ran = () => existsSync(join(worktree, ".ran"));
+const agentLog = () => existsSync(join(worktree, ".agent.log")) ? readFileSync(join(worktree, ".agent.log"), "utf8").trim().split("\n") : [];
 
 describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", () => {
   test("a checked agent builds: the handshake, the sealed model, the brief, end_turn, a clean close — and the run says so", async () => {

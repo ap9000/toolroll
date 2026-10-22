@@ -46,9 +46,9 @@ import { PREPARED_EVIDENCE_FILE, PREPARED_EVIDENCE_GIT, preparedScreenshotMatche
  * repair remains narrowly time-bounded because its job is narrowly scoped.
  */
 
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { run, runClaudeStreamJsonl, runOwnerTag, streamsInput, type ExecResult, type RunOptions } from "./exec.js";
 import { stopRequestedFor, stopWords, underStopWatch } from "./task-control.js";
 import { witnessedRunner } from "./process-custody.js";
@@ -473,6 +473,29 @@ export function launchNetworkOf(store: Store, taskRef: number, profile: Executio
   return { policy: legacyNetwork(profile.provider, repo === null ? [] : repositoryEcosystems(repo)) };
 }
 
+/** Asking a checkout which branch it is on: reads no file a build wrote and runs nothing. */
+const BRANCH_QUERIES: readonly (readonly string[])[] = [
+  ["--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"], ["--no-optional-locks", "symbolic-ref", "--short", "-q", "HEAD"],
+];
+
+/**
+ * The plane's git as a build runs it: hardened (teardown-git.ts checkoutGit) for every call, failing closed, but one —
+ * asking the project's own main checkout which branch it is on (its config is the operator's, and the query runs
+ * nothing). An injected runner (`request.git`: tests only; production always runs git itself) is used as given.
+ */
+function buildCheckoutGit(given: Runner, worktree: string, mainCheckout: string | null = null): Runner {
+  if (given !== run) return given;
+  const hardened = checkoutGit(given);
+  const real = (path: string): string | null => { try { return realpathSync(resolve(path)); } catch { return null; } };
+  const trusted = mainCheckout === null ? null : real(mainCheckout);
+  const own = real(worktree);
+  return (file, args, options) => {
+    const at = options?.cwd === undefined ? null : real(options.cwd);
+    const query = BRANCH_QUERIES.some(one => one.length === args.length && one.every((word, index) => args[index] === word));
+    return trusted !== null && at === trusted && at !== own && query ? given(file, args, options) : hardened(file, args, options);
+  };
+}
+
 /** A run's setup and check commands, in its build's fence, writing where the approval this build runs under sealed
  * (never the scope as it may since have been rewritten; invoke.ts fencedCommands). */
 function commandRunner(store: Store, runId: number, profile: ExecutionProfile, inner: Runner): Runner {
@@ -613,7 +636,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     git: givenGit = run,
   } = request;
   // The plane's own git on this build's checkout runs hardened, and never where the checkout's config names a command.
-  const git = checkoutGit(givenGit);
+  const git = buildCheckoutGit(givenGit, worktree, store.getWorktree(worktree)?.repo ?? null);
 
   const scope = store.getScope(taskId);
   const approval = approvalOf(scope);
@@ -2654,7 +2677,7 @@ async function settleProof(
       noteCheckSuite(label, installed);
       checkLog.push(attemptLog(label, live.command, installed));
       if (installed.notFound || installed.timedOut || installed.code !== 0) return "own-install-failed";
-      return await sealedTreeState(checkoutGit(request.git ?? run)) === "clean" ? null : "setup-changed-files";
+      return await sealedTreeState(buildCheckoutGit(request.git ?? run, worktree)) === "clean" ? null : "setup-changed-files";
     };
     const ownInstall = await ownInstallIfChanged();
     const first = ownInstall === null ? await runVerification("Project check · attempt 1") : null;
@@ -2691,7 +2714,7 @@ async function settleProof(
       } else if (!store.proveRunnerCustodyForSpawn(runId, now())) {
         verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" };
       } else {
-        const gitRunner = checkoutGit(request.git ?? run);
+        const gitRunner = buildCheckoutGit(request.git ?? run, worktree);
         const beforeSetup = await sealedTreeState(gitRunner);
         if (beforeSetup === "head-moved") {
           verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "checkout-moved" };

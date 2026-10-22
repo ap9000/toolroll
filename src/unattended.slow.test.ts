@@ -18,7 +18,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
-import { existsSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runOperate, EXIT } from "./operate.js";
@@ -383,7 +383,8 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
   test("missing observation hands one checked build to the lead without an evidence follow-up", async () => {
     const { addApprover, propose, approve } = await import("./scope.js");
     const { presetTerms, modeTermsJson, modeDigestOf } = await import("./modes.js");
-    const log = join(base, "gate-count.txt");
+    // Outside the plane's state folder (fenced from every build's commands, as Toolroll's own).
+    const log = join(realpathSync(mkdtempSync(join(tmpdir(), "gate-count-"))), "gate-count.txt");
     await writeFile(log, "0");
     await writeFile(join(repo, ".gitignore"), "node_modules\n");
     await writeFile(join(repo, "package.json"), JSON.stringify({ type: "module", scripts: { test: "vitest run" } }));
@@ -395,6 +396,8 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
     if (!who.ok) throw Error("approver");
     for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
     register(store, { name: "builder-1", host: "test", capacity: 4, repos: [repo], now: T0, newToken: () => "tok-builder-1" });
+    // Its check counts its runs in a file outside the project: this project's builds write anywhere (writes-mode.ts).
+    store.setProjectWrites(repo, "anywhere", "alex", T0);
     store.createTask({ id: "t-observe", title: "Restore the earned draft" }, T0);
     store.placeTask(store.lookupRef("t-observe")!.id, repo);
     propose(store, { taskId: "t-observe", goal: "Restore the earned draft after reload", touches: ["value.ts", "value.test.ts"], acceptance: [{ id: "c1", statement: "The regression fails on the original and passes on the saved candidate", how: null, evidence: ["check"] }], now: T0 });
@@ -460,7 +463,8 @@ describe("v40: a drafted, unapproved repair moves the idle-spend invariant not a
     return (async () => {
       const { addApprover, propose, approve } = await import("./scope.js");
       const { presetTerms, modeTermsJson, modeDigestOf } = await import("./modes.js");
-      const log = join(base, "gate-count.txt");
+      // Outside the plane's state folder (fenced from every build's commands, as Toolroll's own).
+    const log = join(realpathSync(mkdtempSync(join(tmpdir(), "gate-count-"))), "gate-count.txt");
       await writeFile(log, "0");
       await writeFile(join(repo, "value.txt"), "initial");
       await writeFile(join(repo, "check.cjs"), `const fs = require('node:fs'); const log = ${JSON.stringify(log)};
@@ -475,6 +479,8 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
       if (!who.ok) throw Error("approver");
       for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
       register(store, { name: "builder-1", host: "test", capacity: 4, repos: [repo], now: T0, newToken: () => "tok-builder-1" });
+    // Its check counts its runs in a file outside the project: this project's builds write anywhere (writes-mode.ts).
+    store.setProjectWrites(repo, "anywhere", "alex", T0);
       store.createTask({ id: "t-check", title: "Repair saved state" }, T0);
       const ref = store.refFor("built-in", "t-check");
       store.placeTask(ref.id, repo);
