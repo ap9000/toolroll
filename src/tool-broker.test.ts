@@ -13,7 +13,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { serverEnv, startToolBroker, type ToolBroker } from "./tool-broker.js";
+import { serverEnv, startToolBroker, workspaceBytes, type ToolBroker } from "./tool-broker.js";
 import { addToolTo, codexToolArgs, prepareRunTools, setToolSecrets, type ToolSpec } from "./project-tools.js";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -432,5 +432,26 @@ describe("through the gateway", () => {
       expect(one.env).not.toContain(SECRET);
     }
     expect(readFileSync(join(dir, "notes.log"), "utf8").match(/^start /gm)).toHaveLength(2);
+  });
+});
+
+describe("a tool server never runs the build's own bytes (arc 2)", () => {
+  test("a command or path inside the checkout or caches, or a relative path, is refused; an ordinary server isn't", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "so-broker-bytes-")));
+    const home = join(root, "home"), checkout = join(root, "checkout"), cache = join(root, "cache"), bin = join(checkout, "node_modules", ".bin");
+    for (const one of [home, bin, cache]) mkdirSync(one, { recursive: true });
+    writeFileSync(join(checkout, "server.js"), "");
+    writeFileSync(join(bin, "evil"), "#!/bin/sh\n", { mode: 0o755 });
+    const untrusted = [checkout, cache];
+    const check = (command: string, args: string[], path = "/usr/bin:/bin") => workspaceBytes(command, args, home, path, untrusted);
+    expect(check("node", ["./server.js"])).toMatch(/relative path/);
+    expect(check("./server.js", [])).toMatch(/relative path/);
+    expect(check("node", [join(checkout, "server.js")])).toBe(join(checkout, "server.js"));
+    expect(check(join(bin, "evil"), [])).toBe(join(bin, "evil"));
+    expect(check("evil", [], `${bin}:/usr/bin`)).toBe(join(bin, "evil"));
+    expect(check("node", [join(cache, "x.js")])).toBe(join(cache, "x.js"));
+    expect(check("sh", ["-c", "echo hi"])).toBeNull();
+    expect(check("npx", ["-y", "@modelcontextprotocol/server-everything"])).toBeNull();
+    rmSync(root, { recursive: true, force: true });
   });
 });

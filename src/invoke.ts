@@ -415,7 +415,9 @@ export async function invokeAgent(
     env: { ...process.env, ...(runOptions.env ?? {}) },
     omitEnv: [...(runOptions.omitEnv ?? []), ...ALL_CREDENTIAL_ENV],
     pass: childDatabaseEnv(isolatedDb.file),
-    ...(workspace === null ? {} : { cwd: workspace }),
+    // A tool server starts in a folder the build can't write, and never runs the build's own bytes (arc 2).
+    cwd: keyHome ?? homedir(),
+    ...(workspace === null ? {} : { untrusted: toolUntrusted(store, workspace, keyHome) }),
     wrap: () => serverFence,
   });
   if (launchTools !== null && "refused" in launchTools) {
@@ -1076,6 +1078,12 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
       rmSync(own, { recursive: true, force: true });
     }
   };
+}
+
+/** What a build writes that a tool server must never run from: its checkout and its project's caches. */
+function toolUntrusted(store: Store, workspace: string, keyHome: string | undefined): string[] {
+  const row = store.getWorktree(workspace);
+  return [workspace, ...(row === null ? [] : [buildCacheFolder(row.repo, keyHome ?? homedir())])];
 }
 
 /** The operator's own model choices a build routed with no model keeps (provider-home.ts). */

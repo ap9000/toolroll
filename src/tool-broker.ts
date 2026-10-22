@@ -21,6 +21,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { accessSync, constants, existsSync, realpathSync } from "node:fs";
+import { delimiter, isAbsolute, resolve, sep } from "node:path";
 import type { ToolSpec } from "./contracts/integration-metadata.js";
 
 /** One tool a launch may use: its values (never leaving this process) and, for research, the only actions it offers. */
@@ -32,7 +34,11 @@ export type BrokerOptions = {
   omitEnv?: readonly string[];
   /** Toolroll's own settings for a local server (the run's isolated database), passed as they are. */
   pass?: Readonly<Record<string, string>>;
+  /** Where a local server starts: a folder the build can't write (never its checkout). */
   cwd?: string;
+  /** Folders the build writes (its checkout, its caches): a server whose command, or a path it's given, resolves inside
+   * one is never started, since it would run the build's own bytes outside the build's limits. */
+  untrusted?: readonly string[];
   /** How a local server is started inside its run's fence, read when it starts (the fence is fixed after the tools). */
   wrap?: () => ((file: string, args: readonly string[]) => { file: string; args: string[] }) | null;
 };
@@ -92,6 +98,30 @@ export function serverEnv(base: NodeJS.ProcessEnv, omit: readonly string[], pass
   return Object.assign(env, pass, values);
 }
 
+/**
+ * The first of a server's command and path-like arguments that resolves inside an untrusted folder (a build's checkout
+ * or caches), or null. The command is resolved as spawn would: a path against `cwd`, a bare name through PATH; an
+ * argument counts when it names an existing path (relative to `cwd`) or is written as one (`./x`, `../x`, `/x`).
+ */
+export function workspaceBytes(command: string, args: readonly string[], cwd: string | undefined, path: string | undefined, untrusted: readonly string[]): string | null {
+  if (untrusted.length === 0) return null;
+  const base = cwd ?? process.cwd();
+  const real = (one: string): string => { try { return realpathSync(one); } catch { return resolve(one); } };
+  const roots = untrusted.map(real);
+  const within = (one: string): boolean => { const at = real(one); return roots.some(root => at === root || at.startsWith(`${root}${sep}`)); };
+  const located = command.includes("/") || command.includes(sep) ? resolve(base, command)
+    : (path ?? "").split(delimiter).filter(Boolean).map(dir => resolve(base, dir, command)).find(one => { try { accessSync(one, constants.X_OK); return true; } catch { return false; } }) ?? null;
+  if (located !== null && within(located)) return located;
+  // A relative path once meant "in the checkout" (servers started there): it is refused rather than read elsewhere.
+  if (!isAbsolute(command) && (command.includes("/") || command.includes(sep))) return `${command} (a relative path)`;
+  for (const arg of args) {
+    if (arg.startsWith("./") || arg.startsWith("../")) return `${arg} (a relative path)`;
+    const candidate = resolve(base, arg);
+    if ((isAbsolute(arg) || existsSync(candidate)) && within(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** A local server, started on first use and spoken to over its stdin and stdout. */
 class LocalServer {
   private child: ChildProcess | null = null;
@@ -99,13 +129,16 @@ class LocalServer {
   private buffer = "";
   private next = 1;
   private readonly pending = new Map<number, { id: unknown; done: (message: Message) => void }>();
+  private refusal: string | null = null;
 
   constructor(private readonly tool: BrokeredTool, private readonly options: BrokerOptions) {}
 
   pid(): number | null { return this.child?.pid ?? null; }
 
-  private start(): ChildProcess {
+  private start(): ChildProcess | null {
     const env = serverEnv(this.options.env ?? process.env, this.options.omitEnv ?? [], this.options.pass ?? {}, this.tool.values);
+    const planted = workspaceBytes(this.tool.spec.command!, this.tool.spec.args, this.options.cwd, env["PATH"], this.options.untrusted ?? []);
+    if (planted !== null) { this.refusal = `The tool's server would run ${planted}, inside what this build can write, so it was not started.`; return null; }
     const wrap = this.options.wrap?.() ?? null;
     const { file, args } = wrap === null ? { file: this.tool.spec.command!, args: [...this.tool.spec.args] } : wrap(this.tool.spec.command!, this.tool.spec.args);
     const child = spawn(file, args, { env, ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }), stdio: ["pipe", "pipe", "ignore"], detached: process.platform !== "win32" });
@@ -149,7 +182,9 @@ class LocalServer {
   send(message: Message): Promise<Message | null> {
     // A new session (a reconnect) starts a fresh server: a server answers initialize once.
     if (message.method === "initialize" && this.initialized) this.stop();
-    if (this.child === null) this.start();
+    if (this.child === null && this.start() === null) {
+      return Promise.resolve(isRequest(message) ? rpcError(message.id, this.refusal ?? "The tool could not start.") : null);
+    }
     if (message.method === "initialize") this.initialized = true;
     if (!isRequest(message)) {
       if (typeof message.method === "string") this.write(message);
