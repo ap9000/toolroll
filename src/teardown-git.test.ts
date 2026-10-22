@@ -186,8 +186,9 @@ test("a global filter whose command is a relative path (the checkout's own file)
 test.each([
   ["./tools/filter.sh", true], ["tools/filter.sh", true], ["node tools/x.js", true], ["sh -c 'fmt'", true], ["make fmt", true],
   ["npx prettier --stdin", true], ["/usr/bin/env python3 x.py", true], ["foo --config=./x", true],
-  ["true; sh filter.sh", true], ["/usr/bin/python3.12 filter.py", true], ["exec bash", true],
-  ["git-lfs clean -- %f", false], ["git-lfs filter-process", false], ["/opt/homebrew/bin/delta", false], ["less -R", false],
+  ["true; sh filter.sh", true], ["/usr/bin/python3.12 filter.py", true], ["exec bash", true], ["awk -f filter.awk", true], ['s"h" filter.sh', true],
+  ["$(cat x)", true], ["mytool --x", true],
+  ["git-lfs clean -- %f", false], ["git-lfs filter-process", false], ["/opt/homebrew/bin/delta", false], ["less -R", false], ["/opt/homebrew/bin/git-lfs smudge -- %f", false],
 ])("a global setting %j can run the checkout's files: %s", (value, runs) => {
   expect(runsCheckoutFiles(value)).toBe(runs);
 });
@@ -204,5 +205,22 @@ test("a global include (a config file, not a command) never blocks the plane's g
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoDir, env });
   writeFileSync(join(repoDir, "a.txt"), "a\n");
   expect((await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env })).code).toBe(0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a command an include brings into global config is judged like any other", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-included-"));
+  const global = join(dir, "global.gitconfig");
+  writeFileSync(join(dir, "more.inc"), "[filter \"fmt\"]\n\tclean = sh filter.sh\n");
+  writeFileSync(global, "[include]\n\tpath = more.inc\n");
+  const repoDir = join(dir, "r");
+  mkdirSync(repoDir);
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: global };
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoDir, env });
+  const marker = join(dir, "ran");
+  writeFileSync(join(repoDir, "filter.sh"), `touch ${marker}\ncat\n`);
+  writeFileSync(join(repoDir, ".gitattributes"), "* filter=fmt\n");
+  expect(refusal(await checkoutGit()("git", ["add", "-A"], { cwd: repoDir, env }))).toMatch(/filter\.fmt\.clean/);
+  expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });

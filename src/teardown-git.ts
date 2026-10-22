@@ -56,8 +56,9 @@ export function commandSetting(listing: string): string | null {
 }
 
 /**
- * A command-running setting in any scope (the operator's global config included) that could run a file of the
- * checkout's (runsCheckoutFiles): `./tools/filter.sh` or `node tools/x.js` runs the build's own bytes. Null when none.
+ * A command-running setting in any scope (the operator's global config, and what it includes) that names anything but
+ * a known, safe program with plain arguments (runsCheckoutFiles): `sh filter.sh`, `awk -f x`, `./tools/x` could run the
+ * build's own bytes. Null when none.
  */
 export function relativeCommandSetting(listing: string): string | null {
   const fields = listing.split("\0");
@@ -68,28 +69,36 @@ export function relativeCommandSetting(listing: string): string | null {
     const key = entry.slice(0, newline).toLowerCase();
     // An include names a config file, read relative to the file that includes it: not a command.
     if (key === "include.path" || key.startsWith("includeif.")) continue;
-    if (key === "core.fsmonitor" ? BOOLEAN.test(entry.slice(newline + 1).trim()) : !COMMAND_KEYS.some(pattern => pattern.test(key))) continue;
+    if (key === "core.fsmonitor" ? BOOLEAN.test(entry.slice(newline + 1).trim()) : !OPERATION_KEYS.some(pattern => pattern.test(key))) continue;
     if (runsCheckoutFiles(entry.slice(newline + 1))) return key;
   }
   return null;
 }
 
-/** Programs that run a script or a recipe named by their arguments (or found in the working folder): a setting run by
- * one of them, from a checkout, can run the build's own files. */
-const RUNNERS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "env", "exec", "eval", "source", "node", "nodejs", "deno", "bun", "python", "ruby", "perl", "php", "lua", "osascript", "npx", "npm",
-  "pnpm", "yarn", "make", "just", "task", "rake", "cargo", "go", "uv", "uvx", "pipx", "poetry"]);
+/** The command-running settings the plane's add, status, commit and diff can run: filters, diff drivers, fsmonitor,
+ * commit signing (credential helpers, pagers, editors and transports aren't run by them here). */
+const OPERATION_KEYS: readonly RegExp[] = ["filter.*.clean", "filter.*.smudge", "filter.*.process", "diff.*.command", "diff.*.textconv", "diff.external",
+  "core.fsmonitor", "gpg.program", "gpg.*.program", "core.alternaterefscommand"].map(key => new RegExp(`^${key.replace(/\./g, "\\.").replace(/\*/g, ".+")}$`));
+
+/** Programs a command-running git setting may name, whatever its scope: none runs a file it is pointed at as code. */
+const SAFE_PROGRAMS = new Set(["git-lfs", "git-crypt", "gpg", "gpg2", "ssh", "ssh-keygen", "less", "more", "cat", "delta", "diff-so-fancy",
+  "vim", "nvim", "vi", "nano", "emacs", "code", "cursor", "subl", "zed", "mate", "true", "false",
+  "git-credential-osxkeychain", "git-credential-libsecret", "git-credential-manager", "git-credential-manager-core"]);
 
 /**
- * Whether a command-running setting's value could run a file of the checkout's: a relative path anywhere in it (`./x`,
- * `tools/x`, `../x`), or a program that runs scripts or recipes (a shell, an interpreter, a package or task runner).
- * An absolute or bare program with plain arguments (`git-lfs clean -- %f`) doesn't.
+ * Whether a command-running setting's value could run anything but a known, safe program with plain arguments
+ * (an allowlist: a shell, an interpreter, `awk -f`, a quoted or piped command, a relative path all fail it). Its
+ * program is the first word, bare or absolute; every word is plain text (no quotes, separators, substitutions or
+ * redirections) and none is a relative path.
  */
 export function runsCheckoutFiles(value: string): boolean {
-  const tokens = value.trim().replace(/^!/, "").split(/[\s'"`;|&()<>{}$]+/).filter(Boolean);
-  // Any word that names a runner, wherever it stands (`true; sh x`) and however it's versioned (`python3.12`).
-  if (tokens.some(token => RUNNERS.has((token.split("/").pop() ?? "").replace(/[\d.]+$/, "")))) return true;
-  return tokens.some(token => {
-    const path = token.replace(/^--?[\w-]+=/, "");
+  const words = value.trim().replace(/^!/, "").split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  if (!words.every(word => /^[\w%@=:,.+\/~-]+$/.test(word))) return true;
+  const program = words[0]!;
+  if (!(program.startsWith("/") || !program.includes("/")) || !SAFE_PROGRAMS.has(program.split("/").pop()!)) return true;
+  return words.slice(1).some(word => {
+    const path = word.replace(/^--?[\w-]+=/, "");
     return path.startsWith("./") || path.startsWith("../") || (path.includes("/") && !path.startsWith("/") && !path.startsWith("~") && !/^[a-z]+:\/\//i.test(path));
   });
 }
@@ -164,7 +173,9 @@ export function teardownGit(runner: Runner = run): Git {
 export function checkoutGit(inner: Runner = run): Runner {
   return async (file, args, options) => {
     if (file !== "git") return inner(file, args, options);
-    const listing = await inner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options);
+    // Read as git will run (includes followed): a setting an include brings in is judged like any other. A local
+    // include itself is refused below, so no file of the checkout's is trusted as configuration.
+    const listing = await inner("git", ["--no-optional-locks", "config", "--list", "--includes", "--show-scope", "-z"], options);
     if (listing.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(listing.stdout);
     if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
