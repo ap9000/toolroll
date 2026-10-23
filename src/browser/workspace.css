@@ -128,13 +128,16 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-lead-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ui-conversation { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .ui-conversation > div { height: 100%; overflow-y: auto; overscroll-behavior: contain; }
-.so-conversation-content { max-width: 780px; margin: 0 auto; padding: 32px 30px var(--so-space-3xl); min-height: 100%; }
+/* The thread (direction A): one column of about 680px of words, centred, from the top. */
+.so-conversation-content { max-width: 740px; margin: 0 auto; padding: 28px 30px var(--so-space-3xl); min-height: 100%; }
 .ui-conversation-empty { display: flex; flex-direction: column; justify-content: center; min-height: 34vh; max-width: 460px; margin: auto; }
 .ui-conversation-empty h2 { font-size: 26px; line-height: 1.15; font-weight: 600; letter-spacing: -.035em; margin: 0 0 var(--so-space-md); text-wrap: balance; }
 .ui-conversation-empty p { color: var(--so-muted); margin: 0; font-size: 14px; line-height: 1.65; max-width: 42ch; }
 .ui-message { margin: 0 0 30px; min-width: 0; }
-.so-message-label { font-size: 12px; font-weight: 500; color: var(--so-muted); margin-bottom: 6px; }
-.ui-message--user { width: fit-content; max-width: 92%; margin-left: auto; padding: 10px 14px; background: var(--so-user-bubble); border-radius: var(--so-radius-sheet); }
+.so-message-label { font-size: 12px; font-weight: 500; color: var(--so-muted); margin-bottom: 4px; }
+/* The thread (direction A): your words in a quiet bubble on the right, the lead's as plain formatted text. */
+.ui-message--user { width: fit-content; max-width: min(92%, 520px); margin-left: auto; padding: 10px 14px; background: var(--so-user-bubble); border-radius: 14px; }
+.ui-message--user .ui-message-content { line-height: 1.6; }
 .ui-message--user .so-message-label { color: var(--so-muted); }
 .ui-message-content { font-size: 14px; line-height: 1.7; max-width: 72ch; overflow-wrap: anywhere; }
 .ui-message-content p { margin: 0 0 var(--so-space-md); }
@@ -143,19 +146,31 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .ui-message-content :where(pre, code) { font-family: var(--so-mono); font-size: 12px; }
 .ui-message-content pre { max-width: 100%; overflow-x: auto; padding: 14px; border: 1px solid var(--so-line); background: var(--so-code-bg); border-radius: var(--so-radius-md); white-space: pre; }
 .so-activity-copy { white-space: pre-wrap; font-size: 12px; line-height: 1.6; color: var(--so-muted); }
+/* What the reply took, in one quiet line above it. */
+.ui-message-content p.so-activity-line { margin: 0 0 var(--so-space-sm); font-size: 12.5px; line-height: 1.5; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+/* A fenced block in a reply: the code exactly as written, scrolling sideways rather than wrapping. */
+.ui-message-content pre.chat-code { margin: var(--so-space-md) 0; font-size: 12.5px; line-height: 1.6; }
+.ui-message-content pre.chat-code code { font-size: inherit; background: none; padding: 0; }
 .so-message-cards { margin-top: 14px; }
 .ui-conversation-scroll { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); box-shadow: var(--so-shadow-overlay); }
 .so-working { display: flex; align-items: center; gap: var(--so-space-sm); color: var(--so-muted); font-size: 12px; padding: 0 0 var(--so-space-md); }
 .so-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--so-live); }
-.so-composer-area { flex-shrink: 0; padding: var(--so-space-md) var(--so-space-2xl) 18px; width: 100%; max-width: 790px; margin: 0 auto; background: var(--so-paper); }
-.so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: var(--so-radius-sheet); padding: 10px 10px var(--so-space-sm) var(--so-space-md); margin: 0; background: var(--so-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
-.so-composer-area form[data-workspace-composer]:focus-within { border-color: var(--so-signal); box-shadow: 0 0 0 3px var(--so-signal-soft); }
-.so-composer-area .ui-textarea { border: 0; border-radius: 0; min-height: 52px; max-height: 180px; resize: none; padding: 2px 3px var(--so-space-sm); box-shadow: none; font-size: 14px; line-height: 1.6; }
+.so-composer-area { flex-shrink: 0; padding: var(--so-space-md) 30px 18px; width: 100%; max-width: 740px; margin: 0 auto; background: var(--so-paper); }
+/* The composer (direction A, made light): one row in a rounded box (a quiet chip for where it goes, the words growing
+   with what is typed, a round send arrow) and, under it while empty and in use, the hint. */
+.so-composer-area { position: relative; }
+.so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: 14px; padding: 7px 7px 7px 14px; margin: 0; background: var(--so-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
+.so-composer-area form[data-workspace-composer]:focus-within { border-color: var(--so-input-line); box-shadow: 0 0 0 3px var(--so-signal-soft); }
+.so-composer-row { display: flex; align-items: flex-end; gap: 8px; }
+.so-composer-area .ui-textarea { flex: 1; min-width: 0; min-height: 24px; max-height: 180px; resize: none; border: 0; border-radius: 0; padding: 5px 0; box-shadow: none; font-size: 14px; line-height: 1.6; }
 .so-composer-area .ui-textarea:focus-visible { outline: 0; }
-.so-composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.so-composer-actions > span { color: var(--so-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.so-composer-actions .ui-button { min-height: 30px; padding: 5px 11px; }
-.so-composer-actions svg { width: 15px; height: 15px; }
+.so-composer-row > .so-composer-chip { flex: none; align-self: center; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; border: 1px solid var(--so-line); border-radius: var(--so-radius-full); color: var(--so-neutral-ink); font-size: 12px; }
+.so-composer-row > .so-composer-send.ui-button { flex: none; width: 32px; height: 32px; min-height: 32px; padding: 0; border-radius: 50%; }
+.so-composer-row > .so-composer-send.ui-button:disabled { background: var(--so-soft); color: var(--so-muted); opacity: 1; }
+.so-composer-row > .so-composer-send svg { width: 16px; height: 16px; }
+.so-composer-hint { position: absolute; left: 0; right: 0; bottom: 1px; margin: 0; padding: 0 44px; color: var(--so-muted); font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; visibility: hidden; }
+.so-composer-area:has(#lead-message:focus:placeholder-shown) .so-composer-hint, .so-composer-hint[data-warning] { visibility: visible; }
+.so-composer-hint[data-warning] { color: var(--so-ink); }
 .so-connection { display: flex; gap: var(--so-space-sm); align-items: center; justify-content: space-between; color: var(--so-warning); background: var(--so-warning-soft); padding: 10px var(--so-space-md); border-radius: var(--so-radius-md); margin-bottom: 10px; font-size: 12px; }
 .so-connection > span { min-width: 0; overflow-wrap: anywhere; }
 .so-connection .ui-button { flex-shrink: 0; }
@@ -391,8 +406,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .ui-message--user { max-width: 94%; }
   .so-composer-area { padding: 8px 12px max(12px, var(--safe-bottom)); }
   .so-composer-area .ui-textarea { font-size: 16px; }
-  .so-composer-area form[data-workspace-composer] { padding: 11px; }
-  .so-composer-actions .ui-button { min-height: 42px; }
   .so-conversation-settings { margin-top: 7px; }
   .so-conversation-settings > summary { min-height: 30px; display: flex; align-items: center; }
   .so-workspace-notices { padding: 10px 14px 0; }
@@ -551,7 +564,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-suggestion { max-width: 100%; }
 /* The lead's question to its owner: the question, then one tap per option and "Something else". */
 /* A queued message (the lead queue): its state under the words, quiet; Remove is a text action. */
-.so-queued { margin: 4px 0 0; font-size: 13px; color: var(--so-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.so-queued { width: fit-content; margin: 6px 0 0 auto; padding: 2px 4px 2px 10px; font-size: 12.5px; color: var(--so-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; border-radius: var(--so-radius-full); background: var(--so-neutral-soft); }
 .so-queued-state { font-weight: 600; color: var(--so-ink); }
 .so-queued form { margin: 0; }
 .so-queued-remove { min-height: 28px; padding: 0 6px; }
@@ -575,13 +588,20 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 }
 
 /* The live reply (chat streaming): what the lead is doing, then its words. */
-.so-live-steps { display: flex; flex-direction: column; gap: var(--so-space-xs); margin: 0 0 10px; padding: 0; list-style: none; font-size: 13px; color: var(--so-muted); }
-.so-live-steps li { display: flex; align-items: flex-start; gap: var(--so-space-sm); overflow-wrap: anywhere; }
+/* One bordered list, a row per step: a spinner while it runs, a check when done, a cross when it failed. */
+.so-live-steps { display: flex; flex-direction: column; margin: 0 0 12px; padding: 0; list-style: none; font-size: 13px; color: var(--so-ink); border: 1px solid var(--so-line); border-radius: var(--so-radius-card); overflow: hidden; }
+.so-live-steps li { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; overflow-wrap: anywhere; }
+.so-live-steps li + li { border-top: 1px solid var(--so-line); }
+.so-live-steps li[data-state="running"] { background: var(--so-code-bg); }
 .so-live-steps li > div { min-width: 0; }
-.so-live-steps li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--so-line); }
-.so-live-steps li[data-state="running"]::before { background: var(--so-live); }
-.so-live-steps li[data-state="succeeded"]::before { background: var(--so-success); }
+.so-live-steps li::before { content: ""; flex: none; box-sizing: border-box; width: 12px; height: 12px; margin-top: 4px; border-radius: 50%; background: var(--so-line); }
+.so-live-steps li[data-state="running"]::before { background: none; border: 2px solid var(--so-info-soft); border-top-color: var(--so-live); animation: so-step-spin .8s linear infinite; }
+.so-live-steps li[data-state="succeeded"]::before { width: 7px; height: 11px; margin: 2px 3px 0 2px; border-radius: 0; background: none; border: solid var(--so-success); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .so-live-steps li[data-state="failed"]::before { background: var(--so-danger); }
+.so-live-steps li[data-state="running"] .so-tool-status { color: var(--so-live); }
+.so-live-steps .so-tool-status { color: var(--so-muted); }
+@keyframes so-step-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .so-live-steps li[data-state="running"]::before { animation: none; } }
 .so-live-steps li[data-state="failed"] .so-tool-status, .so-tool-reason { color: var(--so-danger); }
 .so-tool-status { white-space: nowrap; }
 .so-tool-reason { margin: 2px 0 0; white-space: pre-wrap; }
@@ -600,6 +620,10 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-slash-hint { font-size: 13px; color: var(--so-muted); }
 .so-card-body :where(h3) { margin: 0 0 6px; font-size: 14px; }
 .so-card-body :where(p, ul) { margin-top: 0; }
+/* A card in the thread (direction A): one quiet outline; a decision still waiting carries the black "Needs you" chip. */
+.so-chat-card { border: 1px solid var(--so-input-line); border-radius: 12px; }
+.so-chat-card-title { font-size: 14px; color: var(--so-ink); }
+.so-needs-you { flex: none; padding: 1px 7px; border-radius: var(--so-radius-badge); background: var(--so-signal); color: var(--so-on-signal); font: var(--so-typography-badge); }
 @media (max-width: 900px) { .so-slash-menu li { min-height: 44px; } }
 /* v99: starter kit shortcuts under the empty chat. */
 .so-kit-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--so-space-sm); margin: var(--so-space-xs) auto 0; max-width: 36rem; font-size: 13px; color: var(--so-muted); }
@@ -742,17 +766,14 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-result-task-details { margin-bottom: var(--so-phone-gap); }
   .so-first-run { gap: 10px; margin-bottom: 18px; }
   .so-first-run-steps > li { min-height: 44px; padding: var(--so-space-xs) 0; }
-  /* The composer is one line where it fits: the text and Send side by side, the hint under both. */
-  .so-composer-area .ui-textarea { min-height: 46px; padding: 11px 3px 3px; }
-  .so-composer-area form[data-workspace-composer] { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--so-space-sm); align-items: end; padding: 6px 6px 6px 11px; }
-  .so-composer-area form[data-workspace-composer] > .ui-textarea { grid-column: 1; grid-row: 1; }
-  .so-composer-area .so-composer-actions { display: contents; }
-  .so-composer-area .so-composer-actions > span { grid-column: 1 / -1; grid-row: 2; padding: 2px 3px 2px; line-height: 1.35; }
-  .so-composer-area .so-composer-actions .ui-button { grid-column: 2; grid-row: 1; }
-  /* What a finger hits stays 44px: the small chat disclosures and the send
-     button, and fields inside server fragments a rebuilt view embeds (16px
-     text, so iOS does not zoom). */
-  .so-composer-actions .ui-button { min-height: 44px; }
+  /* The composer on a phone: the same one row, 16px words (iOS doesn't zoom), a 44px send, no chip (the header names
+     the task) and no hint (Return writes a new line there); a warning shows under the box. */
+  .so-composer-area .ui-textarea { min-height: 44px; padding: 10px 0; }
+  .so-composer-area form[data-workspace-composer] { padding: 4px 4px 4px 12px; }
+  .so-composer-row > .so-composer-chip { display: none; }
+  .so-composer-row > .so-composer-send.ui-button { width: 44px; height: 44px; min-height: 44px; }
+  .so-composer-hint { position: static; padding: 4px 4px 0; }
+  .so-composer-hint:not([data-warning]) { display: none; }
   .ui-disclosure { margin-top: var(--so-space-xs); }
   /* A reply's Activity: its 44px target overlaps the reply's slack instead of adding a line of space. */
   .ui-message .ui-disclosure { margin-top: 0; margin-bottom: -8px; }
@@ -810,3 +831,85 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-mode span { width: 100%; justify-content: center; min-height: 40px; font-size: 13px; }
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) { .so-enter-hint { display: none; } }
+
+/* Inline steering (chat Workbench): a comment on a diff line is one quiet row under that line, indented to the code
+   column so the numbers stay in view; it sticks to the diff's visible width while a long line scrolls. */
+.diff-steer-slot { position: sticky; left: 0; box-sizing: border-box; padding: 4px 16px 8px calc(2rem + 6.4rem + 8px); }
+.diff-steer { max-width: 560px; margin: 0; font-family: var(--so-font-sans); color: var(--so-ink); }
+.diff-steer-row { display: flex; align-items: flex-end; gap: 6px; min-height: 36px; box-sizing: border-box; padding: 6px 6px 6px 10px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-paper); }
+.diff-steer-row:focus-within { border-color: var(--so-input-line); box-shadow: 0 0 0 3px var(--so-signal-soft); }
+.diff-steer textarea { flex: 1; min-width: 0; height: 22px; max-height: 88px; resize: none; overflow-y: auto; border: 0; outline: 0; padding: 1px 0; background: transparent; font: 400 13px/20px var(--so-font-sans); color: var(--so-ink); box-shadow: none; }
+.diff-steer textarea:focus-visible { outline: 0; box-shadow: none; }
+.diff-steer textarea::placeholder { color: var(--so-muted); }
+.diff-steer-send { flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: var(--so-signal); color: var(--so-on-signal); cursor: pointer; }
+.diff-steer-send:disabled { background-color: var(--so-soft); color: var(--so-muted); cursor: default; }
+.diff-steer-send:focus-visible { outline: 2px solid var(--so-signal); outline-offset: 2px; }
+.diff-steer-problem { margin: 4px 0 0; font-size: 12px; color: var(--so-danger); }
+.diff-steer-sent { display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0; font: 400 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
+.diff-steer-sent svg { flex: none; color: var(--so-success); }
+.diff-steer-sent span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-review .diff-line[data-diff-line]:has(+ .diff-steer-slot) { box-shadow: inset 2px 0 0 var(--so-live); }
+
+/* The Workbench pane (the result beside the chat): its tabs stay at the top as the pane's header row, and nothing
+   stands between you and the lines: no switch, no per-file buttons, quiet links at the foot. Scoped to this pane; the
+   task and review pages keep their own layout. */
+.so-result-host[data-line-steer] .result-tabs { position: sticky; top: 0; z-index: 4; background: var(--so-paper); }
+.so-result-host[data-line-steer] ol.result-files:not(:has([data-outside-touches])) { display: none; }
+.so-result-host[data-line-steer] ol.result-files .pick-file { display: none; }
+.so-result-host[data-line-steer] .diff-review-help, .so-result-host[data-line-steer] .diff-modes { display: none; }
+.so-result-host[data-line-steer] p.meta:has(> a[href*="/evidence/"]) { display: inline-block; margin: 10px 16px 0 0; font-size: 12px; }
+.so-result-host[data-line-steer] p.meta > a[href*="/evidence/"], .so-result-host[data-line-steer] details.result-knowledge > summary { color: var(--so-muted); font-size: 12px; font-weight: 400; }
+.so-result-host[data-line-steer] details.result-knowledge { display: inline-block; margin: 10px 0 0; padding: 0; border: 0; background: none; box-shadow: none; }
+.so-result-host[data-line-steer] details.result-knowledge[open] { display: block; }
+.so-result-host[data-line-steer] details.result-knowledge > summary { min-height: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--so-line); }
+/* A pin is a small icon, not a button: it shows on the line under the pointer or the keyboard (always on a touch
+   screen, with a 44px target). */
+.so-result-host[data-line-steer] .diff-annotate { background: transparent; border-right-color: transparent; box-shadow: none; color: var(--so-muted); }
+.so-result-host[data-line-steer] .diff-annotate svg { width: 16px; height: 16px; }
+.so-result-host[data-line-steer] .diff-annotate-space { background: transparent; border-right-color: transparent; }
+@media (hover: hover) and (pointer: fine) {
+  .so-result-host[data-line-steer] .diff-review .diff-annotate { opacity: 0; }
+  .so-result-host[data-line-steer] .diff-review .diff-line:hover .diff-annotate,
+  .so-result-host[data-line-steer] .diff-review .diff-annotate:focus-visible,
+  .so-result-host[data-line-steer] .diff-review .diff-line:has(+ .diff-steer-slot) .diff-annotate { opacity: 1; color: var(--so-live); background: transparent; }
+}
+/* One chevron on a fold: the marker the browser draws is dropped where the page draws its own. */
+details.result-request-open > summary { list-style: none; }
+details.result-request-open > summary::-webkit-details-marker { display: none; }
+details.result-request-open > summary::marker { content: ""; }
+
+@media (max-width: 900px) {
+  .diff-steer-slot { padding: 4px 16px 8px; }
+  .diff-steer { max-width: none; }
+  .diff-steer-row { min-height: 52px; padding: 4px 4px 4px 12px; align-items: center; }
+  /* A 28px arrow inside a 44px target: the clear border is part of what a finger hits. */
+  .diff-steer-send { width: 44px; height: 44px; border: 8px solid transparent; background-clip: padding-box; }
+  .so-result-host[data-line-steer] details.result-knowledge > summary { display: inline-flex; align-items: center; min-height: 44px; }
+  .so-result-host[data-line-steer] p.meta > a[href*="/evidence/"] { display: inline-flex; align-items: center; min-height: 44px; }
+  /* A phone keeps code as written: 12px, no wrapping, the diff box scrolls sideways, so the numbers stay aligned. */
+  .so-result-host[data-line-steer] .diff-lines { overflow-x: auto; }
+  .so-result-host[data-line-steer] .diff-line, .so-result-host[data-line-steer] .diff-review .diff-line { min-width: max-content; grid-template-columns: 2.75rem 2.65rem 2.65rem max-content; }
+  .so-result-host[data-line-steer] .diff-line code { white-space: pre; overflow-wrap: normal; font-size: 12px; }
+  .so-result-host[data-line-steer] .diff-hunk-head { overflow-x: auto; white-space: pre; overflow-wrap: normal; }
+  /* The header's chips are quiet: a 1px line and 12px words, on the same 44px tap target. */
+  .so-needs-chip, .so-workspace-header .so-phone-work-button.ui-button { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 12px; }
+}
+@media (max-width: 900px) {
+  /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */
+  .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail) { display: flex; position: relative; }
+  .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail)::after { content: ""; position: absolute; inset: 0; background: var(--so-overlay); }
+  .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel--detail { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; z-index: 30; width: auto; height: auto; overflow: auto; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 24px rgb(0 0 0 / .12); }
+  .so-supporting-panel--detail .so-work-panel-header { padding-top: 10px; }
+  /* The sheet's grab handle, as the mockup draws it. */
+  .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel--detail::before { content: ""; display: block; width: 36px; height: 4px; margin: 8px auto 0; border-radius: 2px; background: var(--so-input-line); }
+}
+/* The pane's header names the run in the machine's voice, on the right. */
+.so-work-run { margin-left: auto; margin-right: var(--so-space-sm); font: 400 12px/1 var(--so-font-mono); color: var(--so-muted); }
+.so-work-run ~ .so-close-work { margin-left: 0; }
+@media (max-width: 900px) { .so-work-run { display: none; } }
+/* A line comment in your bubble: where (small mono), the line it is about (as written, scrolling sideways), the words. */
+.chat-steer { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-message-content .chat-steer p.chat-steer-ref { margin: 0; font: 400 11.5px/1.4 var(--so-font-mono); color: var(--so-muted); overflow-wrap: anywhere; }
+.ui-message-content .chat-steer pre.chat-steer-code { margin: 0; padding: 6px 8px; border: 0; border-radius: var(--so-radius-sm); background: var(--so-paper); font: 400 12px/1.5 var(--so-font-mono); white-space: pre; overflow-x: auto; max-width: 100%; }
+.ui-message-content .chat-steer pre.chat-steer-code code { font: inherit; background: none; padding: 0; }
+.ui-message-content .chat-steer p.chat-steer-note { margin: 0; }
