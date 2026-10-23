@@ -3,7 +3,7 @@
  * state, and under a workspace approval they write only the checkout, their own temp folder and the project's caches,
  * which their package managers are pointed at.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -95,6 +95,30 @@ describe.skipIf(!FENCED)("a build's setup and check commands", () => {
     const outside = join(dir, "outside.txt");
     const result = await fencedCheckoutCommands(store, repo, realpathSync(checkout), run)("/bin/sh", ["-c", probe(realpathSync(checkout), outside)], { cwd: checkout });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["state-refused", "outside-refused", "worktree-ok", "temp-ok", "cache-ok"]);
+  });
+});
+
+describe.skipIf(!FENCED)("a project's checks in a checkout that links the shared install", () => {
+  test("read the dependencies their checkout links, and no other copy", async () => {
+    const { worktree } = await build();
+    const KEY = "0123456789abcdef01234567", OTHER = "fedcba9876543210fedcba98";
+    for (const key of [KEY, OTHER]) {
+      const pkg = join(state, "deps", key, "node_modules", "pkg");
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "pkg", main: "index.js" }));
+      writeFileSync(join(pkg, "index.js"), `module.exports = ${JSON.stringify(key)};\n`);
+      writeFileSync(join(state, "deps", key, "ready.json"), JSON.stringify({ version: 1, repo, key, lock: "lock", node: "node", setup: "setup-1", tree: null, createdAt: "2026-10-12T00:00:00.000Z" }));
+    }
+    const shared = join(state, "deps", KEY, "node_modules");
+    mkdirSync(join(worktree, "node_modules"));
+    writeFileSync(join(worktree, "node_modules", ".toolroll-shared"), `${shared}\n`);
+    symlinkSync(join(shared, "pkg"), join(worktree, "node_modules", "pkg"), "dir");
+    store.stampWorktreeSetup(worktree, "setup-1");
+    const result = await fencedCheckoutCommands(store, repo, worktree, run)("/bin/sh", ["-c", [
+      `${JSON.stringify(process.execPath)} -e 'console.log(require("pkg"))'`,
+      `cat ${JSON.stringify(join(state, "deps", OTHER, "node_modules", "pkg", "index.js"))} >/dev/null 2>&1 || echo other-refused`,
+    ].join("\n")], { cwd: worktree });
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual([KEY, "other-refused"]);
   });
 });
 

@@ -1,6 +1,26 @@
 # Changelog
 
-## 0.9.66 — 2026-10-22
+## 0.9.67 — 2026-10-23
+
+- **A project's checks read their own dependencies again.** 0.9.66 began
+  running checks in a fenced checkout but left out the grant for the shared
+  install the checkout links, so any check that loaded a package failed
+  ("could not resolve"). The linked copy is readable again; others stay fenced.
+- **Builds that write only their workspace resolve host names again on a
+  Mac.** 0.9.66 denied every unix socket to such a build, including the
+  system's DNS service, so with an open network nothing resolved (npm, git,
+  any fetch failed with "could not resolve host"). The DNS socket is allowed;
+  every other socket stays denied.
+- 0.9.66 as released to the console, published: its macOS check failed on a
+  test whose socket path outgrew macOS's 104-byte limit in the runner's temp
+  folder. The test now makes its sockets under /tmp. The browser journeys'
+  model stand-ins also keep their call journal where a workspace-only build
+  may write, so the release check runs them under the default sandbox.
+- `toolroll project network` takes `--open` and `--allowlist` again, and
+  reads `--remove <hosts>` and `--local any|none` as values: the shared flag
+  parser had refused the first two and read the others as switches.
+
+## 0.9.66 — 2026-10-22 (tagged, not published)
 
 - **The board is live to watch.** A strip of workers sits above the lanes:
   what each is building on this board, its stage and a running clock (or
