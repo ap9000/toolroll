@@ -249,6 +249,12 @@ function realSelection(only) {
   return selectJourneys(catalogue, { journeys: "real", only });
 }
 
+/** Whether this runs inside a macOS sandbox (the plane's check fence), where no new sandbox can be made. */
+export function insideFence() {
+  if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return false;
+  try { execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 }); return false; } catch { return true; }
+}
+
 export async function world(name, { seed, env = {}, groups = null } = {}) {
   const journeys = option("--journeys", "all");
   if (!JOURNEYS.includes(journeys)) throw new Error(`--journeys is ${JOURNEYS.join(", ")}, not ${journeys}`);
@@ -347,6 +353,12 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // The first command makes the database; the rest of the setup is independent, so it runs at once (each command is a
   // node start of about half a second; SQLite's busy wait orders their writes).
   cli(["approver", "add", "alex", "--password", passwords.alex]);
+  // Inside the plane's macOS check fence nothing can create a sandbox, so this throwaway plane lets its agents run
+  // unconfined there: they stay inside the check's own sandbox. Never outside that fence.
+  if (insideFence()) {
+    cli(["config", "unconfined-agents", "allow", ...auth]);
+    say("inside the check's macOS sandbox: this world's agents run without a sandbox of their own (the check's still holds)");
+  }
   const setup = argv => new Promise((done, fail) => execFile(process.execPath, [BIN, ...argv, "--db", db, "--json"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, timeout: 180_000 },
     (error, stdout, stderr) => error ? fail(new Error(`standing-orders ${argv.join(" ")}: ${(stdout ?? "") + (stderr ?? "")}`.slice(0, 2000))) : done(JSON.parse(stdout))));
   const [runner] = await Promise.all([

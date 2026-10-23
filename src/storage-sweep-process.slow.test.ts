@@ -12,6 +12,7 @@ import { idleStorageSweep } from "./storage-sweep-schedule.js";
 import { createSweepSupervisor, storageSweepSupervisor, SWEEP_NICE, sweepRequest, sweepResponse, type SweepRequest, type SweepSupervisor } from "./storage-sweep-process.js";
 import { hangingSweep, observeSweep } from "../test/sweep-process.js";
 import { sweepObservations } from "../test/sweep-observations.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 // The service's pass: only a caller with an owner claims a sweep (storage-sweep-schedule.ts).
 const service = {};
@@ -49,7 +50,8 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("parent heartbeat and database renewals continue while the production child blocks in du during a large sweep", async () => {
+// The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+test.skipIf(INSIDE_FENCE)("parent heartbeat and database renewals continue while the production child blocks in du during a large sweep", async () => {
   const temp = join(root, "tmp");
   mkdirSync(temp);
   const old = new Date(Date.now() - 8 * 86_400_000);

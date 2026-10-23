@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "./store.js";
 import { runOperate, EXIT } from "./operate.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-08-30T12:00:00.000Z");
 
@@ -98,7 +99,9 @@ describe("the MCP server's credential door", () => {
     expect(String(envelope()["message"])).toContain("mode must be exactly 0600");
   });
 
-  test("mode 4600 refuses — the setuid bit counts, special bits included", async () => {
+  // The release check runs inside the plane's macOS fence, which can't set a file's special bits; CI (Linux, and the
+  // tag's macOS jobs) runs this unfenced.
+  test.skipIf(INSIDE_FENCE)("mode 4600 refuses — the setuid bit counts, special bits included", async () => {
     const path = tokenFile("token-4600", "some-token\n", 0o4600);
     const code = await run(["--db", db, "--token-file", path, "--json"]);
     expect(code).toBe(EXIT.refused);

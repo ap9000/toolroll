@@ -21,6 +21,7 @@ import { symlinkSync } from "node:fs";
 import { claudeToolArgs } from "./project-tools.js";
 import { NOTES_SERVER } from "../test/notes-mcp-server.js";
 import { poolRootOf } from "./worktree.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 // Observe the real spawn boundary without redefining Node's ESM exports.
 vi.mock("node:child_process", { spy: true });
@@ -88,7 +89,9 @@ describe("the agent fence", () => {
     expect(parseFilesystem(codexFenceArgv(["/", "/"], true)).get("/")).toBe("deny");
   });
 
-  test.skipIf(spawnSync("codex", ["--version"], { encoding: "utf8" }).error?.message.includes("ENOENT"))(
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI
+  // (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE || spawnSync("codex", ["--version"], { encoding: "utf8" }).error?.message.includes("ENOENT"))(
     "installed Codex sandbox accepts duplicate-path launch policy, runs git, and denies the database",
     () => {
       const launch = duplicateLaunch();
@@ -953,7 +956,9 @@ describe("a link planted among the repository's worktree entries grants nothing"
     expect(bwrap[bwrap.indexOf(join(home, ".toolroll")) - 1]).toBe("--tmpfs");
   });
 
-  test.skipIf(spawnSync("codex", ["--version"], { encoding: "utf8" }).error !== undefined)("the installed Codex sandbox denies the read through the planted link's target", () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI
+  // (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE || spawnSync("codex", ["--version"], { encoding: "utf8" }).error !== undefined)("the installed Codex sandbox denies the read through the planted link's target", () => {
     const { fence, grants } = launch("codex");
     const codexHome = join(dir, "so-codex-own");
     mkdirSync(codexHome);

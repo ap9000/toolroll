@@ -15,6 +15,7 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { loadPtySpawn, TerminalHost } from "./live-terminal.js";
 import { T0 } from "../test/serve-kit.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const spawn = loadPtySpawn();
 let home: string, repo: string, store: Store, server: Server, base: string, port: number, token: string, host: TerminalHost;
@@ -127,7 +128,8 @@ describe.skipIf(spawn === null || process.platform === "win32")("live terminals 
     expect((await fetch(`${base}${path}`, { headers: { cookie } })).status).toBe(426);
   });
 
-  test("typing reaches the program and its output comes back; close says it ended", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("typing reaches the program and its output comes back; close says it ended", async () => {
     const cookie = await login();
     const id = await start(cookie);
     const live = await attach(id, cookie);

@@ -6,6 +6,7 @@ import { CodingProviderDisconnectedError, CodingProviderRequestError, CodingProv
 import { effectiveContainment, overrideContainerFactoryForTests, pinContainment, resetContainmentForTests } from "./containment.js";
 import * as processTree from "./process-tree.js";
 import { fakePid } from "../test/fake-pid.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const roots: string[] = [];
 const providers: CodingProvider[] = [];
@@ -55,7 +56,9 @@ afterEach(async () => {
   resetContainmentForTests();
 });
 
-describe("native coding transport", () => {
+// The release check runs inside the plane's macOS fence, which can't observe other processes, so no transport here can
+// verify its process exited; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+describe.skipIf(INSIDE_FENCE)("native coding transport", () => {
   it("publishes custody before initialize and retains it after initialization fails", async () => {
     const test = fixture("", "", "emit({ id: message.id, error: { code: -32000, message: 'Fixture initialization rejected' } });");
     const snapshots: CodingCustody[] = [];
