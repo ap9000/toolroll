@@ -2,8 +2,7 @@ import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { channelInbox } from "./chat-inbox.js";
-import { roomCommand } from "./chat-rooms.js";
+import { admitChatEvent } from "./chat-admission.js";
 import {
   processChatEvent,
   applyChatAction,
@@ -159,21 +158,9 @@ export function receiveSlack(
   // A channel or private group is a room: accepted only while it follows a
   // conversation, or for the `/team` words that make it follow one.
   const isRoom = !slackId(channel, "D");
-  const words = "text" in payload ? payload.text ?? "" : "";
-  // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "slack", identity.installation, String(channel), words) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
-  if (isRoom && !roomish) return false;
-  const binding = state.bindingFor(identity.installation, member);
-  const open = inbox.watched && !inbox.command;
-  if (
-    kind !== "pair" && !open &&
-    (!binding ||
-      !state.live(binding) ||
-      (binding.channel !== channel && !roomish))
-  )
-    return false;
-  if (kind === "pair" && (binding || isRoom)) return false;
+  const admitted = admitChatEvent(state, "slack", identity.installation, { kind, member, channel, isRoom, payload });
+  if (admitted === null) return false;
+  const { binding } = admitted;
   return state.enqueue({
     id,
     installation: identity.installation,

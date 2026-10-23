@@ -3,8 +3,7 @@ import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
-import { channelInbox } from "./chat-inbox.js";
-import { roomCommand } from "./chat-rooms.js";
+import { admitChatEvent } from "./chat-admission.js";
 import {
   ChatState,
   ChatDeliveryError,
@@ -156,21 +155,9 @@ export function receiveDiscord(
     member === identity.bot
   )
     return false;
-  const words = "text" in payload ? payload.text ?? "" : "";
-  // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "discord", identity.installation, String(channel), words) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
-  if (isRoom && !roomish) return false;
-  const binding = state.bindingFor(identity.installation, member);
-  const open = inbox.watched && !inbox.command;
-  if (
-    kind === "pair"
-      ? !!binding || isRoom
-      : !open && (!binding ||
-        !state.live(binding) ||
-        (binding.channel !== channel && !roomish))
-  )
-    return false;
+  const admitted = admitChatEvent(state, "discord", identity.installation, { kind, member, channel, isRoom, payload });
+  if (admitted === null) return false;
+  const { binding } = admitted;
   return state.enqueue({
     id: chatHash(
       `${identity.installation}:${kind === "action" ? "interaction" : "message"}:${id}`,
