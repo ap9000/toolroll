@@ -1565,7 +1565,9 @@ export function reviewDiffHtml(
           ? html`<span class="diff-annotate-space"></span>`
           : html`<button type="button" class="diff-annotate pick-line" data-path="${one.path}" data-line="${lineNumber}" data-side="${side}" aria-label="Annotate ${one.path}, ${side} line ${lineNumber}" title="Annotate this line">${annotateIcon}</button>`;
         const marker = line.kind === "addition" ? "+" : line.kind === "deletion" ? "−" : line.kind === "context" ? " " : "·";
-        return html`<div class="diff-line diff-${line.kind}">${annotate}<span class="diff-gutter">${line.oldLine ?? ""}</span><span class="diff-gutter">${line.newLine ?? ""}</span><code><b aria-hidden="true">${marker}</b>${line.text}</code></div>`;
+        // Each real line names its file and line, so a comment (or a test) can find the exact row.
+        const named = lineNumber === null || line.kind === "meta" ? "" : html` data-diff-file="${one.path}" data-diff-line="${lineNumber}"`;
+        return html`<div class="diff-line diff-${line.kind}"${named}>${annotate}<span class="diff-gutter">${line.oldLine ?? ""}</span><span class="diff-gutter">${line.newLine ?? ""}</span><code><b aria-hidden="true">${marker}</b>${line.text}</code></div>`;
       })}</div></section>`;
     });
     const anchor = anchors.get(one.path);

@@ -379,8 +379,8 @@ export function chatHeading(copy: string, projectCount: number, showProjectToggl
 
 /** A deliberately small rich-text grammar for model copy. The reply is shaped first (the lead's voice, enforced:
  * no headers, at most three bold anchors, labelled links, no internal ids unless `asked` wanted them); input is
- * escaped before tags are introduced: bullets, numbered steps, bold, inline code and labelled http(s) links are
- * presentation only—never executable HTML. */
+ * escaped before tags are introduced: bullets, numbered steps, bold, inline code, fenced code blocks and labelled
+ * http(s) links are presentation only—never executable HTML. */
 export function renderChatText(raw: string, asked?: string): Html {
   const inline = replyHtmlInline;
   const text = shapeReply(raw, { appOrigin: requestContext.getStore()?.appOrigins ?? null, ...(asked === undefined ? {} : { asked }) });
@@ -399,7 +399,22 @@ export function renderChatText(raw: string, asked?: string): Html {
     out.push(list.tag === "ul" ? html`<ul>${list.items}</ul>` : html`<ol>${list.items}</ol>`);
     list = null;
   };
+  // A fenced block (shaping leaves it exactly as written) is shown as written: escaped, never parsed.
+  let fence: { lang: string; lines: string[] } | null = null;
+  const closeFence = (): void => {
+    const open = fence as { lang: string; lines: string[] } | null;
+    if (open === null) return;
+    out.push(html`<pre class="chat-code"${open.lang === "" ? "" : html` data-lang="${open.lang}"`}><code>${open.lines.join("\n")}</code></pre>`);
+    fence = null;
+  };
   for (const line of lines) {
+    const open = fence as { lang: string; lines: string[] } | null;
+    if (open !== null) {
+      if (/^\s{0,3}```\s*$/.test(line)) closeFence(); else open.lines.push(line);
+      continue;
+    }
+    const fenceMark = /^\s{0,3}```\s*([A-Za-z0-9_+.#-]{0,24})\s*$/.exec(line);
+    if (fenceMark !== null) { flushParagraph(); closeList(); fence = { lang: fenceMark[1]!, lines: [] }; continue; }
     const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
     const numbered = /^\s*(\d{1,9})[.)]\s+(.+)$/.exec(line);
     if (bullet !== null || numbered !== null) {
@@ -416,7 +431,8 @@ export function renderChatText(raw: string, asked?: string): Html {
       paragraph.push(line);
     }
   }
-  flushParagraph(); closeList();
+  // An unclosed fence still shows its lines as code: the reply may have been cut.
+  flushParagraph(); closeList(); closeFence();
   return html`<div class="chat-copy">${out}</div>`;
 }
 

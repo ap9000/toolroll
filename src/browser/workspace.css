@@ -134,7 +134,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .ui-conversation-empty p { color: var(--so-muted); margin: 0; font-size: 14px; line-height: 1.65; max-width: 42ch; }
 .ui-message { margin: 0 0 30px; min-width: 0; }
 .so-message-label { font-size: 12px; font-weight: 500; color: var(--so-muted); margin-bottom: 6px; }
-.ui-message--user { width: fit-content; max-width: 92%; margin-left: auto; padding: 10px 14px; background: var(--so-user-bubble); border-radius: var(--so-radius-sheet); }
+/* The thread (direction A): your words in a quiet bubble on the right, the lead's as plain formatted text. */
+.ui-message--user { width: fit-content; max-width: min(92%, 520px); margin-left: auto; padding: 10px 14px; background: var(--so-user-bubble); border-radius: 14px; }
+.ui-message--user .ui-message-content { line-height: 1.6; }
 .ui-message--user .so-message-label { color: var(--so-muted); }
 .ui-message-content { font-size: 14px; line-height: 1.7; max-width: 72ch; overflow-wrap: anywhere; }
 .ui-message-content p { margin: 0 0 var(--so-space-md); }
@@ -143,17 +145,25 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .ui-message-content :where(pre, code) { font-family: var(--so-mono); font-size: 12px; }
 .ui-message-content pre { max-width: 100%; overflow-x: auto; padding: 14px; border: 1px solid var(--so-line); background: var(--so-code-bg); border-radius: var(--so-radius-md); white-space: pre; }
 .so-activity-copy { white-space: pre-wrap; font-size: 12px; line-height: 1.6; color: var(--so-muted); }
+/* What the reply took, in one quiet line above it. */
+.ui-message-content p.so-activity-line { margin: 0 0 var(--so-space-sm); font-size: 12.5px; line-height: 1.5; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+/* A fenced block in a reply: the code exactly as written, scrolling sideways rather than wrapping. */
+.ui-message-content pre.chat-code { margin: var(--so-space-md) 0; font-size: 12.5px; line-height: 1.6; }
+.ui-message-content pre.chat-code code { font-size: inherit; background: none; padding: 0; }
 .so-message-cards { margin-top: 14px; }
 .ui-conversation-scroll { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); box-shadow: var(--so-shadow-overlay); }
 .so-working { display: flex; align-items: center; gap: var(--so-space-sm); color: var(--so-muted); font-size: 12px; padding: 0 0 var(--so-space-md); }
 .so-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--so-live); }
 .so-composer-area { flex-shrink: 0; padding: var(--so-space-md) var(--so-space-2xl) 18px; width: 100%; max-width: 790px; margin: 0 auto; background: var(--so-paper); }
-.so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: var(--so-radius-sheet); padding: 10px 10px var(--so-space-sm) var(--so-space-md); margin: 0; background: var(--so-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
+.so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: 14px; padding: 10px 10px var(--so-space-sm) var(--so-space-md); margin: 0; background: var(--so-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
 .so-composer-area form[data-workspace-composer]:focus-within { border-color: var(--so-signal); box-shadow: 0 0 0 3px var(--so-signal-soft); }
 .so-composer-area .ui-textarea { border: 0; border-radius: 0; min-height: 52px; max-height: 180px; resize: none; padding: 2px 3px var(--so-space-sm); box-shadow: none; font-size: 14px; line-height: 1.6; }
 .so-composer-area .ui-textarea:focus-visible { outline: 0; }
 .so-composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .so-composer-actions > span { color: var(--so-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.so-composer-actions > #composer-hint { margin-right: auto; min-width: 0; }
+/* Where the message goes: the project or task this conversation is narrowed to. */
+.so-composer-actions > .so-composer-chip { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); color: var(--so-neutral-ink); }
 .so-composer-actions .ui-button { min-height: 30px; padding: 5px 11px; }
 .so-composer-actions svg { width: 15px; height: 15px; }
 .so-connection { display: flex; gap: var(--so-space-sm); align-items: center; justify-content: space-between; color: var(--so-warning); background: var(--so-warning-soft); padding: 10px var(--so-space-md); border-radius: var(--so-radius-md); margin-bottom: 10px; font-size: 12px; }
@@ -551,7 +561,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-suggestion { max-width: 100%; }
 /* The lead's question to its owner: the question, then one tap per option and "Something else". */
 /* A queued message (the lead queue): its state under the words, quiet; Remove is a text action. */
-.so-queued { margin: 4px 0 0; font-size: 13px; color: var(--so-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.so-queued { width: fit-content; margin: 6px 0 0 auto; padding: 2px 4px 2px 10px; font-size: 12.5px; color: var(--so-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; border-radius: var(--so-radius-full); background: var(--so-neutral-soft); }
 .so-queued-state { font-weight: 600; color: var(--so-ink); }
 .so-queued form { margin: 0; }
 .so-queued-remove { min-height: 28px; padding: 0 6px; }
@@ -575,13 +585,20 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 }
 
 /* The live reply (chat streaming): what the lead is doing, then its words. */
-.so-live-steps { display: flex; flex-direction: column; gap: var(--so-space-xs); margin: 0 0 10px; padding: 0; list-style: none; font-size: 13px; color: var(--so-muted); }
-.so-live-steps li { display: flex; align-items: flex-start; gap: var(--so-space-sm); overflow-wrap: anywhere; }
+/* One bordered list, a row per step: a spinner while it runs, a check when done, a cross when it failed. */
+.so-live-steps { display: flex; flex-direction: column; margin: 0 0 12px; padding: 0; list-style: none; font-size: 13px; color: var(--so-ink); border: 1px solid var(--so-line); border-radius: var(--so-radius-card); overflow: hidden; }
+.so-live-steps li { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; overflow-wrap: anywhere; }
+.so-live-steps li + li { border-top: 1px solid var(--so-line); }
+.so-live-steps li[data-state="running"] { background: var(--so-code-bg); }
 .so-live-steps li > div { min-width: 0; }
-.so-live-steps li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--so-line); }
-.so-live-steps li[data-state="running"]::before { background: var(--so-live); }
-.so-live-steps li[data-state="succeeded"]::before { background: var(--so-success); }
+.so-live-steps li::before { content: ""; flex: none; box-sizing: border-box; width: 12px; height: 12px; margin-top: 4px; border-radius: 50%; background: var(--so-line); }
+.so-live-steps li[data-state="running"]::before { background: none; border: 2px solid var(--so-info-soft); border-top-color: var(--so-live); animation: so-step-spin .8s linear infinite; }
+.so-live-steps li[data-state="succeeded"]::before { width: 7px; height: 11px; margin: 2px 3px 0 2px; border-radius: 0; background: none; border: solid var(--so-success); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .so-live-steps li[data-state="failed"]::before { background: var(--so-danger); }
+.so-live-steps li[data-state="running"] .so-tool-status { color: var(--so-live); }
+.so-live-steps .so-tool-status { color: var(--so-muted); }
+@keyframes so-step-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .so-live-steps li[data-state="running"]::before { animation: none; } }
 .so-live-steps li[data-state="failed"] .so-tool-status, .so-tool-reason { color: var(--so-danger); }
 .so-tool-status { white-space: nowrap; }
 .so-tool-reason { margin: 2px 0 0; white-space: pre-wrap; }
@@ -600,6 +617,10 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-slash-hint { font-size: 13px; color: var(--so-muted); }
 .so-card-body :where(h3) { margin: 0 0 6px; font-size: 14px; }
 .so-card-body :where(p, ul) { margin-top: 0; }
+/* A card in the thread (direction A): one quiet outline; a decision still waiting carries the black "Needs you" chip. */
+.so-chat-card { border: 1px solid var(--so-input-line); border-radius: 12px; }
+.so-chat-card-title { font-size: 14px; color: var(--so-ink); }
+.so-needs-you { flex: none; padding: 1px 7px; border-radius: var(--so-radius-badge); background: var(--so-signal); color: var(--so-on-signal); font: var(--so-typography-badge); }
 @media (max-width: 900px) { .so-slash-menu li { min-height: 44px; } }
 /* v99: starter kit shortcuts under the empty chat. */
 .so-kit-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--so-space-sm); margin: var(--so-space-xs) auto 0; max-width: 36rem; font-size: 13px; color: var(--so-muted); }
@@ -810,3 +831,25 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-mode span { width: 100%; justify-content: center; min-height: 40px; font-size: 13px; }
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) { .so-enter-hint { display: none; } }
+
+/* Inline steering (chat Workbench): a comment on a diff line, under that line, sent to the lead as its next step. */
+.diff-steer-slot { position: sticky; left: 0; width: min(520px, calc(100vw - 48px)); padding: 6px 12px 10px 3.2rem; box-sizing: border-box; }
+.diff-steer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--so-input-line); border-radius: var(--so-radius-card); background: var(--so-paper); font: var(--so-typography-body); font-size: 13px; color: var(--so-ink); box-shadow: 0 1px 2px rgb(0 0 0 / .04); }
+.diff-steer label { font-size: 12px; color: var(--so-muted); }
+.diff-steer textarea { min-height: 56px; resize: vertical; border: 0; outline: 0; padding: 0; background: transparent; font: inherit; font-size: 13.5px; line-height: 1.5; color: var(--so-ink); }
+.diff-steer:focus-within { border-color: var(--so-signal); box-shadow: 0 0 0 3px var(--so-signal-soft); }
+.diff-steer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.diff-steer-problem { margin: 0; font-size: 12px; color: var(--so-danger); }
+.diff-steer--sent { flex-direction: row; align-items: center; justify-content: space-between; color: var(--so-live); font-weight: 500; }
+.diff-review .diff-line[data-diff-line]:has(+ .diff-steer-slot) { box-shadow: inset 2px 0 0 var(--so-live); }
+@media (max-width: 900px) {
+  .diff-steer-slot { padding-left: 12px; width: calc(100vw - 32px); }
+  .diff-steer-actions .ui-button { flex: 1; min-height: 44px; }
+}
+@media (max-width: 900px) {
+  /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */
+  .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail) { display: flex; position: relative; }
+  .so-workspace[data-workspace-phone-view="work"] .so-main-column:has(~ .so-supporting-panel--detail)::after { content: ""; position: absolute; inset: 0; background: var(--so-overlay); }
+  .so-workspace[data-workspace-phone-view="work"] .so-supporting-panel--detail { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; z-index: 30; width: auto; height: auto; overflow: auto; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 24px rgb(0 0 0 / .12); }
+  .so-supporting-panel--detail .so-work-panel-header { padding-top: 10px; }
+}

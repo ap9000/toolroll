@@ -2244,6 +2244,29 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   const phone = await on.locator("[data-phone-card]").innerText();
   if (!/Pair Telegram/.test(phone) || !/Tailscale/.test(phone)) throw new Error(`the phone card: ${phone}`);
   await bothSizes(on, "4-phone");
+  // The Workbench: the result's change beside the chat; a comment on one of its lines goes to the lead as the
+  // conversation's next message, naming the file, the line and the run.
+  const built = freshRows(install.db, `SELECT r.id AS id FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${install.task.id.replace(/'/g, "''")}' AND r.role = 'builder' AND r.outcome IS NOT NULL ORDER BY r.id DESC LIMIT 1`)[0]?.id;
+  if (built === undefined) throw new Error("the first task has no finished build to comment on");
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
+  const linePin = on.locator("[data-workspace-result] [data-diff-line] button.pick-line").first();
+  await waitFor(linePin, "a line of the result's change", { timeoutMs: 30_000, state: "attached" });
+  await bothSizes(on, "5-workbench");
+  const path = await linePin.getAttribute("data-path"), line = await linePin.getAttribute("data-line");
+  const before = await on.locator("[data-workspace-chat] [data-message-id]").count();
+  await linePin.click();
+  const steer = on.locator(`[data-diff-steer][data-diff-line="${line}"]`);
+  await waitFor(steer, "the comment form under that line");
+  if (await on.locator("#comment-form textarea[name=note]:focus").count() !== 0) throw new Error("the pin opened the request form instead of the comment under the line");
+  await steer.locator("textarea").fill("Keep this, but name the edge case in a comment.");
+  await bothSizes(on, "5-workbench-comment");
+  await steer.locator('button[type="submit"]').click();
+  await waitFor(on.locator("[data-steer-sent]"), "the comment to say it went to the lead");
+  const steered = `On ${path}:${line} (run #${built}): Keep this, but name the edge case in a comment.`;
+  await until("the comment in the chat as the next message", async () => {
+    const texts = await on.locator("[data-workspace-chat] [data-message-id]").allInnerTexts();
+    return texts.length > before && texts.some(text => text.includes(steered));
+  }, { timeoutMs: 30_000, everyMs: 500 });
   return { result: ended };
 });
 
