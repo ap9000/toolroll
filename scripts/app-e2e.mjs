@@ -1384,7 +1384,11 @@ await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboar
     await box.fill("A first line\nand a second\nand a third");
     await keyboard(336, 0);
     await phone.waitForFunction(() => document.documentElement.hasAttribute("data-mobile-keyboard"));
-    await phone.waitForTimeout(100);
+    // The thread scrolls to its newest message after the resize; on a busy machine that lands later than 100 ms.
+    await phone.waitForFunction(() => {
+      const last = [...document.querySelectorAll("#chat-thread [data-message-id]")].at(-1)?.getBoundingClientRect();
+      return last && last.bottom >= 0 && last.bottom <= document.querySelector(".so-composer-area").getBoundingClientRect().top + 1;
+    }, null, { timeout: 5000 }).catch(() => {});
     const typing = await measure();
     await phone.screenshot({ path: join(w.out, "chat-keyboard-phone.png") });
     if (typing.box > typing.visible + 0.5 || typing.send > typing.visible + 0.5) throw new Error(`the chat box sits under the keyboard: ${JSON.stringify(typing)}`);
