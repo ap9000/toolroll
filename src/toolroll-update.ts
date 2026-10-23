@@ -41,6 +41,7 @@ import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES,
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
+import { sleep } from "./sleep.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -1303,7 +1304,7 @@ export function machineSystem(home = homedir(), env: Record<string, string | und
   };
   return {
     now: () => new Date(),
-    sleep: ms => new Promise(done => setTimeout(done, ms)),
+    sleep,
     release: async version => {
       const body = await json(`${REGISTRY}/${NAME}/${version}`) as { version?: string; dist?: { tarball?: string; integrity?: string; attestations?: { url?: string } } };
       return { version: String(body.version ?? ""), tarball: String(body.dist?.tarball ?? ""), integrity: String(body.dist?.integrity ?? ""), attestations: body.dist?.attestations?.url ?? null };

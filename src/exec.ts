@@ -18,6 +18,7 @@ import { createContainer, currentContainment, type AttachOutcome, type Container
 import type { Store } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
 import type { LiveInput } from "./live-input.js";
+import { sleep as defaultSleep } from "./sleep.js";
 
 export type ExecResult = {
   /** Process exit code, or one of the synthetic codes below. */
@@ -641,7 +642,7 @@ export type SpawnAttempt = { result: ExecResult; transient: boolean };
 export async function retryTransientSpawn(
   attempt: () => Promise<SpawnAttempt>,
   delays: readonly number[] = SPAWN_RETRY_DELAYS_MS,
-  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  sleep: (ms: number) => Promise<void> = defaultSleep,
 ): Promise<ExecResult> {
   let last = await attempt();
   for (const delay of delays) {

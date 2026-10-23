@@ -19,6 +19,7 @@ import { hostname } from "node:os";
 import { basename, sep } from "node:path";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
 import type { Store, WorktreeRow } from "./store.js";
+import { sleep as defaultSleep } from "./sleep.js";
 
 /** How long a process has after SIGTERM before SIGKILL. */
 export const STOP_GRACE_MS = 10_000;
@@ -96,7 +97,7 @@ export async function stopProcesses(targets: readonly ProcessRow[], options: Sto
   const graceMs = options.graceMs ?? STOP_GRACE_MS;
   const census = options.census ?? (() => processCensus());
   const signal = options.signal ?? ((pid, name) => process.kill(pid, name));
-  const sleep = options.sleep ?? (ms => new Promise<void>(done => setTimeout(done, ms)));
+  const sleep = options.sleep ?? defaultSleep;
   const send = (rows: readonly ProcessRow[], name: NodeJS.Signals) => {
     for (const row of rows) {
       try { signal(row.pid, name); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH" && (error as NodeJS.ErrnoException).code !== "EPERM") throw error; }

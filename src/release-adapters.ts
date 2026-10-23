@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { parse as parseYaml } from "yaml";
+import { sleep } from "./sleep.js";
 // Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullRequest, ReleaseAdapters } from "./release.js";
@@ -194,7 +195,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 
   return {
     now: options.now ?? (() => new Date()),
-    sleep: options.sleep ?? (ms => new Promise(done => setTimeout(done, ms))),
+    sleep: options.sleep ?? sleep,
     say: options.say ?? (line => process.stdout.write(`${line}\n`)),
     repo: {
       async github() {

@@ -16,6 +16,7 @@ import { request as httpRequest } from "node:http";
 import { connect, createServer } from "node:net";
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { sleep } from "./sleep.js";
 
 export type BrowserLaunch = { command: string; args: readonly string[] };
 export type ScoutBrowserServer = { url: string; close: () => Promise<void> };
@@ -101,7 +102,7 @@ async function serveBrowser(launch: BrowserLaunch, options: BrowserOptions, dead
     signal(child.pid, "SIGKILL");
   };
   // First runs download the pinned tool; it listens once it is ready.
-  while (stopped === null && Date.now() < deadline && !(await answers(port))) await new Promise(done => setTimeout(done, 250));
+  while (stopped === null && Date.now() < deadline && !(await answers(port))) await sleep(250);
   if (stopped !== null || Date.now() >= deadline) {
     const reason = stopped ?? late;
     await close();

@@ -14,6 +14,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { configBase, namedPath } from "./names.js";
+import { sleep } from "./sleep.js";
 
 export const CONFIG_VERSION = 2;
 const FILE_NAME = "repos.json";
@@ -116,7 +117,6 @@ export async function updateProjectRegistry(
   const reaperPath = `${file}.reaper.lock`;
   const token = randomBytes(16).toString("hex");
   const body = JSON.stringify({ pid: process.pid, token, at: Date.now() });
-  const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 
   const tryReap = (): void => {
     // Recovery only for PROVEN-dead owners, serialized by the reaper lock,
