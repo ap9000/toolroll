@@ -21,6 +21,14 @@
   need to create a sandbox or watch other processes skip there and still run
   in CI, and the browser journeys' throwaway planes run their agents inside
   the check's own sandbox.
+- A Claude build no longer refuses to start when a sandbox around Toolroll
+  hides your Claude settings file: it signs in from the keychain as before,
+  and a sign-in that needed the file still fails quickly and says so.
+- The test suite reads its own home and temp folders, never yours, so it runs
+  the same on your machine and inside a check's sandbox. Tests that need a
+  socket path shorter than any folder the sandbox allows, and the one browser
+  journey that resumes a saved Claude session, skip inside the sandbox and
+  still run in CI.
 - `toolroll release` no longer stops at merge when GitHub has already deleted
   the merged branch: it looks a few times, 2 seconds apart, before calling the
   delete a failure (0.9.66 and 0.9.67 both stopped there).
