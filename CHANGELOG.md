@@ -7,6 +7,9 @@
   folder. The test now makes its sockets under /tmp. The browser journeys'
   model stand-ins also keep their call journal where a workspace-only build
   may write, so the release check runs them under the default sandbox.
+- `toolroll project network` takes `--open` and `--allowlist` again, and
+  reads `--remove <hosts>` and `--local any|none` as values: the shared flag
+  parser had refused the first two and read the others as switches.
 
 ## 0.9.66 — 2026-10-22 (tagged, not published)
 
