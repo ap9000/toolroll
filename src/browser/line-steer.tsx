@@ -25,7 +25,7 @@ export function steerMessage(input: { run: number; path: string; line: number; s
   return `On ${where} (run #${input.run}): ${note}${code === "" ? "" : `\n\n> ${code}`}`;
 }
 
-type Target = { slot: HTMLElement; path: string; line: number; side: "new" | "old"; code: string };
+type Target = { slot: HTMLElement; pin: HTMLButtonElement; path: string; line: number; side: "new" | "old"; code: string };
 
 /** The words of a diff row, without its +/− marker. */
 function rowCode(row: Element | null): string {
@@ -48,29 +48,41 @@ export function LineSteer({ host, run, maxChars, steer }: {
   const [problem, setProblem] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const noteId = useId();
+  // One comment travels at a time: while it is on its way, its form holds still and the other pins wait.
+  const inFlight = useRef(false);
 
+  /** Close the form; the cursor goes back to the pin it came from. */
   const close = (current: Target | null) => {
+    if (inFlight.current) return;
     current?.slot.remove();
     setTarget(null); setNote(""); setState("editing"); setProblem(null);
+    if (current?.pin.isConnected) current.pin.focus();
   };
 
   useEffect(() => {
     const panel = host.current;
     if (!panel) return;
-    // Beside the chat, a line is there to be commented on: the diff opens with its pins showing.
-    panel.querySelectorAll<HTMLElement>("[data-review-diff]").forEach(review => {
-      review.setAttribute("data-mode", "annotate");
-      review.querySelectorAll<HTMLButtonElement>("button[data-diff-mode]").forEach(one => one.setAttribute("aria-pressed", String(one.dataset.diffMode === "annotate")));
+    // Beside the chat, a line is there to be commented on: the diff opens with its pins showing, and stays in the mode
+    // the person picks here. (The result page's own script, loaded with the page, sets View on any diff it finds;
+    // what this panel chose is put back when anything else changes it.)
+    let chosen: "annotate" | "view" = "annotate";
+    const apply = () => panel.querySelectorAll<HTMLElement>("[data-review-diff]").forEach(review => {
+      if (review.getAttribute("data-mode") !== chosen) review.setAttribute("data-mode", chosen);
+      review.querySelectorAll<HTMLButtonElement>("button[data-diff-mode]").forEach(one => {
+        const pressed = String(one.dataset.diffMode === chosen);
+        if (one.getAttribute("aria-pressed") !== pressed) one.setAttribute("aria-pressed", pressed);
+      });
     });
+    apply();
+    const keep = new MutationObserver(apply);
+    keep.observe(panel, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-mode"] });
     const onClick = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null;
       // The diff's View / Annotate switch, kept working on markup React placed.
       const mode = element?.closest<HTMLButtonElement>("button[data-diff-mode]");
       if (mode && panel.contains(mode)) {
-        const review = mode.closest<HTMLElement>("[data-review-diff]");
-        const value = mode.dataset.diffMode === "annotate" ? "annotate" : "view";
-        review?.setAttribute("data-mode", value);
-        review?.querySelectorAll<HTMLButtonElement>("button[data-diff-mode]").forEach(one => one.setAttribute("aria-pressed", String(one === mode)));
+        chosen = mode.dataset.diffMode === "annotate" ? "annotate" : "view";
+        apply();
         return;
       }
       const pin = element?.closest<HTMLButtonElement>("button.pick-line");
@@ -81,18 +93,18 @@ export function LineSteer({ host, run, maxChars, steer }: {
       event.preventDefault();
       event.stopPropagation();
       const row = pin.closest(".diff-line");
-      if (!row) return;
+      if (!row || inFlight.current) return;
       setTarget(previous => {
         previous?.slot.remove();
         const slot = document.createElement("div");
         slot.className = "diff-steer-slot";
         row.after(slot);
-        return { slot, path, line, side: pin.dataset.side === "old" ? "old" : "new", code: rowCode(row) };
+        return { slot, pin, path, line, side: pin.dataset.side === "old" ? "old" : "new", code: rowCode(row) };
       });
       setNote(""); setState("editing"); setProblem(null);
     };
     panel.addEventListener("click", onClick, true);
-    return () => panel.removeEventListener("click", onClick, true);
+    return () => { panel.removeEventListener("click", onClick, true); keep.disconnect(); };
   }, [host]);
 
   // A form that opens takes the cursor; one whose slot left the page (the result was replaced) closes.
@@ -103,11 +115,16 @@ export function LineSteer({ host, run, maxChars, steer }: {
   const message = steerMessage({ run, path: target.path, line: target.line, side: target.side, code: target.code, note });
   const tooLong = message.length > maxChars;
   const submit = async () => {
-    if (note.trim() === "" || tooLong || state !== "editing") return;
+    if (note.trim() === "" || tooLong || state !== "editing" || inFlight.current) return;
+    inFlight.current = true;
     setState("sending"); setProblem(null);
-    const refused = await steer(message);
-    if (refused === null) setState("sent");
-    else { setState("editing"); setProblem(refused); }
+    try {
+      const refused = await steer(message);
+      if (refused === null) setState("sent");
+      else { setState("editing"); setProblem(refused); }
+    } finally {
+      inFlight.current = false;
+    }
   };
 
   return createPortal(state === "sent"
@@ -119,12 +136,12 @@ export function LineSteer({ host, run, maxChars, steer }: {
         onSubmit={event => { event.preventDefault(); void submit(); }}
         onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); close(target); } }}>
         <label htmlFor={noteId}>Comment on line {target.line} — the lead takes it as its next step</label>
-        <textarea ref={box} id={noteId} rows={2} maxLength={STEER_LIMITS.note} value={note} onChange={event => setNote(event.target.value)}
-          onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); } }} />
+        <textarea ref={box} id={noteId} rows={2} maxLength={STEER_LIMITS.note} value={note} readOnly={state === "sending"} onChange={event => setNote(event.target.value)}
+          onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
         {(problem !== null || tooLong) && <p className="diff-steer-problem" role="alert">{tooLong ? "That's longer than one message can be. Shorten the comment." : problem}</p>}
         <div className="diff-steer-actions">
           <Button type="submit" size="sm" disabled={note.trim() === "" || tooLong || state === "sending"}>{state === "sending" ? "Sending…" : "Send to the lead"}</Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => close(target)}>Cancel</Button>
+          <Button type="button" variant="outline" size="sm" disabled={state === "sending"} onClick={() => close(target)}>Cancel</Button>
         </div>
       </form>, target.slot);
 }

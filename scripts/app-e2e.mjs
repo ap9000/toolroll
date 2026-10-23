@@ -2254,6 +2254,8 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await bothSizes(on, "5-workbench");
   const path = await linePin.getAttribute("data-path"), line = await linePin.getAttribute("data-line");
   const before = await on.locator("[data-workspace-chat] [data-message-id]").count();
+  // The lead's answer to the comment: a scripted world answers every turn it starts.
+  script({ role: "lead", when: [/Keep this, but name the edge case in a comment\./], answer: { steps: [{ text: "Noted: I'll ask for a comment that names the edge case.", calls: [] }] } });
   await linePin.click();
   const steer = on.locator(`[data-diff-steer][data-diff-line="${line}"]`);
   await waitFor(steer, "the comment form under that line");
@@ -2262,11 +2264,22 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await bothSizes(on, "5-workbench-comment");
   await steer.locator('button[type="submit"]').click();
   await waitFor(on.locator("[data-steer-sent]"), "the comment to say it went to the lead");
-  const steered = `On ${path}:${line} (run #${built}): Keep this, but name the edge case in a comment.`;
+  // The message as sent names the run too; the thread shows a person's words shaped like every message (ids folded).
+  const steered = [`On ${path}:${line}`, "Keep this, but name the edge case in a comment."];
   await until("the comment in the chat as the next message", async () => {
-    const texts = await on.locator("[data-workspace-chat] [data-message-id]").allInnerTexts();
-    return texts.length > before && texts.some(text => text.includes(steered));
-  }, { timeoutMs: 30_000, everyMs: 500 });
+    const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts();
+    return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
+  }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
+  const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
+  if (!sent.some(text => text.startsWith(`On ${path}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
+  // On a phone the result is a sheet over the chat; the chat under it takes no taps or tab stops until it's put away.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 1) throw new Error("the chat under the phone's result sheet can still be reached");
+  if (!await on.locator("[data-workspace-detail].so-supporting-panel--detail").isVisible()) throw new Error("the result sheet isn't showing on a phone");
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 0) throw new Error("the chat stays out of reach on a desk");
   return { result: ended };
 });
 

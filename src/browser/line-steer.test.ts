@@ -86,11 +86,57 @@ test("a refusal keeps the words and says why; a message over the limit can't be 
   expect(panel.querySelector('[data-diff-steer] [role="alert"]')?.textContent).toContain("longer than one message");
 });
 
-test("Escape closes the form and takes its slot out of the diff", async () => {
+test("the diff opens with its pins showing, and stays in the mode picked here when another script resets it", async () => {
+  await mount(async () => null);
+  const review = panel.querySelector<HTMLElement>("[data-review-diff]")!;
+  expect(review.dataset.mode).toBe("annotate");
+  // The result page's own script sets View on any diff it finds.
+  await act(async () => { review.setAttribute("data-mode", "view"); await Promise.resolve(); });
+  expect(review.dataset.mode).toBe("annotate");
+});
+
+test("Escape closes the form, takes its slot out of the diff, and gives the cursor back to the pin", async () => {
   await mount(async () => null);
   await pin(1390);
   await act(() => { panel.querySelector("[data-diff-steer]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
   expect(panel.querySelector(".diff-steer-slot")).toBeNull();
+  expect(document.activeElement).toBe(panel.querySelector('button.pick-line[data-line="1390"]'));
+});
+
+test("while one comment is on its way, its form holds still and another pin waits; it never says another was sent", async () => {
+  let finish: (value: string | null) => void = () => {};
+  const steer = vi.fn(() => new Promise<string | null>(done => { finish = done; }));
+  await mount(steer);
+  await pin(1390);
+  await type("First.");
+  await act(async () => { panel.querySelector<HTMLButtonElement>('[data-diff-steer] button[type="submit"]')!.click(); });
+  expect(panel.querySelector<HTMLTextAreaElement>("[data-diff-steer] textarea")!.readOnly).toBe(true);
+  await pin(1391);
+  expect(panel.querySelector('[data-diff-line="1391"]')!.nextElementSibling?.classList.contains("diff-steer-slot") ?? false).toBe(false);
+  await act(async () => { finish(null); });
+  expect(steer).toHaveBeenCalledTimes(1);
+  expect(panel.querySelector('[data-diff-line="1390"]')!.nextElementSibling?.querySelector("[data-steer-sent]")).not.toBeNull();
+});
+
+test("a delivery that isn't confirmed is never called sent", async () => {
+  await mount(async () => "Delivery isn't confirmed. Check the chat for it before sending it again.");
+  await pin(1390);
+  await type("Please.");
+  await act(async () => { panel.querySelector<HTMLButtonElement>('[data-diff-steer] button[type="submit"]')!.click(); });
+  expect(panel.querySelector("[data-steer-sent]")).toBeNull();
+  expect(panel.querySelector('[data-diff-steer] [role="alert"]')?.textContent).toContain("isn't confirmed");
+});
+
+test("Cmd or Ctrl + Enter sends, but not while an input method is still composing", async () => {
+  const steer = vi.fn(async () => null);
+  await mount(steer);
+  await pin(1390);
+  await type("Words");
+  const box = panel.querySelector<HTMLTextAreaElement>("[data-diff-steer] textarea")!;
+  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, isComposing: true, bubbles: true })); });
+  expect(steer).not.toHaveBeenCalled();
+  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })); });
+  expect(steer).toHaveBeenCalledTimes(1);
 });
 
 const message = (role: BrowserMessage["role"], createdAt: string): BrowserMessage => ({ id: createdAt, role, text: "", html: "", activity: null, createdAt, cardsHtml: "" });

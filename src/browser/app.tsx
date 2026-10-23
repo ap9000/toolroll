@@ -199,36 +199,43 @@ export function useWorkspace(initial: BrowserWorkspace) {
 
   useEffect(() => { if (stale) clearRefreshRetry(); }, [stale, clearRefreshRetry]);
 
-  const send = async (event: FormEvent, mode: string | null = null) => {
+  /** What became of a send: the server took it (or queued it), refused it, it is unconfirmed (no answer to read), or
+   * nothing was sent at all. */
+  type SendOutcome = "accepted" | "queued" | "refused" | "unconfirmed" | "skipped";
+  const send = async (event: FormEvent, mode: string | null = null): Promise<SendOutcome> => {
     event.preventDefault();
     const current = state.current;
     // A reply in progress no longer blocks a send: the server queues it (docs/plans/lead-message-queue.md).
-    if (sendLatch.current || current.stale || navigator.onLine === false || current.draft.pending || !current.draft.text.trim()) return;
+    if (sendLatch.current || current.stale || navigator.onLine === false || current.draft.pending || !current.draft.text.trim()) return "skipped";
     const next = submitDraft(current.draft);
-    if (!next.pending) return;
+    if (!next.pending) return "skipped";
     sendLatch.current = true;
     setSending(true);
     updateDraft(next);
     setNotice("");
     try {
       const result = await sendMessage(current.workspace, next.pending, fetch, mode);
-      if (!mounted.current) return;
+      if (!mounted.current) return result.refused ? "refused" : result.queued === true ? "queued" : "accepted";
       if (result.refused) {
         updateDraft(rejectDraft(state.current.draft, next.pending.request));
         setNotice(result.message ?? "Message not sent. Your draft is saved.");
+        return "refused";
       } else if (result.queued === true) {
         updateDraft(queuedDraft(state.current.draft, next.pending.request));
         setNotice("Queued: it goes to the lead when it finishes.");
         void check();
+        return "queued";
       } else {
         setNotice("Checking delivery…");
         void check();
+        return "accepted";
       }
     } catch (error) {
-      if (!mounted.current) return;
+      if (!mounted.current) return "unconfirmed";
       if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
       setNotice(error instanceof WorkspaceAuthError ? error.message : "Delivery is not confirmed. Check again before sending another message.");
       void check();
+      return "unconfirmed";
     } finally {
       sendLatch.current = false;
       if (mounted.current) setSending(false);
@@ -284,14 +291,15 @@ export function useWorkspace(initial: BrowserWorkspace) {
     if (current.draft.text.trim() !== "" || current.draft.pending) return "Send or clear the message you're writing first.";
     if (sendLatch.current || current.stale || navigator.onLine === false) return "The conversation isn't connected. Try again in a moment.";
     updateDraft(editDraft(current.draft, text));
-    await send({ preventDefault() {} } as FormEvent);
+    const outcome = await send({ preventDefault() {} } as FormEvent);
+    if (outcome === "accepted" || outcome === "queued") return null;
+    // Refused or never sent: the words came back to the composer. Take them out again; the form keeps them.
     const after = state.current.draft;
-    // Refused or undelivered: the words came back to the composer. Take them out again; the form keeps them.
-    if (after.pending === null && !after.submitted && after.text === text) {
-      updateDraft(editDraft(after, ""));
-      return "The lead didn't take it. The note above the message box says why.";
-    }
-    return null;
+    if (after.pending === null && after.text === text) updateDraft(editDraft(after, ""));
+    // Unconfirmed: it may have arrived. The composer's note says to check before sending again; so does this.
+    return outcome === "unconfirmed"
+      ? "Delivery isn't confirmed. Check the chat for it before sending it again."
+      : "The lead didn't take it. The note above the message box says why.";
   };
 
   return { workspace, draft, notice, storageAvailable, sending, stale, offline, send, check, reconnect, steer,
@@ -955,10 +963,23 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   useEffect(notifyWorkspaceRendered, []);
   useWindowStaysPut();
+  // On a phone the result opens as a sheet over the chat (workspace.css): the chat stays in view, dimmed, and out of
+  // reach — no tab stop or tap lands under the sheet until it is put away.
+  const mainColumn = useRef<HTMLDivElement>(null);
+  const sheet = phoneView === "work" && hasWork && !docked && taskView === null && !hidePanel;
+  useEffect(() => {
+    const column = mainColumn.current;
+    if (!column) return;
+    const phone = matchMedia("(max-width: 900px)");
+    const sync = () => column.toggleAttribute("inert", sheet && phone.matches);
+    sync();
+    phone.addEventListener("change", sync);
+    return () => { phone.removeEventListener("change", sync); column.removeAttribute("inert"); };
+  }, [sheet]);
   return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
-    <div className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
+    <div ref={mainColumn} className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
       <header className="so-workspace-header"><PhoneNavigation workspace={workspace} />{pageOnly
         ? <p className="so-header-title">{section}</p>
         : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { htmlString } from "../html.js";
 import { renderChatText } from "./render-chat.js";
+import { reviewDiffHtml } from "./render-results.js";
 
 const render = (text: string) => htmlString(renderChatText(text));
 
@@ -33,5 +34,18 @@ describe("a lead reply's fenced code", () => {
   test("keeps the lists and paragraphs around it", () => {
     const out = render("- one\n```\nx\n```\n- two");
     expect(out).toMatch(/<ul><li>one<\/li><\/ul><pre class="chat-code"><code>x<\/code><\/pre><ul><li>two<\/li><\/ul>/);
+  });
+});
+
+describe("a diff line's names", () => {
+  test("carry a hostile file name and line text as data, never markup", () => {
+    const path = 'a"><img src=x onerror=alert(1)>.js';
+    const patch = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,1 @@\n-</code><script>x</script>\n+&amp; "q" <b>`;
+    const out = htmlString(reviewDiffHtml({ text: patch, truncated: false, artifactId: 1 }, null, 1, true));
+    expect(out).not.toMatch(/<img|<script/);
+    expect(out).toContain('data-diff-file="a&quot;&gt;&lt;img src=x onerror=alert(1)&gt;.js"');
+    expect(out).toContain('data-diff-line="1"');
+    expect(out).toContain("&lt;/code&gt;&lt;script&gt;x&lt;/script&gt;");
+    expect(out).toContain("&amp;amp; &quot;q&quot; &lt;b&gt;");
   });
 });

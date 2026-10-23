@@ -769,6 +769,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-composer-area form[data-workspace-composer] > .ui-textarea { grid-column: 1; grid-row: 1; }
   .so-composer-area .so-composer-actions { display: contents; }
   .so-composer-area .so-composer-actions > span { grid-column: 1 / -1; grid-row: 2; padding: 2px 3px 2px; line-height: 1.35; }
+  /* A phone's box has one line for words under it: the hint (or a length or storage warning) keeps it; the header
+     already names the task or project. */
+  .so-composer-area .so-composer-actions > .so-composer-chip { display: none; }
   .so-composer-area .so-composer-actions .ui-button { grid-column: 2; grid-row: 1; }
   /* What a finger hits stays 44px: the small chat disclosures and the send
      button, and fields inside server fragments a rebuilt view embeds (16px
@@ -843,7 +846,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .diff-steer--sent { flex-direction: row; align-items: center; justify-content: space-between; color: var(--so-live); font-weight: 500; }
 .diff-review .diff-line[data-diff-line]:has(+ .diff-steer-slot) { box-shadow: inset 2px 0 0 var(--so-live); }
 @media (max-width: 900px) {
-  .diff-steer-slot { padding-left: 12px; width: calc(100vw - 32px); }
+  .diff-steer-slot { padding-left: 12px; width: calc(100vw - 52px); }
   .diff-steer-actions .ui-button { flex: 1; min-height: 44px; }
 }
 @media (max-width: 900px) {
