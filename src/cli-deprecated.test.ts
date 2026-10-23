@@ -3,11 +3,12 @@
  * below answers with one removal line (one envelope with --json), runs nothing and is hidden from help and the command
  * contract. `connect` still saves a profile, with its warning. The local lead's own commands stay visible and quiet.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { main } from "./cli.js";
+import { maybeRunConnectCommand } from "./connect-cli.js";
 import { deprecationWarning, removedMessage } from "./deprecations.js";
 
 /** The exact legacy inventory: each invocation and the words its warning names. */
@@ -80,5 +81,49 @@ describe("removed central team and native session commands", () => {
     const capabilities: string[] = [];
     await main(["contract", "--json"], line => capabilities.push(line));
     expect(capabilities.join("\n")).not.toContain("session-client");
+  });
+});
+
+describe("what the removal must keep (slim review)", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "toolroll-removed-keep-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  const secret = "s3cret-token-value-0123456789";
+  const reply = (body: unknown, status = 200) => (async () => Response.json(body, { status })) as unknown as typeof fetch;
+  const connect = async (fetcher: typeof fetch) => {
+    const stdout: string[] = [];
+    const code = await maybeRunConnectCommand(["connect", "https://central.example", "--as", "alex", "--token-stdin", "--json"], line => stdout.push(line),
+      { profileFile: join(dir, "profiles.json"), stderr: () => undefined, readStdin: async () => secret, fetch: fetcher });
+    return { code, stdout, saved: existsSync(join(dir, "profiles.json")) };
+  };
+  const snapshot = { leads: [], conversations: [], selected: null, participants: [], messages: [], canManage: false, canSend: false, cursor: 0, truncated: false, projects: [], accounts: [] };
+
+  test("a chat with a saved central profile is refused as removed, never run against this computer's lead", async () => {
+    const file = join(dir, "profiles.json");
+    writeFileSync(file, JSON.stringify({ version: 1, active: "default", profiles: { default: { origin: "https://central.example", account: "alex", token: secret } } }), { mode: 0o600 });
+    const stdout: string[] = [];
+    const team = { profileFile: file, stderr: () => undefined, fetch: (() => { throw new Error("no network in this test"); }) as typeof fetch };
+    expect(await main(["chat", "--say", "Continue the work", "--json"], line => stdout.push(line), { connect: team, remote: team })).toBe(2);
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: false, reason: "removed", message: removedMessage("chat --conversation", "team") });
+  });
+
+  test("connect never shows the credential a server's refusal echoes", async () => {
+    const { code, stdout } = await connect(reply({ version: 1, ok: false, code: "forbidden", message: `The token ${secret} is not valid.` }, 403));
+    expect(code).toBe(1);
+    expect(stdout.join("\n")).not.toContain(secret);
+    expect(JSON.parse(stdout[0]!).message).toBe("The token [redacted] is not valid.");
+  });
+
+  test("connect saves nothing on a success without a well-formed listing, and saves on one with it", async () => {
+    const bare = await connect(reply({ version: 1, ok: true, code: "ok", message: "ok" }));
+    expect(bare.code).toBe(1);
+    expect(JSON.parse(bare.stdout[0]!)).toMatchObject({ ok: false, code: "service-unavailable" });
+    expect(bare.saved).toBe(false);
+    const broken = await connect(reply({ version: 1, ok: true, code: "ok", message: "ok", snapshot: { ...snapshot, messages: [{ id: "x" }] } }));
+    expect(broken.code).toBe(1);
+    expect(broken.saved).toBe(false);
+    const good = await connect(reply({ version: 1, ok: true, code: "ok", message: "ok", snapshot }));
+    expect(good.code).toBe(0);
+    expect(good.saved).toBe(true);
   });
 });

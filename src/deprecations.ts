@@ -26,14 +26,17 @@ export const DEPRECATED_PAGE: Record<Deprecated, string> = {
 const CENTRAL_LEAD_ACTIONS = ["list", "create", "update", "member", "transfer"];
 const CENTRAL_CHAT_FLAGS = ["--profile", "--lead", "--conversation", "--authorize", "--terms-digest", "--request-id"];
 
-/** The removed command an invocation names, as `{ named, kind }`; null when it is a live command. */
-export function removedCommand(argv: readonly string[]): { named: string; kind: Deprecated } | null {
+/** The removed command an invocation names, as `{ named, kind }`; null when it is a live command. `chat`/`brief`
+ * without --local went to the central service whenever a profile was saved (`savedProfile`, asked only then): that
+ * invocation is removed too, never quietly run against this computer's lead instead. */
+export function removedCommand(argv: readonly string[], savedProfile: () => boolean = () => false): { named: string; kind: Deprecated } | null {
   const [first, second] = argv;
   const verb = () => argv.slice(1).find(arg => !arg.startsWith("-")) ?? "";
   if (first === "session") return { named: `session ${verb()}`.trim(), kind: "session" };
   if (first === "conversation") return { named: `conversation ${verb()}`.trim(), kind: "team" };
   if (first === "lead" && second !== "token" && second !== "say" && argv.some(arg => arg === "--profile" || CENTRAL_LEAD_ACTIONS.includes(arg))) return { named: `lead ${verb()}`.trim(), kind: "team" };
   if ((first === "chat" || first === "brief") && argv.some(arg => CENTRAL_CHAT_FLAGS.includes(arg))) return { named: `${first} --conversation`, kind: "team" };
+  if ((first === "chat" || first === "brief") && !argv.includes("--local") && savedProfile()) return { named: `${first} --conversation`, kind: "team" };
   return null;
 }
 

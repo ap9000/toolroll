@@ -34,7 +34,7 @@ import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, isLargeRepo } from
 import { run as execRun } from "./exec.js";
 import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
-import { maybeRunConnectCommand, type ConnectOptions } from "./connect-cli.js";
+import { hasCentralProfile, maybeRunConnectCommand, type ConnectOptions } from "./connect-cli.js";
 import { removedCommand, removedMessage } from "./deprecations.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
@@ -379,7 +379,8 @@ async function dispatch(
   // hidden from help and the contract, before anything remote or local opens, changing nothing.
   if (argv[0] === "routine") return routinesMoved(argv, write);
   // D5: the central team CLI and native sessions are gone; each old invocation says so and changes nothing.
-  const removed = removedCommand(argv);
+  const connectOptions = mainOptions.connect ?? mainOptions.remote;
+  const removed = removedCommand(argv, () => hasCentralProfile(connectOptions ?? {}));
   if (removed !== null) {
     const message = removedMessage(removed.named, removed.kind);
     write(argv.includes("--json") ? envelopeJson({ ok: false, command: removed.named, reason: "removed", message }) : message);

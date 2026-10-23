@@ -39,6 +39,7 @@ type Flags = Record<string, string | true>;
 const value = (flags: Flags, name: string): string => typeof flags[name] === 'string' ? flags[name] as string : '';
 const text = (raw: string): string => raw.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 const record = (input: unknown): input is Record<string, unknown> => !!input && typeof input === 'object' && !Array.isArray(input);
+const strings = (input: unknown): input is string[] => Array.isArray(input) && input.every(one => typeof one === 'string');
 const accountValid = (input: string): boolean => !!input && input.length <= 200 && !/[\s:\x00-\x1f\x7f]/.test(input);
 const tokenValid = (input: string): boolean => !!input && input.length <= 8192 && !/[\s\x00-\x1f\x7f]/.test(input);
 const profilePath = (options: ConnectOptions): string => options.profileFile ?? namedPath(configBase(options.env ?? process.env, options.home ?? homedir()), ['remote', 'profiles.json']);
@@ -92,6 +93,11 @@ export const bearerOf = (profile: Profile): string => parseApiToken(profile.toke
 
 /** The saved central profile remote commands use: the named one (or the active one), and whether it holds an API token.
  * null when nothing is saved. Reads only the private profile file — never a local login or the database. */
+export function hasCentralProfile(options: ConnectOptions): boolean {
+  // An unreadable or invalid profile file still names a central service: the caller refuses rather than run locally.
+  try { return profiles(options) !== null; } catch { return true; }
+}
+
 export function centralProfile(options: ConnectOptions, name?: string): { name: string; origin: string; account: string; token: string; apiToken: boolean } | null {
   const saved = profiles(options);
   if (saved === null) return null;
@@ -131,7 +137,25 @@ function parse(argv: readonly string[]): { flags: Flags; positions: string[] } {
   if (positions.length !== 1 && !flags.help) throw new UsageError('Name one service origin.');
   return { flags, positions };
 }
-/** The server must accept the credential before it is saved: one read of POST /api/team, never retried. */
+function isMessage(one: unknown): boolean {
+  return record(one) && Number.isSafeInteger(one.id) && typeof one.author === 'string' && ['operator', 'assistant'].includes(String(one.role)) && typeof one.text === 'string' && ['queued', 'running', 'answered', 'failed', 'cancelled', 'uncertain'].includes(String(one.status)) && Number.isSafeInteger(one.revision) && typeof one.createdAt === 'string' && (one.requestId === null || typeof one.requestId === 'string') && (one.turnId === null || Number.isSafeInteger(one.turnId)) && (one.error === null || typeof one.error === 'string');
+}
+/** The listing a central service answers `list` with; a reply without a well-formed one is no proof of a service. */
+function isSnapshot(one: unknown): boolean {
+  if (!record(one) || !Array.isArray(one.leads) || !one.leads.every(lead => record(lead) && typeof lead.id === 'string' && typeof lead.name === 'string') || !Array.isArray(one.conversations) || !one.conversations.every(conversation => record(conversation) && typeof conversation.id === 'string' && typeof conversation.leadId === 'string' && typeof conversation.title === 'string') || !(one.selected === null || record(one.selected) && typeof one.selected.id === 'string' && typeof one.selected.leadId === 'string' && typeof one.selected.title === 'string') || !Array.isArray(one.participants) || !one.participants.every(participant => record(participant) && typeof participant.account === 'string' && ['viewer', 'contributor', 'manager'].includes(String(participant.role)) && typeof participant.active === 'boolean') || !Array.isArray(one.messages) || !one.messages.every(isMessage) || typeof one.canManage !== 'boolean' || typeof one.canSend !== 'boolean' || !Number.isSafeInteger(one.cursor) || typeof one.truncated !== 'boolean' || !strings(one.projects) || !strings(one.accounts)) return false;
+  if (one.chatAuthorization !== undefined) {
+    const grant = one.chatAuthorization;
+    if (!record(grant) || typeof grant.enabled !== 'boolean' || !(grant.provider === null || typeof grant.provider === 'string') || !(grant.model === null || typeof grant.model === 'string') || !Number.isSafeInteger(grant.dailyTurns) || ![grant.weeklyCeilingUsd, grant.conversationCeilingUsd].every(amount => amount === null || typeof amount === 'number' && Number.isFinite(amount) && amount >= 0) || typeof grant.termsDigest !== 'string') return false;
+  }
+  if (one.tasks !== undefined) {
+    const tasks = one.tasks;
+    if (!record(tasks) || !record(tasks.totals) || !['all', 'needs-you', 'running', 'completed'].every(key => Number.isSafeInteger((tasks.totals as Record<string, unknown>)[key])) || !Array.isArray(tasks.items) || !tasks.items.every(task => record(task) && typeof task.rootId === 'string' && typeof task.activeTaskId === 'string' && typeof task.title === 'string' && record(task.status) && typeof task.status.label === 'string') || !(tasks.nextCursor === null || typeof tasks.nextCursor === 'string')) return false;
+  }
+  if (one.proposals !== undefined && (!Array.isArray(one.proposals) || !one.proposals.every(proposal => record(proposal) && Number.isSafeInteger(proposal.id) && typeof proposal.title === 'string' && typeof proposal.state === 'string' && typeof proposal.href === 'string'))) return false;
+  return true;
+}
+/** The server must accept the credential before it is saved: one read of POST /api/team, never retried. A success
+ * proves itself with a well-formed listing, as the central `list` it is. */
 async function verify(profile: Profile, options: ConnectOptions): Promise<ConnectReply> {
   const unconfirmed: ConnectReply = { version: 1, ok: false, code: 'service-unavailable', message: 'The service response could not be read.' };
   try {
@@ -139,7 +163,8 @@ async function verify(profile: Profile, options: ConnectOptions): Promise<Connec
     if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); return unconfirmed; }
     if (response.status === 429) { await response.body?.cancel(); return { ...unconfirmed, code: 'rate-limited', message: 'Request limit reached. Try again shortly.' }; }
     const payload = await responseBody(response);
-    if (!record(payload) || payload.version !== 1 || typeof payload.ok !== 'boolean' || typeof payload.code !== 'string' || typeof payload.message !== 'string' || payload.ok && !response.ok) return unconfirmed;
+    if (!record(payload) || payload.version !== 1 || typeof payload.ok !== 'boolean' || typeof payload.code !== 'string' || typeof payload.message !== 'string' || payload.snapshot !== undefined && !isSnapshot(payload.snapshot) || payload.ok && !response.ok) return unconfirmed;
+    if (payload.ok && payload.snapshot === undefined) return unconfirmed;
     return { version: 1, ok: payload.ok, code: payload.code, message: payload.message };
   } catch { return unconfirmed; }
 }
@@ -150,7 +175,11 @@ export async function maybeRunConnectCommand(argv: readonly string[], write: (li
   const json = argv.includes('--json');
   let secret = '';
   const stderr = (line: string) => (options.stderr ?? (line => process.stderr.write(`${line}\n`)))(text(secret ? line.replaceAll(secret, '[redacted]') : line));
-  const emit = (reply: ConnectReply) => write(json ? envelopeJson({ ...reply, command: 'team connect' }) : text(reply.message));
+  const emit = (reply: ConnectReply) => {
+    // A server's words can echo the credential it was sent: every string it says is redacted before it is shown.
+    const safe = JSON.parse(JSON.stringify(reply, (_key, one: unknown) => typeof one === 'string' && secret ? one.replaceAll(secret, '[redacted]') : one)) as ConnectReply;
+    write(json ? envelopeJson({ ...safe, command: 'team connect' }) : text(safe.message));
+  };
   try {
     // D5: `connect` belongs to the deprecated central team service; it still saves the profile remote commands use.
     stderr(deprecationWarning('connect', 'team'));
