@@ -842,7 +842,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .diff-steer textarea:focus-visible { outline: 0; box-shadow: none; }
 .diff-steer textarea::placeholder { color: var(--so-muted); }
 .diff-steer-send { flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: var(--so-signal); color: var(--so-on-signal); cursor: pointer; }
-.diff-steer-send:disabled { background: var(--so-soft); color: var(--so-muted); cursor: default; }
+.diff-steer-send:disabled { background-color: var(--so-soft); color: var(--so-muted); cursor: default; }
 .diff-steer-send:focus-visible { outline: 2px solid var(--so-signal); outline-offset: 2px; }
 .diff-steer-problem { margin: 4px 0 0; font-size: 12px; color: var(--so-danger); }
 .diff-steer-sent { display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0; font: 400 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
@@ -853,25 +853,25 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* The Workbench pane (the result beside the chat): its tabs stay at the top as the pane's header row, and nothing
    stands between you and the lines: no switch, no per-file buttons, quiet links at the foot. Scoped to this pane; the
    task and review pages keep their own layout. */
-.so-result-host .result-tabs { position: sticky; top: 0; z-index: 4; background: var(--so-paper); }
-.so-result-host ol.result-files:not(:has([data-outside-touches])) { display: none; }
-.so-result-host ol.result-files .pick-file { display: none; }
-.so-result-host .diff-review-help, .so-result-host .diff-modes { display: none; }
-.so-result-host p.meta:has(> a[href*="/evidence/"]) { display: inline-block; margin: 10px 16px 0 0; font-size: 12px; }
-.so-result-host p.meta > a[href*="/evidence/"], .so-result-host details.result-knowledge > summary { color: var(--so-muted); font-size: 12px; font-weight: 400; }
-.so-result-host details.result-knowledge { display: inline-block; margin: 10px 0 0; padding: 0; border: 0; background: none; box-shadow: none; }
-.so-result-host details.result-knowledge[open] { display: block; }
-.so-result-host details.result-knowledge > summary { min-height: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--so-line); }
+.so-result-host[data-line-steer] .result-tabs { position: sticky; top: 0; z-index: 4; background: var(--so-paper); }
+.so-result-host[data-line-steer] ol.result-files:not(:has([data-outside-touches])) { display: none; }
+.so-result-host[data-line-steer] ol.result-files .pick-file { display: none; }
+.so-result-host[data-line-steer] .diff-review-help, .so-result-host[data-line-steer] .diff-modes { display: none; }
+.so-result-host[data-line-steer] p.meta:has(> a[href*="/evidence/"]) { display: inline-block; margin: 10px 16px 0 0; font-size: 12px; }
+.so-result-host[data-line-steer] p.meta > a[href*="/evidence/"], .so-result-host[data-line-steer] details.result-knowledge > summary { color: var(--so-muted); font-size: 12px; font-weight: 400; }
+.so-result-host[data-line-steer] details.result-knowledge { display: inline-block; margin: 10px 0 0; padding: 0; border: 0; background: none; box-shadow: none; }
+.so-result-host[data-line-steer] details.result-knowledge[open] { display: block; }
+.so-result-host[data-line-steer] details.result-knowledge > summary { min-height: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--so-line); }
 /* A pin is a small icon, not a button: it shows on the line under the pointer or the keyboard (always on a touch
    screen, with a 44px target). */
-.so-result-host .diff-annotate { background: transparent; border-right-color: transparent; box-shadow: none; color: var(--so-muted); }
-.so-result-host .diff-annotate svg { width: 16px; height: 16px; }
-.so-result-host .diff-annotate-space { background: transparent; border-right-color: transparent; }
+.so-result-host[data-line-steer] .diff-annotate { background: transparent; border-right-color: transparent; box-shadow: none; color: var(--so-muted); }
+.so-result-host[data-line-steer] .diff-annotate svg { width: 16px; height: 16px; }
+.so-result-host[data-line-steer] .diff-annotate-space { background: transparent; border-right-color: transparent; }
 @media (hover: hover) and (pointer: fine) {
-  .so-result-host .diff-review .diff-annotate { opacity: 0; }
-  .so-result-host .diff-review .diff-line:hover .diff-annotate,
-  .so-result-host .diff-review .diff-annotate:focus-visible,
-  .so-result-host .diff-review .diff-line:has(+ .diff-steer-slot) .diff-annotate { opacity: 1; color: var(--so-live); background: transparent; }
+  .so-result-host[data-line-steer] .diff-review .diff-annotate { opacity: 0; }
+  .so-result-host[data-line-steer] .diff-review .diff-line:hover .diff-annotate,
+  .so-result-host[data-line-steer] .diff-review .diff-annotate:focus-visible,
+  .so-result-host[data-line-steer] .diff-review .diff-line:has(+ .diff-steer-slot) .diff-annotate { opacity: 1; color: var(--so-live); background: transparent; }
 }
 /* One chevron on a fold: the marker the browser draws is dropped where the page draws its own. */
 details.result-request-open > summary { list-style: none; }
@@ -880,13 +880,16 @@ details.result-request-open > summary::-webkit-details-marker { display: none; }
 @media (max-width: 900px) {
   .diff-steer-slot { padding: 4px 16px 8px; }
   .diff-steer { max-width: none; }
-  .diff-steer-row { min-height: 44px; padding-block: 8px; }
-  .diff-steer-send { width: 28px; height: 28px; }
+  .diff-steer-row { min-height: 52px; padding: 4px 4px 4px 12px; align-items: center; }
+  /* A 28px arrow inside a 44px target: the clear border is part of what a finger hits. */
+  .diff-steer-send { width: 44px; height: 44px; border: 8px solid transparent; background-clip: padding-box; }
+  .so-result-host[data-line-steer] details.result-knowledge > summary { display: inline-flex; align-items: center; min-height: 44px; }
+  .so-result-host[data-line-steer] p.meta > a[href*="/evidence/"] { display: inline-flex; align-items: center; min-height: 44px; }
   /* A phone keeps code as written: 12px, no wrapping, the diff box scrolls sideways, so the numbers stay aligned. */
-  .so-result-host .diff-lines { overflow-x: auto; }
-  .so-result-host .diff-line, .so-result-host .diff-review .diff-line { min-width: max-content; grid-template-columns: 2.75rem 2.65rem 2.65rem max-content; }
-  .so-result-host .diff-line code { white-space: pre; overflow-wrap: normal; font-size: 12px; }
-  .so-result-host .diff-hunk-head { overflow-x: auto; white-space: pre; overflow-wrap: normal; }
+  .so-result-host[data-line-steer] .diff-lines { overflow-x: auto; }
+  .so-result-host[data-line-steer] .diff-line, .so-result-host[data-line-steer] .diff-review .diff-line { min-width: max-content; grid-template-columns: 2.75rem 2.65rem 2.65rem max-content; }
+  .so-result-host[data-line-steer] .diff-line code { white-space: pre; overflow-wrap: normal; font-size: 12px; }
+  .so-result-host[data-line-steer] .diff-hunk-head { overflow-x: auto; white-space: pre; overflow-wrap: normal; }
   /* The header's chips are quiet: a 1px line and 12px words, on the same 44px tap target. */
   .so-needs-chip, .so-workspace-header .so-phone-work-button.ui-button { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 12px; }
 }

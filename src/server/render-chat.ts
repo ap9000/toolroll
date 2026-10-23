@@ -436,17 +436,20 @@ export function renderChatText(raw: string, asked?: string): Html {
   return html`<div class="chat-copy">${out}</div>`;
 }
 
-/** A line comment from the chat Workbench (src/browser/line-steer.tsx steerMessage): "On <file>:<line>[ (removed line)]
- * (run #<n>): <comment>" and, after a blank line, "> <the line>". The words the lead reads stay exactly as sent; the
- * thread shows them in three parts: a small reference line, the quoted code as written, and the comment. Null for any
- * other message, which keeps its own plain rendering. Everything is escaped by the html template. */
+/** A line comment from the chat Workbench (src/browser/line-steer.tsx steerMessage): On "<file, as a JSON string>":<line>
+ * [ (removed line)] (run #<n>): <comment>, then a blank line and "> <the line>" (empty for a blank line), always last.
+ * The words the lead reads stay exactly as sent; the thread shows them in three parts: a small reference line, the quoted
+ * code as written, and the comment. Null for any other message, which keeps its own plain rendering. Everything is
+ * escaped by the html template. */
 export function steerCommentHtml(text: string): Html | null {
-  const steer = /^On (.{1,300}?):(\d{1,9})( \(removed line\))? \(run #(\d{1,12})\): ([\s\S]*?)(?:\n\n> ([^\n]*))?$/.exec(text);
+  const steer = /^On ("(?:[^"\\\n]|\\.){1,1200}"):(\d{1,9})( \(removed line\))? \(run #(\d{1,12})\): ([\s\S]+)\n\n> ([^\n]*)$/.exec(text);
   if (steer === null) return null;
-  const [, path, line, removed, run, comment, code] = steer;
-  if (comment!.trim() === "") return null;
+  const [, quoted, line, removed, run, comment, code] = steer;
+  let path: unknown;
+  try { path = JSON.parse(quoted!); } catch { return null; }
+  if (typeof path !== "string" || path === "" || /[\u0000-\u001f]/.test(path) || comment!.trim() === "") return null;
   return html`<div class="chat-steer" data-steer-comment><p class="chat-steer-ref">${path}:${line}${removed === undefined ? "" : " · removed line"} · run #${run}</p>${
-    code === undefined || code === "" ? "" : html`<pre class="chat-steer-code"><code>${code}</code></pre>`}<p class="chat-steer-note" style="white-space:pre-wrap">${comment}</p></div>`;
+    code === "" ? "" : html`<pre class="chat-steer-code"><code>${code}</code></pre>`}<p class="chat-steer-note" style="white-space:pre-wrap">${comment}</p></div>`;
 }
 
 export function chatActivity(activity: string | null): Html {

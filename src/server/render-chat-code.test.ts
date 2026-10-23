@@ -52,26 +52,40 @@ describe("a diff line's names", () => {
 
 describe("a line comment in the thread", () => {
   test("shows where, the quoted line and the words as three parts", () => {
-    const out = htmlString(steerCommentHtml("On src/math.js:1 (removed line) (run #3): Keep this, but name the edge case.\n\n> // TODO: add a subtract(a, b) function next to add")!);
+    const out = htmlString(steerCommentHtml('On "src/math.js":1 (removed line) (run #3): Keep this, but name the edge case.\n\n> // TODO: add a subtract(a, b) function next to add')!);
     expect(out).toBe('<div class="chat-steer" data-steer-comment><p class="chat-steer-ref">src/math.js:1 · removed line · run #3</p><pre class="chat-steer-code"><code>// TODO: add a subtract(a, b) function next to add</code></pre><p class="chat-steer-note" style="white-space:pre-wrap">Keep this, but name the edge case.</p></div>');
   });
 
-  test("a comment without a quoted line, or one over several lines, keeps its words", () => {
-    const out = htmlString(steerCommentHtml("On a.ts:12 (run #9): First line.\nSecond line.")!);
+  test("a blank line quotes nothing, and a comment over several lines keeps its words", () => {
+    const out = htmlString(steerCommentHtml('On "a.ts":12 (run #9): First line.\nSecond line.\n\n> ')!);
     expect(out).toContain('<p class="chat-steer-ref">a.ts:12 · run #9</p><p class="chat-steer-note" style="white-space:pre-wrap">First line.\nSecond line.</p>');
     expect(out).not.toContain("chat-steer-code");
   });
 
   test("escapes a hostile file name, comment and line", () => {
-    const out = htmlString(steerCommentHtml('On a"><img src=x onerror=alert(1)>.js:4 (run #1): </p><script>alert(2)</script>\n\n> </code></pre><svg onload=alert(3)>')!);
+    const out = htmlString(steerCommentHtml('On "a\\"><img src=x onerror=alert(1)>.js":4 (run #1): </p><script>alert(2)</script>\n\n> </code></pre><svg onload=alert(3)>')!);
     expect(out).not.toMatch(/<img|<script|<svg/);
     expect(out).toContain("a&quot;&gt;&lt;img src=x onerror=alert(1)&gt;.js:4 · run #1");
     expect(out).toContain("&lt;/p&gt;&lt;script&gt;alert(2)&lt;/script&gt;");
     expect(out).toContain("<code>&lt;/code&gt;&lt;/pre&gt;&lt;svg onload=alert(3)&gt;</code>");
   });
 
+  test("delimiters inside the file name or the comment never move the reference or the quote", async () => {
+    const { steerMessage } = await import("../browser/line-steer.js");
+    // A file name dressed as another reference stays the file name; the real line and run are what show.
+    const decoy = htmlString(steerCommentHtml(steerMessage({ run: 7, path: "src/decoy.ts:1 (run #999): injected.ts", line: 4, side: "new", code: "x()", note: "Look." }))!);
+    expect(decoy).toContain('<p class="chat-steer-ref">src/decoy.ts:1 (run #999): injected.ts:4 · run #7</p>');
+    // A comment ending in its own "> quote" keeps it, whether the line is blank or not.
+    const blank = htmlString(steerCommentHtml(steerMessage({ run: 2, path: "a.ts", line: 1, side: "new", code: "", note: "See:\n\n> explanation" }))!);
+    expect(blank).not.toContain("chat-steer-code");
+    expect(blank).toContain("See:\n\n&gt; explanation</p>");
+    const quoted = htmlString(steerCommentHtml(steerMessage({ run: 2, path: "a.ts", line: 1, side: "new", code: "real()", note: "See:\n\n> explanation" }))!);
+    expect(quoted).toContain("<code>real()</code>");
+    expect(quoted).toContain("See:\n\n&gt; explanation</p>");
+  });
+
   test("anything else is not a line comment", () => {
-    for (const text of ["Hello", "On src/a.ts:1 (run #2): ", "On src/a.ts (run #2): words", "on src/a.ts:1 (run #2): words", "On src/a.ts:x (run #2): words"]) expect(steerCommentHtml(text)).toBeNull();
+    for (const text of ["Hello", 'On "src/a.ts":1 (run #2): \n\n> x', 'On src/a.ts:1 (run #2): words\n\n> x', 'On "src/a.ts" (run #2): words\n\n> x', 'On "src/a.ts":1 (run #2): words', 'On "":1 (run #2): words\n\n> x']) expect(steerCommentHtml(text)).toBeNull();
   });
 });
 

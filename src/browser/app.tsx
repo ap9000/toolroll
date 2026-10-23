@@ -9,7 +9,7 @@ import {
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
   DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, Passwordless, PostForm } from "./ui/index.js";
 import {
-  carryDraft, editDraft, emptyDraft, isWorkspace, queuedDraft, readWorkspace, receiveDraft, rejectDraft,
+  awaitReceipt, carryDraft, editDraft, emptyDraft, isWorkspace, queuedDraft, readWorkspace, receiveDraft, rejectDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
 } from "./workspace-client.js";
 import type { ChatDraft, DraftScope, DraftStorage } from "./workspace-client.js";
@@ -291,8 +291,14 @@ export function useWorkspace(initial: BrowserWorkspace) {
     if (current.draft.text.trim() !== "" || current.draft.pending) return "Send or clear the message you're writing first.";
     if (sendLatch.current || current.stale || navigator.onLine === false) return "The conversation isn't connected. Try again in a moment.";
     updateDraft(editDraft(current.draft, text));
+    const request = state.current.draft.request;
     const outcome = await send({ preventDefault() {} } as FormEvent);
-    if (outcome === "accepted" || outcome === "queued") return null;
+    // Queued is a durable acknowledgement; anything else the server didn't refuse counts only once its receipt is read.
+    if (outcome === "queued") return null;
+    if (outcome === "accepted") {
+      return await awaitReceipt(() => state.current.draft.pending?.request ?? null, request, () => check())
+        ? null : "Delivery isn't confirmed. Check the chat for it before sending it again.";
+    }
     // Refused or never sent: the words came back to the composer. Take them out again; the form keeps them.
     const after = state.current.draft;
     if (after.pending === null && after.text === text) updateDraft(editDraft(after, ""));

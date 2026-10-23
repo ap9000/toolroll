@@ -16,12 +16,14 @@ const oneLine = (text: string, max: number): string => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
-/** The chat message a steer sends: where, which run, the note, and the line it is about. */
+/** The chat message a steer sends: where, which run, the note, and the line it is about. The file name is written as a
+ * JSON string and the quoted line always closes the message (empty when the line is blank), so a reader (the thread's
+ * steerCommentHtml) can take the reference and the quote back without guessing where a file name or a note ends. */
 export function steerMessage(input: { run: number; path: string; line: number; side: "new" | "old"; code: string; note: string }): string {
-  const where = `${oneLine(input.path, STEER_LIMITS.path)}:${input.line}${input.side === "old" ? " (removed line)" : ""}`;
+  const where = `${JSON.stringify(oneLine(input.path, STEER_LIMITS.path))}:${input.line}${input.side === "old" ? " (removed line)" : ""}`;
   const code = oneLine(input.code, STEER_LIMITS.code);
   const note = input.note.trim().slice(0, STEER_LIMITS.note);
-  return `On ${where} (run #${input.run}): ${note}${code === "" ? "" : `\n\n> ${code}`}`;
+  return `On ${where} (run #${input.run}): ${note}\n\n> ${code}`;
 }
 
 type Target = { slot: HTMLElement; pin: HTMLButtonElement; path: string; line: number; side: "new" | "old"; code: string };
@@ -61,6 +63,8 @@ export function LineSteer({ host, run, maxChars, steer }: {
   useEffect(() => {
     const panel = host.current;
     if (!panel) return;
+    // The pane's lighter diff (workspace.css: no switch, no per-file buttons) belongs only where this is installed.
+    panel.setAttribute("data-line-steer", "");
     // Beside the chat, a line is there to be commented on: the diff's pins are always there (no View / Annotate switch;
     // workspace.css hides it). The result page's own script, loaded with the page, sets View on any diff it finds, so
     // Annotate is put back whenever anything changes it.
@@ -91,7 +95,7 @@ export function LineSteer({ host, run, maxChars, steer }: {
       setNote(""); setState("editing"); setProblem(null);
     };
     panel.addEventListener("click", onClick, true);
-    return () => { panel.removeEventListener("click", onClick, true); keep.disconnect(); };
+    return () => { panel.removeEventListener("click", onClick, true); keep.disconnect(); panel.removeAttribute("data-line-steer"); };
   }, [host]);
 
   // A form that opens takes the cursor; one whose slot left the page (the result was replaced) closes.
@@ -109,8 +113,12 @@ export function LineSteer({ host, run, maxChars, steer }: {
     setState("sending"); setProblem(null);
     try {
       const refused = await steer(message);
-      if (refused === null) setState("sent");
-      else { setState("editing"); setProblem(refused); }
+      if (refused === null) {
+        // The editor gives way to a one-line note; the cursor goes back to the pin it came from, not to the page.
+        const hadFocus = target.slot.contains(document.activeElement);
+        setState("sent");
+        if (hadFocus && target.pin.isConnected) target.pin.focus();
+      } else { setState("editing"); setProblem(refused); }
     } finally {
       inFlight.current = false;
     }
@@ -126,7 +134,7 @@ export function LineSteer({ host, run, maxChars, steer }: {
       </p>
     : <form className="diff-steer" data-diff-steer data-diff-file={target.path} data-diff-line={target.line}
         onSubmit={event => { event.preventDefault(); void submit(); }}
-        onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); close(target); } }}>
+        onKeyDown={event => { if (event.key === "Escape" && !event.nativeEvent.isComposing) { event.preventDefault(); close(target); } }}>
         <label htmlFor={noteId} className="so-sr-only">Comment on line {target.line} of {target.path}, for the lead. Enter sends; Escape cancels.</label>
         <div className="diff-steer-row">
           <textarea ref={box} id={noteId} rows={1} maxLength={STEER_LIMITS.note} value={note} readOnly={state === "sending"} placeholder="Comment for the lead…"

@@ -34,8 +34,10 @@ const type = (value: string) => act(() => {
 
 test("the message names the file, line and run, quotes the line on one line, and is bounded", () => {
   expect(steerMessage({ run: 3224, path: "src/a.ts", line: 12, side: "new", code: "  const a =\n 1;  ", note: "  Fail with the numbers.  " }))
-    .toBe("On src/a.ts:12 (run #3224): Fail with the numbers.\n\n> const a = 1;");
-  expect(steerMessage({ run: 1, path: "src/a.ts", line: 3, side: "old", code: "", note: "Why?" })).toBe("On src/a.ts:3 (removed line) (run #1): Why?");
+    .toBe('On "src/a.ts":12 (run #3224): Fail with the numbers.\n\n> const a = 1;');
+  expect(steerMessage({ run: 1, path: "src/a.ts", line: 3, side: "old", code: "", note: "Why?" })).toBe('On "src/a.ts":3 (removed line) (run #1): Why?\n\n> ');
+  // A file name that looks like a reference stays one quoted name.
+  expect(steerMessage({ run: 7, path: 'src/decoy.ts:1 (run #999): x".ts', line: 4, side: "new", code: "y", note: "n" })).toBe('On "src/decoy.ts:1 (run #999): x\\".ts":4 (run #7): n\n\n> y');
   const long = steerMessage({ run: 1, path: "p".repeat(900), line: 1, side: "new", code: "c".repeat(900), note: "n".repeat(9000) });
   expect(long.length).toBeLessThan(STEER_LIMITS.path + STEER_LIMITS.code + STEER_LIMITS.note + 60);
 });
@@ -68,7 +70,7 @@ test("sending posts one message with the quoted line, then says it went", async 
   await type("Don't swallow the timeout.");
   await act(async () => { send().click(); });
   expect(steer).toHaveBeenCalledTimes(1);
-  expect(steer).toHaveBeenCalledWith("On scripts/app-e2e.mjs:1390 (run #3224): Don't swallow the timeout.\n\n> }, null, { timeout: 5000 }).catch(() => {});");
+  expect(steer).toHaveBeenCalledWith('On "scripts/app-e2e.mjs":1390 (run #3224): Don\'t swallow the timeout.\n\n> }, null, { timeout: 5000 }).catch(() => {});');
   expect(panel.querySelector("[data-steer-sent]")?.textContent).toContain("Sent to the lead");
 });
 
@@ -142,6 +144,25 @@ test("Enter sends; Shift + Enter is a new line, and nothing sends while an input
   expect(steer).toHaveBeenCalledTimes(1);
   // Sent: one quiet line with its first words, where the comment was.
   expect(panel.querySelector("[data-steer-sent]")?.textContent).toBe("Sent to the lead · Words");
+});
+
+test("Escape while an input method is composing keeps the comment; sent, the cursor goes back to the pin", async () => {
+  await mount(async () => null);
+  await pin(1390);
+  await type("Keep me");
+  const form = panel.querySelector("[data-diff-steer]")!;
+  await act(() => { form.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true })); });
+  expect(panel.querySelector<HTMLTextAreaElement>("[data-diff-steer] textarea")?.value).toBe("Keep me");
+  await act(async () => { panel.querySelector<HTMLTextAreaElement>("[data-diff-steer] textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  expect(panel.querySelector("[data-steer-sent]")).not.toBeNull();
+  expect(document.activeElement).toBe(panel.querySelector('button.pick-line[data-line="1390"]'));
+});
+
+test("the pane is marked while steering is installed, and unmarked after", async () => {
+  await mount(async () => null);
+  expect(panel.hasAttribute("data-line-steer")).toBe(true);
+  await act(async () => root?.unmount()); root = null;
+  expect(panel.hasAttribute("data-line-steer")).toBe(false);
 });
 
 const message = (role: BrowserMessage["role"], createdAt: string): BrowserMessage => ({ id: createdAt, role, text: "", html: "", activity: null, createdAt, cardsHtml: "" });

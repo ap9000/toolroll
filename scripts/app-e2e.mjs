@@ -2267,9 +2267,19 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await waitFor(steer, "the comment form under that line");
   if (await on.locator("#comment-form textarea[name=note]:focus").count() !== 0) throw new Error("the pin opened the request form instead of the comment under the line");
   await steer.locator("textarea").fill("Keep this, but name the edge case in a comment.");
-  await bothSizes(on, "5-workbench-comment");
-  await steer.locator('button[type="submit"]').click();
+  await settle(on);
+  await on.screenshot({ path: join(w.out, "onboarding-5-workbench-comment-1440.png") });
+  // Sent from a phone, with Return, as a person would: the sheet holds the same row, and the cursor goes back to the pin.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  await steer.scrollIntoViewIfNeeded();
+  if (await on.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) > 1) throw new Error("the comment row scrolls the phone sideways");
+  await on.screenshot({ path: join(w.out, "onboarding-5-workbench-comment-390.png") });
+  await steer.locator("textarea").press("Enter");
   await waitFor(on.locator("[data-steer-sent]"), "the comment to say it went to the lead");
+  if (!await on.evaluate(() => document.activeElement?.matches("button.pick-line") ?? false)) throw new Error("after sending, the cursor didn't go back to the line's pin");
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
   // The thread shows it in parts: where (file, line, run), the quoted line, and the words.
   const steered = [`${path}:${line}`, `run #${built}`, "Keep this, but name the edge case in a comment."];
   await until("the comment in the chat as the next message", async () => {
@@ -2277,7 +2287,7 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
     return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
   }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
   const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
-  if (!sent.some(text => text.startsWith(`On ${path}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
+  if (!sent.some(text => text.startsWith(`On ${JSON.stringify(path)}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
   // The thread itself, while the lead works (its steps) and once it has answered (a code block and a card to confirm).
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
   await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
