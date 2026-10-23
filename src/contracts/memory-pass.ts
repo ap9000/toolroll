@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
 import { limited, readVersioned, toModelSchema, versioned, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 export const MEMORY_EFFECTS = ["harm", "non-compliance", "irrelevant"] as const;
 export const MEMORY_DOMAINS = ["project", "orchestration"] as const;
@@ -82,8 +83,6 @@ export const MEMORY_VERDICT_VERSION = 1;
 export const savedVerdictSchema = versioned(MEMORY_VERDICT_VERSION, verdictShape(saved));
 
 export type SavedVerdict = z.infer<typeof savedVerdictSchema>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * A verdict kept before it carried `version` (through 0.9.36), as version 1. Those left a gap's `matchesGap` out when

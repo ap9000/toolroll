@@ -11,6 +11,7 @@ import type { TextLimitKey } from "../text-limits.js";
 import type { RepositoryContext } from "../repository-context.js";
 import { limited, readVersioned, versioned, type ContractResult } from "./contract.js";
 import { decisionLineSchema } from "./project-memory.js";
+import { isRecord } from "../is-record.js";
 
 /** How many references a project keeps, and how many a run is given. Text limits live in TEXT_LIMITS. */
 export const KNOWLEDGE_COUNTS = { references: 12, selected: 3, decisions: 8 } as const;
@@ -46,8 +47,6 @@ export const savedKnowledgeSchema = versioned(KNOWLEDGE_VERSION, knowledgeShape(
 /** Knowledge as every reader returns it: the payload without its envelope. */
 export type Knowledge = Omit<z.infer<typeof knowledgeSchema>, "version">;
 export type KnowledgeReference = Knowledge["references"][number];
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 function pick(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};

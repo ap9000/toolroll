@@ -15,11 +15,10 @@
 
 import { z } from "zod";
 import { parseContract, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 /** RFC 6749 scope tokens. */
 export const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A field's schema without its optional wrapper. */
 const inner = (field: z.ZodType): z.ZodType => (field instanceof z.ZodOptional ? (field.unwrap() as z.ZodType) : field);

@@ -585,7 +585,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   "fresh": {
     "src/acp-check.ts#settleChecks@2": 4,
     "src/acp-check.ts#settleChecks@2>took:acquire(store,ref,job.runner,_).newLeaseId@2": 1,
-    "src/acp-client.ts#exactField@11": 3,
+    "src/acp-client.ts#exactField@10": 3,
     "src/backup.ts#runningNow@18": 2,
     "src/browser-workspace.ts#<module>": 2,
     "src/browser/app.tsx#Navigation@21": 3,
@@ -613,7 +613,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#keep@12": 5,
     "src/flow-send.ts#sendStep@14": 3,
     "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 5,
-    "src/flow-triggers.ts#checkTrigger@50": 3,
+    "src/flow-triggers.ts#checkTrigger@49": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@25": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@26": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,

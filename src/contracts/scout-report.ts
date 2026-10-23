@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { limitRule, TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
 import { limited, readVersioned, toModelSchema, versioned, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 /** How many follow-ups, items and screenshots a report may carry. */
 export const REPORT_COUNTS = { followUps: 5, items: 6, images: 8 } as const;
@@ -133,8 +134,6 @@ export const scoutHandbackSchema = z.strictObject({
 });
 
 export const SCOUT_OUTPUT_JSON_SCHEMA: Readonly<Record<string, unknown>> = toModelSchema(scoutHandbackSchema);
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 function pick(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};

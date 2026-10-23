@@ -58,6 +58,7 @@ import {
   HEADERS_MAX, legacySubagentStep, LONGEST_WAIT_MINUTES, savedFlowDefinitionSchema, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf, SURE_AT_MAX, SURE_AT_MIN, ZONE_ID,
   type FlowChoice, type FlowColor, type FlowDefinition, type FlowLimit, type FlowSort, type FlowStage, type FlowStageKind, type FlowStepFields, type FlowWait, type FlowZone, type ScriptLanguage, type TriggerInput,
 } from "./contracts/flow.js";
+import { isRecord } from "./is-record.js";
 
 export { CHOICES_MAX, CHOICES_MIN, FLOW_COLORS, FLOW_END, FLOW_MERGE_METHODS, FLOW_STAGE_KINDS, LONGEST_WAIT_MINUTES, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf };
 export type {
@@ -144,7 +145,6 @@ export class FlowContractError extends Error {
 
 // ------------------------------------------------------------------ reading a drawing
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 /** Text as every release has kept it: trimmed, and blank as none. Anything else is left for the schema to name. */
 const said = (value: unknown): unknown => value === undefined || value === null ? null : typeof value === "string" ? value.trim() === "" ? null : value.trim() : value;
 const coordinate = (value: unknown, min: number, max: number, fallback: number): number =>
