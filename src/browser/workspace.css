@@ -888,7 +888,7 @@ details.result-request-open > summary::-webkit-details-marker { display: none; }
   .so-result-host .diff-line code { white-space: pre; overflow-wrap: normal; font-size: 12px; }
   .so-result-host .diff-hunk-head { overflow-x: auto; white-space: pre; overflow-wrap: normal; }
   /* The header's chips are quiet: a 1px line and 12px words, on the same 44px tap target. */
-  .so-needs-chip, .so-phone-work-button.ui-button { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 12px; }
+  .so-needs-chip, .so-workspace-header .so-phone-work-button.ui-button { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 12px; }
 }
 @media (max-width: 900px) {
   /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */
@@ -903,3 +903,9 @@ details.result-request-open > summary::-webkit-details-marker { display: none; }
 .so-work-run { margin-left: auto; margin-right: var(--so-space-sm); font: 400 12px/1 var(--so-font-mono); color: var(--so-muted); }
 .so-work-run ~ .so-close-work { margin-left: 0; }
 @media (max-width: 900px) { .so-work-run { display: none; } }
+/* A line comment in your bubble: where (small mono), the line it is about (as written, scrolling sideways), the words. */
+.chat-steer { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-message-content .chat-steer p.chat-steer-ref { margin: 0; font: 400 11.5px/1.4 var(--so-font-mono); color: var(--so-muted); overflow-wrap: anywhere; }
+.ui-message-content .chat-steer pre.chat-steer-code { margin: 0; padding: 6px 8px; border: 0; border-radius: var(--so-radius-sm); background: var(--so-paper); font: 400 12px/1.5 var(--so-font-mono); white-space: pre; overflow-x: auto; max-width: 100%; }
+.ui-message-content .chat-steer pre.chat-steer-code code { font: inherit; background: none; padding: 0; }
+.ui-message-content .chat-steer p.chat-steer-note { margin: 0; }

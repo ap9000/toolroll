@@ -2270,10 +2270,10 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await bothSizes(on, "5-workbench-comment");
   await steer.locator('button[type="submit"]').click();
   await waitFor(on.locator("[data-steer-sent]"), "the comment to say it went to the lead");
-  // The message as sent names the run too; the thread shows a person's words shaped like every message (ids folded).
-  const steered = [`On ${path}:${line}`, "Keep this, but name the edge case in a comment."];
+  // The thread shows it in parts: where (file, line, run), the quoted line, and the words.
+  const steered = [`${path}:${line}`, `run #${built}`, "Keep this, but name the edge case in a comment."];
   await until("the comment in the chat as the next message", async () => {
-    const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts();
+    const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id] [data-steer-comment]').allInnerTexts();
     return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
   }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
   const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
@@ -2285,6 +2285,16 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   await waitFor(on.locator('[data-workspace-chat] [data-message-id] pre.chat-code').first(), "the lead's reply with its code block", { timeoutMs: 60_000 });
   await waitFor(on.locator('[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you').first(), "the card waiting on you", { timeoutMs: 30_000 });
   await bothSizes(on, "chat-thread");
+  // On a phone the task opens as a sheet; put it away to show the thread itself.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  const backToChat = on.locator(".so-supporting-panel--detail .so-phone-back").first();
+  if (await backToChat.isVisible()) await backToChat.click();
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 0) throw new Error("the chat stays out of reach after the sheet is put away");
+  await on.screenshot({ path: join(w.out, "onboarding-chat-thread-phone-chat-390.png") });
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
   await waitFor(on.locator("[data-workspace-result] [data-diff-line]").first(), "the result again", { timeoutMs: 30_000, state: "attached" });
   // On a phone the result is a sheet over the chat; the chat under it takes no taps or tab stops until it's put away.
