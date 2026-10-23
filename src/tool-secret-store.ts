@@ -32,6 +32,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { envValue } from "./names.js";
+import { sleep } from "./sleep.js";
 
 export type SecretStoreKind = "macos-keychain" | "secret-service" | "files";
 /** One item's address: what the store lists, never a secret (a folder's or project's hash, a tool's name). */
@@ -199,8 +200,6 @@ function currentStore(env: NodeJS.ProcessEnv): DetectedStore {
 export function secretBackend(env: NodeJS.ProcessEnv = process.env): SecretBackend | null {
   return currentStore(env).backend;
 }
-
-export const secretStoreKind = (): SecretStoreKind => secretBackend()?.kind ?? "files";
 
 /** Where secrets rest, in the words Settings and `toolroll integrations` share; `problem` when Toolroll's folder can't be used. */
 export function secretStorage(): { kind: SecretStoreKind; words: string; filesOnly: boolean; problem?: string } {
@@ -550,7 +549,7 @@ export async function withSecretLockAsync<T>(folder: SecretFolder, name: string,
   const lock = lockFile(folder, name), started = Date.now();
   while (!takeLock(lock, options.staleMs ?? 120_000)) {
     if (Date.now() - started > (options.waitMs ?? 120_000)) throw new SecretStoreError("A sign-in is being renewed elsewhere. Try again in a moment.");
-    await new Promise(resolve => setTimeout(resolve, 25));
+    await sleep(25);
   }
   try { return await work(); } finally { rmSync(lock, { force: true }); }
 }
@@ -655,9 +654,4 @@ export function writeHeldSecret(state: string, name: string, file: readonly stri
     if (value === null) removeValue(backend, item);
     else writeSealed(backend, folder, item, value);
   });
-}
-
-/** Whether a held secret has a value, without reading it where that can be helped. */
-export function heldSecretSet(state: string, name: string, file: readonly string[]): boolean {
-  try { return readHeldSecret(state, name, file) !== null; } catch { return false; }
 }

@@ -36,6 +36,7 @@ import { isAcpProvider } from "./acp-agents.js";
 import { SecretStoreError, destroyOwnFile, prepareSecretFolder, registerSecretFolder, pathIn, readOwnFile, readSealed, removeValue, secretBackend, secretFolder, secretStorage, serviceOf, withSecretLock, withSecretLockAsync, writeOwnFile, writeSealed, type SecretBackend, type SecretFolder, type SecretItem, type SecretStoreKind } from "./tool-secret-store.js";
 import { ACCESS, GRANTED, REFRESH, mintRunToken, mintsRunTokens, oneAtATime, runScope, scopeList, signedIn } from "./oauth-run-token.js";
 import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
+import { canonicalJson } from "./canonical-json.js";
 
 export type { ToolSecret, ToolSpec };
 
@@ -109,19 +110,10 @@ export function catalogTool(id: string): (ToolSpec & { label: string }) | null {
   return TOOL_CATALOG.find(one => one.name === id) ?? null;
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** What a build is held to: how the server starts and which secrets it names — never their values or its description. */
 export function toolDigest(spec: ToolSpec): string {
   const { about: _about, ...terms } = spec;
-  return createHash("sha256").update(`standing-orders:tool:v1:${canonical(terms)}`, "utf8").digest("hex").slice(0, 32);
+  return createHash("sha256").update(`standing-orders:tool:v1:${canonicalJson(terms)}`, "utf8").digest("hex").slice(0, 32);
 }
 
 const str = (value: unknown, cap: number, what: string): string => {

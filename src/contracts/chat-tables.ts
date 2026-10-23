@@ -217,4 +217,3 @@ export const CHAT_TABLES = [
   "chat_note_draft",
   "chat_digest",
 ] as const;
-export type ChatTable = (typeof CHAT_TABLES)[number];

@@ -10,7 +10,7 @@ import { browserCrewFromIndex } from './browser-crew.js';
 export { browserCrewFromIndex, browserWorkActionHref } from './browser-crew.js';
 import type { Store } from './store.js';
 import type { WorkSummaryAccess } from './work-summary.js';
-import { workIndexPage, type WorkIndexItem, type WorkIndexPage } from './work-index.js';
+import { workIndexPage } from './work-index.js';
 import type { StatusTone } from './workspace-ui.js';
 import type { Ask, AskChip } from './needs-you.js';
 import type { WorkIndexGroup } from './work-index.js';

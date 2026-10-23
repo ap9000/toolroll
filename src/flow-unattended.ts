@@ -36,6 +36,7 @@ import { dollarWords as dollars, scheduleWords, UNATTENDED_RULE_WORDS, unattende
 import { MODE_MAX_DAYS } from "./modes.js";
 import { accountReachesSql } from "./project-access.js";
 import type { FlowRow, FlowTriggerRow, Store } from "./store.js";
+import { canonicalJson } from "./canonical-json.js";
 
 /** Grant history, run reservations and the last prepared script snapshots shared by UI/worker processes. Additive only. */
 export const FLOW_UNATTENDED_SCHEMA = `
@@ -104,18 +105,6 @@ export type UnattendedTerms = {
   dailyRunCap: number | null;
   absoluteExpiry: string;
 };
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 export const unattendedTermsJson = (terms: UnattendedTerms): string => canonicalJson(terms);
 

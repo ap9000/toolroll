@@ -6,6 +6,7 @@ import { createContainer, currentContainment, type Container } from "./containme
 import { processMayBeAlive } from "./process-liveness.js";
 import { observeProcessTree, sampleProcessTree, stopProcessTree, type ProcessObservationFailure } from "./process-tree.js";
 import { isOwnEnv } from "./names.js";
+import { sleep } from "./sleep.js";
 
 /** Read-only recovery witnesses, never authority to signal historical PIDs.
  * macOS ancestry is observational; a missed/failed observation stays fenced.
@@ -344,7 +345,7 @@ export function createCodexCodingProvider(options: { cwd?: string; command?: str
       // descendants after ancestry is lost or silently release session custody.
       const absent = (): boolean => (owned.pid === undefined || !processMayBeAlive(owned.pid, process.platform !== "win32")) && [...descendants.values()].every(({ pid, group }) => !processMayBeAlive(pid, group));
       const until = Date.now() + EXIT_GRACE_MS;
-      while (!ancestryUnknown && !absent() && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 25));
+      while (!ancestryUnknown && !absent() && Date.now() < until) await sleep(25);
       clean = clean && !ancestryUnknown && absent();
     }
     if (!clean) throw new CodingProviderShutdownError();

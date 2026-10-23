@@ -12,19 +12,21 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { envelopeJson } from './envelope.js';
 import { COMMAND_GUIDE } from './surface.js';
-import { centralProfile, UsageError, type TeamCliOptions } from './team-cli.js';
+import { centralProfile, UsageError, type ConnectOptions } from './connect-cli.js';
 import { CLI_FILES_BYTES, CLI_WAIT_SECONDS, type CliRequest } from './cli-http.js';
 import { TOKEN_REPLACEMENT } from './password-bearer.js';
 import { contractRow, fileArguments, STEP_UP_MESSAGE, type RemoteCommand, type RemoteCommandLookup } from './remote-command.js';
 
 export { contractRow, STEP_UP_MESSAGE, type RemoteMode } from './remote-command.js';
 const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
-/** Team commands own their own central path (team-cli.ts); `session` sends its own checked request (session-cli.ts). */
+/** Never sent remotely: `connect` saves the profile itself, the lead's commands are this computer's, and the removed
+ * central team and session verbs answer with their removal notice (removed-commands.ts). */
 const TEAM_COMMANDS = new Set(['connect', 'lead', 'conversation', 'chat', 'brief', 'session']);
 const RESPONSE_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = (CLI_WAIT_SECONDS + 35) * 1_000;
 
-export type RemoteExecOptions = TeamCliOptions & {
+export type RemoteExecOptions = ConnectOptions & {
+  sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   cwd?: string;
   /** Raw output streams; remote bytes are written exactly as the server returned them. */
   stdout?: (chunk: string) => void;

@@ -76,15 +76,6 @@ merge anything yourself.
 ${CONTEXT_END}`;
 }
 
-/**
- * Whether a repository has the Toolroll skill: a SKILL.md in the current
- * folder, or in the one installs before the rename used. The setup guide
- * and the console's first-run checklist both ask this, so they agree.
- */
-export function projectSkillInstalled(repo: string): boolean {
-  return [SKILL_DIR, LEGACY_SKILL_DIR].some(dir => existsSync(join(repo, dir, SKILL_FILE)));
-}
-
 export type InstallPlan = {
   skillPath: string;
   skillAction: "create" | "replace" | "refuse-foreign";

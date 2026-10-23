@@ -12,8 +12,9 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { configBase, namedPath } from "./names.js";
+import { sleep } from "./sleep.js";
 
 export const CONFIG_VERSION = 2;
 const FILE_NAME = "repos.json";
@@ -92,18 +93,6 @@ export async function updateRepos(
   return updated.ok ? { ok: true, repos: updated.registry.repos } : updated;
 }
 
-/** Persist project roots through the same lock as repo enrollment. */
-export async function updateProjectRoots(
-  file: string,
-  transform: (roots: string[]) => string[],
-): Promise<{ ok: true; roots: string[] } | RegistryUpdateFailure> {
-  const updated = await updateProjectRegistry(file, current => ({
-    ...current,
-    roots: transform(current.roots),
-  }));
-  return updated.ok ? { ok: true, roots: updated.registry.roots } : updated;
-}
-
 /** Atomically update repositories and roots without either writer erasing the other. */
 export async function updateProjectRegistry(
   file: string,
@@ -116,7 +105,6 @@ export async function updateProjectRegistry(
   const reaperPath = `${file}.reaper.lock`;
   const token = randomBytes(16).toString("hex");
   const body = JSON.stringify({ pid: process.pid, token, at: Date.now() });
-  const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 
   const tryReap = (): void => {
     // Recovery only for PROVEN-dead owners, serialized by the reaper lock,

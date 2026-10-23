@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import { limitRule, TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
+import { isRecord } from "../is-record.js";
 
 /**
  * A string bounded by its TEXT_LIMITS entry, never a literal. The limit rule rides along as the field's description,
@@ -65,8 +66,6 @@ export type ContractOptions = {
 };
 
 type Node = { _zod: { def: Def } };
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The schema at `path`, including whether that value may be omitted, following arrays, wrappers and unions. */
 function nodeAt(schema: Node, input: unknown, path: readonly PropertyKey[]): { def: Def; optional: boolean } | null {

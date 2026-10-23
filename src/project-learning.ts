@@ -47,7 +47,6 @@ export type LearningEvidence = { runId?: number; artifactId: number; sha256: str
 export type LearningCandidate = { kind: 'project' | 'system'; observation: string; action: string; paths: string[]; phases: ('plan' | 'build' | 'review')[]; evidence: LearningEvidence[] };
 type Payload = LearningCandidate & { environment: string; fingerprint: string; platform: string; head: string };
 export type Lesson = { id: number; repo: string; source: number; reviewer: number; status: string; version: number; payload: Payload; sha: string; identity: string; adoptedBy: string | null };
-export type LearningEvent = { snapshot: string | null; outcome: string | null; id: number; actor: string; at: string; action: string; before: string; after: string; reason: string; lesson: number | null; run: number | null; evidence: LearningEvidence[] };
 export const learningSha = (text: string): string => createHash('sha256').update(text).digest('hex');
 const text = (x: unknown, max: number): x is string => typeof x === 'string' && x.trim().length > 0 && Buffer.byteLength(x) <= max && !/[\x00-\x1f\x7f]/.test(x);
 const pathOk = (x: unknown): x is string => text(x, 300) && !x.startsWith('/') && !x.includes('\\') && !/^[A-Za-z]:/.test(x) && x.split('/').every(p => p !== '.' && p !== '..' && p !== '') && !/[\*?\[\]:]/.test(x);

@@ -10,7 +10,6 @@ import { CHAT_BUTTON_TOKEN } from "./chat-content.js";
 import { parseContract, type ContractResult } from "./contract.js";
 
 export const teamsSubmitSchema = z.object({ so: z.string().regex(CHAT_BUTTON_TOKEN, { error: "must be a Toolroll button token" }) });
-export type TeamsSubmit = z.infer<typeof teamsSubmitSchema>;
 
 /** A submit's one-time token. */
 export function readTeamsSubmit(value: unknown): ContractResult<string> {

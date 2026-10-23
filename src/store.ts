@@ -71,46 +71,16 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, exactKeys, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
-  canonicalOverridesJson,
-  canonicalRouteJson,
-  exactModelId,
-  isRiskLevel,
-  isTaskSize,
-  headroomFrom,
-  makesNoPlan,
-  legOf,
-  overridesFromJson,
-  phaseOfRole,
-  recommendRoute,
-  routeDigestOf,
-  routeFromJson,
-  routeProblems,
-  routeStampProblem,
-  ROUTE_ERA,
-  type ExactSpec,
-  type ProviderRoom,
-  type CandidateTier,
-  PROVIDER_ID_LIST,
-  type TaskSize,
-  type TaskSizing,
-  type PhaseRoute,
-  type PublicationAuthority,
-  type RouteStamp,
-  type ReadinessLookup,
-  type ReadinessObservation,
-  type ReadinessState,
-  type RiskLevel,
-  type RouteEvidenceKind,
-  type RouteOverride,
+  canonicalOverridesJson, canonicalRouteJson, isRiskLevel, isTaskSize, headroomFrom, makesNoPlan, legOf, overridesFromJson, phaseOfRole, recommendRoute, routeDigestOf, routeFromJson, routeProblems, routeStampProblem, ROUTE_ERA, type ExactSpec, type ProviderRoom, type CandidateTier, PROVIDER_ID_LIST, type TaskSize, type TaskSizing, type PhaseRoute, type PublicationAuthority, type RouteStamp, type ReadinessLookup, type ReadinessObservation, type ReadinessState, type RouteEvidenceKind, type RouteOverride,
 } from "./phase-routing.js";
 import { readAuthModeStrict } from "./keys.js";
 import type { TerminalClass } from "./exhaustion.js";
 import { modeDigestOf, modeTermsFromJson } from "./modes.js";
 import { readVerifiedArtifact } from "./evidence.js";
-import { isProviderId, type ProviderId } from "./provider.js";
+import { type ProviderId } from "./provider.js";
 import type { BoardFacts } from "./board.js";
 import type { BackendGrant, MutationClass, TaskOrigin } from "./grant.js";
 import type { Runner } from "./runner.js";
@@ -1285,9 +1255,6 @@ export type TaskState = "queued" | "running" | "done" | "failed" | "cancelled";
 type CancellationRefusal = "reason-required" | "bad-reason";
 type CancellationTransition = { changed: boolean; reason?: never } | { changed: false; reason: CancellationRefusal };
 
-/** States from which no further work is dispatched. */
-export const TERMINAL_STATES: readonly TaskState[] = ["done", "failed", "cancelled"];
-
 export type Task = {
   id: string;
   title: string;
@@ -1357,20 +1324,6 @@ export type TaskRef = {
   revisionBriefArtifact: number | null;
   /** Recorded, not asserted: what the grant's selector is checked against. */
   origin: TaskOrigin;
-};
-
-/** A standing order: a pre-approved template whose instances build unattended. */
-
-export type ExecutionSlot = {
-  id: number;
-  runner: string;
-  state: "reserved" | "running" | "released";
-  run: number | null;
-  incarnation: string | null;
-  processGroup: number | null;
-  reservedAt: string;
-  runningAt: string | null;
-  releasedAt: string | null;
 };
 
 /** Chat providers are direct API adapters — a DISJOINT type from the build
@@ -1778,11 +1731,6 @@ export type Capability = {
   lastResult: string | null;
   expiresAt: string | null;
 };
-
-/** `kind:name`, the unambiguous way a requirement names a capability. */
-export function capabilityKey(capability: Pick<Capability, "kind" | "name">): string {
-  return `${capability.kind}:${capability.name}`;
-}
 
 /** Parse `kind:name`; a bare name is refused rather than guessed at. */
 export function parseCapabilityKey(
@@ -7819,17 +7767,6 @@ export class Store {
     return row !== undefined;
   }
 
-  enqueueExternalIntent(
-    mirror: string,
-    kind: "comment" | "transition" | "close",
-    body: string | null,
-    now: Date,
-  ): void {
-    this.db
-      .prepare("INSERT INTO external_intent (mirror, kind, body, created_at) VALUES (?, ?, ?, ?)")
-      .run(mirror, kind, body, now.toISOString());
-  }
-
   pendingExternalIntents(limit = 50): { id: number; mirror: string; kind: "comment" | "transition" | "close"; body: string | null; attempts: number }[] {
     return this.db
       .prepare("SELECT id, mirror, kind, body, attempts FROM external_intent WHERE state = 'pending' ORDER BY id LIMIT ?")
@@ -13528,65 +13465,6 @@ export class Store {
 
   // ---- worker-process slots (v14, finding 26) ----------------------------
 
-  reserveExecutionSlots(runner: string, count: number, now: Date): number[] {
-    return this.transact(() => {
-      const ids: number[] = [];
-      for (let index = 0; index < count; index++) {
-        const inserted = this.db
-          .prepare("INSERT INTO execution_slot (runner, reserved_at) VALUES (?, ?)")
-          .run(runner, now.toISOString());
-        ids.push(Number(inserted.lastInsertRowid));
-      }
-      return ids;
-    });
-  }
-
-  /** reserved → running happens in the stamp-before-spawn moment, carrying
-   * the process group so recovery can ask the OS before freeing capacity. */
-  markSlotRunning(
-    id: number,
-    facts: { run: number; incarnation?: string | null; processGroup?: number | null },
-    now: Date,
-  ): boolean {
-    const changed = this.db
-      .prepare(
-        `UPDATE execution_slot SET state = 'running', run = ?, incarnation = ?, process_group = ?, running_at = ?
-          WHERE id = ? AND state = 'reserved'`,
-      )
-      .run(facts.run, facts.incarnation ?? null, facts.processGroup ?? null, now.toISOString(), id);
-    return Number(changed.changes) === 1;
-  }
-
-  /** A correction process replaces the exited provider in the same open
-   * root attempt. It may refresh only that attempt's exact occupied slot. */
-  refreshSlotProcess(id: number, facts: { run: number; incarnation?: string | null; processGroup: number }): boolean {
-    if (!Number.isInteger(facts.processGroup) || facts.processGroup <= 0) return false;
-    const changed = this.db.prepare(`UPDATE execution_slot SET process_group = ?
-      WHERE id = ? AND state = 'running' AND run = ? AND incarnation IS ?
-        AND EXISTS (SELECT 1 FROM run WHERE id = ? AND outcome IS NULL)`)
-      .run(facts.processGroup, id, facts.run, facts.incarnation ?? null, facts.run);
-    return Number(changed.changes) === 1;
-  }
-
-  releaseExecutionSlot(id: number, now: Date): boolean {
-    const changed = this.db
-      .prepare("UPDATE execution_slot SET state = 'released', released_at = ? WHERE id = ? AND state IN ('reserved','running')")
-      .run(now.toISOString(), id);
-    return Number(changed.changes) === 1;
-  }
-
-  liveSlotCount(runner: string): number {
-    const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM execution_slot WHERE runner = ? AND state IN ('reserved','running')")
-      .get(runner);
-    return Number(row?.["n"] ?? 0);
-  }
-
-  getExecutionSlot(id: number): ExecutionSlot | null {
-    const row = this.db.prepare("SELECT * FROM execution_slot WHERE id = ?").get(id);
-    return row === undefined ? null : readExecutionSlot(row);
-  }
-
   // ---- durable ceremony nonces (v14, findings 21/30) ---------------------
 
   /** Minted from a POST, never a GET. Bounded per approver; expired rows
@@ -16035,47 +15913,6 @@ export class Store {
     }));
   }
 
-  /**
-   * The Work destination's one bounded page (workspace package 1 query):
-   * the newest tasks the viewer may see, with the viewer's already-proved
-   * admission bound BEFORE the ordering and the limit — never a wider
-   * read post-filtered in the caller. `admitted` is the resolved
-   * permitted repo set: `null` means unrestricted (every placed row),
-   * `[]` means no placed project is permitted (no placed row at all).
-   * `includeUnplaced` says whether NULL-repo rows belong to this viewer;
-   * an account restricted to projects never sees them, so they must not
-   * spend its page. Every predicate is a bound parameter; the limit is
-   * clamped here, not trusted from the caller. Read-only; the legacy
-   * `listTasksScoped` is untouched.
-   */
-  listWorkTasksAdmitted(
-    admitted: readonly string[] | null,
-    includeUnplaced: boolean,
-    limit: number,
-  ): (Task & { repo: string | null })[] {
-    const page = Math.max(1, Math.min(Math.floor(limit), 500));
-    // SQLite accepts an empty IN list, so an empty admission binds as
-    // "no placed row" without any special SQL shape.
-    const rows = this.db
-      .prepare(
-        `SELECT task.*, task_ref.repo AS task_repo FROM task
-         JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
-         WHERE ((task_ref.repo IS NULL AND ? = 1)
-             OR (task_ref.repo IS NOT NULL AND (? = 1 OR task_ref.repo IN (${(admitted ?? []).map(() => "?").join(",")}))))
-         ORDER BY task.created_at DESC, task.id DESC LIMIT ?`,
-      )
-      .all(BUILT_IN, includeUnplaced ? 1 : 0, admitted === null ? 1 : 0, ...(admitted ?? []), page);
-    return rows.map(row => ({
-      id: String(row["id"]),
-      title: String(row["title"]),
-      state: String(row["state"]) as TaskState,
-      createdAt: String(row["created_at"]),
-      updatedAt: String(row["updated_at"]),
-      priority: row["priority"] === null || row["priority"] === undefined ? 0 : Number(row["priority"]),
-      repo: row["task_repo"] === null ? null : String(row["task_repo"]),
-    }));
-  }
-
   /** Newest first, because the question is almost always "what just happened". */
   runsFor(taskRef: number): Run[] {
     return this.db
@@ -17267,11 +17104,6 @@ export class Store {
     return Number(inserted.lastInsertRowid);
   }
 
-  incidentForRun(run: number): Incident | null {
-    const row = this.db.prepare("SELECT * FROM incident WHERE run = ?").get(run);
-    return row === undefined ? null : readIncident(row);
-  }
-
   /** Unresolved, task attached, oldest first. No time window: these do not age out. */
   openIncidents(repo: string | null = null): (Incident & { taskId: string })[] {
     return this.db
@@ -17769,15 +17601,6 @@ export class Store {
     });
   }
 
-  /** Renew the lease AND re-prove the generation in one CAS — the last
-   * gate before the external call; a failed re-proof aborts the attempt. */
-  renewMergeClaim(id: number, generation: number, leaseMs: number, now: Date): boolean {
-    const { changes } = this.db
-      .prepare("UPDATE merge_intent SET claimed_until = ? WHERE id = ? AND state = 'claimed' AND generation = ?")
-      .run(new Date(now.getTime() + leaseMs).toISOString(), id, generation);
-    return Number(changes) === 1;
-  }
-
   /** STATE-SPECIFIC and TERMINALLY MONOTONIC (E1): the writer names the
    * state it believes it owns, and a terminal row is never overwritten —
    * a stale claim owner cannot un-merge what the observer already settled,
@@ -17949,15 +17772,6 @@ export class Store {
           lastError: row["last_error"] === null ? null : String(row["last_error"]),
           firingDeadline: row["firing_deadline"] === null ? null : String(row["firing_deadline"]),
         };
-  }
-
-  latestObservation(githubRepo: string, prNumber: number): { headSha: string; state: string; observedAt: string; generation: number } | null {
-    const row = this.db
-      .prepare("SELECT head_sha, state, observed_at, generation FROM ci_observation WHERE github_repo = ? AND pr_number = ?")
-      .get(githubRepo, prNumber);
-    return row === undefined || String(row["observed_at"]) === ""
-      ? null
-      : { headSha: String(row["head_sha"]), state: String(row["state"]), observedAt: String(row["observed_at"]), generation: Number(row["generation"]) };
   }
 
   /** Revocation is immediate: intents not yet pushed die with the grant. */
@@ -19793,10 +19607,6 @@ export class Store {
     return row === undefined ? null : readLeadTurn(row);
   }
 
-  leadStepsOf(leadTurn: number): ChatTurn[] {
-    return this.db.prepare("SELECT * FROM chat_turn WHERE mate_turn = ? ORDER BY id ASC").all(leadTurn).map(readChatTurn);
-  }
-
 
 
   // ---- projects ------------------------------------------------------------
@@ -19998,57 +19808,6 @@ export class Store {
         exampleDependent: String(row["example"]),
         repo: row["dependent_repo"] === null || row["dependent_repo"] === undefined ? null : String(row["dependent_repo"]),
         blockerRepo: row["blocker_repo"] === null || row["blocker_repo"] === undefined ? null : String(row["blocker_repo"]),
-      }));
-  }
-
-  /**
-   * Active work only, running first — the Work tab's page. Terminal history
-   * belongs to Done and the build ledger, never to this list.
-   */
-  listActiveWorkScoped(
-    repo: string | null,
-    now: Date,
-    limit = 50,
-  ): (Task & { repo: string | null; approved: boolean; held: boolean; buildingBy: string | null; strikes: number })[] {
-    const page = Math.max(1, Math.min(Math.floor(limit), 100));
-    return this.db
-      .prepare(
-        `SELECT task.*, task_ref.repo AS task_repo, task_ref.strikes AS ref_strikes,
-           EXISTS (
-             SELECT 1 FROM task_scope
-             WHERE task_scope.task_id = task.id AND task_scope.approved_digest = task_scope.digest
-               AND task_scope.approved_at IS NOT NULL
-           ) AS approved,
-           EXISTS (
-             SELECT 1 FROM hold
-             WHERE hold.task_ref = task_ref.id AND (hold.until IS NULL OR hold.until > ?)
-           ) AS held,
-           (SELECT claim.runner FROM claim
-             WHERE claim.task_ref = task_ref.id AND claim.released_at IS NULL AND claim.expires_at > ?
-               AND claim.lease_generation = (
-                 SELECT MAX(newest.lease_generation) FROM claim AS newest
-                 WHERE newest.task_ref = claim.task_ref)
-             LIMIT 1) AS building_by
-         FROM task
-         JOIN task_ref ON task_ref.backend = ? AND task_ref.external_id = task.id
-         WHERE task.state IN ('running','queued')
-           AND (? IS NULL OR task_ref.repo IS NULL OR task_ref.repo = ?)
-         ORDER BY CASE task.state WHEN 'running' THEN 0 ELSE 1 END, task.updated_at DESC, task.id DESC
-         LIMIT ?`,
-      )
-      .all(now.toISOString(), now.toISOString(), BUILT_IN, repo, repo, page)
-      .map(row => ({
-        id: String(row["id"]),
-        title: String(row["title"]),
-        state: String(row["state"]) as TaskState,
-        createdAt: String(row["created_at"]),
-        updatedAt: String(row["updated_at"]),
-        priority: row["priority"] === null || row["priority"] === undefined ? 0 : Number(row["priority"]),
-        repo: row["task_repo"] === null ? null : String(row["task_repo"]),
-        approved: Number(row["approved"]) === 1,
-        held: Number(row["held"]) === 1,
-        buildingBy: row["building_by"] === null ? null : String(row["building_by"]),
-        strikes: Number(row["ref_strikes"]),
       }));
   }
 
@@ -23155,21 +22914,6 @@ function readTaskRef(row: Record<string, unknown>): TaskRef {
 }
 
 
-
-function readExecutionSlot(row: Record<string, unknown>): ExecutionSlot {
-  const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));
-  return {
-    id: Number(row["id"]),
-    runner: String(row["runner"]),
-    state: String(row["state"]) as ExecutionSlot["state"],
-    run: row["run"] === null ? null : Number(row["run"]),
-    incarnation: maybe("incarnation"),
-    processGroup: row["process_group"] === null ? null : Number(row["process_group"]),
-    reservedAt: String(row["reserved_at"]),
-    runningAt: maybe("running_at"),
-    releasedAt: maybe("released_at"),
-  };
-}
 
 function readChatTurn(row: Record<string, unknown>): ChatTurn {
   const maybe = (key: string): string | null => (row[key] === null || row[key] === undefined ? null : String(row[key]));

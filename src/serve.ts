@@ -188,7 +188,7 @@ type ReviewFacts
 } from "./workspace-ui.js";
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
-  const { guided, projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, earlierLiveVersions, familyHistory, freshAssignment, workRowOf, taskListPane, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, taskPullRequestOf, failureOf, explainAttempt, runChecksHere, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, progressOf, resultDetailOf } = createTaskViews({
+  const { projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, failureOf, explainAttempt, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, resultDetailOf } = createTaskViews({
     get store() { return store; },
     get projectCounts() { return projectCounts; },
     get admissionList() { return admissionList; },
@@ -208,7 +208,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get liveRefreshSeconds() { return liveRefreshSeconds; },
   });
 
-  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
+  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
     get codingProjects() { return codingProjects; },

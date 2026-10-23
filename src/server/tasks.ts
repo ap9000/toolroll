@@ -12,7 +12,7 @@ import { handlersOf } from './handler-registry.js';
 import { closedQuestionWords } from "../decision.js";
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** tasks handlers, moved without changing their route bodies. */
-import { html,htmlString,joinHtml,postForm,textHtml,type Html } from "../html.js";
+import { html, htmlString, joinHtml, textHtml, type Html } from "../html.js";
 import { createHash,randomBytes,randomUUID } from "node:crypto";
 import { lstatSync,realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
@@ -24,7 +24,7 @@ import { codingHandoffPreview,createCodingHandoff } from '../coding-handoff.js';
 import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
-import { checkResponse,CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "../contracts/console-api.js";
+import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { diagnoseTaskDispatch } from "../dispatch.js";
 import { evidencePack,evidencePackHtml } from "../evidence-pack.js";
@@ -42,10 +42,7 @@ import { applyModeToNewFiling,authorizePlanUnderMode } from "../plan-auto.js";
 import { milestonesOf,parseExecutionPlanDocument } from "../plan.js";
 import { levelOfProfile } from "../policy.js";
 import {
-authorizedProject,
-canonicalProject,
-projectName,
-rowVisible
+  authorizedProject, canonicalProject, projectName,
 } from "../project.js";
 import { fileTaskProposal } from "../proposal.js";
 import { isProviderId,PROVIDER_IDS,validateSpec,type ProviderId } from "../provider.js";
@@ -100,7 +97,7 @@ import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQue
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
-  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, taskRooms, identify, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
+  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
   /** A row admitted the address but its path parameter does not parse: the console's unknown page. */
   function noPage(who: Who, response: ServerResponse): void {

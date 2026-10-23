@@ -17,7 +17,7 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
 import { closedQuestionWords } from "./decision.js";
 import { steerDestinationWords } from "./steer-status.js";
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
-import { leadTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type LeadProposal, type Store } from "./store.js";
+import { leadTurnKeepsProposals, verifiedAuthor, type LeadProposal, type Store } from "./store.js";
 import { agentQuestion, answerAgentQuestion } from "./agent-board.js";
 import type { VerifiedApprover } from "./principal.js";
 import { isVerifiedApprover, reproveApprover } from "./principal.js";
@@ -293,11 +293,6 @@ export function dismissCoordinatorProposal(store: Store, who: VerifiedApprover, 
     if (proposal === null || !who.repos.includes(proposal.repo)) return false;
     return store.casCoordinatorProposal(proposalId, "pending", "dismissed", who.name, null, now);
   });
-}
-
-/** Which door renders a coordinator proposal for this reader: the repo must be admitted. */
-export function coordinatorProposalVisible(who: { repos: readonly string[] }, proposal: CoordinatorProposal): boolean {
-  return who.repos.includes(proposal.repo);
 }
 
 /**

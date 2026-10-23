@@ -13,9 +13,8 @@ import { authenticateAccount } from "../scope.js";
 import { SSO_CALLBACK } from "../sso-settings.js";
 import type { EdgeContext,HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
-import { requestContext } from "./request-context.js";
 import { personChip,refuse,screen } from "./chrome.js";
-import { redirect,respond } from "./http.js";
+import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
 import { randomBytes,timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -43,7 +42,7 @@ export function sameVisitCheck(authTime: number | null, startedAt: number, now: 
   return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -180,7 +179,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     const body = readForm(posted, CONSOLE_FORMS.sessions);
     if (who.via !== "cookie") return refuse(response, who, 403, "Sign in in a browser to manage sessions and tokens.", "/settings");
     const operator = store.isInstanceOperator(who.name);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${body.get("everyone") === "1" && operator ? "everyone=1&" : ""}${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/sessions${body.get("everyone") === "1" && operator ? "?everyone=1" : ""}`);
     const action = body.get("action") ?? "";
     if (action === "end-session") {
       const target = store.webSessions(null).find(one => one.idHash === (body.get("session") ?? ""));

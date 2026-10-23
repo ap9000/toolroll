@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "../scope.js";
 import { limited, readVersioned, toModelSchema, versioned, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 /** How many paths a plan may say it touches. */
 export const PLAN_TOUCHES = 32;
@@ -46,8 +47,6 @@ function pick(body: Record<string, unknown>, fields: readonly string[]): Record<
   }
   return out;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * A plan written before plans carried `version` (every plan through 0.9.33), as version 1. The old parser read only

@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type { Store } from './store.js';
 import { scanForSecrets, readVerifiedArtifact } from './evidence.js';
 import { changeKnowledge, knowledgeView } from './project-knowledge.js';

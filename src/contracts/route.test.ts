@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalRouteJson, overridesFromJson, parseSizing, routeFromJson, routeJsonProblem } from "../phase-routing.js";
+import { canonicalRouteJson, overridesFromJson, routeFromJson, routeJsonProblem } from "../phase-routing.js";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { readRouteOverrides, readSealedRoute, routeOverrideSchema, sealedRouteSchema, taskSizingSchema } from "./route.js";
@@ -84,7 +84,7 @@ describe("the sealed route contract", () => {
     expect(overridesFromJson(null)).toEqual([]);
     assertContract({
       schema: taskSizingSchema,
-      read: input => (parseSizing(input) === null ? { ok: false, lines: ["payload: not a sizing"] } : { ok: true }),
+      read: input => (!taskSizingSchema.safeParse(input).success ? { ok: false, lines: ["payload: not a sizing"] } : { ok: true }),
       valid: [{ name: "a sizing", input: { size: "large", risky: true, source: "person", reason: "" } }],
       invalid: [
         { name: "an unknown size", input: { size: "huge", risky: false, source: "person", reason: "" }, paths: ["payload"] },

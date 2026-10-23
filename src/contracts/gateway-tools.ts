@@ -107,8 +107,6 @@ export const GATEWAY_TOOL_OUTPUTS = {
   file_proposal: z.looseObject({ ref: str, replayed: z.boolean(), admission: str }),
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
-export type GatewayToolOutput<N extends GatewayToolName> = z.infer<(typeof GATEWAY_TOOL_OUTPUTS)[N]>;
-
 // ------------------------------------------------------------- a person's tools
 
 /**

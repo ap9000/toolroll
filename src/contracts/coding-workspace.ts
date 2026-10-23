@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { readVersioned, versioned, type ContractResult } from "./contract.js";
 import { CODING_CONTEXT_VERSION, codingContextSchema } from "./coding-context.js";
+import { isRecord } from "../is-record.js";
 
 export const CODING_STATUSES = ["starting", "ready", "working", "needs-input", "stopping", "interrupted", "failed", "uncertain", "closed"] as const;
 
@@ -41,8 +42,6 @@ export const codingSessionRecordSchema = versioned(CODING_SESSION_VERSION, codin
 
 export type CodingStatus = z.infer<typeof codingSessionSchema>["status"];
 export type CodingSession = z.infer<typeof codingSessionSchema>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * Unversioned records were read as a cast, including partial fields, nulls and unknown nested keys. Preserve that

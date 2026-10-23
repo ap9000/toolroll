@@ -15,7 +15,7 @@ import type { Store } from "./store.js";
 import { fetchOpenRouterModels, type OpenRouterModel } from "./openrouter-models.js";
 import { codexModelSchema, codexModelsCacheSchema, npmLatestSchema } from "./contracts/model-catalog.js";
 import { readCappedBody } from "./converse.js";
-import { validModelId, type ProviderId } from "./provider.js";
+import { type ProviderId } from "./provider.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
 
 export const MODELS_SCHEMA = `

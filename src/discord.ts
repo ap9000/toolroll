@@ -1,6 +1,6 @@
 /** A single leased Discord Gateway connection, hosted by the ordinary worker. */
 import { randomBytes } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
+import { abortablePause, workChatQueue } from "./chat-follow.js";
 import {
   loadDiscordCredentials,
   discordApi,
@@ -35,13 +35,7 @@ export async function followDiscord(
 ): Promise<void> {
   const owner = randomBytes(16).toString("hex"),
     state = new ChatState(options.store, "discord");
-  const pause = async (ms: number) => {
-    try {
-      await sleep(ms, undefined, { signal: options.signal });
-    } catch {
-      /* shutdown */
-    }
-  };
+  const pause = abortablePause(options.signal);
   while (!options.signal.aborted) {
     const credentials = loadDiscordCredentials(options.dir);
     if (
@@ -179,18 +173,16 @@ export async function followDiscord(
     };
     try {
       await client.login(credentials.botToken);
-      while (same()) {
-        if (!connected || state.retryAt(credentials.installation) > new Date().toISOString()) {
-          await pause(1000);
-          continue;
-        }
-        await processDiscordEvent(chat);
-        if (same()) await planDiscordRooms(chat);
-        if (same()) await deliverDiscordPart(chat);
-        if (same() && options.notifications())
-          await planDiscordNotifications(chat);
-        await pause(1000);
-      }
+      await workChatQueue({
+        same,
+        ready: () => connected && !(state.retryAt(credentials.installation) > new Date().toISOString()),
+        pause,
+        notifications: () => options.notifications(),
+        process: () => processDiscordEvent(chat),
+        rooms: () => planDiscordRooms(chat),
+        deliver: () => deliverDiscordPart(chat),
+        notify: () => planDiscordNotifications(chat),
+      });
     } catch {
       if (alive) problem("Discord is unavailable. Retrying shortly.");
     } finally {

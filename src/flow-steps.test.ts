@@ -16,7 +16,7 @@ import type { Runner } from "./backend.js";
 import { flowFromSteps, type FlowDefinition } from "./flows.js";
 import { advanceFlows } from "./flow-engine.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
-import { saveScript, scriptUses, validateScript } from "./flow-scripts.js";
+import { saveScript, validateScript } from "./flow-scripts.js";
 import { flowInsights } from "./flow-insights.js";
 import { addFlowTriggerTo, flowFormPage, receiveFlowForm, shareFlowButton } from "./flow-triggers.js";
 import { storeEvidence } from "./evidence.js";
@@ -47,7 +47,7 @@ const flowOf = (steps: Parameters<typeof flowFromSteps>[0]) => store.createFlow(
 const io = (extra: Partial<StepIo> = {}): StepIo => ({ gh: vi.fn<Runner>(async () => ok()), git: exec, shell: exec, fetch: vi.fn() as unknown as typeof fetch, dir, scratch: join(dir, "scratch"), base: "main", evidenceRoot: dir, ...extra });
 
 describe("project scripts", () => {
-  test("a script is checked, versioned, and known by the zones that run it", () => {
+  test("a script is checked and versioned", () => {
     expect(() => validateScript({ name: "Run Tests!", about: "x", body: "npm test" })).toThrow("Name the script in lowercase letters, numbers and dashes, like run-tests.");
     expect(() => validateScript({ name: "deploy", about: "Deploys", body: `curl -H "token: ${["ghp", "t".repeat(36)].join("_")}"` })).toThrow(/Keep secrets out of scripts/);
     expect(() => validateScript({ name: "slow", about: "Slow", body: "sleep 1", timeoutMinutes: 90 })).toThrow("A script may run for 1 to 60 minutes.");
@@ -55,8 +55,6 @@ describe("project scripts", () => {
     expect(saveScript(store, repo, { name: "has-readme", about: "Checks there is a README", body: "test -f README.md" }, "alex", T0)).toMatchObject({ said: "No changes to save." });
     expect(saveScript(store, repo, { name: "has-readme", about: "Checks there is a README", body: "test -s README.md", timeoutMinutes: 5 }, "alex", T0)).toMatchObject({ version: 2 });
     expect(store.flowScript(repo, "has-readme")).toMatchObject({ version: 2, body: "test -s README.md", timeoutMinutes: 5, savedBy: "alex" });
-    const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { title: "Readme", kind: "check", script: "has-readme" }]);
-    expect(scriptUses(store, repo).get("has-readme")).toEqual([{ flow, flowName: "Ship it", zone: "Readme" }]);
   });
 
   test("a script zone runs the script in a fresh copy with the card's details, keeps its log, and sends a failure down the failure path", async () => {

@@ -104,7 +104,7 @@ import {
 import { attemptKeyOf, closeRunQuestions, noteOpenTool, recordAgentTurn } from "./agent-board.js";
 import { openStatusFile, pulseAgentBoard, removeStatusFile, statusBrief, type AgentPulseState } from "./agent-pulse.js";
 import { withAgentTurns } from "./agent-turns.js";
-import { PROOF_LIMITS, parseProof, serializeProof, adjudicate, artifactManifestOnly, sameDiffStatFacts, type DiffStatFacts, type ScreenshotOutcome, type VerifyCommandFacts } from "./proof.js";
+import { PROOF_LIMITS, parseProof, serializeProof, adjudicate, sameDiffStatFacts, type DiffStatFacts, type ScreenshotOutcome, type VerifyCommandFacts } from "./proof.js";
 import { parseHandoffArtifact, type HandoffArtifact } from "./contracts/handoff.js";
 import { captureReviewContext } from "./review-context.js";
 import {
@@ -629,7 +629,6 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     permissionMode = "auto",
     skipPermissions = false,
     provider = "claude",
-    model,
     maxTurns = DEFAULT_MAX_TURNS,
     timeoutMs = DEFAULT_BUILD_TIMEOUT_MS,
     agent,
@@ -1844,7 +1843,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   if (captured.rubric !== undefined) {
     try { unlinkSync(join(captured.worktree, captured.rubric)); } catch { /* The commit gate still excludes it. */ }
   }
-  const { store, request, agent, git, worktree, branch, baseRevision, taskId, taskRef, runner, provider, scope, effective, answers, timeoutMs, root, mailbox, done, proof, clock } = captured;
+  const { store, request, agent, git, worktree, branch, baseRevision, taskId, taskRef, runner, provider, scope, effective, answers, timeoutMs, root, mailbox, done, clock } = captured;
   // THE STOP FENCE after the provider (v52): a stop recorded while the
   // agent ran ends the attempt HERE, before any handoff is read, any park
   // sealed, or any commit made — whatever the process wrote is preserved
@@ -3949,30 +3948,6 @@ async function stripEvidenceImages(git: Runner, worktree: string): Promise<{ ok:
   }
   const rest = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--quiet"], { cwd: worktree });
   return { ok: true, notice: evidenceImagesNotice(images), staged: rest.code !== 0 };
-}
-
-/**
- * `claude --output-format json` returns an envelope: the result is the
- * summary, and the session id is what lets a malformed park be repaired by
- * resuming the conversation that produced it instead of paying for a new one.
- */
-function envelope(stdout: string): { summary: string; sessionId?: string } {
-  try {
-    const parsed = JSON.parse(stdout) as { result?: unknown; session_id?: unknown };
-    return {
-      summary:
-        typeof parsed.result === "string" && parsed.result.trim() !== ""
-          ? parsed.result.trim()
-          : "unattended build",
-      ...(typeof parsed.session_id === "string" && parsed.session_id !== ""
-        ? { sessionId: parsed.session_id }
-        : {}),
-    };
-  } catch {
-    // An agent that printed something unparseable still did work — and a
-    // session nobody can name simply cannot be resumed.
-    return { summary: "unattended build" };
-  }
 }
 
 /**

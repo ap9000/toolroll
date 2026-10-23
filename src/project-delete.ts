@@ -18,12 +18,10 @@ import type { ExecResult } from "./exec.js";
 import type { Runner } from "./worktree.js";
 import { teardownGit, refusal } from "./teardown-git.js";
 import { BUILT_IN, type Database, type Store } from "./store.js";
-import { BRANCH_PREFIX, BRANCH_PREFIXES, isOwnBranch } from "./names.js";
+import { BRANCH_PREFIXES, isOwnBranch } from "./names.js";
 
 /** The tables whose history is the audit record itself: never touched. */
 const KEPT = new Set(["action_ledger", "ledger_seal", "ledger_checkpoint"]);
-/** What Toolroll names the branches it makes: toolroll/…, and standing-orders/… from before the rename. */
-export const OWN_BRANCH = BRANCH_PREFIX;
 export const OWN_BRANCHES = BRANCH_PREFIXES;
 
 export type ProjectHoldings = {

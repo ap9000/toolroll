@@ -30,12 +30,6 @@ export function liveCommandsShown(store: Store, repo: string | null): boolean {
   }
 }
 
-export function liveDetailSetting(store: Store, repo: string): LiveDetailSetting | null {
-  const row = store.handle.prepare("SELECT repo, commands, updated_by, updated_at FROM live_detail_setting WHERE repo = ?").get(repo);
-  if (row === undefined) return null;
-  return { repo: String(row["repo"]), commands: Number(row["commands"]) === 1, updatedBy: String(row["updated_by"]), updatedAt: String(row["updated_at"]) };
-}
-
 /** Save the setting and its ledger line in one transaction. The caller has proved who is asking (and, to turn it on, their password). */
 export function setLiveCommands(store: Store, change: { repo: string; commands: boolean; by: string; via: string }, now: Date): { said: string } {
   store.transact(() => {

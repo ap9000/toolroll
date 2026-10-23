@@ -17,11 +17,10 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { scanForSecrets } from "./evidence.js";
-import { createLiveRecorder, LIVE_CAP_WORDS, parseLiveRecords, redactLiveLines, projectLiveText, serializeLiveRecord, type KeyState, type LiveActivityKind, type LiveRecord, type LiveRecorderOptions } from "./live-records.js";
+import { createLiveRecorder, parseLiveRecords, redactLiveLines, projectLiveText, serializeLiveRecord, type KeyState, type LiveActivityKind, type LiveRecord, type LiveRecorderOptions } from "./live-records.js";
 
 export const LIVE_LINE_CAP = 2 * 1024;
 export const LIVE_FILE_CAP = 4 * 1024 * 1024;
-export const LIVE_CAP_MARKER = LIVE_CAP_WORDS;
 export const LIVE_REDACTED_LINE = "[a credential-shaped line was redacted]";
 /** Finalized runs keep their live file this long for the final drain. */
 export const LIVE_RETAIN_MS = 24 * 60 * 60 * 1000;

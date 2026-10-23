@@ -30,7 +30,6 @@ import { randomBytes } from "node:crypto";
 import type { Store } from "./store.js";
 
 export type AgentTurn = "busy" | "idle" | "crashed";
-export const AGENT_TURNS: readonly AgentTurn[] = ["busy", "idle", "crashed"];
 export type AgentSaid = "working" | "blocked" | "done";
 
 /** A busy run whose transcript and activity are both this old is Stuck. */

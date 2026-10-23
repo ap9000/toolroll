@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { activeCodingUpdateWork } from './coding-update.js';
 import { CodingActionError, CodingWorkspace } from './coding-workspace.js';
-import { SessionService } from './session-service.js';
 import { CodingProviderDisconnectedError, CodingProviderRequestError, type CodingProvider, type CodingProviderEvent } from './coding-provider.js';
 import { fakePid } from '../test/fake-pid.js';
 import { savedSessionRows } from '../test/coding-fixtures.js';
@@ -104,56 +103,6 @@ describe('native coding workspace', () => {
     expect(provider.calls).toHaveLength(count);
   });
 
-  test('the session service shares native identity and persists mutation receipts across restart', async () => {
-    const service = () => new SessionService({ workspace, authorized: one => one.name === actor.name && one.generation === actor.generation, project: () => repo });
-    const input = { version: 1, project: repo, title: 'Improve welcome', prompt: 'Make the welcome screen clearer.', key };
-    const first = await service().execute(actor, 'start', input);
-    expect(first).toMatchObject({ ok: true, delivery: 'confirmed', result: { receipt: { key, status: 'accepted' }, session: { nativeThreadId: provider.thread } } });
-    const id = first.result!.session!.id, count = provider.calls.length;
-    expect((await service().execute(actor, 'start', input)).result?.session?.id).toBe(id);
-    expect(provider.calls).toHaveLength(count);
-    expect(await service().execute(actor, 'start', { ...input, title: 'Changed title' })).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent' });
-    await workspace.close(); workspace = open();
-    const saved = await service().execute(actor, 'start', input);
-    expect(saved).toMatchObject({ ok: true, result: { receipt: { status: 'accepted' }, session: { id, nativeThreadId: provider.thread } } });
-    expect(provider.calls).toHaveLength(count);
-  });
-
-  test.each(['accepted', 'pending', 'uncertain', 'rejected'] as const)('a %s command replay with revoked projection access preserves delivery uncertainty', async receiptStatus => {
-    let authorized = true;
-    const service = new SessionService({ workspace, authorized: () => authorized, project: () => repo });
-    const input = { version: 1, project: repo, title: 'Improve welcome', prompt: 'Make the welcome screen clearer.', key };
-    expect((await service.execute(actor, 'start', input)).ok).toBe(true);
-    const dbHandle = (workspace as unknown as { db: DatabaseSync }).db;
-    dbHandle.prepare('UPDATE coding_command SET status=? WHERE owner=? AND generation=? AND key=?').run(receiptStatus, actor.name, actor.generation, key);
-    const calls = provider.calls.length;
-    const replay = service.execute(actor, 'start', input);
-    authorized = false;
-    const response = await replay;
-    expect(response).toMatchObject(receiptStatus === 'rejected'
-      ? { status: 'rejected', delivery: 'not-sent', retry: 'never' }
-      : { status: 'uncertain', delivery: 'unknown', retry: 'inspect-first', nextActions: [{ operation: 'list' }] });
-    expect(response.result).toBeUndefined();
-    expect(provider.calls).toHaveLength(calls);
-    expect(dbHandle.prepare('SELECT status FROM coding_command WHERE key=?').get(key)?.['status']).toBe(receiptStatus);
-  });
-
-  test('stale session service controls do not interrupt or steer a newer turn', async () => {
-    const session = await start();
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const state = workspace.snapshot(session.id, actor);
-    const input = { version: 1, sessionId: session.id, key: 'stale-operation-0001', expectedRevision: state.revision, expectedThreadId: session.nativeThreadId, expectedTurnId: 'older-turn' };
-    const calls = provider.calls.length;
-    expect(await service.execute(actor, 'stop', input)).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent' });
-    expect(provider.calls).toHaveLength(calls);
-    expect(workspace.get(session.id, actor)).toMatchObject({ status: 'working', turnId: 'turn-1' });
-    const stop = { ...input, key: 'current-stop-000001', expectedTurnId: 'turn-1' };
-    expect(await service.execute(actor, 'stop', stop)).toMatchObject({ ok: true, result: { receipt: { status: 'accepted' } } });
-    const stopped = provider.calls.length;
-    expect(await service.execute(actor, 'stop', stop)).toMatchObject({ ok: true, result: { receipt: { status: 'accepted' } } });
-    expect(provider.calls).toHaveLength(stopped);
-  });
-
   test('a turn that ends while send is yielding is rejected before a new turn can start', async () => {
     const session = await start();
     const revision = workspace.revision(session.id, actor);
@@ -165,66 +114,6 @@ describe('native coding workspace', () => {
     expect(workspace.get(session.id, actor).status).toBe('ready');
   });
 
-  test('reimporting identical native history does not invalidate a post-restart send', async () => {
-    const session = await start();
-    await workspace.close(); workspace = open();
-    const original = provider.request.bind(provider);
-    provider.request = async (method, params) => {
-      const result = await original(method, params);
-      if (method !== 'thread/resume') return result;
-      return { thread: { id: provider.thread, turns: [{ items: [{ id: key, type: 'userMessage', content: [{ type: 'text', text: 'Make the welcome screen clearer.' }] }] }] } };
-    };
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const before = workspace.snapshot(session.id, actor);
-    const result = await service.execute(actor, 'send', { version: 1, sessionId: session.id, key: 'restart-send-000001', prompt: 'Use a shorter heading.',
-      expectedRevision: before.revision, expectedThreadId: before.session.nativeThreadId, expectedTurnId: before.session.turnId });
-    expect(result).toMatchObject({ ok: true, status: 'succeeded', result: { receipt: { status: 'accepted' } } });
-    expect(provider.calls.at(-1)?.method).toBe('turn/start');
-  });
-
-  test('different native history still requires inspection before a post-restart send', async () => {
-    const session = await start();
-    await workspace.close(); workspace = open();
-    const original = provider.request.bind(provider);
-    provider.request = async (method, params) => {
-      const result = await original(method, params);
-      if (method !== 'thread/resume') return result;
-      return { thread: { id: provider.thread, turns: [{ items: [{ id: key, type: 'userMessage', content: [{ type: 'text', text: 'A corrected request discovered in native history.' }] }] }] } };
-    };
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const before = workspace.snapshot(session.id, actor), calls = provider.calls.length;
-    const result = await service.execute(actor, 'send', { version: 1, sessionId: session.id, key: 'restart-send-000002', prompt: 'Use a shorter heading.',
-      expectedRevision: before.revision, expectedThreadId: before.session.nativeThreadId, expectedTurnId: before.session.turnId });
-    expect(result).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent' });
-    expect(provider.calls.slice(calls).map(call => call.method)).toEqual(['thread/resume']);
-    expect(workspace.snapshot(session.id, actor).items[0]?.text).toBe('A corrected request discovered in native history.');
-    expect(workspace.revision(session.id, actor)).toBeGreaterThan(before.revision);
-  });
-
-  test('a session service lost reply cannot resend the same instruction', async () => {
-    const session = await start();
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const state = workspace.snapshot(session.id, actor);
-    const input = { version: 1, sessionId: session.id, key: 'lost-reply-00000001', prompt: 'Use a shorter heading.', expectedRevision: state.revision, expectedThreadId: session.nativeThreadId, expectedTurnId: session.turnId };
-    provider.failure = new CodingProviderDisconnectedError('connection lost');
-    expect(await service.execute(actor, 'send', input)).toMatchObject({ ok: false, status: 'uncertain', delivery: 'unknown' });
-    const count = provider.calls.length;
-    expect(await service.execute(actor, 'send', input)).toMatchObject({ ok: false, status: 'uncertain', delivery: 'unknown', result: { receipt: { status: 'uncertain' } } });
-    expect(provider.calls).toHaveLength(count);
-  });
-
-  test('session reads enforce live generation and project access without leaking activity', async () => {
-    const session = await start();
-    let access = true;
-    const service = new SessionService({ workspace, authorized: (one, project) => one.generation === actor.generation && (!project || access), project: () => repo });
-    expect(await service.execute({ ...actor, generation: 2 }, 'show', { version: 1, sessionId: session.id })).toMatchObject({ ok: false, status: 'rejected' });
-    access = false;
-    const list = await service.execute(actor, 'list', { version: 1 });
-    expect(list.result?.sessions).toEqual([]);
-    const show = await service.execute(actor, 'show', { version: 1, sessionId: session.id });
-    expect(show).toMatchObject({ ok: false, status: 'rejected' }); expect(show.result).toBeUndefined();
-  });
-
   test('an interrupted command receipt is uncertain after restart and never runs again', async () => {
     const dbHandle = (workspace as unknown as { db: DatabaseSync }).db;
     const { createHash } = await import('node:crypto');
@@ -233,118 +122,6 @@ describe('native coding workspace', () => {
     let repeated = false;
     const receipt = await workspace.command(actor, key, 'same request', () => {}, async () => { repeated = true; return 'never'; });
     expect(receipt.status).toBe('uncertain'); expect(repeated).toBe(false);
-  });
-
-  test('session transport reads a bounded history window and marks shortened approval details', async () => {
-    const session = await start();
-    const handle = (workspace as unknown as { db: DatabaseSync }).db;
-    // An old malformed row proves the bounded read does not parse history
-    // outside its window. The full legacy snapshot still reads all rows.
-    handle.prepare('UPDATE coding_item SET payload=? WHERE session=?').run('old unreadable history', session.id);
-    const insert = handle.prepare('INSERT INTO coding_item(session,id,payload) VALUES(?,?,?)');
-    for (let n = 0; n < 120; n++) insert.run(session.id, `message-${n}`, JSON.stringify({ id: `message-${n}`, type: 'agentMessage', text: `Saved update ${n}`, status: 'completed' }));
-    const request = handle.prepare("INSERT INTO coding_request VALUES(?,?,?,?,'pending')");
-    for (let n = 0; n < 55; n++) request.run(`approval-${n}`, session.id, JSON.stringify(n), JSON.stringify({ id: `approval-${n}`, kind: 'command', method: 'item/commandExecution/requestApproval', title: 'Allow this command?', detail: `Command ${n}`, questions: [] }));
-    const bounded = workspace.snapshotBounded(session.id, actor);
-    expect(bounded.items).toHaveLength(100); expect(bounded.items[0]?.id).toBe('message-20'); expect(bounded.items.at(-1)?.id).toBe('message-119');
-    expect(bounded.requests).toHaveLength(50); expect(bounded.truncated).toBe(true);
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    expect(await service.execute(actor, 'show', { version: 1, sessionId: session.id, view: 'activity' })).toMatchObject({ ok: true, result: { truncated: true, items: bounded.items, requests: expect.any(Array) } });
-    handle.prepare('DELETE FROM coding_item WHERE session=?').run(session.id);
-    handle.prepare('DELETE FROM coding_request WHERE session=?').run(session.id);
-    request.run('long-approval', session.id, '99', JSON.stringify({ id: 'long-approval', kind: 'command', method: 'item/commandExecution/requestApproval', title: 'Allow this command?', detail: 'A'.repeat(9000), questions: [] }));
-    const shortened = await service.execute(actor, 'show', { version: 1, sessionId: session.id, view: 'activity' });
-    expect(shortened.result?.truncated).toBe(true); expect(shortened.result?.requests?.[0]?.detail).toHaveLength(8000);
-  });
-
-  test('bounded session lists preserve authorization and do not call a filtered scan complete', async () => {
-    const session = await start();
-    const handle = (workspace as unknown as { db: DatabaseSync }).db;
-    const insert = handle.prepare('INSERT INTO coding_session(id,owner,generation,repo,document) VALUES(?,?,?,?,?)');
-    const service = new SessionService({ workspace, authorized: (_actor, project) => project === undefined || project === session.repo, project: (_actor, project) => project });
-    try {
-      // These bodies must not be loaded: project authorization happens from
-      // metadata, and a short filtered page is not the complete catalog.
-      for (let n = 0; n < 105; n++) insert.run(`hidden-${n}`, actor.name, actor.generation, '/private', JSON.stringify('unreadable private document'));
-      expect(await service.execute(actor, 'list', { version: 1, limit: 10 })).toMatchObject({ ok: true, message: '0 sessions shown; more may be available.', result: { sessions: [], truncated: true } });
-      // Project filtering is in SQL, so unrelated newer sessions cannot
-      // crowd an admitted project's older result out of the bounded window.
-      expect(await service.execute(actor, 'list', { version: 1, project: session.repo, limit: 10 })).toMatchObject({ ok: true, result: { sessions: [{ id: session.id }], truncated: false } });
-      for (let n = 0; n < 3; n++) insert.run(`visible-${n}`, actor.name, actor.generation, session.repo, JSON.stringify({ ...session, id: `visible-${n}`, nativeThreadId: null, turnId: null, status: 'ready' }));
-      expect(await service.execute(actor, 'list', { version: 1, project: session.repo, limit: 1 })).toMatchObject({ ok: true, result: { sessions: [{ id: 'visible-2' }], truncated: true } });
-    } finally { handle.prepare('DELETE FROM coding_session WHERE id<>?').run(session.id); }
-  });
-
-  test('pending command replies require inspection before another session control', async () => {
-    const session = await start();
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const snapshot = workspace.snapshot(session.id, actor);
-    const request = { version: 1 as const, sessionId: session.id, key: 'pending-control-001', prompt: 'Make the heading shorter.', expectedRevision: snapshot.revision, expectedThreadId: session.nativeThreadId, expectedTurnId: session.turnId };
-    let entered!: () => void, release!: () => void;
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    const held = new Promise<void>(resolve => { release = resolve; });
-    const original = provider.request.bind(provider);
-    provider.request = async (method, params) => {
-      if (method === 'turn/steer') { entered(); await held; }
-      return original(method, params);
-    };
-    const sending = service.execute(actor, 'send', request);
-    try {
-      await started;
-      const pending = await service.execute(actor, 'send', request);
-      expect(pending).toMatchObject({ ok: true, status: 'pending', result: { receipt: { status: 'pending' } } });
-      expect(pending.nextActions.map(action => action.operation)).toEqual(['show', 'changes']);
-      expect(pending.result?.brief?.nextAction).toBe(pending.nextActions[0]?.label);
-    } finally { release(); await sending; }
-  });
-
-  test('an uncertain reply inspects a completed session and only offers recovery for uncertain session state', async () => {
-    const session = await start();
-    const service = new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const snapshot = workspace.snapshot(session.id, actor);
-    const original = provider.request.bind(provider);
-    provider.request = async (method, params) => {
-      const result = await original(method, params);
-      if (method !== 'turn/steer') return result;
-      provider.note('item/completed', { item: { id: 'saved-follow-up', type: 'userMessage', clientId: params['clientUserMessageId'], content: params['input'] } });
-      provider.note('turn/completed', { turn: { id: 'turn-1', status: 'completed' } });
-      throw new CodingProviderDisconnectedError('The native reply was lost after completion.');
-    };
-    const request = { version: 1 as const, sessionId: session.id, key: 'uncertain-ready-001', prompt: 'Make the heading shorter.', expectedRevision: snapshot.revision, expectedThreadId: session.nativeThreadId, expectedTurnId: session.turnId };
-    const uncertain = await service.execute(actor, 'send', request);
-    expect(uncertain).toMatchObject({ ok: false, status: 'uncertain', delivery: 'unknown', retry: 'inspect-first', result: { session: { status: 'ready' } } });
-    expect(uncertain.nextActions.map(action => action.operation)).toEqual(['show', 'changes']);
-    expect(uncertain.result?.brief?.nextAction).toBe(uncertain.nextActions[0]?.label);
-    expect((await service.execute(actor, 'send', request)).nextActions).toEqual(uncertain.nextActions);
-    // A separate lost message with no native receipt leaves the session
-    // uncertain. Inspection still leads; recovery is then appropriate.
-    provider.request = original;
-    provider.failure = new CodingProviderDisconnectedError('connection lost');
-    const current = workspace.snapshot(session.id, actor);
-    const lost = await service.execute(actor, 'send', { ...request, key: 'uncertain-state-001', expectedRevision: current.revision, expectedTurnId: current.session.turnId });
-    expect(lost).toMatchObject({ status: 'uncertain', result: { session: { status: 'uncertain' } } });
-    expect(lost.nextActions.map(action => action.operation)).toEqual(['show', 'changes', 'recover']);
-  });
-
-  test('known admission and state refusals are not uncertain native deliveries', async () => {
-    const session = await start();
-    const service = () => new SessionService({ workspace, authorized: () => true, project: () => repo });
-    const expected = () => {
-      const snapshot = workspace.snapshot(session.id, actor);
-      return { version: 1 as const, sessionId: session.id, expectedRevision: snapshot.revision, expectedThreadId: snapshot.session.nativeThreadId, expectedTurnId: snapshot.session.turnId };
-    };
-    const calls = provider.calls.length;
-    expect(await service().execute(actor, 'start', { version: 1, project: repo, title: 'Invalid model', prompt: 'Make the heading clearer.', model: 'invalid model', key: 'invalid-model-0001' })).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent', reason: 'invalid-request' });
-    expect(await service().execute(actor, 'resume', { ...expected(), key: 'already-active-0001' })).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent', result: { receipt: { status: 'rejected' } } });
-    provider.emit({ kind: 'request', id: 'question-1', method: 'item/tool/requestUserInput', params: { threadId: provider.thread, questions: [{ id: 'q1', header: 'Retry policy', question: 'Use three attempts?', options: [] }] } });
-    const blocked = { ...expected(), prompt: 'A follow-up while a question is open.', key: 'blocked-message-001' };
-    expect(await service().execute(actor, 'send', blocked)).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent', result: { receipt: { status: 'rejected' } } });
-    expect(await service().execute(actor, 'send', blocked)).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent' });
-    expect(provider.calls).toHaveLength(calls);
-    await workspace.close();
-    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider, admissionPaused: () => true });
-    expect(await service().execute(actor, 'send', { ...expected(), prompt: 'Try after the update.', key: 'update-paused-0001' })).toMatchObject({ ok: false, status: 'rejected', delivery: 'not-sent', result: { receipt: { status: 'rejected' } } });
-    expect(provider.calls).toHaveLength(calls);
   });
 
   test('ambiguous first delivery remains fenced and is never silently resubmitted', async () => {

@@ -91,7 +91,6 @@ export const chatActionRequestSchemas = {
 
 export type ChatActionOperation = keyof typeof chatActionRequestSchemas;
 export const CHAT_ACTION_OPERATIONS = Object.keys(chatActionRequestSchemas) as [ChatActionOperation, ...ChatActionOperation[]];
-export type ChatActionRequest<O extends ChatActionOperation = ChatActionOperation> = z.infer<(typeof chatActionRequestSchemas)[O]>;
 
 /** The fields each action takes, from its schema. */
 export const CHAT_ACTION_FIELDS = Object.fromEntries(

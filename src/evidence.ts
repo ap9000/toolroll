@@ -155,10 +155,6 @@ export function mailboxName(): string {
   return `${MAILBOX_PREFIX}${randomBytes(8).toString("hex")}${MAILBOX_SUFFIX}`;
 }
 
-export function looksLikeMailbox(name: string): boolean {
-  return name.startsWith(MAILBOX_PREFIX) && name.endsWith(MAILBOX_SUFFIX);
-}
-
 /** Every protocol file the sweep must never let an old attempt leave behind.
  * The pre-rename NIGHTORDERS- prefix stays recognized here — a worktree cut
  * down before 2026-08-13 may still hold one, and cleanup has no vintage. */

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, chmodSync, copyFileSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, chmodSync, copyFileSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { backup, DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { bundleHash, readDesktopBundle, verifyDesktopUpdateBundles, type DesktopBundle } from "./desktop-bundle.js";
 import { readDesktopConfig, desktopServiceCommand, desktopServiceDefinition, verifyDesktopLiveness, type DesktopConfig } from "./desktop-host.js";
@@ -12,10 +12,11 @@ import { readSchemaVersion, SCHEMA_VERSION, Store } from "./store.js";
 import { BASELINE_SCHEMA_VERSION } from "./store-baseline.js";
 import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate, updateAdmissionPaused } from "./desktop-update-gate.js";
 import { currentDesktopAccess } from "./desktop-access.js";
-import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, type ReleasedCodingOwner } from "./coding-update.js";
+import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner } from "./coding-update.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { readDesktopRecoveryView, readDesktopUpdateJournal, supervisorPidsOf, updateRequestIs, type DesktopRecoveryView, type DesktopUpdateJournal, type DesktopUpdatePhase } from "./contracts/update-journal.js";
 import type { ContractIssue } from "./contracts/contract.js";
+import { sleep as defaultSleep } from "./sleep.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -503,7 +504,7 @@ export async function runDesktopUpdate(stateDir: string, hooks: UpdateHooks = {}
   let installation: DatabaseSync | null;
   try { installation = installationLock(j); } catch (error) { lock.close(); throw error; }
   if (!installation) { lock.close(); throw Error("Another updater is working on this app. Its operation was not interrupted."); }
-  const sleep = hooks.sleep ?? (ms => new Promise(done => setTimeout(done, ms)));
+  const sleep = hooks.sleep ?? defaultSleep;
   const control = async (action: "start" | "stop", bundle: DesktopBundle, journal: UpdateJournal) => {
     if (action === "start" && updateStopRequested(journal)) throw Error("You stopped the background service. Automatic restart is disabled for this update.");
     try { await (hooks.service ?? service)(action, bundle, journal); }

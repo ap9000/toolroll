@@ -17,12 +17,10 @@
  * spending — those stay with people (or a signed hands-off mode).
  */
 import { Buffer } from "node:buffer";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { strictJsonParse } from "./converse.js";
 import { scanForSecrets } from "./evidence.js";
-import { run, type ExecResult } from "./exec.js";
+import { run } from "./exec.js";
+import { CLAUDE_NO_TOOLS_ARGS, CLAUDE_SIGNED_OUT, claudeJsonBody, claudeModelArgs, inScratchDir, type CommandRunner } from "./claude-print.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { ContractResult } from "./contracts/contract.js";
 import { readTurnAnswer, TURN_MODEL_SCHEMA, type TurnAction, type TurnAnswer } from "./contracts/subagent-turn.js";
@@ -30,13 +28,11 @@ import { LIMITS } from "./decision.js";
 import { overruns, TEXT_LIMITS, type Overrun } from "./text-limits.js";
 
 export const SOUL_CHARS = 12_000;
-const HANDLE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 export type Soul = { name: string; role: string; sections: { title: string; body: string }[] };
 
 /** A handle from a name: "Maya" → "maya". */
 export const handleOf = (name: string) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "subagent";
-export const isHandle = (value: unknown): value is string => typeof value === "string" && HANDLE.test(value);
 
 /** A soul file read: its name and role (front matter) and its sections. */
 export function parseSoul(text: string): { ok: true; soul: Soul } | { ok: false; problem: string } {
@@ -253,36 +249,27 @@ export type TurnReply = ({ ok: true; value: unknown; ms: number } & TurnCost) | 
 export type TurnRunner = (request: TurnRequest) => Promise<TurnReply>;
 export const TURN_TIMEOUT_MS = 180_000;
 
-type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
-
 /** The production runner: Claude through this computer's sign-in, answering in the turn schema (TURN_MODEL_SCHEMA), with no tools, no MCP servers and no repository. */
 export function claudeTurnRunner(runner: CommandRunner = run): TurnRunner {
-  return async request => {
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-subagent-"));
-    const started = Date.now();
-    try {
+  return request =>
+    inScratchDir("standing-orders-subagent-", async dir => {
+      const started = Date.now();
       const result = await runner("claude", [
-        "-p", "--output-format", "json", "--json-schema", JSON.stringify(TURN_MODEL_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
-        "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-        ...(request.model === "default" ? [] : ["--model", request.model]),
+        "-p", "--output-format", "json", "--json-schema", JSON.stringify(TURN_MODEL_SCHEMA), ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ], { cwd: dir, stdin: request.prompt, timeoutMs: request.timeoutMs, maxBuffer: 512 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true });
       if (result.notFound) return { ok: false, said: "Claude isn't installed on this computer." };
       if (result.timedOut) return { ok: false, said: "Claude took too long to decide." };
-      const parsed = strictJsonParse(Buffer.from(result.stdout, "utf8"), 512 * 1024, 12);
-      const body = parsed.ok && typeof parsed.value === "object" && parsed.value !== null && !Array.isArray(parsed.value) ? parsed.value as Record<string, unknown> : null;
+      const body = claudeJsonBody(result.stdout, 512 * 1024);
       if (result.code !== 0 || body === null || body["is_error"] === true || body["subtype"] !== "success") {
         const why = typeof body?.["subtype"] === "string" && body["subtype"] !== "success" ? ` (${String(body["subtype"]).replace(/_/g, " ").slice(0, 60)})` : result.code !== 0 ? ` (exit ${result.code})` : "";
-        return { ok: false, said: /not logged in|login|authenticat/i.test(`${result.stdout}${result.stderr}`) ? "Claude isn't signed in on this computer." : `Claude couldn't decide${why}.` };
+        return { ok: false, said: CLAUDE_SIGNED_OUT.test(`${result.stdout}${result.stderr}`) ? "Claude isn't signed in on this computer." : `Claude couldn't decide${why}.` };
       }
       const cost = costOf(body);
       if (body["structured_output"] !== undefined && body["structured_output"] !== null) return { ok: true, value: body["structured_output"], ms: Date.now() - started, ...cost };
       const text = typeof body["result"] === "string" ? body["result"].trim().replace(/^```(?:json)?\n?|\n?```$/g, "") : "";
       const inner = strictJsonParse(Buffer.from(text, "utf8"), 64 * 1024, 8);
       return inner.ok ? { ok: true, value: inner.value, ms: Date.now() - started, ...cost } : { ok: false, said: "Claude's answer wasn't a decision.", ...cost };
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  };
+    });
 }
 
 /** What the CLI says a turn cost, and its tokens (cache reads and writes count as input). */

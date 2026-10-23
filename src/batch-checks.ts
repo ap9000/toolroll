@@ -22,7 +22,6 @@ import { fencedCheckoutCommands } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Runner } from "./backend.js";
 import type { Store, VerifyCommand } from "./store.js";
 import type { ExecResult } from "./exec.js";
 import { run as execRun } from "./exec.js";

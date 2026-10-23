@@ -34,9 +34,8 @@ import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, isLargeRepo } from
 import { run as execRun } from "./exec.js";
 import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
-import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "./session-cli.js";
-import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
-import { deprecationWarning } from "./deprecations.js";
+import { hasCentralProfile, maybeRunConnectCommand, type ConnectOptions } from "./connect-cli.js";
+import { removedCommand, removedMessage } from "./deprecations.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
 import { readPulls } from "./pulls.js";
@@ -155,17 +154,6 @@ export function parseArgs(argv: readonly string[]): ParseResult {
 }
 
 /** The commands that operate the queue rather than report on the world. */
-/** Every verb the CLI routes OUTSIDE runOperate. Exported (with
- * OPERATE_COMMANDS) so the declared command guide's drift tests compare
- * exact sets instead of regex-reading source. "" is the no-verb report,
- * which answers as `scan`. */
-export const TOP_LEVEL_COMMANDS: readonly string[] = [
-  "", "scan", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github",
-  "link", "unlink", "update", "release", "contract", "skills list", "skills get", "skills install", "demo",
-  ...SESSION_CLI_ACTIONS.map(action => `session ${action}`),
-  ...TEAM_CLI_ACTIONS,
-];
-
 export const OPERATE_COMMANDS = new Set([
   "up",
   // Only `lead token` reaches here; the central service's lead verbs answer first.
@@ -236,9 +224,8 @@ export const OPERATE_COMMANDS = new Set([
 export type MainOptions = {
   binSource?: string;
   operate?: OperateOptions;
-  session?: SessionCliOptions;
-  team?: TeamCliOptions;
-  /** Injected by tests: the remote CLI's profile, fetch and output streams (defaults to `team`'s profile seams). */
+  connect?: ConnectOptions;
+  /** Injected by tests: the remote CLI's profile, fetch and output streams (defaults to `connect`'s profile seams). */
   remote?: RemoteExecOptions;
   /** Injected by tests: the gh-facing halves of `repos add-from-github` —
    * the verb's parsing, gating, and enrollment are what CLI tests prove;
@@ -391,16 +378,24 @@ async function dispatch(
   // v115: routines became scheduled flows. Every old `routine …` invocation answers with one line pointing there —
   // hidden from help and the contract, before anything remote or local opens, changing nothing.
   if (argv[0] === "routine") return routinesMoved(argv, write);
+  // D5: the central team CLI and native sessions are gone; each old invocation says so and changes nothing.
+  const connectOptions = mainOptions.connect ?? mainOptions.remote;
+  const removed = removedCommand(argv, () => hasCentralProfile(connectOptions ?? {}));
+  if (removed !== null) {
+    const message = removedMessage(removed.named, removed.kind);
+    write(argv.includes("--json") ? envelopeJson({ ok: false, command: removed.named, reason: "removed", message }) : message);
+    return 2;
+  }
   // A saved API token sends commands marked remote to the central server, before anything local opens.
   // Command families below load when their command runs, so one command never pays for the others.
-  if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
+  if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.connect ?? mainOptions.remote);
   // This computer's own service, read here and never on a central server.
   if (argv[0] === 'doctor') return (await import("./doctor.js")).runDoctorCommand(argv.slice(1), write);
-  const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);
+  const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.connect);
   if (typeof central === "number") return central;
   if (central !== null) argv = central.local;
-  const team = await maybeRunTeamCommand(argv, write, mainOptions.team);
-  if (team !== null) return team;
+  const connected = await maybeRunConnectCommand(argv, write, mainOptions.connect);
+  if (connected !== null) return connected;
   if ((argv[0] === "chat" || argv[0] === "brief") && argv.includes("--local")) argv = argv.filter(arg => arg !== "--local");
   const [first, ...rest] = argv;
   if (first === "help") {
@@ -418,12 +413,6 @@ async function dispatch(
     return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });
   }
   if (first === "contract") return runContractCommand(rest, write);
-  if (first === "session") {
-    // D5: native coding sessions are deprecated. They still run this release; each use says so once, on stderr.
-    (mainOptions.session?.stderr ?? (line => process.stderr.write(`${line}\n`)))(deprecationWarning(`session ${rest.find(arg => !arg.startsWith("-")) ?? ""}`.trim(), "session"));
-    // D7: it runs on the saved connection over /api/cli, signed in with that profile's API token.
-    return runSessionCommand(rest, write, { ...(mainOptions.remote ?? mainOptions.team), ...mainOptions.session });
-  }
   if (first === "demo") return runDemoCommand(rest, write);
   if (first === "skills") return runSkillsCommand(rest, write);
   if (first === "repos") return runReposCommand(rest, write, mainOptions.onboard);

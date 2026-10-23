@@ -47,7 +47,7 @@ import type { EdgeContext,HandlerContext } from './handler-context.js';
 import { serveInstallAsset } from "./pages-assets.js";
 import { healthz } from "./remote-hooks.js";
 import type { ServerRuntime } from './runtime.js';
-import { projectChip,refuse,regionScript,relativeAge,screen,settingsRows,transcriptScript,WORKSPACE_STYLE,workToolRows,type NavRow } from "./chrome.js";
+import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
@@ -533,7 +533,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   }
 
   async function fleetPage(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
+    const { url, response, project } = ctx;
     // Cross-project by design: which agent is on which project is the
     // question, so this screen is a survey — reads are still filtered
     // through the ceiling before a card renders. No project needed.

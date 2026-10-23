@@ -1,18 +1,18 @@
 /**
- * D5: the central team service and native coding sessions are deprecated. Every legacy command below still runs this
- * release, says so once on stderr (never on stdout, so a --json answer stays one envelope), and is hidden from help and
- * the command contract. The local lead's own commands (lead token, lead say, chat, brief) stay visible and quiet.
+ * D5: the central team CLI and native coding sessions were deprecated in 0.9.56 and are removed. Every legacy command
+ * below answers with one removal line (one envelope with --json), runs nothing and is hidden from help and the command
+ * contract. `connect` still saves a profile, with its warning. The local lead's own commands stay visible and quiet.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { main } from "./cli.js";
-import { deprecationWarning } from "./deprecations.js";
+import { maybeRunConnectCommand } from "./connect-cli.js";
+import { deprecationWarning, removedMessage } from "./deprecations.js";
 
 /** The exact legacy inventory: each invocation and the words its warning names. */
 const TEAM: readonly { argv: string[]; named: string }[] = [
-  { argv: ["connect"], named: "connect" },
   ...["list", "create", "update", "member", "transfer"].map(action => ({ argv: ["lead", action], named: `lead ${action}` })),
   ...["list", "create", "show", "member", "edit", "withdraw", "read", "follow", "stop"].map(action => ({ argv: ["conversation", action], named: `conversation ${action}` })),
   { argv: ["chat", "--lead", "l1", "--conversation", "c1"], named: "chat --conversation" },
@@ -21,7 +21,7 @@ const TEAM: readonly { argv: string[]; named: string }[] = [
 const SESSION: readonly { argv: string[]; named: string }[] =
   ["capabilities", "list", "show", "changes", "start", "send", "stop", "resume", "recover"].map(action => ({ argv: ["session", action], named: `session ${action}` }));
 
-describe("deprecated central team and native session commands", () => {
+describe("removed central team and native session commands", () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "toolroll-deprecated-")); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
@@ -29,16 +29,27 @@ describe("deprecated central team and native session commands", () => {
   const run = async (argv: readonly string[]) => {
     const stdout: string[] = [], stderr: string[] = [];
     const team = { profileFile: join(dir, "profiles.json"), stderr: (line: string) => stderr.push(line), fetch: (() => { throw new Error("no network in this test"); }) as typeof fetch };
-    const code = await main([...argv], line => stdout.push(line), { team, remote: team, session: { stderr: line => stderr.push(line) } });
+    const code = await main([...argv], line => stdout.push(line), { connect: team, remote: team });
     return { code, stdout, stderr };
   };
 
-  test.each([...TEAM, ...SESSION])("$named still answers, warns once on stderr, and keeps --json stdout one envelope", async ({ argv, named }) => {
+  test.each([...TEAM, ...SESSION])("$named answers that it was removed, as one --json envelope, and runs nothing", async ({ argv, named }) => {
     const kind = argv[0] === "session" ? "session" : "team";
-    const { stdout, stderr } = await run([...argv, "--json"]);
-    expect(stderr.filter(line => line.startsWith("Warning:"))).toEqual([deprecationWarning(named, kind)]);
+    const { code, stdout, stderr } = await run([...argv, "--json"]);
+    expect(code).toBe(2);
+    expect(stderr).toEqual([]);
     expect(stdout).toHaveLength(1);
-    expect(() => JSON.parse(stdout[0]!)).not.toThrow();
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: false, reason: "removed", message: removedMessage(named, kind) });
+    const plain = await run([...argv]);
+    expect(plain.stdout).toEqual([removedMessage(named, kind)]);
+  });
+
+  test("connect still saves a profile path and warns once on stderr", async () => {
+    const { code, stdout, stderr } = await run(["connect", "--json"]);
+    expect(code).toBe(2);
+    expect(stderr.filter(line => line.startsWith("Warning:"))).toEqual([deprecationWarning("connect", "team")]);
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: false, code: "usage" });
   });
 
   test("the local lead's commands never warn", async () => {
@@ -70,5 +81,49 @@ describe("deprecated central team and native session commands", () => {
     const capabilities: string[] = [];
     await main(["contract", "--json"], line => capabilities.push(line));
     expect(capabilities.join("\n")).not.toContain("session-client");
+  });
+});
+
+describe("what the removal must keep (slim review)", () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "toolroll-removed-keep-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  const secret = "s3cret-token-value-0123456789";
+  const reply = (body: unknown, status = 200) => (async () => Response.json(body, { status })) as unknown as typeof fetch;
+  const connect = async (fetcher: typeof fetch) => {
+    const stdout: string[] = [];
+    const code = await maybeRunConnectCommand(["connect", "https://central.example", "--as", "alex", "--token-stdin", "--json"], line => stdout.push(line),
+      { profileFile: join(dir, "profiles.json"), stderr: () => undefined, readStdin: async () => secret, fetch: fetcher });
+    return { code, stdout, saved: existsSync(join(dir, "profiles.json")) };
+  };
+  const snapshot = { leads: [], conversations: [], selected: null, participants: [], messages: [], canManage: false, canSend: false, cursor: 0, truncated: false, projects: [], accounts: [] };
+
+  test("a chat with a saved central profile is refused as removed, never run against this computer's lead", async () => {
+    const file = join(dir, "profiles.json");
+    writeFileSync(file, JSON.stringify({ version: 1, active: "default", profiles: { default: { origin: "https://central.example", account: "alex", token: secret } } }), { mode: 0o600 });
+    const stdout: string[] = [];
+    const team = { profileFile: file, stderr: () => undefined, fetch: (() => { throw new Error("no network in this test"); }) as typeof fetch };
+    expect(await main(["chat", "--say", "Continue the work", "--json"], line => stdout.push(line), { connect: team, remote: team })).toBe(2);
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: false, reason: "removed", message: removedMessage("chat --conversation", "team") });
+  });
+
+  test("connect never shows the credential a server's refusal echoes", async () => {
+    const { code, stdout } = await connect(reply({ version: 1, ok: false, code: "forbidden", message: `The token ${secret} is not valid.` }, 403));
+    expect(code).toBe(1);
+    expect(stdout.join("\n")).not.toContain(secret);
+    expect(JSON.parse(stdout[0]!).message).toBe("The token [redacted] is not valid.");
+  });
+
+  test("connect saves nothing on a success without a well-formed listing, and saves on one with it", async () => {
+    const bare = await connect(reply({ version: 1, ok: true, code: "ok", message: "ok" }));
+    expect(bare.code).toBe(1);
+    expect(JSON.parse(bare.stdout[0]!)).toMatchObject({ ok: false, code: "service-unavailable" });
+    expect(bare.saved).toBe(false);
+    const broken = await connect(reply({ version: 1, ok: true, code: "ok", message: "ok", snapshot: { ...snapshot, messages: [{ id: "x" }] } }));
+    expect(broken.code).toBe(1);
+    expect(broken.saved).toBe(false);
+    const good = await connect(reply({ version: 1, ok: true, code: "ok", message: "ok", snapshot }));
+    expect(good.code).toBe(0);
+    expect(good.saved).toBe(true);
   });
 });

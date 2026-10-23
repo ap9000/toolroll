@@ -20,7 +20,7 @@ import { run as execRun } from "./exec.js";
 import { approvedCommandShell, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { boundStreamHeadTail, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
-import { CHECK_LEVEL_WORDS, checkCommandFor, quickVerifyKey, repoClause, repoOfRun, runCheckLevel, type CheckLevel } from "./check-levels.js";
+import { CHECK_LEVEL_WORDS, checkCommandFor, repoClause, repoOfRun, runCheckLevel, type CheckLevel } from "./check-levels.js";
 import { fileTaskProposal } from "./proposal.js";
 
 export const CHECKS_REQUESTED = "checks requested";
@@ -287,11 +287,6 @@ export function resultCheckLevel(store: Store, runId: number, now: Date): CheckL
   return read.level;
 }
 
-/** Whether this result's commit has passed the project's full check, here or in a follow-up. */
-export function fullCheckPassed(reading: CheckReading): boolean {
-  return reading.status === "passed" && (reading.level === "full" || reading.level === null);
-}
-
 /** Before a Quick or Off result merges: the project's full check on its exact
  * commit. Clear when the build already ran the full check, when the project has
  * no full command (its CI covers it), or when a follow-up full check passed. */
@@ -312,8 +307,6 @@ export function fullCheckGate(store: Store, runId: number, now: Date): FullCheck
   if (last.state === "not-run") return { state: "not-run", message: `The full check didn't finish on this commit${last.note === null ? "" : `: ${last.note}`} Run it again, or merge anyway.` };
   return { state: "waiting", message: "The full check is still running on this commit. Merge once it passes, or merge anyway." };
 }
-
-export const isQuickCommand = (command: VerifyCommand | null, repo: string): boolean => command !== null && command.repo === quickVerifyKey(repo);
 
 // ---- Add tests --------------------------------------------------------------
 

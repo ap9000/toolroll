@@ -43,7 +43,6 @@ import { passwordlessSessionFor,
 } from "./scope.js";
 import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
 import { readAuthModeStrict } from "./keys.js";
-import { parseProof } from "./proof.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "./assignment.js";
 import { getDecision, recordDecision, retireDecision } from "./project-memory.js";
 import { resumeTaskStop, taskControlOf } from "./task-control.js";
@@ -54,7 +53,7 @@ import { addCardToFlow, advanceFlows, cancelFlowCard, crossProjectProblem, decid
 import { chooseFlowCard, flowPersonOf } from "./flow-send.js";
 import type { FlowCardRow, FlowRow, FlowTriggerRow } from "./store.js";
 import { assignFlowCard, commentOnFlowCard, flowPeople, mentionsIn, watchFlowCard } from "./flow-people.js";
-import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, scheduleFromWords, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
+import { addFlowTriggerTo, describeTrigger, readLinearKey, removeFlowTrigger, takesDeliveries, triggerConfigOf, validateTriggerConfig } from "./flow-triggers.js";
 import { describeSchedule, parseSchedule } from "./flow-schedule.js";
 import { dirname } from "node:path";
 import { handleOf, parseSoul, SOUL_CHARS, SUBAGENT_TEMPLATES, subagentLabel } from "./subagents.js";

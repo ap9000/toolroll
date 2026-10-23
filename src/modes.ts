@@ -16,6 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { CHAT_PROVIDERS, isChatProvider, type ChatProvider } from "./contracts/chat-tables.js";
+import { canonicalJson } from "./canonical-json.js";
 
 export type ModeName = "standard" | "hands-off";
 
@@ -124,18 +125,6 @@ export function presetTerms(name: ModeName, absoluteExpiry: string): ModeTerms {
         chatApprove: false,
         absoluteExpiry,
       };
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 export function modeTermsJson(terms: ModeTerms): string {

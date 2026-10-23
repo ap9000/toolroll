@@ -273,9 +273,6 @@ export function revisionSourceOf(scopeDigest: string | null): string {
   return scopeDigest === null ? "none" : scopeDigest;
 }
 
-export const REVIEW_DRAFT_PREFIX = "standing-orders:review-draft:";
-export const RESULT_SCROLL_PREFIX = "standing-orders:result-scroll:";
-
 /** The in-page half of the result presentation. Everything it does is
  * presentational or a bounded draft: no fetch, no endpoint, no submit.
  *

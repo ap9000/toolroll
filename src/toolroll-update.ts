@@ -30,17 +30,18 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type LingeringRun, type UpdateWaiting } from "./desktop-update.js";
+import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type UpdateWaiting } from "./desktop-update.js";
 import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate, updateAdmissionPaused, updateGateOwned } from "./desktop-update-gate.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { removeTerminalUpdateGate } from "./terminal-catalog.js";
-import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate, type ReleasedCodingOwner } from "./coding-update.js";
+import { assertCodingUpdateStopped, backupCodingCatalog, codingCatalogExists, releaseStaleCodingOwner, removeCodingUpdateGate } from "./coding-update.js";
 import { installLaunchdService, launchdPlist, stopLaunchdService, writeFileDurably, type SupervisorRunner } from "./daemon.js";
 import { NAME } from "./names.js";
 import { orphanKey, updateSafeSchema, V117_RENAMED_COLUMNS, V117_RENAMED_TABLES, V118_MERGED_TABLES, V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS } from "./store.js";
 import { isNewer, REGISTRY } from "./releases.js";
 import { markNeverIndex } from "./never-index.js";
 import { readRuntimeUpdateJournal, RUNTIME_PHASES, RUNTIME_UPDATE_STEPS, stagedStartedAt, updaterStartingOf, type RuntimeUpdateJournalRecord } from "./contracts/update-journal.js";
+import { sleep } from "./sleep.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -1303,7 +1304,7 @@ export function machineSystem(home = homedir(), env: Record<string, string | und
   };
   return {
     now: () => new Date(),
-    sleep: ms => new Promise(done => setTimeout(done, ms)),
+    sleep,
     release: async version => {
       const body = await json(`${REGISTRY}/${NAME}/${version}`) as { version?: string; dist?: { tarball?: string; integrity?: string; attestations?: { url?: string } } };
       return { version: String(body.version ?? ""), tarball: String(body.dist?.tarball ?? ""), integrity: String(body.dist?.integrity ?? ""), attestations: body.dist?.attestations?.url ?? null };
@@ -1471,5 +1472,3 @@ export function retireUpdateJob(id: string, home = homedir()): void {
   const unit = jobUnit(home);
   try { if (readFileSync(unit, "utf8").includes(`<string>${id}</string>`)) rmSync(unit, { force: true }); } catch { /* none */ }
 }
-
-export const nextScheduledAt = nextAt;

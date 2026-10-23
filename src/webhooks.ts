@@ -23,7 +23,6 @@ const POST_TIMEOUT_MS = 10_000;
 export const LEGACY_WEBHOOK_WARNING = "Legacy webhooks are deprecated. Connect Slack or Discord in Chat settings.";
 
 export const CONSOLE_URL_ENV = "TOOLROLL_CONSOLE_URL";
-export const PRIMARY_ENV = "TOOLROLL_MESSAGING_PRIMARY";
 
 const CONSOLE_FILE = "console-url";
 const PRIMARY_FILE = "messaging-primary";

@@ -11,7 +11,6 @@
 
 import { z } from "zod";
 import { ENVELOPE_VERSION, envelopeJson, type EnvelopePayload } from "../envelope.js";
-import type { SessionDescriptor } from "../session-contract.js";
 import { parseContract } from "./contract.js";
 import { LISTED_TASK_STATES } from "./lead-tools.js";
 import { healthSnapshotSchema } from './health.js';
@@ -51,9 +50,6 @@ export type CommandFlag = z.infer<typeof commandFlagSchema>;
 export const REMOTE_POLICIES = ["yes", "no", "step-up"] as const;
 export type RemotePolicy = typeof REMOTE_POLICIES[number];
 
-/** A session operation's executable input schema, as session-contract.ts states it. */
-const sessionInputSchema = z.custom<SessionDescriptor["inputSchema"]>(value => typeof value === "object" && value !== null && !Array.isArray(value));
-
 export const commandRowSchema = z.looseObject({
   /** What you type after `toolroll` (subcommands included). */
   invocation: str,
@@ -76,8 +72,6 @@ export const commandRowSchema = z.looseObject({
   positionals: z.array(z.looseObject({ name: str, required: z.boolean(), meaning: str }).readonly()).readonly().optional(),
   flags: z.array(commandFlagSchema).readonly().optional(),
   notableReasons: z.array(str).readonly().optional(),
-  /** Session schemas are executable input contracts, not a grant of authority. */
-  inputSchema: sessionInputSchema.optional(),
   /** Whether a person signed in to a central server with their own API token may run it there (`runOperateAs`):
    *  yes — runs as that person, within their token's scope and project access.
    *  no — this machine's own infrastructure, credentials or files; never run for a remote caller.

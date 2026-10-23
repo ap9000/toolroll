@@ -15,7 +15,6 @@ import { readCandidateEndpoints, savedInventoryPaths } from "./contracts/diff-st
 import { liveQuickCommand, quickVerifyKey, runCheckLevel } from "./check-levels.js";
 
 export const VERIFICATION_RECEIPT_CAPTURE = "machine verification receipt v1";
-export const REVIEW_GATE_NAME = "REVIEW-VERIFICATION.json";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const binding = (a: Artifact) => ({ artifactId: a.id, sha256: a.sha256, bytesStored: a.bytesStored, bytesOriginal: a.bytesOriginal, truncated: a.truncated, redacted: a.redacted, captureStatus: a.captureStatus });
 export const isVerificationReceipt = (a: Artifact) => a.kind === "structured-output" && (a.capture === VERIFICATION_RECEIPT_CAPTURE || a.capture === "machine verification reuse v1");

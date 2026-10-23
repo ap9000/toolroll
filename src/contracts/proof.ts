@@ -9,6 +9,7 @@ import { z } from "zod";
 import { TEXT_LIMITS } from "../text-limits.js";
 import { EVIDENCE_KINDS, type EvidenceKind } from "../scope.js";
 import { limited, readVersioned, versioned, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 /** How many entries each proof list may hold. Text limits live in TEXT_LIMITS. */
 export const PROOF_COUNTS = { criteria: 12, evidencePerCriterion: 4, checks: 12, changed: 64, caveats: 8, screenshots: 8 } as const;
@@ -79,8 +80,6 @@ export type ParsedCriterion = z.infer<typeof proofCriterionSchema>;
 export type CriterionEvidenceRef = z.infer<typeof criterionEvidenceSchema>;
 export type ParsedCheck = z.infer<typeof proofCheckSchema>;
 export type ParsedScreenshot = z.infer<typeof proofScreenshotSchema>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The listed fields of `body`, a null or missing one left out (the old parser read null text as missing). */
 function pick(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {

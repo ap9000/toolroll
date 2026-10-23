@@ -53,6 +53,7 @@ import { tmpdir } from "node:os";
 import type { FlowCardSource, FlowReceipt, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { envValue } from "./names.js";
 import { linearLabelNames, readFormSubmission, readGithubEvent, readGithubIssue, readGithubIssueEventList, readGithubIssueList, readGithubRun, readGithubRunList, readInboundMail, readLinearAnswer, readLinearEvent, readLinearIssue, readWebhookPayload } from "./contracts/trigger-payloads.js";
+import { isRecord } from "./is-record.js";
 
 export { FLOW_TRIGGER_KINDS };
 export type { ChatApp, FlowTriggerKind, TriggerConfig, TriggerInput };
@@ -75,7 +76,6 @@ const TEAM = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 // ------------------------------------------------------------ the terms
 
 const HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/;
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * A trigger's settings read by their one schema (`label: required`, `unknown key 'flows'`). A setting given as null is
@@ -390,7 +390,6 @@ function dropHookSecret(dir: string, trigger: number, credential: string): void 
 }
 
 const LINEAR = { name: "linear-key", file: ["linear-key"] };
-export const LINEAR_ENV = "TOOLROLL_LINEAR_KEY";
 /** The Linear API key the worker checks Linear with: the environment, or kept by Toolroll (the keychain, or an owner-only file beside the database). */
 export function readLinearKey(dir: string | null): string | null {
   const env = envValue(process.env, "LINEAR_KEY")?.trim();

@@ -62,7 +62,6 @@ import {
   ROUTE_PROVIDERS,
   ROUTE_VERSION,
   TASK_SIZE_WORDS,
-  taskSizingSchema,
   type PhaseRoute,
   type RouteLeg,
   type RouteOverride,
@@ -71,6 +70,7 @@ import {
 } from "./contracts/route.js";
 import type { Phase, ProviderId } from "./provider.js";
 import type { QualityMode } from "./quality.js";
+import { canonicalJson } from "./canonical-json.js";
 
 /** The sealed route's shape is its contract (contracts/route.ts); these are its types. */
 export type { PhaseRoute, RouteLeg, RouteOverride, RouteVersion, TaskSizing };
@@ -104,8 +104,6 @@ export { ROUTE_VERSION };
  * row; which route version it holds rides in the snapshot itself. */
 export const ROUTE_ERA = 1;
 export const PHASES: readonly Phase[] = ROUTE_PHASES;
-/** The review leg remains readable in signed history but is no longer scheduled. */
-export const ACTIVE_PHASES: readonly Phase[] = ["plan", "build", "repair"];
 
 /** The risk words a route sealed before v115 may carry (history); every route since says `routine`. */
 export type RiskLevel = (typeof RISKS)[number];
@@ -133,12 +131,6 @@ export function makesNoPlan(size: TaskSizing | null | undefined, risk: RiskLevel
 /** Where a size came from, in words. */
 export function sizeSourceWords(source: SizeSource): string {
   return source === "classifier" ? "sized automatically" : source === "person" ? "set by a person" : "sized from the description";
-}
-
-/** Strict read of a stored sizing (the route contract's): exact keys, known words, bounded reason. */
-export function parseSizing(raw: unknown): TaskSizing | null {
-  const parsed = taskSizingSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
 }
 
 export function riskTitle(risk: RiskLevel): string {
@@ -619,19 +611,6 @@ export function sameSpec(a: { provider: string; model: string | null }, b: { pro
 }
 
 // ---- canonical bytes, digest, strict rehydration ---------------------------
-
-/** Deterministic JSON: object keys sorted recursively, arrays in order. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 /** The stored snapshot bytes: the version rides IN the snapshot. */
 export function canonicalRouteJson(route: PhaseRoute): string {

@@ -20,7 +20,7 @@
 import type { DispatchAction, DispatchDiagnosis } from "./dispatch.js";
 import { ACCEPT_NEEDS_REASON, FAILED_CHECK, cantAcceptYetOf, evidenceProblemOf, type AcceptLabel, type EvidenceProblem } from "./result-acts.js";
 export { ACCEPT_NEEDS_REASON, cantAcceptYetOf, evidenceProblemOf, type EvidenceProblem };
-import { GOAL_ASSESSMENT_PENDING, manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
+import { manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
 import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
 import { OPEN_RESULT, plainReasonOf, stageOfCode, taskStatusOf, workToneOf } from "./task-status.js";
@@ -108,8 +108,6 @@ export function reviewFactsOf(retry: ReviewRetryState | null, reviewerAlive: (ru
 
 /** The tokens a review in flight wears — the dispatch codes, unchanged. */
 export const REVIEW_TOKENS: ReadonlySet<string> = new Set(["reviewing", "review-pending", "review-failed", "review-exhausted"]);
-
-const retriesLeft = (count: number, explicit = true): string => `${count}${explicit ? " explicit" : ""} ${count === 1 ? "retry" : "retries"}`;
 
 /**
  * A review that is queued, running, failed with a retry left, or
@@ -648,11 +646,6 @@ export function workCounts(rows: readonly { views: readonly WorkView[] }[]): Rec
   const counts: Record<WorkView, number> = { all: 0, "needs-you": 0, running: 0, completed: 0 };
   for (const row of rows) for (const view of row.views) counts[view] += 1;
   return counts;
-}
-
-/** All's order: rank, then most recently updated. */
-export function compareWorkRows(a: { rank: number; updatedAt: string }, b: { rank: number; updatedAt: string }): number {
-  return a.rank - b.rank || (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0);
 }
 
 /** The shell's three primary destinations, from the page's own active

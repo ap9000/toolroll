@@ -9,14 +9,12 @@
  * `tools/call` results with `isError: true`.
  */
 import { dirname, join } from 'node:path';
-import { statSync } from 'node:fs';
 import { repositoryContextRead } from './repository-context.js';
 import { ASSIGNMENT_TOOLS, assignmentForCoordinator } from "./assignment-adapters.js";
 import { parseContract, toModelSchema } from "./contracts/contract.js";
 import { GATEWAY_TOOL_INPUTS, GATEWAY_TOOL_OUTPUTS, type GatewayToolInput, type GatewayToolName } from "./contracts/gateway-tools.js";
 import { reportToolOutput } from "./contracts/lead-tools.js";
 
-import { PACKAGE_VERSION } from "./version.js";
 import type { Store } from "./store.js";
 import {
   authenticateCoordinator,

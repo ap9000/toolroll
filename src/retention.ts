@@ -75,7 +75,6 @@ export const PERIOD_CHOICES: Readonly<Record<RetentionKind, readonly (number | n
   evidence: [1, 7, 14, 28, null], checkouts: LONG_CHOICES, chat: LONG_CHOICES, notifications: LONG_CHOICES,
 };
 export const MIN_DAYS = RETENTION_DAYS.min;
-export const MAX_DAYS = RETENTION_DAYS.max;
 const DAY_MS = 86_400_000;
 /** A sweep is due once a day. */
 export const SWEEP_EVERY_MS = DAY_MS;

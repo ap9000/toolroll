@@ -298,6 +298,11 @@ export function goOutside(response: ServerResponse, to: string, words: string, b
   response.end(htmlString(html`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${to}"><title>Toolroll</title>${HANDOFF_STYLE}<p>${words} <a href="${to}">Continue</a></p>`));
 }
 
+/** A form's answer: back to `page` (which may carry its own query) saying `said` or `problem` words, then an anchor. */
+export function sayTo(response: ServerResponse, page: string, anchor = ""): (key: "said" | "problem", words: string, at?: string) => void {
+  const join = page.includes("?") ? "&" : "?";
+  return (key, words, at = anchor) => redirect(response, `${page}${join}${key}=${encodeURIComponent(words)}${at}`);
+}
 export function redirect(response: ServerResponse, to: string): void {
   // Set as a header (not only in writeHead) so the answer can be read back after: a refused act's redirect names it.
   response.setHeader("Location", to);

@@ -307,6 +307,3 @@ export function answerSubagentQuestion(store: Store, id: number, answer: { choic
     return { ok: true as const, said: question.toolCall === null ? "Answered. It picks the card up again now." : choice?.id === APPROVE ? "Approved. The call is made now, exactly as shown." : "It won't make that call. It picks the card up again now." };
   });
 }
-
-/** A card's link, for messages about it. */
-export const subagentCardHref = (flow: number, card: number) => flowCardHref(flow, card);

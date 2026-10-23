@@ -289,8 +289,6 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_cancel: proposed("cancel", { task: str }),
 } as const satisfies Record<LeadToolName, z.ZodType>;
 
-export type LeadToolOutput<N extends LeadToolName> = z.infer<(typeof LEAD_TOOL_OUTPUTS)[N]>;
-
 /**
  * Report a result that disagrees with its output schema without hiding the actual result, including under Vitest.
  * Contract tests assert output shapes directly; executing a tool always writes the diagnostic and returns its result.

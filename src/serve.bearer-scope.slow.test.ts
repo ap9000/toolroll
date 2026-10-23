@@ -213,14 +213,12 @@ describe("the other token routes keep the token's scope and projects", () => {
     expect((await post(token("act", [A]))).status).toBe(403);
   });
 
-  test("session commands over /api/cli refuse read and project-limited tokens before a mutation", async () => {
+  test("removed session commands over /api/cli are refused for every token before anything runs", async () => {
     const argv = ["session", "start", "--project", B, "--title", "Must not run", "--key", "remote_session_key_1", "--file", "prompt", "--json"];
-    for (const [bearer, reason] of [[token("read"), "read-only"], [token("act", [A]), "all-projects"]] as const) {
+    for (const bearer of [token("read"), token("act", [A]), token("act")]) {
       const response = await fetch(`${base}/api/cli`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ argv, files: { prompt: "Must not run" } }) });
-      expect(response.status).toBe(200);
-      const answer = await response.json() as { exitCode: number; stdout: string };
-      expect(answer.exitCode).toBe(3);
-      expect(JSON.parse(answer.stdout)).toMatchObject({ operation: "start", ok: false, status: "rejected", delivery: "not-sent", reason });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ ok: false, code: "remote-refused" });
     }
     expect(ran).toEqual([]);
   });

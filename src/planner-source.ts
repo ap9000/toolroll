@@ -39,13 +39,14 @@
 import { readSnapshot, REFERENCE_LIMIT, referenceWords } from "./task-source.js";
 import { createHash } from "node:crypto";
 import type { Store } from "./store.js";
-import type { AcceptanceCriterion, Scope } from "./scope.js";
+import type { Scope } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { RiskLevel } from "./phase-routing.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact } from "./evidence.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { PLAN_TOUCHES } from "./contracts/plan.js";
 import { contractChangesOf, type ContractChange, type ContractTerms } from "./contract-changes.js";
+import { canonicalJsonUndefinedAsNull } from "./canonical-json.js";
 
 export const PLANNER_SOURCE_VERSION = 1;
 
@@ -124,17 +125,7 @@ export type PlannerSource = {
 };
 
 /** Stable JSON for hashing and equality only — no filling, no trimming. */
-export function canonicalContractJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalContractJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const body = value as Record<string, unknown>;
-    return `{${Object.keys(body)
-      .sort()
-      .map(key => `${JSON.stringify(key)}:${canonicalContractJson(body[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
+export const canonicalContractJson = canonicalJsonUndefinedAsNull;
 
 export function plannerSourceDigest(contract: PlannerContract): string {
   return createHash("sha256").update(`planner-source:v${PLANNER_SOURCE_VERSION}\n${canonicalContractJson(contract)}`, "utf8").digest("hex");

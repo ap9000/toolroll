@@ -14,6 +14,7 @@
 import { z } from "zod";
 import { parseContract, versioned, type ContractResult } from "./contract.js";
 import { savedCriterionSchema } from "./scope.js";
+import { isRecord } from "../is-record.js";
 
 export const RECIPE_FORMAT = "standing-orders-recipe";
 
@@ -47,8 +48,6 @@ export const recipeDocumentSchema = z.discriminatedUnion("version", [recipeV1Sch
 
 export type RecipeDocument = z.infer<typeof recipeDocumentSchema>;
 export type RecipeInput = z.infer<typeof recipeInputSchema>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A success check as the scope reader reads it: an absent or empty `how` is null; every other key, known or not, as given. */
 function checkBody(entry: unknown): unknown {

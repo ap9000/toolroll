@@ -7,11 +7,7 @@ import { CodingWorkspace } from '../coding-workspace.js';
 import { createMcpHttp } from "../mcp-http.js";
 import { createOAuthHttp,resourceMetadataUrl } from "../mcp-oauth.js";
 import { reproveRemote,type Principal } from "../operate-remote.js";
-import {
-rowVisible
-} from "../project.js";
 import { RequestBudget,SourceAdmission,type Admission } from "../request-budget.js";
-import { createSessionRunner } from '../session-remote.js';
 import {
 type Store
 } from "../store.js";
@@ -49,7 +45,7 @@ export interface RemoteRuntime {
   freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
-  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
+  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
 
   /**
    * The full principal a live `so_` API token stands for: its person and their generation, the token's own read/act
@@ -119,15 +115,12 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     },
   });
-  // D7: native session operations are remote commands too (`session …` over /api/cli), run by the session owner.
-  const sessionRunner = createSessionRunner({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo), clock });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
     admit: principal => requestBudget.admit(principal.tokenId, "api"),
     authenticate: tokenPrincipalOf,
     run: async () => options.cliRunner ?? ((await import("../operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
     modeOf: options.cliModeOf,
-    session: sessionRunner,
     store,
   });
 

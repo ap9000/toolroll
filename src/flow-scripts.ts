@@ -10,9 +10,8 @@
  */
 import { createHash } from "node:crypto";
 import { scanForSecrets } from "./evidence.js";
-import { flowDefinitionOf } from "./flow-engine.js";
 import { SCRIPT_LANGUAGES, SCRIPT_NAME, type ScriptLanguage } from "./flows.js";
-import type { FlowScriptRow, Store } from "./store.js";
+import type { Store } from "./store.js";
 
 export type ScriptDraft = { name: string; about: string; body: string; timeoutMinutes: number; language: ScriptLanguage; file: string | null };
 
@@ -53,14 +52,3 @@ export function saveScript(store: Store, repo: string, input: Parameters<typeof 
   return { ok: true, said: current === null ? `Saved the ${draft.name} script. Any flow in this project can run it.` : `Saved version ${version} of ${draft.name}. Every flow that runs it uses this version from now on.`, version };
 }
 
-/** The flows and zones in a project that run each script. */
-export function scriptUses(store: Store, repo: string): Map<string, { flow: number; flowName: string; zone: string }[]> {
-  const uses = new Map<string, { flow: number; flowName: string; zone: string }[]>();
-  for (const flow of store.listFlows([repo])) for (const stage of flowDefinitionOf(flow)?.stages ?? [])
-    if (stage.kind === "check" && stage.script !== null) uses.set(stage.script, [...uses.get(stage.script) ?? [], { flow: flow.id, flowName: flow.name, zone: stage.title }]);
-  return uses;
-}
-
-export function scriptWords(script: FlowScriptRow): string {
-  return `${script.name} (version ${script.version}, up to ${script.timeoutMinutes} min): ${script.about}`;
-}
