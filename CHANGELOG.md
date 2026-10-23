@@ -12,6 +12,11 @@
   message, naming the file, line and run and quoting the line. The thread
   shows it as a reference, the quoted line, and your words. On a phone the
   result opens as a sheet over the chat.
+- **A fenced check can build bundles from the shared dependencies.** On a Mac
+  the sandbox let a build look up the linked copy's folder but not list it,
+  so esbuild couldn't find node_modules ("could not resolve react"). That one
+  folder may now be listed; nothing in it is readable beyond node_modules.
+  The console's own browser build also resolves through the checkout's links.
 - `toolroll release` no longer stops at merge when GitHub has already deleted
   the merged branch: it looks a few times, 2 seconds apart, before calling the
   delete a failure (0.9.66 and 0.9.67 both stopped there).

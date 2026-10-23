@@ -16,6 +16,9 @@ const result = await build({
   entryPoints: { workspace: "src/browser/app.tsx", terminal: "src/browser/terminal-app.tsx" },
   outdir,
   bundle: true,
+  // A checkout that links the plane's shared dependencies resolves through its own node_modules links, never by
+  // listing the shared copy (a fenced build may look up, not list, its folder). The bundle is byte-identical.
+  preserveSymlinks: true,
   format: "esm",
   platform: "browser",
   target: ["es2022"],

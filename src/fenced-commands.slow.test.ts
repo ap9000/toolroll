@@ -117,8 +117,12 @@ describe.skipIf(!FENCED)("a project's checks in a checkout that links the shared
     const result = await fencedCheckoutCommands(store, repo, worktree, run)("/bin/sh", ["-c", [
       `${JSON.stringify(process.execPath)} -e 'console.log(require("pkg"))'`,
       `cat ${JSON.stringify(join(state, "deps", OTHER, "node_modules", "pkg", "index.js"))} >/dev/null 2>&1 || echo other-refused`,
+      // A bundler finds node_modules by listing the copy's folder (esbuild did, in the 0.9.68 release check).
+      `ls ${JSON.stringify(join(state, "deps", KEY))}`,
+      `cat ${JSON.stringify(join(state, "deps", KEY, "ready.json"))} >/dev/null 2>&1 || echo note-refused`,
+      `ls ${JSON.stringify(join(state, "deps", OTHER))} >/dev/null 2>&1 || echo other-list-refused`,
     ].join("\n")], { cwd: worktree });
-    expect(result.stdout.trim().split("\n"), result.stderr).toEqual([KEY, "other-refused"]);
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual([KEY, "other-refused", "node_modules", "ready.json", "note-refused", "other-list-refused"]);
   });
 });
 
