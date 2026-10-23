@@ -7,13 +7,9 @@
  * nothing is sent: a later zone shows it to a person, and a later step posts
  * it ({{stage.<id>}}).
  */
-import { Buffer } from "node:buffer";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { strictJsonParse } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
-import { run, type ExecResult } from "./exec.js";
+import { run } from "./exec.js";
+import { CLAUDE_NO_TOOLS_ARGS, CLAUDE_SIGNED_OUT, claudeJsonBody, claudeModelArgs, inScratchDir, type CommandRunner } from "./claude-print.js";
 import { fillFlowText, type FlowDefinition, type FlowStage } from "./flows.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import { LIMITS } from "./decision.js";
@@ -73,32 +69,23 @@ export function keptDraft(text: string): string {
   return redactSecretLines(trimmed, scanForSecrets(trimmed));
 }
 
-type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
-
 /** The production runner: Claude through the sign-in on this computer, with no tools, no MCP servers and no repository. */
 export function claudeDraftRunner(runner: CommandRunner = run): DraftRunner {
-  return async request => {
-    const dir = mkdtempSync(join(tmpdir(), "standing-orders-draft-"));
-    const started = Date.now();
-    try {
+  return request =>
+    inScratchDir("standing-orders-draft-", async dir => {
+      const started = Date.now();
       const result = await runner("claude", [
-        "-p", "--output-format", "json", "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
-        "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-        ...(request.model === "default" ? [] : ["--model", request.model]),
+        "-p", "--output-format", "json", ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ], { cwd: dir, stdin: request.prompt, timeoutMs: request.timeoutMs, maxBuffer: 256 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true });
       if (result.notFound) return { ok: false, said: "Claude isn't installed on this computer." };
       if (result.timedOut) return { ok: false, said: "Claude took too long to write the draft." };
-      const parsed = strictJsonParse(Buffer.from(result.stdout, "utf8"), 256 * 1024, 12);
-      const body = parsed.ok && typeof parsed.value === "object" && parsed.value !== null && !Array.isArray(parsed.value) ? parsed.value as Record<string, unknown> : null;
+      const body = claudeJsonBody(result.stdout, 256 * 1024);
       if (result.code !== 0 || body === null || body["is_error"] === true || body["subtype"] !== "success" || typeof body["result"] !== "string") {
-        return { ok: false, said: /not logged in|login|authenticat/i.test(`${result.stdout}${result.stderr}`) ? "Claude isn't signed in on this computer." : "Claude couldn't write the draft." };
+        return { ok: false, said: CLAUDE_SIGNED_OUT.test(`${result.stdout}${result.stderr}`) ? "Claude isn't signed in on this computer." : "Claude couldn't write the draft." };
       }
       const cost = body["total_cost_usd"];
       return { ok: true, text: body["result"], ms: Date.now() - started, ...(typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? { costUsd: cost } : {}) };
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  };
+    });
 }
 
 export const DRAFT_TIMEOUT = DRAFT_TIMEOUT_MS;

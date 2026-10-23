@@ -26,7 +26,8 @@ import {
   type LeadToolCall,
   type LeadToolSchema,
 } from "./converse.js";
-import { run, type ExecResult } from "./exec.js";
+import { run } from "./exec.js";
+import { CLAUDE_NO_TOOLS_ARGS, claudeModelArgs, type CommandRunner } from "./claude-print.js";
 import { claudeStreamReader } from "./lead-progress.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { SubscriptionChatProviderId } from "./store.js";
@@ -57,7 +58,6 @@ export type SubscriptionLeadRunner = (
   request: SubscriptionLeadRequest,
 ) => Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }>;
 
-type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
 
 const RESPONSE_CAP_BYTES = 65_536;
 
@@ -242,9 +242,7 @@ export async function performSubscriptionLeadRequest(
         // Streaming (someone is watching): the same answer, delivered as
         // events whose final `result` line is the whole structured reply.
         "-p", ...(streaming ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : ["--output-format", "json"]), "--json-schema", JSON.stringify(schema),
-        "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
-        "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-        ...(request.model === "default" ? [] : ["--model", request.model]),
+        ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ];
     }
     const result = await runner(command, args, {
