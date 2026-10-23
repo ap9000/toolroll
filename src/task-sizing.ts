@@ -15,15 +15,14 @@
  * The task text is data to the classifier, never instructions, and all it
  * can return is one of three sizes, a yes/no, and a short reason.
  */
-import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSizeAnswer, SIZING_MODEL_SCHEMA, type SizeAnswer } from "./contracts/task-sizing.js";
-import { strictJsonParse } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
-import { run, terminateOwnedProcesses, type ExecResult } from "./exec.js";
+import { run, terminateOwnedProcesses } from "./exec.js";
+import { CLAUDE_NO_TOOLS_ARGS, claudeJsonBody, type CommandRunner } from "./claude-print.js";
 import { JEV_MODEL, JEV_URL } from "./flow-sort.js";
 import { readProviderKey } from "./keys.js";
 import { type TaskSize, type TaskSizing } from "./phase-routing.js";
@@ -84,8 +83,6 @@ export function sizingText(input: SizingInput): string {
   ].join("\n");
 }
 
-type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
-
 /** A small Claude model on this computer's sign-in: no tools, no MCP servers, no repository, credential keys stripped.
  * The abort ends it: a late answer never keeps a command (or its process) waiting. */
 export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_MODEL, budgetMs = SIZING_BUDGET_MS): Sizer {
@@ -108,12 +105,10 @@ export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_M
         sizingText(input),
       ].join("\n");
       const result = await runner("claude", [
-        "-p", "--output-format", "json", "--json-schema", JSON.stringify(SIZING_MODEL_SCHEMA), "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
-        "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--model", model,
+        "-p", "--output-format", "json", "--json-schema", JSON.stringify(SIZING_MODEL_SCHEMA), ...CLAUDE_NO_TOOLS_ARGS, "--model", model,
       ], { cwd: dir, stdin: prompt, timeoutMs: budgetMs, maxBuffer: 256 * 1024, omitEnv: ALL_CREDENTIAL_ENV, processGroup: true, owner, beforeSpawn: () => !signal.aborted });
       if (signal.aborted || result.notFound || result.timedOut || result.code !== 0) return null;
-      const parsed = strictJsonParse(Buffer.from(result.stdout, "utf8"), 256 * 1024, 12);
-      const body = parsed.ok && typeof parsed.value === "object" && parsed.value !== null && !Array.isArray(parsed.value) ? (parsed.value as Record<string, unknown>) : null;
+      const body = claudeJsonBody(result.stdout, 256 * 1024);
       if (body === null || body["is_error"] === true || body["subtype"] !== "success") return null;
       return answerOf(body["structured_output"]);
     } finally {

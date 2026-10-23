@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { liveWindowLines, readLiveWindow } from "./live.js";
 import { validKeyTail } from "./live-records.js";
 import type { Store } from "./store.js";
+import { sleep } from "./sleep.js";
 
 export const PEEK_TAIL_LINES = 400;
 const ESC = "\u001b";
@@ -210,7 +211,7 @@ export async function runPeek(
   try {
     paint();
     while (!stop) {
-      await new Promise(resolve => setTimeout(resolve, options.intervalMs ?? 500));
+      await sleep(options.intervalMs ?? 500);
       paint();
     }
   } finally {

@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readlinkSync, realpathSync, statSync } from "nod
 import { delimiter, isAbsolute, join } from "node:path";
 import { codingEnvironment } from "./coding-provider.js";
 import { teardownGit, refusal, type Git } from "./teardown-git.js";
+import { sleep } from "./sleep.js";
 
 export type TerminalProgram = "claude" | "codex" | "shell";
 export const TERMINAL_PROGRAMS: readonly TerminalProgram[] = ["claude", "codex", "shell"];
@@ -458,7 +459,7 @@ export class TerminalHost {
 
   private async sweep(session: Session): Promise<void> {
     const grace = this.options.closeGraceMs ?? CLOSE_GRACE_MS;
-    const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const pause = sleep;
     const leaderGone = () => session.pty === null;
     let readable = true;
     const members = (): Map<number, string> => {

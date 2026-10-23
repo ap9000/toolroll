@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 import { parseContract, readVersioned, versioned, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 /** A link the message carries: a page of Toolroll's (a button) or the one outside page, a pull request. */
 export const flowSendLinkSchema = z.union([
@@ -66,8 +67,6 @@ export type FlowSendPayload = z.infer<typeof flowSendPayloadSchema>;
 export type FlowChoosePayload = z.infer<typeof flowChoosePayloadSchema>;
 /** A visit's content as the console and chat apps read it: a send's, or a choice's with its options. */
 export type FlowSendContent = Omit<FlowSendPayload, "version"> & { options?: FlowChoosePayload["options"]; reply?: boolean };
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A kept item as 0.9.36 read it: its five words (a web link), and a screenshot id only when it is a whole number. */
 const savedItemSchema = z.object({ ...flowSendItemSchema.shape, shot: z.unknown() });

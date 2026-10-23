@@ -62,6 +62,7 @@ import {
   plannerSourceBlock,
   type PlannerSource,
 } from "./planner-source.js";
+import { canonicalJsonUndefinedAsNull } from "./canonical-json.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -282,19 +283,6 @@ type PlannerPayload =
       authorityAnchor: string | null;
     };
 
-/** Stable JSON for equality only — it does not fill, trim, or reinterpret. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const body = value as Record<string, unknown>;
-    return `{${Object.keys(body)
-      .sort()
-      .map(key => `${JSON.stringify(key)}:${canonicalJson(body[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
 function decodeStructuredBytes(raw: Buffer): { ok: true; text: string } | { ok: false } {
   try {
     // Buffer#toString silently inserts U+FFFD for malformed sequences,
@@ -321,7 +309,7 @@ function planAuthorityAnchor(raw: string): string | null {
     // canonicalJson is recursive. A byte-bounded but pathologically deep
     // JSON value can still exhaust the JS stack; that means its authority
     // cannot be frozen safely, so this output is not eligible for repair.
-    return canonicalJson({
+    return canonicalJsonUndefinedAsNull({
       goal: body["goal"],
       outOfScope: body["outOfScope"],
       touches: body["touches"],

@@ -32,6 +32,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { envValue } from "./names.js";
+import { sleep } from "./sleep.js";
 
 export type SecretStoreKind = "macos-keychain" | "secret-service" | "files";
 /** One item's address: what the store lists, never a secret (a folder's or project's hash, a tool's name). */
@@ -548,7 +549,7 @@ export async function withSecretLockAsync<T>(folder: SecretFolder, name: string,
   const lock = lockFile(folder, name), started = Date.now();
   while (!takeLock(lock, options.staleMs ?? 120_000)) {
     if (Date.now() - started > (options.waitMs ?? 120_000)) throw new SecretStoreError("A sign-in is being renewed elsewhere. Try again in a moment.");
-    await new Promise(resolve => setTimeout(resolve, 25));
+    await sleep(25);
   }
   try { return await work(); } finally { rmSync(lock, { force: true }); }
 }

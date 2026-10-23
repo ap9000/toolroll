@@ -1,3 +1,4 @@
+import { isRecord } from "./is-record.js";
 /**
  * The Agent Client Protocol, from the plane's side (docs/plans/acp-adapter.md).
  *
@@ -111,10 +112,6 @@ export type AcpConversation = {
 };
 
 type Pending = "initialize" | "session/new" | "model" | "prompt" | "close";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function bounded(text: string, cap: number): string {
   return text.length <= cap ? text : text.slice(0, cap);

@@ -8,6 +8,7 @@ import { bundleHash } from "./desktop-bundle.js";
 import { installLaunchdService, launchdPlist, type ServiceDefinition, type SupervisorRunner } from "./daemon.js";
 import { run } from "./exec.js";
 import { desktopUpdateStatus, durableJson, installationLock, pauseUpdateRecovery, readUpdateJournal, requestUpdateRestore, sqliteLock, updateTerminal, type UpdateJournal } from "./desktop-update.js";
+import { sleep } from "./sleep.js";
 
 type Recovery = {
   version: 1; id: string; state: "armed" | "running" | "backoff" | "attention" | "done";
@@ -16,7 +17,6 @@ type Recovery = {
 };
 const recordFile = (j: UpdateJournal) => join(j.workDir, "recovery.json");
 const app = (j: UpdateJournal) => join(j.workDir, "Updater.app");
-const sleep = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
 function readRecovery(j: UpdateJournal): Recovery | null {
   const file = recordFile(j);
   if (!existsSync(file)) return null;
