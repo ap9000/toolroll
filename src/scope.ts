@@ -11,6 +11,7 @@ import { claimActor, currentActor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { isAcpProfile, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
 import { levelOfProfile } from "./policy.js";
+import { canonicalJson } from "./canonical-json.js";
 export { isAcpProfile };
 /**
  * What a task is allowed to become, agreed before anything builds it.
@@ -258,19 +259,6 @@ export function watchdogsOf(profile: ExecutionProfile, timeoutMs: number, repair
 export type UnattendedPermissionMode = "auto" | "bypassPermissions";
 
 export const PROFILE_DIGEST_VERSION = 2;
-
-/** Deterministic JSON: object keys sorted recursively, arrays in order. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 /** The stored snapshot bytes: version embedded IN the snapshot (finding 17). */
 export function canonicalProfileJson(profile: ExecutionProfile): string {

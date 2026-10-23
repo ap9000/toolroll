@@ -71,6 +71,7 @@ import {
 } from "./contracts/route.js";
 import type { Phase, ProviderId } from "./provider.js";
 import type { QualityMode } from "./quality.js";
+import { canonicalJson } from "./canonical-json.js";
 
 /** The sealed route's shape is its contract (contracts/route.ts); these are its types. */
 export type { PhaseRoute, RouteLeg, RouteOverride, RouteVersion, TaskSizing };
@@ -619,19 +620,6 @@ export function sameSpec(a: { provider: string; model: string | null }, b: { pro
 }
 
 // ---- canonical bytes, digest, strict rehydration ---------------------------
-
-/** Deterministic JSON: object keys sorted recursively, arrays in order. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 /** The stored snapshot bytes: the version rides IN the snapshot. */
 export function canonicalRouteJson(route: PhaseRoute): string {
