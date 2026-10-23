@@ -84,6 +84,20 @@ describe("a line comment in the thread", () => {
     expect(quoted).toContain("See:\n\n&gt; explanation</p>");
   });
 
+  test("a comment on a blank line still reads in parts once the chat POST has trimmed it", async () => {
+    const { steerMessage } = await import("../browser/line-steer.js");
+    for (const code of ["", "   ", "\t"]) {
+      // What the store keeps: the message as POST /chat saves it (src/server/chat.ts trims it).
+      const stored = steerMessage({ run: 4, path: "a.ts", line: 9, side: "old", code, note: "Why blank?" }).trim();
+      expect(stored.endsWith("\n\n>")).toBe(true);
+      const out = htmlString(steerCommentHtml(stored)!);
+      expect(out).toBe('<div class="chat-steer" data-steer-comment><p class="chat-steer-ref">a.ts:9 · removed line · run #4</p><p class="chat-steer-note" style="white-space:pre-wrap">Why blank?</p></div>');
+    }
+    // A non-blank line survives the same trim whole.
+    const stored = steerMessage({ run: 4, path: "a.ts", line: 9, side: "new", code: "x()  ", note: "Hm." }).trim();
+    expect(htmlString(steerCommentHtml(stored)!)).toContain("<code>x()</code>");
+  });
+
   test("anything else is not a line comment", () => {
     for (const text of ["Hello", 'On "src/a.ts":1 (run #2): \n\n> x', 'On src/a.ts:1 (run #2): words\n\n> x', 'On "src/a.ts" (run #2): words\n\n> x', 'On "src/a.ts":1 (run #2): words', 'On "":1 (run #2): words\n\n> x']) expect(steerCommentHtml(text)).toBeNull();
   });

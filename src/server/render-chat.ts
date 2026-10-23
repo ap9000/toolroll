@@ -437,14 +437,16 @@ export function renderChatText(raw: string, asked?: string): Html {
 }
 
 /** A line comment from the chat Workbench (src/browser/line-steer.tsx steerMessage): On "<file, as a JSON string>":<line>
- * [ (removed line)] (run #<n>): <comment>, then a blank line and "> <the line>" (empty for a blank line), always last.
+ * [ (removed line)] (run #<n>): <comment>, then a blank line and "> <the line>" (just ">" for a blank line, once the
+ * chat POST has trimmed the message), always last.
  * The words the lead reads stay exactly as sent; the thread shows them in three parts: a small reference line, the quoted
  * code as written, and the comment. Null for any other message, which keeps its own plain rendering. Everything is
  * escaped by the html template. */
 export function steerCommentHtml(text: string): Html | null {
-  const steer = /^On ("(?:[^"\\\n]|\\.){1,1200}"):(\d{1,9})( \(removed line\))? \(run #(\d{1,12})\): ([\s\S]+)\n\n> ([^\n]*)$/.exec(text);
+  const steer = /^On ("(?:[^"\\\n]|\\.){1,1200}"):(\d{1,9})( \(removed line\))? \(run #(\d{1,12})\): ([\s\S]+)\n\n>(?: ([^\n]*))?$/.exec(text);
   if (steer === null) return null;
-  const [, quoted, line, removed, run, comment, code] = steer;
+  // A blank line's quote ("> ") reaches the store as ">": the chat POST trims the message (src/server/chat.ts).
+  const [, quoted, line, removed, run, comment, code = ""] = steer;
   let path: unknown;
   try { path = JSON.parse(quoted!); } catch { return null; }
   if (typeof path !== "string" || path === "" || /[\u0000-\u001f]/.test(path) || comment!.trim() === "") return null;
