@@ -15,7 +15,7 @@ import type { EdgeContext,HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { personChip,refuse,screen } from "./chrome.js";
-import { redirect,respond } from "./http.js";
+import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
 import { randomBytes,timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -180,7 +180,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     const body = readForm(posted, CONSOLE_FORMS.sessions);
     if (who.via !== "cookie") return refuse(response, who, 403, "Sign in in a browser to manage sessions and tokens.", "/settings");
     const operator = store.isInstanceOperator(who.name);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${body.get("everyone") === "1" && operator ? "everyone=1&" : ""}${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/sessions${body.get("everyone") === "1" && operator ? "?everyone=1" : ""}`);
     const action = body.get("action") ?? "";
     if (action === "end-session") {
       const target = store.webSessions(null).find(one => one.idHash === (body.get("session") ?? ""));
