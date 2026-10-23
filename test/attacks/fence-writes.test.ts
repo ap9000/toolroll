@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { claudeProjectFolder, linuxFenced, macosFenced, NO_GRANTS, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
 import { codexSandbox, git, GIT_ENV, lines, needs, repository, seatbelt, underCodex, underSeatbelt, useScratch } from "./harness.js";
+import { outsideTempDir } from "../short-temp.js";
 
 type World = { home: string; main: string; worktree: string; launch: string; cache: string; fence: string[]; grants: FenceGrants; transcript: string };
 
@@ -202,7 +203,7 @@ function underBubblewrap(text: string, fence: readonly string[], grants: FenceGr
 describe("attack: writing outside the workspace (Linux)", () => {
   // Outside /tmp, as homes and checkouts are: a build's /tmp is its own, so a world there would be out of its sight.
   let dir: string | null = null;
-  beforeEach(() => { dir = realpathSync(mkdtempSync(join(homedir(), ".so-attack-writes-"))); });
+  beforeEach(() => { dir = outsideTempDir(".so-attack-writes-"); });
   afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
   const scratch = () => dir!;
 

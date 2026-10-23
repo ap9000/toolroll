@@ -5,7 +5,7 @@
  * before and after.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -144,7 +144,18 @@ test("parallel lane roots keep the worker's control socket below macOS's 103-byt
   for (const one of runs) {
     expect(one.code).toBe(0);
     expect(one.output.toString().startsWith(realpathSync(tmpdir()))).toBe(true);
-    expect(Buffer.byteLength(one.output.toString())).toBeLessThanOrEqual(103);
+    // What the lanes add after the run's temp root, measured from where a person's run starts (a check in the plane's
+    // macOS fence starts in a deeper temp folder, where no socket this long fits however the lanes are laid out).
+    const added = Buffer.byteLength(one.output.toString()) - Buffer.byteLength(realpathSync(tmpdir()));
+    expect(personalTempRoot() + added).toBeLessThanOrEqual(103);
     expect(existsSync(one.root)).toBe(false);
   }
 });
+
+/** How long a run's temp root is when a person runs the suite: their own temp folder (on a Mac, the per-user one
+ * Darwin names) and a so-t root in it. Elsewhere, this run's own. */
+function personalTempRoot(): number {
+  if (process.platform !== "darwin") return Buffer.byteLength(realpathSync(tmpdir()));
+  const own = spawnSync("getconf", ["DARWIN_USER_TEMP_DIR"], { encoding: "utf8" }).stdout.trim();
+  return Buffer.byteLength(join(realpathSync(own), "so-tXXXXXX"));
+}

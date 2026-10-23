@@ -675,6 +675,9 @@ await journey("task", SCRIPTED, "Send it back asking for more than the plan allo
 });
 
 await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
+  // Carrying on resumes Claude's saved session, which Claude keeps in the person's home; inside the plane's macOS check
+  // fence that home is read-only, so the first run's session is never saved. It runs everywhere else.
+  if (insideFence()) throw new Skip("inside the plane's macOS check fence Claude can't save the session a resumed build needs");
   const id = "round";
   cli(["task", "add", "Add a round2 function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add round2(x) to src/math.js (round to 2 decimal places) with a test in test/math.test.js. Whether an exact half rounds up or to the nearest even digit is the operator's call and is not decided yet: before writing any code, stop and ask the operator with two options (half up, half to even), then build what they choose.", "--acceptance", "round2 follows the operator's answer, with a test|check", ...auth]);

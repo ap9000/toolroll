@@ -14,6 +14,7 @@ import { fencedCheckoutCommands, fencedCommands } from "./invoke.js";
 import { register } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { WorktreePool } from "./worktree.js";
+import { outsideTempDir } from "../test/short-temp.js";
 
 const FENCED = macosFenceAvailable() || linuxFenceAvailable();
 const T0 = new Date("2026-10-22T08:00:00.000Z");
@@ -25,7 +26,7 @@ let pool: WorktreePool;
 
 beforeEach(async () => {
   // Outside /tmp, as homes and checkouts are: a Linux command's /tmp is its own, so a world there would be out of sight.
-  dir = realpathSync(mkdtempSync(join(homedir(), ".so-fenced-commands-")));
+  dir = outsideTempDir(".so-fenced-commands-");
   state = join(dir, "toolroll");
   mkdirSync(state);
   writeFileSync(join(state, "up-login.txt"), "secret\n");
@@ -81,7 +82,7 @@ describe.skipIf(!FENCED)("a build's setup and check commands", () => {
 
   test("a self-hosted check's own database folder is writable", async () => {
     const { runId, worktree } = await build();
-    const db = realpathSync(mkdtempSync(join(homedir(), ".so-check-db-")));
+    const db = outsideTempDir(".so-check-db-");
     try {
       const result = await fencedCommands(store, runId, "workspace", run)("/bin/sh", ["-c", `touch "$(dirname "$TOOLROLL_DB")/orders.db" && echo db-ok`], { cwd: worktree, env: { TOOLROLL_DB: join(db, "orders.db") } });
       expect(result.stdout.trim(), result.stderr).toBe("db-ok");

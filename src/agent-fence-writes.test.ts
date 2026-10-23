@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
 import { grantFolder, linuxFenced, linuxHostSockets, macosFenceAvailable, macosFenceProfile, NO_GRANTS, type FenceGrants } from "./agent-fence.js";
+import { shortTempDir } from "../test/short-temp.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 test("a workspace build's private /tmp gives its kept paths back read-only, then its allowlist writable", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-args-")));
@@ -58,11 +60,12 @@ test("a workspace build masks an engine the operator moved (a link in home) and 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("a workspace build sharing /tmp has every socket there masked, with the folder that holds it", async () => {
+// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+test.skipIf(INSIDE_FENCE)("a workspace build sharing /tmp has every socket there masked, with the folder that holds it", async () => {
   const { createServer } = await import("node:net");
   // Under /tmp, not the system temp folder: a unix socket's path must fit 104 bytes on macOS, and a runner's temp
   // folder (/private/var/folders/…/T/) leaves too little room for tmux-501/default.
-  const tmp = realpathSync(mkdtempSync(join("/tmp", "so-tmpsockets-")));
+  const tmp = shortTempDir("so-tmpsockets-");
   const servers: import("node:net").Server[] = [];
   try {
     mkdirSync(join(tmp, "tmux-501"));

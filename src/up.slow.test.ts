@@ -20,6 +20,8 @@ import { addRepos, loadProjectRegistry, updateRepos } from "./repos.js";
 import { instanceRunDir, proveLiveConsole, readInstance } from "./console-instance.js";
 import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
+import { shortTempDir } from "../test/short-temp.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const PORT = 41000 + (process.pid % 2000);
 
@@ -89,9 +91,10 @@ describe("toolroll up", () => {
     }
   });
 
-  test("a running up proves itself live to this installation's CLI (cockpit B1); stopping forgets the record and the socket", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("a running up proves itself live to this installation's CLI (cockpit B1); stopping forgets the record and the socket", async () => {
     // A short state folder: a Unix socket path has to fit the platform's limit (~104 bytes on macOS).
-    const short = realpathSync(mkdtempSync("/tmp/so-ui-"));
+    const short = shortTempDir("so-ui-");
     db = join(short, "orders.db");
     try {
     let proof: Promise<unknown> | null = null;

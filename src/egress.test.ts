@@ -9,6 +9,8 @@ import {
   repositoryEcosystems, resolveNetwork, runNetworkFromValue, startEgressProxy, PROJECT_NETWORK_DEFAULT, PROVIDER_HOSTS, REGISTRY_HOSTS, type EgressProxy,
 } from "./egress.js";
 import { canonicalProfileJson, profileDigestOf, profileFromJson, type ExecutionProfile } from "./scope.js";
+import { shortTempDir } from "../test/short-temp.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const closers: (() => unknown)[] = [];
 afterEach(async () => { for (const close of closers.splice(0)) await close(); });
@@ -203,11 +205,12 @@ describe("the Linux bridge's forwarder", () => {
     expect(ended.ms).toBeLessThan(3000);
   });
 
-  test("is made only in a private folder of this user's: never through a link planted where the folder should be", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("is made only in a private folder of this user's: never through a link planted where the folder should be", async () => {
     const { startEgressBridge } = await import("./egress-bridge.js");
     const { chmodSync, symlinkSync } = await import("node:fs");
     // A short folder: a socket's whole path must stay under ~100 bytes.
-    const dir = realpathSync(mkdtempSync("/tmp/sob-"));
+    const dir = shortTempDir("sob-");
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
     const elsewhere = join(dir, "elsewhere"), planted = join(dir, "bridge-secrets"), open = join(dir, "open");
     mkdirSync(elsewhere, { mode: 0o700 });

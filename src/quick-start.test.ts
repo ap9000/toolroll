@@ -12,12 +12,14 @@ import { join } from "node:path";
 import { claimInstance, INSTANCE_PATH, instanceHttpAnswer, openInstanceSocket } from "./console-instance.js";
 import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
 import { openStore, SCHEMA_VERSION } from "./store.js";
+import { shortTempDir } from "../test/short-temp.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const BUILD = "9.9.9-test";
 let dir: string, state: string, databaseFile: string, repo: string;
 const closers: (() => void | Promise<void>)[] = [];
 beforeEach(() => {
-  dir = realpathSync(mkdtempSync(join("/tmp", "so-qs-")));
+  dir = shortTempDir("so-qs-");
   state = join(dir, "s"); repo = join(dir, "shop");
   mkdirSync(state, { mode: 0o700 }); mkdirSync(repo);
   databaseFile = join(state, "orders.db");
@@ -76,7 +78,8 @@ test("with no console running, it starts one for this repository", async () => {
   expect(did).toEqual(["up"]);
 });
 
-test("a console that proves itself: a new repository is added through admission, then that console opens", async () => {
+// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+test.skipIf(INSIDE_FENCE)("a console that proves itself: a new repository is added through admission, then that console opens", async () => {
   const port = await liveConsole();
   const { value, write, did, out } = seams();
   expect(await runQuickStart([], write, value)).toBe(0);
@@ -88,7 +91,8 @@ test("a console that proves itself: a new repository is added through admission,
   expect(again.did).toEqual([`open http://127.0.0.1:${port}`]);
 });
 
-test("something that can't prove it is the console is refused with the restart; nothing is added or opened", async () => {
+// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+test.skipIf(INSIDE_FENCE)("something that can't prove it is the console is refused with the restart; nothing is added or opened", async () => {
   await liveConsole();
   const { value, write, did, out } = seams({ build: "1.0.0" });
   expect(await runQuickStart([], write, value)).toBe(3);
@@ -96,7 +100,8 @@ test("something that can't prove it is the console is refused with the restart; 
   expect(out.join("\n")).toContain("toolroll up");
 });
 
-test("under an agent, or with --json, nothing starts, is added or opens: it says what it would do", async () => {
+// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+test.skipIf(INSIDE_FENCE)("under an agent, or with --json, nothing starts, is added or opens: it says what it would do", async () => {
   const quiet = seams({ underAgent: true });
   expect(existsSync(databaseFile)).toBe(false);
   expect(await runQuickStart([], quiet.write, quiet.value)).toBe(0);
@@ -145,14 +150,16 @@ test("a database that can't be checked is refused, never read as nothing running
   expect(broken.did).toEqual([]);
 });
 
-test("a console that stops while the project is being added is never opened: proved again right before", async () => {
+// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+test.skipIf(INSIDE_FENCE)("a console that stops while the project is being added is never opened: proved again right before", async () => {
   await liveConsole();
   const { value, write, did } = seams({ admit: async path => { did.push(`admit ${path}`); for (const close of closers.splice(0).reverse()) await close(); return 0; } });
   expect(await runQuickStart([], write, value)).toBe(3);
   expect(did).toEqual([`admit ${repo}`]);
 });
 
-test("an already-added project is opened only after the console proves itself again, after reading the registry", async () => {
+// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+test.skipIf(INSIDE_FENCE)("an already-added project is opened only after the console proves itself again, after reading the registry", async () => {
   await liveConsole();
   const { value, write, did } = seams({ enrolled: async () => { for (const close of closers.splice(0).reverse()) await close(); return true; } });
   expect(await runQuickStart([], write, value)).toBe(3);
