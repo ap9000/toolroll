@@ -40,7 +40,7 @@ import type { HandlerContext } from './handler-context.js';
 import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
 import { refuse,screen } from "./chrome.js";
-import { HANDOFF_STYLE,redirect,respond,safeReturn,signInSpent,startedHere } from "./http.js";
+import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
 import { browserCaller } from "./session.js";
 /** settings handlers, moved without changing their route bodies. */
@@ -485,7 +485,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
     const body = readForm(posted, CONSOLE_FORMS.passwordless);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/passwordless?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/passwordless");
     const action = body.get("action");
     if (action === "off") {
       setPasswordless(store, false, who.name, now);
@@ -742,7 +742,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function spendBudget(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.spendBudget);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/spend?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/spend");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
     const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
     if (target === null) return back("problem", "Choose what the budget is for.");
@@ -771,7 +771,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const known = consoleProjects();
     if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project sets how many tasks build at once.", "/settings/project");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`);
     const n = parseProjectConcurrency(body.get("concurrency") ?? "");
     if (n === null) return back("problem", "Builds at once is a whole number from 1 to 64. Nothing changed.");
     const databaseFile = store.databaseFile();
@@ -789,7 +789,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const repo = body.get("repo") ?? "";
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes the live view.", "/settings/project");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`);
     const act = body.get("act");
     if (act === "off") return back("said", setLiveCommands(store, { repo, commands: false, by: who.name, via: "the console" }, now).said);
     if (act !== "on") return back("problem", "That change isn't available.");
@@ -806,7 +806,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const repo = body.get("repo") ?? "";
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes what its builds may reach.", "/settings/project");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#network`);
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#network");
     const hosts = (body.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean).map(normalizeHost);
     if (hosts.some(one => one === null)) return back("problem", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path. Nothing changed.");
     if (hosts.length > MAX_NETWORK_HOSTS) return back("problem", `A project lists at most ${MAX_NETWORK_HOSTS} hosts. Nothing changed.`);
@@ -842,7 +842,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function policySave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.policy);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/policy?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/policy");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
     const chosen = body.getAll("provider");
     const checked = checkPolicy({ providers: chosen.length === 4 ? null : chosen, models: parseList(body.get("models")), tools: parseList(body.get("tools")), ceiling: body.get("ceiling") ?? "" });
@@ -859,7 +859,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const repo = body.get("repo") ?? "";
     const known = consoleProjects();
     if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/approval?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/approval?repo=${encodeURIComponent(repo)}`);
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
     const protect = body.get("protect") ?? "none";
     const paths = parseProtectedPaths(body.get("paths") ?? "");
@@ -874,7 +874,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function requestLimitsSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.requestLimits);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/sessions");
     const target = body.get("target") ?? "";
     const token = target === "*" ? null : store.apiTokens(null).find(one => one.id === target && one.revokedAt === null) ?? null;
     if (target !== "*" && token === null) return back("problem", "That token is no longer live. Nothing changed.");
@@ -894,7 +894,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.signIn);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up sign-in.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sign-in?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/sign-in");
     const action = body.get("action") ?? "";
     const before = ssoSettings();
     if (action === "test") {
@@ -930,7 +930,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator updates Toolroll.", "/settings");
     const stateDir = dirname(databaseFile);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/updates?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/updates");
     if (op === "seen") { markWhatsNewSeen(stateDir); return redirect(response, "/settings/updates"); }
     if (op === "cancel") return back("said", requestRuntimeUpdateCancel(stateDir));
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to update.");
@@ -961,7 +961,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function retentionSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.retention);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/retention?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/retention");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change retention.");
     const before = store.retentionPeriods();
     // Only what the page offers (or the period already set): a hand-made value doesn't save.
@@ -979,7 +979,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.storage);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/storage?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/storage");
     const what = op === "clean" ? "clean up" : op === "discard" ? "discard a checkout" : "change checkout cleanup";
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", `Enter your Toolroll password to ${what}.`);
     if (op === "cleanup") {
@@ -1012,7 +1012,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
     if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
     if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver sets up pull requests.", "/projects");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}`);
     const act = body.get("act");
     if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to change pull requests.");
     if (act === "on") {
@@ -1045,7 +1045,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
     if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
     if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver sets a project's checks.", "/projects");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/checks?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/checks?repo=${encodeURIComponent(repo)}`);
     if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to change checks.");
     const act = body.get("act");
     // The automatic review switch: the policy log keeps before → after.
@@ -1100,7 +1100,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.backups);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after backups.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/backups?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/backups");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change backups.");
     const every = body.get("every") ?? "";
     const hours = Number(every);
@@ -1136,7 +1136,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.flowsOn);
     const repo = body.get("repo") ?? "";
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/flows?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/flows?repo=${encodeURIComponent(repo)}`);
     const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])];
     if (store.isDemo()) return refuse(response, who, 403, "An approver switches starter flows on.", "/settings/flows");
     if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/settings/flows");
@@ -1151,7 +1151,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.integrationsTest);
     if (!options.configDir) return refuse(response, who, 403, "An installation approver tests integrations.", "/settings");
     const key = body.get("key") ?? "";
-    const back = (name: "said" | "problem", words: string) => redirect(response, `/settings/integrations?${name}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/integrations");
     const checked = (await integrations.check([key])).find(one => one.key === key);
     if (checked === undefined) return back("problem", "That integration isn't here any more.");
     return checked.state === "connected" ? back("said", `${checked.name} works${checked.account === null ? "" : ` (${checked.account})`}.`)
@@ -1162,7 +1162,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, request, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.monitoring);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up monitoring.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/monitoring?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/monitoring");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
     const before = readMonitoring(options.configDir);
     // Never into Toolroll's own folder, a project or the build checkouts: an agent could read the stream there.
@@ -1245,7 +1245,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.toolsChange);
     const repo = body.get("repo") ?? "";
     if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
-    const back = (key: "said" | "problem", words: string, anchor = "") => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}${anchor}`);
+    const back = sayTo(response, `/settings/tools?repo=${encodeURIComponent(repo)}`);
     // As for Connect: a post from a page that showed another project is refused, never applied here.
     const shown = body.get("shown") ?? "";
     if (shown !== repo) {
@@ -2244,7 +2244,7 @@ ${modeWords(terms)
     const repo = body.get("repo") ?? "";
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes where its builds may write.", "/settings/project");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}#writes`);
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#writes");
     const wanted = body.get("writes");
     if (!isWritesMode(wanted)) return back("problem", "Choose where builds may write. Nothing changed.");
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change where builds may write.");
