@@ -50,7 +50,7 @@ test("a pin opens the form under its own line, and the page's own handlers never
   const form = row.nextElementSibling?.querySelector<HTMLFormElement>("[data-diff-steer]");
   expect(form?.dataset.diffFile).toBe("scripts/app-e2e.mjs");
   expect(form?.dataset.diffLine).toBe("1390");
-  expect(form?.querySelector("label")?.textContent).toContain("line 1390");
+  expect(form?.querySelector("label")?.textContent).toContain("line 1390 of scripts/app-e2e.mjs");
   expect(seen).not.toHaveBeenCalled();
   // Another pin moves the one form; there is never a second.
   await pin(1391);
@@ -64,6 +64,7 @@ test("sending posts one message with the quoted line, then says it went", async 
   await pin(1390);
   const send = () => panel.querySelector<HTMLButtonElement>('[data-diff-steer] button[type="submit"]')!;
   expect(send().disabled).toBe(true);
+  expect(send().getAttribute("aria-label")).toBe("Send to the lead");
   await type("Don't swallow the timeout.");
   await act(async () => { send().click(); });
   expect(steer).toHaveBeenCalledTimes(1);
@@ -86,7 +87,7 @@ test("a refusal keeps the words and says why; a message over the limit can't be 
   expect(panel.querySelector('[data-diff-steer] [role="alert"]')?.textContent).toContain("longer than one message");
 });
 
-test("the diff opens with its pins showing, and stays in the mode picked here when another script resets it", async () => {
+test("the diff opens with its pins showing, and keeps them when the result page's own script resets it to View", async () => {
   await mount(async () => null);
   const review = panel.querySelector<HTMLElement>("[data-review-diff]")!;
   expect(review.dataset.mode).toBe("annotate");
@@ -127,16 +128,20 @@ test("a delivery that isn't confirmed is never called sent", async () => {
   expect(panel.querySelector('[data-diff-steer] [role="alert"]')?.textContent).toContain("isn't confirmed");
 });
 
-test("Cmd or Ctrl + Enter sends, but not while an input method is still composing", async () => {
+test("Enter sends; Shift + Enter is a new line, and nothing sends while an input method is still composing", async () => {
   const steer = vi.fn(async () => null);
   await mount(steer);
   await pin(1390);
   await type("Words");
   const box = panel.querySelector<HTMLTextAreaElement>("[data-diff-steer] textarea")!;
-  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, isComposing: true, bubbles: true })); });
+  expect(box.placeholder).toBe("Comment for the lead…");
+  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true })); });
+  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true })); });
   expect(steer).not.toHaveBeenCalled();
-  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })); });
+  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
   expect(steer).toHaveBeenCalledTimes(1);
+  // Sent: one quiet line with its first words, where the comment was.
+  expect(panel.querySelector("[data-steer-sent]")?.textContent).toBe("Sent to the lead · Words");
 });
 
 const message = (role: BrowserMessage["role"], createdAt: string): BrowserMessage => ({ id: createdAt, role, text: "", html: "", activity: null, createdAt, cardsHtml: "" });

@@ -2255,7 +2255,13 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   const path = await linePin.getAttribute("data-path"), line = await linePin.getAttribute("data-line");
   const before = await on.locator("[data-workspace-chat] [data-message-id]").count();
   // The lead's answer to the comment: a scripted world answers every turn it starts.
-  script({ role: "lead", when: [/Keep this, but name the edge case in a comment\./], answer: { steps: [{ text: "Noted: I'll ask for a comment that names the edge case.", calls: [] }] } });
+  // It reads, drafts a follow-up as a card to confirm, and shows the test it means (a code block): the whole thread.
+  script({ role: "lead", when: [/Keep this, but name the edge case in a comment\./], answer: { delayMs: 4_000, steps: [
+    { text: "Reading the line.", calls: [{ name: "get_capabilities" }] },
+    { text: "Drafting the follow-up.", calls: [{ name: "propose_task", arguments: { repo: "r1", title: "Name the edge case in subtract", goal: "Add a comment above subtract(a, b) naming the negative-result edge case, with a test for it.",
+      acceptance: [{ id: "c1", statement: "subtract(2, 5) returns -3, with a test", evidence: ["check"] }], planning: "auto" } }] },
+    { text: "Here's the test I mean:\n\n```js\ntest('subtracts below zero', () => {\n  assert.equal(subtract(2, 5), -3);\n});\n```\n\nConfirm the card and the planner picks it up.", calls: [] },
+  ] } });
   await linePin.click();
   const steer = on.locator(`[data-diff-steer][data-diff-line="${line}"]`);
   await waitFor(steer, "the comment form under that line");
@@ -2272,6 +2278,15 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
   const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
   if (!sent.some(text => text.startsWith(`On ${path}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
+  // The thread itself, while the lead works (its steps) and once it has answered (a code block and a card to confirm).
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
+  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
+  await bothSizes(on, "chat-thread-live");
+  await waitFor(on.locator('[data-workspace-chat] [data-message-id] pre.chat-code').first(), "the lead's reply with its code block", { timeoutMs: 60_000 });
+  await waitFor(on.locator('[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you').first(), "the card waiting on you", { timeoutMs: 30_000 });
+  await bothSizes(on, "chat-thread");
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
+  await waitFor(on.locator("[data-workspace-result] [data-diff-line]").first(), "the result again", { timeoutMs: 30_000, state: "attached" });
   // On a phone the result is a sheet over the chat; the chat under it takes no taps or tab stops until it's put away.
   await on.setViewportSize({ width: 390, height: 844 });
   await settle(on);

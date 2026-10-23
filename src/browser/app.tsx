@@ -741,8 +741,8 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
   const live = useLiveReply(chat, busy || (draft.pending !== null && !sending), () => { void controller.check(); });
   // A reply in progress doesn't disable sending: the next message waits in the lead queue.
   const disabled = sending || stale || offline || draft.pending !== null || !draft.text.trim();
-  // A phone starts the box at one line (Send sits beside it); a desk keeps its two.
-  useLayoutEffect(() => { const el = box.current; if (el) { const phone = matchMedia("(max-width: 760px)").matches; el.style.height = phone ? "0px" : "auto"; el.style.height = `${Math.min(180, Math.max(phone ? 44 : 48, el.scrollHeight))}px`; } }, [draft.text]);
+  // The box is one line (Send sits beside it) and grows with the words.
+  useLayoutEffect(() => { const el = box.current; if (el) { const phone = matchMedia("(max-width: 760px)").matches; el.style.height = "0px"; el.style.height = `${Math.min(180, Math.max(phone ? 44 : 24, el.scrollHeight))}px`; } }, [draft.text]);
   const delivery = offline ? "Offline. Your draft stays in this tab." : sending ? "Sending…" : notice;
   // A desk opens ready to type; a phone waits for a tap (no keyboard over the thread), and nothing steals focus later.
   useEffect(() => {
@@ -784,25 +784,26 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
             <span className="so-slash-name">/{one.command}</span><span className="so-slash-hint">{one.hint}</span>
           </li>)}
         </ul>}
-        <Textarea ref={box} id="lead-message" name="message" rows={2} maxLength={chat.maxChars} placeholder={dock?.placeholder ?? "Message your lead…"} value={draft.text}
-          role={commandMatches.length > 0 ? "combobox" : undefined} aria-expanded={commandMatches.length > 0 ? true : undefined} aria-controls={commandMatches.length > 0 ? commandList : undefined}
-          onChange={event => { setCommandsClosed(false); controller.edit(event.target.value); }} onKeyDown={event => {
-            if (commandMatches.length > 0) {
-              const current = Math.min(commandIndex, commandMatches.length - 1);
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setCommandIndex((current + (event.key === "ArrowDown" ? 1 : commandMatches.length - 1)) % commandMatches.length); return; }
-              if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyCommand(commandMatches[current]!); return; }
-              if (event.key === "Escape") { event.preventDefault(); setCommandsClosed(true); return; }
-            }
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && (returnSends() || event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
-          }} aria-describedby="composer-hint" />
-        <div className="so-composer-actions">
-          {/* Where this message goes, when it is narrower than the lead's whole reach: only what the payload names. */}
-          {!dock && (chat.project || (chat.taskId && workspace.focus)) && <span className="so-composer-chip" data-composer-scope>{chat.project ? chat.project : workspace.focus!.title}</span>}
-          <span id="composer-hint">{!storageAvailable ? "Draft stays on this page only." : draft.text.length > chat.maxChars - 200 ? `${draft.text.length} / ${chat.maxChars}` : <>/ for commands<span className="so-enter-hint"> · Shift + Enter for a new line</span></>}</span>
-          {/* While the lead is answering, a message waits its turn in the queue: the button says so. */}
-          <ViewButton type="submit" disabled={disabled} aria-label={busy ? "Queue message" : "Send message"}><Icon name="send" /><span>{busy ? "Queue" : "Send"}</span></ViewButton>
+        {/* One row: where it goes (a quiet chip), the words, and the send arrow. */}
+        <div className="so-composer-row">
+          {!dock && (chat.project || (chat.taskId && workspace.focus)) && <span className="so-composer-chip" data-composer-scope title={chat.project ? chat.project : workspace.focus!.title}>{chat.project ? chat.project : workspace.focus!.title}</span>}
+          <Textarea ref={box} id="lead-message" name="message" rows={1} maxLength={chat.maxChars} placeholder={dock?.placeholder ?? "Message your lead…"} value={draft.text}
+            role={commandMatches.length > 0 ? "combobox" : undefined} aria-expanded={commandMatches.length > 0 ? true : undefined} aria-controls={commandMatches.length > 0 ? commandList : undefined}
+            onChange={event => { setCommandsClosed(false); controller.edit(event.target.value); }} onKeyDown={event => {
+              if (commandMatches.length > 0) {
+                const current = Math.min(commandIndex, commandMatches.length - 1);
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setCommandIndex((current + (event.key === "ArrowDown" ? 1 : commandMatches.length - 1)) % commandMatches.length); return; }
+                if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyCommand(commandMatches[current]!); return; }
+                if (event.key === "Escape") { event.preventDefault(); setCommandsClosed(true); return; }
+              }
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && (returnSends() || event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!disabled) event.currentTarget.form?.requestSubmit(); }
+            }} aria-describedby="composer-hint" />
+          {/* While the lead is answering, a message waits its turn in the queue: the button's name says so. */}
+          <ViewButton type="submit" size="icon" className="so-composer-send" disabled={disabled} aria-label={busy ? "Queue message" : "Send message"} title={busy ? "Queue" : "Send"}><Icon name="send" /></ViewButton>
         </div>
       </PostForm>
+      {/* The hint waits under the box while it is empty and in use; a warning (storage, length) always shows. */}
+      <p id="composer-hint" className="so-composer-hint" data-warning={!storageAvailable || draft.text.length > chat.maxChars - 200 ? "" : undefined}>{!storageAvailable ? "Draft stays on this page only." : draft.text.length > chat.maxChars - 200 ? `${draft.text.length} / ${chat.maxChars}` : <>/ for commands<span className="so-enter-hint"> · Shift + Enter for a new line</span></>}</p>
       {!dock && workspace.controlsHtml && <Disclosure summary="Conversation settings" className="so-conversation-settings"><GuardedHtml html={workspace.controlsHtml} immutable /></Disclosure>}
     </div>
   </div>;
@@ -1045,7 +1046,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     </aside>}
     {!hidePanel && !docked && taskView === null && <aside className={`so-supporting-panel${hasWork ? " so-supporting-panel--detail" : ""}`} data-workspace-detail>
       <div className="so-work-panel-header"><ViewButton variant="ghost" size="sm" className="so-phone-back min-[901px]:hidden max-[901px]:h-11 max-[901px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />{isChat ? "Back to chat" : "Back"}</ViewButton>
-        {hasWork && <><h2>{workspace.result ? "Result" : "Task"}</h2>{workspace.result && selectedTask && <HeadlineBadge label={selectedTask.label} tone={selectedTask.tone} className="so-current-task-state" data-workspace-current-task-state="" />}<a href={teamSnapshot?.selected ? "/chat?conversation=" + encodeURIComponent(teamSnapshot.selected.id) : "/chat"} className="so-close-work" aria-label="Close work and return to the main chat"><Icon name="close" /></a></>}
+        {hasWork && <><h2>{workspace.result ? "Result" : "Task"}</h2>{workspace.result && selectedTask && <HeadlineBadge label={selectedTask.label} tone={selectedTask.tone} className="so-current-task-state" data-workspace-current-task-state="" />}{workspace.result && <span className="so-work-run">run #{workspace.result.runId}</span>}<a href={teamSnapshot?.selected ? "/chat?conversation=" + encodeURIComponent(teamSnapshot.selected.id) : "/chat"} className="so-close-work" aria-label="Close work and return to the main chat"><Icon name="close" /></a></>}
       </div>
       {hasWork ? <div className="so-work-detail-content">
         {workspace.focus && (workspace.result
