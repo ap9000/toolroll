@@ -876,6 +876,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* One chevron on a fold: the marker the browser draws is dropped where the page draws its own. */
 details.result-request-open > summary { list-style: none; }
 details.result-request-open > summary::-webkit-details-marker { display: none; }
+details.result-request-open > summary::marker { content: ""; }
 
 @media (max-width: 900px) {
   .diff-steer-slot { padding: 4px 16px 8px; }

@@ -100,8 +100,19 @@ export function LineSteer({ host, run, maxChars, steer }: {
 
   // A form that opens takes the cursor; one whose slot left the page (the result was replaced) closes.
   useEffect(() => { if (target && state === "editing") box.current?.focus(); }, [target, state]);
-  // One line that grows with the words, up to about four.
-  useLayoutEffect(() => { const el = box.current; if (el) { el.style.height = "0px"; el.style.height = `${Math.min(88, Math.max(22, el.scrollHeight))}px`; } }, [note, target]);
+  // One line that grows with the words, up to about four, measured again when its width changes (a phone turning, the
+  // pane resizing), so wrapped words are never cut off.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const fit = () => { el.style.height = "0px"; el.style.height = `${Math.min(88, Math.max(22, el.scrollHeight))}px`; };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const watch = new ResizeObserver(() => { if (el.clientWidth !== width) { width = el.clientWidth; fit(); } });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [note, target, state]);
   useEffect(() => () => { target?.slot.remove(); }, [target]);
   if (target === null || !target.slot.isConnected) return null;
 
