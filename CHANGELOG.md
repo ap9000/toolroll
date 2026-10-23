@@ -2,6 +2,10 @@
 
 ## 0.9.67 — 2026-10-23
 
+- **A project's checks read their own dependencies again.** 0.9.66 began
+  running checks in a fenced checkout but left out the grant for the shared
+  install the checkout links, so any check that loaded a package failed
+  ("could not resolve"). The linked copy is readable again; others stay fenced.
 - **Builds that write only their workspace resolve host names again on a
   Mac.** 0.9.66 denied every unix socket to such a build, including the
   system's DNS service, so with an open network nothing resolved (npm, git,

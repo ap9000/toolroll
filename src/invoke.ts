@@ -1130,7 +1130,7 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
       const allowed = store.projectWrites(repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home: homedir(), worktree: checkout, binding, launchFolder: own, cache });
       const database = options?.env?.["TOOLROLL_DB"];
       const checkData = allowed === null || database === undefined ? null : grantFolder(dirname(database), false);
-      const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, binding, poolRoots });
+      const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, linked: linkedFor(store, checkout), binding, poolRoots });
       const grants: FenceGrants = allowed === null ? base
         : { ...base, readOnly: [...new Set([...base.readOnly, ...allowed.readOnly])].sort(), writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] } };
       return await inner(file, args, {
