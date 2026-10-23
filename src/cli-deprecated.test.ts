@@ -1,18 +1,17 @@
 /**
- * D5: the central team service and native coding sessions are deprecated. Every legacy command below still runs this
- * release, says so once on stderr (never on stdout, so a --json answer stays one envelope), and is hidden from help and
- * the command contract. The local lead's own commands (lead token, lead say, chat, brief) stay visible and quiet.
+ * D5: the central team CLI and native coding sessions were deprecated in 0.9.56 and are removed. Every legacy command
+ * below answers with one removal line (one envelope with --json), runs nothing and is hidden from help and the command
+ * contract. `connect` still saves a profile, with its warning. The local lead's own commands stay visible and quiet.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { main } from "./cli.js";
-import { deprecationWarning } from "./deprecations.js";
+import { deprecationWarning, removedMessage } from "./deprecations.js";
 
 /** The exact legacy inventory: each invocation and the words its warning names. */
 const TEAM: readonly { argv: string[]; named: string }[] = [
-  { argv: ["connect"], named: "connect" },
   ...["list", "create", "update", "member", "transfer"].map(action => ({ argv: ["lead", action], named: `lead ${action}` })),
   ...["list", "create", "show", "member", "edit", "withdraw", "read", "follow", "stop"].map(action => ({ argv: ["conversation", action], named: `conversation ${action}` })),
   { argv: ["chat", "--lead", "l1", "--conversation", "c1"], named: "chat --conversation" },
@@ -21,7 +20,7 @@ const TEAM: readonly { argv: string[]; named: string }[] = [
 const SESSION: readonly { argv: string[]; named: string }[] =
   ["capabilities", "list", "show", "changes", "start", "send", "stop", "resume", "recover"].map(action => ({ argv: ["session", action], named: `session ${action}` }));
 
-describe("deprecated central team and native session commands", () => {
+describe("removed central team and native session commands", () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "toolroll-deprecated-")); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
@@ -29,16 +28,27 @@ describe("deprecated central team and native session commands", () => {
   const run = async (argv: readonly string[]) => {
     const stdout: string[] = [], stderr: string[] = [];
     const team = { profileFile: join(dir, "profiles.json"), stderr: (line: string) => stderr.push(line), fetch: (() => { throw new Error("no network in this test"); }) as typeof fetch };
-    const code = await main([...argv], line => stdout.push(line), { team, remote: team, session: { stderr: line => stderr.push(line) } });
+    const code = await main([...argv], line => stdout.push(line), { connect: team, remote: team });
     return { code, stdout, stderr };
   };
 
-  test.each([...TEAM, ...SESSION])("$named still answers, warns once on stderr, and keeps --json stdout one envelope", async ({ argv, named }) => {
+  test.each([...TEAM, ...SESSION])("$named answers that it was removed, as one --json envelope, and runs nothing", async ({ argv, named }) => {
     const kind = argv[0] === "session" ? "session" : "team";
-    const { stdout, stderr } = await run([...argv, "--json"]);
-    expect(stderr.filter(line => line.startsWith("Warning:"))).toEqual([deprecationWarning(named, kind)]);
+    const { code, stdout, stderr } = await run([...argv, "--json"]);
+    expect(code).toBe(2);
+    expect(stderr).toEqual([]);
     expect(stdout).toHaveLength(1);
-    expect(() => JSON.parse(stdout[0]!)).not.toThrow();
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: false, reason: "removed", message: removedMessage(named, kind) });
+    const plain = await run([...argv]);
+    expect(plain.stdout).toEqual([removedMessage(named, kind)]);
+  });
+
+  test("connect still saves a profile path and warns once on stderr", async () => {
+    const { code, stdout, stderr } = await run(["connect", "--json"]);
+    expect(code).toBe(2);
+    expect(stderr.filter(line => line.startsWith("Warning:"))).toEqual([deprecationWarning("connect", "team")]);
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: false, code: "usage" });
   });
 
   test("the local lead's commands never warn", async () => {

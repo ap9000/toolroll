@@ -69,7 +69,7 @@ test("two people: attribution, project limits, refused approvals, revocation, an
       let stdout = "", stderr = "";
       const lines: string[] = [];
       const code = await main(argv, line => lines.push(line), {
-        team: { profileFile, readStdin: async () => stdin, stderr: line => { stderr += `${line}\n`; } },
+        connect: { profileFile, readStdin: async () => stdin, stderr: line => { stderr += `${line}\n`; } },
         remote: { profileFile, modeOf, stdout: chunk => { stdout += chunk; }, stderr: chunk => { stderr += chunk; } },
         operate: { databaseFile },
       });
