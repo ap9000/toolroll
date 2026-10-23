@@ -24,7 +24,7 @@ import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
@@ -2068,6 +2068,9 @@ async function freshInstall(name, { claude, crewModels = false }) {
       const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: { ...process.env, HOME: home } });
       for (const phase of ["plan", "build", "repair", "review"]) toolroll("config", "set", phase, "--provider", "claude", "--model", "sonnet");
       toolroll("verify", "set", "--repo", realpathSync(shop), "--command", "npm test", "--timeout-seconds", "120", "--yes");
+      // Inside the plane's macOS check fence, as the world itself does (e2e-kit insideFence): this throwaway install's
+      // agents run inside the check's own sandbox.
+      if (insideFence()) toolroll("config", "unconfined-agents", "allow");
     }
     return install;
   } catch (error) {
