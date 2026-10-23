@@ -68,6 +68,10 @@ function claudeSettingsAuthProblem(configDir: string): string | null {
   try { text = readFileSync(join(configDir, "settings.json"), "utf8"); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    // A sandbox around the plane (a project check's fence, say) may hide the file while the CLI still signs in from its
+    // keychain. Isolated builds never load it, and a login that needed it fails within seconds and is reported as one.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES") return null;
     return "Can't read your Claude settings.json to check sign-in. Restore access to that file and try again. Isolated builds do not load it.";
   }
   let settings: unknown;

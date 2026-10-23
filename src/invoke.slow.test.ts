@@ -433,6 +433,13 @@ describe("the invocation gateway", () => {
       writeFileSync(path, JSON.stringify({ hooks: {}, theme: "dark", env: { EDITOR: "vim", [secret]: secret } }));
       expect((await invoke()).kind).toBe("ran");
       expect(spawned).toBe(2);
+      // Hidden by a sandbox around the plane (permission denied), the CLI still signs in from its keychain: it runs.
+      if (process.getuid?.() !== 0) {
+        chmodSync(path, 0o000);
+        expect((await invoke()).kind).toBe("ran");
+        expect(spawned).toBe(3);
+        chmodSync(path, 0o600);
+      }
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
