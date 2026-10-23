@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.9.66 — 2026-10-22
+## 0.9.67 — 2026-10-23
+
+- 0.9.66 as released to the console, published: its macOS check failed on a
+  test whose socket path outgrew macOS's 104-byte limit in the runner's temp
+  folder. The test now makes its sockets under /tmp. The browser journeys'
+  model stand-ins also keep their call journal where a workspace-only build
+  may write, so the release check runs them under the default sandbox.
+
+## 0.9.66 — 2026-10-22 (tagged, not published)
 
 - **The board is live to watch.** A strip of workers sits above the lanes:
   what each is building on this board, its stage and a running clock (or

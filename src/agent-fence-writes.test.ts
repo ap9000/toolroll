@@ -59,13 +59,15 @@ test("a workspace build masks an engine the operator moved (a link in home) and 
 
 test("a workspace build sharing /tmp has every socket there masked, with the folder that holds it", async () => {
   const { createServer } = await import("node:net");
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "so-tmpsockets-")));
+  // Under /tmp, not the system temp folder: a unix socket's path must fit 104 bytes on macOS, and a runner's temp
+  // folder (/private/var/folders/…/T/) leaves too little room for tmux-501/default.
+  const tmp = realpathSync(mkdtempSync(join("/tmp", "so-tmpsockets-")));
   const servers: import("node:net").Server[] = [];
   try {
     mkdirSync(join(tmp, "tmux-501"));
     for (const path of [join(tmp, "top.sock"), join(tmp, "tmux-501", "default")]) {
       const server = createServer();
-      await new Promise<void>(done => server.listen(path, done));
+      await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(path, done); });
       servers.push(server);
     }
     mkdirSync(join(tmp, "plain"));
