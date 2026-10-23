@@ -3,7 +3,7 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity } from "./chat-delivery-state.js";
 import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { roomCommand } from "./chat-rooms.js";

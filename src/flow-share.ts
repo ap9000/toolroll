@@ -23,7 +23,7 @@ import { addFlowTriggerTo, describeTrigger, HOOK_PATH, readHooksBase, triggerCon
 import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWords, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { readVersioned } from "./contracts/contract.js";
-import { FLOW_ALIASES, WEBHOOK_SENDERS, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
+import { FLOW_ALIASES, WEBHOOK_SENDERS, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
 import { parseSchedule } from "./flow-schedule.js";
 import type { FlowRow, Store } from "./store.js";
 

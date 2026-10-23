@@ -42,7 +42,7 @@ import type { ServerRuntime } from './runtime.js';
 import { refuse,screen } from "./chrome.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
-import { browserCaller,type Who } from "./session.js";
+import { browserCaller } from "./session.js";
 /** settings handlers, moved without changing their route bodies. */
 import { DEFAULT_ACCENT,normalHex } from "../accent-colors.js";
 import { resolvePhaseAgent } from "../agentconfig.js";
@@ -70,7 +70,7 @@ import { startersHtml } from "../flow-starters-ui.js";
 import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
-import { clearProviderKey,keyStatus,plausibleKey,PROVIDER_KEY_ENV,readAuthMode,readProviderKey,saveProviderKey,setAuthMode,SUBSCRIPTION_CAPABLE,verdictWords,verifyProviderKey,type AuthMode } from "../keys.js";
+import { clearProviderKey, keyStatus, plausibleKey, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, saveProviderKey, setAuthMode, SUBSCRIPTION_CAPABLE, verdictWords, verifyProviderKey } from "../keys.js";
 import { decisionsHtml,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
 import { cancelCommitment,conditionWords,openCommitments } from '../lead-commitments.js';
@@ -138,7 +138,7 @@ import { latestReleaseFor,leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAV
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, recordSignIn, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
 
   // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
   async function spendPage(ctx: HandlerContext): Promise<void> {
@@ -449,7 +449,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
   // v105: Settings → Data, where an instance operator downloads everything. The download is a POST with the password.
   async function dataPage(ctx: HandlerContext): Promise<void> {
     const { url, response, project } = ctx;
-    const who = browserCaller(ctx.who);
+    browserCaller(ctx.who);
     return sendScreen(response, 200, screen("Data", html`<p><a href="/settings">Settings</a></p><h1>Data</h1>${(dataExportHtml({ problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }

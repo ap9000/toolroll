@@ -27,9 +27,7 @@ import { kitPageHtml,kitsGalleryHtml } from "../kits-ui.js";
 import { addKitGithubTrigger,addKitSample,kitOf,setUpKit } from "../kits.js";
 import { connectionsOf } from "../mcp-connect.js";
 import {
-authorizedProject,
-projectName,
-rowVisible
+  authorizedProject, projectName,
 } from "../project.js";
 import { recipeAnswersFromForm,recipeDefinitionPreviewHtml,recipeEditorHtml,recipeFromForm,recipeLibraryHtml,recipeRunHtml,recipeScript,workflowPreviewHtml } from "../recipe-ui.js";
 import { createWorkflowPreview,exportRecipe,findRecipe,importRecipe,launchWorkflow,prepareRecipeRun,RecipeError,savedRecipes,saveWorkflowRecipe,starterRecipes,workflowPreview } from "../recipes.js";
@@ -49,7 +47,7 @@ import { redirect,respond,SAFETY,taskHref } from "./http.js";
 import { html, type Html } from "../html.js";
 import { type Who } from "./session.js";
 export function createFlowsHandlers(runtime: ServerRuntime) {
-  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, flowRooms, identify, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
+  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
 
   // ---- reads ---------------------------------------------------------------
 

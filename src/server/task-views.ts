@@ -3,7 +3,7 @@ import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
-import { html,htmlString,joinHtml,type Html } from "../html.js";
+import { html, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
 import { assignmentOf,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";

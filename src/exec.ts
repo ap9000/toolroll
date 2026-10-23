@@ -10,8 +10,7 @@
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
 import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
 import { jsonlDiscriminants } from "./jsonl-discriminants.js";
 import { createContainer, currentContainment, type AttachOutcome, type Container, type ContainmentBackendId } from "./containment.js";
@@ -1148,7 +1147,6 @@ export function runStreamJsonl(
   args: readonly string[],
   options: RunOptions = {},
 ): Promise<ExecResult> {
-  const { cwd } = options;
   const childEnv = resolveChildEnv(options);
 
   return new Promise(resolve => {
@@ -1357,7 +1355,6 @@ export function runGeminiStreamJsonl(
   args: readonly string[],
   options: RunOptions = {},
 ): Promise<ExecResult> {
-  const { cwd } = options;
   const childEnv = resolveChildEnv(options);
 
   return new Promise(resolve => {
@@ -1919,7 +1916,6 @@ export function runClaudeStreamJsonl(
   args: readonly string[],
   options: RunOptions = {},
 ): Promise<ExecResult> {
-  const { cwd } = options;
   const childEnv = resolveChildEnv(options);
   const live = options.liveInput ?? null;
 

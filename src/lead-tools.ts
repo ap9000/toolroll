@@ -1,5 +1,4 @@
 import { sweepLine, sweepTable } from "./lead-sweep.js";
-import { TEXT_LIMITS } from "./text-limits.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
 import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
 import { policyParts } from "./policy.js";
@@ -43,9 +42,9 @@ import { LEAD_ASK_OTHER, type FlowCardRow, type FlowRow, type Store, type LeadPr
 import type { VerifiedApprover } from "./principal.js";
 import type { LeadToolSchema } from "./converse.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
-import { readVerifiedArtifact, readVerifiedReport, scanForSecrets } from "./evidence.js";
+import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
-import { diagnoseTaskDispatch, withDispatchDiagnoses } from "./dispatch.js";
+import { diagnoseTaskDispatch } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
 import { agentsSummary, chosenWords, PHASES, postureWords, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
@@ -60,7 +59,7 @@ import { planInChat } from "./chat-decide.js";
 import { flowDecisionAt } from "./telegram-flow.js";
 import { flowPersonOf } from "./flow-send.js";
 import { flowInsights } from "./flow-insights.js";
-import { describeTrigger, FLOW_TRIGGER_KINDS, triggerConfigOf } from "./flow-triggers.js";
+import { describeTrigger, triggerConfigOf } from "./flow-triggers.js";
 import type { ChatAction } from "./chat-actions.js";
 
 export const LEAD_MAX_PROPOSALS_PER_TURN = 5;
@@ -114,8 +113,6 @@ import { labelOf, nameOf, summaryOf, zonesOf } from "./subagent-admin.js";
 import { SUBAGENT_TEMPLATES, withSection } from "./subagents.js";
 import { callOutcome, callWords, defaultRule, ruleWords } from "./subagent-tools.js";
 import { deskOf, routinesOf } from "./subagent-desk.js";
-import { KITS } from "./kits.js";
-import { STARTER_IDS } from "./flow-starters.js";
 import { undoFor, weekOf, weekWords } from "./subagent-week.js";
 import { PERSON_ID, personEntry, teamRoomOf } from "./lead-people.js";
 import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";

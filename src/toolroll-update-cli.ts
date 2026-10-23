@@ -6,7 +6,6 @@
  */
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { installMethod } from "./install-method.js";
 import { isNewer, latestVersionNow } from "./releases.js";

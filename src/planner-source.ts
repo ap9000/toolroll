@@ -39,7 +39,7 @@
 import { readSnapshot, REFERENCE_LIMIT, referenceWords } from "./task-source.js";
 import { createHash } from "node:crypto";
 import type { Store } from "./store.js";
-import type { AcceptanceCriterion, Scope } from "./scope.js";
+import type { Scope } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { RiskLevel } from "./phase-routing.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact } from "./evidence.js";

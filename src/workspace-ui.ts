@@ -20,7 +20,7 @@
 import type { DispatchAction, DispatchDiagnosis } from "./dispatch.js";
 import { ACCEPT_NEEDS_REASON, FAILED_CHECK, cantAcceptYetOf, evidenceProblemOf, type AcceptLabel, type EvidenceProblem } from "./result-acts.js";
 export { ACCEPT_NEEDS_REASON, cantAcceptYetOf, evidenceProblemOf, type EvidenceProblem };
-import { GOAL_ASSESSMENT_PENDING, manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
+import { manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
 import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
 import { OPEN_RESULT, plainReasonOf, stageOfCode, taskStatusOf, workToneOf } from "./task-status.js";
@@ -108,8 +108,6 @@ export function reviewFactsOf(retry: ReviewRetryState | null, reviewerAlive: (ru
 
 /** The tokens a review in flight wears — the dispatch codes, unchanged. */
 export const REVIEW_TOKENS: ReadonlySet<string> = new Set(["reviewing", "review-pending", "review-failed", "review-exhausted"]);
-
-const retriesLeft = (count: number, explicit = true): string => `${count}${explicit ? " explicit" : ""} ${count === 1 ? "retry" : "retries"}`;
 
 /**
  * A review that is queued, running, failed with a retry left, or

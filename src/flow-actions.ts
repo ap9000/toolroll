@@ -18,9 +18,6 @@
  * answer: the card takes its failure path. Trouble reaching a service is
  * tried again, like every step.
  */
-import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { redactSecretAssignments } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { fillFlowText, type FlowStage } from "./flows.js";

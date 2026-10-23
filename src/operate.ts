@@ -9,7 +9,7 @@ import { checkPublicCommand } from "./public-check.js";
 import { leadNameOf } from "./lead-identity.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
-import { fileAddTestsTask, followUpChecksOf, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
+import { fileAddTestsTask, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
 import { runBatchChecks } from "./batch-checks.js";
 import { BATCH_HINT, BATCH_WINDOW_MS, projectBatchChecks, setProjectBatchChecks } from "./batch-policy.js";
 import { buildReviewPass } from "./build-review.js";
@@ -102,29 +102,14 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore,
-  openStoreNoMigrate,
-  CONCURRENT_WRITER_WAIT_MS,
-  isDatabaseBusy,
-  databasePath,
-  BUILT_IN,
-  DEFAULT_ACTOR,
-  parseCapabilityKey,
-  verifiedAuthor,
-  isDigestTime,
-  RESULT_SCREENSHOTS,
-  type ResultScreenshots,
-  type Capability,
-  type ReviewRetryState,
-  type Store,
-  type TaskState,
+  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
-import { configPath, addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
+import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
@@ -141,7 +126,7 @@ import { spawn as spawnChild } from "node:child_process";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
-import { closedQuestionWords, hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
+import { closedQuestionWords, hasDisguisedText, validateNote } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, storeEvidence } from "./evidence.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, encodePlannerSource, plannerSourceOf } from "./planner-source.js";
 
@@ -177,7 +162,7 @@ function planContractLines(store: Store, evidenceRoot: string, taskId: string): 
   ];
 }
 import { verdictWords as proofVerdictWords, matrixWords, semanticCoverage, coverageWords } from "./proof.js";
-import { probeRepo, isVerified } from "./probe.js";
+import { probeRepo } from "./probe.js";
 import {
   diagnoseTaskDispatch,
   diagnosisIsDispatchable,
@@ -227,29 +212,14 @@ import { projectAuthority } from "./project-access.js";
 import { authorizedProject, canonicalProject, projectName, resolveCeiling } from "./project.js";
 import { tally, spendLine } from "./summary.js";
 import {
-  bodyHashOf,
-  describePublicationGrant,
-  observeChecks,
-  publicationBody,
-  publishPass,
-  type PublishExec,
-  sweepMerges,
+  describePublicationGrant, observeChecks, publishPass, type PublishExec, sweepMerges,
 } from "./publish.js";
 import { checkPublishing, publishingOf, savePublishing, followPullRequests, newestPullRequestOf } from "./pull-request-flow.js";
 import { starterOf, startersFor, switchOnStarter } from "./flow-starters.js";
 
 type CapabilityKind = Capability["kind"];
 import {
-  acquire,
-  acquireIfReady,
-  type FailureClass,
-  heartbeat,
-  release,
-  reap,
-  currentClaim,
-  DEFAULT_LEASE_MS,
-  SYNC_MAX_AGE_MS,
-  finalize,
+  acquire, acquireIfReady, heartbeat, release, reap, currentClaim, DEFAULT_LEASE_MS, SYNC_MAX_AGE_MS, finalize,
 } from "./claim.js";
 import { disposeBuildOutcome, holdStaleApproval, regateTask } from "./dispose.js";
 import {
@@ -285,7 +255,7 @@ import {
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
 import { baseStandingWords, freshBaseFor, taskBaseOf } from "./task-base.js";
@@ -317,7 +287,7 @@ import { plan as planTask } from "./planner.js";
 import { attachTmux, elapsedWords, openInTmux, PEEK_TAIL_LINES, runPeek, snapshotLiveRuns } from "./peek-cli.js";
 import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
-import { PROVIDER_KEY_ENV, SUBSCRIPTION_CAPABLE, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords, type AuthMode } from "./keys.js";
+import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";

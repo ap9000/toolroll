@@ -22,7 +22,7 @@
  * twice. Trouble reaching a service is retried three times, 5 then 15
  * minutes apart; a check that fails is an answer, not trouble.
  */
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Runner } from "./backend.js";
 import { approvedCommandShell, redactSecretAssignments, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";

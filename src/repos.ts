@@ -12,7 +12,7 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { configBase, namedPath } from "./names.js";
 
 export const CONFIG_VERSION = 2;

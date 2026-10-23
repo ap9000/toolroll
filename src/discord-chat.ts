@@ -6,13 +6,7 @@ import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-s
 import { channelInbox } from "./chat-inbox.js";
 import { roomCommand } from "./chat-rooms.js";
 import {
-  ChatState,
-  ChatDeliveryError,
-  chatHash,
-  partContent,
-  type ChatIdentity,
-  type ChatContent,
-  type ChatPart,
+  ChatState, ChatDeliveryError, chatHash, partContent, type ChatIdentity, type ChatContent,
 } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readDiscordButtonToken, readDiscordComponentInteraction } from "./contracts/discord-callback.js";

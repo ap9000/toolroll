@@ -8,7 +8,6 @@
  *
  * Imports the store's types only (no runtime cycle): the store builds its chats on it.
  */
-import { join } from "node:path";
 import { neverHeld, watchedPing } from "./agent-board.js";
 import { ChatCore } from "./chat-core.js";
 import { readChatMessageBody, readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatMessageBody } from "./contracts/chat-content.js";

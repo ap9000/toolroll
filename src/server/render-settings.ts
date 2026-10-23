@@ -18,7 +18,7 @@ import { RESULT_SHOT_CHOICES } from "../result-shots.js";
 import { isAlive as runnerAlive } from "../runner.js";
 import { type UnattendedPermissionMode } from "../scope.js";
 import { ASSISTANTS } from "../setup-guide.js";
-import { type Capability,type ChatConfig,type PushSubscription,type ResultScreenshots,type Store } from "../store.js";
+import { type Capability, type PushSubscription, type ResultScreenshots, type Store } from "../store.js";
 import { redactToken,TOKEN_ENV,type TokenSource } from "../telegram.js";
 import { requestContext } from "./request-context.js";
 import { chatMoney,type Chrome,screen,type Screen,strokeIcon,when,whenTime } from "./chrome.js";

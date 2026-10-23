@@ -25,11 +25,7 @@ import type {
 } from "./store.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
 import {
-  CHAT_CONTROLS,
-  chatControlHref,
-  chatResultHref,
-  isChatControl,
-  type ChatControl,
+  CHAT_CONTROLS, chatControlHref, isChatControl, type ChatControl,
 } from "./chat-controls.js";
 import { CHAT_TASK_ACTIONS, isChatTaskAction } from "./chat-task-actions.js";
 export function channelRepos(

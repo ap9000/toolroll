@@ -36,7 +36,6 @@ import { chatMoney,type Chrome,oneLineOf,relativeAge,safePrUrl,screen,type Scree
 import { chatResultHref,projectChatHref,taskChatHref,taskHref } from "./http.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionReceiptCard,type CompletionReceiptView } from "./render-results.js";
-import { type LeadFormFacts } from "./render-settings.js";
 import { agentsAvailabilityHtml,agentsBadgesHtml,agentsStripHtml,agentsSummaryWords,agentsWhyHtml,approvalSheetHtml,checkProgressHtml,consentClosedHtml,consentDoorOf,decisionAnswerCard,dispatchHeadline,milestoneProgressHtml,type MilestoneProgressView,type PlanContractView,planRevisionLedgerHtml,type PlanRevisionLedgerView,profileWords,type RevisionView,type RouteView,sizeConsequence,taskControlDetailsHtml,taskStatusCard,taskViewSwitch } from "./render-tasks.js";
 
 /** The installation fact that the lead was turned on by default, once (its value: the provider). */
@@ -501,8 +500,6 @@ export function chatPage(chrome: Chrome, data: {
   /** Chat's first run is on the page: it already says what to do while there is no lead. */
   firstRunShown?: boolean;
 }): Screen {
-  const formFacts: LeadFormFacts = { keyFacts: data.keyFacts, openrouterModels: data.openrouterModels, ...(data.liveModels === undefined ? {} : { liveModels: data.liveModels }), csrf: data.csrf,
-    returnTo: data.focusTask === null ? "/chat" : taskChatHref(data.focusTask.id) };
   const parts: HtmlValue[] = [
     data.focusTask === null
       ? chatHeading("", data.projects.length, data.enabled.ok)

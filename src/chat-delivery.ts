@@ -47,7 +47,6 @@ import { phoneText, PHONE_HELP, phoneCommand, phoneStatus, phoneTaskView, phoneT
 import { applyRoomInbound, conversationRow, roomCardApprover, roomCommand, roomGrantAllowed, roomMessagesAfter, roomMessageText, teamDomain } from "./chat-rooms.js";
 import { isTelegramProgressNotification, proposalTaskOf, type Notification, type Store } from "./store.js";
 import { isShotsKind, resultShotsFor } from "./result-shots.js";
-import { CHAT_APP_NAMES } from "./flow-triggers.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";

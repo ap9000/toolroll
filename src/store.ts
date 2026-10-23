@@ -71,46 +71,16 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, exactKeys, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
-  canonicalOverridesJson,
-  canonicalRouteJson,
-  exactModelId,
-  isRiskLevel,
-  isTaskSize,
-  headroomFrom,
-  makesNoPlan,
-  legOf,
-  overridesFromJson,
-  phaseOfRole,
-  recommendRoute,
-  routeDigestOf,
-  routeFromJson,
-  routeProblems,
-  routeStampProblem,
-  ROUTE_ERA,
-  type ExactSpec,
-  type ProviderRoom,
-  type CandidateTier,
-  PROVIDER_ID_LIST,
-  type TaskSize,
-  type TaskSizing,
-  type PhaseRoute,
-  type PublicationAuthority,
-  type RouteStamp,
-  type ReadinessLookup,
-  type ReadinessObservation,
-  type ReadinessState,
-  type RiskLevel,
-  type RouteEvidenceKind,
-  type RouteOverride,
+  canonicalOverridesJson, canonicalRouteJson, isRiskLevel, isTaskSize, headroomFrom, makesNoPlan, legOf, overridesFromJson, phaseOfRole, recommendRoute, routeDigestOf, routeFromJson, routeProblems, routeStampProblem, ROUTE_ERA, type ExactSpec, type ProviderRoom, type CandidateTier, PROVIDER_ID_LIST, type TaskSize, type TaskSizing, type PhaseRoute, type PublicationAuthority, type RouteStamp, type ReadinessLookup, type ReadinessObservation, type ReadinessState, type RouteEvidenceKind, type RouteOverride,
 } from "./phase-routing.js";
 import { readAuthModeStrict } from "./keys.js";
 import type { TerminalClass } from "./exhaustion.js";
 import { modeDigestOf, modeTermsFromJson } from "./modes.js";
 import { readVerifiedArtifact } from "./evidence.js";
-import { isProviderId, type ProviderId } from "./provider.js";
+import { type ProviderId } from "./provider.js";
 import type { BoardFacts } from "./board.js";
 import type { BackendGrant, MutationClass, TaskOrigin } from "./grant.js";
 import type { Runner } from "./runner.js";

@@ -20,7 +20,7 @@
 import { closeSync, constants as fsConstants, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { createCipheriv, createECDH, createPrivateKey, hkdfSync, randomBytes, createHash, sign as cryptoSign } from "node:crypto";
-import type { Notification, PushSubscription, Store } from "./store.js";
+import type { Notification, Store } from "./store.js";
 import { isCheckProgressLine } from "./check-progress.js";
 
 export const VAPID_FILE = "vapid-keys.json";

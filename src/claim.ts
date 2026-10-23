@@ -1048,7 +1048,7 @@ export type InterruptSeal =
 function sealInterrupted(store: Store, leaseId: string, args: InterruptedSeal): InterruptSeal {
   const { runId, taskId, stopRun, now } = args;
   const db = store.handle;
-  const run = openAttempt(store, leaseId, runId, "an interruption");
+  openAttempt(store, leaseId, runId, "an interruption");
   // A lease the world moved past still ends its run as interrupted — that IS the honest ending — touching no task state.
   const fenced = !releaseAs(store, leaseId, "interrupted", now);
   if (args.message !== undefined && args.message.trim() !== "") {
@@ -1097,7 +1097,7 @@ export type InterruptedSeal = { runId: number; taskId: string; stopRun: number; 
 function sealHandBack(store: Store, leaseId: string, args: HandBackSeal): HandBackFinalize {
   const { runId, taskId, now } = args;
   const db = store.handle;
-  const run = openAttempt(store, leaseId, runId, "a hand-back");
+  openAttempt(store, leaseId, runId, "a hand-back");
   // A lease the world moved past still ends its run as interrupted — that IS the honest ending — touching no task state.
   const fenced = !releaseAs(store, leaseId, "interrupted", now);
   if (args.message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: args.message });
@@ -1326,7 +1326,6 @@ export type PlanFinalize =
  */
 function sealPlan(store: Store, leaseId: string, args: PlanSeal): PlanFinalize {
   const { runId, taskId, plan, now } = args;
-  const db = store.handle;
   // The ingestion record (contract handoff, task 1) is composed here from
   // the filed terms and the drafted plan; its file and row land inside the
   // transaction below, only after the stale-source check admits the draft.
@@ -1592,7 +1591,7 @@ export type RevisionFinalize =
  */
 function sealRevision(store: Store, leaseId: string, args: RevisionSeal): RevisionFinalize {
   const { runId, taskId, taskRef, revision, now } = args;
-  const run = openAttempt(store, leaseId, runId, "a plan revision", "builder");
+  openAttempt(store, leaseId, runId, "a plan revision", "builder");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };
   const fenced = releaseOrRefuse(store, leaseId, "released", runId, now);
@@ -1681,7 +1680,6 @@ export type PlanFailureDisposition =
  */
 function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): PlanFailureDisposition {
   const { runId, taskId, failure: kind, message, now } = args;
-  const db = store.handle;
   const run = openAttempt(store, leaseId, runId, "a failure", "planner");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };
@@ -1794,7 +1792,6 @@ export type ScoutFinalize = { ok: true } | { ok: false; reason: "fenced" | "unkn
  */
 function sealScout(store: Store, leaseId: string, args: ScoutSeal): ScoutFinalize {
   const { runId, taskId, report, now } = args;
-  const db = store.handle;
   const run = openAttempt(store, leaseId, runId, "a report", "scout");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };

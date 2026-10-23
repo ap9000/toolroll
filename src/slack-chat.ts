@@ -22,7 +22,7 @@ import {
 } from "./chat-channel.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
-import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatBinding, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {

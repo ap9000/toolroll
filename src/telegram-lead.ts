@@ -1,5 +1,5 @@
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
-import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
+import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
  * The paired phone as one more way to use the same assistant.
@@ -23,8 +23,8 @@ export { channelRepos as telegramConversationRepos, resolveChannelLead as resolv
  * the console and CLI state), and the door re-proves everything again.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { LEAD_MESSAGE_MAX_CHARS, leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
-import { confirmLeadProposal, dismissLeadProposal, type DoorOutcome } from "./lead-doors.js";
+import { leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
+import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";

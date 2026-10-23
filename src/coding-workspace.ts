@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
 import { provenDeadByBootChange } from './boot-identity.js';
 import { containerEmptiness } from './container-state.js';
