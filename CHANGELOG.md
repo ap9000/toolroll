@@ -17,6 +17,10 @@
   so esbuild couldn't find node_modules ("could not resolve react"). That one
   folder may now be listed; nothing in it is readable beyond node_modules.
   The console's own browser build also resolves through the checkout's links.
+- The release check passes inside the plane's macOS check sandbox: tests that
+  need to create a sandbox or watch other processes skip there and still run
+  in CI, and the browser journeys' throwaway planes run their agents inside
+  the check's own sandbox.
 - `toolroll release` no longer stops at merge when GitHub has already deleted
   the merged branch: it looks a few times, 2 seconds apart, before calling the
   delete a failure (0.9.66 and 0.9.67 both stopped there).
