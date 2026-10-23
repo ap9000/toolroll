@@ -31,6 +31,7 @@ import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { flag, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
 /** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
@@ -483,6 +484,8 @@ await journey("triggers", SCRIPTED, "A webhook trigger makes a card from a poste
 });
 
 await journey("triggers", SCRIPTED, "A GitHub trigger checks a real repository with gh (Check now)", ["A failing script sends the card back, and Insights show where and why"], async () => {
+  // gh needs its sign-in; inside a release check's fence that folder is (rightly) out of reach.
+  if (spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status !== 0) throw new Skip("gh can't run signed in here (inside a check's fence its sign-in is out of reach)");
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "github"); await type(form, "Repository", "ap9000/standing-orders"); await pick(form, "Watch", "checks"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Failed checks on main" });
   await row.locator("button", { hasText: "Check now" }).click();

@@ -277,6 +277,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // First on the PATH of everything this run starts: the CLI, the console, the worker, a demo, a fresh install.
   const provider = journeys === "scripted" ? scriptedProvider(join(root, "provider")) : countingProvider(join(root, "provider"));
   process.env.PATH = `${provider.bin}${delimiter}${process.env.PATH ?? ""}`;
+  // Everything this run starts reads the world's own config folder, never the person's (their saved central profile
+  // would send the CLI elsewhere, and inside a check's fence it can't even be looked at); gh keeps its sign-in.
+  process.env.GH_CONFIG_DIR ??= join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gh");
+  process.env.XDG_CONFIG_HOME = join(root, "config");
 
   const cli = (argv, { ok = [0], json = true, env = {} } = {}) => {
     try {
