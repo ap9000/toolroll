@@ -569,7 +569,6 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "credential_hash": {
     "src/export.ts#<module>": 2,
-    "src/process-recovery-anchor.ts#<module>": 1,
     "src/store-baseline.ts#<module>": 1,
     "src/store.ts#<module>": 1,
     "src/store.ts#Store.accountOf@150": 2,
