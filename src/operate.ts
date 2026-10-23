@@ -838,6 +838,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
+  // project network: what its builds may reach (--open | --allowlist).
+  "open", "allowlist",
   // v105: the full export.
   "zip",
   // Settings → Integrations: the last checks, without checking again.
@@ -859,6 +861,10 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   // task steer: pause the running Claude build, then send the note.
   "now",
 ]);
+
+/** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
+ * --local are switches. */
+const PROJECT_NETWORK_VALUE_FLAGS: ReadonlySet<string> = new Set(["remove", "local"]);
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
   const positional: string[] = [];
@@ -930,7 +936,7 @@ async function runOperateLocal(
   write: Write,
   options: OperateOptions = {},
 ): Promise<number> {
-  const parsed = parseOperateArgs(argv, command === "flows" ? FLOWS_VALUE_FLAGS : undefined);
+  const parsed = parseOperateArgs(argv, ownValueFlags(command, argv));
   // A parse error precedes the flags map, so JSON mode is read from the raw
   // argv — the envelope contract holds even for the earliest refusal.
   if ("error" in parsed) return fail(write, argv.includes("--json"), command, "usage", parsed.error, EXIT.usage);
@@ -1148,7 +1154,7 @@ export async function runOperateAs(
   if (row.remote === "step-up") return refuse("step-up", REMOTE_MESSAGES["step-up"]);
   const scope = REMOTE_SCOPES.get(row.invocation);
   if (row.remote !== "yes" || scope === undefined) return refuse("not-remote", REMOTE_MESSAGES.no);
-  const parsed = parseOperateArgs(rest, root === "flows" ? FLOWS_VALUE_FLAGS : undefined);
+  const parsed = parseOperateArgs(rest, ownValueFlags(root, rest));
   if ("error" in parsed) return refuse("usage", parsed.error);
   // The parser's positionals must spell the same row (a value flag can't hide a subcommand).
   if (remoteRowOf(root, parsed.positional)?.invocation !== row.invocation) return refuse("not-remote", REMOTE_MESSAGES.unknown);
@@ -12067,4 +12073,12 @@ async function knownProject(context: Context, repoFlag: string, match: { listed:
   const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
   const known = [...new Set([...context.store.knownRepos(), ...(match.listed ? context.store.listProjects().map(one => one.path) : []), ...("error" in registered ? [] : registered.repos)])];
   return known.find(one => one === repoFlag || one === resolve(repoFlag) || (match.canonical && one === canonicalProject(repoFlag)));
+}
+
+// Last in the file, so the password tripwire's function positions (password-freshness.test.ts) stay as reviewed.
+/** The value flags a verb reads under a global switch's name, for parseOperateArgs. */
+export function ownValueFlags(command: string, argv: readonly string[]): ReadonlySet<string> | undefined {
+  if (command === "flows") return FLOWS_VALUE_FLAGS;
+  if (command === "project" && argv.find(arg => !arg.startsWith("-")) === "network") return PROJECT_NETWORK_VALUE_FLAGS;
+  return undefined;
 }
