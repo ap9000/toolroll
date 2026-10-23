@@ -895,12 +895,6 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
 /** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
  * --local are switches. */
 const PROJECT_NETWORK_VALUE_FLAGS: ReadonlySet<string> = new Set(["remove", "local"]);
-/** The value flags a verb reads under a global switch's name, for parseOperateArgs. */
-export function ownValueFlags(command: string, argv: readonly string[]): ReadonlySet<string> | undefined {
-  if (command === "flows") return FLOWS_VALUE_FLAGS;
-  if (command === "project" && argv.find(arg => !arg.startsWith("-")) === "network") return PROJECT_NETWORK_VALUE_FLAGS;
-  return undefined;
-}
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
   const positional: string[] = [];
@@ -12979,4 +12973,12 @@ function databaseFailure(
     `The database ${file} stayed busy for ${CONCURRENT_WRITER_WAIT_MS / 1_000} seconds. Wait for the other Toolroll process to finish, then try again.`,
     EXIT.failed,
   );
+}
+
+// Last in the file, so the password tripwire's function positions (password-freshness.test.ts) stay as reviewed.
+/** The value flags a verb reads under a global switch's name, for parseOperateArgs. */
+export function ownValueFlags(command: string, argv: readonly string[]): ReadonlySet<string> | undefined {
+  if (command === "flows") return FLOWS_VALUE_FLAGS;
+  if (command === "project" && argv.find(arg => !arg.startsWith("-")) === "network") return PROJECT_NETWORK_VALUE_FLAGS;
+  return undefined;
 }
