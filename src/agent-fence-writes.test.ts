@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { grantFolder, linuxFenced, linuxHostSockets, NO_GRANTS, type FenceGrants } from "./agent-fence.js";
+import { spawnSync } from "node:child_process";
+import { grantFolder, linuxFenced, linuxHostSockets, macosFenceAvailable, macosFenceProfile, NO_GRANTS, type FenceGrants } from "./agent-fence.js";
 
 test("a workspace build's private /tmp gives its kept paths back read-only, then its allowlist writable", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-args-")));
@@ -76,4 +77,24 @@ test("a workspace build sharing /tmp has every socket there masked, with the fol
     expect(masks).not.toContain(join(tmp, "plain"));
     expect(linuxHostSockets(501, join(tmp, "nohome"), tmp, false, {})).not.toContain(join(tmp, "top.sock"));
   } finally { for (const one of servers) one.close(); rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("a workspace build with an open network may ask the system's DNS service, and still no other socket", () => {
+  const grants: FenceGrants = { ...NO_GRANTS, writes: { subpaths: ["/tmp/so-ws"], prefixes: [] } };
+  const profile = macosFenceProfile([], grants);
+  expect(profile).toContain("(deny network-outbound (remote unix-socket))");
+  expect(profile).toContain(`(remote unix-socket (path-literal "/private/var/run/mDNSResponder"))`);
+  expect(macosFenceProfile([], NO_GRANTS)).not.toContain("mDNSResponder");
+});
+
+/** A name only the system's resolver answers (localhost comes from the hosts file without it); null when offline. */
+const lookup = (wrap: string[]) => spawnSync(wrap[0] ?? process.execPath, [...wrap.slice(1), ...(wrap.length === 0 ? [] : [process.execPath]), "-e", "require('node:dns').lookup('github.com', error => process.stdout.write(error ? 'error ' + error.code : 'found'))"], { encoding: "utf8", timeout: 30_000 }).stdout;
+const online = macosFenceAvailable() && lookup([]) === "found";
+
+test.skipIf(!online)("on macOS a workspace build with an open network resolves a host name", () => {
+  const work = realpathSync(mkdtempSync(join("/tmp", "so-dns-")));
+  try {
+    const profile = macosFenceProfile([], { ...NO_GRANTS, writes: { subpaths: [work], prefixes: [] } });
+    expect(lookup(["/usr/bin/sandbox-exec", "-p", profile])).toBe("found");
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });

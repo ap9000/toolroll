@@ -2,6 +2,11 @@
 
 ## 0.9.67 — 2026-10-23
 
+- **Builds that write only their workspace resolve host names again on a
+  Mac.** 0.9.66 denied every unix socket to such a build, including the
+  system's DNS service, so with an open network nothing resolved (npm, git,
+  any fetch failed with "could not resolve host"). The DNS socket is allowed;
+  every other socket stays denied.
 - 0.9.66 as released to the console, published: its macOS check failed on a
   test whose socket path outgrew macOS's 104-byte limit in the runner's temp
   folder. The test now makes its sockets under /tmp. The browser journeys'

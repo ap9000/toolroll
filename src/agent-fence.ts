@@ -798,9 +798,11 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(above.length === 0 ? [] : [`(deny file-write* ${paths("literal", above)})`]),
     ...macosNetworkRules(grants.network),
     // A workspace build reaches no unix socket but its own (a container engine's, an agent's, a database's would act
-    // outside its limits for it), whatever its network: a confined network has its own rule for this already.
+    // outside its limits for it), whatever its network: a confined network has its own rule for this already. Its open
+    // network still names hosts: the system's DNS service answers on a unix socket, and without it nothing resolves.
     ...(grants.writes === undefined || grants.network?.mode === "allowlist" ? [] : [
       "(deny network-outbound (remote unix-socket))",
+      `(allow network-outbound (remote unix-socket (path-literal ${seatbelt(MACOS_DNS_SOCKET)})))`,
       ...(grants.writes.subpaths.length === 0 ? [] : [`(allow network-outbound ${grants.writes.subpaths.map(root => `(remote unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`]),
     ]),
   ].join("\n");
@@ -825,6 +827,8 @@ export function macosNetworkRules(network: NetworkFence | undefined): string[] {
 }
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+/** Where macOS's resolver (mDNSResponder) answers: every name lookup on a Mac is a message to this socket. */
+export const MACOS_DNS_SOCKET = "/private/var/run/mDNSResponder";
 
 /** A process already inside a Seatbelt sandbox (an agent's, or a flow check zone's) can't apply another: sandbox-exec says so. */
 const NESTED_SANDBOX = /sandbox_apply: Operation not permitted/;
