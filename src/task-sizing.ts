@@ -198,11 +198,6 @@ export function installFilingSizer(sizer: Sizer, budgetMs = SIZING_BUDGET_MS): (
 }
 let budget = SIZING_BUDGET_MS;
 
-/** Whether filings in this process are classified. */
-export function filingSizerInstalled(): boolean {
-  return installed !== null;
-}
-
 /**
  * After a filing: ask the classifier (within the budget) and apply its size
  * to the still-unapproved task. Runs in the background; the filing already

@@ -139,9 +139,6 @@ export const chatTokenBodySchema = versioned(CHAT_EVENT_VERSION, { token: z.stri
 export const chatProblemBodySchema = versioned(CHAT_EVENT_VERSION, { problem: z.string().min(1) });
 export const chatActionBodySchema = z.union([chatTokenBodySchema, chatProblemBodySchema]);
 
-/** A notice carries its parts, not a body. */
-export const chatNoticeBodySchema = versioned(CHAT_EVENT_VERSION, {});
-
 export type ChatPairBody = z.infer<typeof chatPairBodySchema>;
 export type ChatMessageBody = z.infer<typeof chatMessageBodySchema>;
 export type ChatActionBody = z.infer<typeof chatActionBodySchema>;

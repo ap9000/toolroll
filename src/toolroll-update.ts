@@ -1471,5 +1471,3 @@ export function retireUpdateJob(id: string, home = homedir()): void {
   const unit = jobUnit(home);
   try { if (readFileSync(unit, "utf8").includes(`<string>${id}</string>`)) rmSync(unit, { force: true }); } catch { /* none */ }
 }
-
-export const nextScheduledAt = nextAt;

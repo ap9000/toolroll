@@ -256,10 +256,6 @@ export function withRefusal(href: string, code: keyof typeof RESULT_REFUSALS): s
  * page ceiling, admission bound before it. */
 export const REVIEW_QUEUE_CAP = 100;
 
-/** The one return road the comment endpoint honors besides its own run
- * page: the cockpit's selected-result link, exactly. */
-export const REVIEW_RETURN = /^\/review\?result=[A-Za-z0-9._~%-]{1,200}$/;
-
 /** Review priority: a deterministic, LABELED presentation aid over facts
  * the done list already carries. Band 0 goes first; the words name why.
  * It is never a verdict — the stored proof verdict stays the authority,
@@ -701,12 +697,6 @@ export function reviewCockpitPage(
     workspace: { view },
     functional: { script: reviewEvidenceScript() + (selected !== null && selected.detail !== null ? RESULT_REVIEW_SCRIPT : ""), fetches: false },
   });
-}
-
-/** The selected result: intent → proof → changes → publication → acts,
- * one scan path, every fact labeled by its source. */
-export function reviewCockpitDetail(view: ReviewCockpitView, csrf: string, noted: boolean, canRetryReview = false, tab: ResultTab = "summary", user = ""): Html {
-  return reviewCockpitDetailParts(view, csrf, noted, canRetryReview, tab, user).html;
 }
 
 /** The selected result's HTML and, for the rebuilt page, the same result

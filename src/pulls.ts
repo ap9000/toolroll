@@ -295,21 +295,6 @@ export function idleDays(pull: Pull, now: Date): number | null {
   return Math.max(0, (now.getTime() - updated) / MS_PER_DAY);
 }
 
-/** Waiting on someone, and has been for longer than they would have chosen. */
-export function isStalled(
-  pull: Pull,
-  now: Date,
-  staleDays: number = DEFAULT_STALE_DAYS,
-  markers: readonly string[] = DEFAULT_REVISION_MARKERS,
-): boolean {
-  const attention = classify(pull, markers);
-  // Nobody is blocked on a draft, and a machine that is still working is not late.
-  if (attention === "none" || attention === "machine") return false;
-
-  const idle = idleDays(pull, now);
-  return idle !== null && idle >= staleDays;
-}
-
 function firstLine(text: string): string {
   const [line = ""] = text.trim().split("\n");
   return line;

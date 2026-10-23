@@ -154,16 +154,6 @@ export function parseArgs(argv: readonly string[]): ParseResult {
 }
 
 /** The commands that operate the queue rather than report on the world. */
-/** Every verb the CLI routes OUTSIDE runOperate. Exported (with
- * OPERATE_COMMANDS) so the declared command guide's drift tests compare
- * exact sets instead of regex-reading source. "" is the no-verb report,
- * which answers as `scan`. */
-export const TOP_LEVEL_COMMANDS: readonly string[] = [
-  "", "scan", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github",
-  "link", "unlink", "update", "release", "contract", "skills list", "skills get", "skills install", "demo",
-  "connect",
-];
-
 export const OPERATE_COMMANDS = new Set([
   "up",
   // Only `lead token` reaches here; the central service's lead verbs answer first.

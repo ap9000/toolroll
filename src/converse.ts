@@ -146,21 +146,6 @@ export function settleForPrice(price: ModelPrice, tokensIn: number, tokensOut: n
   return tokensIn * price.inMicrousd + tokensOut * price.outMicrousd;
 }
 
-/** The worst a turn can cost, in integer micro-dollars: every prompt byte
- * as a token-third (generous) plus the full output allowance. */
-export function worstCaseMicrousd(model: string, promptBytes: number): number | null {
-  const price = priceOf(model);
-  if (price === null) return null;
-  const inputTokens = Math.ceil(promptBytes / 3);
-  return inputTokens * price.inMicrousd + MAX_OUTPUT_TOKENS * price.outMicrousd;
-}
-
-export function settleMicrousd(model: string, tokensIn: number, tokensOut: number): number | null {
-  const price = priceOf(model);
-  if (price === null) return null;
-  return tokensIn * price.inMicrousd + tokensOut * price.outMicrousd;
-}
-
 // ---------------------------------------------------------------- keys
 
 export const DIRECT_CHAT_PROVIDERS: readonly DirectChatProviderId[] = ["anthropic-api", "openrouter-api"];
@@ -441,11 +426,6 @@ export function leadWorstCaseForPrice(
     input += tokens(baseBytes + (s - 1) * (M * 2 * (R + C) + 2 * T));
   }
   return input * price.inMicrousd + S * MAX_OUTPUT_TOKENS * price.outMicrousd;
-}
-
-/** The bytes a tool result costs on the wire: its JSON string form. */
-export function embeddedBytes(text: string): number {
-  return Buffer.byteLength(JSON.stringify(text), "utf8");
 }
 
 export type LeadToolSchema = { name: string; description: string; inputSchema: Record<string, unknown> };

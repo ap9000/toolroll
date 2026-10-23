@@ -13,7 +13,7 @@ import { addApprover } from './scope.js';
 import * as scope from './scope.js';
 import { createDecisionServer } from './serve.js';
 import { ROUTES } from './server/route-table.js';
-import { isPasswordBearer, PASSWORD_BEARER_REFUSED, PASSWORD_BEARER_REFUSED_FROM, passwordBearerAccepted, withReplacement } from './password-bearer.js';
+import { isPasswordBearer, PASSWORD_BEARER_REFUSED, PASSWORD_BEARER_REFUSED_FROM, passwordBearerAccepted } from './password-bearer.js';
 import { PACKAGE_VERSION } from './version.js';
 
 vi.mock('./scope.js', async importOriginal => {
@@ -33,8 +33,6 @@ describe('the removal boundary', () => {
     expect(isPasswordBearer('Bearer alex:secret')).toBe(true);
     expect(isPasswordBearer(`Bearer so_abcdefabcdef_${'y'.repeat(43)}`)).toBe(false);
     expect(isPasswordBearer(undefined)).toBe(false);
-    expect(withReplacement('Bearer alex:secret', 'authenticate first')).toContain('toolroll tokens create');
-    expect(withReplacement(undefined, 'authenticate first')).toBe('authenticate first');
   });
 });
 

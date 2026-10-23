@@ -650,11 +650,6 @@ export function workCounts(rows: readonly { views: readonly WorkView[] }[]): Rec
   return counts;
 }
 
-/** All's order: rank, then most recently updated. */
-export function compareWorkRows(a: { rank: number; updatedAt: string }, b: { rank: number; updatedAt: string }): number {
-  return a.rank - b.rank || (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0);
-}
-
 /** The shell's three primary destinations, from the page's own active
  * key: every old page keeps its key and lights the destination it now
  * lives under. */

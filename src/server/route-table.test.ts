@@ -4,7 +4,7 @@
  * serve.bearer-scope tests), generated from the same table.
  */
 import { describe, expect, test } from "vitest";
-import { assertRouteTable, declaredForAnotherMethod, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
+import { assertRouteTable, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
 
 const consoleRoutes = ROUTES.filter(route => route.stage === "console");
 const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
@@ -130,7 +130,6 @@ describe("the route table", () => {
       expect(matchRoute("POST", path, "console"), path).toBeNull();
     }
     expect(matchRoute("POST", "/board", "console")).toBeNull();
-    expect(declaredForAnotherMethod("POST", "/board", "console")).toBe(true);
     expect(matchRoute("GET", "/tasks/add", "console")).toBeNull();
     expect(matchRoute("DELETE", "/board", "console")).toBeNull();
     expect(matchRoute("HEAD", "/board", "console")).toBeNull();

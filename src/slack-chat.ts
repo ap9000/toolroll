@@ -6,7 +6,6 @@ import { channelInbox } from "./chat-inbox.js";
 import { roomCommand } from "./chat-rooms.js";
 import {
   processChatEvent,
-  applyChatAction,
   planChatNotifications,
   channelAccess,
   type ChatDeliveryOptions,
@@ -201,12 +200,6 @@ const delivery = (options: SlackChatOptions): ChatDeliveryOptions => ({
 });
 export const processSlackEvent = (options: SlackChatOptions) =>
   processChatEvent(delivery(options));
-export const applySlackAction = (
-  options: SlackChatOptions,
-  event: ChatEvent,
-  binding: ChatBinding,
-  repos: readonly string[],
-) => applyChatAction(delivery(options), event, binding, repos);
 export const planSlackNotifications = (options: SlackChatOptions) =>
   planChatNotifications(delivery(options));
 export const planSlackRooms = (options: SlackChatOptions) =>

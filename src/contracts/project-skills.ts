@@ -72,7 +72,6 @@ export const skillChoiceSchema = z.strictObject({ sha: z.string(), enabled: z.bo
 /** A project's selection: each skill name and its chosen version. */
 export const skillSelectionSchema = z.record(z.string(), skillChoiceSchema);
 
-export type SkillChoice = z.infer<typeof skillChoiceSchema>;
 export type SkillSelection = z.infer<typeof skillSelectionSchema>;
 
 const snapshotFacts = {

@@ -30,13 +30,11 @@ import { LIMITS } from "./decision.js";
 import { overruns, TEXT_LIMITS, type Overrun } from "./text-limits.js";
 
 export const SOUL_CHARS = 12_000;
-const HANDLE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 export type Soul = { name: string; role: string; sections: { title: string; body: string }[] };
 
 /** A handle from a name: "Maya" → "maya". */
 export const handleOf = (name: string) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "subagent";
-export const isHandle = (value: unknown): value is string => typeof value === "string" && HANDLE.test(value);
 
 /** A soul file read: its name and role (front matter) and its sections. */
 export function parseSoul(text: string): { ok: true; soul: Soul } | { ok: false; problem: string } {

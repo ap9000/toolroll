@@ -1,5 +1,5 @@
 // Assignment direct assessments reuse custody checks; gaps remain explicit.
-import { readObservationEvidence, OBSERVATION_CAPTURE, OBSERVATION_FILE, type ObservationEvidence } from "./observations.js";
+import { readObservationEvidence, OBSERVATION_CAPTURE, type ObservationEvidence } from "./observations.js";
 import { isVerificationReceipt } from "./verification-evidence.js";
 /**
  * Inherited review context (v51, contract handoff task 3): the bounded,
@@ -79,18 +79,6 @@ export const REVIEW_CONTEXT_LIMITS = {
 export function reviewContextFileName(id: string): string {
   if (!ITEM_ID.test(id)) throw new Error("invalid context item id");
   return `REVIEW-CONTEXT-${id}.txt`;
-}
-
-export function reviewContextManifest(inventory: ReviewContextInventory): string {
-  return JSON.stringify({
-    ...inventory,
-    ...(inventory.handoff === undefined ? {} : { handoff: { artifact: inventory.handoff.artifact, sha256: inventory.handoff.sha256, file: "REVIEW-BUILDER-NOTES.json" } }),
-    ...(inventory.observations === undefined ? {} : { observations: { artifact: inventory.observations.artifact, sha256: inventory.observations.sha256, file: OBSERVATION_FILE } }),
-    format: "review-context-manifest-v1",
-    items: inventory.items.map(({ content: _content, ...item }) => ({
-      ...item, file: reviewContextFileName(item.id),
-    })),
-  });
 }
 
 export type ContextGapReason =

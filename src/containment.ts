@@ -37,7 +37,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import { captureCgroupIdentity, cgroupEmptiness, containerEmptiness } from "./container-state.js";
 import { createServer, type Server } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { envValue } from "./names.js";
 
@@ -573,9 +573,4 @@ export function jobObjectContainer(capability: ContainmentCapability, label: str
       server.close();
     },
   };
-}
-
-/** Where the Windows helper lives beside this module (dist or src). */
-export function containmentModuleDir(): string {
-  return dirname(fileURLToPath(import.meta.url));
 }

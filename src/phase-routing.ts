@@ -62,7 +62,6 @@ import {
   ROUTE_PROVIDERS,
   ROUTE_VERSION,
   TASK_SIZE_WORDS,
-  taskSizingSchema,
   type PhaseRoute,
   type RouteLeg,
   type RouteOverride,
@@ -104,8 +103,6 @@ export { ROUTE_VERSION };
  * row; which route version it holds rides in the snapshot itself. */
 export const ROUTE_ERA = 1;
 export const PHASES: readonly Phase[] = ROUTE_PHASES;
-/** The review leg remains readable in signed history but is no longer scheduled. */
-export const ACTIVE_PHASES: readonly Phase[] = ["plan", "build", "repair"];
 
 /** The risk words a route sealed before v115 may carry (history); every route since says `routine`. */
 export type RiskLevel = (typeof RISKS)[number];
@@ -133,12 +130,6 @@ export function makesNoPlan(size: TaskSizing | null | undefined, risk: RiskLevel
 /** Where a size came from, in words. */
 export function sizeSourceWords(source: SizeSource): string {
   return source === "classifier" ? "sized automatically" : source === "person" ? "set by a person" : "sized from the description";
-}
-
-/** Strict read of a stored sizing (the route contract's): exact keys, known words, bounded reason. */
-export function parseSizing(raw: unknown): TaskSizing | null {
-  const parsed = taskSizingSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
 }
 
 export function riskTitle(risk: RiskLevel): string {

@@ -47,10 +47,6 @@ import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend
 
 export type { ProviderRunner } from "./provider.js";
 
-/** The claude binary name — kept for the legacy quota rows and tests that
- * describe history; new code carries a resolved AgentSpec instead. */
-export const PROVIDER_BINARY = "claude";
-
 /** "Within seconds": how soon a silent failed run must end for its stderr to
  * be read for the sign-in signal. */
 const AUTH_EARLY_EXIT_MS = 30_000;

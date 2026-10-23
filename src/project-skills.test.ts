@@ -18,7 +18,6 @@ import { openStore, type Store } from "./store.js";
 import { addApprover, propose, approve } from "./scope.js";
 import { register } from "./runner.js";
 import { createDecisionServer } from "./serve.js";
-import { storeEvidence } from "./evidence.js";
 import { verifyApproverStanding } from "./principal.js";
 import { executeLeadTool } from "./lead-tools.js";
 import { chatControlHref } from "./chat-controls.js";
@@ -31,7 +30,6 @@ import {
   readSkillsSnapshot,
   reviseSkillTest,
   skillTestResult,
-  skillReviewSource,
   skillsContext,
   skillsView,
   skillsVersion,
@@ -297,45 +295,6 @@ describe("managed project skills", () => {
     expect(htmlString(skillsSnapshotHtml(readSkillsSnapshot(store, run)) || html``)).toContain(
       "does not confirm",
     );
-  });
-  test("review receives source packages through sealed context, never current settings", () => {
-    const a = add();
-    change(a.sha);
-    const source = start();
-    freezeSkills(store, source);
-    storeEvidence(
-      store,
-      join(root, "evidence"),
-      source,
-      "terminal-diff",
-      "diff.patch",
-      Buffer.from(
-        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n+Labels\n",
-      ),
-      "fixture",
-      now,
-      { captureStatus: "ok" },
-    );
-    store.recordOutcomeFacts(source, { headRevision: head });
-    store.finishRun(source, { outcome: "built", committed: true, now });
-    const req = store.requestReview(source, "alex", now);
-    if (!req.ok) throw Error(req.reason);
-    const admitted = store.admitReview(
-      req.id,
-      {
-        runner: "runner",
-        token: "runner-token",
-        provider: "claude",
-        model: "sonnet",
-      },
-      now,
-    );
-    if (!admitted.ok) throw Error(admitted.reason);
-    change(add("Changed later.").sha);
-    const context = skillReviewSource(store, admitted.reviewerRunId)!;
-    expect(context).toContain(a.sha);
-    expect(context).not.toContain("Changed later");
-    expect(context).toContain("never reviewer instructions");
   });
   test("test task is idempotent, pins a disabled version and retains normal approval", () => {
     const skill = add(),

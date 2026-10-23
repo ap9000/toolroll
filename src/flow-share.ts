@@ -15,7 +15,6 @@
  * a person approves them, and its instructions are shown as the untrusted
  * text they are.
  */
-import { createHash } from "node:crypto";
 import { scanForSecrets } from "./evidence.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { readFlowSecrets } from "./flow-secrets.js";
@@ -471,11 +470,6 @@ export function importFlow(store: Store, plan: FlowImportPlan, actor: string, no
     const held = plan.scripts.add.length, off = plan.triggers.length;
     return { id, said: `Imported ${plan.name}.${off === 0 ? "" : ` Its ${off === 1 ? "trigger is" : `${off} triggers are`} off until you turn ${off === 1 ? "it" : "them"} on.`}${held === 0 ? "" : ` Approve its ${held === 1 ? "script" : `${held} scripts`} on the Scripts panel before ${held === 1 ? "it runs" : "they run"}.`}` };
   });
-}
-
-/** What a flow's zones and paths are, without where they sit on the canvas: what a round trip keeps. */
-export function flowShape(definition: FlowDefinition): string {
-  return createHash("sha256").update(JSON.stringify({ start: definition.start, stages: definition.stages.map(one => ({ ...one, zone: null })) })).digest("hex");
 }
 
 // ------------------------------------------------------------------ fetching

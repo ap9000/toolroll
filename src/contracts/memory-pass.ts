@@ -108,8 +108,6 @@ export function readSavedVerdict(input: unknown): ContractResult<SavedVerdict> {
 /** One corroborating sighting: the session and its verbatim quote. A proposal keeps at most six. */
 export const memoryEvidenceSchema = z.array(z.strictObject({ session: z.string(), quote: z.string() })).max(6);
 
-export type MemoryEvidence = z.infer<typeof memoryEvidenceSchema>;
-
 /** A proposal as its row reads; its evidence is a JSON list (an older runtime reads it as one, so it has no envelope). */
 export const memoryProposalSchema = z.strictObject({
   id: z.int(),

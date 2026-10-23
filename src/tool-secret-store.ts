@@ -200,8 +200,6 @@ export function secretBackend(env: NodeJS.ProcessEnv = process.env): SecretBacke
   return currentStore(env).backend;
 }
 
-export const secretStoreKind = (): SecretStoreKind => secretBackend()?.kind ?? "files";
-
 /** Where secrets rest, in the words Settings and `toolroll integrations` share; `problem` when Toolroll's folder can't be used. */
 export function secretStorage(): { kind: SecretStoreKind; words: string; filesOnly: boolean; problem?: string } {
   const found = currentStore(process.env);
@@ -655,9 +653,4 @@ export function writeHeldSecret(state: string, name: string, file: readonly stri
     if (value === null) removeValue(backend, item);
     else writeSealed(backend, folder, item, value);
   });
-}
-
-/** Whether a held secret has a value, without reading it where that can be helped. */
-export function heldSecretSet(state: string, name: string, file: readonly string[]): boolean {
-  try { return readHeldSecret(state, name, file) !== null; } catch { return false; }
 }

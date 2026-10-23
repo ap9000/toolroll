@@ -390,7 +390,6 @@ function dropHookSecret(dir: string, trigger: number, credential: string): void 
 }
 
 const LINEAR = { name: "linear-key", file: ["linear-key"] };
-export const LINEAR_ENV = "TOOLROLL_LINEAR_KEY";
 /** The Linear API key the worker checks Linear with: the environment, or kept by Toolroll (the keychain, or an owner-only file beside the database). */
 export function readLinearKey(dir: string | null): string | null {
   const env = envValue(process.env, "LINEAR_KEY")?.trim();

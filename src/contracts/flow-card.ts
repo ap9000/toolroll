@@ -12,7 +12,6 @@ import { z } from "zod";
 import { cardOutputsSchema } from "./stage-output.js";
 
 export const FLOW_CARD_STATES = ["active", "done", "cancelled"] as const;
-export type FlowCardState = (typeof FLOW_CARD_STATES)[number];
 
 export const flowCardSchema = z.strictObject({
   id: z.int().min(1),

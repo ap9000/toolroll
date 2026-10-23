@@ -92,18 +92,6 @@ export async function updateRepos(
   return updated.ok ? { ok: true, repos: updated.registry.repos } : updated;
 }
 
-/** Persist project roots through the same lock as repo enrollment. */
-export async function updateProjectRoots(
-  file: string,
-  transform: (roots: string[]) => string[],
-): Promise<{ ok: true; roots: string[] } | RegistryUpdateFailure> {
-  const updated = await updateProjectRegistry(file, current => ({
-    ...current,
-    roots: transform(current.roots),
-  }));
-  return updated.ok ? { ok: true, roots: updated.registry.roots } : updated;
-}
-
 /** Atomically update repositories and roots without either writer erasing the other. */
 export async function updateProjectRegistry(
   file: string,

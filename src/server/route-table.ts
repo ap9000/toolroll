@@ -498,11 +498,6 @@ export function matchRoute(method: string, pathname: string, stage?: Stage): Rou
   return null;
 }
 
-/** True when some row declares this path for another method (a wrong-method request). */
-export function declaredForAnotherMethod(method: string, pathname: string, stage?: Stage): boolean {
-  return compiled.some(({ route, test }) => (stage === undefined || route.stage === stage) && !methodMatches(route.method, method) && test.test(pathname));
-}
-
 /** Refuses a malformed table at startup: duplicate ids, duplicate method+pattern rows, or a row shadowed by an earlier one for its own sample. */
 export function assertRouteTable(routes: readonly RouteDeclaration[] = ROUTES): void {
   const ids = new Set<string>(), keys = new Set<string>();
@@ -525,7 +520,3 @@ export function assertRouteTable(routes: readonly RouteDeclaration[] = ROUTES): 
   }
 }
 assertRouteTable();
-
-/** The effective policy of every row, as plain data — what the snapshot test compares. */
-export const routePolicySnapshot = (): Array<Omit<RouteDeclaration, "sample">> =>
-  ROUTES.map(({ sample: _sample, ...rest }) => ({ ...rest }));

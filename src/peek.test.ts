@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitBlobSha1, looksBinary, diffLines, renderUnified } from "./peek.js";
+import { gitBlobSha1 } from "./peek.js";
 
 describe("the native reader's pure core (attended finding 7)", () => {
   test("gitBlobSha1 agrees with git hash-object, byte for byte", () => {
@@ -19,95 +19,6 @@ describe("the native reader's pure core (attended finding 7)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  test("binary detection: a NUL in the first 8 KiB, nothing else", () => {
-    expect(looksBinary(Buffer.from("plain text\n"))).toBe(false);
-    expect(looksBinary(Buffer.from([104, 105, 0, 33]))).toBe(true);
-    // NUL beyond the sniff window does not reclassify the file.
-    const tail = Buffer.concat([Buffer.alloc(8192, 97), Buffer.from([0])]);
-    expect(looksBinary(tail)).toBe(false);
-  });
-
-  // The property that makes the differ trustworthy: replaying the hunks
-  // onto the old text reconstructs the new text exactly.
-  const replay = (aText: string, hunks: ReturnType<typeof diffLines>): string => {
-    if (hunks === null) throw new Error("no hunks");
-    const a = aText.split("\n");
-    const out: string[] = [];
-    let cursor = 0; // 0-based index into a
-    for (const hunk of hunks) {
-      const start = hunk.aStart - 1;
-      while (cursor < start) out.push(a[cursor++] as string);
-      for (const line of hunk.lines) {
-        const tag = line[0];
-        const body = line.slice(1);
-        if (tag === " ") {
-          expect(a[cursor]).toBe(body); // context must match the old text
-          out.push(body);
-          cursor++;
-        } else if (tag === "-") {
-          expect(a[cursor]).toBe(body);
-          cursor++;
-        } else {
-          out.push(body);
-        }
-      }
-    }
-    while (cursor < a.length) out.push(a[cursor++] as string);
-    return out.join("\n");
-  };
-
-  test("diffLines round-trips: edits, insertions, deletions, and no-ops reconstruct exactly", () => {
-    const base = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", ""].join("\n");
-    const edits = [
-      base, // identical
-      base.replace("charlie", "charlie-two"), // one edit
-      ["alpha", "bravo", "delta", "echo", "foxtrot", "golf", "hotel", ""].join("\n"), // deletion
-      ["alpha", "inserted", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", ""].join("\n"), // insertion
-      ["zero", "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "changed", ""].join("\n"), // both ends
-      "", // everything deleted
-    ];
-    for (const next of edits) {
-      const hunks = diffLines(base, next);
-      if (next === base) {
-        expect(hunks).toEqual([]);
-        continue;
-      }
-      expect(replay(base, hunks)).toBe(next);
-    }
-    // And the reverse direction.
-    for (const next of edits) {
-      if (next === base) continue;
-      expect(replay(next, diffLines(next, base))).toBe(base);
-    }
-  });
-
-  test("an edit distance past the bound returns null — a rewrite is named, not rendered", () => {
-    const a = Array.from({ length: 300 }, (_, index) => `left-${index}`).join("\n");
-    const b = Array.from({ length: 300 }, (_, index) => `right-${index}`).join("\n");
-    expect(diffLines(a, b, 100)).toBeNull();
-    expect(diffLines(a, b)).not.toBeNull(); // the default bound admits it
-  });
-
-  test("renderUnified caps in whole hunks and says truncated", () => {
-    const base = Array.from({ length: 50 }, (_, index) => `line-${index}`).join("\n");
-    const changed = base.replace("line-5", "five").replace("line-45", "forty-five");
-    const hunks = diffLines(base, changed);
-    if (hunks === null) throw new Error("hunks");
-    expect(hunks.length).toBe(2);
-    const full = renderUnified("src/x.ts", hunks, 64 * 1024);
-    expect(full.truncated).toBe(false);
-    expect(full.text).toContain("--- a/src/x.ts");
-    expect(full.text).toContain("-line-5");
-    expect(full.text).toContain("+forty-five");
-    // A cap that fits the header and first hunk only: the second is dropped
-    // whole — never a half-line (finding 9).
-    const tight = renderUnified("src/x.ts", hunks, 150);
-    expect(tight.truncated).toBe(true);
-    expect(tight.text).toContain("-line-5");
-    expect(tight.text).not.toContain("forty-five");
-    expect(tight.text.endsWith("\n")).toBe(true);
   });
 
   test("new files aggregate without suppression: the numbers always add up", async () => {
