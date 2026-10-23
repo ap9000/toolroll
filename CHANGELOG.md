@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.68 — 2026-10-23
+
+- **The lead chat is redesigned.** Your messages sit in grey bubbles and the
+  lead's replies read as plain text, with code blocks. Its work folds into one
+  "Worked …" line, live steps show a spinner and then a check, and anything
+  waiting on you carries a "Needs you" chip. The message box is one row that
+  grows as you type, with a send arrow (Queue while a reply runs).
+- **Comment on a line of a change.** In a result's Changes tab, a pin on any
+  line opens a one-line comment. Enter sends it to the lead as its next
+  message, naming the file, line and run and quoting the line. The thread
+  shows it as a reference, the quoted line, and your words. On a phone the
+  result opens as a sheet over the chat.
+- `toolroll release` no longer stops at merge when GitHub has already deleted
+  the merged branch: it looks a few times, 2 seconds apart, before calling the
+  delete a failure (0.9.66 and 0.9.67 both stopped there).
+- Leaner code, with every feature kept (about 5,600 fewer lines). The
+  deprecated team and native session commands are gone, and `chat` and
+  `brief` without `--local` refuse when a central profile is saved.
+
 ## 0.9.67 — 2026-10-23
 
 - **A project's checks read their own dependencies again.** 0.9.66 began
