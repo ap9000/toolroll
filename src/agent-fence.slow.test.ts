@@ -9,7 +9,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
+import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, MACOS_BASELINE, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
+
+/** Every macOS profile's opening (deny by default, the baseline, the base read and write allows) and, with an open
+ * network, its closing rules. */
+const MACOS_HEAD = ["(version 1)", "(deny default)", ...MACOS_BASELINE, "(allow file-read*)", "(allow file-write*)", "(allow file-read-metadata (vnode-type DIRECTORY))"];
+const MACOS_TAIL_OPEN = ["(allow network*)", "(deny appleevent-send)", "(deny lsopen)"];
 import { adapterFor } from "./provider.js";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
@@ -614,8 +619,7 @@ describe("what the fence gives back", () => {
     const own = join(dir, "so-tools-own");
     const profile = macosFenceProfile(["/s/secret"], { readOnly: ["/r/meta"], readable: [], lookup: ["/r/checkout"], runFolders: { root: "/private/var/folders/a.b/T", own } });
     expect(profile.split("\n")).toEqual([
-      "(version 1)",
-      "(allow default)",
+      ...MACOS_HEAD,
       '(deny file-read* file-write* (subpath "/s/secret"))',
       '(deny file-write* (subpath "/r/meta"))',
       '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-|so-cmd-)"))',
@@ -623,10 +627,10 @@ describe("what the fence gives back", () => {
       `(allow file-read* file-write* (subpath "${own}"))`,
       `(deny file-write* (literal "${own}"))`,
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
-      "(deny process-info-pidinfo)",
-      "(allow process-info-pidinfo (target same-sandbox))",
-      "(deny mach-priv-task-port)",
+      "(deny process-info*)",
+      "(allow process-info* (target same-sandbox))",
       "(deny mach-task-name)",
+      ...MACOS_TAIL_OPEN,
     ]);
     // Present launch folders are fenced by path too, for Codex and Linux; never this launch's own.
     const root = join(dir, "tmp");
@@ -858,7 +862,7 @@ describe("the macOS fence holds against renaming a folder above it and against a
     const profile = macosFenceProfile(fence, grants);
     expect(profile).toContain(`(literal "${home}")`);
     expect(profile).toContain(`(literal "${root}")`);
-    expect(profile.split("\n").at(-1)).toMatch(/^\(deny file-write\* \(literal /);
+    expect(profile.split("\n").at(-1 - MACOS_TAIL_OPEN.length)).toMatch(/^\(deny file-write\* \(literal /);
   });
 
   test.skipIf(!macosFenceAvailable())("a build can't rename a folder above a fenced path or the temp folder to read through the new name, and still writes inside them", () => {
@@ -1124,21 +1128,21 @@ describe("another project's checkouts are out of reach", () => {
   test("Seatbelt: the pool deny comes first, the own checkout's allow right after it, before every other deny and the read-only and lookup rules", () => {
     const { fence, grants } = launch("claude");
     const lines = macosFenceProfile(fence, grants).split("\n");
-    expect(lines.slice(0, 6)).toEqual([
-      "(version 1)",
-      "(allow default)",
+    const at = MACOS_HEAD.length - 2;
+    expect(lines.slice(at, at + 6)).toEqual([
+      ...MACOS_HEAD.slice(-2),
       `(deny file-read* file-write* (subpath ${q(pool)}))`,
       `(allow file-read* file-write* (subpath ${q(active)}))`,
       `(deny file-write* (literal ${q(active)}))`,
       `(allow file-read-metadata (literal ${q(pool)}) (literal ${q(join(pool, "app"))}))`,
     ]);
     // Every later deny still holds inside the checkout; the lookup and readable grants still come after them.
-    expect(lines[6]).toMatch(/^\(deny file-read\* file-write\* \(subpath /);
-    expect(lines.findIndex(line => line.startsWith("(deny file-write* (subpath"))).toBeGreaterThan(5);
-    expect(lines.findLastIndex(line => line.includes(q(join(pool, "app", "sibling-4567cdef"))))).toBeGreaterThan(5);
-    expect(lines.findIndex(line => line.startsWith("(allow file-read* file-test-existence"))).toBeGreaterThan(5);
+    expect(lines[at + 6]).toMatch(/^\(deny file-read\* file-write\* \(subpath /);
+    expect(lines.findIndex(line => line.startsWith("(deny file-write* (subpath"))).toBeGreaterThan(at + 5);
+    expect(lines.findLastIndex(line => line.includes(q(join(pool, "app", "sibling-4567cdef"))))).toBeGreaterThan(at + 5);
+    expect(lines.findIndex(line => line.startsWith("(allow file-read* file-test-existence"))).toBeGreaterThan(at + 5);
     // The pool's folders above can't be renamed to reach it under a name no rule mentions.
-    expect(lines.at(-1)).toContain(`(literal ${q(state)})`);
+    expect(lines.at(-1 - MACOS_TAIL_OPEN.length)).toContain(`(literal ${q(state)})`);
   });
 
   test("bubblewrap masks the pool, then binds the own checkout back read-write, before every other mask", () => {

@@ -44,6 +44,7 @@ Inputs: v1 of this plan, the Codex review of v1 (findings 1–12, all folded in 
 - **Same-sandbox process interactions as srt does them.**
   - Allowed within the same sandbox: `process-info*`, `signal`, `mach-priv-task-port` (mac:1091–1093).
   - Toolroll denies the task port entirely today (af:867). Relax.
+  - *As built (0.9.70):* relaxed where srt has it — only commands share a sandbox there. Where Toolroll runs the agent harness itself inside the sandbox (Claude, Gemini and ACP builds), the harness holds its provider sign-in in memory (Node is signed with `get-task-allow`), so those launches keep the deny. No Toolroll secret holder shares a build's sandbox: each tool server is its own `sandbox-exec`; the broker, egress proxy and scout browser run outside. Measured: an unentitled process gets no task port even unsandboxed (`task_for_pid` → KERN_FAILURE), and `lldb` attach failed inside a same-sandbox-allow profile.
   - `kern.procargs` stays unreadable. It isn't on srt's sysctl allowlist either.
 - **Directory metadata:** accept srt's `(allow file-read-metadata (vnode-type DIRECTORY))` (mac:929). Q7 is decided, which overrides Codex's "patch it".
 - **Sign-ins level returns, srt-style (§1.3).**
@@ -152,6 +153,7 @@ The release lane runs on a macOS runner and a Linux runner that have the prerequ
   2. writes: workspace allowlist or `(allow file-write*)` for anywhere, then denies, then mandatory denies **last**;
   3. network: open, or allowlist with proxy and broker ports, plus the socket rule and delegation denies.
 - Add a sealed per-project `machLookup` opt-in. This is srt `allowMachLookup`, for Playwright, Go TLS and the like.
+- *As built (0.9.70):* the typed rule (`FenceGrants.machLookup`, names or `prefix*`, emitted right after the baseline, before the delegation denies) lands here; its project setting and seal land with `readDeny` in C9 (one project-sandbox setting, one password flow). Finding: on macOS 26 `(deny default)` alone does **not** stop KERN_PROCARGS2 on a process outside the sandbox (srt's own baseline leaks another process's environment); Toolroll keeps its explicit `kern.procargs` sysctl deny plus `(deny process-info*)`/same-sandbox allow and `(deny mach-task-name)`. Bind and accept on local addresses stay allowed under a confined network (as before; they send nothing out). Native matrix: identical pass/fail to 0.9.69's profile (gc under workspace writes and this machine's gemini auth fail on both).
 - *Tests:*
   - **Native compatibility matrix:** `claude -p` plus `--resume`, `gemini`, one ACP agent, `git commit/gc/worktree prune`, `npm ci`, a local test server under loopback `any`, Toolroll's own Playwright check.
   - **Positive-control Apple Events test,** run under both an open and an allowlist network. The design follows srt's macos-apple-events.test.ts:67: a test-owned receiver first accepts an event unsandboxed (baseline), then refuses it sandboxed, with an `lsopen` probe the same way. Static finding: the hole is real. Not proven: the full escape, including TCC behavior [C10].
@@ -282,7 +284,7 @@ The release lane runs on a macOS runner and a Linux runner that have the prerequ
 | Ancestor holds | srt denies unlink and create; Toolroll denies all `file-write*` on the vnode (mac:822) | VnodePin |
 | Pool denied, own checkout writable | Composes only with careful write config; under anywhere it needs explicit exceptions | WriteException |
 | Git config | Mandatory deny needs a write config and is conditional; the shared Git directory is outside the anchor | Toolroll trusted binding stays |
-| Task port | Same-sandbox allow | **Accepted** (owner: match srt) |
+| Task port | Same-sandbox allow | **Accepted** (owner: match srt) for commands, checks, flows and tool servers. An agent launch (Claude, Gemini, ACP: the harness itself inside the sandbox with its sign-in, which srt never has) keeps `(deny mach-priv-task-port)` (0.9.70). |
 | Delegation services | srt allows `launchservicesd` and `lsd.mapdb` | MachDeny under an allowlist network (integrity) |
 | Directory metadata | Allowed (mac:929) | **Accepted** (Q7) |
 

@@ -41,14 +41,25 @@ describe("attack: debugger attach and reading another process's arguments or env
   test("policy: every profile denies kern.procargs, foreign process info and task ports, and keeps its own sandbox's process info", () => {
     const profile = macosFenceProfile([], NO_GRANTS).split("\n");
     expect(profile).toEqual(expect.arrayContaining([
+      "(deny default)",
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
-      "(deny process-info-pidinfo)",
-      "(allow process-info-pidinfo (target same-sandbox))",
-      "(deny mach-priv-task-port)",
+      "(deny process-info*)",
+      "(allow process-info* (target same-sandbox))",
+      // Sandbox parity (owner): the task port within the same sandbox, as Anthropic's sandbox runtime allows it.
+      "(allow mach-priv-task-port (target same-sandbox))",
       "(deny mach-task-name)",
     ]));
-    // The same-sandbox allow comes after the blanket deny, or it would be overridden.
-    expect(profile.indexOf("(allow process-info-pidinfo (target same-sandbox))")).toBeGreaterThan(profile.indexOf("(deny process-info-pidinfo)"));
+    // The same-sandbox allow comes after the blanket deny, or it would be overridden; the deny after the baseline's.
+    expect(profile.lastIndexOf("(allow process-info* (target same-sandbox))")).toBeGreaterThan(profile.indexOf("(deny process-info*)"));
+    expect(profile.indexOf("(deny process-info*)")).toBeGreaterThan(profile.indexOf("(allow process-info* (target same-sandbox))"));
+  });
+
+  test("policy: an agent launch (its harness inside the sandbox) gets no task port even within it; a command launch gets the baseline's", () => {
+    const agent = macosFenceProfile([], { ...NO_GRANTS, agentInside: true }).split("\n");
+    const command = macosFenceProfile([], NO_GRANTS).split("\n");
+    expect(agent.lastIndexOf("(deny mach-priv-task-port)")).toBeGreaterThan(agent.indexOf("(allow mach-priv-task-port (target same-sandbox))"));
+    expect(command).not.toContain("(deny mach-priv-task-port)");
+    expect(command).toContain("(allow mach-priv-task-port (target same-sandbox))");
   });
 
   test("native: KERN_PROCARGS2 and ps can't read another process's environment; the build's own processes still run", async ctx => {

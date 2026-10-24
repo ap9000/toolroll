@@ -1237,6 +1237,8 @@ describe("checkout Git preflight", () => {
         expect(checked.cwd).toBe(launch!.cwd);
         expect(checked.fence).toBe(launch!.fence);
         expect(checked.fenceGrants).toBe(launch!.fenceGrants);
+        // The agent harness runs inside the sandbox: no task port within it (sandbox parity C5).
+        expect(launch!.fenceGrants).toMatchObject({ agentInside: true });
         expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({
           poolRoots: expect.arrayContaining([join(dirname(store.databaseFile()!), "worktrees")]),
         }));

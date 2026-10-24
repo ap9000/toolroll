@@ -488,3 +488,25 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+## Anthropic sandbox-runtime — Apache-2.0
+
+Copyright Anthropic PBC.
+
+Source revision `c66fb77b28fd` of https://github.com/anthropics/sandbox-runtime (`@anthropic-ai/sandbox-runtime` v0.0.81).
+
+Adapted, not shipped whole: the macOS Seatbelt baseline (the deny-default prologue's process, mach, sysctl, iokit and
+device rules, `src/sandbox/macos-sandbox-utils.ts`) in `src/agent-fence.ts` `MACOS_BASELINE`, and the mandatory
+write-deny lists (`src/sandbox/sandbox-utils.ts` `DANGEROUS_FILES`, `getDangerousDirectories`). Modified: the optional
+Apple Events, weaker-network-isolation and user mach blocks are omitted; Toolroll adds its own denies after them.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

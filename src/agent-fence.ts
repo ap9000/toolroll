@@ -394,6 +394,11 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
   /** macOS: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
+  /** An agent harness itself runs inside this sandbox, not only its commands (invoke.ts: a Claude, Gemini or ACP build):
+   * no task port, even within the sandbox (macosFenceProfile). */
+  agentInside?: true;
+  /** macOS: the project's sealed mach services beyond the baseline (Anthropic's sandbox runtime `allowMachLookup`). */
+  machLookup?: string[];
   /** A `sign-ins` check's exact sign-in files (read) and its checkout's own Claude transcript folder (written):
    * check-access.ts, signInGrants. Bound back over the home fence by path, never a pattern or a parent folder. */
   signIns?: SignInGrants };
@@ -871,7 +876,16 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
   }))].sort();
   return [
     "(version 1)",
-    "(allow default)",
+    // Deny by default (sandbox parity C5): only what Anthropic's sandbox runtime's baseline allows (processes, its mach,
+    // sysctl and iokit allowlists), then reads and writes as below. Apple Events and Launch Services are never allowed.
+    "(deny default)",
+    ...MACOS_BASELINE,
+    ...machLookupRules(grants.machLookup ?? []),
+    "(allow file-read*)",
+    ...(grants.writes === undefined ? ["(allow file-write*)"] : []),
+    // Directory metadata, as the sandbox runtime allows it (owner Q7): realpath can walk through a denied folder's
+    // parents; no listing and no file contents come back.
+    "(allow file-read-metadata (vnode-type DIRECTORY))",
     // A workspace build writes only its allowlist (and the terminal devices); every deny and read-only rule after this
     // still holds inside it.
     ...(grants.writes === undefined ? [] : [
@@ -910,13 +924,26 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(grants.readable.length === 0 ? [] : [`(allow file-read-data ${paths("literal", [...new Set(grants.readable.map(one => dirname(one)))])})`]),
     // Its own launch folder: what is in it, never the folder itself (it can't be renamed, removed or replaced by a link).
     ...(folders?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [folders.own])})`, `(deny file-write* ${paths("literal", [folders.own])})`]),
+    // Another process's arguments and environment stay unreadable. `(deny default)` alone doesn't do it (checked on
+    // macOS 26: KERN_PROCARGS2 of a process outside the sandbox still read, as under Anthropic's sandbox runtime's own
+    // baseline): only the explicit sysctl and process-info denies do. Its own sandbox's processes stay inspectable, and
+    // no task name port is handed out (the task port itself only within the same sandbox, as the baseline has it).
     '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
-    "(deny process-info-pidinfo)",
-    "(allow process-info-pidinfo (target same-sandbox))",
-    "(deny mach-priv-task-port)",
+    "(deny process-info*)",
+    "(allow process-info* (target same-sandbox))",
     "(deny mach-task-name)",
+    // The baseline gives a process the task port of another in its own sandbox (Anthropic's sandbox runtime's rule,
+    // owner's parity decision). There the agent harness never shares the sandbox: only its commands run inside. Here a
+    // Claude, Gemini or ACP build runs whole inside it, holding its provider sign-in or key in memory, so an agent launch
+    // keeps the old deny; a command, check, flow or tool-server launch (no harness inside) gets the baseline's rule.
+    // No other secret holder ever shares a build's sandbox: each tool server is its own sandbox-exec, and the broker,
+    // the egress proxy and the scout's browser run outside it.
+    ...(grants.agentInside === true ? ["(deny mach-priv-task-port)"] : []),
     ...(above.length === 0 ? [] : [`(deny file-write* ${paths("literal", above)})`]),
     ...macosNetworkRules(grants.network),
+    // Never, whatever came before: nothing may script another application or ask Launch Services to open anything.
+    "(deny appleevent-send)",
+    "(deny lsopen)",
     // A workspace build reaches no unix socket but its own (a container engine's, an agent's, a database's would act
     // outside its limits for it), whatever its network: a confined network has its own rule for this already. Its open
     // network still names hosts: the system's DNS service answers on a unix socket, and without it nothing resolves.
@@ -936,15 +963,73 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
  * connection.
  */
 export function macosNetworkRules(network: NetworkFence | undefined): string[] {
-  if (network === undefined || network.mode === "open") return [];
+  if (network === undefined || network.mode === "open") return ["(allow network*)"];
   const local = (port: number | "*") => `(remote ip "localhost:${port}")`;
   return [
-    "(deny network-outbound)",
+    // Local servers bind and accept as before (a bind or an accept sends nothing out); every outbound connection is
+    // denied but those below.
+    '(allow network-bind (local ip "*:*"))',
+    '(allow network-inbound (local ip "*:*"))',
     `(allow network-outbound ${network.loopback === "any" ? local("*") : [network.proxyPort, ...network.brokerPorts].map(local).join(" ")})`,
-    ...(network.socketRoots.length === 0 ? [] : [`(allow network-outbound ${network.socketRoots.map(root => `(remote unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`]),
+    ...(network.socketRoots.length === 0 ? [] : [
+      "(allow system-socket (socket-domain AF_UNIX))",
+      `(allow network-bind ${network.socketRoots.map(root => `(local unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`,
+      `(allow network-outbound ${network.socketRoots.map(root => `(remote unix-socket (subpath ${seatbelt(root)}))`).join(" ")})`,
+    ]),
     `(deny mach-lookup ${DELEGATION_SERVICES.map(name => `(global-name ${seatbelt(name)})`).join(" ")})`,
   ];
 }
+
+/** A project's sealed mach services (Anthropic's sandbox runtime `allowMachLookup`): a name, or a prefix ending `*`.
+ * Only a name of reverse-DNS shape is ever emitted; a confined network's delegation denies still come after these. */
+function machLookupRules(names: readonly string[]): string[] {
+  const valid = names.filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]*\*?$/.test(name) && name.length <= 200);
+  if (valid.length === 0) return [];
+  return [`(allow mach-lookup ${valid.map(name => name.endsWith("*") ? `(global-name-prefix ${seatbelt(name.slice(0, -1))})` : `(global-name ${seatbelt(name)})`).join(" ")})`];
+}
+
+/**
+ * The macOS baseline under `(deny default)`: Anthropic's sandbox runtime's prologue, process, IPC, mach, iokit and
+ * sysctl allowlists, copied from @anthropic-ai/sandbox-runtime c66fb77 src/sandbox/macos-sandbox-utils.ts
+ * (generateSandboxProfile), Apache-2.0, Copyright Anthropic PBC; see THIRD_PARTY_NOTICES.md. Modified: its optional
+ * Apple Events, weaker-network-isolation and user mach blocks are not here (the first is never allowed; a project's own
+ * mach services come from machLookupRules), and its log tag is not used.
+ */
+export const MACOS_BASELINE: readonly string[] = [
+  "(allow process-exec)",
+  "(allow process-fork)",
+  "(allow process-info* (target same-sandbox))",
+  "(allow signal (target same-sandbox))",
+  "(allow mach-priv-task-port (target same-sandbox))",
+  "(allow user-preference-read)",
+  `(allow mach-lookup ${[
+    "com.apple.audio.systemsoundserver", "com.apple.distributed_notifications@Uv3", "com.apple.FontObjectsServer", "com.apple.fonts",
+    "com.apple.logd", "com.apple.lsd.mapdb", "com.apple.PowerManagement.control", "com.apple.system.logger",
+    "com.apple.system.notification_center", "com.apple.system.opendirectoryd.libinfo", "com.apple.system.opendirectoryd.membership",
+    "com.apple.bsd.dirhelper", "com.apple.securityd.xpc", "com.apple.coreservices.launchservicesd",
+  ].map(name => `(global-name "${name}")`).join(" ")})`,
+  "(allow ipc-posix-shm)",
+  "(allow ipc-posix-sem)",
+  '(allow iokit-open (iokit-registry-entry-class "IOSurfaceRootUserClient") (iokit-registry-entry-class "RootDomainUserClient") (iokit-user-client-class "IOSurfaceSendRight"))',
+  "(allow iokit-get-properties)",
+  "(allow system-socket (require-all (socket-domain AF_SYSTEM) (socket-protocol 2)))",
+  `(allow sysctl-read ${[
+    "hw.activecpu", "hw.busfrequency_compat", "hw.byteorder", "hw.cacheconfig", "hw.cachelinesize_compat", "hw.cpufamily", "hw.cpufrequency",
+    "hw.cpufrequency_compat", "hw.cputype", "hw.l1dcachesize_compat", "hw.l1icachesize_compat", "hw.l2cachesize_compat", "hw.l3cachesize_compat",
+    "hw.logicalcpu", "hw.logicalcpu_max", "hw.machine", "hw.memsize", "hw.ncpu", "hw.nperflevels", "hw.packages", "hw.pagesize_compat", "hw.pagesize",
+    "hw.physicalcpu", "hw.physicalcpu_max", "hw.tbfrequency_compat", "hw.vectorunit", "kern.argmax", "kern.bootargs", "kern.hostname", "kern.maxfiles",
+    "kern.maxfilesperproc", "kern.maxproc", "kern.ngroups", "kern.osproductversion", "kern.osrelease", "kern.ostype", "kern.osvariant_status",
+    "kern.osversion", "kern.secure_kernel", "kern.tcsm_available", "kern.tcsm_enable", "kern.usrstack64", "kern.version", "kern.willshutdown",
+    "machdep.cpu.brand_string", "machdep.ptrauth_enabled", "security.mac.lockdown_mode_state", "sysctl.proc_cputype", "vm.loadavg",
+  ].map(name => `(sysctl-name "${name}")`).join(" ")} ${[
+    "hw.optional.arm", "hw.optional.arm.", "hw.optional.armv8_", "hw.perflevel", "kern.proc.all", "kern.proc.pgrp.", "kern.proc.pid.", "machdep.cpu.", "net.routetable.",
+  ].map(name => `(sysctl-name-prefix "${name}")`).join(" ")})`,
+  '(allow sysctl-write (sysctl-name "kern.tcsm_enable"))',
+  "(allow distributed-notification-post)",
+  '(allow mach-lookup (global-name "com.apple.SecurityServer"))',
+  ...["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/dtracehelper", "/dev/tty"].map(path => `(allow file-ioctl (literal "${path}"))`),
+  '(allow file-ioctl file-read-data file-write-data (require-all (literal "/dev/null") (vnode-type CHARACTER-DEVICE)))',
+];
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 /** Where macOS's resolver (mDNSResponder) answers: every name lookup on a Mac is a message to this socket. */

@@ -43,7 +43,10 @@ describe("attack: another project's worktree under the state folder (incl. a sam
     const { fence, grants } = at.launch("claude");
     expect(grants.pool).toMatchObject({ deny: [at.pool], own: at.active, lookup: [at.pool, join(at.pool, "app")] });
     const profile = macosFenceProfile(fence, grants).split("\n");
-    expect(profile.slice(2, 5)).toEqual([
+    const first = profile.indexOf(`(deny file-read* file-write* (subpath ${q(at.pool)}))`);
+    // After the baseline and the base read/write allows; before every other deny.
+    expect(profile.slice(0, first).some(line => line.startsWith("(deny file"))).toBe(false);
+    expect(profile.slice(first, first + 3)).toEqual([
       `(deny file-read* file-write* (subpath ${q(at.pool)}))`,
       `(allow file-read* file-write* (subpath ${q(at.active)}))`,
       `(deny file-write* (literal ${q(at.active)}))`,

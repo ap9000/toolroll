@@ -493,7 +493,7 @@ export async function invokeAgent(
   if (fence.length > 0) {
     // A tool server keeps its own reach (it holds its tool's secrets, not the agent's code): never the agent's network,
     // nor its write allowlist (a server keeps its own state where it always has).
-    const serverGrants = (): FenceGrants => { const { network: _agentOnly, writes: _agentWrites, ...rest } = grants; return rest; };
+    const serverGrants = (): FenceGrants => { const { network: _agentOnly, writes: _agentWrites, agentInside: _agent, ...rest } = grants; return rest; };
     // Nor read what the build wrote: however its arguments are spelled, no byte of the checkout or caches can load.
     const serverDenies = [...fence, ...serverUntrusted.filter(path => existsSync(path)).map(path => realpathSync(path))];
     if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, serverDenies, serverGrants());
@@ -597,7 +597,8 @@ export async function invokeAgent(
       : ownKeyEnv.filter(name => name !== keyEnvName)),
   ];
   const launchOptions: RunOptions = {
-    ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants, confinement: "required" as const }),
+    // The agent harness runs inside this sandbox with its own sign-in: no task port within it (agent-fence.ts).
+    ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: { ...grants, agentInside: true as const }, confinement: "required" as const }),
     ...runOptions,
     ...(workspace === null ? {} : { cwd: workspace }),
     // v105: how the CLI really billed this turn (its key source, its plan's windows), read off its own stream.

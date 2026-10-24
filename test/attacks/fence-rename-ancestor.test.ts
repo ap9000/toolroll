@@ -38,7 +38,10 @@ describe("attack: renaming a parent of a fenced path or of the temp folder", () 
     expect(above).toEqual(expect.arrayContaining([state, home, dir, root]));
     expect(above).not.toContain(join(state, "up-login.txt"));
     expect(above).not.toContain("/");
-    const last = macosFenceProfile(fence, grants).split("\n").at(-1)!;
+    // The ancestor holds, after every other file rule (only the network and the never-allowed rules follow).
+    const lines = macosFenceProfile(fence, grants).split("\n");
+    const last = lines.findLast(line => line.startsWith("(deny file-write* (literal "))!;
+    expect(lines.slice(lines.indexOf(last) + 1).every(line => !/file-(read|write)/.test(line))).toBe(true);
     expect(last).toMatch(/^\(deny file-write\* \(literal /);
     for (const folder of [home, join(home, ".config"), state, root]) expect(last).toContain(`(literal ${q(folder)})`);
     // Legitimate path: contents stay writable, so the rule is a literal (the folder itself), never a subpath.
