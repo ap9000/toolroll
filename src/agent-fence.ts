@@ -44,7 +44,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -1118,15 +1118,48 @@ export function readGrantedFile(path: string): Buffer | null {
   } catch { return null; }
 }
 
-/** Remove the sign-in copies a launch left behind when its process is gone (a crash): `c-<pid>-…`, never another live one's. */
-export function sweepSignInCopies(folder: string): void {
+/**
+ * Remove the sign-in copies a launch left behind when its process is gone (a crash): `c-<pid>-…`, never another live
+ * one's. Only in the real, private folder Toolroll made (as a check makes its copy there), and never through a link:
+ * a link planted as an entry is unlinked, not followed; a copy is removed by walking it with lstat, unlinking files
+ * and links, each folder removed only while it is still the folder that was looked at.
+ */
+export function sweepSignInCopies(folder: string, look: (path: string) => import("node:fs").Stats = lstatSync, uid: number | undefined = process.getuid?.()): void {
+  if (grantFolder(folder, false) === null) return;
+  let root: import("node:fs").Stats;
+  try { root = look(folder); } catch { return; }
+  if (!root.isDirectory() || root.isSymbolicLink() || (uid !== undefined && root.uid !== uid) || (root.mode & 0o077) !== 0) return;
   let entries: string[] = [];
-  try { const held = lstatSync(folder); if (!held.isDirectory() || held.isSymbolicLink()) return; entries = readdirSync(folder); } catch { return; }
+  try { entries = readdirSync(folder); } catch { return; }
   for (const entry of entries) {
-    const pid = Number(/^c-(\d+)-/.exec(entry)?.[1] ?? NaN);
-    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    const match = /^c-(\d+)-/.exec(entry);
+    if (match === null) continue;
+    const path = join(folder, entry);
+    let held: import("node:fs").Stats;
+    try { held = look(path); } catch { continue; }
+    if (held.isSymbolicLink()) { try { unlinkSync(path); } catch { /* gone */ } continue; }
+    if (!held.isDirectory() || (uid !== undefined && held.uid !== uid)) continue;
+    const pid = Number(match[1]);
     let alive = true;
     try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code === "EPERM"; }
-    if (!alive) rmSync(join(folder, entry), { recursive: true, force: true });
+    if (!alive) removeWithoutFollowing(path, held, look);
   }
+}
+
+/** Remove a folder and what is in it, following no link: every child looked at with lstat, files and links unlinked,
+ * each folder removed only while it is still the one first seen (device and inode). */
+function removeWithoutFollowing(path: string, seen: import("node:fs").Stats, look: (path: string) => import("node:fs").Stats): void {
+  let children: string[] = [];
+  try { children = readdirSync(path); } catch { return; }
+  for (const child of children) {
+    const at = join(path, child);
+    let held: import("node:fs").Stats;
+    try { held = look(at); } catch { continue; }
+    if (held.isDirectory() && !held.isSymbolicLink()) removeWithoutFollowing(at, held, look);
+    else { try { unlinkSync(at); } catch { /* gone */ } }
+  }
+  try {
+    const now = look(path);
+    if (now.isDirectory() && !now.isSymbolicLink() && now.dev === seen.dev && now.ino === seen.ino) rmdirSync(path);
+  } catch { /* gone or changed: left alone */ }
 }

@@ -175,10 +175,44 @@ describe.skipIf(!FENCED)("the sign-in copies folder (Linux checks' copies, fence
   test("a copy a launch left behind when it died is swept; a live launch's copy stays", async () => {
     const { sweepSignInCopies } = await import("./agent-fence.js");
     const folder = join(dir, "copies");
-    mkdirSync(folder);
-    mkdirSync(join(folder, "c-999999-dead"));
+    mkdirSync(folder, { mode: 0o700 });
+    mkdirSync(join(folder, "c-999999-dead", "inner"), { recursive: true });
+    writeFileSync(join(folder, "c-999999-dead", "inner", "0"), "token");
     mkdirSync(join(folder, `c-${process.pid}-live`));
     sweepSignInCopies(folder);
     expect(readdirSync(folder)).toEqual([`c-${process.pid}-live`]);
   });
+
+  test("the sweep follows no link: a linked root is ignored; a planted link entry is unlinked and its target survives", async () => {
+    const { sweepSignInCopies } = await import("./agent-fence.js");
+    const target = join(dir, "precious");
+    mkdirSync(join(target, "c-999999-x"), { recursive: true });
+    writeFileSync(join(target, "c-999999-x", "keep"), "keep");
+    // A linked sweep root: nothing in its target is touched.
+    symlinkSync(target, join(dir, "linked-copies"));
+    sweepSignInCopies(join(dir, "linked-copies"));
+    expect(readdirSync(join(target, "c-999999-x"))).toEqual(["keep"]);
+    // A link planted as an entry (and one planted inside a dead copy): unlinked, never followed.
+    const folder = join(dir, "copies2");
+    mkdirSync(folder, { mode: 0o700 });
+    symlinkSync(join(target, "c-999999-x"), join(folder, "c-999998-planted"));
+    mkdirSync(join(folder, "c-999997-dead"));
+    symlinkSync(target, join(folder, "c-999997-dead", "out"));
+    sweepSignInCopies(folder);
+    expect(readdirSync(folder)).toEqual([]);
+    expect(readdirSync(join(target, "c-999999-x"))).toEqual(["keep"]);
+  });
+
+  test("an entry someone else owns is left alone", async () => {
+    const { sweepSignInCopies } = await import("./agent-fence.js");
+    const { lstatSync: real } = await import("node:fs");
+    const folder = join(dir, "copies3");
+    mkdirSync(folder, { mode: 0o700 });
+    mkdirSync(join(folder, "c-999999-theirs"));
+    const uid = process.getuid!();
+    const look = (path: string) => { const held = real(path); return path.endsWith("c-999999-theirs") ? Object.assign(Object.create(Object.getPrototypeOf(held)), held, { uid: uid + 1 }) : held; };
+    sweepSignInCopies(folder, look, uid);
+    expect(readdirSync(folder)).toEqual(["c-999999-theirs"]);
+  });
+
 });
