@@ -1,0 +1,25 @@
+name: youiyoux
+
+# Every pull request: what its UI changes add that Toolroll already has (a hand-built copy of a
+# component, a hardcoded colour, spacing or radius a variable already holds), as notes on those
+# lines in Files changed. Advisory: it always passes and is not one of REQUIRED_PR_CHECKS, so a
+# release never waits for it. Pinned, so a youiyoux release never changes what it says.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ui:
+    name: youiyoux · UI drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npx -y youiyoux@0.1.21 check --diff origin/${{ github.base_ref }} --format github
