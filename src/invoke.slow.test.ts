@@ -27,6 +27,11 @@ import { fakePid } from "../test/fake-pid.js";
 // Gateway tests must use a disposable provider home, never the operator's
 // credentials. Private-home setup is mandatory even with an injected runner.
 let providerHome: string;
+/** The fence fenceFor makes, with its denied paths replaced by `paths` (its grants as made). */
+const { fenceFor: realFenceFor } = await vi.importActual<typeof import("./agent-fence.js")>("./agent-fence.js");
+function fenceOnly(paths: string[]): void {
+  vi.mocked(fencing.fenceFor).mockImplementation((kind, ctx) => ({ ...realFenceFor(kind, ctx), fence: paths }));
+}
 beforeEach(() => { providerHome = mkdtempSync(join(tmpdir(), "so-invoke-home-")); });
 afterEach(() => rmSync(providerHome, { recursive: true, force: true }));
 function invokeAgent(...args: Parameters<typeof invokeGateway>): ReturnType<typeof invokeGateway> {
@@ -1086,7 +1091,7 @@ describe("checkout Git preflight", () => {
     bindCheckout(store, tree);
     const cleanup = vi.fn(() => rmSync(privateDir, { recursive: true, force: true }));
     vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: { FENCE_FIXTURE: "same" }, omitEnv: [], privateDir, cleanup });
-    vi.mocked(fencing.agentFence).mockReturnValue([blocked]);
+    fenceOnly([blocked]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
     const binary = join(providerHome, "gemini");
     writeFileSync(binary, "#!/bin/sh\necho 0.57.0\n");
@@ -1149,13 +1154,13 @@ describe("checkout Git preflight", () => {
     bindCheckout(store, tree);
     const privateDir = join(providerHome, "so-tools-fixture");
     mkdirSync(privateDir, { recursive: true });
-    vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
+    fenceOnly([join(providerHome, "denied")]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(macos);
     vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
     vi.mocked(command.run).mockResolvedValue(OK);
     vi.mocked(projectTools.prepareRunTools).mockImplementation(async () => {
       // Nothing of the fence exists yet: the decision can't have come from it, or from the launch's own folder.
-      expect(fencing.agentFence).not.toHaveBeenCalled();
+      expect(fencing.fenceFor).not.toHaveBeenCalled();
       return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined, ...(own === "with" ? { privateDir } : {}) };
     });
     try {
@@ -1178,7 +1183,7 @@ describe("checkout Git preflight", () => {
     mkdirSync(join(providerHome, "empty-config"));
     // The tools are prepared for the macOS sandbox, then the fence comes back empty: the run would have none.
     vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: {}, omitEnv: [], cleanup, privateDir: join(providerHome, "empty-config"), ...(hasTools ? { serverPids: () => [] } : {}) });
-    vi.mocked(fencing.agentFence).mockReturnValue([]);
+    fenceOnly([]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
     try {
       registerBuilder(store);
@@ -1202,7 +1207,7 @@ describe("checkout Git preflight", () => {
     const store = openStore(scenario === "no-fence" ? ":memory:" : join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
     bindCheckout(store, tree);
-    vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
+    fenceOnly([join(providerHome, "denied")]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(scenario !== "no-native-wrapper");
     vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
     try {
@@ -1232,7 +1237,7 @@ describe("checkout Git preflight", () => {
         expect(checked.cwd).toBe(launch!.cwd);
         expect(checked.fence).toBe(launch!.fence);
         expect(checked.fenceGrants).toBe(launch!.fenceGrants);
-        expect(fencing.fenceGrants).toHaveBeenCalledWith(expect.objectContaining({
+        expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({
           poolRoots: expect.arrayContaining([join(dirname(store.databaseFile()!), "worktrees")]),
         }));
       }

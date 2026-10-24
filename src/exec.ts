@@ -217,6 +217,9 @@ export class ContainmentRefusal extends Error {
  */
 export function confined(file: string, args: readonly string[], bag: { fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined }): { file: string; args: string[] } {
   const fence = bag.fence ?? [];
+  // A fence is only ever made by fenceFor (agent-fence.ts), which marks it required: one without the mark was put
+  // together some other way, and would run bare wherever no OS fence applies. Nothing runs.
+  if (fence.length > 0 && bag.confinement !== "required") throw new ContainmentRefusal("This process was given a fence that isn't marked required, so it was not started.");
   if (fence.length > 0 && macosFenceAvailable()) return macosFenced(file, args, fence, bag.fenceGrants);
   if (fence.length > 0 && linuxFenceAvailable()) return linuxFenced(file, args, fence, bag.fenceGrants);
   if (bag.confinement === "required") {

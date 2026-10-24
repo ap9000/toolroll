@@ -340,7 +340,7 @@ describe("the agent fence", () => {
       expect(boundary.shell).toContain(other);
       expect(boundary.readOnly).toEqual([metadata]);
       const grants = fenceGrants({ databaseFile: null, worktree: active, boundary });
-      const fenced = (script: string, rules = grants) => run("/bin/bash", ["-c", script], { cwd: active, processGroup: true, fence: boundary.shell, fenceGrants: rules, env: fencedGitEnv({}) });
+      const fenced = (script: string, rules = grants) => run("/bin/bash", ["-c", script], { cwd: active, processGroup: true, confinement: "required", fence: boundary.shell, fenceGrants: rules, env: fencedGitEnv({}) });
 
       const inside = await fenced([
         "git config gc.reflogExpire; git config gc.reflogExpireUnreachable",
@@ -404,9 +404,9 @@ describe("the agent fence", () => {
     // The child writes what it could read into the worktree (always reachable).
     const outcome = join(worktree, "outcome.txt");
     const script = `const fs=require("fs");let r;try{r=fs.readFileSync(${JSON.stringify(join(state, "up-login.txt"))},"utf8")}catch(e){r=e.code}fs.writeFileSync(${JSON.stringify(outcome)},r)`;
-    await run(process.execPath, ["-e", script], { processGroup: true, fence });
+    await run(process.execPath, ["-e", script], { processGroup: true, confinement: "required", fence });
     expect(readFileSync(outcome, "utf8")).toBe("EPERM");
-    await runStreamJsonl(process.execPath, ["-e", script], { processGroup: true, fence });
+    await runStreamJsonl(process.execPath, ["-e", script], { processGroup: true, confinement: "required", fence });
     expect(readFileSync(outcome, "utf8")).toBe("EPERM");
     // Without a fence the same spawn reads it: the test would catch a no-op fence.
     await run(process.execPath, ["-e", script], { processGroup: true });
@@ -671,7 +671,7 @@ describe("what the fence gives back", () => {
     symlinkSync(join(state, "deps", OTHER_KEY, "node_modules", "pkg"), join(worktree, "node_modules", "pkg"), "dir");
     const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home: join(dir, "home") });
     const foreign = await run("/bin/bash", ["-c", `${JSON.stringify(process.execPath)} -e 'console.log(require("pkg").value)' 2>/dev/null || echo foreign-refused`],
-      { cwd: worktree, processGroup: true, fence, fenceGrants: fenceGrants({ databaseFile: join(state, "orders.db"), worktree, linked: LINKED }) });
+      { cwd: worktree, processGroup: true, confinement: "required", fence, fenceGrants: fenceGrants({ databaseFile: join(state, "orders.db"), worktree, linked: LINKED }) });
     expect(foreign.stdout.trim()).toBe("foreign-refused");
   });
 
@@ -716,7 +716,7 @@ describe("what the fence gives back", () => {
       `ls ${JSON.stringify(join(state, "deps"))} 2>/dev/null || echo deps-unlisted`,
       `(echo x >> ${JSON.stringify(linked)}) 2>/dev/null && echo changed-shared || echo shared-read-only`,
       `cat ${JSON.stringify(join(state, "runner-token"))} 2>/dev/null || echo state-still-fenced`,
-    ].join("\n")], { cwd: worktree, processGroup: true, fence, fenceGrants: grants });
+    ].join("\n")], { cwd: worktree, processGroup: true, confinement: "required", fence, fenceGrants: grants });
     expect(ran.stdout.trim().split("\n"), ran.stderr).toEqual([LINKED_KEY, `ran ${LINKED_KEY}`, "other-copy-unreadable", "deps-unlisted", "shared-read-only", "state-still-fenced"]);
     // A file written into the deps folder after launch stays unreadable, beside the folder and inside the linked copy.
     const flag = join(worktree, "written.flag");
@@ -726,14 +726,14 @@ describe("what the fence gives back", () => {
       ...late.map(path => `cat ${JSON.stringify(path)} 2>/dev/null || echo late-unreadable`),
       `${JSON.stringify(process.execPath)} -e 'console.log(require("pkg").value)'`,
       "PATH=\"$PWD/node_modules/.bin:$PATH\" pkg-cli",
-    ].join("\n")], { cwd: worktree, processGroup: true, fence, fenceGrants: grants, timeoutMs: 30_000 });
+    ].join("\n")], { cwd: worktree, processGroup: true, confinement: "required", fence, fenceGrants: grants, timeoutMs: 30_000 });
     await new Promise(done => setTimeout(done, 500));
     for (const path of late) writeFileSync(path, "synthetic-late-secret");
     writeFileSync(flag, "");
     const after = await waiting;
     expect(after.stdout.trim().split("\n"), after.stderr).toEqual(["late-unreadable", "late-unreadable", "late-unreadable", LINKED_KEY, `ran ${LINKED_KEY}`]);
     // Control: the deny alone (the fence before this change) breaks the same import.
-    const before = await run("/bin/bash", ["-c", `${JSON.stringify(process.execPath)} -e 'require("pkg")' 2>/dev/null && echo imported || echo import-failed`], { cwd: worktree, processGroup: true, fence });
+    const before = await run("/bin/bash", ["-c", `${JSON.stringify(process.execPath)} -e 'require("pkg")' 2>/dev/null && echo imported || echo import-failed`], { cwd: worktree, processGroup: true, confinement: "required", fence });
     expect(before.stdout.trim()).toBe("import-failed");
   });
 });
@@ -785,7 +785,7 @@ describe("a build's tool secrets behind the macOS fence", () => {
         console.log("tool " + answer.result.content[0].text);`;
       try {
         // The tool starts from inside the fence first, so its server has a pid to probe.
-        const started = await run(process.execPath, ["--input-type=module", "-e", client, notes.url, notes.headers.Authorization], { processGroup: true, fence: fenceOf.fence, fenceGrants: fenceOf.grants });
+        const started = await run(process.execPath, ["--input-type=module", "-e", client, notes.url, notes.headers.Authorization], { processGroup: true, confinement: "required", fence: fenceOf.fence, fenceGrants: fenceOf.grants });
         expect(started.stdout.trim(), started.stderr).toBe(`tool ${createHash("sha256").update(secret).digest("hex")}`);
         const [serverPid] = tools.serverPids?.() ?? [];
         expect(serverPid).toEqual(expect.any(Number));
@@ -797,7 +797,7 @@ describe("a build's tool secrets behind the macOS fence", () => {
           // Every descriptor the shell inherited that can be read as a file.
           "for fd in /dev/fd/*; do [ -f \"$fd\" ] && head -c 65536 \"$fd\"; done; echo",
           `${JSON.stringify(python)} ${JSON.stringify(join(dir, "probe.py"))} ${process.pid} ${serverPid}`,
-        ].join("\n")], { processGroup: true, fence: fenceOf.fence, fenceGrants: fenceOf.grants });
+        ].join("\n")], { processGroup: true, confinement: "required", fence: fenceOf.fence, fenceGrants: fenceOf.grants });
         expect(spawned.mock.calls.map(([file, args]) => [file, args?.slice(0, 3)])).toEqual([
           ["/usr/bin/sandbox-exec", ["-p", macosFenceProfile(fenceOf.fence, fenceOf.grants), "/bin/bash"]],
         ]);

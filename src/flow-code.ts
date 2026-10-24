@@ -15,14 +15,17 @@
  *   keys are out of reach), under a time limit, with the setup's plain
  *   environment rather than this process's.
  */
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Runner } from "./backend.js";
+import { buildCacheEnv, buildCacheFolder, checkLaunchRoot, fenceFor, linuxFenceAvailable, macosFenceAvailable, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist, type FencePolicy, type LaunchFence } from "./agent-fence.js";
+import type { FlowScriptRow, Store } from "./store.js";
+import { poolRootOf } from "./worktree.js";
 import { SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { scrubSecrets } from "./flow-secrets.js";
-import type { FlowScriptRow } from "./store.js";
 import { TEXT_LIMITS } from "./text-limits.js";
 import { projectFile } from "./project-file.js";
 
@@ -51,7 +54,9 @@ export type CodeRun = {
   secrets: Record<string, string>;
   scratch: string;
   shell: Runner;
-  fence: readonly string[];
+  /** Where it runs from (flowLaunch): its fence, and the launch folder its input and an inline script are written to;
+   * null only where there is nothing to fence (a store with no database file). */
+  launch: FlowLaunch | null;
 };
 /** `printed`: everything it printed (secrets blanked), for a trigger to read items from; `output` is what a card keeps. */
 export type CodeResult = { state: "passed" | "failed"; exitCode: number | null; output: string; printed: string; goTo: string | null; log: string; said: string };
@@ -73,7 +78,10 @@ export async function runCode(run: CodeRun): Promise<CodeResult> {
   const language = script.language;
   const tag = randomBytes(6).toString("hex");
   mkdirSync(run.scratch, { recursive: true });
-  const inputFile = join(run.scratch, `flow-input-${tag}.json`);
+  // The input and an inline script live in the launch's own folder, the one place beside its working folder its fence
+  // gives back (every other launch folder, and every other flow copy in the scratch pool, stay out of reach).
+  const files = run.launch?.folder ?? run.scratch;
+  const inputFile = join(files, `flow-input-${tag}.json`);
   let scriptFile: string | null = null;
   try {
     writeFileSync(inputFile, JSON.stringify(run.input), { mode: 0o600 });
@@ -81,7 +89,7 @@ export async function runCode(run: CodeRun): Promise<CodeResult> {
       scriptFile = projectFile(run.root, script.file);
       if (scriptFile === null) return { state: "failed", exitCode: null, output: "", printed: "", goTo: null, log: "", said: `${script.name} runs ${script.file}, which isn't a file in the project.` };
     } else {
-      const own = join(run.scratch, `flow-script-${tag}.${EXTENSION[language]}`);
+      const own = join(files, `flow-script-${tag}.${EXTENSION[language]}`);
       writeFileSync(own, `${script.body}\n`, { mode: 0o700 });
       chmodSync(own, 0o700);
       scriptFile = own;
@@ -91,7 +99,7 @@ export async function runCode(run: CodeRun): Promise<CodeResult> {
     // first without breaking anything. Only our own paths are in the command; the card is only data.
     const ran = await run.shell("/bin/sh", ["-c", 'exec "$@" < "$FLOW_INPUT"', "flow-script", runtime.file, ...runtime.args], {
       cwd: run.cwd, timeoutMs: script.timeoutMinutes * 60_000, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
-      env: { ...run.env, ...run.secrets, FLOW_INPUT: inputFile }, fence: run.fence,
+      env: { ...run.env, ...run.secrets, ...(run.launch?.env ?? {}), FLOW_INPUT: inputFile }, ...(run.launch?.fence ?? {}),
     });
     const printed = codeOutput(ran.stdout, run.secrets);
     const all = scrubSecrets(ran.stdout.slice(0, 1_000_000), run.secrets);
@@ -150,4 +158,47 @@ export function cardsFromOutput(stdout: string): { key: string; title: string; d
     if (trimmed.startsWith("{")) { try { return asItem(JSON.parse(trimmed)); } catch { return asItem(trimmed); } }
     return asItem(trimmed);
   }).filter((one): one is NonNullable<typeof one> => one !== null);
+}
+
+/**
+ * Where one flow launch runs (docs/plans/sandbox-parity.md C1): the fence `fenceFor` makes for a flow's setup, script
+ * or trigger, around `folder` (a copy of the card's work, bound to its project, or a clean folder), with a launch folder
+ * of its own for its input, an inline script and its temp files; writes as the project's writes setting allows (its
+ * folder, the copy's Git data, its project's caches); the scratch pool denied around its own folder; and its network
+ * open, as flows' scripts have always had it (they reach the services their secrets are for; no approval seals a
+ * network for them). The fence is required: where this machine can't confine it, it runs only when an instance operator
+ * allowed unconfined agents, and otherwise nothing runs and the card says why.
+ */
+export type FlowLaunch = { folder: string; env: Record<string, string>; fence?: LaunchFence; dispose(): void };
+
+export function flowLaunch(store: Store, options: { repo: string; folder: string; scratch: string; copy: boolean; available?: () => boolean; policy?: FencePolicy; home?: string }): FlowLaunch | null | { problem: string } {
+  const databaseFile = store.databaseFile();
+  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return null;
+  const available = options.available ?? (() => macosFenceAvailable() || linuxFenceAvailable());
+  const own = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
+  const dispose = () => rmSync(own, { recursive: true, force: true });
+  const temp = join(own, "tmp");
+  mkdirSync(temp, { mode: 0o700 });
+  const env: Record<string, string> = { TMPDIR: temp, TMP: temp, TEMP: temp };
+  if (!available()) {
+    if (store.unfencedAgentsAllowed()) return { folder: own, env, dispose };
+    dispose();
+    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
+  }
+  try {
+    const poolRoots = [join(dirname(databaseFile), "worktrees"), options.scratch, ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+    // A copy is held to its project by the plane's own record of the repository, never what the copy says.
+    const binding = options.copy ? trustedWorktreeBinding(options.repo, options.folder, poolRoots) : null;
+    // The policy its flow sealed; nothing sealed is v1 (the home configuration denied), never a wider one implicitly.
+    const home = options.home ?? homedir();
+    const boundary = taskBoundary({ worktree: options.folder, provider: "command", home, binding, policy: options.policy ?? 1 });
+    const cache = buildCacheFolder(options.repo, home);
+    const allowed = store.projectWrites(options.repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home, worktree: options.folder, binding, launchFolder: own, cache });
+    const fence = fenceFor("flow", { databaseFile, worktree: options.folder, home, boundary, binding, runFolders: runFolders(own), poolRoots, extra: allowed?.deny ?? [],
+      writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, network: { mode: "open" } });
+    return { folder: own, env: { ...env, ...(allowed === null ? {} : buildCacheEnv(cache)) }, fence, dispose };
+  } catch {
+    dispose();
+    return { problem: "The flow's copy couldn't be bound to its project, so nothing ran." };
+  }
 }

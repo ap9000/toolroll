@@ -39,7 +39,7 @@ import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInCopiesRoot, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
-import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
@@ -597,7 +597,7 @@ export async function invokeAgent(
       : ownKeyEnv.filter(name => name !== keyEnvName)),
   ];
   const launchOptions: RunOptions = {
-    ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants }),
+    ...(fenced.wrap.length === 0 ? {} : { fence: fenced.wrap, fenceGrants: grants, confinement: "required" as const }),
     ...runOptions,
     ...(workspace === null ? {} : { cwd: workspace }),
     // v105: how the CLI really billed this turn (its key source, its plan's windows), read off its own stream.
@@ -659,7 +659,7 @@ export async function invokeAgent(
         const insideFence = (file: string, args: readonly string[]) => codexHarness
           ? runCommand(executable, ["sandbox", ...codexFenceArgv(fence, invocation.skipPermissions, grants),
             "-P", "standing-orders", "--", file, ...args], probeOptions)
-          : runCommand(file, args, { ...probeOptions, fence: launchOptions.fence!,
+          : runCommand(file, args, { ...probeOptions, fence: launchOptions.fence!, confinement: "required",
             ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }) });
         const check = await insideFence("git", gitArgs);
         if (check.code !== 0) {
@@ -674,7 +674,7 @@ export async function invokeAgent(
     // key in the launching environment must be absent. No agent takes part, so no agent can fake it.
     if (acpCheckAsk?.isolation !== undefined && launchOptions.fence !== undefined && workspace !== null) {
       // processGroup: run() applies the fence only on the process-group road (a plain execFile carries none).
-      const probe = { cwd: workspace, env: childEnv, omitEnv: childOmitEnv, fence: launchOptions.fence, ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }), timeoutMs: 15_000, processGroup: true };
+      const probe = { cwd: workspace, env: childEnv, omitEnv: childOmitEnv, fence: launchOptions.fence, confinement: "required" as const, ...(launchOptions.fenceGrants === undefined ? {} : { fenceGrants: launchOptions.fenceGrants }), timeoutMs: 15_000, processGroup: true };
       const read = await runCommand("/bin/cat", [acpCheckAsk.isolation.file], probe);
       const env = await runCommand("/usr/bin/env", [], probe);
       acpIsolation = {
@@ -1044,15 +1044,15 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     // Git data, its launch folder, its project's caches and the provider state its CLI must write.
     const allowed = worktree === null || row === null || writes !== "workspace" ? null
       : writeAllowlist({ provider, home: keyHome ?? homedir(), worktree, binding, launchFolder: ownTools, cache: buildCacheFolder(row.repo, keyHome ?? homedir()) });
-    const fence = agentFence({ databaseFile, worktree, ...home, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] });
-    const grants = fenceGrants({ databaseFile, worktree, boundary, runFolders: folders, linked: linkedFor(store, worktree), binding, ...home, poolRoots });
+    // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
+    // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
+    // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
+    const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots,
+      extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly } });
     return {
-      fence,
+      fence: launch.fence,
       fileTools: boundary?.fileTools ?? [],
-      // The shared install is granted only as the plane linked it: this checkout's project and stamped setup.
-      // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
-      // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
-      grants: allowed === null ? grants : { ...grants, writes: allowed.writes, readOnly: [...new Set([...grants.readOnly, ...allowed.readOnly])].sort() },
+      grants: launch.fenceGrants,
       // The checkout's own Git data, which a private /tmp gives back beside the checkout (agent-fence.ts linuxFenced).
       gitPaths: binding === null ? [] : [binding.gitdir, join(binding.main, ".git")],
       ...(allowed === null || row === null ? {} : { cache: buildCacheFolder(row.repo, keyHome ?? homedir()) }),
@@ -1103,6 +1103,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
           ...options,
           fence: fenced.fence,
           fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
+          confinement: "required",
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
         });
@@ -1148,9 +1149,9 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
       const allowed = store.projectWrites(repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home: homedir(), worktree: checkout, binding, launchFolder: own, cache });
       const database = options?.env?.["TOOLROLL_DB"];
       const checkData = allowed === null || database === undefined ? null : grantFolder(dirname(database), false);
-      const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, linked: linkedFor(store, checkout), binding, poolRoots });
-      const grants: FenceGrants = allowed === null ? base
-        : { ...base, readOnly: [...new Set([...base.readOnly, ...allowed.readOnly])].sort(), writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] } };
+      const launch = fenceFor("check", { databaseFile, worktree: checkout, boundary, binding, runFolders: folders, poolRoots, extra: allowed?.deny ?? [], linked: linkedFor(store, checkout),
+        writes: allowed === null ? null : { writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] }, readOnly: allowed.readOnly } });
+      const grants = launch.fenceGrants;
       // With sign-ins, under the network its caller proved for it (the narrowest of its results' sealed check networks and
       // the project's current one): none given, nothing runs.
       const signIns = access !== "sign-ins" ? null : network === undefined ? { problem: "A check with sign-ins has no network sealed for it, so nothing ran." }
@@ -1159,8 +1160,9 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
       try {
         return await inner(file, args, {
           ...options,
-          fence: agentFence({ databaseFile, worktree: checkout, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] }),
+          fence: launch.fence,
           fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
+          confinement: launch.confinement,
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
         });

@@ -247,7 +247,7 @@ export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileToo
  * The task's worktree, the files Toolroll makes for the run (in the
  * system temp folder) and everything else stay as they are.
  */
-export function taskBoundary(options: { worktree: string; provider: string; home?: string; binding?: WorktreeBinding | null }): TaskBoundary {
+export function taskBoundary(options: { worktree: string; provider: string; home?: string; binding?: WorktreeBinding | null; policy?: FencePolicy }): TaskBoundary {
   const home = real(options.home ?? homedir());
   const worktree = real(options.worktree);
   const main = options.binding?.main ?? null;
@@ -255,6 +255,9 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   const needed = [worktree, main, gitdir].filter((path): path is string => path !== null);
   const own = new Set(PROVIDER_HOME[options.provider] ?? []);
   const present = (names: readonly string[]) => names.map(name => join(home, name)).filter(path => existsSync(path)).map(real);
+  // Policy v2 (docs/plans/sandbox-parity.md §1.2): the home folder, the repositories beside this one and the project's
+  // primary checkout are read as Anthropic's sandbox runtime reads them; only writes to the primary checkout stay denied.
+  if ((options.policy ?? 1) === 2) return v2Boundary(worktree, main, gitdir);
   const shell = new Set(present(HOME_CONFIGURATION.filter(name => !own.has(name))));
   const protectedShell = [...shell];
   const repository = (path: string) => existsSync(join(path, ".git"));
@@ -281,11 +284,39 @@ export function taskBoundary(options: { worktree: string; provider: string; home
       if (entry !== ".git" && path !== worktree && !inside(worktree, path)) shell.add(path);
     }
   }
-  // Git needs this worktree's metadata and the shared objects/refs, but
-  // must not prune or rewrite the metadata of another task's checkout. It
-  // still reads that metadata (gc keeps what a sibling's HEAD and index
-  // reach) and looks up the checkout it names: a checkout it can't see is
-  // one `git worktree prune` deletes the entry of.
+  const { readOnly, lookup } = siblingGitData(main, gitdir);
+  const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
+  // By name too, present or not: a build started while ~/.codex is absent must never make it (and later swap it for a
+  // link while a sign-ins check reads through it). Only Seatbelt uses these (macosFenceProfile); bubblewrap can only
+  // mask what exists, and Codex's own sandbox takes existing paths.
+  const homeNames = HOME_CONFIGURATION.filter(name => !own.has(name)).map(name => join(home, name)).sort();
+  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames };
+}
+
+/** A v2 boundary: nothing of the home folder, the repositories beside this one or the primary checkout is denied to
+ * read; the primary checkout (all but its `.git`, which this worktree's Git needs) is never written; other tasks' Git
+ * metadata is read, never written, as under v1. */
+function v2Boundary(worktree: string, main: string | null, gitdir: string | null): TaskBoundary {
+  const noWrite = new Set<string>();
+  if (main !== null && main !== worktree) {
+    let entries: string[] = [];
+    try { entries = readdirSync(main); } catch { entries = []; }
+    for (const entry of entries) {
+      const path = join(main, entry);
+      if (entry !== ".git" && path !== worktree && !inside(worktree, path)) noWrite.add(path);
+    }
+  }
+  const { readOnly, lookup } = siblingGitData(main, gitdir);
+  for (const path of noWrite) readOnly.add(path);
+  return { protectedShell: [], shell: [], fileTools: [], readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames: [] };
+}
+
+/**
+ * Git needs this worktree's metadata and the shared objects/refs, but must not prune or rewrite the metadata of another
+ * task's checkout. It still reads that metadata (gc keeps what a sibling's HEAD and index reach) and looks up the
+ * checkout it names: a checkout it can't see is one `git worktree prune` deletes the entry of.
+ */
+function siblingGitData(main: string | null, gitdir: string | null): { readOnly: Set<string>; lookup: Set<string> } {
   const readOnly = new Set<string>();
   const lookup = new Set<string>();
   if (gitdir !== null && main !== null) {
@@ -310,12 +341,7 @@ export function taskBoundary(options: { worktree: string; provider: string; home
       lookup.add(join(checkout, ".git"));
     }
   }
-  const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
-  // By name too, present or not: a build started while ~/.codex is absent must never make it (and later swap it for a
-  // link while a sign-ins check reads through it). Only Seatbelt uses these (macosFenceProfile); bubblewrap can only
-  // mask what exists, and Codex's own sandbox takes existing paths.
-  const homeNames = HOME_CONFIGURATION.filter(name => !own.has(name)).map(name => join(home, name)).sort();
-  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames };
+  return { readOnly, lookup };
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
@@ -1188,4 +1214,60 @@ export function signInCopiesRoot(state: string, uid: number | undefined = proces
     if (held.isSymbolicLink() || !held.isDirectory() || (uid !== undefined && held.uid !== uid) || (held.mode & 0o777) !== 0o700) return null;
     return grantFolder(root, false) === root ? root : null;
   } catch { return null; }
+}
+
+/**
+ * Which fence policy a launch runs under (docs/plans/sandbox-parity.md §1.5). v1: the fence as approvals sealed before
+ * 0.9.70 knew it (the home configuration, the repositories beside the project and its primary checkout denied to read).
+ * v2: those reads open, as in Anthropic's sandbox runtime, less what the project's sealed `readDeny` names. A widening,
+ * so only a scope sealed at v2 runs under it; every narrowing applies to both.
+ */
+export type FencePolicy = 1 | 2;
+export const FENCE_POLICY_CURRENT: FencePolicy = 2;
+
+/** Who a launch is (docs/plans/sandbox-parity.md §3): a build's agent, its setup and check commands, a saved result's
+ * checks, a flow's setup, script or trigger, or a tool server. Each gets its fence from `fenceFor`, and only from it. */
+export type FenceKind = "build" | "command" | "check" | "flow" | "tool-server";
+
+/**
+ * What `fenceFor` needs. The boundary and the trusted binding are required, as values or an explicit null (a launch
+ * with no checkout), so no caller forgets one; every path comes from Toolroll's own records, never from the checkout.
+ */
+export type FenceContext = {
+  databaseFile: string | null;
+  worktree: string | null;
+  boundary: TaskBoundary | null;
+  binding: WorktreeBinding | null;
+  runFolders: RunFolders;
+  /** The checkout pools, from the plane's records (CheckoutPool). */
+  poolRoots: readonly (string | null)[];
+  home?: string;
+  /** Denied beside the fence (a provider's live session keys, say). */
+  extra?: readonly string[];
+  /** The shared dependencies this checkout links, as the plane recorded them. */
+  linked?: { repo: string; setupDigest: string | null } | null;
+  /** A workspace launch's write allowlist and what it adds read-only (writeAllowlist); absent: writes anywhere its
+   * fence allows. */
+  writes?: { writes: WriteAllowlist; readOnly: string[] } | null;
+  /** The launch's network, when it has one of its own (a flow's: decided by its caller, never left unsaid). */
+  network?: NetworkFence;
+};
+
+/** A launch's whole fence: its denied paths, what it gives back, and that it runs inside the OS fence or not at all.
+ * Spread into RunOptions as is. */
+export type LaunchFence = { kind: FenceKind; fence: string[]; fenceGrants: FenceGrants; confinement: "required" };
+
+/** The one place a launch's fence is made (docs/plans/sandbox-parity.md C1): its denies, its grants, and
+ * `confinement: "required"`, so the spawn road refuses it where no OS fence applies rather than running it bare. */
+export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
+  const home = ctx.home === undefined ? {} : { home: ctx.home };
+  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: ctx.extra ?? [] });
+  const base = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
+  const written = ctx.writes ?? null;
+  const grants: FenceGrants = {
+    ...base,
+    ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...base.readOnly, ...written.readOnly])].sort() }),
+    ...(ctx.network === undefined ? {} : { network: ctx.network }),
+  };
+  return { kind, fence, fenceGrants: grants, confinement: "required" };
 }
