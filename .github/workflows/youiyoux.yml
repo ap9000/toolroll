@@ -22,4 +22,4 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: npx -y youiyoux@0.1.20 check --diff origin/${{ github.base_ref }} --format github
+      - run: npx -y youiyoux@0.1.21 check --diff origin/${{ github.base_ref }} --format github
