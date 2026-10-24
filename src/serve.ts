@@ -1,4 +1,6 @@
 import { taskMovedSince } from "./chat-ask.js";
+import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
+import { signInsUnavailableWords } from "./check-access.js";
 import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./live-detail.js";
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
@@ -462,6 +464,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     access: projectAccessOf(repo),
     network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    checkAccess: {
+      setting: store.projectCheckAccess(repo), changed: store.projectCheckAccessChange(repo),
+      canNarrow: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo),
+      canWiden: who.via === "cookie" && !store.isDemo() && store.isInstanceOperator(who.name),
+      unconfinedHere: !(options.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable())) && store.unfencedAgentsAllowed(),
+      signInsUnavailable: signInsUnavailableWords(options.platform ?? process.platform),
+    },
     liveView: (() => {
       const commands = liveCommandsShown(store, repo);
       const canChange = who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo);

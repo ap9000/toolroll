@@ -1,4 +1,5 @@
 /** Results and runs: the review cockpit, evidence, receipts, diffs and the result panel. */
+import type { CheckAccess } from "../check-access.js";
 import type { RunNetworkRecord } from "../egress.js";
 import { assignmentPresentationOf,historicalAssessmentReason,shortenedMaterialReason } from "../assignment-presentation.js";
 import { assignmentActionHref,assignmentStatusOf,assignmentWithEvidence } from "../assignment-ui.js";
@@ -444,6 +445,8 @@ export type ReviewCockpitView = {
   efficiency?: RunEfficiency | null;
   /** What the run's network was and what its proxy saw (egress.ts): display only. */
   network?: RunNetworkRecord | null;
+  /** How far its checks reached (check-access.ts): shown only when wider than sandboxed. */
+  checkAccess?: CheckAccess;
   taskId: string;
   title: string;
   repo: string | null;
@@ -775,6 +778,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     record: run === null ? null : { build: run.id, href: `/r/${run.id}?record=1`, facts: [
       { label: "Agent", value: [run.provider, run.model].filter(Boolean).join(" · ") },
       { label: "Worker", value: run.runner },
+      ...(view.checkAccess === undefined || view.checkAccess === "sandboxed" ? [] : [{ label: "Checks", value: view.checkAccess === "unsandboxed" ? "Checks ran without a sandbox" : "Checks ran with model and GitHub sign-ins" }]),
       ...(run.branch === null ? [] : [{ label: "Branch", value: run.branch }]),
       ...(run.finishedAt === null ? [] : [{ label: "Finished", value: when(run.finishedAt) }]),
       ...(run.ranMinutes === null ? [] : [{ label: "Ran", value: `${run.ranMinutes} min` }]),

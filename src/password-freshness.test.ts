@@ -357,7 +357,7 @@ describe("where freshness may be honoured", () => {
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 57, "src/pull-request-flow.ts": 1,
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
       "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
@@ -458,6 +458,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#peopleCommand@45": 1,
     "src/operate.ts#planTaskCommand@37": 1,
     "src/operate.ts#policyCommand@163": 1,
+    "src/operate.ts#projectCheckAccessCommand@181": 1,
     "src/operate.ts#projectChecksCommand@147": 1,
     "src/operate.ts#projectConcurrencyCommand@146": 1,
     "src/operate.ts#projectDeleteCommand@150": 1,
@@ -858,6 +859,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@41": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@93": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@94": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,

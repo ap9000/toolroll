@@ -230,7 +230,7 @@ describe("the agent fence", () => {
     expect(fence).toEqual([
       join(home, ".standing-orders"),
       join(state, "backups"), join(state, "bridge-secrets"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
-      join(state, "repos.json"), join(state, ".toolroll-run"), join(state, "runner-token"), join(state, "up-login.txt"),
+      join(state, "repos.json"), join(state, ".toolroll-run"), join(state, "runner-token"), join(state, "sign-in-copies"), join(state, "up-login.txt"),
     ].sort());
     expect(fence.some(path => worktree.startsWith(path))).toBe(false);
     // A repository in the folder — the build's own, named by its worktree's git metadata, or any other — is work, never fenced.
@@ -243,7 +243,7 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "bridge-secrets"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
+    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "bridge-secrets"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "sign-in-copies"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
     // No database file: only ~/.standing-orders.
     expect(agentFence({ databaseFile: null, worktree: null, home })).toEqual([join(home, ".standing-orders")]);
   });
@@ -621,6 +621,7 @@ describe("what the fence gives back", () => {
       '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-|so-cmd-)"))',
       '(allow file-read-metadata (literal "/r/checkout"))',
       `(allow file-read* file-write* (subpath "${own}"))`,
+      `(deny file-write* (literal "${own}"))`,
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
       "(deny process-info-pidinfo)",
       "(allow process-info-pidinfo (target same-sandbox))",
@@ -632,6 +633,9 @@ describe("what the fence gives back", () => {
     for (const name of ["so-tools-mine", "so-tools-theirs", "so-codex-theirs", "unrelated"]) mkdirSync(join(root, name), { recursive: true });
     const fence = agentFence({ databaseFile: null, worktree: null, home: join(dir, "home"), runFolders: runFolders(join(root, "so-tools-mine"), root) });
     expect(fence).toEqual([join(root, "so-codex-theirs"), join(root, "so-tools-theirs")]);
+    // A second root (a Mac's short one for checks) is denied by pattern too.
+    const both = macosFenceProfile([], { readOnly: [], readable: [], lookup: [], runFolders: { root: "/private/var/folders/a.b/T", own, also: ["/private/tmp"] } });
+    expect(both).toContain('(deny file-read* file-write* (regex #"^/private/tmp/(so-tools-|so-codex-|so-net-|so-cmd-)"))');
   });
 
   test("Codex: a folder holding the shared install that can't be listed stays denied whole, and its grant is dropped", () => {

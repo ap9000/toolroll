@@ -42,6 +42,7 @@ export { isAcpProfile };
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { networkFromValue, networkWords, type NetworkProfile } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
+import { checkAccessWords, isCheckAccess, type CheckAccess } from "./check-access.js";
 import { z } from "zod";
 import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
@@ -166,6 +167,8 @@ export type ClaudeProfile = {
   /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
    * write allowlists, which keep writing anywhere their fence allows. */
   writes?: WritesMode;
+  /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
+  checkAccess?: Exclude<CheckAccess, "sandboxed">;
 };
 
 export type CodexShapedProfile = {
@@ -187,6 +190,8 @@ export type CodexShapedProfile = {
   /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
    * write allowlists, which keep writing anywhere their fence allows. */
   writes?: WritesMode;
+  /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
+  checkAccess?: Exclude<CheckAccess, "sandboxed">;
 };
 
 export type GeminiProfile = {
@@ -210,6 +215,8 @@ export type GeminiProfile = {
   /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
    * write allowlists, which keep writing anywhere their fence allows. */
   writes?: WritesMode;
+  /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
+  checkAccess?: Exclude<CheckAccess, "sandboxed">;
 };
 
 /**
@@ -234,6 +241,8 @@ export type AcpProfile = {
   /** Where the build may write (writes-mode.ts), resolved when the scope was written; absent on approvals sealed before
    * write allowlists, which keep writing anywhere their fence allows. */
   writes?: WritesMode;
+  /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
+  checkAccess?: Exclude<CheckAccess, "sandboxed">;
 };
 
 export type ExecutionProfile = ClaudeProfile | CodexShapedProfile | GeminiProfile | AcpProfile;
@@ -466,10 +475,14 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   if (network === null) return null;
   const writes = p["writes"];
   if (writes !== undefined && !isWritesMode(writes)) return null;
-  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }) };
+  // Check access is sealed only when wider than sandboxed: an explicit "sandboxed", or any other word, is not this code's.
+  const sealedAccess = p["checkAccess"];
+  if (sealedAccess !== undefined && (sealedAccess === "sandboxed" || !isCheckAccess(sealedAccess))) return null;
+  const checkAccess = sealedAccess as Exclude<CheckAccess, "sandboxed"> | undefined;
+  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }), ...(checkAccess === undefined ? {} : { checkAccess }) };
   if (p["provider"] === "claude") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes", "checkAccess"]) &&
       str(p["model"]) &&
       (p["permissionArgv"] === "auto" || p["permissionArgv"] === "acceptEdits" || p["permissionArgv"] === "bypassPermissions") &&
       num(p["maxTurns"]) && num(p["repairMaxTurns"]) &&
@@ -493,7 +506,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "codex" || p["provider"] === "openrouter") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes", "checkAccess"]) &&
       str(p["model"]) &&
       (p["sandboxMode"] === "workspace-write" || p["sandboxMode"] === "danger-full-access") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -517,7 +530,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "gemini") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes", "checkAccess"]) &&
       str(p["model"]) &&
       (p["approvalArgv"] === "auto_edit" || p["approvalArgv"] === "yolo") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -541,7 +554,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (typeof p["provider"] === "string" && isAcpProvider(p["provider"])) {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes", "checkAccess"]) &&
       str(p["model"]) &&
       p["permission"] === "full" &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -1680,6 +1693,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     // What the build may reach (egress.ts), part of what the yes agrees to.
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  network      ${networkWords(scope.profile.network ?? null).replace(/^Network: /, "")}`]),
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  writes       ${writesWords(scope.profile.writes)}`]),
+    ...(scope.profile?.checkAccess === undefined ? [] : [`  checks       ${checkAccessWords(scope.profile.checkAccess)}`]),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];

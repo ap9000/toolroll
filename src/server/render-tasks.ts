@@ -1,6 +1,7 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
 import { networkWords } from "../egress.js";
 import { writesWords } from "../writes-mode.js";
+import { checkAccessWords } from "../check-access.js";
 import { ACP_AGENTS, isAcpProfile } from "../acp-agents.js";
 import { type Html, html, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { closedQuestionReason, closedQuestionWords } from "../decision.js";
@@ -610,7 +611,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
           ? html`<p class="meta">Runs on <span class="mono">${ACP_AGENTS[profile.provider].name} (via ACP) · ${profile.model}</span> — full access inside the OS fence; the agent runs any tool it chooses and nothing asks. No turn limit: stops after ${Math.round(profile.timeoutSeconds / 60)} min, or ${Math.round(profile.idleTimeoutSeconds / 60)} min silent; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min, or ${Math.round(profile.repairIdleTimeoutSeconds / 60)} min silent.</p>`
         : html`<p class="meta">Runs on <span class="mono">${profile.provider} · ${profile.model}</span> — ${profile.sandboxMode === "danger-full-access" ? "FULL permissions via --dangerously-bypass-approvals-and-sandbox; nothing asks" : "workspace-write sandbox"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}); repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`;
   // What the build may reach is part of what is approved (egress.ts): said on every approval form.
-  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>`;
+  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}`;
 }
 /** The Agents view every console surface renders (v47): the SAME
  * projection the CLI prints — who plans, builds, and revises,

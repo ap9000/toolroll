@@ -6,6 +6,7 @@
  */
 import type { ProjectNetwork } from "./egress.js";
 import type { WritesMode } from "./writes-mode.js";
+import { CHECK_ACCESS_WARNINGS, signInHostsMissing, type CheckAccess } from "./check-access.js";
 import { html, postForm, type Html, reauth } from "./html.js";
 import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
 
@@ -23,6 +24,21 @@ export const PROJECT_DELETE_CSS = `.project-settings,.project-delete{max-width:7
   `.project-settings .build-access .tool-name{font:var(--so-typography-mono)}.project-settings .build-access details{margin:4px 0 0}.project-settings .build-access summary{min-height:44px;display:inline-flex;align-items:center;cursor:pointer;color:var(--so-muted);font:var(--so-typography-label)}` +
   `.project-settings .build-access ul{margin:0 0 4px;padding-left:20px;font:var(--so-typography-body);color:var(--so-ink)}.project-settings .build-access li{margin:2px 0}.project-settings .build-access li .meta{color:var(--so-muted)}` +
   `.project-settings .build-access a.manage-tools{display:inline-flex;align-items:center;justify-content:center;min-height:44px;margin-top:4px;padding:0 14px;white-space:nowrap;background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line);border-radius:var(--so-radius-md);font:var(--so-typography-label);text-decoration:none}` +
+  // A radio or checkbox choice sits beside its words, at its natural size, not as a full-width grid row.
+  `.project-settings .build-access label.check{display:flex;align-items:center;gap:8px;min-height:44px;font:var(--so-typography-body);font-weight:500}` +
+  `.project-settings .build-access label.check input{width:auto;min-height:0;margin:0;flex:none}.project-settings .build-access form .meta{margin:-8px 0 0 26px}` +
+  // Check access: a warning shows only under the option chosen; the folds draw the console's own chevron (as a diff's).
+  `.project-settings .check-access-setting .option .warning{display:none;color:var(--so-ink)}.project-settings .check-access-setting .option:has(input:checked) .warning{display:block}` +
+  `.project-settings .check-access-setting form{margin-top:0;gap:10px}.project-settings .check-access-setting .option{display:grid;gap:2px}` +
+  `.project-settings .check-access-setting .option .meta{margin:0 0 0 26px}.project-settings .check-access-setting label.check{min-height:36px}` +
+  `.project-settings .check-access-setting details > summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:40px;padding:0}` +
+  `.project-settings .check-access-setting details > summary::-webkit-details-marker{display:none}.project-settings .check-access-setting details > summary::marker{content:""}` +
+  `.project-settings .check-access-setting details > summary::before{content:"";flex:none;width:.35rem;height:.35rem;border-right:1.5px solid var(--so-muted);border-bottom:1.5px solid var(--so-muted);transform:rotate(-45deg);transition:transform .15s ease}` +
+  `.project-settings .check-access-setting details[open] > summary::before{transform:rotate(45deg) translateY(-.1rem)}` +
+  // Show hosts: a quiet fold in the line, not a card.
+  `.project-settings .check-access-setting details.hosts{border:0;background:none;padding:0;margin:0}.project-settings .check-access-setting details.hosts > summary{min-height:32px;font-size:.8125rem}` +
+  `.project-settings .check-access-setting details.hosts .tool-name{margin:0 0 4px;font-size:.75rem}` +
+  `.project-settings .check-access-setting button.primary{background:var(--so-signal);color:var(--so-on-signal);border-color:var(--so-signal)}` +
   `.project-settings .build-access a.manage-tools:hover{background:var(--so-raised)}.project-settings .build-access a.manage-tools:focus-visible,.project-settings .build-access summary:focus-visible{outline:2px solid var(--so-ink);outline-offset:2px}`;
 
 export type ProjectSettingsView = {
@@ -39,6 +55,13 @@ export type ProjectSettingsView = {
   network?: { setting: ProjectNetwork; canChange: boolean };
   /** Where its builds may write (writes-mode.ts), and whether this person may change it. */
   writes?: { setting: WritesMode; canChange: boolean };
+  /** How far its checks reach (check-access.ts): the level, who changed it last, and whether this person may narrow it
+   * (an approver for the project) or also widen it (an instance operator). */
+  checkAccess?: { setting: CheckAccess; changed: { by: string; at: string } | null; canNarrow: boolean; canWiden: boolean;
+    /** This machine can't sandbox checks at all, and an operator allowed them to run anyway: every level runs unsandboxed. */
+    unconfinedHere?: boolean;
+    /** Why sign-ins can't be chosen (off for now), or null: they can. */
+    signInsUnavailable?: string | null };
 };
 
 /** Where builds may write, said plainly; an approver changes it with their password. */
@@ -57,6 +80,48 @@ function writesHtml(view: ProjectSettingsView): Html | "" {
     ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
     <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
   return html`<section class="build-access writes-setting" id="writes" aria-labelledby="writes-title"><h2 id="writes-title">Where builds write</h2>${said}<details><summary>Change</summary>${form}</details></section>`;
+}
+
+/** Check access (check-access.ts): how far the project's checks reach, said once. Collapsed: the level, what it means
+ * when it isn't the default, and who changed it. Inside Change: a line per level, and each wider level's warning under it
+ * only while it is chosen. An instance operator widens it with a password typed now; an approver narrows it. */
+function checkAccessHtml(view: ProjectSettingsView): Html | "" {
+  const access = view.checkAccess;
+  if (access === undefined) return "";
+  const saved = access.setting;
+  // Sign-ins aren't available (off for now): a saved sign-ins level runs sandboxed, and the page says so.
+  const unavailable = access.signInsUnavailable ?? null;
+  const setting: CheckAccess = unavailable !== null && saved === "sign-ins" ? "sandboxed" : saved;
+  const network = view.network?.setting ?? null;
+  const names: Record<CheckAccess, string> = { sandboxed: "Sandboxed", "sign-ins": "Sandboxed, with model and GitHub sign-ins", unsandboxed: "Not sandboxed" };
+  const meaning: Record<CheckAccess, string | null> = { sandboxed: null, "sign-ins": "Checks can read your Claude, Codex and GitHub sign-ins.", unsandboxed: "Checks run with your full access to this machine and to Toolroll." };
+  // The sign-ins never widen the network: how many hosts they'd still need, and where to add them (a change of its own).
+  const missing = setting === "sign-ins" && network !== null ? signInHostsMissing(network) : [];
+  const hosts = missing.length === 0 ? "" : html`<p class="meta" data-sign-in-hosts>${missing.length} sign-in ${missing.length === 1 ? "host isn't" : "hosts aren't"} allowed yet · <a href="#network">Add them</a></p><details class="hosts"><summary>Show hosts</summary><p class="tool-name">${missing.join(", ")}</p></details>`;
+  const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${new Date(access.changed.at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</p>`;
+  // Said before anything else: on a machine with no OS sandbox, every level runs without one.
+  const unconfined = access.unconfinedHere === true ? html`<p class="meta warning-line" data-unconfined-here>This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.</p>` : "";
+  const runsSandboxed = setting !== saved && access.unconfinedHere !== true ? html`<p class="meta warning-line" data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but checks run sandboxed: sign-ins can't be shared with checks safely yet.</p>` : "";
+  // No OS sandbox here, and unconfined running allowed: checks run without a sandbox whatever is saved, and that is
+  // what the page says first (never "sandboxed"); the saved level is named under it.
+  const head = access.unconfinedHere === true
+    ? html`<h2 id="check-access-title">Check access</h2><p><strong>${names.unsandboxed}</strong></p>${saved === "unsandboxed" ? "" : html`<p class="meta" data-saved-level>Saved as ${names[saved]}.</p>`}${unconfined}${changed}`
+    : html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${runsSandboxed}${hosts}${changed}`;
+  if (!access.canNarrow && !access.canWiden) return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}</section>`;
+  const option = (value: CheckAccess, detail: string, warning: string | null) => {
+    const allowed = (value === setting || access.canWiden || value === "sandboxed") && !(value === "sign-ins" && unavailable !== null);
+    return html`<div class="option"><label class="check"><input type="radio" name="level" value="${value}"${setting === value ? html` checked` : ""}${allowed ? "" : html` disabled`}> ${names[value]}</label><p class="meta">${detail}</p>${warning === null ? "" : html`<p class="meta warning" data-check-access-warning="${value}">${warning}</p>`}</div>`;
+  };
+  const open = network?.mode === "open";
+  const form = postForm("/settings/project/check-access", html`
+    ${option("sandboxed", "Can't read the files your sign-ins and credentials are kept in, Toolroll's folders or other projects.", null)}
+    ${unavailable !== null ? option("sign-ins", unavailable, null) : option("sign-ins", `Also reads the files your Claude, Codex and GitHub sign-ins are kept in, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
+    ${option("unsandboxed", "For projects whose checks create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
+    ${open && unavailable === null ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
+    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    <button type="submit" class="primary">Save</button>
+    <p class="meta">${access.canWiden ? "" : "Only an instance operator can widen this. "}Flow script steps always run sandboxed. Tasks already approved keep their level.</p>`, { hidden: { repo: view.repo } });
+  return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}<details class="change"><summary>Change</summary>${form}</details></section>`;
 }
 
 /** Network: what the project's builds may reach, said plainly; an approver changes it with their password. */
@@ -137,7 +202,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: 
   const remote = html`<section class="build-access recorded-remote" aria-labelledby="recorded-remote-title"><h2 id="recorded-remote-title">Recorded remote</h2>${view.remoteUrl
     ? html`<p class="path">${view.remoteUrl}</p>`
     : html`<p>No remote recorded. Landed work waits for your review.</p>`}<details><summary>Change remote</summary><p>An owner or instance operator can run:</p><p class="path">toolroll repos add &lt;project&gt; --remote &lt;url&gt;</p></details></section>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${writesHtml(view)}${liveViewHtml(view)}`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${writesHtml(view)}${checkAccessHtml(view)}${liveViewHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`
