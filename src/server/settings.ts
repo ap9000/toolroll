@@ -89,6 +89,7 @@ import { checkPolicy,parseList,policyParts } from "../policy.js";
 import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concurrency.js";
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
+import { isCheckAccess, widerThan } from "../check-access.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
@@ -2153,6 +2154,7 @@ ${modeWords(terms)
     "settings.project-live-view": projectLiveView,
     "settings.project-network": projectNetwork,
     "settings.project-writes": projectWrites,
+    "settings.project-check-access": projectCheckAccess,
     "settings.project-delete": projectDelete,
     "settings.policy-send": policySave,
     "settings.approval-send": approvalSave,
@@ -2249,6 +2251,33 @@ ${modeWords(terms)
     if (!isWritesMode(wanted)) return back("problem", "Choose where builds may write. Nothing changed.");
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change where builds may write.");
     const changed = store.setProjectWrites(repo, wanted, who.name, now);
+    return back("said", changed.before === changed.after ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
+  }
+
+  // Settings → Project → Check access (check-access.ts). Widening is an instance operator's act with a password typed now
+  // (an identity-provider re-check doesn't count); any approver for the project narrows it. The level is compared again
+  // inside the write, so a change made meanwhile can't turn a narrowing into a widening. The ledger keeps before → after.
+  async function projectCheckAccess(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectCheckAccess);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes how far its checks reach.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#check-access");
+    const wanted = body.get("level");
+    if (!isCheckAccess(wanted)) return back("problem", "Choose how far checks reach. Nothing changed.");
+    const widening = widerThan(wanted, store.projectCheckAccess(repo));
+    // Sign-ins with an open network: a second, explicit yes, said before the password.
+    if (wanted === "sign-ins" && widening && store.projectNetwork(repo).mode === "open" && body.get("confirm-open") !== "yes") {
+      return back("problem", "This project's network is open: confirm that its checks could send your sign-ins to any host. Nothing changed.");
+    }
+    const proved = authenticateCredential(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change how far checks reach.");
+    if (widening && (proved.method !== "password-now" || !store.isInstanceOperator(who.name))) {
+      return back("problem", "Only an instance operator widens how far checks reach, with their password typed now. Nothing changed.");
+    }
+    const changed = store.setProjectCheckAccess(repo, wanted, who.name, now, { may: widening ? "widen" : "narrow" });
+    if (changed === null) return back("problem", "Check access changed meanwhile, and this would now widen it. Nothing changed.");
     return back("said", changed.before === changed.after ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
   }
 

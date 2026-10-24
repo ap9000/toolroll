@@ -358,6 +358,7 @@ post("settings", "settings.project-concurrency", "/settings/project/concurrency"
 post("settings", "settings.project-live-view", "/settings/project/live-view", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-network", "/settings/project/network", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-writes", "/settings/project/writes", { scope: "step-up", callers: ["cookie"] });
+post("settings", "settings.project-check-access", "/settings/project/check-access", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
 // Lead sweeps (docs/plans/lead-fan-out.md): the table, and cancelling what isn't ready. The handler shows a sweep only in
 // a project the reader can see, and acts only for an approver.

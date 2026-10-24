@@ -859,6 +859,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@41": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@93": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@94": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
