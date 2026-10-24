@@ -32,12 +32,12 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
-import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
+import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, narrowestAccess, narrowestNetwork, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
@@ -1236,8 +1236,7 @@ function plainLines(stdout: string): string {
 /** What a `sign-ins` check never inherits: a caller's choice of Claude's config folder (Claude's keychain sign-in is
  * keyed to its default one; check-access.ts). gh's and Codex's are set to the granted ones instead. */
 const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
-/** Where a Linux sign-ins check's copies of its sign-in files live while it runs: inside Toolroll's fenced state folder. */
-const SIGN_IN_COPIES = "sign-in-copies";
+
 
 /**
  * A `sign-ins` check's launch (check-access.ts): its exact sign-in files and its own transcript folder
@@ -1265,8 +1264,11 @@ async function signInsLaunch(store: Store, own: string, temp: string, checkout: 
     // from a launch already running): bubblewrap binds from the original root, so only this check sees them.
     const database = store.databaseFile();
     if (database === null || database === "" || database === ":memory:") return { problem: "A check with sign-ins needs Toolroll's state folder, so nothing ran." };
-    mkdirSync(join(dirname(realpathSync(database)), SIGN_IN_COPIES), { recursive: true, mode: 0o700 });
-    const folder = mkdtempSync(join(dirname(realpathSync(database)), SIGN_IN_COPIES, "c-"));
+    const parent = join(dirname(realpathSync(database)), SIGN_IN_COPIES_DIR);
+    try { mkdirSync(parent, { mode: 0o700 }); } catch { /* there already: checked next */ }
+    // Only the real, private folder Toolroll made: never a link planted where it should be.
+    if (grantFolder(parent, false) === null || (lstatSync(parent).mode & 0o077) !== 0) return { problem: "The sign-in copies folder isn't a private folder of Toolroll's, so nothing ran." };
+    const folder = mkdtempSync(join(parent, `c-${process.pid}-`));
     cleanup.push(folder);
     grants.read.forEach((path, index) => {
       const bytes = readGrantedFile(path);

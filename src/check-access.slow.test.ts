@@ -4,7 +4,7 @@
  * home configuration; at `sandboxed` none of it; at `unsandboxed` it runs with no OS fence at all.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { claudeProjectFolder, linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
@@ -143,5 +143,42 @@ describe.skipIf(!FENCED)("a sign-ins check with no network proved for it", () =>
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins")("/bin/sh", ["-c", "echo ran"], { cwd: checkout });
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(/no network sealed for it/);
+  });
+});
+
+describe.skipIf(!FENCED)("the sign-in copies folder (Linux checks' copies, fenced from everything)", () => {
+  test("in a state folder that isn't Toolroll's own, another build's fence and a check at each level can't read a sibling copy", async () => {
+    const { agentFence, macosFenceProfile, NO_GRANTS, SIGN_IN_COPIES_DIR } = await import("./agent-fence.js");
+    const { spawnSync } = await import("node:child_process");
+    const plain = join(dir, "plain-state");
+    mkdirSync(plain);
+    const other = openStore(join(plain, "orders.db"));
+    try {
+      // Building a fence makes the folder (owner-only) and fences it by name.
+      const fence = agentFence({ databaseFile: join(plain, "orders.db"), worktree: checkout, home });
+      const copies = join(realpathSync(plain), SIGN_IN_COPIES_DIR);
+      expect(fence).toContain(copies);
+      const sibling = join(copies, "c-999999-other");
+      mkdirSync(sibling);
+      writeFileSync(join(sibling, "0"), "token");
+      if (process.platform === "darwin") {
+        const ran = spawnSync("/usr/bin/sandbox-exec", ["-p", macosFenceProfile(fence, NO_GRANTS), "/bin/sh", "-c", reads("copy", join(sibling, "0"))], { encoding: "utf8" });
+        expect(ran.stdout.trim(), ran.stderr).toBe("copy-refused");
+      }
+      for (const level of ["sandboxed", "sign-ins"] as const) {
+        const result = await fencedCheckoutCommands(other, repo, checkout, run, undefined, level, NOWHERE)("/bin/sh", ["-c", reads("copy", join(sibling, "0"))], { cwd: checkout });
+        expect(result.stdout.trim(), `${level}: ${result.stderr}`).toBe("copy-refused");
+      }
+    } finally { other.close(); }
+  });
+
+  test("a copy a launch left behind when it died is swept; a live launch's copy stays", async () => {
+    const { sweepSignInCopies } = await import("./agent-fence.js");
+    const folder = join(dir, "copies");
+    mkdirSync(folder);
+    mkdirSync(join(folder, "c-999999-dead"));
+    mkdirSync(join(folder, `c-${process.pid}-live`));
+    sweepSignInCopies(folder);
+    expect(readdirSync(folder)).toEqual([`c-${process.pid}-live`]);
   });
 });

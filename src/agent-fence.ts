@@ -44,7 +44,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -54,6 +54,9 @@ import type { LoopbackMode } from "./egress.js";
 
 /** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
 export const BRIDGE_DIR = "bridge-secrets";
+/** Where a Linux sign-ins check's copies of its sign-in files live while it runs (check-access.ts): one folder per launch,
+ * `c-<pid>-…`, beside the database; fenced from every build by name, like the bridges. */
+export const SIGN_IN_COPIES_DIR = "sign-in-copies";
 
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
@@ -153,6 +156,13 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // refuses a root that isn't a private folder: egress-bridge.ts).
     bridgeFolder = bridges;
     fence.add(bridges);
+    // The sign-in copies (check-access.ts): made before any build starts, fenced from every build by name whether or not
+    // the state folder is Toolroll's own, and swept of what a launch that has since died left behind. A Linux check
+    // binds its own copy from outside its sandbox, so nothing here is granted back.
+    const copies = join(state, SIGN_IN_COPIES_DIR);
+    try { lstatSync(copies); } catch { try { mkdirSync(copies, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    sweepSignInCopies(copies);
+    fence.add(copies);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
@@ -1106,4 +1116,17 @@ export function readGrantedFile(path: string): Buffer | null {
       return readFileSync(fd);
     } finally { closeSync(fd); }
   } catch { return null; }
+}
+
+/** Remove the sign-in copies a launch left behind when its process is gone (a crash): `c-<pid>-…`, never another live one's. */
+export function sweepSignInCopies(folder: string): void {
+  let entries: string[] = [];
+  try { const held = lstatSync(folder); if (!held.isDirectory() || held.isSymbolicLink()) return; entries = readdirSync(folder); } catch { return; }
+  for (const entry of entries) {
+    const pid = Number(/^c-(\d+)-/.exec(entry)?.[1] ?? NaN);
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    let alive = true;
+    try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code === "EPERM"; }
+    if (!alive) rmSync(join(folder, entry), { recursive: true, force: true });
+  }
 }
