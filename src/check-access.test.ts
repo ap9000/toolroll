@@ -180,7 +180,9 @@ describe("review round: authority, networks and per-command levels", () => {
 
   test("a build's checks never get its agent's provider hosts; two networks narrow to what both allow", () => {
     const sealed = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "registry.npmjs.org", "api.stripe.com"], loopback: "proxy-only" as const };
-    expect(checkNetworkOf(sealed, "claude").hosts).toEqual(["registry.npmjs.org", "api.stripe.com"]);
+    expect(checkNetworkOf(sealed, "claude", { mode: "allowlist", hosts: [], loopback: "proxy-only" }).hosts).toEqual(["registry.npmjs.org", "api.stripe.com"]);
+    // A provider host the project lists itself (added for its sign-ins) stays its checks' too.
+    expect(checkNetworkOf(sealed, "claude", { mode: "allowlist", hosts: ["api.anthropic.com"], loopback: "proxy-only" }).hosts).toEqual(["api.anthropic.com", "registry.npmjs.org", "api.stripe.com"]);
     expect(narrowestNetwork({ ...sealed, hosts: ["*.stripe.com", "registry.npmjs.org"] }, { ...sealed, hosts: ["api.stripe.com", "github.com"] }).hosts).toEqual(["api.stripe.com"]);
     expect(narrowestNetwork({ version: 1, mode: "open", hosts: [], loopback: "any" }, sealed)).toMatchObject({ mode: "allowlist", hosts: sealed.hosts, loopback: "proxy-only" });
   });
@@ -200,13 +202,13 @@ describe("review round: authority, networks and per-command levels", () => {
     expect(checkoutLaunchOf(store, REPO, [runId]).access).toBe("sandboxed");
     store.stampRunCheckAccess(runId, "sign-ins", net);
     // The runner re-reads before each command: a narrowing between two commands applies to the second.
-    const ranAt: Parameters<typeof checkoutRunner>[5] = [];
-    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], ranAt);
+    const ranAt: string[] = [];
+    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], level => ranAt.push(level));
     await runner("/bin/true", [], {});
     store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
     await runner("/bin/true", [], {});
     expect(ranAt).toEqual(["sign-ins", "sandboxed"]);
-    expect(widestRan(ranAt)).toBe("sign-ins");
+    expect(widestRan(ranAt as Parameters<typeof widestRan>[0])).toBe("sign-ins");
     expect(ranAtLine("unsandboxed")).toMatch(/These commands ran without a sandbox/);
     expect(ranAtLine("sandboxed")).toBeNull();
   });

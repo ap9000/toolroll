@@ -83,3 +83,13 @@ test("a sign-in file is read only as the real file it is: never through a link, 
   symlinkSync(join(dir, "elsewhere"), join(home, ".codex"));
   expect(readGrantedFile(join(home, ".codex", "auth.json"))).toBeNull();
 });
+
+test("a sign-in file with a second name (a hard link to something else) is never granted or read", async () => {
+  const { linkSync } = await import("node:fs");
+  const { readGrantedFile } = await import("./agent-fence.js");
+  rmSync(join(home, ".config", "gh", "hosts.yml"));
+  writeFileSync(join(dir, "database"), "secret");
+  linkSync(join(dir, "database"), join(home, ".config", "gh", "hosts.yml"));
+  expect(signInGrants(home, checkout, "darwin").read).not.toContain(join(home, ".config", "gh", "hosts.yml"));
+  expect(readGrantedFile(join(home, ".config", "gh", "hosts.yml"))).toBeNull();
+});

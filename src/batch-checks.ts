@@ -121,8 +121,8 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
   const bound = (text: string) => { const hits = scanForSecrets(text); return boundStreamHeadTail(hits.length > 0 ? redactSecretLines(text, hits) : text, 12 * 1024); };
   const section = (label: string, shown: string, result: ExecResult) =>
     `=== ${label} ===\n$ ${shown}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""})\n\n--- stdout ---\n${bound(result.stdout)}\n\n--- stderr ---\n${bound(result.stderr)}`;
-  // How each command actually ran (check-access.ts): the widest is on every member's receipt and in its log.
-  const ranAt: CheckAccess[] = [];
+  // How each command actually ran (check-access.ts), per result: only the commands it was part of count for its receipt.
+  const ranAtOf = new Map<number, CheckAccess[]>();
   const note = (set: Member[], text: string) => { for (const one of set) logs.get(one.request)!.push(text); };
   const attempt = (set: Member[], tested: string | null, outcome: Attempt["outcome"]) => { for (const one of set) attempts.get(one.request)!.push({ members: set.map(m => m.task), tested, outcome }); };
 
@@ -157,18 +157,20 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       if (deps.shouldStop?.() === true) return { conflict: false, tested, outcome: { ran: false, failure: "Stopped before the check started." }, setupFailed: false };
       // The approvals are re-read before every spawn: a revoked or changed command never runs.
       const liveSetup = store.liveWorktreeSetup(repo);
-      // Worked out again right before each command (check-access.ts): a narrowing meanwhile applies to the next one.
+      // Worked out again right before each command (check-access.ts): a narrowing meanwhile applies to the next one. Each
+      // member is credited with exactly the commands of this set.
+      const setRan = (level: CheckAccess) => { for (const one of set) ranAtOf.set(one.request, [...(ranAtOf.get(one.request) ?? []), level]); };
       if ((liveSetup?.digest ?? null) !== (setup?.digest ?? null)) return { conflict: false, tested, outcome: { ran: false, failure: "The project's approved setup changed before the check started." }, setupFailed: false };
       if (liveSetup !== null) {
         const shell = approvedCommandShell(liveSetup.command);
-        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, runner, set.map(one => one.runId), ranAt), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, runner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note(set, section(`${label} · approved project setup on ${tested.slice(0, 7)}`, liveSetup.command, prepared));
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) return { conflict: false, tested, outcome: { ran: false, failure: "The project's setup failed, so the check didn't run." }, setupFailed: true };
       }
       const live = store.liveVerifyCommand(repo);
       if (live === null || live.digest !== command.digest) return { conflict: false, tested, outcome: { ran: false, failure: "The approved check changed before it started." }, setupFailed: false };
       const shell = approvedCommandShell(live.command);
-      const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, runner, set.map(one => one.runId), ranAt), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+      const ran = await runWithIsolatedDatabase(checkoutRunner(store, repo, checkout, runner, set.map(one => one.runId), setRan), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
       note(set, section(`${label} · full check on ${tested.slice(0, 7)}`, live.command, ran));
       return { conflict: false, tested, setupFailed: false,
         outcome: ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code } };
@@ -180,12 +182,12 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
 
   const seal = (one: Member, mode: BatchFacts["mode"], together: Member[], tested: string | null, outcome: Outcome) => {
     const at = now();
-    const ranLine = ranAtLine(widestRan(ranAt));
+    const ranLine = ranAtLine(widestRan(ranAtOf.get(one.request) ?? []));
     const text = logs.get(one.request)!.length === 0 ? "No command started." : [...logs.get(one.request)!, ...(ranLine === null ? [] : [ranLine])].join("\n\n");
     const logId = storeEvidence(store, root, one.runId, "structured-output", `batch-check-${one.request}.log`, Buffer.from(text, "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
     const logArtifact = store.getArtifact(logId)!;
     const batch = { mode, tested: tested ?? one.head, base, members: together.map(m => ({ task: m.task, run: m.runId, head: m.head })), attempts: attempts.get(one.request)! };
-    const receipt = JSON.stringify({ version: 1, request: one.request, run: one.runId, head: one.head, tested, level: "full", checkAccess: widestRan(ranAt),
+    const receipt = JSON.stringify({ version: 1, request: one.request, run: one.runId, head: one.head, tested, level: "full", checkAccess: widestRan(ranAtOf.get(one.request) ?? []),
       command: { repo: command.repo, command: command.command, digest: command.digest, approvedBy: command.approvedBy },
       result: outcome, batch, log: { artifactId: logArtifact.id, sha256: logArtifact.sha256, bytesStored: logArtifact.bytesStored, truncated: logArtifact.truncated } }, null, 1);
     storeEvidence(store, root, one.runId, "structured-output", `batch-check-${one.request}.json`, Buffer.from(receipt, "utf8"), FOLLOW_UP_RECEIPT, at, { captureStatus: "ok" });

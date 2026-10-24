@@ -57,7 +57,9 @@ export type ProjectSettingsView = {
   writes?: { setting: WritesMode; canChange: boolean };
   /** How far its checks reach (check-access.ts): the level, who changed it last, and whether this person may narrow it
    * (an approver for the project) or also widen it (an instance operator). */
-  checkAccess?: { setting: CheckAccess; changed: { by: string; at: string } | null; canNarrow: boolean; canWiden: boolean };
+  checkAccess?: { setting: CheckAccess; changed: { by: string; at: string } | null; canNarrow: boolean; canWiden: boolean;
+    /** This machine can't sandbox checks at all, and an operator allowed them to run anyway: every level runs unsandboxed. */
+    unconfinedHere?: boolean };
 };
 
 /** Where builds may write, said plainly; an approver changes it with their password. */
@@ -92,7 +94,9 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const missing = setting === "sign-ins" && network !== null ? signInHostsMissing(network) : [];
   const hosts = missing.length === 0 ? "" : html`<p class="meta" data-sign-in-hosts>${missing.length} sign-in ${missing.length === 1 ? "host isn't" : "hosts aren't"} allowed yet · <a href="#network">Add them</a></p><details class="hosts"><summary>Show hosts</summary><p class="tool-name">${missing.join(", ")}</p></details>`;
   const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${new Date(access.changed.at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</p>`;
-  const head = html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${hosts}${changed}`;
+  // Said before anything else: on a machine with no OS sandbox, every level runs without one.
+  const unconfined = access.unconfinedHere === true ? html`<p class="meta warning-line" data-unconfined-here>This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.</p>` : "";
+  const head = html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${unconfined}${hosts}${changed}`;
   if (!access.canNarrow && !access.canWiden) return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}</section>`;
   const option = (value: CheckAccess, detail: string, warning: string | null) => {
     const allowed = value === setting || access.canWiden || value === "sandboxed";
@@ -100,8 +104,8 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   };
   const open = network?.mode === "open";
   const form = postForm("/settings/project/check-access", html`
-    ${option("sandboxed", "No sign-ins, credentials, Toolroll folders or other projects.", null)}
-    ${option("sign-ins", `Also your Claude, Codex and GitHub sign-ins, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
+    ${option("sandboxed", "Can't read the files your sign-ins and credentials are kept in, Toolroll's folders or other projects.", null)}
+    ${option("sign-ins", `Also reads the files your Claude, Codex and GitHub sign-ins are kept in, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
     ${option("unsandboxed", "For projects whose checks create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
     ${open ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
     ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}

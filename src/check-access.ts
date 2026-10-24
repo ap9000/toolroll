@@ -59,8 +59,9 @@ export function narrowestNetwork(a: NetworkProfile, b: NetworkProfile): NetworkP
 
 /** A build's checks' own network: what its approval sealed, less its agent's provider hosts (those are the agent's, never
  * its checks'); narrower if a project host happens to be one of them. */
-export function checkNetworkOf(sealed: NetworkProfile, provider: string): NetworkProfile {
+export function checkNetworkOf(sealed: NetworkProfile, provider: string, project: ProjectNetwork): NetworkProfile {
   if (sealed.mode === "open") return sealed;
-  const agent = new Set(PROVIDER_HOSTS[provider] ?? []);
+  // A provider host the project itself lists (an operator added it, for its sign-ins, say) is the checks' too.
+  const agent = new Set((PROVIDER_HOSTS[provider] ?? []).filter(host => !project.hosts.includes(host)));
   return { ...sealed, hosts: sealed.hosts.filter(host => !agent.has(host)) };
 }

@@ -1236,6 +1236,8 @@ function plainLines(stdout: string): string {
 /** What a `sign-ins` check never inherits: a caller's choice of Claude's config folder (Claude's keychain sign-in is
  * keyed to its default one; check-access.ts). gh's and Codex's are set to the granted ones instead. */
 const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
+/** Where a Linux sign-ins check's copies of its sign-in files live while it runs: inside Toolroll's fenced state folder. */
+const SIGN_IN_COPIES = "sign-in-copies";
 
 /**
  * A `sign-ins` check's launch (check-access.ts): its exact sign-in files and its own transcript folder
@@ -1247,6 +1249,7 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
 async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[]): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
   const home = homedir();
   const grants = signInGrants(home, checkout);
+  const cleanup: string[] = [];
   // Codex's files are copied, each read only as the real file it is (readGrantedFile: no link, here or above it).
   const codex = join(own, "codex");
   mkdirSync(codex, { mode: 0o700 });
@@ -1258,8 +1261,13 @@ async function signInsLaunch(store: Store, own: string, temp: string, checkout: 
   // a link swapped in after validation must never be what it binds). A Mac's sandbox checks the real path itself.
   if (process.platform === "linux") {
     const copies: Record<string, string> = {};
-    const folder = join(own, "sign-ins");
-    mkdirSync(folder, { mode: 0o700 });
+    // Under Toolroll's own state folder, which every fence denies whole (a launch's folder in a shared /tmp isn't masked
+    // from a launch already running): bubblewrap binds from the original root, so only this check sees them.
+    const database = store.databaseFile();
+    if (database === null || database === "" || database === ":memory:") return { problem: "A check with sign-ins needs Toolroll's state folder, so nothing ran." };
+    mkdirSync(join(dirname(realpathSync(database)), SIGN_IN_COPIES), { recursive: true, mode: 0o700 });
+    const folder = mkdtempSync(join(dirname(realpathSync(database)), SIGN_IN_COPIES, "c-"));
+    cleanup.push(folder);
     grants.read.forEach((path, index) => {
       const bytes = readGrantedFile(path);
       if (bytes === null) return;
@@ -1272,7 +1280,7 @@ async function signInsLaunch(store: Store, own: string, temp: string, checkout: 
   }
   let egress: EgressProxy | null = null;
   let bridge: EgressBridge | null = null;
-  const close = async () => { await egress?.close(); await bridge?.close(); };
+  const close = async () => { await egress?.close(); await bridge?.close(); for (const one of cleanup) rmSync(one, { recursive: true, force: true }); };
   try {
     const env: Record<string, string> = { CODEX_HOME: codex, GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config") };
     if (policy.mode === "open") return { grants, network: { mode: "open" }, env, close };
@@ -1324,11 +1332,11 @@ export const ranAtLine = (level: CheckAccess): string | null => level === "sandb
   : `=== Check access ===\n${level === "unsandboxed" ? "These commands ran without a sandbox." : "These commands ran sandboxed, with model and GitHub sign-ins."}`;
 
 /** A saved result's check command runner (batch-checks.ts, result-follow-ups.ts): its level and network worked out right
- * now (checkoutLaunchOf), and how it actually runs recorded in `ranAt`. */
-export function checkoutRunner(store: Store, repo: string, checkout: string, inner: Runner, runIds: readonly number[], ranAt: CheckAccess[]): Runner {
+ * now (checkoutLaunchOf), and how it actually runs told to `ran`. */
+export function checkoutRunner(store: Store, repo: string, checkout: string, inner: Runner, runIds: readonly number[], ran: (level: CheckAccess) => void): Runner {
   return (file, args, options) => {
     const launch = checkoutLaunchOf(store, repo, runIds);
-    ranAt.push(actualCheckAccess(store, launch.access));
+    ran(actualCheckAccess(store, launch.access));
     return fencedCheckoutCommands(store, repo, checkout, inner, undefined, launch.access, launch.network)(file, args, options);
   };
 }

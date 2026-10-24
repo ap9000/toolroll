@@ -218,7 +218,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
       let ready = true;
       if (setup !== null) {
         const shell = approvedCommandShell(setup.command);
-        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], ranAt), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level)), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note("Approved project setup", setup.command, prepared);
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) { ready = false; result = { ran: false, failure: "The project's setup failed, so the check didn't run." }; }
       }
@@ -229,7 +229,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
           result = { ran: false, failure: "The approved check changed before it started." };
         } else {
           const shell = approvedCommandShell(live.command);
-          const ran = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], ranAt), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+          const ran = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], level => ranAt.push(level)), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
           note(`${CHECK_LEVEL_WORDS[target.level]} check`, live.command, ran);
           result = ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code };
         }

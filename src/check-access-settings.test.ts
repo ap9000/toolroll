@@ -101,3 +101,12 @@ test("widening takes a password typed now on both roads: an identity-provider re
   // And the write itself refuses a widening by anyone but an instance operator, whatever was claimed.
   expect(store.setProjectCheckAccess(repo, "unsandboxed", "sam", NOW, { may: "widen" })).toBeNull();
 });
+
+test("on a machine that can't sandbox checks at all, the section says so before anyone chooses", async () => {
+  const { projectSettingsHtml } = await import("./project-delete-ui.js");
+  expect(typeof projectSettingsHtml).toBe("function");
+  // The words the section shows when no OS sandbox exists (rendered in the page; the flag comes from serve.ts).
+  const ui = (await import("node:fs")).readFileSync("src/project-delete-ui.ts", "utf8");
+  expect(ui).toContain("This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.");
+  expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\)\) && store\.unfencedAgentsAllowed\(\)/);
+});

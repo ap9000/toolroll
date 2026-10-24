@@ -516,7 +516,8 @@ function checkLaunchOf(store: Store, runId: number, profile: ExecutionProfile): 
   const sealed = taskRef === undefined ? undefined : launchNetworkOf(store, taskRef, profile);
   // No sealed network to narrow from: its checks run sandboxed.
   if (sealed === undefined || !("policy" in sealed)) return { access: CHECK_ACCESS_DEFAULT, network: null };
-  return { access, network: checkNetworkOf(sealed.policy, profile.provider) };
+  const repo = store.refForId(taskRef!)?.repo ?? null;
+  return { access, network: checkNetworkOf(sealed.policy, profile.provider, repo === null ? { mode: "allowlist", hosts: [], loopback: "proxy-only" } : store.projectNetwork(repo)) };
 }
 
 /** Where a build may write (writes-mode.ts): what its approval sealed, or — sealed before write allowlists — anywhere

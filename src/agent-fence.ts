@@ -1081,7 +1081,8 @@ export function signInGrants(home: string, checkout: string, platform: NodeJS.Pl
   const read = SIGN_IN_FILES(platform).map(name => join(base, name)).filter(path => {
     try {
       const held = lstatSync(path);
-      return held.isFile() && !held.isSymbolicLink() && realpathSync(path) === path;
+      // One name only: a hard link made to another file (Toolroll's database, say) would be read through this grant.
+      return held.isFile() && !held.isSymbolicLink() && held.nlink === 1 && realpathSync(path) === path;
     } catch { return false; }
   });
   const transcript = claudeProjectFolder(base, real(checkout));
@@ -1100,7 +1101,8 @@ export function readGrantedFile(path: string): Buffer | null {
     if (realpathSync(dirname(path)) !== dirname(path)) return null;
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      if (!fstatSync(fd).isFile()) return null;
+      const held = fstatSync(fd);
+      if (!held.isFile() || held.nlink !== 1) return null;
       return readFileSync(fd);
     } finally { closeSync(fd); }
   } catch { return null; }
