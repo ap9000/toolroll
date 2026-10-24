@@ -9,13 +9,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, MACOS_BASELINE, NO_GRANTS, ownedAncestors, runFolders, SECCOMP_HELPER_ENV, taskBoundary } from "./agent-fence.js";
-import { argsOnlySeccomp, nativeSeccomp } from "../test/seccomp-fixture.js";
+import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, srtTermsOf, taskBoundary, type FenceGrants } from "./agent-fence.js";
 
-/** Every macOS profile's opening (deny by default, the baseline, the base read and write allows) and, with an open
- * network, its closing rules. */
-const MACOS_HEAD = ["(version 1)", "(deny default)", ...MACOS_BASELINE, "(allow file-read*)", "(allow file-write*)", "(allow file-read-metadata (vnode-type DIRECTORY))"];
-const MACOS_TAIL_OPEN = ["(allow network*)", "(deny appleevent-send)", "(deny lsopen)"];
+/** The spawn a fenced launch makes (the sandbox runtime's, agent-fence.ts sandboxedSpawn), for the macOS-only checks
+ * here: on a Mac it needs no environment of its own. */
+const macosFenced = (file: string, args: readonly string[], fence: readonly string[], grants: FenceGrants = NO_GRANTS, cwd?: string): { file: string; args: string[] } => {
+  const wrapped = sandboxedSpawn(file, args, fence, grants, cwd);
+  return { file: wrapped.file, args: wrapped.args };
+};
 import { adapterFor } from "./provider.js";
 import { openStore, type Store } from "./store.js";
 import { register } from "./runner.js";
@@ -76,7 +77,7 @@ describe("the agent fence", () => {
     symlinkSync(tools, alias, "dir");
     const folders = runFolders(null, dir);
     const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home, runFolders: folders });
-    expect(fence).toEqual(expect.arrayContaining([tools, codexHome]));
+    // Other launches' folders are read-denied by pattern (srtTermsOf, codexFilesystem), never listed in the fence.
     return {
       tools, codexHome,
       fence: [...fence, tools, codexHome, alias, `${tools}/../so-tools-own`],
@@ -235,7 +236,7 @@ describe("the agent fence", () => {
     const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home });
     expect(fence).toEqual([
       join(home, ".standing-orders"),
-      join(state, "backups"), join(state, "bridge-secrets"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
+      join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
       // The journal and shared memory by name, there or not.
       join(state, "orders.db-journal"), join(state, "orders.db-shm"),
       join(state, "repos.json"), join(state, ".toolroll-run"), join(state, "runner-token"), join(state, "up-login.txt"),
@@ -251,7 +252,7 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "bridge-secrets"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
+    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
     // No database file: only ~/.standing-orders.
     expect(agentFence({ databaseFile: null, worktree: null, home })).toEqual([join(home, ".standing-orders")]);
   });
@@ -395,7 +396,6 @@ describe("the agent fence", () => {
     const settings = JSON.parse(claude[claude.indexOf("--settings") + 1]!) as { permissions: { deny: string[] } };
     expect(settings.permissions.deny).toEqual(["Read(//s/up-login.txt)", "Read(//s/up-login.txt/**)", "Edit(//s/up-login.txt)", "Edit(//s/up-login.txt/**)", "Read(//h/.standing-orders)", "Read(//h/.standing-orders/**)", "Edit(//h/.standing-orders)", "Edit(//h/.standing-orders/**)"]);
     expect(JSON.parse(claudeFenceSettings([]))).toEqual({ permissions: { deny: [] } });
-    expect(macosFenceProfile(['/a "quoted"/x'])).toContain('(subpath "/a \\"quoted\\"/x")');
   });
 
   test.skipIf(!macosFenceAvailable())("on macOS the sandbox refuses a fenced read from any child process, while the worktree, other writes and the network stay open", () => {
@@ -526,28 +526,6 @@ describe("the agent fence", () => {
   });
 });
 
-describe("the Linux fence (v88)", () => {
-  test("bubblewrap masks each fenced folder with an empty one and each fenced file with /dev/null, around the agent itself", () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "so-linux-fence-")));
-    try {
-      const folder = join(root, "keys"), file = join(root, "up-login.txt");
-      mkdirSync(folder);
-      writeFileSync(file, "alex secret");
-      const seccomp = argsOnlySeccomp();
-      expect(linuxFenced("claude", ["-p", "hi"], [folder, file], { ...NO_GRANTS, seccomp })).toEqual({ file: "bwrap", args: ["--dev-bind", "/", "/", "--tmpfs", folder, "--ro-bind", "/dev/null", file,
-        "--ro-bind", seccomp.helper, seccomp.helper, ...SECCOMP_HELPER_ENV.flatMap(name => ["--unsetenv", name]),
-        "--new-session", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "--", seccomp.helper, "claude", "-p", "hi"] });
-      // No helper, or one changed since it was installed: no Linux fence at all.
-      expect(() => linuxFenced("claude", [], [folder])).toThrow(/seccomp helper/);
-      expect(() => linuxFenced("claude", [], [folder], { ...NO_GRANTS, seccomp: { ...seccomp, sha256: "0".repeat(64) } })).toThrow(/seccomp helper/);
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
-  test("it is used only on Linux, and only where bubblewrap actually runs", () => {
-    expect(linuxFenceAvailable("darwin", () => true)).toBe(false);
-    expect(linuxFenceAvailable("win32", () => true)).toBe(false);
-  });
-});
 
 describe("the macOS fence inside another sandbox", () => {
   test.runIf(process.platform === "darwin")("a process already fenced (a flow's check zone running end-to-end journeys) doesn't nest it; any other probe failure keeps it on", () => {
@@ -597,11 +575,10 @@ describe("what the fence gives back", () => {
     expect(grants).toEqual({ readOnly: [], readable: [join(state, "deps", LINKED_KEY, "node_modules")], lookup: [join(state, "deps"), join(state, "deps", LINKED_KEY)] });
     // A checkout with its own install (or none) is given nothing.
     expect(fenceGrants({ databaseFile: join(state, "orders.db"), worktree: join(dir, "elsewhere"), linked: LINKED }).readable).toEqual([]);
-    const profile = macosFenceProfile(fence, grants);
-    expect(profile).toContain(`(allow file-read-metadata (literal "${join(state, "deps")}") (literal "${join(state, "deps", LINKED_KEY)}"))`);
-    expect(profile).toContain(`(allow file-read* file-test-existence (subpath "${join(state, "deps", LINKED_KEY, "node_modules")}"))`);
-    // The deny comes first and the narrow grant after it: a later Seatbelt rule wins.
-    expect(profile.indexOf(`(subpath "${join(state, "deps")}")`)).toBeLessThan(profile.indexOf("(allow file-read* file-test-existence"));
+    // The sandbox runtime: the deps folder denied, the linked install read again inside it (the more specific path wins).
+    const terms = srtTermsOf(fence, grants);
+    expect(terms.readConfig.denyOnly).toContain(join(state, "deps"));
+    expect(terms.readConfig.allowWithinDeny).toContain(join(state, "deps", LINKED_KEY, "node_modules"));
     // Codex can't grant inside a deny: the deps folder becomes read-only and everything not on the way is denied.
     const flat = flattened(fence, grants);
     expect(flat.deny).toEqual(expect.arrayContaining([join(state, "deps", OTHER_KEY), join(state, "deps", LINKED_KEY, "ready.json"), join(state, "runner-token")]));
@@ -614,42 +591,8 @@ describe("what the fence gives back", () => {
     for (const folder of [join(state, "deps"), join(state, "deps", LINKED_KEY)]) {
       for (const pattern of ["orders.db*", "*token*", "up-login*", "*.txt"]) expect(filesystem).toContain(`"${join(folder, pattern)}"="deny"`);
     }
-    // Linux binds the readable copy back, read-only, after masking the folder around it.
-    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
-    // The deps folder is masked whole (what is made there later is masked too), then only the linked copy is bound back.
-    const mask = bwrap.findIndex((arg, at) => arg === "--tmpfs" && bwrap[at + 1] === join(state, "deps"));
-    const bind = bwrap.findIndex((arg, at) => arg === "--ro-bind" && bwrap[at + 1] === join(state, "deps", LINKED_KEY, "node_modules"));
-    expect(mask).toBeGreaterThan(0);
-    expect(bind).toBeGreaterThan(mask);
-    expect(bwrap).not.toContain(join(state, "deps", OTHER_KEY));
   });
 
-  test("every macOS profile hides other processes' arguments and environment and anything outside its own sandbox; other launches' folders are denied by pattern, its own kept", () => {
-    const own = join(dir, "so-tools-own");
-    const profile = macosFenceProfile(["/s/secret"], { readOnly: ["/r/meta"], readable: [], lookup: ["/r/checkout"], runFolders: { root: "/private/var/folders/a.b/T", own } });
-    expect(profile.split("\n")).toEqual([
-      ...MACOS_HEAD,
-      '(deny file-read* file-write* (subpath "/s/secret"))',
-      '(deny file-write* (subpath "/r/meta"))',
-      '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-|so-cmd-)"))',
-      '(allow file-read-metadata (literal "/r/checkout"))',
-      `(allow file-read* file-write* (subpath "${own}"))`,
-      `(deny file-write* (literal "${own}"))`,
-      '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
-      "(deny process-info*)",
-      "(allow process-info* (target same-sandbox))",
-      "(deny mach-task-name)",
-      ...MACOS_TAIL_OPEN,
-    ]);
-    // Present launch folders are fenced by path too, for Codex and Linux; never this launch's own.
-    const root = join(dir, "tmp");
-    for (const name of ["so-tools-mine", "so-tools-theirs", "so-codex-theirs", "unrelated"]) mkdirSync(join(root, name), { recursive: true });
-    const fence = agentFence({ databaseFile: null, worktree: null, home: join(dir, "home"), runFolders: runFolders(join(root, "so-tools-mine"), root) });
-    expect(fence).toEqual([join(root, "so-codex-theirs"), join(root, "so-tools-theirs")]);
-    // A second root (a Mac's short one for checks) is denied by pattern too.
-    const both = macosFenceProfile([], { readOnly: [], readable: [], lookup: [], runFolders: { root: "/private/var/folders/a.b/T", own, also: ["/private/tmp"] } });
-    expect(both).toContain('(deny file-read* file-write* (regex #"^/private/tmp/(so-tools-|so-codex-|so-net-|so-cmd-)"))');
-  });
 
   test("Codex: a folder holding the shared install that can't be listed stays denied whole, and its grant is dropped", () => {
     const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home: join(dir, "home") });
@@ -696,19 +639,6 @@ describe("what the fence gives back", () => {
     expect(filesystem).toContain('"/d"="deny"');
   });
 
-  test("bubblewrap masks each fenced folder whole first, then binds back only grants outside fenced paths, launch folders and secret names", () => {
-    const fenced = join(dir, "fenced"), meta = join(dir, "meta"), temp = join(dir, "T");
-    const paths = { inner: join(fenced, "inner"), linked: join(fenced, "deps", "k", "node_modules"), secret: join(fenced, "deps", "x.token", "node_modules"),
-      launch: join(temp, "so-tools-other", "lib"), own: join(temp, "so-tools-mine", "lib") };
-    for (const path of [meta, ...Object.values(paths)]) mkdirSync(path, { recursive: true });
-    const grants = { readOnly: [paths.inner, fenced, meta], readable: [paths.linked, paths.secret, paths.launch, paths.own], lookup: [], runFolders: { root: temp, own: join(temp, "so-tools-mine") } };
-    const bwrap = linuxFenced("claude", [], [fenced], { ...grants, seccomp: argsOnlySeccomp() }).args;
-    // One whole mask (a file made there after launch is masked with it), then the grants, then the command.
-    expect(bwrap.slice(0, 5)).toEqual(["--dev-bind", "/", "/", "--tmpfs", fenced]);
-    const bound = bwrap.flatMap((arg, at) => arg === "--ro-bind" && bwrap[at + 1] !== argsOnlySeccomp().helper ? [bwrap[at + 1]!] : []);
-    expect(bound.sort()).toEqual([meta, paths.linked, paths.own].sort());
-    expect(bwrap.indexOf("--ro-bind")).toBeGreaterThan(bwrap.indexOf("--tmpfs"));
-  });
 
   test("a fenced build's git never expires a reflog, after any settings the caller already passed", () => {
     expect(fencedGitEnv({})).toEqual({ GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "gc.reflogExpire", GIT_CONFIG_VALUE_0: "never", GIT_CONFIG_KEY_1: "gc.reflogExpireUnreachable", GIT_CONFIG_VALUE_1: "never" });
@@ -744,7 +674,9 @@ describe("what the fence gives back", () => {
     for (const path of late) writeFileSync(path, "synthetic-late-secret");
     writeFileSync(flag, "");
     const after = await waiting;
-    expect(after.stdout.trim().split("\n"), after.stderr).toEqual(["late-unreadable", "late-unreadable", "late-unreadable", LINKED_KEY, `ran ${LINKED_KEY}`]);
+    // The linked copy's own folder is read whole (a listing can't be granted alone), so a file made there is read; the
+    // deps folder beside it and another copy stay unread.
+    expect(after.stdout.trim().split("\n"), after.stderr).toEqual(["late-unreadable", "synthetic-late-secret" + "late-unreadable", LINKED_KEY, `ran ${LINKED_KEY}`]);
     // Control: the deny alone (the fence before this change) breaks the same import.
     const before = await run("/bin/bash", ["-c", `${JSON.stringify(process.execPath)} -e 'require("pkg")' 2>/dev/null && echo imported || echo import-failed`], { cwd: worktree, processGroup: true, confinement: "required", fence });
     expect(before.stdout.trim()).toBe("import-failed");
@@ -811,13 +743,13 @@ describe("a build's tool secrets behind the macOS fence", () => {
           "for fd in /dev/fd/*; do [ -f \"$fd\" ] && head -c 65536 \"$fd\"; done; echo",
           `${JSON.stringify(python)} ${JSON.stringify(join(dir, "probe.py"))} ${process.pid} ${serverPid}`,
         ].join("\n")], { processGroup: true, confinement: "required", fence: fenceOf.fence, fenceGrants: fenceOf.grants });
-        expect(spawned.mock.calls.map(([file, args]) => [file, args?.slice(0, 3)])).toEqual([
-          ["/usr/bin/sandbox-exec", ["-p", macosFenceProfile(fenceOf.fence, fenceOf.grants), "/bin/bash"]],
-        ]);
+        expect(spawned.mock.calls.map(([file, args]) => [file, args?.[0], String(args?.[1]).includes("/usr/bin/sandbox-exec")])).toEqual([["/bin/sh", "-c", true]]);
         expect(fenced.stdout).not.toContain(secret);
         expect(fenced.stdout).toContain(notes.url);
         expect(fenced.stdout).toContain("other-launch-unreadable");
-        expect(fenced.stdout.trim().split("\n").slice(-2)).toEqual(["denied", "denied"]);
+        // Another process's arguments and environment (KERN_PROCARGS2) stay readable under the sandbox runtime's baseline
+        // (a limit it documents and the owner accepted): a tool server's secrets in its environment are within reach.
+        expect(fenced.stdout.trim().split("\n").slice(-2)[1]).toBe(`read ${createHash("sha256").update(secret).digest("hex")}`);
         // Control: unfenced, the same probe reads the server's environment, secret and all.
         const open = spawnSync(python, [join(dir, "probe.py"), String(serverPid)], { encoding: "utf8" });
         expect(open.stdout.trim()).toBe(`read ${createHash("sha256").update(secret).digest("hex")}`);
@@ -859,20 +791,6 @@ describe("the macOS fence holds against renaming a folder above it and against a
     return spawnSync(file, args, { encoding: "utf8", cwd: worktree, env: { ...process.env, NODE_OPTIONS: undefined } });
   };
 
-  test("the folders above a fenced path and the temp folder are the user's own ones only, never / nor the path itself", () => {
-    const above = ownedAncestors([join(state, "up-login.txt")], [root]);
-    expect(above).toEqual(expect.arrayContaining([state, home, dir, root]));
-    expect(above).not.toContain(join(state, "up-login.txt"));
-    expect(above).not.toContain("/");
-    // System folders the user doesn't own are left out: a build can't rename them anyway.
-    expect(above).not.toContain("/private");
-    expect(ownedAncestors(["/nowhere/at/all"], ["/no/temp"])).toEqual([]);
-    const { fence, grants } = fenceOf();
-    const profile = macosFenceProfile(fence, grants);
-    expect(profile).toContain(`(literal "${home}")`);
-    expect(profile).toContain(`(literal "${root}")`);
-    expect(profile.split("\n").at(-1 - MACOS_TAIL_OPEN.length)).toMatch(/^\(deny file-write\* \(literal /);
-  });
 
   test.skipIf(!macosFenceAvailable())("a build can't rename a folder above a fenced path or the temp folder to read through the new name, and still writes inside them", () => {
     const attack = [
@@ -884,10 +802,8 @@ describe("the macOS fence holds against renaming a folder above it and against a
     expect(fenced.stdout).not.toContain(MARKER);
     expect(fenced.stdout).not.toContain("moved-");
     expect(existsSync(join(root, "so-tools-other", "mcp.json")) && existsSync(join(state, "up-login.txt"))).toBe(true);
-    // The same profile without the ancestor rule lets the rename through: the rule is what holds.
-    const { fence, grants } = fenceOf();
-    const without = macosFenceProfile(fence, grants).split("\n").filter(line => !line.startsWith("(deny file-write* (literal ")).join("\n");
-    const open = sh(`mv "${root}" "${root}.x" && cat "${root}.x/so-tools-other/mcp.json"; mv "${root}.x" "${root}"`, without);
+    // Control: unsandboxed, the rename goes through and reads the secret by its new name.
+    const open = spawnSync("/bin/sh", ["-c", `mv "${root}" "${root}.x" && cat "${root}.x/so-tools-other/mcp.json"; mv "${root}.x" "${root}"`], { encoding: "utf8" });
     expect(open.stdout).toContain(MARKER);
     // Writing inside those folders works as before: the own tool folder, the temp folder, the home folder.
     const inside = sh([
@@ -967,10 +883,10 @@ describe("a link planted among the repository's worktree entries grants nothing"
     const filesystem = parseFilesystem(codexFenceArgv(fence, false, grants));
     expect([...filesystem].filter(([, mode]) => mode === "read")).toEqual([]);
     expect(filesystem.get(join(home, ".toolroll"))).toBe("deny");
-    // Bubblewrap masks the folder and binds nothing back from the planted link.
-    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
-    expect(bwrap.join(" ")).not.toContain("tool-secrets");
-    expect(bwrap[bwrap.indexOf(join(home, ".toolroll")) - 1]).toBe("--tmpfs");
+    // The sandbox runtime denies the folder and is given nothing back from the planted link.
+    const terms = srtTermsOf(fence, grants);
+    expect(JSON.stringify(terms)).not.toContain("tool-secrets");
+    expect(terms.readConfig.denyOnly).toContain(join(home, ".toolroll"));
   });
 
   // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI
@@ -1094,7 +1010,10 @@ describe("another project's checkouts are out of reach", () => {
     "npm --version >/dev/null && echo npm-ok",
     ...(tools ? [`cat ${q(join(own, "mcp.json"))}`] : []),
   ].join("\n");
-  const HELD = ["other-unreadable", "other-unwritable", "pool-unlisted", "link-unreadable", "later-unreadable", "later-unwritable"];
+  // A project made after launch is unread (the pool's read deny holds whatever is made there) but writable: the sandbox
+  // runtime can't deny writes to a folder and give one inside it back, so writes are denied to what is there at launch.
+  // (On Linux the pool's read deny is a mask, so what it writes there lands in the mask, never the real folder.)
+  const HELD = ["other-unreadable", "other-unwritable", "pool-unlisted", "link-unreadable", "later-unreadable", process.platform === "darwin" ? "later-written" : "later-unwritable"];
   const WORKS = () => [active, active, head, "status-ok", "mine", `node-${LINKED_KEY}`, "npm-ok"];
 
   test("the plane names its checkouts' pool by their layout only", () => {
@@ -1134,38 +1053,7 @@ describe("another project's checkouts are out of reach", () => {
     for (const roots of [["/"], [home], [dir], [active], [join(active, "node_modules")]]) expect(checkoutPool({ roots, worktree: active, home }).deny).toEqual([]);
   });
 
-  test("Seatbelt: the pool deny comes first, the own checkout's allow right after it, before every other deny and the read-only and lookup rules", () => {
-    const { fence, grants } = launch("claude");
-    const lines = macosFenceProfile(fence, grants).split("\n");
-    const at = MACOS_HEAD.length - 2;
-    expect(lines.slice(at, at + 6)).toEqual([
-      ...MACOS_HEAD.slice(-2),
-      `(deny file-read* file-write* (subpath ${q(pool)}))`,
-      `(allow file-read* file-write* (subpath ${q(active)}))`,
-      `(deny file-write* (literal ${q(active)}))`,
-      `(allow file-read-metadata (literal ${q(pool)}) (literal ${q(join(pool, "app"))}))`,
-    ]);
-    // Every later deny still holds inside the checkout; the lookup and readable grants still come after them.
-    expect(lines[at + 6]).toMatch(/^\(deny file-read\* file-write\* \(subpath /);
-    expect(lines.findIndex(line => line.startsWith("(deny file-write* (subpath"))).toBeGreaterThan(at + 5);
-    expect(lines.findLastIndex(line => line.includes(q(join(pool, "app", "sibling-4567cdef"))))).toBeGreaterThan(at + 5);
-    expect(lines.findIndex(line => line.startsWith("(allow file-read* file-test-existence"))).toBeGreaterThan(at + 5);
-    // The pool's folders above can't be renamed to reach it under a name no rule mentions.
-    expect(lines.at(-1 - MACOS_TAIL_OPEN.length)).toContain(`(literal ${q(state)})`);
-  });
 
-  test("bubblewrap masks the pool, then binds the own checkout back read-write, before every other mask", () => {
-    const { fence, grants } = launch("claude");
-    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
-    expect(bwrap.slice(0, 8)).toEqual(["--dev-bind", "/", "/", "--tmpfs", pool, "--bind", active, active]);
-    const masks = bwrap.flatMap((arg, at) => arg === "--tmpfs" ? [at] : []);
-    expect(masks.slice(1).every(at => at > bwrap.indexOf("--bind"))).toBe(true);
-    expect(bwrap.filter(arg => arg === "--bind")).toHaveLength(1);
-    // The shared install is still bound back read-only; nothing in the pool but the own checkout is.
-    expect(bwrap[bwrap.indexOf(join(state, "deps", LINKED_KEY, "node_modules")) - 1]).toBe("--ro-bind");
-    const bound = bwrap.flatMap((arg, at) => arg === "--ro-bind" || arg === "--bind" ? [bwrap[at + 1]!] : []);
-    expect(bound.filter(path => path.startsWith(pool + "/"))).toEqual([active]);
-  });
 
   test("Codex denies launch-time siblings without denying or pattern-matching own ancestors", () => {
     for (const fullAccess of [false, true]) {
@@ -1224,18 +1112,16 @@ describe("another project's checkouts are out of reach", () => {
     expect(policy.write).toEqual([active]);
   });
 
-  test.skipIf(!macosFenceAvailable())("Seatbelt blocks replacing the own checkout root before a resumed launch", () => {
+  test.skipIf(!macosFenceAvailable())("a resumed launch never adopts a sibling for an own checkout a build replaced", () => {
     const { fence, grants } = launch("claude");
     const attack = `cd / && rm -rf ${q(active)}; ln -s ${q(join(pool, "app", "sibling-4567cdef"))} ${q(active)}`;
-    const wrapped = macosFenced("/bin/sh", ["-c", attack], fence, grants);
+    const wrapped = macosFenced("/bin/sh", ["-c", attack], fence, grants, active);
     spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8" });
-    expect(lstatSync(active).isDirectory()).toBe(true);
-    // Deleting contents may remove .git: a resumed launch must refuse, never adopt a sibling.
-    expect(() => trustedWorktreeBinding(main, active)).toThrow("trusted binding");
-    const control = macosFenced("/bin/sh", ["-c", attack], fence, { ...grants, pool: undefined });
-    spawnSync(control.file, control.args, { cwd: dir, encoding: "utf8" });
-    expect(lstatSync(active).isSymbolicLink()).toBe(true);
-    expect(() => trustedWorktreeBinding(main, active)).toThrow("trusted binding");
+    // Whatever the build left (the runtime writes a build's own checkout whole), a resume refuses it rather than
+    // adopt the sibling.
+    let bound: string | null = null;
+    try { bound = trustedWorktreeBinding(main, active, [pool]).gitdir; } catch (error) { expect(String(error)).toMatch(/trusted binding/); }
+    if (bound !== null) expect(bound).toBe(realpathSync(join(main, ".git", "worktrees", "task-0123abcd")));
   });
 
   test("Codex resolves aliases without denying own checkout or Git data and refuses an incomplete listing", () => {
@@ -1259,21 +1145,21 @@ describe("another project's checkouts are out of reach", () => {
     const result = spawnSync(file, args, { cwd: active, encoding: "utf8", env });
     expect(result.stdout, result.stderr).not.toContain(MARKER);
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual([...HELD, ...WORKS(), "own-tools"]);
-    expect(existsSync(join(theirs, "planted.txt")) || existsSync(join(late, "planted.txt"))).toBe(false);
+    expect(existsSync(join(theirs, "planted.txt"))).toBe(false);
     // Control: the same fence without the pool deny reads both, so the deny is what holds.
     const open = wrapped(late, { ...grants, pool: undefined });
     expect(spawnSync(open.file, open.args, { cwd: active, encoding: "utf8", env }).stdout).toContain(MARKER);
   }, 60_000);
 
-  test.skipIf(!linuxFenceAvailable())("bubblewrap denies existing and later projects while own checkout and tools work", () => {
+  test.skipIf(!linuxFenceAvailable())("on Linux another project's worktree, and one made after launch, are out of reach while the own checkout and tools work", () => {
     const { fence, grants } = launch("claude");
     const late = join(pool, "late", "task-fedcba98");
-    const wrapped = linuxFenced("/bin/sh", ["-c", probe(late, true)], fence, { ...grants, seccomp: nativeSeccomp() ?? argsOnlySeccomp() });
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", probe(late, true)], fence, grants, active);
     later();
-    const result = spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined } });
+    const result = spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined, ...wrapped.env } });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual([...HELD, ...WORKS(), "own-tools"]);
-    expect(existsSync(join(theirs, "planted.txt")) || existsSync(join(late, "planted.txt"))).toBe(false);
+    expect(existsSync(join(theirs, "planted.txt"))).toBe(false);
   });
 
   // Whether Codex's own sandbox runs here at all (it can't inside another Seatbelt sandbox).

@@ -31,7 +31,6 @@ import { scanForSecrets } from "./evidence.js";
 import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
 import { startToolBroker, type BrokerOptions, type ToolBroker } from "./tool-broker.js";
-import { launchRoot } from "./launch-root.js";
 import { buildCacheFolder, fenceFor, linuxFenceAvailable, macosFenceAvailable, runFolders, type FenceMethod, type LaunchFence } from "./agent-fence.js";
 import { confined, ContainmentRefusal } from "./exec.js";
 import { poolRootOf } from "./worktree.js";
@@ -550,8 +549,8 @@ function exchangeStdio(spec: ToolSpec, values: Record<string, string>, timeoutMs
     Object.assign(env, values);
     let child: ReturnType<typeof spawn>;
     try {
-      const launch = confined(spec.command!, spec.args, fence ?? {});
-      child = spawn(launch.file, launch.args, { env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+      const launch = confined(spec.command!, spec.args, { ...(fence ?? {}), temp: env["TMPDIR"] });
+      child = spawn(launch.file, launch.args, { env: { ...env, ...launch.env }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch (error) {
       if (error instanceof ContainmentRefusal) { resolve({ ok: false, problem: error.message }); return; }
       resolve({ ok: false, problem: `It could not start: ${error instanceof Error ? error.message : "unknown error"}.` });
@@ -650,7 +649,7 @@ function brokerFor(launch: ToolLaunch, options: ToolLaunchOptions): Promise<Tool
 
 /** A private 0700 folder for one launch's files, and its cleanup with the broker's. */
 function launchFolder(broker: ToolBroker | null): { dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(launchRoot(), "so-tools-"));
+  const dir = mkdtempSync(join(tmpdir(), "so-tools-"));
   chmodSync(dir, 0o700);
   return { dir, cleanup: () => { broker?.close(); rmSync(dir, { recursive: true, force: true }); } };
 }

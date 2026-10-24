@@ -249,8 +249,7 @@ export function resolveScopeProfile(
   // sandbox settings (project-sandbox.ts), sealed when it lists any.
   const sandbox = repo === null ? PROJECT_SANDBOX_DEFAULT : store.projectSandbox(repo);
   return { ok: true, profile: { ...profile, network, writes, ...(checkAccess === "sandboxed" ? {} : { checkAccess }), fencePolicy: 2,
-    ...(sandbox.readDeny.length === 0 ? {} : { readDeny: [...sandbox.readDeny] }), ...(sandbox.machLookup.length === 0 ? {} : { machLookup: [...sandbox.machLookup] }),
-    ...(sandbox.writeUnlock.length === 0 ? {} : { writeUnlock: [...sandbox.writeUnlock] }) }, provenance: { resolvedFrom: build.source, repairFrom } };
+    ...(sandbox.readDeny.length === 0 ? {} : { readDeny: [...sandbox.readDeny] }), ...(sandbox.machLookup.length === 0 ? {} : { machLookup: [...sandbox.machLookup] }) }, provenance: { resolvedFrom: build.source, repairFrom } };
 }
 
 // ---- route candidates (v47, phase routing) --------------------------------

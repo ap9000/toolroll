@@ -75,14 +75,17 @@ const probe = () => [
 ].join("\n");
 
 describe.skipIf(!FENCED)("check access in the fence", () => {
-  test.skipIf(!SIGN_INS)("sign-ins: exactly the sign-in files (Codex's in its real home), its own transcript folder; nothing else", async () => {
+  test.skipIf(!SIGN_INS)("sign-ins: exactly the sign-in files (Codex's in its real home); nothing else", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", probe()], { cwd: checkout, env: { GH_CONFIG_DIR: join(home, ".ssh") } });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual([
       "claude-account-read", "claude-settings-read", "claude-history-refused", "other-transcript-refused", "gh-hosts-read",
       "codex-direct-read", "codex-home", "ssh-refused", "aws-refused",
-      // On Linux the transcript folder isn't granted; what is written under a masked folder lands in the mask (an empty
-      // folder of the sandbox's own), never in the real one: checked below.
-      ...(process.platform === "darwin" ? ["transcript-written", "memory-refused", "other-refused"] : ["transcript-refused", "memory-written", "other-written"]),
+      // Under policy v1 (this check's: no approval sealed v2) the home configuration stays unwritten whole: the sandbox
+      // runtime can't write back inside a write deny, so not even its own transcript is written.
+      "transcript-refused",
+      // On Linux a write under a read-denied folder lands in the sandbox's own empty folder over it, never the real
+      // one (checked below).
+      ...(process.platform === "darwin" ? ["memory-refused", "other-refused"] : ["memory-written", "other-written"]),
       // A caller's GH_CONFIG_DIR never points the check (or its grant) elsewhere.
       `gh=${join(home, ".config", "gh")}`,
     ]);

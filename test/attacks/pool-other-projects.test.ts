@@ -5,14 +5,13 @@
  * back only this build's own checkout (Seatbelt: subpath deny then own allow; Codex: launch-time siblings denied one by
  * one, the folders between read-only; bubblewrap: tmpfs mask then a bind of the own checkout).
  */
-import { argsOnlySeccomp } from "../seccomp-fixture.js";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { codexFenceArgv, linuxFenced, macosFenced, macosFenceProfile } from "../../src/agent-fence.js";
+import { codexFenceArgv, sandboxedSpawn, srtTermsOf } from "../../src/agent-fence.js";
 import { poolRootOf } from "../../src/worktree.js";
-import { codexSandbox, expectNoMarker, lines, marker, needs, ordinaryWork, plane, q, seatbelt, underCodex, useScratch, write, type Plane } from "./harness.js";
+import { codexSandbox, expectNoMarker, lines, marker, needs, ordinaryWork, osFence, plane, q, underCodex, useScratch, write, type Plane } from "./harness.js";
 
 const filesystem = (argv: string[]): Map<string, string> => {
   const table = argv.find(arg => arg.startsWith("permissions.standing-orders.filesystem="))!;
@@ -43,19 +42,13 @@ describe("attack: another project's worktree under the state folder (incl. a sam
     expect(poolRootOf(at.prefixed, at.main)).toBeNull();
     const { fence, grants } = at.launch("claude");
     expect(grants.pool).toMatchObject({ deny: [at.pool], own: at.active, lookup: [at.pool, join(at.pool, "app")] });
-    const profile = macosFenceProfile(fence, grants).split("\n");
-    const first = profile.indexOf(`(deny file-read* file-write* (subpath ${q(at.pool)}))`);
-    // After the baseline and the base read/write allows; before every other deny.
-    expect(profile.slice(0, first).some(line => line.startsWith("(deny file"))).toBe(false);
-    expect(profile.slice(first, first + 3)).toEqual([
-      `(deny file-read* file-write* (subpath ${q(at.pool)}))`,
-      `(allow file-read* file-write* (subpath ${q(at.active)}))`,
-      `(deny file-write* (literal ${q(at.active)}))`,
-    ]);
-    // Seatbelt's subpath matches whole path components, so the prefix sibling stays under the pool deny.
-    expect(profile.filter(line => line.startsWith("(allow") && line.includes(q(at.prefixSibling)) && !line.startsWith("(allow file-read-metadata"))).toEqual([]);
-    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
-    expect(bwrap.slice(0, 8)).toEqual(["--dev-bind", "/", "/", "--tmpfs", at.pool, "--bind", at.active, at.active]);
+    // The sandbox runtime's terms: the pool unread, the own checkout read again; every other checkout unwritten.
+    const terms = srtTermsOf(fence, grants);
+    expect(terms.readConfig.denyOnly).toContain(at.pool);
+    expect(terms.readConfig.allowWithinDeny).toContain(at.active);
+    expect(terms.readConfig.allowWithinDeny).not.toContain(at.prefixSibling);
+    for (const path of [join(at.pool, "other"), join(at.pool, "app-extra"), at.sibling, at.prefixSibling]) expect(terms.writeConfig.denyWithinAllow, path).toContain(path);
+    expect(terms.writeConfig.denyWithinAllow.some(path => path === at.active || at.active.startsWith(`${path}/`))).toBe(false);
     for (const fullAccess of [false, true]) {
       const codex = filesystem(codexFenceArgv(at.launch("codex").fence, fullAccess, at.launch("codex").grants));
       expect(codex.get(at.active)).toBe("write");
@@ -65,14 +58,14 @@ describe("attack: another project's worktree under the state folder (incl. a sam
     }
   });
 
-  test("native Seatbelt: every other checkout, and a project made after launch, is out of reach; the own checkout works", ctx => {
-    needs(ctx, seatbelt());
+  test("native: every other checkout, and a project made after launch, is out of reach; the own checkout works", ctx => {
+    needs(ctx, osFence());
     const { secret, at } = setup();
     const { fence, grants } = at.launch("claude");
     const work = ordinaryWork(at);
-    const { file, args } = macosFenced("/bin/sh", ["-c", `${probe(at, true)}\n${work.script}`], fence, grants);
+    const { file, args, env } = sandboxedSpawn("/bin/sh", ["-c", `${probe(at, true)}\n${work.script}`], fence, grants, at.active);
     later(at, secret);
-    const result = spawnSync(file, args, { cwd: at.active, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined } });
+    const result = spawnSync(file, args, { cwd: at.active, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined, ...env } });
     expectNoMarker(result, secret);
     expect(lines(result), result.stderr).toEqual([...held(true), ...work.expected]);
     expect(existsSync(join(at.theirs, "planted.txt"))).toBe(false);

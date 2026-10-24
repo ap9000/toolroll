@@ -119,7 +119,7 @@ import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
-import { parseMachLookup, parseReadDeny, parseWriteUnlock, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
+import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
@@ -841,8 +841,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "token-name",
   // task pause / task steer --now: the asker's own request id, so a repeat is the same request.
   "request",
-  // project sandbox (sandbox parity C9): read denies, macOS services and unlocked protected files.
-  "read-deny", "mach", "unlock",
+  // project sandbox (sandbox parity C9): read denies and macOS services.
+  "read-deny", "mach",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
@@ -12159,29 +12159,27 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
 }
 
 /**
- * `project sandbox --repo <p> [--read-deny <a,b>] [--mach <a,b>] [--unlock <a,b>]` (project-sandbox.ts, sandbox parity
- * C9): what the project's builds and checks may not read (paths, `~/…` or absolute), the macOS services and the protected
- * files they may still use. Each list is replaced whole by its flag (an empty value clears it). New scopes seal it;
+ * `project sandbox --repo <p> [--read-deny <a,b>] [--mach <a,b>]` (project-sandbox.ts, sandbox parity C9): what the
+ * project's builds and checks may not read (paths, `~/…` or absolute) and the macOS services they may also use. Each list is replaced whole by its flag (an empty value clears it). New scopes seal it;
  * approved ones keep theirs. Changing it is an approver's act with a password, kept in the ledger as before → after.
  */
 async function projectSandboxCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
   const command = "project sandbox";
-  const allowed = new Set(["repo", "read-deny", "mach", "unlock", "as", "token", "token-file", "token-env", "db", "json"]);
+  const allowed = new Set(["repo", "read-deny", "mach", "as", "token", "token-file", "token-env", "db", "json"]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project sandbox option.`, EXIT.usage);
   const repoFlag = text(flags, "repo");
-  if (positional.length > 1 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project sandbox --repo <project path> [--read-deny <paths>] [--mach <services>] [--unlock <files>] (comma-separated; empty clears).", EXIT.usage);
+  if (positional.length > 1 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project sandbox --repo <project path> [--read-deny <paths>] [--mach <services>] (comma-separated; empty clears).", EXIT.usage);
   const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const words = (one: ProjectSandbox): string[] => [`${repo}: ${readDenyWords(one.readDeny)}`,
-    ...(one.machLookup.length === 0 ? [] : [`macOS services also allowed: ${one.machLookup.join(", ")}`]),
-    ...(one.writeUnlock.length === 0 ? [] : [`Protected files builds may still write: ${one.writeUnlock.join(", ")}`])];
+    ...(one.machLookup.length === 0 ? [] : [`macOS services also allowed: ${one.machLookup.join(", ")}`])];
   const current = context.store.projectSandbox(repo);
   const asked = (name: string): string[] | undefined => { const value = flags.get(name); return value === undefined ? undefined : value === true ? [] : value.split(","); };
-  const changes = { readDeny: asked("read-deny"), machLookup: asked("mach"), writeUnlock: asked("unlock") };
-  if (changes.readDeny === undefined && changes.machLookup === undefined && changes.writeUnlock === undefined) return succeed(context.write, context.json, command, { repo, sandbox: current }, () => words(current));
-  const parsed = { readDeny: parseReadDeny(changes.readDeny ?? current.readDeny), machLookup: parseMachLookup(changes.machLookup ?? current.machLookup), writeUnlock: parseWriteUnlock(changes.writeUnlock ?? current.writeUnlock) };
+  const changes = { readDeny: asked("read-deny"), machLookup: asked("mach") };
+  if (changes.readDeny === undefined && changes.machLookup === undefined) return succeed(context.write, context.json, command, { repo, sandbox: current }, () => words(current));
+  const parsed = { readDeny: parseReadDeny(changes.readDeny ?? current.readDeny), machLookup: parseMachLookup(changes.machLookup ?? current.machLookup) };
   for (const [name, one] of Object.entries(parsed)) if (!one.ok) return fail(context.write, context.json, command, "usage", `${name}: ${one.problem}. Nothing changed.`, EXIT.usage);
-  const wanted: ProjectSandbox = { readDeny: parsed.readDeny.ok ? parsed.readDeny.list : [], machLookup: parsed.machLookup.ok ? parsed.machLookup.list : [], writeUnlock: parsed.writeUnlock.ok ? parsed.writeUnlock.list : [] };
+  const wanted: ProjectSandbox = { readDeny: parsed.readDeny.ok ? parsed.readDeny.list : [], machLookup: parsed.machLookup.ok ? parsed.machLookup.list : [] };
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
   if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes its sandbox, with their password: pass --as and --token.", EXIT.refused);

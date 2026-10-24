@@ -1136,7 +1136,8 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
     const calls: { file: string; args: string[]; options: { cwd: string; env?: NodeJS.ProcessEnv } }[] = [];
     const execute = async (file: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }) => {
       calls.push({ file, args, options });
-      return { code: 0, stdout: args.includes("rev-parse") ? "candidate-head\n" : "", stderr: "" };
+      // The command is in the arguments, or (Linux) in the sandbox launch helper's environment.
+      return { code: 0, stdout: [...args, options.env?.["TOOLROLL_SANDBOX_LAUNCH"] ?? ""].join(" ").includes("rev-parse") ? "candidate-head\n" : "", stderr: "" };
     };
     const result = await checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir }, execute);
     expect(result).toEqual({ provider: "codex", head: "candidate-head", revParse: "passed", status: "passed" });
@@ -1158,7 +1159,8 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
       expect(native?.provider).toBe(provider);
       if (native?.revParse === "unfenced-only") expect(newCalls.map(call => call.file)).toEqual(["git", "git"]);
       else expect(newCalls).toHaveLength(4);
-      for (const call of newCalls) expect(call.args).toContain("core.fsmonitor=false");
+      // Inside the sandbox runtime's command line, or as plain arguments.
+      for (const call of newCalls) expect([...call.args, call.options.env?.["TOOLROLL_SANDBOX_LAUNCH"] ?? ""].join(" ")).toContain("core.fsmonitor=false");
     }
     await expect(checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir },
       async (file: string) => ({ code: file === "git" ? 0 : 71, stdout: "", stderr: "sandbox unavailable" }))).rejects.toThrow("The provider sandbox could not run its control");

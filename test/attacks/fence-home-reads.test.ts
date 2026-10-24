@@ -9,7 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import { fenceFor, linuxFenced, macosFenced, runFolders, taskBoundary, trustedWorktreeBinding, type FencePolicy } from "../../src/agent-fence.js";
+import { fenceFor, sandboxedSpawn, srtTermsOf, runFolders, taskBoundary, trustedWorktreeBinding, type FencePolicy } from "../../src/agent-fence.js";
 import { run as exec } from "../../src/exec.js";
 import { saveScript } from "../../src/flow-scripts.js";
 import { runFlowSteps, type StepIo } from "../../src/flow-steps.js";
@@ -18,7 +18,6 @@ import { checkoutSandboxOf } from "../../src/invoke.js";
 import { readDenyPath } from "../../src/project-sandbox.js";
 import { addApprover } from "../../src/scope.js";
 import { openStore } from "../../src/store.js";
-import { nativeSeccomp } from "../seccomp-fixture.js";
 import { git, marker, needs, osFence, repository, useScratch, write } from "./harness.js";
 
 const scratch = useScratch("home-reads");
@@ -44,10 +43,9 @@ function plane() {
 /** `read`/`denied` per path, in the OS fence. */
 function reads(paths: string[], launch: ReturnType<ReturnType<typeof plane>["fence"]>, cwd: string): Promise<string[]> {
   const script = paths.map(path => `if cat ${JSON.stringify(path)} >/dev/null 2>&1; then echo read; else echo denied; fi`).join("\n");
-  const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
-    : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
+  const wrapped = sandboxedSpawn("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants, cwd);
   return new Promise(done => {
-    const child = spawn(wrapped.file, wrapped.args, { cwd, stdio: ["ignore", "pipe", "inherit"] });
+    const child = spawn(wrapped.file, wrapped.args, { env: { ...process.env, ...wrapped.env }, cwd, stdio: ["ignore", "pipe", "inherit"] });
     let out = "";
     child.stdout.on("data", chunk => { out += chunk; });
     child.on("close", () => done(out.trim().split("\n")));
@@ -65,20 +63,19 @@ describe("home reads under v2, the read-deny list, and v1 kept for older approva
     expect(await reads(order, fence(1), worktree)).toEqual(["denied", "denied", "denied"]);
   });
 
-  test("native: a read deny that names nothing yet is never dropped: denied by name on a Mac, its nearest folder masked on Linux", async ctx => {
+  test("native: a read deny that names nothing yet is never dropped: the runtime is given it by name", async ctx => {
     const { home, worktree, fence } = plane();
     mkdirSync(join(home, ".config", "other"), { recursive: true });
     write(join(home, ".config", "other", "settings"), "visible\n");
     const launch = fence(2, ["~/.config/tool/token"]);
     const target = join(home, ".config", "tool", "token");
-    if (process.platform === "linux") expect(launch.fenceGrants.readDenyAbove).toEqual([join(home, ".config")]);
-    else expect(launch.fenceGrants.homeNames).toContain(target);
+    // Named in the runtime's read denies whether or not it is there now.
+    expect(srtTermsOf(launch.fence, launch.fenceGrants).readConfig.denyOnly).toContain(target);
     needs(ctx, osFence());
     // Whatever the launch makes there, it never lands in the real folder; on a Mac it can't even be made.
     const script = `mkdir -p ${JSON.stringify(join(home, ".config", "tool"))} 2>/dev/null; echo planted > ${JSON.stringify(target)} 2>/dev/null; echo done`;
-    const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
-      : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
-    execFileSync(wrapped.file, wrapped.args, { cwd: worktree });
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants, worktree);
+    execFileSync(wrapped.file, wrapped.args, { env: { ...process.env, ...wrapped.env }, cwd: worktree });
     const { existsSync } = await import("node:fs");
     expect(existsSync(target)).toBe(false);
   });
@@ -89,9 +86,9 @@ describe("home reads under v2, the read-deny list, and v1 kept for older approva
     try {
       if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
       // No readable approval behind a run: v1, nothing listed, plus the project's read denies now.
-      store.raw().prepare("INSERT INTO project_sandbox (repo, read_deny_json, mach_lookup_json, write_unlock_json, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)")
-        .run("/repo", JSON.stringify(["~/.aws"]), JSON.stringify(["com.apple.trustd.agent"]), "[]", T0.toISOString(), "alex");
-      expect(checkoutSandboxOf(store, "/repo", [])).toEqual({ policy: 1, readDeny: ["~/.aws"], machLookup: [], unlock: [] });
+      store.raw().prepare("INSERT INTO project_sandbox (repo, read_deny_json, mach_lookup_json, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)")
+        .run("/repo", JSON.stringify(["~/.aws"]), JSON.stringify(["com.apple.trustd.agent"]), T0.toISOString(), "alex");
+      expect(checkoutSandboxOf(store, "/repo", [])).toEqual({ policy: 1, readDeny: ["~/.aws"], machLookup: [] });
     } finally { store.close(); }
   });
 

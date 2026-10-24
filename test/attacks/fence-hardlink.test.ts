@@ -10,8 +10,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { fenceFor, linuxFenced, macosFenced, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist } from "../../src/agent-fence.js";
-import { nativeSeccomp } from "../seccomp-fixture.js";
+import { fenceFor, sandboxedSpawn, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist } from "../../src/agent-fence.js";
 import { git, marker, needs, osFence, repository, useScratch, write } from "./harness.js";
 
 const scratch = useScratch("hardlink");
@@ -37,10 +36,9 @@ describe("attack: a hard link to a fenced file", () => {
         const allowed = workspace ? writeAllowlist({ provider: "command", home, worktree, binding, launchFolder: null, cache: null }) : null;
         const launch = fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
           boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly } });
-        const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
-          : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
+        const wrapped = sandboxedSpawn("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants);
         const out = await new Promise<string>(done => {
-          const child = spawn(wrapped.file, wrapped.args, { cwd: worktree, stdio: ["ignore", "pipe", "ignore"] });
+          const child = spawn(wrapped.file, wrapped.args, { env: { ...process.env, ...wrapped.env }, cwd: worktree, stdio: ["ignore", "pipe", "ignore"] });
           let text = "";
           child.stdout.on("data", chunk => { text += chunk; });
           child.on("close", () => done(text));

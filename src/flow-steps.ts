@@ -37,7 +37,6 @@ import { claudeDraftRunner, DRAFT_CHARS, DRAFT_TIMEOUT, draftPrompt, wholeDraft,
 import { overruns, passOn, TEXT_LIMITS, writeWithin } from "./text-limits.js";
 import { readFlowSecrets, sendingReady, runRequest, sendEmail, toolWaiting, useTool, type MailSender, type ToolCaller } from "./flow-actions.js";
 import { cleanFolder, flowLaunch, runCode } from "./flow-code.js";
-import { withProtectedWatch } from "./agent-fence.js";
 import { readProviderKey } from "./keys.js";
 import type { FlowCardRow, FlowRow, FlowScriptRow, FlowStepKind, Store } from "./store.js";
 import { replyInChannel } from "./chat-inbox.js";
@@ -381,8 +380,8 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     const setup = copy ? store.liveWorktreeSetup(flow.repo) : null;
     if (setup !== null) {
       const shell = approvedCommandShell(setup.command);
-      const prepared = await withProtectedWatch(launch?.fence?.fenceGrants, () => io.shell(shell.file, shell.args, { cwd: path, timeoutMs: setup.timeoutMs, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
-        ...(launch === null ? {} : { env: launch.env, ...(launch.fence ?? {}) }) }));
+      const prepared = await io.shell(shell.file, shell.args, { cwd: path, timeoutMs: setup.timeoutMs, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
+        ...(launch === null ? {} : { env: launch.env, ...(launch.fence ?? {}) }) });
       log += `$ ${setup.command}\n${prepared.stdout}${prepared.stderr}\n`;
       if (prepared.code !== 0) return { state: "failed", said: `The project's setup failed before ${script.name} ran (exit ${prepared.code}).\n${tail(`${prepared.stdout}\n${prepared.stderr}`)}`, log, exitCode: prepared.code };
     }

@@ -123,7 +123,8 @@ describe.skipIf(!FENCED)("a project's checks in a checkout that links the shared
       `cat ${JSON.stringify(join(state, "deps", KEY, "ready.json"))} >/dev/null 2>&1 || echo note-refused`,
       `ls ${JSON.stringify(join(state, "deps", OTHER))} >/dev/null 2>&1 || echo other-list-refused`,
     ].join("\n")], { cwd: worktree });
-    expect(result.stdout.trim().split("\n"), result.stderr).toEqual([KEY, "other-refused", "node_modules", "ready.json", "note-refused", "other-list-refused"]);
+    // The copy's own folder is read whole (the sandbox runtime can't grant a listing alone): its ready note too.
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual([KEY, "other-refused", "node_modules", "ready.json", "other-list-refused"]);
   });
 });
 

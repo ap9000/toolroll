@@ -1,39 +1,21 @@
-/** The Linux fence's arguments for a workspace build (agent-fence.ts linuxFenced): what /tmp gives back is read-only,
- * the allowlist is bound writable after it, and the host's own services are masked whatever the network. */
-import { argsOnlySeccomp } from "../test/seccomp-fixture.js";
+/** A workspace build's terms for the sandbox runtime (agent-fence.ts srtTermsOf): exactly its allowlist written (with the
+ * runtime's own temp and log paths), its fence and read-only grants never; and a grant never made through a link. */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { grantFolder, linuxFenced, linuxHostSockets, macosFenceAvailable, macosFenceProfile, NO_GRANTS, type FenceGrants } from "./agent-fence.js";
-import { shortTempDir } from "../test/short-temp.js";
-import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { grantFolder, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, srtTermsOf, type FenceGrants } from "./agent-fence.js";
 
-test("a workspace build's private /tmp gives its kept paths back read-only, then its allowlist writable", () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-fence-args-")));
-  try {
-    const git = join(dir, "repo", ".git"), objects = join(git, "objects");
-    mkdirSync(objects, { recursive: true });
-    const grants: FenceGrants = { ...NO_GRANTS, writes: { subpaths: [objects], prefixes: [] },
-      network: { mode: "allowlist", proxyPort: 1, brokerPorts: [], loopback: "proxy-only", socketRoots: [], keep: [git], bridge: { folder: dir, forwarder: dir, node: "node" } } };
-    const { args } = linuxFenced("true", [], [], { ...grants, seccomp: argsOnlySeccomp() });
-    const at = (flag: string, path: string) => args.findIndex((one, index) => one === flag && args[index + 1] === path && args[index + 2] === path);
-    if (git.startsWith("/tmp/")) {
-      expect(at("--bind", git)).toBe(-1);
-      expect(at("--ro-bind", git)).toBeGreaterThan(-1);
-      expect(at("--bind", objects)).toBeGreaterThan(at("--ro-bind", git));
-    }
-    expect(args.slice(0, 5)).toEqual(["--ro-bind", "/", "/", "--dev", "/dev"]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("a workspace build with an open network still has the host's own sockets masked", () => {
-  const sockets = linuxHostSockets();
-  const { args } = linuxFenced("true", [], [], { ...NO_GRANTS, seccomp: argsOnlySeccomp(), writes: { subpaths: [homedir()], prefixes: [] }, network: { mode: "open" } });
-  for (const path of sockets) expect(args.join("\0")).toContain(path);
-  const anywhere = linuxFenced("true", [], [], { ...NO_GRANTS, seccomp: argsOnlySeccomp(), network: { mode: "open" } }).args;
-  expect(anywhere.slice(0, 3)).toEqual(["--dev-bind", "/", "/"]);
+test("a workspace build writes its allowlist and the runtime's own paths; its fence and read-only grants are never written", () => {
+  const grants: FenceGrants = { ...NO_GRANTS, readOnly: ["/work/repo/.git/objects/info"], writes: { subpaths: ["/work/task", "/work/repo/.git/objects"], prefixes: [{ path: "/work/repo/.git/packed-refs", suffix: "([.~][^/]*)?$" }] } };
+  const terms = srtTermsOf(["/state"], grants);
+  expect(terms.writeConfig.allowOnly).toEqual(expect.arrayContaining(["/work/task", "/work/repo/.git/objects", "/work/repo/.git/packed-refs*", "/tmp/claude"]));
+  expect(terms.writeConfig.allowOnly).not.toContain("/");
+  expect(terms.writeConfig.denyWithinAllow).toEqual(expect.arrayContaining(["/state", "/work/repo/.git/objects/info"]));
+  expect(terms.readConfig.denyOnly).toContain("/state");
+  // Writing anywhere (an approver's choice): everything but the denies.
+  expect(srtTermsOf(["/state"], NO_GRANTS).writeConfig).toMatchObject({ allowOnly: ["/"], denyWithinAllow: ["/state"] });
 });
 
 test("a grant is never made through a link of this user's, at the folder or anywhere above it", () => {
@@ -48,57 +30,59 @@ test("a grant is never made through a link of this user's, at the folder or anyw
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("a workspace build masks an engine the operator moved (a link in home) and one the environment names", () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-engines-")));
-  try {
-    const home = join(dir, "home"), moved = join(dir, "elsewhere", "docker"), named = join(dir, "custom.sock");
-    mkdirSync(home); mkdirSync(moved, { recursive: true }); mkdirSync(named);
-    symlinkSync(moved, join(home, ".docker"));
-    const env = { DOCKER_HOST: `unix://${named}`, SSH_AUTH_SOCK: named };
-    expect(linuxHostSockets(501, home, "/tmp", true, env)).toEqual(expect.arrayContaining([moved, named]));
-    expect(linuxHostSockets(501, home, "/tmp", false, env)).not.toEqual(expect.arrayContaining([moved]));
-    expect(linuxHostSockets(501, home, "/tmp", false, env)).toEqual(expect.arrayContaining([named]));
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-// Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
-test.skipIf(INSIDE_FENCE)("a workspace build sharing /tmp has every socket there masked, with the folder that holds it", async () => {
-  const { createServer } = await import("node:net");
-  // Under /tmp, not the system temp folder: a unix socket's path must fit 104 bytes on macOS, and a runner's temp
-  // folder (/private/var/folders/…/T/) leaves too little room for tmux-501/default.
-  const tmp = shortTempDir("so-tmpsockets-");
-  const servers: import("node:net").Server[] = [];
-  try {
-    mkdirSync(join(tmp, "tmux-501"));
-    for (const path of [join(tmp, "top.sock"), join(tmp, "tmux-501", "default")]) {
-      const server = createServer();
-      await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(path, done); });
-      servers.push(server);
-    }
-    mkdirSync(join(tmp, "plain"));
-    const masks = linuxHostSockets(501, join(tmp, "nohome"), tmp, true, {});
-    expect(masks).toEqual(expect.arrayContaining([join(tmp, "top.sock"), join(tmp, "tmux-501")]));
-    expect(masks).not.toContain(join(tmp, "plain"));
-    expect(linuxHostSockets(501, join(tmp, "nohome"), tmp, false, {})).not.toContain(join(tmp, "top.sock"));
-  } finally { for (const one of servers) one.close(); rmSync(tmp, { recursive: true, force: true }); }
-});
-
-test("a workspace build with an open network may ask the system's DNS service, and still no other socket", () => {
-  const grants: FenceGrants = { ...NO_GRANTS, writes: { subpaths: ["/tmp/so-ws"], prefixes: [] } };
-  const profile = macosFenceProfile([], grants);
-  expect(profile).toContain("(deny network-outbound (remote unix-socket))");
-  expect(profile).toContain(`(remote unix-socket (path-literal "/private/var/run/mDNSResponder"))`);
-  expect(macosFenceProfile([], NO_GRANTS)).not.toContain("mDNSResponder");
-});
-
 /** A name only the system's resolver answers (localhost comes from the hosts file without it); null when offline. */
-const lookup = (wrap: string[]) => spawnSync(wrap[0] ?? process.execPath, [...wrap.slice(1), ...(wrap.length === 0 ? [] : [process.execPath]), "-e", "require('node:dns').lookup('github.com', error => process.stdout.write(error ? 'error ' + error.code : 'found'))"], { encoding: "utf8", timeout: 30_000 }).stdout;
-const online = macosFenceAvailable() && lookup([]) === "found";
+const lookup = (wrap?: { file: string; args: string[]; env: Record<string, string> }) => {
+  const script = "require('node:dns').lookup('github.com', error => process.stdout.write(error ? 'error ' + error.code : 'found'))";
+  return wrap === undefined ? spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 30_000 }).stdout
+    : spawnSync(wrap.file, wrap.args, { encoding: "utf8", timeout: 30_000, env: { ...process.env, ...wrap.env } }).stdout;
+};
+const online = macosFenceAvailable() && lookup() === "found";
 
 test.skipIf(!online)("on macOS a workspace build with an open network resolves a host name", () => {
   const work = realpathSync(mkdtempSync(join("/tmp", "so-dns-")));
   try {
-    const profile = macosFenceProfile([], { ...NO_GRANTS, writes: { subpaths: [work], prefixes: [] } });
-    expect(lookup(["/usr/bin/sandbox-exec", "-p", profile])).toBe("found");
+    const script = "require('node:dns').lookup('github.com', error => process.stdout.write(error ? 'error ' + error.code : 'found'))";
+    expect(lookup(sandboxedSpawn(process.execPath, ["-e", script], [join(work, "denied")], { ...NO_GRANTS, writes: { subpaths: [work], prefixes: [] } }, work))).toBe("found");
   } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test("the handoff's protected names: the sandbox runtime's dangerous files and folders, and what it can't hold once a launch has started", async () => {
+  const { protectedChanges } = await import("./agent-fence.js");
+  const { DANGEROUS_FILES, getDangerousDirectories } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js");
+  // A superset of the runtime's own lists.
+  for (const name of DANGEROUS_FILES) expect(protectedChanges([`pkg/${name}`]), name).toEqual([`pkg/${name}`]);
+  for (const dir of getDangerousDirectories()) expect(protectedChanges([`pkg/${dir}/x`]), dir).toEqual([`pkg/${dir}/x`]);
+  expect(protectedChanges(["src/a.ts", ".mcp.json", "packages/x/.vscode/tasks.json", "lib/.git/hooks/x", "a/.Envrc", "b/.npmrc", ".yarnrc.yml", ".claude/settings.local.json", "README.md"]))
+    .toEqual([".mcp.json", "packages/x/.vscode/tasks.json", "lib/.git/hooks/x", "a/.Envrc", "b/.npmrc", ".yarnrc.yml", ".claude/settings.local.json"]);
+  expect(protectedChanges(["docs/vscode.md", "src/mcp.json.ts"])).toEqual([]);
+});
+
+test("native: a build can't rewrite the code that fences it: Toolroll's install, the sandbox runtime, its launch helper, the Node running it", async ctx => {
+  ctx.skip(!(macosFenceAvailable() || linuxFenceAvailable()), "no sandbox here");
+  const { fenceFor, runFolders, toolrollInstall, sandboxLaunchHelperPath } = await import("./agent-fence.js").then(async m => ({ ...m, sandboxLaunchHelperPath: (await import("./sandbox-runtime.js")).sandboxLaunchHelper }));
+  const { createRequire } = await import("node:module");
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-install-")));
+  try {
+    const launch = fenceFor("command", { databaseFile: null, worktree: null, home: join(dir, "home"), boundary: null, binding: null, runFolders: runFolders(null), poolRoots: [] });
+    const runtime = join(createRequire(import.meta.url).resolve("@anthropic-ai/sandbox-runtime"), "..", "..");
+    const targets = [join(import.meta.dirname, "..", "package.json"), join(runtime, "package.json"), sandboxLaunchHelperPath(), process.execPath].map(path => realpathSync(path));
+    // Each is held read-only (one the user doesn't own, a system Node, is out of a build's reach already).
+    const { statSync } = await import("node:fs");
+    for (const path of targets) if (statSync(path).uid === process.getuid?.()) expect(launch.fenceGrants.readOnly.some(one => path === one || path.startsWith(`${one}/`)), path).toBe(true);
+    expect(toolrollInstall(null, join(dir, "home")).length).toBeGreaterThan(0);
+    const probe = targets.map(path => `(: >> ${JSON.stringify(path)}) 2>/dev/null && echo written || echo denied`).join("\n");
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", probe], [join(dir, "fenced")], launch.fenceGrants, dir);
+    const result = spawnSync(wrapped.file, wrapped.args, { encoding: "utf8", cwd: dir, env: { ...process.env, ...wrapped.env } });
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual(targets.map(() => "denied"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a build of Toolroll's own source, run from it, can still commit: the install that is its repository isn't held", async () => {
+  const { toolrollInstall } = await import("./agent-fence.js");
+  const install = realpathSync(join(import.meta.dirname, ".."));
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "so-home-")));
+  try {
+    expect(toolrollInstall(null, outside)).toContain(install);
+    expect(toolrollInstall(null, outside, install)).not.toContain(install);
+  } finally { rmSync(outside, { recursive: true, force: true }); }
 });

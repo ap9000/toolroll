@@ -90,7 +90,7 @@ import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concu
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
 import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
-import { parseMachLookup, parseReadDeny, parseWriteUnlock } from "../project-sandbox.js";
+import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
@@ -2287,7 +2287,7 @@ ${modeWords(terms)
   }
 
   // Settings → Project → Home folder (project-sandbox.ts, sandbox parity C9): what the project's builds and checks may not
-  // read, and the macOS services and protected files they may still use. An approver for the project changes it with
+  // read, and the macOS services they may also use. An approver for the project changes it with
   // their password typed now; the ledger keeps before → after. New scopes seal it; approved ones keep theirs.
   async function projectSandbox(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
@@ -2296,11 +2296,11 @@ ${modeWords(terms)
     if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes its sandbox.", "/settings/project");
     const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#sandbox");
-    const lines = (name: "read-deny" | "mach" | "unlock") => (body.get(name) ?? "").split(/\r?\n/);
-    const parsed = { readDeny: parseReadDeny(lines("read-deny")), machLookup: parseMachLookup(lines("mach")), writeUnlock: parseWriteUnlock(lines("unlock")) };
+    const lines = (name: "read-deny" | "mach") => (body.get(name) ?? "").split(/\r?\n/);
+    const parsed = { readDeny: parseReadDeny(lines("read-deny")), machLookup: parseMachLookup(lines("mach")) };
     for (const one of Object.values(parsed)) if (!one.ok) return back("problem", `${one.problem.charAt(0).toUpperCase()}${one.problem.slice(1)}. Nothing changed.`);
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change the project's sandbox.");
-    const wanted = { readDeny: parsed.readDeny.ok ? parsed.readDeny.list : [], machLookup: parsed.machLookup.ok ? parsed.machLookup.list : [], writeUnlock: parsed.writeUnlock.ok ? parsed.writeUnlock.list : [] };
+    const wanted = { readDeny: parsed.readDeny.ok ? parsed.readDeny.list : [], machLookup: parsed.machLookup.ok ? parsed.machLookup.list : [] };
     const changed = store.setProjectSandbox(repo, wanted, who.name, now);
     if (changed === null) return back("problem", "An approver for this project changes its sandbox. Nothing changed.");
     return back("said", JSON.stringify(changed.before) === JSON.stringify(changed.after) ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");

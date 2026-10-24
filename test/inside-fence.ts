@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 export const INSIDE_FENCE: boolean = (() => {
   if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return false;
   try {
-    execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 });
+    execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)(allow mach-lookup)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 });
     return false;
   } catch {
     return true;

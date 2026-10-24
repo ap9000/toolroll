@@ -15,8 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readReportImage, scoutBrowserLaunch, scoutProxyEnv } from "./scout.js";
 import { startScoutProxy, type ScoutProxy } from "./scout-net.js";
-import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, SANDBOX_EXEC } from "./agent-fence.js";
-import { nativeSeccomp } from "../test/seccomp-fixture.js";
+import { linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn } from "./agent-fence.js";
 import { SCOUT_BROWSER_ENV, scoutBrowserTool, startContractedBrowser, startScoutBrowser, type BrowserLaunch, type ScoutBrowserServer } from "./scout-browser.js";
 
 describe("a browser that can't start", () => {
@@ -46,8 +45,7 @@ const online = await lookup("example.com").then(() => true, () => false);
 const why =
   spawnSync("npm", ["--version"], { stdio: "ignore" }).status !== 0 ? "npm is not installed"
   : !online ? "this machine can't reach the web"
-  : process.platform === "linux" && linuxFenceAvailable() && nativeSeccomp() === null ? "no seccomp helper built (node vendor/seccomp/build.mjs)"
-  : process.platform === "darwin" && existsSync(SANDBOX_EXEC) && !macosFenceAvailable() ? "this test runs inside a sandbox, where Chrome's own sandbox can't start; run it from an unsandboxed shell"
+  : process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec") && !macosFenceAvailable() ? "this test runs inside a sandbox, where Chrome's own sandbox can't start; run it from an unsandboxed shell"
   : null;
 if (why !== null) console.warn(`The scout's real browser tests are skipped: ${why}.`);
 
@@ -111,10 +109,9 @@ describe.skipIf(why !== null)(`the scout's real browser${why === null ? "" : ` (
       console.log(JSON.stringify(steps.map(step => step.ok ? "ok" : step.reason)));
     `);
     const tsx = resolve("node_modules/.bin/tsx");
-    let { file, args } = { file: tsx, args: [client, server.url, secret] };
-    if (macosFenceAvailable()) ({ file, args } = macosFenced(file, args, [secret]));
-    else if (linuxFenceAvailable()) ({ file, args } = linuxFenced(file, args, [secret], { ...NO_GRANTS, seccomp: nativeSeccomp()! }));
-    const env = { ...process.env, ...scoutProxyEnv(proxy.url, server.url) };
+    let { file, args, env: added } = { file: tsx, args: [client, server.url, secret], env: {} as Record<string, string> };
+    if (macosFenceAvailable() || linuxFenceAvailable()) ({ file, args, env: added } = sandboxedSpawn(file, args, [secret], NO_GRANTS));
+    const env = { ...process.env, ...scoutProxyEnv(proxy.url, server.url), ...added };
     const output = await new Promise<string>((done, fail) => {
       const child = spawn(file, args, { env, stdio: ["ignore", "pipe", "pipe"] });
       let text = "";

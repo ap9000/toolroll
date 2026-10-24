@@ -1074,7 +1074,6 @@ CREATE TABLE IF NOT EXISTS project_sandbox (
   repo              TEXT PRIMARY KEY,
   read_deny_json    TEXT NOT NULL DEFAULT '[]',
   mach_lookup_json  TEXT NOT NULL DEFAULT '[]',
-  write_unlock_json TEXT NOT NULL DEFAULT '[]',
   updated_at        TEXT NOT NULL,
   updated_by        TEXT NOT NULL
 );
@@ -8192,13 +8191,13 @@ export class Store {
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
           let sealedAccess: unknown;
-          // SANDBOX WIDENINGS (v133, project-sandbox.ts): extra macOS services or unlocked protected files seal, likewise,
+          // SANDBOX WIDENINGS (v133, project-sandbox.ts): extra macOS services seal, likewise,
           // only on a person's own password yes to exactly them.
           let sandboxWidened = false;
           try {
             const stored = typeof profileText === "string" ? JSON.parse(profileText) as { profile?: Record<string, unknown> | null } | null : null;
             sealedAccess = stored?.profile?.["checkAccess"];
-            sandboxWidened = stored?.profile?.["machLookup"] !== undefined || stored?.profile?.["writeUnlock"] !== undefined;
+            sandboxWidened = stored?.profile?.["machLookup"] !== undefined;
           } catch { sealedAccess = "unreadable"; }
           if (sealedAccess !== undefined || sandboxWidened) return false;
         }
@@ -19086,7 +19085,7 @@ export class Store {
   }
 
   /** How one attempt was kept away from Toolroll's own secrets (the agent fence), kept beside its tools. */
-  recordRunFence(run: number, fence: { method: string; paths: number; policy?: 1 | 2; digest?: string; helper?: string | null }, now: Date): void {
+  recordRunFence(run: number, fence: { method: string; paths: number; policy?: 1 | 2; digest?: string; engine?: string }, now: Date): void {
     this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('fence', json(?)), ?)
       ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.fence', json(?))`).run(run, JSON.stringify(fence), now.toISOString(), JSON.stringify(fence));
   }
@@ -19106,7 +19105,7 @@ export class Store {
     return runNetworkFromValue(parsed);
   }
 
-  runFence(run: number): { method: string; paths: number; policy?: 1 | 2; digest?: string; helper?: string | null } | null {
+  runFence(run: number): { method: string; paths: number; policy?: 1 | 2; digest?: string; engine?: string } | null {
     const row = this.db.prepare("SELECT json_extract(tools_json, '$.fence') AS fence FROM run_tool WHERE run = ?").get(run);
     if (row === undefined || row["fence"] === null) return null;
     const read = readStoreColumn("run_tool.tools_json.fence", row["fence"]);
@@ -22584,10 +22583,10 @@ export class Store {
   /** A project's sandbox settings (project-sandbox.ts): its saved lists, or none. A damaged row keeps what it can read
    * of its read denies (never fewer) and grants nothing else. */
   projectSandbox(repo: string): ProjectSandbox {
-    const row = this.db.prepare("SELECT read_deny_json, mach_lookup_json, write_unlock_json FROM project_sandbox WHERE repo = ?").get(repo);
+    const row = this.db.prepare("SELECT read_deny_json, mach_lookup_json FROM project_sandbox WHERE repo = ?").get(repo);
     if (row === undefined) return { ...PROJECT_SANDBOX_DEFAULT };
     const read = (text: unknown): unknown => { try { return typeof text === "string" ? JSON.parse(text) : null; } catch { return null; } };
-    return sandboxOf({ readDeny: read(row["read_deny_json"]), machLookup: read(row["mach_lookup_json"]), writeUnlock: read(row["write_unlock_json"]) });
+    return sandboxOf({ readDeny: read(row["read_deny_json"]), machLookup: read(row["mach_lookup_json"]) });
   }
 
   /** An approver changed a project's sandbox settings (their password was proved by the caller): saved whole, and in
@@ -22598,12 +22597,12 @@ export class Store {
       if (account === null || account.revokedAt !== null || account.role !== "approver" || !this.accountCanAccess(by, repo)) return null;
       const before = this.projectSandbox(repo);
       const clean = sandboxOf(wanted);
-      this.db.prepare(`INSERT INTO project_sandbox (repo, read_deny_json, mach_lookup_json, write_unlock_json, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
+      this.db.prepare(`INSERT INTO project_sandbox (repo, read_deny_json, mach_lookup_json, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT (repo) DO UPDATE SET read_deny_json = excluded.read_deny_json, mach_lookup_json = excluded.mach_lookup_json,
-        write_unlock_json = excluded.write_unlock_json, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-        .run(repo, JSON.stringify(clean.readDeny), JSON.stringify(clean.machLookup), JSON.stringify(clean.writeUnlock), now.toISOString(), by);
+        updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+        .run(repo, JSON.stringify(clean.readDeny), JSON.stringify(clean.machLookup), now.toISOString(), by);
       const after = this.projectSandbox(repo);
-      const words = (one: ProjectSandbox) => `read-deny ${one.readDeny.length === 0 ? "none" : one.readDeny.join(",")}; mach ${one.machLookup.length === 0 ? "none" : one.machLookup.join(",")}; unlock ${one.writeUnlock.length === 0 ? "none" : one.writeUnlock.join(",")}`;
+      const words = (one: ProjectSandbox) => `read-deny ${one.readDeny.length === 0 ? "none" : one.readDeny.join(",")}; mach ${one.machLookup.length === 0 ? "none" : one.machLookup.join(",")}`;
       this.recordPolicy(by, repo, "sandbox", words(before), words(after), now);
       return { before, after };
     });

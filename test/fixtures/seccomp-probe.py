@@ -1,5 +1,5 @@
 # Probes what the Linux seccomp helper refuses (test/attacks/fence-seccomp.test.ts): io_uring, VM sockets and new user
-# namespaces. One line each: "<name> ok" or "<name> <errno name>".
+# namespaces, and unix sockets (the sandbox runtime blocks making one). One line each: "<name> ok" or "<name> <errno name>".
 import ctypes, errno, socket
 libc = ctypes.CDLL(None, use_errno=True)
 def said(name, rc):
@@ -12,3 +12,8 @@ try:
 except OSError as error:
     print("vsock", errno.errorcode.get(error.errno, "?"))
 said("userns", libc.unshare(0x10000000))  # CLONE_NEWUSER
+try:
+    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    print("unix ok")
+except OSError as error:
+    print("unix", errno.errorcode.get(error.errno, "?"))

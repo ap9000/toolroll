@@ -43,10 +43,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { networkFromValue, networkWords, type NetworkProfile } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { checkAccessWords, isCheckAccess, type CheckAccess } from "./check-access.js";
-import { validUnlock } from "./agent-fence.js";
 import { MAX_MACH_LOOKUP, MAX_READ_DENY, sandboxTermsWords, validMachLookup, validReadDeny } from "./project-sandbox.js";
-/** At most this many unlocked protected files in one approval. */
-export const MAX_WRITE_UNLOCK = 50;
 import { z } from "zod";
 import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
@@ -173,9 +170,6 @@ export type ClaudeProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
-  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
-   * write; sealed only when the project unlocked some. */
-  writeUnlock?: string[];
   /** The fence policy it was sealed under (agent-fence.ts FencePolicy): 2 from 0.9.70 (the home folder read as in
    * Anthropic's sandbox runtime, less `readDeny`); absent on approvals sealed before, which keep v1's home denies. */
   fencePolicy?: 2;
@@ -206,9 +200,6 @@ export type CodexShapedProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
-  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
-   * write; sealed only when the project unlocked some. */
-  writeUnlock?: string[];
   /** The fence policy it was sealed under (agent-fence.ts FencePolicy): 2 from 0.9.70 (the home folder read as in
    * Anthropic's sandbox runtime, less `readDeny`); absent on approvals sealed before, which keep v1's home denies. */
   fencePolicy?: 2;
@@ -241,9 +232,6 @@ export type GeminiProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
-  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
-   * write; sealed only when the project unlocked some. */
-  writeUnlock?: string[];
   /** The fence policy it was sealed under (agent-fence.ts FencePolicy): 2 from 0.9.70 (the home folder read as in
    * Anthropic's sandbox runtime, less `readDeny`); absent on approvals sealed before, which keep v1's home denies. */
   fencePolicy?: 2;
@@ -277,9 +265,6 @@ export type AcpProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
-  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
-   * write; sealed only when the project unlocked some. */
-  writeUnlock?: string[];
   /** The fence policy it was sealed under (agent-fence.ts FencePolicy): 2 from 0.9.70 (the home folder read as in
    * Anthropic's sandbox runtime, less `readDeny`); absent on approvals sealed before, which keep v1's home denies. */
   fencePolicy?: 2;
@@ -523,11 +508,6 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   const sealedAccess = p["checkAccess"];
   if (sealedAccess !== undefined && (sealedAccess === "sandboxed" || !isCheckAccess(sealedAccess))) return null;
   const checkAccess = sealedAccess as Exclude<CheckAccess, "sandboxed"> | undefined;
-  // Unlocked protected files: present only as a non-empty, sorted list of distinct valid entries.
-  const unlock = p["writeUnlock"];
-  if (unlock !== undefined && !(Array.isArray(unlock) && unlock.length > 0 && unlock.length <= MAX_WRITE_UNLOCK && unlock.every(one => typeof one === "string" && validUnlock(one))
-    && unlock.every((one, at) => at === 0 || unlock[at - 1] < one))) return null;
-  const writeUnlock = unlock as string[] | undefined;
   // Sandbox parity (v133): the policy version is exactly 2 when present; the lists, when present, are non-empty, sorted,
   // distinct and valid (project-sandbox.ts), as only this code writes them.
   const policy = p["fencePolicy"];
@@ -541,11 +521,11 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   const readDeny = sealedList("readDeny", validReadDeny, MAX_READ_DENY);
   const machLookup = sealedList("machLookup", validMachLookup, MAX_MACH_LOOKUP);
   if (readDeny === null || machLookup === null) return null;
-  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }), ...(checkAccess === undefined ? {} : { checkAccess }), ...(writeUnlock === undefined ? {} : { writeUnlock: [...writeUnlock] }),
+  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }), ...(checkAccess === undefined ? {} : { checkAccess }),
     ...(policy === undefined ? {} : { fencePolicy: 2 as const }), ...(readDeny === undefined ? {} : { readDeny }), ...(machLookup === undefined ? {} : { machLookup }) };
   if (p["provider"] === "claude") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes", "checkAccess", "writeUnlock", "fencePolicy", "readDeny", "machLookup"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes", "checkAccess", "fencePolicy", "readDeny", "machLookup"]) &&
       str(p["model"]) &&
       (p["permissionArgv"] === "auto" || p["permissionArgv"] === "acceptEdits" || p["permissionArgv"] === "bypassPermissions") &&
       num(p["maxTurns"]) && num(p["repairMaxTurns"]) &&
@@ -569,7 +549,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "codex" || p["provider"] === "openrouter") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes", "checkAccess", "writeUnlock", "fencePolicy", "readDeny", "machLookup"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes", "checkAccess", "fencePolicy", "readDeny", "machLookup"]) &&
       str(p["model"]) &&
       (p["sandboxMode"] === "workspace-write" || p["sandboxMode"] === "danger-full-access") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -593,7 +573,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "gemini") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes", "checkAccess", "writeUnlock", "fencePolicy", "readDeny", "machLookup"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes", "checkAccess", "fencePolicy", "readDeny", "machLookup"]) &&
       str(p["model"]) &&
       (p["approvalArgv"] === "auto_edit" || p["approvalArgv"] === "yolo") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -617,7 +597,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (typeof p["provider"] === "string" && isAcpProvider(p["provider"])) {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes", "checkAccess", "writeUnlock", "fencePolicy", "readDeny", "machLookup"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes", "checkAccess", "fencePolicy", "readDeny", "machLookup"]) &&
       str(p["model"]) &&
       p["permission"] === "full" &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -1758,7 +1738,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     ...(scope.profile === null || scope.profile === undefined ? [] : [`  writes       ${writesWords(scope.profile.writes)}`]),
     ...(scope.profile?.checkAccess === undefined ? [] : [`  checks       ${checkAccessWords(scope.profile.checkAccess)}`]),
     // Its sandbox terms (project-sandbox.ts), part of what the yes agrees to: what it reads, and any widening.
-    ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`]), ...(terms.unlock === null ? [] : [`  unlocked     ${terms.unlock}`])])(sandboxTermsWords(scope.profile))),
+    ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`])])(sandboxTermsWords(scope.profile))),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];

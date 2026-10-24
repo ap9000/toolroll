@@ -614,7 +614,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
   // What the build may reach is part of what is approved (egress.ts): said on every approval form.
   // Its sandbox terms (project-sandbox.ts): what it reads always, and any widening, part of what the yes agrees to.
   const terms = sandboxTermsWords(profile);
-  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}${terms.unlock === null ? "" : html`<p class="meta" data-scope-unlock>${terms.unlock.charAt(0).toUpperCase()}${terms.unlock.slice(1)}.</p>`}`;
+  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
 }
 /** The Agents view every console surface renders (v47): the SAME
  * projection the CLI prints — who plans, builds, and revises,

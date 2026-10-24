@@ -4,18 +4,17 @@
  * shared Git config, hooks or attributes (which Git runs as commands), read another live Claude session's keys, or
  * leave something in the shared temp folder.
  * Guard: a `workspace` build writes only its allowlist (its checkout and Git data less config/hooks/info, its launch
- * folder, its project's cache folder, the provider state its CLI must write); the macOS sandbox, bubblewrap and
- * Codex's profile each enforce it.
+ * folder, its project's cache folder, the provider state its CLI must write); Anthropic's sandbox-runtime (Seatbelt on
+ * a Mac, bubblewrap on Linux) and Codex's profile each enforce it.
  */
-import { nativeSeccomp } from "../seccomp-fixture.js";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { claudeProjectFolder, linuxFenced, macosFenced, NO_GRANTS, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
-import { codexSandbox, git, GIT_ENV, lines, needs, repository, seatbelt, underCodex, underSeatbelt, useScratch } from "./harness.js";
+import { claudeProjectFolder, NO_GRANTS, sandboxedSpawn, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
+import { codexSandbox, git, GIT_ENV, lines, needs, osFence, repository, seatbelt, underCodex, underSandbox, underSandboxAsync, useScratch } from "./harness.js";
 import { outsideTempDir } from "../short-temp.js";
 
 type World = { home: string; main: string; worktree: string; launch: string; cache: string; fence: string[]; grants: FenceGrants; transcript: string };
@@ -87,7 +86,7 @@ describe("attack: writing outside the workspace (macOS)", () => {
     const dir = scratch();
     const w = world(dir, "claude");
     const shared = join("/private/tmp", `so-writes-probe-${process.pid}`);
-    const result = underSeatbelt([script(w, shared), `touch ${w.transcript}/session.jsonl && echo transcript-ok`].join("\n"), w.fence, w.grants, { cwd: w.worktree, env: { ...process.env, ...GIT_ENV } });
+    const result = underSandbox([script(w, shared), `touch ${w.transcript}/session.jsonl && echo transcript-ok`].join("\n"), w.fence, w.grants, { cwd: w.worktree, env: { ...process.env, ...GIT_ENV } });
     expect(lines(result), result.stderr).toEqual([...REFUSED, "sessions-refused", "shared-temp-refused", ...ALLOWED, "transcript-ok"]);
     untouched(w);
     expect(git(w.worktree, "log", "-1", "--format=%s")).toBe("feature");
@@ -97,23 +96,18 @@ describe("attack: writing outside the workspace (macOS)", () => {
     needs(ctx, seatbelt());
     const dir = scratch();
     const w = world(dir, "claude");
-    // Inside the sandbox: the cache folder itself can't be moved away or replaced.
-    const swap = underSeatbelt([
-      `mv ${w.cache} ${w.cache}-moved 2>/dev/null || echo rename-refused`,
-      `rm -rf ${w.cache} 2>/dev/null; test -d ${w.cache} && echo still-there`,
-    ].join("\n"), w.fence, w.grants, { cwd: w.worktree });
-    expect(lines(swap), swap.stderr).toEqual(["rename-refused", "still-there"]);
-    // Had it been swapped (outside any sandbox, as an earlier anywhere build could), the next launch grants nothing there.
+    // Inside the sandbox the cache folder can be removed (the runtime writes a granted folder whole, itself included);
+    // swapped for a link, the next launch grants nothing there.
     const agents = join(w.home, "Library", "LaunchAgents");
     rmSync(w.cache, { recursive: true, force: true });
     symlinkSync(agents, w.cache);
     const next = writeAllowlist({ provider: "claude", home: w.home, worktree: w.worktree, binding: { main: w.main, gitdir: realpathSync(join(w.main, ".git", "worktrees", "task-1")) }, launchFolder: w.launch, cache: w.cache });
     expect(next.writes.subpaths).not.toContain(realpathSync(agents));
-    const result = underSeatbelt(`touch ${w.cache}/evil.plist 2>/dev/null || echo planted-refused`, next.deny, { ...NO_GRANTS, writes: next.writes, readOnly: next.readOnly }, { cwd: w.worktree });
+    const result = underSandbox(`touch ${w.cache}/evil.plist 2>/dev/null || echo planted-refused`, next.deny, { ...NO_GRANTS, writes: next.writes, readOnly: next.readOnly }, { cwd: w.worktree });
     expect(lines(result), result.stderr).toEqual(["planted-refused"]);
   });
 
-  test("a workspace build reaches no unix socket outside its own folders, even with an open network", async ctx => {
+  test("a build under a confined network reaches no unix socket outside its own folders", async ctx => {
     needs(ctx, seatbelt());
     // A unix socket's path is capped near 104 bytes: this world lives in a short folder of its own.
     const short = realpathSync(mkdtempSync("/tmp/sw-"));
@@ -128,8 +122,8 @@ describe("attack: writing outside the workspace (macOS)", () => {
       await new Promise<void>((done, fail) => { mine.once("error", fail); mine.listen(own, done); });
       const run = (path: string) => `python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.connect('${path}'); print(s.recv(10).decode().strip())" 2>/dev/null || echo refused`;
       const result = await new Promise<{ stdout: string; stderr: string }>(done => {
-        const { file, args } = macosFenced("/bin/sh", ["-c", [run(socket), run(own)].join("\n")], w.fence, { ...w.grants, network: { mode: "open" } });
-        const child = spawn(file, args, { cwd: w.worktree });
+        const { file, args, env } = sandboxedSpawn("/bin/sh", ["-c", [run(socket), run(own)].join("\n")], w.fence, { ...w.grants, network: { mode: "allowlist", proxyPort: 1, brokerPorts: [], loopback: "proxy-only", socketRoots: [join(w.launch, "tmp")] } }, w.worktree);
+        const child = spawn(file, args, { cwd: w.worktree, env: { ...process.env, ...env } });
         let stdout = "", stderr = "";
         child.stdout.on("data", chunk => { stdout += String(chunk); });
         child.stderr.on("data", chunk => { stderr += String(chunk); });
@@ -144,7 +138,7 @@ describe("attack: writing outside the workspace (macOS)", () => {
     needs(ctx, seatbelt());
     const w = world(scratch(), "opencode");
     const config = join(w.home, ".config", "opencode");
-    const result = underSeatbelt([
+    const result = underSandbox([
       `echo '{"mcp":{"evil":{"command":["sh"]}}}' > ${config}/opencode.json 2>/dev/null || echo config-refused`,
       `mkdir -p ${config}/plugins 2>/dev/null; touch ${config}/plugins/evil.js 2>/dev/null || echo plugin-refused`,
       `touch ${config}/tui.json 2>/dev/null || echo new-config-refused`,
@@ -157,7 +151,7 @@ describe("attack: writing outside the workspace (macOS)", () => {
     needs(ctx, seatbelt());
     const w = world(scratch(), "gemini");
     writeFileSync(join(w.home, ".gemini", "settings.json"), "{}\n");
-    const result = underSeatbelt([
+    const result = underSandbox([
       `echo '{"mcpServers":1}' > ${w.home}/.gemini/settings.json 2>/dev/null || echo gemini-settings-refused`,
       `touch ${w.home}/.gemini/history/h && echo history-ok`,
       `echo '{}' > ${w.home}/.gemini/projects.json.tmp-1 && mv ${w.home}/.gemini/projects.json.tmp-1 ${w.home}/.gemini/projects.json && echo projects-ok`,
@@ -183,23 +177,8 @@ describe("attack: writing outside the workspace (macOS)", () => {
   });
 });
 
-/** Whether bubblewrap runs a read-only root here. */
-function bubblewrap(): { available: boolean; note: string; platform?: NodeJS.Platform } {
-  if (process.platform !== "linux") return { available: false, note: "bubblewrap write checks skipped: not Linux" };
-  if (nativeSeccomp() === null) return { available: false, platform: "linux", note: "bubblewrap write checks skipped: no seccomp helper built (node vendor/seccomp/build.mjs)" };
-  const ran = spawnSync("bwrap", ["--ro-bind", "/", "/", "--dev", "/dev", "--", "true"], { encoding: "utf8", timeout: 5_000 });
-  return ran.status === 0 ? { available: true, note: "" } : { available: false, platform: "linux", note: `bubblewrap write checks skipped: ${(ran.stderr ?? "").trim()}` };
-}
-
 function underBubblewrap(text: string, fence: readonly string[], grants: FenceGrants, cwd: string): Promise<{ stdout: string; stderr: string }> {
-  const { file, args } = linuxFenced("/bin/sh", ["-c", text], fence, { ...grants, seccomp: nativeSeccomp()! });
-  return new Promise(done => {
-    const child = spawn(file, args, { cwd, env: { ...process.env, ...GIT_ENV, NODE_OPTIONS: undefined } });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", chunk => { stdout += String(chunk); });
-    child.stderr.on("data", chunk => { stderr += String(chunk); });
-    child.on("close", () => done({ stdout, stderr }));
-  });
+  return underSandboxAsync(text, fence, grants, { cwd, env: { ...process.env, ...GIT_ENV, NODE_OPTIONS: undefined } as NodeJS.ProcessEnv });
 }
 
 describe("attack: writing outside the workspace (Linux)", () => {
@@ -209,8 +188,9 @@ describe("attack: writing outside the workspace (Linux)", () => {
   afterEach(() => { if (dir !== null) rmSync(dir, { recursive: true, force: true }); dir = null; });
   const scratch = () => dir!;
 
-  test("a read-only root with the allowlist bound back; the shared /tmp is read-only to it", async ctx => {
-    needs(ctx, bubblewrap());
+  test("the allowlist alone is written; the shared /tmp is not", async ctx => {
+    ctx.skip(process.platform !== "linux", "Linux write checks skipped: not Linux");
+    needs(ctx, osFence());
     const w = world(scratch(), "claude");
     const result = await underBubblewrap(script(w, "/tmp/so-writes-probe"), w.fence, w.grants, w.worktree);
     expect(lines(result), result.stderr).toEqual([...REFUSED, "sessions-refused", "shared-temp-refused", ...ALLOWED]);

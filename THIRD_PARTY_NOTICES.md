@@ -488,21 +488,14 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
 ## Anthropic sandbox-runtime — Apache-2.0
 
-Copyright Anthropic PBC.
+Copyright Anthropic PBC. https://github.com/anthropics/sandbox-runtime
 
-Source revision `c66fb77b28fd` of https://github.com/anthropics/sandbox-runtime (`@anthropic-ai/sandbox-runtime` v0.0.81).
-
-Adapted, not shipped whole: the macOS Seatbelt baseline (the deny-default prologue's process, mach, sysctl, iokit and
-device rules, `src/sandbox/macos-sandbox-utils.ts`) in `src/agent-fence.ts` `MACOS_BASELINE`, and the mandatory
-write-deny lists (`src/sandbox/sandbox-utils.ts` `DANGEROUS_FILES`, `getDangerousDirectories`). Modified: the optional
-Apple Events, weaker-network-isolation and user mach blocks are omitted; Toolroll adds its own denies after them.
-
-Vendored: the Linux seccomp helper's sources, `vendor/seccomp-src/apply-seccomp.c` (unmodified) and
-`vendor/seccomp-src/seccomp-unix-block.c` (modified: the `socket(AF_UNIX)` rule removed), with the license in
-`vendor/seccomp-src/LICENSE`; `vendor/seccomp/build.mjs` is adapted from its `vendor/seccomp/build.ts`. The built
-`dist/helpers/linux-<arch>/apply-seccomp` binaries ship in the package.
+`@anthropic-ai/sandbox-runtime` 0.0.79 is a dependency, installed whole from npm with its own `LICENSE` (and its
+prebuilt Linux seccomp helpers, `vendor/seccomp/<arch>/apply-seccomp`). Toolroll calls it for every sandbox it runs
+(`src/sandbox-runtime.ts`, `src/sandbox-launch.ts`) and copies or modifies none of its code.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

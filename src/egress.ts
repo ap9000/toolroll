@@ -6,8 +6,8 @@
  * and the project's added hosts), and that snapshot is what the approval binds and the launch enforces. Nothing at
  * launch re-derives it from settings changed since or from files the agent wrote.
  *
- * The launch enforces it at the operating system (agent-fence.ts: Seatbelt's network rules on macOS, a network
- * namespace on Linux) and reaches the world through one proxy of its own (startEgressProxy), which admits only the
+ * The launch enforces it at the operating system (Anthropic's sandbox-runtime: its Seatbelt network rules on macOS, a
+ * network namespace on Linux with the proxy relayed in) and reaches the world through one proxy of its own (startEgressProxy), which admits only the
  * snapshot's hosts. The proxy never decrypts TLS: it restricts where a build connects, not what it sends there.
  */
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
@@ -252,6 +252,8 @@ export function runNetworkFromValue(value: unknown): RunNetworkRecord | null {
 export type EgressProxy = {
   /** The proxy's address with this run's credentials, for HTTPS_PROXY and the like. */
   url: string;
+  /** This run's credential alone: a client presenting it (with any user name: the sandbox runtime names its own) is served. */
+  secret: string;
   port: number;
   counts: () => EgressCounts;
   close: () => Promise<void>;
@@ -284,7 +286,7 @@ export async function startEgressProxy(options: {
   const upstreamPort = options.upstreamPort ?? ((port: number) => port);
   const lookup = options.lookup ?? (async (host: string) => (await dnsLookup(host, { all: true, verbatim: true })).map(one => one.address));
   const secret = randomBytes(24).toString("base64url");
-  const expected = Buffer.from(`Basic ${Buffer.from(`run:${secret}`).toString("base64")}`);
+  const expected = Buffer.from(secret);
   const sockets = new Set<Socket>();
   const byHost = new Map<string, { connections: number; refused: number }>();
   let connections = 0, refused = 0, otherHosts = 0;
@@ -297,8 +299,15 @@ export async function startEgressProxy(options: {
     if (allowed) entry.connections++; else entry.refused++;
     try { options.decided?.(key, allowed, why); } catch { /* a listener's trouble is not the build's */ }
   };
+  /** Basic credentials whose password is this run's secret, whatever the user name (the sandbox runtime puts its own
+   * attribution there). */
   const authorized = (incoming: IncomingMessage): boolean => {
-    const given = Buffer.from(String(incoming.headers["proxy-authorization"] ?? ""));
+    const header = String(incoming.headers["proxy-authorization"] ?? "");
+    const basic = /^Basic ([A-Za-z0-9+/=]+)$/.exec(header)?.[1];
+    if (basic === undefined) return false;
+    const decoded = Buffer.from(basic, "base64").toString("utf8");
+    const colon = decoded.indexOf(":");
+    const given = Buffer.from(colon < 0 ? "" : decoded.slice(colon + 1));
     return given.length === expected.length && timingSafeEqual(given, expected);
   };
   /** The addresses a request may reach, or why it may not. */
@@ -382,6 +391,7 @@ export async function startEgressProxy(options: {
   const port = typeof address === "object" && address !== null ? address.port : 0;
   return {
     url: `http://run:${secret}@127.0.0.1:${port}`,
+    secret,
     port,
     counts: () => ({ connections, refused, hosts: [...byHost].map(([host, one]) => ({ host, ...one })).sort((a, b) => b.connections + b.refused - (a.connections + a.refused) || a.host.localeCompare(b.host)), otherHosts }),
     close: () => new Promise<void>(done => {

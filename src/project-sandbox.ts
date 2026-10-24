@@ -6,14 +6,11 @@
  *   Narrowing only: it applies to running launches' next start too (flows, coding sessions read it live).
  * - `machLookup`: macOS services its builds may also reach (the sandbox runtime `allowMachLookup`), for toolchains the
  *   deny-default baseline breaks (Go's TLS, Playwright). Widening: sealed, and only a person's password yes seals it.
- * - `writeUnlock`: exact protected files (agent-fence.ts PROTECTED_FILES / PROTECTED_DIRS) its builds may still write,
- *   relative to the checkout. Widening, likewise.
  */
 import { isAbsolute, normalize } from "node:path";
-import { validUnlock } from "./agent-fence.js";
 
-export type ProjectSandbox = { readDeny: string[]; machLookup: string[]; writeUnlock: string[] };
-export const PROJECT_SANDBOX_DEFAULT: ProjectSandbox = { readDeny: [], machLookup: [], writeUnlock: [] };
+export type ProjectSandbox = { readDeny: string[]; machLookup: string[] };
+export const PROJECT_SANDBOX_DEFAULT: ProjectSandbox = { readDeny: [], machLookup: [] };
 export const MAX_READ_DENY = 100;
 export const MAX_MACH_LOOKUP = 30;
 
@@ -56,19 +53,16 @@ export function parseSandboxList(lines: readonly string[], valid: (one: string) 
 
 export const parseReadDeny = (lines: readonly string[]) => parseSandboxList(lines, validReadDeny, MAX_READ_DENY);
 export const parseMachLookup = (lines: readonly string[]) => parseSandboxList(lines, validMachLookup, MAX_MACH_LOOKUP);
-export const parseWriteUnlock = (lines: readonly string[]) => parseSandboxList(lines, validUnlock, 50);
 
-/** A stored or sealed setting, read strictly: anything unreadable reads as the narrowest (no unlock, no extra services)
- * but keeps whatever read-denies are valid (never fewer than were asked for). */
-export function sandboxOf(raw: { readDeny?: unknown; machLookup?: unknown; writeUnlock?: unknown }): ProjectSandbox {
+/** A stored or sealed setting, read strictly: anything unreadable reads as the narrowest (no extra services) but keeps
+ * whatever read-denies are valid (never fewer than were asked for). */
+export function sandboxOf(raw: { readDeny?: unknown; machLookup?: unknown }): ProjectSandbox {
   const strings = (value: unknown) => Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : [];
   const readDeny = parseReadDeny(strings(raw.readDeny));
   const mach = parseMachLookup(strings(raw.machLookup));
-  const unlock = parseWriteUnlock(strings(raw.writeUnlock));
   return {
     readDeny: readDeny.ok ? readDeny.list : strings(raw.readDeny).filter(validReadDeny),
     machLookup: mach.ok ? mach.list : [],
-    writeUnlock: unlock.ok ? unlock.list : [],
   };
 }
 
@@ -76,21 +70,19 @@ export function sandboxOf(raw: { readDeny?: unknown; machLookup?: unknown; write
 export const readDenyPath = (one: string, home: string): string => one.startsWith("~/") ? `${home}/${one.slice(2)}` : one;
 
 /** What an approval's sandbox terms say, one line each, for every surface that asks for a yes (scope.ts describeScope,
- * the console's scope view): the fence policy and its read denies always, the macOS services and unlocked protected
- * files when there are any. */
-export function sandboxTermsWords(profile: { fencePolicy?: 2; readDeny?: readonly string[]; machLookup?: readonly string[]; writeUnlock?: readonly string[] }): { reads: string; mach: string | null; unlock: string | null } {
+ * the console's scope view): the fence policy and its read denies always, the macOS services when there are any. */
+export function sandboxTermsWords(profile: { fencePolicy?: 2; readDeny?: readonly string[]; machLookup?: readonly string[] }): { reads: string; mach: string | null } {
   const reads = profile.fencePolicy === 2
-    ? `your home folder, as in Anthropic's sandbox runtime${(profile.readDeny ?? []).length === 0 ? "" : `, except ${(profile.readDeny ?? []).join(", ")}`}; never Toolroll's own folders or other tasks' work`
+    ? `your home folder, as in Anthropic's sandbox runtime${(profile.readDeny ?? []).length === 0 ? "" : `, except ${(profile.readDeny ?? []).join(", ")}`}; never Toolroll's own folders; other tasks' work read, never written`
     : "not your home folder's credentials and agent settings (approved before home reads opened)";
   return {
     reads,
     mach: (profile.machLookup ?? []).length === 0 ? null : `also reaches these macOS services: ${(profile.machLookup ?? []).join(", ")}`,
-    unlock: (profile.writeUnlock ?? []).length === 0 ? null : `protected files it may still write: ${(profile.writeUnlock ?? []).join(", ")}`,
   };
 }
 
 /** The setting in a sentence, for the CLI and the settings page. */
 export function readDenyWords(list: readonly string[]): string {
-  return list.length === 0 ? "Builds and checks can read your home folder, as in Anthropic's sandbox runtime; Toolroll's own folders and other tasks' work stay out of reach."
+  return list.length === 0 ? "Builds and checks can read your home folder, as in Anthropic's sandbox runtime; Toolroll's own folders stay out of reach, and other tasks' work is read, never written."
     : `Builds and checks can read your home folder except ${list.length === 1 ? list[0] : `${list.length} paths (${list.slice(0, 3).join(", ")}${list.length > 3 ? ", …" : ""})`}.`;
 }

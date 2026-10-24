@@ -6,9 +6,10 @@
  * - synthetic markers: a secret-looking string no real file holds, so "the marker never appears" is the proof;
  * - scratch folders (homes, state folders, projects, run folders) under the test run's own temp root, removed after;
  * - git with a fixed identity and no global or system config, so a developer's settings never decide a result;
- * - runners for the generated Seatbelt profile (`sandbox-exec`) and the installed `codex sandbox`, probed once. Where
- *   one can't run (not macOS, Codex not installed, or already inside a sandbox, which can't nest), a native check is
- *   skipped with a plain note saying why, and the policy assertions beside it still run;
+ * - runners for the sandbox runtime's sandbox (Anthropic's sandbox-runtime: Seatbelt on a Mac, bubblewrap on Linux) and
+ *   the installed `codex sandbox`, probed once. Where one can't run (no sandbox here, Codex not installed, or already
+ *   inside a sandbox, which can't nest), a native check is skipped with a plain note saying why, and the policy
+ *   assertions beside it still run;
  * - `expectedToFail`: an attack whose fix isn't on main yet, named with the task that fixes it. Vitest's `fails`
  *   turns the test red the moment the fix lands, so the marker is removed then and the attack stays covered.
  */
@@ -18,7 +19,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, test, type TestContext } from "vitest";
-import { agentFence, codexFenceArgv, fenceGrants, HARDENED_GIT_ARGS, linuxFenceAvailable, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, SANDBOX_EXEC, taskBoundary, trustedWorktreeBinding, type FenceGrants } from "../../src/agent-fence.js";
+import { agentFence, codexFenceArgv, fenceGrants, HARDENED_GIT_ARGS, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, taskBoundary, trustedWorktreeBinding, type FenceGrants } from "../../src/agent-fence.js";
+import { sandboxRuntimeProblem } from "../../src/sandbox-runtime.js";
 import { poolRootOf } from "../../src/worktree.js";
 // Every attack file imports this harness, and this harness every guard (scripts/quick-check.mjs SECURITY_CRITICAL),
 // so a Quick command that follows imports (`vitest related <changed files>`) runs the whole suite when one changes.
@@ -111,15 +113,13 @@ export function seatbelt(): Probe {
   if (process.platform !== "darwin") return seatbeltProbe = { available: false, note: "Seatbelt checks skipped: not macOS" };
   if (macosFenceAvailable()) return seatbeltProbe = { available: true, note: "" };
   // Unavailable on a Mac is a failure where a lane requires the native attacks (needs()).
-  const ran = spawnSync(SANDBOX_EXEC, ["-p", "(version 1)(allow default)", "/usr/bin/true"], { encoding: "utf8", timeout: 5_000 });
-  const why = /Operation not permitted/.test(ran.stderr ?? "") ? "this process is already inside a sandbox, and Seatbelt can't nest" : "sandbox-exec is missing";
-  return seatbeltProbe = { available: false, platform: "darwin", note: `Seatbelt checks skipped: ${why}` };
+  return seatbeltProbe = { available: false, platform: "darwin", note: `Seatbelt checks skipped: ${sandboxRuntimeProblem("darwin") ?? "this process is already inside a sandbox, and Seatbelt can't nest"}` };
 }
 
 /** Toolroll's own OS fence, as any launch gets it: Seatbelt on a Mac, bubblewrap on Linux. */
 export function osFence(): Probe {
   if (process.platform === "darwin") return seatbelt();
-  if (process.platform === "linux") return linuxFenceAvailable() ? { available: true, note: "" } : { available: false, platform: "linux", note: "OS fence checks skipped: bubblewrap can't make its namespaces here" };
+  if (process.platform === "linux") return linuxFenceAvailable() ? { available: true, note: "" } : { available: false, platform: "linux", note: `OS fence checks skipped: ${sandboxRuntimeProblem("linux") ?? "the sandbox runtime can't sandbox here"}` };
   return { available: false, note: "OS fence checks skipped: no macOS sandbox or bubblewrap on this platform" };
 }
 
@@ -154,10 +154,24 @@ export function needs(ctx: TestContext, probe: Probe): void {
 
 const NATIVE_ENV = () => ({ ...process.env, NODE_OPTIONS: undefined });
 
-/** `script` in /bin/sh under the generated Seatbelt profile for `fence` and `grants`, exactly as a build spawns it. */
-export function underSeatbelt(script: string, fence: readonly string[], grants: FenceGrants = NO_GRANTS, options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number }): SpawnSyncReturns<string> {
-  const { file, args } = macosFenced("/bin/sh", ["-c", script], fence, grants);
-  return spawnSync(file, args, { cwd: options.cwd, encoding: "utf8", env: options.env ?? NATIVE_ENV(), timeout: options.timeout ?? 60_000 });
+/** `script` in /bin/sh inside the sandbox runtime's sandbox for `fence` and `grants`, exactly as a build spawns it. */
+export function underSandbox(script: string, fence: readonly string[], grants: FenceGrants = NO_GRANTS, options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number }): SpawnSyncReturns<string> {
+  const env = options.env ?? NATIVE_ENV();
+  const { file, args, env: added } = sandboxedSpawn("/bin/sh", ["-c", script], fence, grants, options.cwd, env["TMPDIR"]);
+  return spawnSync(file, args, { cwd: options.cwd, encoding: "utf8", env: { ...env, ...added }, timeout: options.timeout ?? 60_000 });
+}
+
+/** The same, without blocking this process (a proxy or broker it talks to runs here). */
+export function underSandboxAsync(script: string, fence: readonly string[], grants: FenceGrants = NO_GRANTS, options: { cwd: string; env?: NodeJS.ProcessEnv }): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const env = options.env ?? NATIVE_ENV();
+  const { file, args, env: added } = sandboxedSpawn("/bin/sh", ["-c", script], fence, grants, options.cwd, env["TMPDIR"]);
+  return new Promise(done => {
+    const child = spawn(file, args, { cwd: options.cwd, env: { ...env, ...added }, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.on("close", status => done({ status, stdout, stderr }));
+  });
 }
 
 /** `script` in /bin/sh under `codex sandbox` with the generated permission profile, with its own CODEX_HOME. */

@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Runner } from "./backend.js";
-import { buildCacheEnv, buildCacheFolder, checkLaunchRoot, fenceFor, linuxFenceAvailable, withProtectedWatch, macosFenceAvailable, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist, type FencePolicy, type LaunchFence } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, checkLaunchRoot, fenceFor, linuxFenceAvailable, macosFenceAvailable, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist, type FencePolicy, type LaunchFence } from "./agent-fence.js";
 import type { FlowScriptRow, Store } from "./store.js";
 import { readDenyPath } from "./project-sandbox.js";
 import { poolRootOf } from "./worktree.js";
@@ -98,10 +98,10 @@ export async function runCode(run: CodeRun): Promise<CodeResult> {
     const runtime = runtimeOf(language, scriptFile);
     // The card goes in on stdin from its file (never a pipe): a script that doesn't read it can finish
     // first without breaking anything. Only our own paths are in the command; the card is only data.
-    const ran = await withProtectedWatch(run.launch?.fence?.fenceGrants, () => run.shell("/bin/sh", ["-c", 'exec "$@" < "$FLOW_INPUT"', "flow-script", runtime.file, ...runtime.args], {
+    const ran = await run.shell("/bin/sh", ["-c", 'exec "$@" < "$FLOW_INPUT"', "flow-script", runtime.file, ...runtime.args], {
       cwd: run.cwd, timeoutMs: script.timeoutMinutes * 60_000, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
       env: { ...run.env, ...run.secrets, ...(run.launch?.env ?? {}), FLOW_INPUT: inputFile }, ...(run.launch?.fence ?? {}),
-    }));
+    });
     const printed = codeOutput(ran.stdout, run.secrets);
     const all = scrubSecrets(ran.stdout.slice(0, 1_000_000), run.secrets);
     const both = scrubSecrets(`${ran.stdout}${ran.stderr === "" ? "" : `\n${ran.stderr}`}`, run.secrets);
@@ -184,7 +184,7 @@ export function flowLaunch(store: Store, options: { repo: string; folder: string
   if (!available()) {
     if (store.unfencedAgentsAllowed()) return { folder: own, env, dispose };
     dispose();
-    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
+    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
   }
   try {
     const poolRoots = [join(dirname(databaseFile), "worktrees"), options.scratch, ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];

@@ -49,32 +49,8 @@ jobs:
         env:
           CI: "true"
 
-  # The Linux seccomp helper (docs/plans/sandbox-parity.md C7), built from the vendored sources on each architecture's
-  # own runner; the package ships both, with their sha256 in dist/helpers/manifest.json.
-  seccomp:
-    name: seccomp helper · linux-${{ matrix.arch }}
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: ["x64", "arm64"]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-      - run: sudo apt-get update && sudo apt-get install -y libseccomp-dev
-      - run: node vendor/seccomp/build.mjs "helpers/linux-${{ matrix.arch }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: seccomp-linux-${{ matrix.arch }}
-          path: helpers/linux-${{ matrix.arch }}/apply-seccomp
-          if-no-files-found: error
-
   publish:
-    needs: [macos, seccomp]
+    needs: macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -104,20 +80,6 @@ jobs:
           fi
 
       - run: npm ci
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: seccomp-linux-*
-          path: seccomp
-
-      - name: Both seccomp helpers go into the package, named in its manifest
-        run: |
-          for arch in x64 arm64; do
-            mkdir -p "dist/helpers/linux-$arch"
-            install -m 0755 "seccomp/seccomp-linux-$arch/apply-seccomp" "dist/helpers/linux-$arch/apply-seccomp"
-          done
-          npm run build
-          node -e 'const m = require("./dist/helpers/manifest.json"); if (!/^[0-9a-f]{64}$/.test(m["linux-x64"] ?? "") || !/^[0-9a-f]{64}$/.test(m["linux-arm64"] ?? "")) { console.error("seccomp helpers missing from the manifest"); process.exit(1); }'
 
       # prepublishOnly runs the typecheck and the build.
       - run: npm publish --access public

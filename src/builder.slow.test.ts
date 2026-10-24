@@ -311,7 +311,7 @@ describe("the builder's gates", () => {
     expect(store.handle.prepare("SELECT note FROM run_note WHERE run = ?").all(req.runId as number).map(row => String(row["note"]))).toContain(words);
   });
 
-  test("a result that wrote a protected name (an MCP server list, a nested Git hook) is refused at the handoff, its work kept (sandbox parity C8)", async () => {
+  test("a result that wrote a protected name (an MCP server list, a nested Git hook) is refused at the handoff, its work kept (a backstop for what the sandbox runtime holds only at launch)", async () => {
     const { mkdirSync } = await import('node:fs');
     const { run } = await import('./exec.js');
     const sh = (...args: string[]) => execFileSync('git', ['-C', wt, ...args], { encoding: 'utf8', env: {
@@ -336,7 +336,6 @@ describe("the builder's gates", () => {
     expect(sh('rev-list', '--count', 'HEAD')).toBe('1');
     expect(readFileSync(join2(wt, '.mcp.json'), 'utf8')).toContain('mcpServers');
   });
-
   test("a rerun (task regate) dispatches through the builder with no agent call and reruns the check on the last head (v70)", async () => {
     const { regateTask } = await import("./dispose.js");
     approveScope();

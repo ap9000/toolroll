@@ -4,6 +4,7 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
+import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import type { ProjectSandbox } from "./project-sandbox.js";
 import type { ProjectNetwork } from "./egress.js";
 import type { WritesMode } from "./writes-mode.js";
@@ -87,24 +88,24 @@ function writesHtml(view: ProjectSettingsView): Html | "" {
 }
 
 /** Home folder (project-sandbox.ts): what builds and checks can read there, said once; the paths they can't, and the
- * advanced lists (macOS services, protected files), changed under Change with the approver's password. */
+ * advanced list (macOS services), changed under Change with the approver's password. */
 function sandboxHtml(view: ProjectSandboxView): Html | "" {
   const sandbox = view.sandbox;
   if (sandbox === undefined) return "";
-  const { readDeny, machLookup, writeUnlock } = sandbox.setting;
+  const { readDeny, machLookup } = sandbox.setting;
   const said = readDeny.length === 0
-    ? html`<p>Builds and checks can read your home folder, as in Anthropic's sandbox runtime. Toolroll's own folders and other tasks' work stay out of reach.</p>`
+    ? html`<p>Builds and checks can read your home folder, as in Anthropic's sandbox runtime. Toolroll's own folders stay out of reach; other tasks' work is read, never written.</p>`
     : html`<p>Builds and checks can read your home folder except <strong>${readDeny.length === 1 ? readDeny[0]! : `${readDeny.length} paths`}</strong>.</p>`;
-  const extra = machLookup.length + writeUnlock.length === 0 ? "" : html`<p class="meta">${[...(machLookup.length === 0 ? [] : [`${machLookup.length} macOS ${machLookup.length === 1 ? "service" : "services"} allowed`]), ...(writeUnlock.length === 0 ? [] : [`${writeUnlock.length} protected ${writeUnlock.length === 1 ? "file" : "files"} writable`])].join(" · ")}</p>`;
-  const head = html`<h2 id="sandbox-title">Home folder</h2>${said}${extra}`;
+  const extra = machLookup.length === 0 ? "" : html`<p class="meta">${machLookup.length} macOS ${machLookup.length === 1 ? "service" : "services"} allowed</p>`;
+  // The engine, named where the sandbox is set (sandbox-runtime.ts).
+  const engine = html`<p class="meta" data-sandbox-engine>Builds, checks and flows run in ${sandboxRuntimeWords()}.</p>`;
+  const head = html`<h2 id="sandbox-title">Home folder</h2>${said}${extra}${engine}`;
   if (!sandbox.canChange) return html`<section class="build-access sandbox-setting" id="sandbox" aria-labelledby="sandbox-title">${head}<p class="meta">An approver for this project can change this.</p></section>`;
   const form = postForm("/settings/project/sandbox", html`
     <label>Paths builds can't read<textarea name="read-deny" rows="4" placeholder="~/.ssh&#10;~/.aws">${readDeny.join("\n")}</textarea></label>
     <p class="meta">One per line: <code>~/…</code> or a full path.</p>
     <details><summary>Advanced</summary>
       <label>macOS services builds may also use<textarea name="mach" rows="2">${machLookup.join("\n")}</textarea></label>
-      <label>Protected files builds may still write<textarea name="unlock" rows="2" placeholder=".vscode/settings.json">${writeUnlock.join("\n")}</textarea></label>
-      <p class="meta">Exact files in the project, such as <code>.vscode/settings.json</code>. Hooks, shell profiles and tool settings stay protected otherwise.</p>
     </details>
     <p class="meta">Tasks scoped from now on use this; tasks already approved keep what they were approved with.</p>
     ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}

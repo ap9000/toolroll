@@ -3919,14 +3919,14 @@ async function commit(
     }
   }
 
-  // The mandatory write denies' backstop (sandbox parity C8): a result that wrote a protected name (a hook, editor or
-  // tool settings, a shell profile) its approval didn't unlock is refused, however it got written: on Linux a name made
-  // after launch can't be bound read-only, and Codex can't deny by pattern. The checkout is kept; nothing is committed.
+  // The protected names' backstop: a result that wrote a hook, Git config, editor or tool settings, a shell profile or
+  // an `.envrc` is refused, however it got written (the sandbox runtime holds the names there when a launch starts; one
+  // made after that, or by Codex, gets through it). The checkout is kept; nothing is committed.
   const staged = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", "-z"], { cwd: worktree });
   if (staged.code !== 0) return { ok: false, reason: "commit-failure", message: firstLine(staged.stderr) };
-  const forbidden = protectedChanges(staged.stdout.split("\0").filter(one => one !== ""), scope.approvedProfile?.writeUnlock ?? []);
+  const forbidden = protectedChanges(staged.stdout.split("\0").filter(one => one !== ""));
   if (forbidden.length > 0) {
-    return { ok: false, reason: "commit-failure", message: `The result changes ${forbidden.slice(0, 3).join(", ")}${forbidden.length > 3 ? ` and ${forbidden.length - 3} more` : ""}, which builds may not write (they run code or change tools for whoever opens the project next). Nothing was committed; the work is kept in ${worktree}. An approver can unlock an exact file for the project.` };
+    return { ok: false, reason: "commit-failure", message: `The result changes ${forbidden.slice(0, 3).join(", ")}${forbidden.length > 3 ? ` and ${forbidden.length - 3} more` : ""}, which builds may not write (they run code or change tools for whoever opens the project next). Nothing was committed; the work is kept in ${worktree}.` };
   }
 
   // Setup can create untracked files as well as edit tracked manifests.

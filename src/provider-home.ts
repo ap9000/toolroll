@@ -18,7 +18,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { validModelId } from "./provider.js";
-import { launchRoot } from "./launch-root.js";
 
 /** The operator's own choices a no-model build keeps. */
 export type ProviderDefaults = { model?: string; alwaysThinking?: boolean; effort?: string };
@@ -74,7 +73,7 @@ export function codexDefaults(codexHome: string): ProviderDefaults {
  * build needs none); a missing `sessions/` is made where Codex would make
  * it, so a resumed build finds the thread its first launch wrote.
  */
-export function isolatedCodexHome(source: string, root: string = launchRoot()): { dir: string; cleanup: () => void } {
+export function isolatedCodexHome(source: string, root: string = tmpdir()): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(root, "so-codex-"));
   try {
     chmodSync(dir, 0o700);

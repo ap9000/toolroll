@@ -10,8 +10,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { checkLaunchRoot, codexFenceArgv, fenceFor, linuxFenced, macosFenced, macosFenceProfile, runFolders, sealedScratch, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
-import { nativeSeccomp } from "../seccomp-fixture.js";
+import { checkLaunchRoot, codexFenceArgv, fenceFor, sandboxedSpawn, srtTermsOf, runFolders, sealedScratch, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
 import { CONTAINMENT_REFUSED_CODE, run as exec } from "../../src/exec.js";
 import { flowLaunch } from "../../src/flow-code.js";
 import { saveScript } from "../../src/flow-scripts.js";
@@ -107,9 +106,8 @@ describe("attack: a flow reaching past the agents' fence", () => {
     const launch = fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
       boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }) });
     const script = [canary.pool.path, canary.scratch.path].map(path => `if cat ${JSON.stringify(path)} >/dev/null 2>&1; then echo read; else echo denied; fi`).join("\n");
-    const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
-      : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
-    expect(execFileSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).trim().split("\n")).toEqual(["read", "denied"]);
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants, worktree);
+    expect(execFileSync(wrapped.file, wrapped.args, { env: { ...process.env, ...wrapped.env }, cwd: worktree, encoding: "utf8" }).trim().split("\n")).toEqual(["read", "denied"]);
   });
 
   test("a scratch folder made after the launch, or planted as a link, is denied too (never only when it was there at launch)", async ctx => {
@@ -120,11 +118,12 @@ describe("attack: a flow reaching past the agents' fence", () => {
     const home = join(root, "home");
     const launch = fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
       boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }) });
-    // Named whether there or not (on Linux, where only what exists can be masked, made first, owner-only).
+    // Named whether there or not.
     expect(launch.fenceGrants.pool?.sealed).toContain(join(realpathSync(pool), "flow-checks"));
-    expect(macosFenceProfile(launch.fence, launch.fenceGrants)).toContain(`(deny file-read* file-write* (subpath "${join(realpathSync(pool), "flow-checks")}"))`);
+    const terms = srtTermsOf(launch.fence, launch.fenceGrants);
+    expect(terms.readConfig.denyOnly).toContain(join(realpathSync(pool), "flow-checks"));
+    expect(terms.writeConfig.denyWithinAllow).toContain(join(realpathSync(pool), "flow-checks"));
     expect(codexFenceArgv(launch.fence, false, launch.fenceGrants).join(" ")).toContain(`"${join(realpathSync(pool), "flow-checks")}"="deny"`);
-    if (process.platform === "linux") expect(statSync(join(pool, "flow-checks")).mode & 0o777).toBe(0o700);
     // A link at the name: denied by name and where it leads.
     const elsewhere = join(root, "elsewhere-scratch");
     mkdirSync(elsewhere);
@@ -135,9 +134,8 @@ describe("attack: a flow reaching past the agents' fence", () => {
     needs(ctx, osFence());
     const late = join(pool, "flow-checks", "flow-check-7-1", "output.txt");
     const script = `sleep 1; if cat ${JSON.stringify(late)} >/dev/null 2>&1; then echo read; else echo denied; fi`;
-    const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
-      : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
-    const child = spawn(wrapped.file, wrapped.args, { cwd: worktree, stdio: ["ignore", "pipe", "inherit"] });
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants, worktree);
+    const child = spawn(wrapped.file, wrapped.args, { env: { ...process.env, ...wrapped.env }, cwd: worktree, stdio: ["ignore", "pipe", "inherit"] });
     let out = "";
     child.stdout.on("data", chunk => { out += chunk; });
     // Made after the launch started.
