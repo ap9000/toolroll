@@ -621,6 +621,7 @@ describe("what the fence gives back", () => {
       '(deny file-read* file-write* (regex #"^/private/var/folders/a\\.b/T/(so-tools-|so-codex-|so-net-|so-cmd-)"))',
       '(allow file-read-metadata (literal "/r/checkout"))',
       `(allow file-read* file-write* (subpath "${own}"))`,
+      `(deny file-write* (literal "${own}"))`,
       '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
       "(deny process-info-pidinfo)",
       "(allow process-info-pidinfo (target same-sandbox))",
@@ -632,6 +633,9 @@ describe("what the fence gives back", () => {
     for (const name of ["so-tools-mine", "so-tools-theirs", "so-codex-theirs", "unrelated"]) mkdirSync(join(root, name), { recursive: true });
     const fence = agentFence({ databaseFile: null, worktree: null, home: join(dir, "home"), runFolders: runFolders(join(root, "so-tools-mine"), root) });
     expect(fence).toEqual([join(root, "so-codex-theirs"), join(root, "so-tools-theirs")]);
+    // A second root (a Mac's short one for checks) is denied by pattern too.
+    const both = macosFenceProfile([], { readOnly: [], readable: [], lookup: [], runFolders: { root: "/private/var/folders/a.b/T", own, also: ["/private/tmp"] } });
+    expect(both).toContain('(deny file-read* file-write* (regex #"^/private/tmp/(so-tools-|so-codex-|so-net-|so-cmd-)"))');
   });
 
   test("Codex: a folder holding the shared install that can't be listed stays denied whole, and its grant is dropped", () => {

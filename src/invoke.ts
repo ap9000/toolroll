@@ -37,7 +37,7 @@ import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
-import { BRIDGE_DIR, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
+import { BRIDGE_DIR, checkLaunchRoot, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
@@ -1080,7 +1080,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
       if (store.unfencedAgentsAllowed()) { store.stampRunCheckAccess(runId, "unsandboxed"); return inner(file, args, options); }
       return { code: 1, stdout: "", stderr: "This machine can't confine the build's commands (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
     }
-    const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
+    const own = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
     try {
       const temp = join(own, "tmp");
       mkdirSync(temp, { mode: 0o700 });
@@ -1130,7 +1130,7 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
     }
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return inner(file, args, options);
-    const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
+    const own = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
     try {
       const temp = join(own, "tmp");
       mkdirSync(temp, { mode: 0o700 });

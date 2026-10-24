@@ -118,3 +118,21 @@ describe.skipIf(!FENCED || !online)("a sign-ins check's network is exactly the p
     expect(after.stdout.trim(), after.stderr).toBe("github-reached");
   });
 });
+
+describe.skipIf(!FENCED || process.platform !== "darwin")("a check's short launch folder (macOS)", () => {
+  test("its TMPDIR is under /private/tmp and holds a long-named unix socket; other launch folders there stay out of reach; its own can't be replaced", async () => {
+    const { mkdtempSync: made } = await import("node:fs");
+    const other = realpathSync(made(join("/private/tmp", "so-cmd-")));
+    writeFileSync(join(other, "secret"), "x");
+    try {
+      const socket = "s".repeat(60);
+      const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sandboxed")("/bin/sh", ["-c", [
+        `case "$TMPDIR" in /private/tmp/so-cmd-*) echo short;; *) echo "long $TMPDIR";; esac`,
+        `${JSON.stringify(process.execPath)} -e 'const s=require("net").createServer().listen(require("path").join(process.env.TMPDIR, ${JSON.stringify(socket)}), () => { console.log("socket-ok"); s.close(); }).on("error", e => console.log("socket-" + e.code))'`,
+        `cat ${JSON.stringify(join(other, "secret"))} >/dev/null 2>&1 && echo other-read || echo other-refused`,
+        `mv "$(dirname "$TMPDIR")" "$(dirname "$TMPDIR")-moved" 2>/dev/null && echo own-moved || echo own-kept`,
+      ].join("\n")], { cwd: checkout });
+      expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["short", "socket-ok", "other-refused", "own-kept"]);
+    } finally { rmSync(other, { recursive: true, force: true }); }
+  });
+});

@@ -298,20 +298,32 @@ export function taskBoundary(options: { worktree: string; provider: string; home
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
-export type RunFolders = { root: string; own: string | null };
+/** Where launches keep their private folders: `root` (the system temp folder) and, on a Mac, `also` the short shared one
+ * a check's launch folder is made in (/private/tmp, so its unix sockets fit); `own` is this launch's. */
+export type RunFolders = { root: string; own: string | null; also?: string[] };
 /** The prefixes of every launch's private folders: its tools' config, a Codex build's own home, and a Linux build's
  * network bridge (egress-bridge.ts). */
 export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd-"] as const;
 
-export function runFolders(own: string | null, root: string = tmpdir()): RunFolders {
-  return { root: real(root), own: own === null ? null : real(own) };
+export function runFolders(own: string | null, root?: string): RunFolders {
+  // The system's own roots (not one a caller names): on a Mac, checks' launch folders are under the short one too.
+  const also = root === undefined && process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? [CHECK_LAUNCH_ROOT_MACOS] : [];
+  return { root: real(root ?? tmpdir()), own: own === null ? null : real(own), ...(also.length === 0 ? {} : { also }) };
 }
+
+/** Where a check's launch folder is made on a Mac: a short shared folder, so its TMPDIR leaves room for a unix socket
+ * path (about 104 bytes); every other launch folder there is denied by pattern, as under the system temp folder. */
+export const CHECK_LAUNCH_ROOT_MACOS = "/private/tmp";
+/** The folder a check's launch folder is made in: on a Mac the short one, elsewhere the system temp folder (unchanged). */
+export const checkLaunchRoot = (): string => process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? CHECK_LAUNCH_ROOT_MACOS : tmpdir();
 
 /** Every other launch's private folder there now. */
 function otherRunFolders(folders: RunFolders): string[] {
-  let entries: string[] = [];
-  try { entries = readdirSync(folders.root); } catch { entries = []; }
-  return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(folders.root, entry)).filter(path => path !== folders.own);
+  return [folders.root, ...(folders.also ?? [])].flatMap(root => {
+    let entries: string[] = [];
+    try { entries = readdirSync(root); } catch { entries = []; }
+    return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(root, entry)).filter(path => path !== folders.own);
+  });
 }
 
 /**
@@ -788,7 +800,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(pool === undefined || pool.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", pool.lookup)})`]),
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),
-    ...(folders === undefined ? [] : [`(deny file-read* file-write* (regex #"^${seatbeltRegex(folders.root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`]),
+    ...(folders === undefined ? [] : [folders.root, ...(folders.also ?? [])].map(root => `(deny file-read* file-write* (regex #"^${seatbeltRegex(root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`)),
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
     // Denied whole above, granted back narrowly here (a later rule wins): an entry made after launch beside it stays denied.
     ...(grants.readable.length === 0 ? [] : [`(allow file-read* file-test-existence ${paths("subpath", grants.readable)})`]),
@@ -804,7 +816,8 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     // Each readable copy's own folder can be listed, never read: bundlers such as esbuild find node_modules by listing
     // its parent, which a lookup alone refuses (the Linux and Codex fences list it as read-only already).
     ...(grants.readable.length === 0 ? [] : [`(allow file-read-data ${paths("literal", [...new Set(grants.readable.map(one => dirname(one)))])})`]),
-    ...(folders?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [folders.own])})`]),
+    // Its own launch folder: what is in it, never the folder itself (it can't be renamed, removed or replaced by a link).
+    ...(folders?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [folders.own])})`, `(deny file-write* ${paths("literal", [folders.own])})`]),
     '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
     "(deny process-info-pidinfo)",
     "(allow process-info-pidinfo (target same-sandbox))",
@@ -893,8 +906,8 @@ const SECRET_SEGMENT = SPLIT_SECRET_PATTERNS.map(patternTest);
  */
 function linuxGrants(fence: readonly string[], grants: FenceGrants): string[] {
   const folders = grants.runFolders;
-  const launchFolder = (path: string) => folders !== undefined && inside(path, folders.root) && path !== folders.own && !(folders.own != null && inside(path, folders.own))
-    && RUN_FOLDER_PREFIXES.some(prefix => relative(folders.root, path).split(sep)[0]!.startsWith(prefix));
+  const launchFolder = (path: string) => folders !== undefined && path !== folders.own && !(folders.own != null && inside(path, folders.own))
+    && [folders.root, ...(folders.also ?? [])].some(root => inside(path, root) && RUN_FOLDER_PREFIXES.some(prefix => relative(root, path).split(sep)[0]!.startsWith(prefix)));
   const secretBelow = (path: string) => fence.some(one => inside(path, one) && relative(one, path).split(sep).some(segment => SECRET_SEGMENT.some(test => test.test(segment))));
   const ok = (path: string, readOnlyGrant: boolean) => existsSync(path) && !fence.includes(path) && !launchFolder(path) && !secretBelow(path)
     && !(readOnlyGrant && fence.some(one => inside(path, one)));
