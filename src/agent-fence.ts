@@ -53,6 +53,7 @@ import { existingFolders } from "./names.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
 import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
+import { LAUNCH_ROOT_PREFIX, launchRoot, launchRoots } from "./launch-root.js";
 import { installSeccompHelper, verifySeccompHelper, type SeccompHelper } from "./seccomp-helper.js";
 
 /** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
@@ -187,6 +188,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   }
   for (const path of options.extra ?? []) if (existsSync(path)) fence.add(real(path));
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
+  // Listed for every backend (Codex and Seatbelt deny them by name as well as by pattern); a Linux fence masks Toolroll's
+  // own launch-folder roots whole instead of each of these (linuxFenced), so none can vanish from under a mask.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
   const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]));
@@ -336,7 +339,11 @@ function siblingGitData(main: string | null, gitdir: string | null): { readOnly:
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
 /** Where launches keep their private folders: `root` (the system temp folder) and, on a Mac, `also` the short shared one
  * a check's launch folder is made in (/private/tmp, so its unix sockets fit); `own` is this launch's. */
-export type RunFolders = { root: string; own: string | null; also?: string[] };
+export type RunFolders = { root: string; own: string | null; also?: string[];
+  /** The roots are Toolroll's own Linux launch-folder roots (launch-root.ts; `also` holds this user's others): a Linux
+   * fence masks them whole and gives back this launch's own folder, rather than masking each other launch's folder
+   * (which may vanish as it is masked). */
+  whole?: true };
 /** The prefixes of every launch's private folders: its tools' config, a Codex build's own home, and a Linux build's
  * network bridge (egress-bridge.ts). */
 export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd-"] as const;
@@ -344,6 +351,11 @@ export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd
 export function runFolders(own: string | null, root?: string): RunFolders {
   // The system's own roots (not one a caller names): on a Mac, checks' launch folders are under the short one too.
   const also = root === undefined && process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? [CHECK_LAUNCH_ROOT_MACOS] : [];
+  if (root === undefined && process.platform === "linux") {
+    const main = real(launchRoot());
+    const others = launchRoots().map(real).filter(one => one !== main);
+    return { root: main, own: own === null ? null : real(own), ...(others.length === 0 ? {} : { also: others }), whole: true };
+  }
   return { root: real(root ?? tmpdir()), own: own === null ? null : real(own), ...(also.length === 0 ? {} : { also }) };
 }
 
@@ -351,7 +363,7 @@ export function runFolders(own: string | null, root?: string): RunFolders {
  * path (about 104 bytes); every other launch folder there is denied by pattern, as under the system temp folder. */
 export const CHECK_LAUNCH_ROOT_MACOS = "/private/tmp";
 /** The folder a check's launch folder is made in: on a Mac the short one, elsewhere the system temp folder (unchanged). */
-export const checkLaunchRoot = (): string => process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? CHECK_LAUNCH_ROOT_MACOS : tmpdir();
+export const checkLaunchRoot = (): string => process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? CHECK_LAUNCH_ROOT_MACOS : launchRoot();
 
 /** Every other launch's private folder in the system temp folder now, each only as the real folder it is (a link planted
  * there is never followed, nor fenced in its target's place) and this user's own. A shared root (`also`, /private/tmp on
@@ -1127,7 +1139,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const network = grants.network?.mode === "allowlist" ? grants.network : null;
   if (network !== null && network.bridge === undefined) throw new Error("A confined network on Linux needs its bridge");
   // A fenced path gone by now (another launch's folder, removed as it finished) has nothing to hide, and a mask over
-  // it would fail the whole launch; one made later is the late-folder residual a private /tmp closes.
+  // it would fail the whole launch. (Launch folders themselves sit in one root that is always there, masked whole below.)
   const present = (path: string) => { try { lstatSync(path); return true; } catch { return false; } };
   const mask = (path: string) => {
     let folder = true;
@@ -1173,6 +1185,19 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // A workspace build never reaches the host's own services either (a container engine would write anywhere for it),
   // whatever its network: confined networks mask them below already.
   const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
+  // Toolroll's Linux launch-folder root (launch-root.ts), always there: masked whole, so no other launch's folder is
+  // seen, whenever it was made, and none can vanish from under its mask. What this launch needs there comes back as it
+  // was: its own folder, and its kept and writable paths there (writable only where they were), never a fenced one.
+  const runRoot = grants.runFolders?.whole === true ? grants.runFolders.root : null;
+  const wholeRoots = runRoot === null ? [] : runRoots(grants.runFolders!);
+  const runMask = wholeRoots.filter(present).flatMap(mask);
+  const writePaths = writes === undefined ? [] : [...writes.subpaths, ...writes.prefixes.map(one => one.path)].map(real);
+  const backInRoot = runRoot === null ? [] : [...new Set([grants.runFolders!.own, ...(network?.keep ?? []), ...writePaths].filter((path): path is string => path !== null).map(real))]
+    .filter(path => inside(path, runRoot) && existsSync(path) && !fence.map(real).some(one => path === one || inside(path, one))).sort();
+  const runBinds = backInRoot.flatMap(path => [writes === undefined || writePaths.some(one => path === one || inside(path, one)) ? "--bind" : "--ro-bind", path, path]);
+  // The masks come after what comes back there: a fenced path inside the roots is covered by the roots' own masks
+  // (never masked by itself, as it may vanish), unless it is inside something given back, where it is masked again.
+  const coveredByRoot = (path: string) => wholeRoots.some(root => inside(path, root)) && !backInRoot.some(one => path === one || inside(path, one));
   // The workload alone runs under the filter: the forwarder opens unix sockets per connection, so it sits outside it.
   const filtered = [seccomp.helper, file, ...args];
   const command = network === null ? filtered
@@ -1192,7 +1217,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // An unlocked exact file, given back writable inside a protected folder bound read-only above (only if it exists:
   // a new one is the watch's to allow), as every backend gives it.
   protectedNames.push(...grantableUnlocks(fence, grants).filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]));
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...(grants.pool?.sealed ?? []).filter(present).flatMap(mask), ...own, ...[...fence, ...grants.readDenyAbove ?? []].filter(present).flatMap(masks), ...kept, ...services, ...protectedNames, ...signIns, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...(grants.pool?.sealed ?? []).filter(present).flatMap(mask), ...own, ...runMask, ...runBinds, ...[...fence, ...grants.readDenyAbove ?? []].filter(path => !coveredByRoot(path)).filter(present).flatMap(masks), ...kept, ...services, ...protectedNames, ...signIns, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
 }
 
 /**
@@ -1284,7 +1309,7 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
       try { entries = readdirSync(folder); } catch { return false; }
       for (const entry of entries) {
         const path = join(folder, entry);
-        if (RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))) continue;
+        if ([...RUN_FOLDER_PREFIXES, LAUNCH_ROOT_PREFIX].some(prefix => entry.startsWith(prefix))) continue;
         let held;
         try { held = lstatSync(path); } catch { continue; }
         if (held.isSocket()) { masks.add(path); found = true; }

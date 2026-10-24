@@ -12,6 +12,7 @@ import { chmodSync, lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { launchRoot } from "./launch-root.js";
 
 /** The prefix of a bridge folder in the temp folder (agent-fence.ts RUN_FOLDER_PREFIXES denies every other run's). */
 export const BRIDGE_PREFIX = "so-net-";
@@ -66,7 +67,7 @@ export type EgressBridge = { folder: string; forwarder: string; close: () => Pro
  * `root`: the plane's own bridge folder beside the database (agent-fence.ts BRIDGE_DIR), which every build's fence
  * hides from launch, so no other build can change the forwarder or reach the sockets.
  */
-export async function startEgressBridge(ports: readonly number[], root: string = tmpdir()): Promise<EgressBridge> {
+export async function startEgressBridge(ports: readonly number[], root: string = launchRoot()): Promise<EgressBridge> {
   // The root must be a real folder of this user's alone, never a link a build could have planted before it existed.
   const held = lstatSync(root);
   if (held.isSymbolicLink() || !held.isDirectory() || (process.getuid !== undefined && held.uid !== process.getuid()) || (root !== tmpdir() && (held.mode & 0o077) !== 0)) {
