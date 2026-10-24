@@ -494,6 +494,16 @@ describe("the builder's gates", () => {
     claimIt();
     store.setProjectCheckAccess("/code/thing", "sign-ins", "alex", T0, { may: "widen" });
     approveScope();
+    // On Linux sign-ins aren't available yet (check-access.ts signInsAvailable): the scope seals, and the run is stamped,
+    // sandboxed, with no network for sign-ins.
+    if (process.platform === "linux") {
+      expect(store.getScope("t-1")?.profile?.checkAccess).toBeUndefined();
+      const asked = request();
+      expect(await build(store, asked)).toMatchObject({ ok: true });
+      expect(store.runCheckAccess(asked.runId as number)).toBe("sandboxed");
+      expect(store.runCheckNetwork(asked.runId as number)).toBeNull();
+      return;
+    }
     expect(store.getScope("t-1")?.profile?.checkAccess).toBe("sign-ins");
     const asked = request();
     const result = await build(store, asked);

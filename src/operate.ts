@@ -118,7 +118,7 @@ import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
-import { CHECK_ACCESS_WARNINGS, checkAccessWords, isCheckAccess, signInHostsMissing, widerThan, type CheckAccess } from "./check-access.js";
+import { CHECK_ACCESS_WARNINGS, checkAccessHere, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
@@ -356,6 +356,8 @@ export type OperateOptions = {
   flowStepIo?: Partial<StepIo>;
   /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
   flowEveryMs?: number;
+  /** Injected by tests: the operating system this runs on (check access: no sign-ins on Linux yet). */
+  platform?: NodeJS.Platform;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   /** Injected by tests: how `integrations` checks reach services (fetch, gh, sign-in checks, mail servers). */
@@ -1085,6 +1087,7 @@ async function dispatchOn(
       ...(options.flowTriggerIo === undefined ? {} : { flowTriggerIo: options.flowTriggerIo }),
       ...(options.flowStepIo === undefined ? {} : { flowStepIo: options.flowStepIo }),
       ...(options.flowEveryMs === undefined ? {} : { flowEveryMs: options.flowEveryMs }),
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
       ...(options.flowFetch === undefined ? {} : { flowFetch: options.flowFetch }),
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
@@ -1245,6 +1248,8 @@ type Context = {
   flowStepIo?: Partial<StepIo>;
   /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
   flowEveryMs?: number;
+  /** Injected by tests: the operating system this runs on (default process.platform). */
+  platform?: NodeJS.Platform;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   integrationIo?: Partial<IntegrationIo>;
@@ -12105,13 +12110,20 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const current = context.store.projectCheckAccess(repo);
+  const platform = context.platform ?? process.platform;
+  // On Linux a saved sign-ins level (a database copied from a Mac) runs sandboxed: said, never hidden.
+  const here = checkAccessHere(current, platform);
   const words = (one: CheckAccess): string[] => {
+    if (checkAccessHere(one, platform) !== one) return [`${repo}: saved with model and GitHub sign-ins, but on Linux its checks run sandboxed: sign-ins can't be shared with checks safely there yet.`];
     const missing = one === "sign-ins" ? signInHostsMissing(context.store.projectNetwork(repo)) : [];
     return [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]]),
       // Never added for it: the operator widens the network separately, with their own password.
       ...(missing.length === 0 ? [] : [`Model sign-ins need these hosts in this project's network allowlist: ${missing.join(", ")}. Add them with: toolroll project network --repo ${repo} --allow ${missing.join(",")}`])];
   };
-  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current, ...(current === "sign-ins" ? { missingHosts: signInHostsMissing(context.store.projectNetwork(repo)) } : {}) }, () => words(current));
+  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current, ...(here === current ? {} : { runsAs: here }), ...(here === "sign-ins" ? { missingHosts: signInHostsMissing(context.store.projectNetwork(repo)) } : {}) }, () => words(current));
+  // Not on Linux yet (check-access.ts signInsAvailable): refused before any password is asked for, nothing written.
+  const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(platform) : null;
+  if (unavailable !== null) return fail(context.write, context.json, command, "refused", unavailable, EXIT.refused);
   const widening = widerThan(wanted, current);
   const acting = await askCredentials(flags, context);
   const proved = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);

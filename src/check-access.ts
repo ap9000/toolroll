@@ -65,3 +65,19 @@ export function checkNetworkOf(sealed: NetworkProfile, provider: string, project
   const agent = new Set((PROVIDER_HOSTS[provider] ?? []).filter(host => !project.hosts.includes(host)));
   return { ...sealed, hosts: sealed.hosts.filter(host => !agent.has(host)) };
 }
+
+/** Linux, for now (0.9.69): no `sign-ins`. Reading a sign-in file there resolves its parent folders by path (Node has no
+ * openat), and a Claude build on Linux can write ~/.claude, so a build could swap a parent folder for a link between the
+ * checks and the read. Until that read is race-free, checks on Linux never get sign-ins: setting the level is refused,
+ * and a level saved or sealed elsewhere (a database copied from a Mac) runs sandboxed. macOS keeps it: only Codex's
+ * files are read that way there, and no build can write ~/.codex. */
+export const signInsAvailable = (platform: NodeJS.Platform = process.platform): boolean => platform !== "linux";
+
+/** Why sign-ins can't be chosen here, said plainly (null: they can). */
+export const signInsUnavailableWords = (platform: NodeJS.Platform = process.platform): string | null => signInsAvailable(platform) ? null
+  : "Not available on Linux yet: sign-ins can't be shared with checks safely there. Choose Sandboxed or Not sandboxed.";
+
+/** The level checks actually get on this platform: `sign-ins` where it isn't available is `sandboxed` (narrower, never
+ * wider). Everything that seals, launches or stamps a check's level goes through this. */
+export const checkAccessHere = (level: CheckAccess, platform: NodeJS.Platform = process.platform): CheckAccess =>
+  level === "sign-ins" && !signInsAvailable(platform) ? CHECK_ACCESS_DEFAULT : level;

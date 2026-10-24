@@ -14,6 +14,9 @@ import { openStore, type Store } from "./store.js";
 import { outsideTempDir } from "../test/short-temp.js";
 
 const FENCED = macosFenceAvailable() || linuxFenceAvailable();
+/** Sign-ins aren't available on Linux yet (check-access.ts signInsAvailable): there a sign-ins check runs nothing. */
+const SIGN_INS = process.platform !== "linux";
+const LINUX_REFUSAL = /Sign-ins can't be shared with checks on Linux yet, so nothing ran\./;
 /** A sign-ins check's network, as its caller proves it: here, its registries only (none for this project). */
 const NOWHERE = { version: 1 as const, mode: "allowlist" as const, hosts: [], loopback: "proxy-only" as const };
 let dir: string, home: string, repo: string, checkout: string, store: Store;
@@ -71,7 +74,7 @@ const probe = () => [
 ].join("\n");
 
 describe.skipIf(!FENCED)("check access in the fence", () => {
-  test("sign-ins: exactly the sign-in files, a private Codex home and its own transcript folder; nothing else", async () => {
+  test.skipIf(!SIGN_INS)("sign-ins: exactly the sign-in files, a private Codex home and its own transcript folder; nothing else", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", probe()], { cwd: checkout, env: { GH_CONFIG_DIR: join(home, ".ssh") } });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual([
       "claude-account-read", "claude-settings-read", "claude-history-refused", "other-transcript-refused", "gh-hosts-read",
@@ -90,7 +93,7 @@ describe.skipIf(!FENCED)("check access in the fence", () => {
     ]);
   });
 
-  test("sign-ins: a sign-in file that is a link is never granted", async () => {
+  test.skipIf(!SIGN_INS)("sign-ins: a sign-in file that is a link is never granted", async () => {
     rmSync(join(home, ".config", "gh", "hosts.yml"));
     symlinkSync(join(home, ".ssh", "id_test"), join(home, ".config", "gh", "hosts.yml"));
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", [
@@ -110,7 +113,7 @@ describe.skipIf(!FENCED)("check access in the fence", () => {
 
 const online = (() => { try { execFileSync("curl", ["-sS", "-o", "/dev/null", "--max-time", "5", "https://api.github.com"], { stdio: "ignore" }); return true; } catch { return false; } })();
 
-describe.skipIf(!FENCED || !online)("a sign-ins check's network is exactly the project's", () => {
+describe.skipIf(!FENCED || !online || !SIGN_INS)("a sign-ins check's network is exactly the project's", () => {
   const reach = `curl -sS -o /dev/null --max-time 10 https://api.github.com 2>/dev/null && echo github-reached || echo github-refused`;
   test("the services the sign-ins are for aren't reachable unless the check's network names their hosts", async () => {
     const before = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", reach], { cwd: checkout });
@@ -135,6 +138,18 @@ describe.skipIf(!FENCED || process.platform !== "darwin")("a check's short launc
       ].join("\n")], { cwd: checkout });
       expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["short", "socket-ok", "other-refused", "own-kept"]);
     } finally { rmSync(other, { recursive: true, force: true }); }
+  });
+});
+
+describe.skipIf(!FENCED || SIGN_INS)("Linux: a sign-ins check runs nothing, in the real fence", () => {
+  test("no sign-in file is read, copied or granted: the command never starts", async () => {
+    const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", probe()], { cwd: checkout });
+    expect(result.stdout).toBe("");
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(LINUX_REFUSAL);
+    // The fence may make the (owner-only) copies folder; nothing was copied into it.
+    const copies = join(dir, "toolroll", "sign-in-copies");
+    expect(readdirSync(join(dir, "toolroll")).includes("sign-in-copies") ? readdirSync(copies) : []).toEqual([]);
   });
 });
 
@@ -167,6 +182,7 @@ describe.skipIf(!FENCED)("the sign-in copies folder (Linux checks' copies, fence
       }
       for (const level of ["sandboxed", "sign-ins"] as const) {
         const result = await fencedCheckoutCommands(other, repo, checkout, run, undefined, level, NOWHERE)("/bin/sh", ["-c", reads("copy", join(sibling, "0"))], { cwd: checkout });
+        if (level === "sign-ins" && !SIGN_INS) { expect(result.stdout, result.stderr).toBe(""); expect(result.stderr).toMatch(LINUX_REFUSAL); continue; }
         expect(result.stdout.trim(), `${level}: ${result.stderr}`).toBe("copy-refused");
       }
     } finally { other.close(); }

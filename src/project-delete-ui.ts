@@ -59,7 +59,9 @@ export type ProjectSettingsView = {
    * (an approver for the project) or also widen it (an instance operator). */
   checkAccess?: { setting: CheckAccess; changed: { by: string; at: string } | null; canNarrow: boolean; canWiden: boolean;
     /** This machine can't sandbox checks at all, and an operator allowed them to run anyway: every level runs unsandboxed. */
-    unconfinedHere?: boolean };
+    unconfinedHere?: boolean;
+    /** Why sign-ins can't be chosen on this machine (Linux, for now), or null: they can. */
+    signInsUnavailable?: string | null };
 };
 
 /** Where builds may write, said plainly; an approver changes it with their password. */
@@ -86,7 +88,10 @@ function writesHtml(view: ProjectSettingsView): Html | "" {
 function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const access = view.checkAccess;
   if (access === undefined) return "";
-  const { setting } = access;
+  const saved = access.setting;
+  // Sign-ins aren't available here (Linux, for now): a saved sign-ins level runs sandboxed, and the page says so.
+  const unavailable = access.signInsUnavailable ?? null;
+  const setting: CheckAccess = unavailable !== null && saved === "sign-ins" ? "sandboxed" : saved;
   const network = view.network?.setting ?? null;
   const names: Record<CheckAccess, string> = { sandboxed: "Sandboxed", "sign-ins": "Sandboxed, with model and GitHub sign-ins", unsandboxed: "Not sandboxed" };
   const meaning: Record<CheckAccess, string | null> = { sandboxed: null, "sign-ins": "Checks can read your Claude, Codex and GitHub sign-ins.", unsandboxed: "Checks run with your full access to this machine and to Toolroll." };
@@ -96,18 +101,19 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${new Date(access.changed.at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</p>`;
   // Said before anything else: on a machine with no OS sandbox, every level runs without one.
   const unconfined = access.unconfinedHere === true ? html`<p class="meta warning-line" data-unconfined-here>This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.</p>` : "";
-  const head = html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${unconfined}${hosts}${changed}`;
+  const runsSandboxed = setting !== saved ? html`<p class="meta warning-line" data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but on Linux checks run sandboxed: sign-ins can't be shared with checks safely there yet.</p>` : "";
+  const head = html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${runsSandboxed}${unconfined}${hosts}${changed}`;
   if (!access.canNarrow && !access.canWiden) return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}</section>`;
   const option = (value: CheckAccess, detail: string, warning: string | null) => {
-    const allowed = value === setting || access.canWiden || value === "sandboxed";
+    const allowed = (value === setting || access.canWiden || value === "sandboxed") && !(value === "sign-ins" && unavailable !== null);
     return html`<div class="option"><label class="check"><input type="radio" name="level" value="${value}"${setting === value ? html` checked` : ""}${allowed ? "" : html` disabled`}> ${names[value]}</label><p class="meta">${detail}</p>${warning === null ? "" : html`<p class="meta warning" data-check-access-warning="${value}">${warning}</p>`}</div>`;
   };
   const open = network?.mode === "open";
   const form = postForm("/settings/project/check-access", html`
     ${option("sandboxed", "Can't read the files your sign-ins and credentials are kept in, Toolroll's folders or other projects.", null)}
-    ${option("sign-ins", `Also reads the files your Claude, Codex and GitHub sign-ins are kept in, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
+    ${unavailable !== null ? option("sign-ins", unavailable, null) : option("sign-ins", `Also reads the files your Claude, Codex and GitHub sign-ins are kept in, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
     ${option("unsandboxed", "For projects whose checks create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
-    ${open ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
+    ${open && unavailable === null ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
     ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
     <button type="submit" class="primary">Save</button>
     <p class="meta">${access.canWiden ? "" : "Only an instance operator can widen this. "}Flow script steps always run sandboxed. Tasks already approved keep their level.</p>`, { hidden: { repo: view.repo } });

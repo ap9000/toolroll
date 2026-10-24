@@ -1,5 +1,5 @@
 import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
-import { CHECK_ACCESS_DEFAULT, checkNetworkOf, type CheckAccess } from "./check-access.js";
+import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, type CheckAccess } from "./check-access.js";
 import { checkoutGit } from "./teardown-git.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
@@ -507,10 +507,11 @@ function commandRunner(store: Store, runId: number, profile: ExecutionProfile, i
   return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined);
 }
 
-/** A build's checks' level and network: its approval's level, and under sign-ins the network its approval sealed less
- * its agent's own provider hosts (never its checks'). */
-function checkLaunchOf(store: Store, runId: number, profile: ExecutionProfile): { access: CheckAccess; network: NetworkProfile | null } {
-  const access = profile.checkAccess ?? CHECK_ACCESS_DEFAULT;
+/** A build's checks' level and network: its approval's level as this platform can give it (sign-ins sealed elsewhere
+ * run sandboxed on Linux, and the run is stamped with that, what actually ran), and under sign-ins the network its
+ * approval sealed less its agent's own provider hosts (never its checks'). */
+export function checkLaunchOf(store: Store, runId: number, profile: ExecutionProfile, platform: NodeJS.Platform = process.platform): { access: CheckAccess; network: NetworkProfile | null } {
+  const access = checkAccessHere(profile.checkAccess ?? CHECK_ACCESS_DEFAULT, platform);
   if (access !== "sign-ins") return { access, network: null };
   const taskRef = store.getRun(runId)?.taskRef;
   const sealed = taskRef === undefined ? undefined : launchNetworkOf(store, taskRef, profile);

@@ -38,7 +38,7 @@ import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
-import { CHECK_ACCESS_DEFAULT, narrowestAccess, narrowestNetwork, type CheckAccess } from "./check-access.js";
+import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
@@ -1245,7 +1245,10 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
  * open, or its allowlist through a proxy of its own (on Linux, carried in by a bridge). Nothing about it is started
  * unless all of it is.
  */
-async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[]): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
+export async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[], platform: NodeJS.Platform = process.platform): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
+  // The belt (check-access.ts signInsAvailable): on Linux no sign-in file is read, copied or granted, whatever level
+  // reached this far. Its callers already run such a check sandboxed; anything else that asks runs nothing.
+  if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks on Linux yet, so nothing ran." };
   const home = homedir();
   const grants = signInGrants(home, checkout);
   const cleanup: string[] = [];
@@ -1258,6 +1261,7 @@ async function signInsLaunch(store: Store, own: string, temp: string, checkout: 
   }
   // On Linux every granted file is bound from a copy of its own, made the same way (bubblewrap binds a source path, and
   // a link swapped in after validation must never be what it binds). A Mac's sandbox checks the real path itself.
+  // Not reached for now: the belt above refuses on Linux until reading these files is race-free there.
   if (process.platform === "linux") {
     const copies: Record<string, string> = {};
     // Under Toolroll's own state folder, which every fence denies whole (a launch's folder in a shared /tmp isn't masked
@@ -1317,8 +1321,9 @@ export function actualCheckAccess(store: Store, access: CheckAccess): CheckAcces
  * narrowest of their sealed check networks and the project's current one. A result with no sealed network runs it
  * sandboxed.
  */
-export function checkoutLaunchOf(store: Store, repo: string, runIds: readonly number[]): { access: CheckAccess; network: NetworkProfile | undefined } {
-  const access = narrowestAccess([store.projectCheckAccess(repo), ...runIds.map(id => store.runCheckAccess(id))]);
+export function checkoutLaunchOf(store: Store, repo: string, runIds: readonly number[], platform: NodeJS.Platform = process.platform): { access: CheckAccess; network: NetworkProfile | undefined } {
+  // As this platform can give it: sign-ins on Linux (a stamp or setting from a Mac's database) run sandboxed.
+  const access = checkAccessHere(narrowestAccess([store.projectCheckAccess(repo), ...runIds.map(id => store.runCheckAccess(id))]), platform);
   if (access !== "sign-ins") return { access, network: undefined };
   const sealed = runIds.map(id => store.runCheckNetwork(id));
   if (sealed.length === 0 || sealed.some(one => one === null)) return { access: CHECK_ACCESS_DEFAULT, network: undefined };
@@ -1335,9 +1340,9 @@ export const ranAtLine = (level: CheckAccess): string | null => level === "sandb
 
 /** A saved result's check command runner (batch-checks.ts, result-follow-ups.ts): its level and network worked out right
  * now (checkoutLaunchOf), and how it actually runs told to `ran`. */
-export function checkoutRunner(store: Store, repo: string, checkout: string, inner: Runner, runIds: readonly number[], ran: (level: CheckAccess) => void): Runner {
+export function checkoutRunner(store: Store, repo: string, checkout: string, inner: Runner, runIds: readonly number[], ran: (level: CheckAccess) => void, platform: NodeJS.Platform = process.platform): Runner {
   return (file, args, options) => {
-    const launch = checkoutLaunchOf(store, repo, runIds);
+    const launch = checkoutLaunchOf(store, repo, runIds, platform);
     ran(actualCheckAccess(store, launch.access));
     return fencedCheckoutCommands(store, repo, checkout, inner, undefined, launch.access, launch.network)(file, args, options);
   };

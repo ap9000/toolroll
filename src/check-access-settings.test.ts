@@ -28,14 +28,19 @@ beforeEach(async () => {
   expect(store.setAccountProjects("sam", [repo], "alex", NOW)).toEqual({ ok: true });
   const made = store.createConsoleTask({ title: "known", repo, filedVia: "console", filedBy: { name: "alex", kind: "person" } }, NOW);
   if (!made.ok) throw new Error(made.reason);
-  server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo });
+  await serveAs("darwin");
+});
+/** The console as it runs on `platform` (a Mac unless a test says Linux, where sign-ins aren't available yet). */
+async function serveAs(platform: NodeJS.Platform): Promise<void> {
+  if (server !== undefined && server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+  server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, platform });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address !== "object") throw new Error("listen");
   base = `http://127.0.0.1:${address.port}`;
-});
+}
 afterEach(async () => {
-  await new Promise<void>(resolve => server.close(() => resolve()));
+  if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -109,4 +114,36 @@ test("on a machine that can't sandbox checks at all, the section says so before 
   const ui = (await import("node:fs")).readFileSync("src/project-delete-ui.ts", "utf8");
   expect(ui).toContain("This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.");
   expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\)\) && store\.unfencedAgentsAllowed\(\)/);
+});
+
+test("on Linux the sign-ins choice is shown disabled with the reason, and a save of it is refused before the password: nothing changes", async () => {
+  await serveAs("linux");
+  const alex = await signIn("alex");
+  const html = await page(alex);
+  expect(html).toMatch(/<input type="radio" name="level" value="sign-ins" disabled> Sandboxed, with model and GitHub sign-ins<\/label><p class="meta">Not available on Linux yet: sign-ins can(?:'|&#39;)t be shared with checks safely there\. Choose Sandboxed or Not sandboxed\.<\/p>/);
+  expect(html).not.toContain('data-check-access-warning="sign-ins"');
+  // The other levels stay choosable.
+  expect(html).toMatch(/value="unsandboxed">/);
+  // A form that sends it anyway (with the right password) changes nothing, and nothing reaches the ledger.
+  expect((await save(alex, { level: "sign-ins", password: tokens["alex"]! })).said).toMatch(/Not available on Linux yet: sign-ins can't be shared with checks safely there\. Choose Sandboxed or Not sandboxed\. Nothing changed\./);
+  expect(store.projectCheckAccess(repo)).toBe("sandboxed");
+  expect(store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = 'check access'").all()).toEqual([]);
+  // Not sandboxed is as it was.
+  expect((await save(alex, { level: "unsandboxed", password: tokens["alex"]! })).said).toMatch(/Saved/);
+  expect(store.projectCheckAccess(repo)).toBe("unsandboxed");
+});
+
+test("on Linux a sign-ins level already saved (a database from a Mac) shows as Sandboxed and says why; on a Mac it shows as saved", async () => {
+  store.setProjectCheckAccess(repo, "sign-ins", "alex", NOW, { may: "widen" });
+  await serveAs("linux");
+  const linux = await page(await signIn("alex"));
+  expect(linux).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed</strong></p>");
+  expect(linux).toMatch(/data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but on Linux checks run sandboxed: sign-ins can(?:'|&#39;)t be shared with checks safely there yet\./);
+  expect(linux).not.toContain("data-sign-in-hosts");
+  expect(linux).toMatch(/value="sandboxed" checked>/);
+  await serveAs("darwin");
+  const mac = await page(await signIn("alex"));
+  expect(mac).toContain("<p><strong>Sandboxed, with model and GitHub sign-ins</strong></p>");
+  expect(mac).not.toContain("data-sign-ins-unavailable");
+  expect(mac).toMatch(/value="sign-ins" checked>/);
 });

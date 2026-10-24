@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, describeScope, propose } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
-import { checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, widerThan } from "./check-access.js";
-import { checkoutLaunchOf, checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
+import { checkAccessHere, checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, signInsAvailable, signInsUnavailableWords, widerThan } from "./check-access.js";
+import { resolveScopeProfile } from "./agentconfig.js";
+import { checkLaunchOf } from "./builder.js";
+import { checkoutLaunchOf, checkoutRunner, ranAtLine, signInsLaunch, widestRan } from "./invoke.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, lines: string[];
@@ -31,7 +33,8 @@ beforeEach(() => {
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
-const run = (argv: string[]) => { lines = []; return runOperate("project", ["check-access", ...argv], line => lines.push(line), { databaseFile: db }); };
+// A Mac unless a test says Linux (sign-ins aren't available there yet): the same answers on every CI machine.
+const run = (argv: string[], platform: NodeJS.Platform = "darwin") => { lines = []; return runOperate("project", ["check-access", ...argv], line => lines.push(line), { databaseFile: db, platform }); };
 const payload = () => JSON.parse(lines.join("\n"));
 const as = (name: string) => ["--as", name, "--token", tokens[name]!];
 
@@ -128,7 +131,8 @@ describe("sealing (v132): the level is part of what is approved", () => {
   });
 
   test("a scope wider than sandboxed seals only on a person's password: never a mode, a grant, a chat confirmation", () => {
-    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+    // Sign-ins where this machine has them (on Linux they seal as sandboxed: see "Linux" below).
+    store.setProjectCheckAccess(REPO, signInsAvailable() ? "sign-ins" : "unsandboxed", "alex", new Date(), { may: "widen" });
     file("t-auto");
     for (const kind of ["mode", "grant", "chat"] as const) expect(store.sealScopeApproval("t-auto", "alex", new Date(), {}, { kind, modeDigest: "d" }, "person")).toBe(false);
     expect(store.getScope("t-auto")?.approvedAt).toBeNull();
@@ -194,16 +198,16 @@ describe("review round: authority, networks and per-command levels", () => {
     const net = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.stripe.com"], loopback: "proxy-only" as const };
     store.stampRunCheckAccess(runId, "sign-ins", net);
     store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" });
-    expect(checkoutLaunchOf(store, REPO, [runId])).toMatchObject({ access: "sign-ins" });
+    expect(checkoutLaunchOf(store, REPO, [runId], "darwin")).toMatchObject({ access: "sign-ins" });
     // The project's own network allows nothing extra: the result's sealed host isn't reachable.
-    expect(checkoutLaunchOf(store, REPO, [runId]).network?.hosts).toEqual([]);
+    expect(checkoutLaunchOf(store, REPO, [runId], "darwin").network?.hosts).toEqual([]);
     // A run with sign-ins but no sealed network runs its checks sandboxed.
     store.stampRunCheckAccess(runId, "sign-ins", null);
-    expect(checkoutLaunchOf(store, REPO, [runId]).access).toBe("sandboxed");
+    expect(checkoutLaunchOf(store, REPO, [runId], "darwin").access).toBe("sandboxed");
     store.stampRunCheckAccess(runId, "sign-ins", net);
     // The runner re-reads before each command: a narrowing between two commands applies to the second.
     const ranAt: string[] = [];
-    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], level => ranAt.push(level));
+    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], level => ranAt.push(level), "darwin");
     await runner("/bin/true", [], {});
     store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
     await runner("/bin/true", [], {});
@@ -211,5 +215,105 @@ describe("review round: authority, networks and per-command levels", () => {
     expect(widestRan(ranAt as Parameters<typeof widestRan>[0])).toBe("sign-ins");
     expect(ranAtLine("unsandboxed")).toMatch(/These commands ran without a sandbox/);
     expect(ranAtLine("sandboxed")).toBeNull();
+  });
+});
+
+describe("Linux: no sign-ins yet (a sign-in file's folders are resolved by path there, and a Claude build can write ~/.claude)", () => {
+  const ranRun = (id: string) => {
+    store.createTask({ id, title: id }, new Date());
+    return store.startRun({ taskRef: store.refFor("built-in", id).id, leaseId: "l", runner: "r", branch: "b", worktree: "/w", route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: new Date() });
+  };
+  const ledger = () => store.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'check access'").all().map(row => String(row["detail"]));
+
+  test("the level: sign-ins is sandboxed on Linux, never wider; every other level and every other platform unchanged", () => {
+    expect(signInsAvailable("linux")).toBe(false);
+    expect(signInsAvailable("darwin")).toBe(true);
+    expect(checkAccessHere("sign-ins", "linux")).toBe("sandboxed");
+    expect(checkAccessHere("unsandboxed", "linux")).toBe("unsandboxed");
+    expect(checkAccessHere("sandboxed", "linux")).toBe("sandboxed");
+    expect(checkAccessHere("sign-ins", "darwin")).toBe("sign-ins");
+    expect(signInsUnavailableWords("linux")).toBe("Not available on Linux yet: sign-ins can't be shared with checks safely there. Choose Sandboxed or Not sandboxed.");
+    expect(signInsUnavailableWords("darwin")).toBeNull();
+  });
+
+  test("the CLI refuses sign-ins on Linux, even for an instance operator with a password typed now: nothing written, nothing in the ledger", async () => {
+    expect(await run(["sign-ins", "--repo", REPO, ...as("alex"), "--json"], "linux")).toBe(EXIT.refused);
+    expect(payload()).toMatchObject({ ok: false, reason: "refused" });
+    expect(lines.join("\n")).toContain("Not available on Linux yet: sign-ins can't be shared with checks safely there. Choose Sandboxed or Not sandboxed.");
+    expect(store.projectCheckAccess(REPO)).toBe("sandboxed");
+    expect(ledger()).toEqual([]);
+    // The other levels are as they were on Linux.
+    expect(await run(["unsandboxed", "--repo", REPO, ...as("alex"), "--json"], "linux")).toBe(EXIT.ok);
+    expect(await run(["sandboxed", "--repo", REPO, ...as("sam"), "--json"], "linux")).toBe(EXIT.ok);
+    // A Mac is unchanged.
+    expect(await run(["sign-ins", "--repo", REPO, ...as("alex"), "--json"], "darwin")).toBe(EXIT.ok);
+    expect(store.projectCheckAccess(REPO)).toBe("sign-ins");
+  });
+
+  test("a sign-ins level already saved (a database from a Mac) shows as running sandboxed on Linux; narrowing it still works", async () => {
+    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+    expect(await run(["--repo", REPO, "--json"], "linux")).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ ok: true, checkAccess: "sign-ins", runsAs: "sandboxed" });
+    expect(payload().missingHosts).toBeUndefined();
+    expect(await run(["--repo", REPO], "linux")).toBe(EXIT.ok);
+    expect(lines.join("\n")).toMatch(/saved with model and GitHub sign-ins, but on Linux its checks run sandboxed/);
+    expect(lines.join("\n")).not.toMatch(/can read your Claude/);
+    expect(await run(["--repo", REPO, "--json"], "darwin")).toBe(EXIT.ok);
+    expect(payload().runsAs).toBeUndefined();
+    expect(await run(["sandboxed", "--repo", REPO, ...as("sam"), "--json"], "linux")).toBe(EXIT.ok);
+    expect(store.projectCheckAccess(REPO)).toBe("sandboxed");
+  });
+
+  test("a scope filed on Linux seals sandboxed (its digest never claims sign-ins it won't get); on a Mac it seals sign-ins", () => {
+    store.createTask({ id: "t-seal", title: "t" }, new Date());
+    store.placeTask(store.lookupRef("t-seal")!.id, REPO);
+    for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", new Date());
+    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+    const linux = resolveScopeProfile(store, REPO, undefined, { provider: "claude", model: "sonnet" }, "linux");
+    const mac = resolveScopeProfile(store, REPO, undefined, { provider: "claude", model: "sonnet" }, "darwin");
+    if (!linux.ok || !mac.ok) throw new Error("profile");
+    expect(linux.profile.checkAccess).toBeUndefined();
+    expect(mac.profile.checkAccess).toBe("sign-ins");
+    // Not sandboxed is sealed on Linux as anywhere.
+    store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" });
+    const open = resolveScopeProfile(store, REPO, undefined, { provider: "claude", model: "sonnet" }, "linux");
+    expect(open.ok && open.profile.checkAccess).toBe("unsandboxed");
+  });
+
+  test("an approval sealed with sign-ins elsewhere: a build's checks on Linux run sandboxed, with no network for sign-ins, and that is what the run is stamped with", () => {
+    const runId = ranRun("t-build");
+    const profile = { checkAccess: "sign-ins" } as Parameters<typeof checkLaunchOf>[2];
+    const launch = checkLaunchOf(store, runId, profile, "linux");
+    expect(launch).toEqual({ access: "sandboxed", network: null });
+    // Both stamping sites (the dispatch and each command) write exactly what checkLaunchOf answers.
+    store.stampRunCheckAccess(runId, launch.access, launch.network);
+    expect(store.runCheckAccess(runId)).toBe("sandboxed");
+    expect(store.runCheckNetwork(runId)).toBeNull();
+    // A sealed not-sandboxed level is unchanged on Linux.
+    expect(checkLaunchOf(store, runId, { checkAccess: "unsandboxed" } as Parameters<typeof checkLaunchOf>[2], "linux").access).toBe("unsandboxed");
+  });
+
+  test("a saved result stamped sign-ins (on a Mac) is checked sandboxed on Linux, and recorded as it ran", async () => {
+    const runId = ranRun("t-result");
+    const net = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.github.com"], loopback: "proxy-only" as const };
+    store.stampRunCheckAccess(runId, "sign-ins", net);
+    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+    expect(checkoutLaunchOf(store, REPO, [runId], "linux")).toEqual({ access: "sandboxed", network: undefined });
+    expect(checkoutLaunchOf(store, REPO, [runId], "darwin").access).toBe("sign-ins");
+    const ranAt: string[] = [];
+    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], level => ranAt.push(level), "linux");
+    await runner("/bin/true", [], {});
+    expect(ranAt).toEqual(["sandboxed"]);
+  });
+
+  test("the belt: the sign-ins launch reads, copies and grants nothing on Linux, whatever level reaches it", async () => {
+    const { existsSync, mkdirSync, readdirSync } = await import("node:fs");
+    const own = join(dir, "launch");
+    mkdirSync(join(own, "tmp"), { recursive: true });
+    const result = await signInsLaunch(store, own, join(own, "tmp"), "/w", { version: 1, mode: "open", hosts: [], loopback: "proxy-only" }, [], "linux");
+    expect(result).toEqual({ problem: "Sign-ins can't be shared with checks on Linux yet, so nothing ran." });
+    // Nothing was made: no private Codex home, no sign-in copies folder beside the database.
+    expect(readdirSync(own)).toEqual(["tmp"]);
+    expect(existsSync(join(dir, "sign-in-copies"))).toBe(false);
   });
 });

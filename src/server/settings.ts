@@ -89,7 +89,7 @@ import { checkPolicy,parseList,policyParts } from "../policy.js";
 import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concurrency.js";
 import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
-import { isCheckAccess, widerThan } from "../check-access.js";
+import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
@@ -2266,6 +2266,9 @@ ${modeWords(terms)
     const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#check-access");
     const wanted = body.get("level");
     if (!isCheckAccess(wanted)) return back("problem", "Choose how far checks reach. Nothing changed.");
+    // Not on Linux yet (check-access.ts signInsAvailable): refused before the password, whatever the form sent.
+    const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(options.platform ?? process.platform) : null;
+    if (unavailable !== null) return back("problem", `${unavailable} Nothing changed.`);
     const widening = widerThan(wanted, store.projectCheckAccess(repo));
     // Sign-ins with an open network: a second, explicit yes, said before the password.
     if (wanted === "sign-ins" && widening && store.projectNetwork(repo).mode === "open" && body.get("confirm-open") !== "yes") {
