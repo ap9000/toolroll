@@ -32,15 +32,16 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
-import { BRIDGE_DIR } from "./agent-fence.js";
+import { BRIDGE_DIR, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
+import { CHECK_ACCESS_DEFAULT, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
-import { proxyEnv, providerOnlyNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
+import { PROVIDER_HOSTS, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
@@ -1068,7 +1069,8 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
  * Their network stays as it was. A machine without an OS fence runs them as before; a fence that can't be prepared
  * (a checkout whose binding no longer proves) runs nothing.
  */
-export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable(),
+  access: CheckAccess = CHECK_ACCESS_DEFAULT, network?: NetworkProfile): Runner {
   // An injected runner (tests) starts no real command, as an injected agent starts no real agent (invokeAgent).
   if (inner !== runCommand) return inner;
   return async (file, args, options) => {
@@ -1081,6 +1083,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
     try {
       const temp = join(own, "tmp");
       mkdirSync(temp, { mode: 0o700 });
+      // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66.
+      if (access === "unsandboxed") return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
       const fenced = runFence(store, runId, "command", undefined, own, writes);
       if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
       if (fenced.fence.length === 0) return inner(file, args, options);
@@ -1088,12 +1092,21 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
       const database = options?.env?.["TOOLROLL_DB"];
       const checkData = database === undefined || fenced.grants.writes === undefined ? null : grantFolder(dirname(database), false);
       const grants: FenceGrants = checkData === null ? fenced.grants : { ...fenced.grants, writes: { ...fenced.grants.writes!, subpaths: [...fenced.grants.writes!.subpaths, checkData] } };
-      return await inner(file, args, {
-        ...options,
-        fence: fenced.fence,
-        fenceGrants: grants,
-        env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)) },
-      });
+      const checkout = store.getRun(runId)?.worktree ?? null;
+      const signIns = access !== "sign-ins" ? null : checkout === null ? { problem: "The check's checkout is unknown, so its sign-ins can't be granted." }
+        : await signInsLaunch(store, own, temp, checkout, network ?? { version: 1, mode: "allowlist", hosts: [], loopback: "proxy-only" });
+      if (signIns !== null && "problem" in signIns) return { code: 1, stdout: "", stderr: `${signIns.problem}\n`, timedOut: false, notFound: false };
+      try {
+        return await inner(file, args, {
+          ...options,
+          fence: fenced.fence,
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
+          env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
+          ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
+        });
+      } finally {
+        await signIns?.close();
+      }
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
@@ -1106,7 +1119,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
  * project's writes setting, only that checkout, its Git data, its own temp folder, the project's caches and its check
  * database writable. Where nothing can confine them, they run only when an instance operator allowed unconfined agents.
  */
-export function fencedCheckoutCommands(store: Store, repo: string, checkout: string, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable()): Runner {
+export function fencedCheckoutCommands(store: Store, repo: string, checkout: string, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable(),
+  access: CheckAccess = CHECK_ACCESS_DEFAULT): Runner {
   if (inner !== runCommand) return inner;
   return async (file, args, options) => {
     if (!available()) {
@@ -1119,6 +1133,8 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
     try {
       const temp = join(own, "tmp");
       mkdirSync(temp, { mode: 0o700 });
+      // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66.
+      if (access === "unsandboxed") return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
       let binding: WorktreeBinding;
       try { binding = trustedWorktreeBinding(repo, checkout); } catch {
         return { code: 1, stdout: "", stderr: "The check's checkout couldn't be bound to its project, so nothing ran.\n", timedOut: false, notFound: false };
@@ -1133,12 +1149,21 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
       const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, linked: linkedFor(store, checkout), binding, poolRoots });
       const grants: FenceGrants = allowed === null ? base
         : { ...base, readOnly: [...new Set([...base.readOnly, ...allowed.readOnly])].sort(), writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] } };
-      return await inner(file, args, {
-        ...options,
-        fence: agentFence({ databaseFile, worktree: checkout, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] }),
-        fenceGrants: grants,
-        env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)) },
-      });
+      // With sign-ins, under the project's network as it stands (its own hosts and the registries it uses).
+      const signIns = access !== "sign-ins" ? null
+        : await signInsLaunch(store, own, temp, checkout, resolveNetwork("command", store.projectNetwork(repo), repositoryEcosystems(repo)));
+      if (signIns !== null && "problem" in signIns) return { code: 1, stdout: "", stderr: `${signIns.problem}\n`, timedOut: false, notFound: false };
+      try {
+        return await inner(file, args, {
+          ...options,
+          fence: agentFence({ databaseFile, worktree: checkout, boundary, binding, runFolders: folders, extra: allowed?.deny ?? [] }),
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
+          env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
+          ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
+        });
+      } finally {
+        await signIns?.close();
+      }
     } finally {
       rmSync(own, { recursive: true, force: true });
     }
@@ -1203,4 +1228,53 @@ async function codexLoginBilling(binary: string, omitEnv: readonly string[]): Pr
 /** The lines of a harness's stdout that are not JSON events. */
 function plainLines(stdout: string): string {
   return stdout.split("\n").filter(line => !line.trimStart().startsWith("{")).join("\n");
+}
+
+/** What a `sign-ins` check never inherits: a caller's choice of Claude's config folder (Claude's keychain sign-in is
+ * keyed to its default one; check-access.ts). gh's and Codex's are set to the granted ones instead. */
+const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
+/** The services whose sign-ins a `sign-ins` check reads: Claude's and Codex's own hosts (egress.ts), and GitHub's. */
+const SIGN_IN_HOSTS: readonly string[] = [...PROVIDER_HOSTS["claude"]!, ...PROVIDER_HOSTS["codex"]!, "github.com", "api.github.com"];
+
+/**
+ * A `sign-ins` check's launch (check-access.ts): its exact sign-in files and its own transcript folder
+ * (agent-fence.ts signInGrants), Codex's config and sign-in copied into a home of the launch's own (private, gone with
+ * the launch; ~/.codex itself stays fenced), gh pointed at its own folder, and the network the check runs under:
+ * open, or its allowlist through a proxy of its own (on Linux, carried in by a bridge). Nothing about it is started
+ * unless all of it is.
+ */
+async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
+  const home = homedir();
+  const grants = signInGrants(home, checkout);
+  const codex = join(own, "codex");
+  mkdirSync(codex, { mode: 0o700 });
+  for (const name of ["config.toml", "auth.json"]) {
+    const from = join(codexHomeDir({}, home), name);
+    try {
+      const held = lstatSync(from);
+      if (!held.isFile() || held.isSymbolicLink()) continue;
+      writeFileSync(join(codex, name), readFileSync(from), { mode: 0o600 });
+    } catch { /* a Codex not signed in here: nothing to copy */ }
+  }
+  let egress: EgressProxy | null = null;
+  let bridge: EgressBridge | null = null;
+  const close = async () => { await egress?.close(); await bridge?.close(); };
+  try {
+    const env: Record<string, string> = { CODEX_HOME: codex, GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config") };
+    if (policy.mode === "open") return { grants, network: { mode: "open" }, env, close };
+    // The sign-ins are given so the check can reach those services: their own hosts come with them.
+    egress = await startEgressProxy({ hosts: [...new Set([...policy.hosts, ...SIGN_IN_HOSTS])].sort() });
+    const network: NetworkFence = { mode: "allowlist", proxyPort: egress.port, brokerPorts: [], loopback: policy.loopback, socketRoots: [temp, realpathSync(checkout)] };
+    if (linuxFenceAvailable()) {
+      const database = store.databaseFile();
+      const fenced = database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR);
+      bridge = await startEgressBridge([egress.port], fenced !== undefined && bridgeFits(fenced) ? fenced : undefined);
+      network.bridge = { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath };
+      network.keep = [realpathSync(checkout), own];
+    }
+    return { grants, network, env: { ...env, ...proxyEnv(egress, policy.loopback) }, close };
+  } catch (error) {
+    await close();
+    return { problem: `The check's network could not be set up, so nothing ran: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }

@@ -254,3 +254,10 @@ Original questions:
 - Whether `sign-ins` should also require the project's network to be an allowlist, rather than only warning.
 - Whether narrowing should also take the operator, for symmetry, or stay approver-level.
 - Whether Claude's writable set can be avoided entirely with a per-launch `CLAUDE_CONFIG_DIR` that links the real one. 0.9.68 found that a different config dir loses the keychain sign-in, so probably not.
+
+## Build notes (deviations from the reviewed plan)
+
+- **Phase 0 lands with `sign-ins`, not on every level.** On the live instance every project uses the default network (allowlist, no local ports). Fencing every sandboxed check's network would break any project whose tests run a local server or fetch from GitHub, Toolroll's own builds included. A sandboxed check reads no credentials, so the network fence now applies where credentials are present: every `sign-ins` check runs behind a proxy of its own (on Linux, through the bridge). That is the risk review finding 1 named. Fencing sandboxed checks' network gets its own roadmap item with a rollout path.
+- **The services a `sign-ins` check is given come with their hosts.** Claude's and Codex's own hosts (egress.ts PROVIDER_HOSTS) and GitHub's (github.com, api.github.com) join the project's allowlist. Otherwise the default network would refuse the very services the sign-ins are for. Checked with real CLIs: gh, Codex and Claude sign in and answer at `sign-ins`. At `sandboxed`, gh and Codex can't.
+- **Claude's config folder is never set by Toolroll.** A caller's `CLAUDE_CONFIG_DIR` is removed instead, because Claude's keychain sign-in is keyed to its default folder. GH_CONFIG_DIR, XDG_CONFIG_HOME and CODEX_HOME are set to the granted ones.
+- **The store write re-checks the level** in the write's own transaction (`may: narrow | widen`). A change made while a person proved themselves can't turn a narrowing into a widening (security review).

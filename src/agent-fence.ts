@@ -325,7 +325,10 @@ function otherRunFolders(folders: RunFolders): string[] {
  * `pool` denies the plane's checkout pools whole and gives this build's own
  * checkout back (CheckoutPool).
  */
-export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist };
+export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
+  /** A `sign-ins` check's exact sign-in files (read) and its checkout's own Claude transcript folder (written):
+   * check-access.ts, signInGrants. Bound back over the home fence by path, never a pattern or a parent folder. */
+  signIns?: SignInGrants };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -789,6 +792,10 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
     // Denied whole above, granted back narrowly here (a later rule wins): an entry made after launch beside it stays denied.
     ...(grants.readable.length === 0 ? [] : [`(allow file-read* file-test-existence ${paths("subpath", grants.readable)})`]),
+    // A sign-ins check (check-access.ts): its exact sign-in files read, its own transcript folder written; nothing else
+    // of the home configuration comes back.
+    ...(grants.signIns === undefined || grants.signIns.read.length === 0 ? [] : [`(allow file-read* ${paths("literal", grants.signIns.read)})`]),
+    ...(grants.signIns === undefined || grants.signIns.write.length === 0 ? [] : [`(allow file-read* file-write* ${paths("subpath", grants.signIns.write)})`]),
     // Each readable copy's own folder can be listed, never read: bundlers such as esbuild find node_modules by listing
     // its parent, which a lookup alone refuses (the Linux and Codex fences list it as read-only already).
     ...(grants.readable.length === 0 ? [] : [`(allow file-read-data ${paths("literal", [...new Set(grants.readable.map(one => dirname(one)))])})`]),
@@ -904,6 +911,11 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const pool = grants.pool?.deny ?? [];
   const own = grants.pool?.own != null && existsSync(grants.pool.own) ? ["--bind", grants.pool.own, grants.pool.own] : [];
   const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
+  // A sign-ins check's exact files, bound back over the masks (validated when granted: signInGrants).
+  const signIns = grants.signIns === undefined ? [] : [
+    ...grants.signIns.read.filter(path => existsSync(path)).flatMap(path => ["--ro-bind", path, path]),
+    ...grants.signIns.write.filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]),
+  ];
   // A confined network: a network and a process view of its own, the host's sockets out of reach (a socket in a
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
   const isolated = network === null ? [] : [
@@ -928,7 +940,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...services, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
@@ -1016,4 +1028,35 @@ export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string
 /** FENCE_SUMMARY as README's markdown table. */
 export function fenceSummaryMarkdown(): string {
   return ["| | Auto | Full access |", "|---|---|---|", ...FENCE_SUMMARY.map(row => `| ${row.agent} | ${row.auto} | ${row.full} |`)].join("\n");
+}
+
+/** What a `sign-ins` check reads and writes beyond its fence (check-access.ts). */
+export type SignInGrants = { read: string[]; write: string[] };
+
+/** The sign-in files a `sign-ins` check reads, by fixed name under the person's home (never from the environment, so no
+ * caller's CLAUDE_CONFIG_DIR or GH_CONFIG_DIR points a grant at .ssh): Claude's account and settings (and, on Linux,
+ * its credentials file; on a Mac they are in the keychain), and gh's hosts and config. Codex reads copies in a folder
+ * of the launch's own (invoke.ts), so nothing of ~/.codex is granted. */
+const SIGN_IN_FILES = (platform: NodeJS.Platform): string[] => [
+  ".claude.json", join(".claude", "settings.json"), ...(platform === "linux" ? [join(".claude", ".credentials.json")] : []),
+  join(".config", "gh", "hosts.yml"), join(".config", "gh", "config.yml"),
+];
+
+/**
+ * A `sign-ins` check's grants: each sign-in file only as the real regular file it is (never a link, nor reached
+ * through one), and the checkout's own Claude transcript folder, made when absent and only as the real folder it is,
+ * so a session the check starts can be resumed. Nothing else under ~/.claude, ~/.codex or ~/.config is granted.
+ */
+export function signInGrants(home: string, checkout: string, platform: NodeJS.Platform = process.platform): SignInGrants {
+  const base = real(home);
+  const read = SIGN_IN_FILES(platform).map(name => join(base, name)).filter(path => {
+    try {
+      const held = lstatSync(path);
+      return held.isFile() && !held.isSymbolicLink() && realpathSync(path) === path;
+    } catch { return false; }
+  });
+  const transcript = claudeProjectFolder(base, real(checkout));
+  // A transcript folder Claude would name by prefix (a very long checkout path) isn't granted: never a prefix of others.
+  const folder = transcript.byPrefix || !existsSync(join(base, ".claude")) ? null : grantFolder(transcript.path);
+  return { read, write: folder === null ? [] : [folder] };
 }
