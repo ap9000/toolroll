@@ -47,6 +47,19 @@ A build agent controls everything it can write: its checkout and `.git` (pointer
 - Check at the moment of use, not only earlier: re-verify right before acting when a file can change in between.
 - Every guard ships with a test that tries to get around it, run against the real sandbox where it applies (`sandbox-exec`, `codex sandbox`). Add each reproduced bypass to the attack suite so it stays fixed.
 
+## Safety self-review (before every commit that touches security)
+
+Run this list yourself before committing anything that touches approvals, credentials, sandboxes, grants, network policy, the release tool or the CLI's password-gated commands. Fix each finding, or say plainly in the commit message why it doesn't apply. The automated review and the arc's Codex review are a second line, not the first.
+
+- **Check and write together.** An authorization decision and the write it allows happen in one transaction. Re-read the current state there, and pass the caller's proven authority (for example, narrow-only versus widen) into the write. Never decide before a password prompt and write after it.
+- **Never widen implicitly.** Grants, network allowlists, check access and approval scope only widen through an explicit step that a person confirms, and that step is logged. Never add hosts, paths or permissions to make a case work.
+- **Grant files, not folders.** Give the exact files a tool needs, never their parent folder and never through a symlink. Write grants exclude anything a later session loads (memory, settings, hooks, config), because writing there is persistent prompt injection.
+- **Don't let input choose what's trusted.** Environment variables, the checkout's git config and remotes, caller-supplied repos, URLs and ids never decide what a grant or proof covers. Pin them to Toolroll's own records, and refuse redirects (insteadOf, includes, alternates, replace refs).
+- **Approvals mean a person's yes to exactly this.** Nothing mints, carries or extends an approval without proving the person approved this exact scope *and this kind of action*. A matching digest isn't enough if the meaning differs (an audit isn't a release). Re-check at the moment of use.
+- **Credentials go only where they belong.** A token is only ever sent to its own service, never logged, never put in URLs, and never readable by project code unless an operator granted that project exactly that.
+- **Tests never touch the person's real setup.** Tests get their own HOME, XDG_CONFIG_HOME, temp folders and short socket paths. A skip for running inside a sandbox (INSIDE_FENCE) is only for what truly needs nesting, process watching or real credentials, and says why.
+- **Prove it against the real thing.** Each guard gets a test that tries to get around it, run against the real sandbox or deployed fence where that applies.
+
 ## Keep the installed tool current
 
 - Always use the latest verified Toolroll build for new live work. Check the running UI, background worker and resolved CLI before dispatch; deploy an available newer verified build first. If the update is blocked, resolve the update instead of continuing ordinary tasks on the old runtime. A source commit, passing build or merge does not count as deployment.
