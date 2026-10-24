@@ -68,7 +68,7 @@ describe("the CI workflows", () => {
     const workflow = workflows.find(one => one.file === "publish.yml")!;
     expect(triggered(workflow, { kind: "push", tag: "v0.9.52" })).toBe(true);
     const publisher = workflow.jobs["publish"]!;
-    expect(publisher.needs).toBe("macos");
+    expect(publisher.needs).toEqual(["macos", "seccomp"]);
     const macos = workflow.jobs["macos"]!;
     expect(checks(macos, "macos")).toEqual([
       { name: "node 22 · macos-latest", runner: "macos-latest" },
@@ -76,7 +76,7 @@ describe("the CI workflows", () => {
     ]);
     // GitHub needs requires every matrix leg to succeed. Neither the job nor a test step may override failure:
     // https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs
-    for (const job of [macos, publisher]) {
+    for (const job of [macos, workflow.jobs["seccomp"]!, publisher]) {
       expect(job.if).toBeUndefined();
       expect(job["continue-on-error"] ?? false).toBe(false);
       for (const step of job.steps ?? []) {

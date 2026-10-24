@@ -499,6 +499,11 @@ device rules, `src/sandbox/macos-sandbox-utils.ts`) in `src/agent-fence.ts` `MAC
 write-deny lists (`src/sandbox/sandbox-utils.ts` `DANGEROUS_FILES`, `getDangerousDirectories`). Modified: the optional
 Apple Events, weaker-network-isolation and user mach blocks are omitted; Toolroll adds its own denies after them.
 
+Vendored: the Linux seccomp helper's sources, `vendor/seccomp-src/apply-seccomp.c` (unmodified) and
+`vendor/seccomp-src/seccomp-unix-block.c` (modified: the `socket(AF_UNIX)` rule removed), with the license in
+`vendor/seccomp-src/LICENSE`; `vendor/seccomp/build.mjs` is adapted from its `vendor/seccomp/build.ts`. The built
+`dist/helpers/linux-<arch>/apply-seccomp` binaries ship in the package.
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at

@@ -7,6 +7,7 @@
  * approver's explicit choice), denies the delegation services, and admits unix sockets only under the run's own
  * folders; the proxy admits only the run's hosts, with its credentials.
  */
+import { nativeSeccomp } from "../seccomp-fixture.js";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { createServer as createNetServer, type Server as NetServer } from "node:net";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -21,10 +22,11 @@ import { startEgressProxy, type EgressProxy } from "../../src/egress.js";
 import { lines, needs, seatbelt, useScratch } from "./harness.js";
 
 /** Whether bubblewrap can make the whole confined network here (its own network and process view). */
-function bubblewrapNet(): { available: boolean; note: string } {
+function bubblewrapNet(): { available: boolean; note: string; platform?: NodeJS.Platform } {
   if (process.platform !== "linux") return { available: false, note: "bubblewrap network checks skipped: not Linux" };
+  if (nativeSeccomp() === null) return { available: false, platform: "linux", note: "bubblewrap network checks skipped: no seccomp helper built (node vendor/seccomp/build.mjs)" };
   const ran = spawnSync("bwrap", ["--dev-bind", "/", "/", "--unshare-net", "--unshare-pid", "--proc", "/proc", "--", "true"], { encoding: "utf8", timeout: 5_000 });
-  return ran.status === 0 ? { available: true, note: "" } : { available: false, note: `bubblewrap network checks skipped: ${(ran.stderr ?? "").trim() || "bwrap can't make a namespace here"}` };
+  return ran.status === 0 ? { available: true, note: "" } : { available: false, platform: "linux", note: `bubblewrap network checks skipped: ${(ran.stderr ?? "").trim() || "bwrap can't make a namespace here"}` };
 }
 
 /** `script` under the generated bubblewrap command, without blocking this process. */
@@ -32,7 +34,7 @@ function underBubblewrap(script: string, grants: FenceGrants, options: { cwd: st
   return underBubblewrapIn(script, [], grants, options);
 }
 function underBubblewrapIn(script: string, fence: readonly string[], grants: FenceGrants, options: { cwd: string }): Promise<{ stdout: string; stderr: string }> {
-  const { file, args } = linuxFenced("/bin/sh", ["-c", script], fence, grants);
+  const { file, args } = linuxFenced("/bin/sh", ["-c", script], fence, { ...grants, seccomp: nativeSeccomp()! });
   return new Promise(done => {
     const child = spawn(file, args, { cwd: options.cwd, env: { ...process.env, NODE_OPTIONS: undefined } });
     let stdout = "", stderr = "";

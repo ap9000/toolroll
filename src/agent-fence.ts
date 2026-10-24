@@ -51,6 +51,7 @@ import { readMonitoring } from "./monitoring-settings.js";
 import { existingFolders } from "./names.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
 import type { LoopbackMode } from "./egress.js";
+import { installSeccompHelper, verifySeccompHelper, type SeccompHelper } from "./seccomp-helper.js";
 
 /** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
 export const BRIDGE_DIR = "bridge-secrets";
@@ -394,6 +395,8 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
   /** macOS: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
+  /** Linux: the seccomp helper every workload runs through (seccomp-helper.ts); none means no Linux fence. */
+  seccomp?: SeccompHelper;
   /** An agent harness itself runs inside this sandbox, not only its commands (invoke.ts: a Claude, Gemini or ACP build):
    * no task port, even within the sandbox (macosFenceProfile). */
   agentInside?: true;
@@ -1097,6 +1100,9 @@ function linuxGrants(fence: readonly string[], grants: FenceGrants): string[] {
  * folder, or /dev/null for a file), so what is made there after launch is masked too; then only the explicit grants
  * bound back read-only (bubblewrap binds from the original root, so a grant inside a mask still reaches its files). */
 export function linuxFenced(file: string, args: readonly string[], fence: readonly string[], grants: FenceGrants = NO_GRANTS): { file: string; args: string[] } {
+  // The seccomp helper, checked right before this launch: missing or changed, there is no Linux fence (C7).
+  const seccomp = grants.seccomp;
+  if (seccomp === undefined || !verifySeccompHelper(seccomp)) throw new LinuxFenceUnavailable("This machine's seccomp helper is missing or isn't the one Toolroll shipped, so nothing was started.");
   const network = grants.network?.mode === "allowlist" ? grants.network : null;
   if (network !== null && network.bridge === undefined) throw new Error("A confined network on Linux needs its bridge");
   const mask = (path: string) => {
@@ -1141,10 +1147,21 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // A workspace build never reaches the host's own services either (a container engine would write anywhere for it),
   // whatever its network: confined networks mask them below already.
   const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
-  const command = network === null ? [file, ...args]
-    : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, ...always, "--die-with-parent", "--", ...command] };
+  // The workload alone runs under the filter: the forwarder opens unix sockets per connection, so it sits outside it.
+  const filtered = [seccomp.helper, file, ...args];
+  const command = network === null ? filtered
+    : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", ...filtered];
+  // The helper bound read-only at its own path (inside the masked state folder), and its own switches never inherited.
+  const helper = ["--ro-bind", seccomp.helper, seccomp.helper, ...SECCOMP_HELPER_ENV.flatMap(name => ["--unsetenv", name])];
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
 }
+
+/** The seccomp helper's own switches (vendor/seccomp-src/apply-seccomp.c): never passed through from a launch's
+ * environment (one turns its namespace filter off, one ships syscalls to a socket). */
+export const SECCOMP_HELPER_ENV: readonly string[] = ["SRT_ALLOW_NESTED_USERNS", "SRT_OBSERVE_SOCK", "SRT_ENCODED_CMD", "SRT_DEBUG"];
+
+/** Thrown by linuxFenced when no Linux fence can be made for this launch: the spawn road refuses it. */
+export class LinuxFenceUnavailable extends Error {}
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
  * engines), wherever they exist here. */
@@ -1364,6 +1381,8 @@ export type FenceContext = {
   writes?: { writes: WriteAllowlist; readOnly: string[] } | null;
   /** The launch's network, when it has one of its own (a flow's: decided by its caller, never left unsaid). */
   network?: NetworkFence;
+  /** Linux: the seccomp helper (tests only; default: installed from this package into the state folder). */
+  seccomp?: SeccompHelper | null;
 };
 
 /** A launch's whole fence: its denied paths, what it gives back, and that it runs inside the OS fence or not at all.
@@ -1377,10 +1396,14 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: ctx.extra ?? [] });
   const base = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
   const written = ctx.writes ?? null;
+  // Linux: the seccomp helper in the state folder, from this package (seccomp-helper.ts).
+  const seccomp = ctx.seccomp !== undefined ? ctx.seccomp
+    : process.platform === "linux" && ctx.databaseFile !== null && ctx.databaseFile !== "" && ctx.databaseFile !== ":memory:" ? installSeccompHelper(dirname(real(ctx.databaseFile))) : null;
   const grants: FenceGrants = {
     ...base,
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...base.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
+    ...(seccomp === null ? {} : { seccomp }),
   };
   return { kind, fence, fenceGrants: grants, confinement: "required" };
 }

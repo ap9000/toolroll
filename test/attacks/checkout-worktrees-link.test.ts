@@ -4,6 +4,7 @@
  * fenced path so the checkout lookup lifts it. Guard: taskBoundary takes only plain folders by the names Git gave them,
  * and looks a checkout up only when that checkout's own `.git` names the entry back.
  */
+import { argsOnlySeccomp } from "../seccomp-fixture.js";
 import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -52,7 +53,7 @@ describe("attack: a .git/worktrees symlink or planted entry becoming a grant", (
     const table = codexFenceArgv(fence, false, grants).find(arg => arg.startsWith("permissions.standing-orders.filesystem="))!;
     expect(table).toContain(`${q(join(at.home, ".toolroll"))}="deny"`);
     expect(table).not.toContain("tool-secrets");
-    const bwrap = linuxFenced("claude", [], fence, grants).args;
+    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
     expect(bwrap[bwrap.indexOf(join(at.home, ".toolroll")) - 1]).toBe("--tmpfs");
     expect(bwrap.join(" ")).not.toContain("tool-secrets");
   });

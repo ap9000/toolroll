@@ -175,6 +175,7 @@ The release lane runs on a macOS runner and a Linux runner that have the prerequ
   - no search fallback (generate-seccomp-filter.ts:239 is not used).
 - A missing helper or a mismatched hash means no Linux fence, so the existing refusals apply.
 - *Tests (native, positive control):* `io_uring_setup`, `socket(AF_VSOCK)` and `unshare(CLONE_NEWUSER)` succeed unsandboxed and fail with EPERM sandboxed; a replaced helper means refusal; the bridge still carries proxy traffic.
+- *As built (0.9.70):* `vendor/seccomp/build.mjs` (not .ts: no TS toolchain needed on the runner); `publish.yml` builds x64 and arm64 on their own runners (`seccomp helper · linux-<arch>`, release tag checks) and the package ships both in `dist/helpers/` with `manifest.json`; `ci.yml` gains `linux fence · bubblewrap + seccomp` (required PR check) running the attack suite with `TOOLROLL_REQUIRE_NATIVE=linux`, so a skipped Linux attack fails the lane. The helper reaches the launch as `FenceGrants.seccomp` from `fenceFor`, is re-hashed in `linuxFenced` right before the spawn, bound read-only at its own path, and `SRT_*` switches are unset. Risk: a machine whose bwrap works but forbids the helper's nested user namespace has no Linux fence (fail closed).
 
 **C8. Mandatory write denies plus persistence (Q3, Q4).**
 - srt's DANGEROUS_FILES and directories, `.git/hooks` and `.git/config` are applied:

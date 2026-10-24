@@ -8,7 +8,7 @@
  */
 
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
-import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
+import { LinuxFenceUnavailable, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
@@ -221,7 +221,10 @@ export function confined(file: string, args: readonly string[], bag: { fence?: r
   // together some other way, and would run bare wherever no OS fence applies. Nothing runs.
   if (fence.length > 0 && bag.confinement !== "required") throw new ContainmentRefusal("This process was given a fence that isn't marked required, so it was not started.");
   if (fence.length > 0 && macosFenceAvailable()) return macosFenced(file, args, fence, bag.fenceGrants);
-  if (fence.length > 0 && linuxFenceAvailable()) return linuxFenced(file, args, fence, bag.fenceGrants);
+  if (fence.length > 0 && linuxFenceAvailable()) {
+    try { return linuxFenced(file, args, fence, bag.fenceGrants); }
+    catch (error) { if (error instanceof LinuxFenceUnavailable) throw new ContainmentRefusal(error.message); throw error; }
+  }
   if (bag.confinement === "required") {
     throw new ContainmentRefusal(fence.length === 0
       ? "This process must run inside the agent fence, and it was given none."

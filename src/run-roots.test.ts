@@ -3,6 +3,7 @@
  * a check's launch folder is made in. Each fence form denies another launch's folder under both; the shared root is
  * never listed, and a link planted among a root's entries is never followed.
  */
+import { argsOnlySeccomp } from "../test/seccomp-fixture.js";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,7 +35,7 @@ test("every fence form denies another launch's folder under both roots", () => {
   writeFileSync(join(sibling, "f"), "x");
   mkdirSync(join(root, "so-cmd-other"));
   writeFileSync(join(root, "so-cmd-other", "f"), "x");
-  const { args } = linuxFenced("/bin/true", [], [], { ...NO_GRANTS, readable: [join(sibling, "f"), join(root, "so-cmd-other", "f")], runFolders: folders });
+  const { args } = linuxFenced("/bin/true", [], [], { ...NO_GRANTS, seccomp: argsOnlySeccomp(), readable: [join(sibling, "f"), join(root, "so-cmd-other", "f")], runFolders: folders });
   expect(args).not.toContain(join(sibling, "f"));
   expect(args).not.toContain(join(root, "so-cmd-other", "f"));
 });

@@ -1,4 +1,5 @@
 /** The sign-ins grants as each platform renders them (agent-fence.ts signInGrants, macosFenceProfile, linuxFenced). */
+import { argsOnlySeccomp } from "../test/seccomp-fixture.js";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +62,7 @@ test("Linux: each file bound back read-only after the masks; no transcript folde
   const copy = join(dir, "copy-0");
   writeFileSync(copy, "x");
   // Bound from the launch's own copy, never the path (a link swapped in after validation is never what is bound).
-  const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".config", "gh")], { ...NO_GRANTS, signIns: { ...grants, copies: { [credentialsPath]: copy } } });
+  const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".config", "gh")], { ...NO_GRANTS, seccomp: argsOnlySeccomp(), signIns: { ...grants, copies: { [credentialsPath]: copy } } });
   const mask = args.indexOf(join(home, ".claude"));
   const bound = args.indexOf(copy);
   expect(args[bound - 1]).toBe("--ro-bind");
@@ -111,7 +112,7 @@ test("the home configuration is denied by name on a Mac, there or not: a build s
   const withSignIns = macosFenceProfile([], { ...grants, signIns: signInGrants(home, checkout, "darwin") });
   expect(withSignIns.indexOf("(allow file-read* (literal")).toBeGreaterThan(withSignIns.indexOf(`(subpath "${join(home, ".codex")}")`));
   // Bubblewrap and Codex's sandbox never see a path that isn't there.
-  expect(linuxFenced("/bin/true", [], [], grants).args).not.toContain(join(home, ".codex"));
+  expect(linuxFenced("/bin/true", [], [], { ...grants, seccomp: argsOnlySeccomp() }).args).not.toContain(join(home, ".codex"));
 });
 
 test("a home name's folders can't be swapped on a Mac: ~/.config is held when there and can't be made when not", async () => {

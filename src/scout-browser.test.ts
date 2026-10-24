@@ -15,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readReportImage, scoutBrowserLaunch, scoutProxyEnv } from "./scout.js";
 import { startScoutProxy, type ScoutProxy } from "./scout-net.js";
-import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, SANDBOX_EXEC } from "./agent-fence.js";
+import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, SANDBOX_EXEC } from "./agent-fence.js";
+import { nativeSeccomp } from "../test/seccomp-fixture.js";
 import { SCOUT_BROWSER_ENV, scoutBrowserTool, startContractedBrowser, startScoutBrowser, type BrowserLaunch, type ScoutBrowserServer } from "./scout-browser.js";
 
 describe("a browser that can't start", () => {
@@ -45,6 +46,7 @@ const online = await lookup("example.com").then(() => true, () => false);
 const why =
   spawnSync("npm", ["--version"], { stdio: "ignore" }).status !== 0 ? "npm is not installed"
   : !online ? "this machine can't reach the web"
+  : process.platform === "linux" && linuxFenceAvailable() && nativeSeccomp() === null ? "no seccomp helper built (node vendor/seccomp/build.mjs)"
   : process.platform === "darwin" && existsSync(SANDBOX_EXEC) && !macosFenceAvailable() ? "this test runs inside a sandbox, where Chrome's own sandbox can't start; run it from an unsandboxed shell"
   : null;
 if (why !== null) console.warn(`The scout's real browser tests are skipped: ${why}.`);
@@ -111,7 +113,7 @@ describe.skipIf(why !== null)(`the scout's real browser${why === null ? "" : ` (
     const tsx = resolve("node_modules/.bin/tsx");
     let { file, args } = { file: tsx, args: [client, server.url, secret] };
     if (macosFenceAvailable()) ({ file, args } = macosFenced(file, args, [secret]));
-    else if (linuxFenceAvailable()) ({ file, args } = linuxFenced(file, args, [secret]));
+    else if (linuxFenceAvailable()) ({ file, args } = linuxFenced(file, args, [secret], { ...NO_GRANTS, seccomp: nativeSeccomp()! }));
     const env = { ...process.env, ...scoutProxyEnv(proxy.url, server.url) };
     const output = await new Promise<string>((done, fail) => {
       const child = spawn(file, args, { env, stdio: ["ignore", "pipe", "pipe"] });

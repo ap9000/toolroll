@@ -39,10 +39,11 @@ export const REQUIRED_PR_CHECKS = [
   "node 22 · ubuntu-latest",
   "node 24 · ubuntu-latest",
   "linux native containment · delegated cgroup v2",
+  "linux fence · bubblewrap + seccomp",
   "Windows Job Object containment",
 ] as const;
 /** The checks a release tag runs (.github/workflows/publish.yml), awaited before Homebrew moves. */
-export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-latest", "publish"] as const;
+export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-latest", "seccomp helper · linux-x64", "seccomp helper · linux-arm64", "publish"] as const;
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
 export type ReleaseStep = typeof RELEASE_STEPS[number];

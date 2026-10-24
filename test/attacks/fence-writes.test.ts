@@ -7,6 +7,7 @@
  * folder, its project's cache folder, the provider state its CLI must write); the macOS sandbox, bubblewrap and
  * Codex's profile each enforce it.
  */
+import { nativeSeccomp } from "../seccomp-fixture.js";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
@@ -183,14 +184,15 @@ describe("attack: writing outside the workspace (macOS)", () => {
 });
 
 /** Whether bubblewrap runs a read-only root here. */
-function bubblewrap(): { available: boolean; note: string } {
+function bubblewrap(): { available: boolean; note: string; platform?: NodeJS.Platform } {
   if (process.platform !== "linux") return { available: false, note: "bubblewrap write checks skipped: not Linux" };
+  if (nativeSeccomp() === null) return { available: false, platform: "linux", note: "bubblewrap write checks skipped: no seccomp helper built (node vendor/seccomp/build.mjs)" };
   const ran = spawnSync("bwrap", ["--ro-bind", "/", "/", "--dev", "/dev", "--", "true"], { encoding: "utf8", timeout: 5_000 });
-  return ran.status === 0 ? { available: true, note: "" } : { available: false, note: `bubblewrap write checks skipped: ${(ran.stderr ?? "").trim()}` };
+  return ran.status === 0 ? { available: true, note: "" } : { available: false, platform: "linux", note: `bubblewrap write checks skipped: ${(ran.stderr ?? "").trim()}` };
 }
 
 function underBubblewrap(text: string, fence: readonly string[], grants: FenceGrants, cwd: string): Promise<{ stdout: string; stderr: string }> {
-  const { file, args } = linuxFenced("/bin/sh", ["-c", text], fence, grants);
+  const { file, args } = linuxFenced("/bin/sh", ["-c", text], fence, { ...grants, seccomp: nativeSeccomp()! });
   return new Promise(done => {
     const child = spawn(file, args, { cwd, env: { ...process.env, ...GIT_ENV, NODE_OPTIONS: undefined } });
     let stdout = "", stderr = "";

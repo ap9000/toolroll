@@ -5,6 +5,7 @@
  * back only this build's own checkout (Seatbelt: subpath deny then own allow; Codex: launch-time siblings denied one by
  * one, the folders between read-only; bubblewrap: tmpfs mask then a bind of the own checkout).
  */
+import { argsOnlySeccomp } from "../seccomp-fixture.js";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -53,7 +54,7 @@ describe("attack: another project's worktree under the state folder (incl. a sam
     ]);
     // Seatbelt's subpath matches whole path components, so the prefix sibling stays under the pool deny.
     expect(profile.filter(line => line.startsWith("(allow") && line.includes(q(at.prefixSibling)) && !line.startsWith("(allow file-read-metadata"))).toEqual([]);
-    const bwrap = linuxFenced("claude", [], fence, grants).args;
+    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
     expect(bwrap.slice(0, 8)).toEqual(["--dev-bind", "/", "/", "--tmpfs", at.pool, "--bind", at.active, at.active]);
     for (const fullAccess of [false, true]) {
       const codex = filesystem(codexFenceArgv(at.launch("codex").fence, fullAccess, at.launch("codex").grants));

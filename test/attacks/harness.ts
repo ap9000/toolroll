@@ -102,7 +102,7 @@ export function repository(path: string, files: Record<string, string> = { "READ
 }
 
 /** Why a native facility can't run here, or null when it can. Probed once per test file. */
-type Probe = { available: boolean; note: string };
+type Probe = { available: boolean; note: string; platform?: NodeJS.Platform };
 
 let seatbeltProbe: Probe | null = null;
 /** The macOS Seatbelt fence, as builds get it: the production probe, plus the plain reason when it is unavailable. */
@@ -110,15 +110,16 @@ export function seatbelt(): Probe {
   if (seatbeltProbe !== null) return seatbeltProbe;
   if (process.platform !== "darwin") return seatbeltProbe = { available: false, note: "Seatbelt checks skipped: not macOS" };
   if (macosFenceAvailable()) return seatbeltProbe = { available: true, note: "" };
+  // Unavailable on a Mac is a failure where a lane requires the native attacks (needs()).
   const ran = spawnSync(SANDBOX_EXEC, ["-p", "(version 1)(allow default)", "/usr/bin/true"], { encoding: "utf8", timeout: 5_000 });
   const why = /Operation not permitted/.test(ran.stderr ?? "") ? "this process is already inside a sandbox, and Seatbelt can't nest" : "sandbox-exec is missing";
-  return seatbeltProbe = { available: false, note: `Seatbelt checks skipped: ${why}` };
+  return seatbeltProbe = { available: false, platform: "darwin", note: `Seatbelt checks skipped: ${why}` };
 }
 
 /** Toolroll's own OS fence, as any launch gets it: Seatbelt on a Mac, bubblewrap on Linux. */
 export function osFence(): Probe {
   if (process.platform === "darwin") return seatbelt();
-  if (process.platform === "linux") return linuxFenceAvailable() ? { available: true, note: "" } : { available: false, note: "OS fence checks skipped: bubblewrap can't make its namespaces here" };
+  if (process.platform === "linux") return linuxFenceAvailable() ? { available: true, note: "" } : { available: false, platform: "linux", note: "OS fence checks skipped: bubblewrap can't make its namespaces here" };
   return { available: false, note: "OS fence checks skipped: no macOS sandbox or bubblewrap on this platform" };
 }
 
@@ -142,6 +143,12 @@ export function needs(ctx: TestContext, probe: Probe): void {
   // The Quick check names every native attack that couldn't run, so a sandboxed run never reads as a full pass.
   const skips = process.env["TOOLROLL_ATTACK_SKIPS"];
   if (!probe.available && skips !== undefined) appendFileSync(skips, `${ctx.task.name}: ${probe.note}\n`);
+  // A release lane that must run its platform's native attacks (TOOLROLL_REQUIRE_NATIVE=linux|darwin) fails instead of
+  // skipping one: a skip is not evidence.
+  const required = process.env["TOOLROLL_REQUIRE_NATIVE"];
+  if (!probe.available && required !== undefined && required === process.platform && probe.platform === process.platform) {
+    throw new Error(`a native attack this lane requires could not run: ${probe.note}`);
+  }
   ctx.skip(!probe.available, probe.note);
 }
 

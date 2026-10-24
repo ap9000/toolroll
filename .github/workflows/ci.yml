@@ -78,6 +78,29 @@ jobs:
   # out untouched tests. Bring it back with per-suite timeouts once the
   # runners are quiet. The Job Object containment test below still runs.
 
+  # The Linux agent fence, EXECUTED (docs/plans/sandbox-parity.md): bubblewrap with unprivileged user namespaces
+  # (which ubuntu-24.04's AppArmor default refuses, so the runner allows them) and the seccomp helper built from
+  # vendor/seccomp-src. TOOLROLL_REQUIRE_NATIVE turns a Linux attack that can't run here into a failure: a skip is
+  # not evidence.
+  linux-fence:
+    name: linux fence · bubblewrap + seccomp
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap libseccomp-dev
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run build
+      - run: node vendor/seccomp/build.mjs
+      - run: npm run test:attacks
+        env:
+          CI: "true"
+          TOOLROLL_REQUIRE_NATIVE: linux
+
   native-windows:
     name: Windows Job Object containment
     runs-on: windows-latest

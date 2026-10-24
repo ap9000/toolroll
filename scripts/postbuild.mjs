@@ -13,6 +13,7 @@ import { realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeSeccompManifest } from "../vendor/seccomp/manifest.mjs";
 
 /** Owner, group, and other execute — the same bits npm sets on a package bin. */
 const EXECUTABLE_BITS = 0o111;
@@ -27,6 +28,10 @@ await copyFile(resolve(root, "src", "server", "console.css"), resolve(root, "dis
 // So is Signal's generated token sheet, which the server prepends to it.
 await mkdir(resolve(root, "dist", "design"), { recursive: true });
 await copyFile(resolve(root, "src", "design", "tokens.css"), resolve(root, "dist", "design", "tokens.css"));
+
+// The Linux seccomp helpers built for this package (vendor/seccomp/build.mjs, or downloaded by the release): their
+// sha256, which the runtime checks before every launch. An empty manifest ships no Linux fence.
+writeSeccompManifest(resolve(root, "dist", "helpers"));
 
 if (process.platform !== "win32") {
   for (const name of ["bin.js", "cli.js"]) {

@@ -317,7 +317,10 @@ export async function checkCheckoutGit({ provider, worktree, databaseFile, repos
   const binding = trustedWorktreeBinding(repository, worktree);
   const boundary = taskBoundary({ worktree, provider, home, binding });
   const fence = agentFence({ databaseFile, worktree, home, boundary, binding });
-  const grants = fenceGrants({ databaseFile, worktree, boundary });
+  // Linux: the seccomp helper the fence runs its workload under (C7), installed beside the database as a build's is.
+  const { installSeccompHelper } = await import(join(root, "dist", "seccomp-helper.js"));
+  const seccomp = process.platform === "linux" ? installSeccompHelper(dirname(databaseFile)) : null;
+  const grants = { ...fenceGrants({ databaseFile, worktree, boundary }), ...(seccomp === null ? {} : { seccomp }) };
   const codexHome = provider === "codex" ? await mkdtemp(join(tmpdir(), "so-codex-canary-")) : null;
   try {
     let head = null;

@@ -9,7 +9,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, MACOS_BASELINE, ownedAncestors, runFolders, taskBoundary } from "./agent-fence.js";
+import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, macosFenceProfile, MACOS_BASELINE, NO_GRANTS, ownedAncestors, runFolders, SECCOMP_HELPER_ENV, taskBoundary } from "./agent-fence.js";
+import { argsOnlySeccomp, nativeSeccomp } from "../test/seccomp-fixture.js";
 
 /** Every macOS profile's opening (deny by default, the baseline, the base read and write allows) and, with an open
  * network, its closing rules. */
@@ -530,7 +531,13 @@ describe("the Linux fence (v88)", () => {
       const folder = join(root, "keys"), file = join(root, "up-login.txt");
       mkdirSync(folder);
       writeFileSync(file, "alex secret");
-      expect(linuxFenced("claude", ["-p", "hi"], [folder, file])).toEqual({ file: "bwrap", args: ["--dev-bind", "/", "/", "--tmpfs", folder, "--ro-bind", "/dev/null", file, "--new-session", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "--", "claude", "-p", "hi"] });
+      const seccomp = argsOnlySeccomp();
+      expect(linuxFenced("claude", ["-p", "hi"], [folder, file], { ...NO_GRANTS, seccomp })).toEqual({ file: "bwrap", args: ["--dev-bind", "/", "/", "--tmpfs", folder, "--ro-bind", "/dev/null", file,
+        "--ro-bind", seccomp.helper, seccomp.helper, ...SECCOMP_HELPER_ENV.flatMap(name => ["--unsetenv", name]),
+        "--new-session", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "--", seccomp.helper, "claude", "-p", "hi"] });
+      // No helper, or one changed since it was installed: no Linux fence at all.
+      expect(() => linuxFenced("claude", [], [folder])).toThrow(/seccomp helper/);
+      expect(() => linuxFenced("claude", [], [folder], { ...NO_GRANTS, seccomp: { ...seccomp, sha256: "0".repeat(64) } })).toThrow(/seccomp helper/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -606,7 +613,7 @@ describe("what the fence gives back", () => {
       for (const pattern of ["orders.db*", "*token*", "up-login*", "*.txt"]) expect(filesystem).toContain(`"${join(folder, pattern)}"="deny"`);
     }
     // Linux binds the readable copy back, read-only, after masking the folder around it.
-    const bwrap = linuxFenced("claude", [], fence, grants).args;
+    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
     // The deps folder is masked whole (what is made there later is masked too), then only the linked copy is bound back.
     const mask = bwrap.findIndex((arg, at) => arg === "--tmpfs" && bwrap[at + 1] === join(state, "deps"));
     const bind = bwrap.findIndex((arg, at) => arg === "--ro-bind" && bwrap[at + 1] === join(state, "deps", LINKED_KEY, "node_modules"));
@@ -693,10 +700,10 @@ describe("what the fence gives back", () => {
       launch: join(temp, "so-tools-other", "lib"), own: join(temp, "so-tools-mine", "lib") };
     for (const path of [meta, ...Object.values(paths)]) mkdirSync(path, { recursive: true });
     const grants = { readOnly: [paths.inner, fenced, meta], readable: [paths.linked, paths.secret, paths.launch, paths.own], lookup: [], runFolders: { root: temp, own: join(temp, "so-tools-mine") } };
-    const bwrap = linuxFenced("claude", [], [fenced], grants).args;
+    const bwrap = linuxFenced("claude", [], [fenced], { ...grants, seccomp: argsOnlySeccomp() }).args;
     // One whole mask (a file made there after launch is masked with it), then the grants, then the command.
     expect(bwrap.slice(0, 5)).toEqual(["--dev-bind", "/", "/", "--tmpfs", fenced]);
-    const bound = bwrap.flatMap((arg, at) => arg === "--ro-bind" ? [bwrap[at + 1]!] : []);
+    const bound = bwrap.flatMap((arg, at) => arg === "--ro-bind" && bwrap[at + 1] !== argsOnlySeccomp().helper ? [bwrap[at + 1]!] : []);
     expect(bound.sort()).toEqual([meta, paths.linked, paths.own].sort());
     expect(bwrap.indexOf("--ro-bind")).toBeGreaterThan(bwrap.indexOf("--tmpfs"));
   });
@@ -959,7 +966,7 @@ describe("a link planted among the repository's worktree entries grants nothing"
     expect([...filesystem].filter(([, mode]) => mode === "read")).toEqual([]);
     expect(filesystem.get(join(home, ".toolroll"))).toBe("deny");
     // Bubblewrap masks the folder and binds nothing back from the planted link.
-    const bwrap = linuxFenced("claude", [], fence, grants).args;
+    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
     expect(bwrap.join(" ")).not.toContain("tool-secrets");
     expect(bwrap[bwrap.indexOf(join(home, ".toolroll")) - 1]).toBe("--tmpfs");
   });
@@ -1147,7 +1154,7 @@ describe("another project's checkouts are out of reach", () => {
 
   test("bubblewrap masks the pool, then binds the own checkout back read-write, before every other mask", () => {
     const { fence, grants } = launch("claude");
-    const bwrap = linuxFenced("claude", [], fence, grants).args;
+    const bwrap = linuxFenced("claude", [], fence, { ...grants, seccomp: argsOnlySeccomp() }).args;
     expect(bwrap.slice(0, 8)).toEqual(["--dev-bind", "/", "/", "--tmpfs", pool, "--bind", active, active]);
     const masks = bwrap.flatMap((arg, at) => arg === "--tmpfs" ? [at] : []);
     expect(masks.slice(1).every(at => at > bwrap.indexOf("--bind"))).toBe(true);
@@ -1259,7 +1266,7 @@ describe("another project's checkouts are out of reach", () => {
   test.skipIf(!linuxFenceAvailable())("bubblewrap denies existing and later projects while own checkout and tools work", () => {
     const { fence, grants } = launch("claude");
     const late = join(pool, "late", "task-fedcba98");
-    const wrapped = linuxFenced("/bin/sh", ["-c", probe(late, true)], fence, grants);
+    const wrapped = linuxFenced("/bin/sh", ["-c", probe(late, true)], fence, { ...grants, seccomp: nativeSeccomp() ?? argsOnlySeccomp() });
     later();
     const result = spawnSync(wrapped.file, wrapped.args, { cwd: active, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined } });
     expect(result.status, result.stderr).toBe(0);
