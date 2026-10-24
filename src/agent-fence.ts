@@ -1298,12 +1298,12 @@ export function linuxHostSockets(uid: number | undefined = process.getuid?.(), h
 export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string }[] = [
   {
     agent: "**Codex / OpenRouter** (any OS)",
-    auto: "Codex's sandbox with the fence: writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network",
-    full: "the same writes, with the fence; its commands reach the network only when the project's network is open",
+    auto: "Codex's sandbox with the fence: reads your home folder except the folders the project lists, never Toolroll's folders or other tasks' work; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere), never hooks, shell profiles or tool settings; no network",
+    full: "the same reads and writes, with the fence; its commands reach the network only when the project's network is open",
   },
   {
     agent: "**Claude, Gemini, ACP agents**",
-    auto: "macOS: inside a Seatbelt sandbox that denies the fence and writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files. Linux: the same in bubblewrap, with a /tmp of its own. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents",
+    auto: "macOS: inside a deny-by-default Seatbelt sandbox (Anthropic's sandbox runtime baseline): reads your home folder except the folders the project lists, never Toolroll's folders or other tasks' work; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files, never hooks, shell profiles or tool settings; no Apple Events. Linux: the same in bubblewrap, with its own session, process view and /tmp, through the sandbox runtime's seccomp filter. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents",
     full: "same",
   },
 ];

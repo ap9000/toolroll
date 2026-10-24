@@ -572,8 +572,18 @@ runner and coordinator tokens, chat bot tokens, the database and its backups,
 other runs' evidence) — everything there except the build's own worktree —
 and `~/.toolroll` (stored provider keys and project tool secrets).
 
-Seatbelt and bubblewrap deny the whole checkout pool and allow the build’s own
-checkout back, covering other projects created after launch too. Codex keeps
+**Your home folder** is readable, as in Anthropic's sandbox runtime (a scope
+approved before 0.9.70 keeps hiding your credentials and agent settings, as it was
+approved). A project hides more with Settings → Project → **Home folder**, or
+`toolroll project sandbox --repo <p> --read-deny "~/.ssh,~/.aws"`; each approved
+scope seals that list. No build writes Git hooks or config, shell profiles,
+`.envrc`, `.mcp.json`, editor or Claude settings, launch agents or package-manager
+config, in its checkout or your home folder, unless an approver unlocks an exact
+file (`--unlock .vscode/settings.json`).
+
+Seatbelt and bubblewrap deny writes to the whole checkout pool and allow the build’s own
+checkout back, covering other projects created after launch too; other tasks'
+checkouts can be read, never written. Codex keeps
 the own checkout’s ancestors traversable and denies each other project folder
 found in trusted checkout pools at launch. A project added after a Codex build
 starts is covered on the next launch. Own Git data, linked shared dependencies
@@ -581,8 +591,8 @@ and launch tools remain available.
 
 | | Auto | Full access |
 |---|---|---|
-| **Codex / OpenRouter** (any OS) | Codex's sandbox with the fence: writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same writes, with the fence; its commands reach the network only when the project's network is open |
-| **Claude, Gemini, ACP agents** | macOS: inside a Seatbelt sandbox that denies the fence and writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files. Linux: the same in bubblewrap, with a /tmp of its own. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents | same |
+| **Codex / OpenRouter** (any OS) | Codex's sandbox with the fence: reads your home folder except the folders the project lists, never Toolroll's folders or other tasks' work; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere), never hooks, shell profiles or tool settings; no network | the same reads and writes, with the fence; its commands reach the network only when the project's network is open |
+| **Claude, Gemini, ACP agents** | macOS: inside a deny-by-default Seatbelt sandbox (Anthropic's sandbox runtime baseline): reads your home folder except the folders the project lists, never Toolroll's folders or other tasks' work; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files, never hooks, shell profiles or tool settings; no Apple Events. Linux: the same in bubblewrap, with its own session, process view and /tmp, through the sandbox runtime's seccomp filter. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents | same |
 
 **Where a build writes.** Each approved scope also seals where its build may
 write. By default (Settings → Project → **Where builds write**, or `toolroll

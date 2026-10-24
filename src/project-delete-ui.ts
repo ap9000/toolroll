@@ -145,7 +145,7 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   };
   const open = network?.mode === "open";
   const form = postForm("/settings/project/check-access", html`
-    ${option("sandboxed", "Can't read the files your sign-ins and credentials are kept in, Toolroll's folders or other projects.", null)}
+    ${option("sandboxed", "Reads your home folder, as in Anthropic's sandbox runtime, except the folders this project hides (Home folder, above). Never Toolroll's folders or other tasks' work.", null)}
     ${unavailable !== null ? option("sign-ins", unavailable, null) : option("sign-ins", `Also reads the files your Claude, Codex and GitHub sign-ins are kept in, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
     ${option("unsandboxed", "For projects whose checks create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
     ${open && unavailable === null ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
