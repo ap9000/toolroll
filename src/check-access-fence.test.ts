@@ -1,5 +1,5 @@
 /** The sign-ins grants as each platform renders them (agent-fence.ts signInGrants, macosFenceProfile, linuxFenced). */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -112,6 +112,19 @@ test("the home configuration is denied by name on a Mac, there or not: a build s
   expect(withSignIns.indexOf("(allow file-read* (literal")).toBeGreaterThan(withSignIns.indexOf(`(subpath "${join(home, ".codex")}")`));
   // Bubblewrap and Codex's sandbox never see a path that isn't there.
   expect(linuxFenced("/bin/true", [], [], grants).args).not.toContain(join(home, ".codex"));
+});
+
+test("a home name's folders can't be swapped on a Mac: ~/.config is held when there and can't be made when not", async () => {
+  const { fenceGrants, taskBoundary } = await import("./agent-fence.js");
+  const literalDeny = (profile: string, path: string) =>
+    profile.split("\n").some(line => line.startsWith("(deny file-write* ") && !line.includes("file-read") && line.includes(`(literal "${path}")`));
+  const boundary = taskBoundary({ worktree: checkout, provider: "command", home });
+  const there = macosFenceProfile([], fenceGrants({ databaseFile: null, worktree: checkout, boundary }));
+  expect(literalDeny(there, join(home, ".config"))).toBe(true);
+  rmSync(join(home, ".config"), { recursive: true });
+  const gone = macosFenceProfile([], fenceGrants({ databaseFile: null, worktree: checkout, boundary: taskBoundary({ worktree: checkout, provider: "command", home }) }));
+  expect(literalDeny(gone, join(home, ".config"))).toBe(true);
+  expect(literalDeny(gone, join(home, ".docker")) || existsSync(join(home, ".docker"))).toBe(true);
 });
 
 test("a sign-in file's folders are looked at again after the open: one swapped meanwhile reads nothing", async () => {

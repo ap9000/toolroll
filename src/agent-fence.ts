@@ -811,7 +811,15 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
   const paths = (filter: "subpath" | "literal", list: readonly string[]) => list.map(path => `(${filter} ${seatbelt(path)})`).join(" ");
   const folders = grants.runFolders;
   const pool = grants.pool;
-  const above = ownedAncestors([...fence, ...grants.readOnly, ...pool?.deny ?? []], folders === undefined ? [real(tmpdir())] : runRoots(folders));
+  const homeNames = grants.homeNames ?? [];
+  const above = ownedAncestors([...fence, ...grants.readOnly, ...homeNames, ...pool?.deny ?? []], folders === undefined ? [real(tmpdir())] : runRoots(folders));
+  // A home name's folder that isn't there yet (~/.config for ~/.config/gh): made by the build, it could be a link to
+  // anywhere and carry the name out of its deny, so nothing may make it while the build runs.
+  const missingAbove = [...new Set(homeNames.flatMap(name => {
+    const out: string[] = [];
+    for (let folder = dirname(name); folder !== dirname(folder) && !existsSync(folder); folder = dirname(folder)) out.push(folder);
+    return out;
+  }))].sort();
   return [
     "(version 1)",
     "(allow default)",
@@ -832,7 +840,8 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
     // The home configuration by name, there or not: nothing may create, read, replace or write one (the sign-ins grants
     // after this give back only their exact files).
-    ...(grants.homeNames === undefined || grants.homeNames.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", grants.homeNames)})`]),
+    ...(homeNames.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", homeNames)})`]),
+    ...(missingAbove.length === 0 ? [] : [`(deny file-write* ${paths("literal", missingAbove)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),
     ...(folders === undefined ? [] : runRoots(folders).map(root => `(deny file-read* file-write* (regex #"^${seatbeltRegex(root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`)),
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
