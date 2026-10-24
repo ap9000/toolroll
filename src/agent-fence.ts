@@ -345,7 +345,9 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
   machLookup?: string[];
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
-  signIns?: SignInGrants };
+  signIns?: SignInGrants;
+  /** Never written, wherever the launch writes (homeWriteDenies): what runs for the operator next or signs them in. */
+  writeDenies?: string[] };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -809,6 +811,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   // grant a listing without the folder's files, so the shared copy's folder is read whole (its ready note among them).
   const allowRead = new Set<string>(grants.readable.flatMap(path => [real(path), real(dirname(path))]));
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
+  for (const path of grants.writeDenies ?? []) denyWrite.add(path);
   for (const name of grants.homeNames ?? []) { denyRead.add(name); denyWrite.add(name); }
   for (const file of grants.signIns?.read ?? []) allowRead.add(file);
   // Every other launch's private folder unread by pattern (one made after this launch too), this launch's own read
@@ -985,6 +988,8 @@ export type FenceContext = {
   machLookup?: readonly string[];
   /** The fence policy it runs under: v2 reads other tasks' checkouts (never writes them). */
   policy?: FencePolicy;
+  /** The agent the launch runs, whose own sign-in files stay its to write (PROVIDER_HOME). */
+  provider?: string;
   /** Scratch folders (a flow's) that stay denied whole inside the pool, whatever the policy. */
   scratchRoots?: readonly string[];
 };
@@ -1020,6 +1025,8 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
+    // Under a write allowlist these are out of reach already; where the launch writes anywhere, they are denied by name.
+    writeDenies: homeWriteDenies(ctx.home ?? homedir(), ctx.binding, ctx.provider ?? null),
     ...(made.pool === undefined ? {} : { pool: { ...made.pool, ...(ctx.policy === 2 ? { readable: true as const } : {}),
       // Flows' scratch folders in the pool (and any the caller names) stay denied whole, at every policy version.
       sealed: sealedScratch(ctx.poolRoots, ctx.scratchRoots ?? []) } }),
@@ -1080,4 +1087,28 @@ export function protectedChanges(changed: readonly string[]): string[] {
     const lower = `/${path.toLowerCase()}`;
     return files.some(name => lower.endsWith(`/${name}`)) || PROTECTED_DIRS.some(dir => lower.includes(`/${dir.toLowerCase()}/`));
   });
+}
+
+/** The home folder's own persistence points beyond the protected names (login items, systemd user units, Git's, gh's
+ * and pip's configuration). */
+export const HOME_PERSISTENCE: readonly string[] = ["Library/LaunchAgents", ".config/systemd/user", ".config/git", ".config/gh", ".config/pip", ".pip"];
+/** The sign-in folders and files at home no launch but their own agent's may write. */
+const HOME_SIGN_INS: readonly string[] = [".codex", ".claude.json", ".claude/.credentials.json"];
+
+/**
+ * What no launch writes, whatever its writes, as static write denies for the sandbox runtime (whose own protected names
+ * are anchored at the launch's folder only): the home folder's protected names (shell profiles, Git and tool
+ * configuration), its persistence points and sign-ins (less the launch's own agent's), and the bound repository's own
+ * Git config, hooks and submodules (a linked worktree reaches them through its `.git` file). On Linux only those that
+ * exist: the runtime would make an empty one on the host for the launch's length, and an empty shell profile changes
+ * the person's own logins meanwhile.
+ */
+export function homeWriteDenies(home: string, binding: WorktreeBinding | null, provider: string | null, platform: NodeJS.Platform = process.platform): string[] {
+  const base = real(home);
+  const own = new Set(PROVIDER_HOME[provider ?? ""] ?? []);
+  const theirs = (name: string) => !own.has(name) && !own.has(name.split("/")[0]!);
+  const names = [...PROTECTED_FILES.filter(name => !name.startsWith(".git/")), ...PROTECTED_DIRS.filter(name => !name.startsWith(".git/")), ...HOME_PERSISTENCE, ...HOME_SIGN_INS].filter(theirs);
+  const paths = [...names.map(name => join(base, name)),
+    ...(binding === null ? [] : ["config", "hooks", "modules"].map(name => join(real(join(binding.main, ".git")), name)))];
+  return [...new Set(paths)].filter(path => platform === "darwin" || existsSync(path)).sort();
 }

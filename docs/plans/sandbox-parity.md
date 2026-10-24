@@ -36,8 +36,12 @@ credential; our proxy now accepts any user name with the run's secret, as srt pu
 broker on srt's second relay (macOS: srt's `socksProxyPort` slot; Linux: the relay's port 1080, which Claude's tool
 list is rewritten to).
 
-**Kept beside srt (static, per the security review):** Toolroll's own install, the sandbox-runtime package, the
-launch helper and the Node running them are read-only to every launch (`toolrollInstall`, write-denied through
+**Kept beside srt (static, per the security review):** the home folder's protected names, persistence points
+(LaunchAgents, systemd user units, Git's, gh's and pip's configuration) and sign-ins (less the launch's own agent's),
+and the bound repository's own `.git/config`, hooks and modules, denied to write by name (`homeWriteDenies`; on Linux
+only those there at launch, as srt would otherwise make an empty one on the host for the launch's length): under a
+write allowlist they are out of reach already, under `anywhere` this is what holds them. Toolroll's own install, the
+sandbox-runtime package, the launch helper and the Node running them are read-only to every launch (`toolrollInstall`, write-denied through
 `denyWithinAllow`); and the handoff refuses a result that adds or changes a protected name (`protectedChanges`: a
 superset of srt's DANGEROUS_FILES and dangerous directories, plus `.envrc`, `.npmrc`, `.yarnrc`, `.yarnrc.yml`,
 Claude's settings files and `.git/config`), because srt holds those names only as they are when a launch starts. With
@@ -49,11 +53,18 @@ walk, watch and quarantine (srt's mandatory denies are what hold); write unlocks
 a write inside its mandatory denies: the `writeUnlock` field, setting and `--unlock` are gone); Q-B's extra names and
 home persistence denies (not in srt's list); run-folder regex fences in Seatbelt (now an srt glob read deny).
 
+**Where a launch writes anywhere (`allowOnly: ["/"]` less the denies):** a build or check whose project an approver
+set to `anywhere` (or whose approval predates write allowlists), a flow of such a project, an agent launch with no
+checkout (a plan or scout turn), and every tool server (the operator's own servers, which keep their state where they
+always have; they never run a file a build wrote). This is 0.9.69's `anywhere`, unchanged.
+
 **Accepted srt limits:** rules fixed at launch; on Linux a deny's glob is expanded at launch; shared temp
 (`/tmp/claude` unless the launch's own) between concurrent builds; reads open by default (v2); directory metadata;
 same-sandbox task ports; Launch Services lookups (listing apps; opening one stays refused); KERN_PROCARGS2 (another
-process's arguments and environment, a tool server's secrets among them) readable on macOS; under an open network
-unix sockets are unrestricted on macOS; srt's Linux filter refuses unix sockets and io_uring but not a VM socket or a
+process's arguments and environment, a tool server's secrets among them, or another build's provider key in API-key
+mode) readable on macOS (srt's profile takes no extra rules); under an open network unix sockets are unrestricted on
+macOS (srt's open mode is `(allow network*)`, its socket rules exist only in its restricted mode; Linux's seccomp
+filter refuses making one either way); srt's Linux filter refuses unix sockets and io_uring but not a VM socket or a
 user namespace; srt can't write back inside a write deny, so a folder or checkout made after launch inside a written
 area is writable, an own checkout can be removed, and under policy v1 a sign-ins check can't write its transcripts;
 a granted folder can be removed (the next launch never grants it through a link).
