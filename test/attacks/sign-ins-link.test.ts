@@ -56,7 +56,7 @@ describe("attack: a sign-in name planted as a link into Toolroll's state", () =>
       `cat ${JSON.stringify(join(home, ".claude.json"))} >/dev/null 2>&1 && echo account-read || echo account-refused`,
     ].join("\n");
     for (const policy of [1, 2] as const) {
-      const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", OPEN, { policy, readDeny: [], machLookup: [], unlock: [] })("/bin/sh", ["-c", script], { cwd: checkout });
+      const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", OPEN, { policy, readDeny: [], machLookup: [] })("/bin/sh", ["-c", script], { cwd: checkout });
       expect(result.stdout, `${policy}: ${result.stderr}`).not.toContain(secret);
       expect(result.stdout.trim().split("\n"), `${policy}: ${result.stderr}`).toEqual(["hosts-refused", "account-read"]);
     }

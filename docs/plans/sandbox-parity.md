@@ -50,8 +50,9 @@ write unlocks gone there is nothing to exempt.
 **Dropped:** the hand-written Seatbelt baseline and network rules; our bubblewrap command, host-socket masks, private
 /tmp and launch-folder root; the vendored seccomp helper, its build, manifest and CI/publish jobs; the protected-name
 walk, watch and quarantine (srt's mandatory denies are what hold); write unlocks (srt can't re-allow
-a write inside its mandatory denies: the `writeUnlock` field, setting and `--unlock` are gone); Q-B's extra names and
-home persistence denies (not in srt's list); run-folder regex fences in Seatbelt (now an srt glob read deny).
+a write inside its mandatory denies: the `writeUnlock` field, setting and `--unlock` are gone); Q-B's extra names in
+the checkout as sandbox rules (the handoff backstop covers them); run-folder regex fences in Seatbelt (now an srt glob
+read deny). The home persistence denies were not dropped: they are static write denies (`homeWriteDenies`, above).
 
 **Where a launch writes anywhere (`allowOnly: ["/"]` less the denies):** a build or check whose project an approver
 set to `anywhere` (or whose approval predates write allowlists), a flow of such a project, an agent launch with no
