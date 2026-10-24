@@ -678,6 +678,38 @@ const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '
  * `codexPool`, which denies them around the build's own checkout, written back.
  */
 export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, grants: FenceGrants = NO_GRANTS): string[] {
+  const access = codexFilesystem(fence, fullAccess, grants);
+  const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
+  return [
+    "-c", 'default_permissions="standing-orders"',
+    "-c", `permissions.standing-orders.extends=${grants.writes === undefined ? '":workspace"' : '":read-only"'}`,
+    "-c", `permissions.standing-orders.filesystem={${filesystem.join(",")}}`,
+    // Codex's command sandbox can't route through a proxy: its commands reach the network only when the run's sealed
+    // network is open (and Full access asked for it), and are offline otherwise.
+    ...(codexNetworkOn(fullAccess, grants) ? ["-c", "permissions.standing-orders.network.enabled=true"] : []),
+    ...(fullAccess ? ["-c", 'approval_policy="never"'] : []),
+  ];
+}
+
+const codexNetworkOn = (fullAccess: boolean, grants: FenceGrants): boolean => fullAccess && (grants.network === undefined || grants.network.mode === "open");
+
+/**
+ * The same permission profile as codexFenceArgv, as the config overrides a Codex app-server thread takes
+ * (`thread/start` and `thread/resume` `config`; checked against codex-cli 0.156: the thread reports
+ * `activePermissionProfile` standing-orders, and its commands are refused the denied paths). Approval policy is the
+ * caller's own (an interactive session asks).
+ */
+export function codexFenceConfig(fence: readonly string[], fullAccess: boolean, grants: FenceGrants = NO_GRANTS): Record<string, unknown> {
+  return {
+    default_permissions: "standing-orders",
+    "permissions.standing-orders.extends": grants.writes === undefined ? ":workspace" : ":read-only",
+    "permissions.standing-orders.filesystem": Object.fromEntries(codexFilesystem(fence, fullAccess, grants)),
+    ...(codexNetworkOn(fullAccess, grants) ? { "permissions.standing-orders.network.enabled": true } : {}),
+  };
+}
+
+/** Each path of a Codex permission profile and its access, the strongest last (a deny outranks a grant). */
+function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: FenceGrants): Map<string, "write" | "read" | "deny"> {
   const { deny, readOnly } = flattened(fence, grants);
   // Codex's harness reads its own launch files outside the command sandbox.
   // Deny the namespace, including folders created after this policy was built.
@@ -710,16 +742,7 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   // Denies are keyed where they resolve; the console's run folder and the sign-in copies folder are also denied by their
   // own pathname, so a link there stays unreplaceable, not only its target.
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR || basename(path) === SIGN_IN_COPIES_DIR) access.set(path, "deny"); }
-  const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
-  return [
-    "-c", 'default_permissions="standing-orders"',
-    "-c", `permissions.standing-orders.extends=${grants.writes === undefined ? '":workspace"' : '":read-only"'}`,
-    "-c", `permissions.standing-orders.filesystem={${filesystem.join(",")}}`,
-    // Codex's command sandbox can't route through a proxy: its commands reach the network only when the run's sealed
-    // network is open (and Full access asked for it), and are offline otherwise.
-    ...(fullAccess && (grants.network === undefined || grants.network.mode === "open") ? ["-c", "permissions.standing-orders.network.enabled=true"] : []),
-    ...(fullAccess ? ["-c", 'approval_policy="never"'] : []),
-  ];
+  return access;
 }
 
 /**

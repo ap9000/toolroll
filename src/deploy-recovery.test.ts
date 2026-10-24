@@ -147,7 +147,7 @@ test.each([['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const)('%s dur
   const database = join(root, 'orders.db'), journalFile = join(root, 'deployment.json');
   const id = '0f1e2d3c-4b5a-4968-8776-655443322110';
   const store = openStore(database);
-  await new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(root, 'worktrees') }).close();
+  await new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) }).close();
   installUpdateGate(store.raw(), id);
   store.close();
   fs.writeFileSync(journalFile, JSON.stringify({ id, phase: 'frozen' }));

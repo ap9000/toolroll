@@ -26,7 +26,10 @@ export class CodingActionError extends Error {
 export class CodingStateConflictError extends CodingActionError {
   constructor(id: string) { super('This session changed. Inspect its latest activity before acting again.', 'rejected', id); }
 }
-type Options = { database: string; worktreeRoot: string; provider?: () => CodingProvider; admissionPaused?: () => boolean; authorize?: (actor: CodingActor, repo: string) => boolean; context?: (input: { repo: string; actor: string; baseRevision: string; prompt: string }) => CodingContext };
+/** How a session's commands are confined (coding-provider.ts codingSessionPermissions): Toolroll's permission profile as
+ * the thread's config overrides, or a refusal. Required: no session starts without its caller saying which. */
+export type CodingPermissions = { config: Record<string, unknown> } | { sandbox: 'workspace-write' } | { problem: string };
+type Options = { database: string; worktreeRoot: string; permissions: (input: { repo: string; worktree: string }) => CodingPermissions; provider?: () => CodingProvider; admissionPaused?: () => boolean; authorize?: (actor: CodingActor, repo: string) => boolean; context?: (input: { repo: string; actor: string; baseRevision: string; prompt: string }) => CodingContext };
 const object = (v: unknown): Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const string = (v: unknown): string => typeof v === 'string' ? v : '';
 const now = (): string => new Date().toISOString();
@@ -259,6 +262,13 @@ export class CodingWorkspace {
     return { id, type, text, status: string(item['status']) || null, ...(type === 'userMessage' && clientId ? { clientId } : {}) };
   }
 
+  /** The thread's confinement, made right before each start or resume from the plane's own records. */
+  private permissionsFor(repo: string, worktree: string): Record<string, unknown> {
+    const made = this.options.permissions({ repo, worktree });
+    if ('problem' in made) throw Error(made.problem);
+    return made;
+  }
+
   private native(): CodingProvider {
     if (this.closed || this.closing || this.persistenceFailed) throw Error('The coding server cannot save activity. Reopen the workspace after the server recovers.');
     if (this.recoveryRequired) throw Error('The previous agent process needs a recovery check before starting more coding work. Its saved process record has been preserved.');
@@ -383,7 +393,7 @@ export class CodingWorkspace {
       this.authorize(actor, repo);
       this.admit();
       nativeStartupAttempted = true;
-      const result = object(await this.request('thread/start', { cwd: worktree, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write', ...(input.model ? { model: input.model } : {}), developerInstructions: CODING_INSTRUCTIONS + (context?.text ?? ''), persistExtendedHistory: true }));
+      const result = object(await this.request('thread/start', { cwd: worktree, approvalPolicy: 'on-request', approvalsReviewer: 'user', ...this.permissionsFor(repo, worktree), ...(input.model ? { model: input.model } : {}), developerInstructions: CODING_INSTRUCTIONS + (context?.text ?? ''), persistExtendedHistory: true }));
       const thread = object(result['thread']), nativeThreadId = string(thread['id']);
       if (!nativeThreadId) throw Error('The agent did not return a session identity.');
       session = { ...session, nativeThreadId, status: 'ready' }; this.save(session); this.loaded.add(id);
@@ -420,7 +430,7 @@ export class CodingWorkspace {
     await this.verifyWorktree(session);
     this.authorize({ name: session.owner, generation: session.generation }, session.repo);
     if (session.context) verifyCodingContext(session.context, session.repo, session.base);
-    const result = object(await this.request('thread/resume', { threadId: session.nativeThreadId, cwd: session.worktree, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write', ...(session.model ? { model: session.model } : {}), developerInstructions: CODING_INSTRUCTIONS + (session.context?.text ?? ''), persistExtendedHistory: true }));
+    const result = object(await this.request('thread/resume', { threadId: session.nativeThreadId, cwd: session.worktree, approvalPolicy: 'on-request', approvalsReviewer: 'user', ...this.permissionsFor(session.repo, session.worktree), ...(session.model ? { model: session.model } : {}), developerInstructions: CODING_INSTRUCTIONS + (session.context?.text ?? ''), persistExtendedHistory: true }));
     const thread = object(result['thread']);
     if (thread['id'] !== session.nativeThreadId) throw Error('The agent returned a different conversation. Continuity could not be verified.');
     this.importHistory(session.id, thread);
