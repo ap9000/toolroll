@@ -32,6 +32,7 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
@@ -40,6 +41,7 @@ import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR, checkLaunchRoot, signInGrants, signInIsItself, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
 import { readDenyPath } from "./project-sandbox.js";
+import { canonicalJson } from "./canonical-json.js";
 import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, withProtectedWatch, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
@@ -416,6 +418,9 @@ export async function invokeAgent(
   // (tool-broker.ts), which alone holds their secrets. A review keeps its isolation.
   // Set once the fence is known: a fenced build's servers never start outside a fence.
   let serverMustBeFenced = false;
+  // Pinned for the attempt (sandbox parity C11): whether an instance operator allowed unconfined agents, read once now.
+  // A tool server the agent starts late gets the decision this attempt launched with, never one changed meanwhile.
+  const unconfinedAtLaunch = store.unfencedAgentsAllowed();
   // What the build writes (its checkout, its project's caches): a tool server never runs from there, nor reads it at all.
   const serverUntrusted = workspace === null ? [] : toolUntrusted(store, workspace, keyHome);
   const launchTools = invocation.phase === "review" ? null : await runTools(store, runId, spec, options.keyHome, clock, invocation.readOnlyTools, invocation.researchWithheld, containment, {
@@ -427,7 +432,7 @@ export async function invokeAgent(
     untrusted: serverUntrusted,
     wrap: () => serverFence,
     // A fenced build's tool servers start only in a fence too, unless an instance operator allowed unconfined agents.
-    unwrapped: () => serverMustBeFenced && !store.unfencedAgentsAllowed()
+    unwrapped: () => serverMustBeFenced && !unconfinedAtLaunch
       ? "This machine can't confine the tool's server (no macOS sandbox, no working bubblewrap), so it was not started." : null,
   });
   if (launchTools !== null && "refused" in launchTools) {
@@ -505,8 +510,10 @@ export async function invokeAgent(
     const serverGrants = (): FenceGrants => { const { network: _agentOnly, writes: _agentWrites, agentInside: _agent, ...rest } = grants; return rest; };
     // Nor read what the build wrote: however its arguments are spelled, no byte of the checkout or caches can load.
     const serverDenies = [...fence, ...serverUntrusted.filter(path => existsSync(path)).map(path => realpathSync(path))];
-    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, serverDenies, serverGrants());
-    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, serverDenies, serverGrants());
+    // Pinned: the server fence this attempt launched with, a copy, whatever changes later (C11).
+    const pinned = structuredClone(serverGrants());
+    if (macosFenceAvailable()) serverFence = (file, args) => macosFenced(file, args, serverDenies, pinned);
+    else if (linuxFenceAvailable()) serverFence = (file, args) => linuxFenced(file, args, serverDenies, pinned);
     serverMustBeFenced = true;
   }
   // No silent fallback (arc 1): a build this machine can't confine at the OS — Claude reduced to its own file-tool
@@ -563,7 +570,10 @@ export async function invokeAgent(
         diagnostic: `The build's network could not be set up, so nothing was started: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
-  if (invocation.phase !== "review") store.recordRunFence(runId, { method: fenced.method, paths: fence.length }, clock());
+  // The attempt's pinned fence, stamped on the run (C11): its method, policy version, the digest of exactly what it was
+  // given, and the seccomp helper it runs through.
+  if (invocation.phase !== "review") store.recordRunFence(runId, { method: fenced.method, paths: fence.length, policy: (launchSandbox ?? LEGACY_SANDBOX).policy,
+    digest: fenceDigest(fence, grants), helper: grants.seccomp?.sha256 ?? null }, clock());
   const billingSeen: { keySource: string | null; model: string | null; planWindows: boolean; answered: boolean } = { keySource: null, model: null, planWindows: false, answered: false };
   // v105: a Codex run on its sign-in bills as Codex says it's signed in (a ChatGPT plan, or a saved key, or Bedrock),
   // read right before it runs. Never with an injected runner: tests don't start a real Codex.
@@ -1353,4 +1363,9 @@ export function checkoutSandboxOf(store: Store, repo: string, runIds: readonly n
     machLookup: common(one => one.machLookup, live.machLookup),
     unlock: common(one => one.unlock, live.writeUnlock),
   };
+}
+
+/** The digest of a launch's whole fence (its denied paths and grants, canonical), as stamped on its run (C11). */
+export function fenceDigest(fence: readonly string[], grants: FenceGrants): string {
+  return createHash("sha256").update(`toolroll:fence:${canonicalJson({ fence: [...fence], grants: grants as unknown as Record<string, unknown> })}`).digest("hex").slice(0, 32);
 }

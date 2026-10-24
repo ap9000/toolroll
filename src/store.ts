@@ -19086,7 +19086,7 @@ export class Store {
   }
 
   /** How one attempt was kept away from Toolroll's own secrets (the agent fence), kept beside its tools. */
-  recordRunFence(run: number, fence: { method: string; paths: number }, now: Date): void {
+  recordRunFence(run: number, fence: { method: string; paths: number; policy?: 1 | 2; digest?: string; helper?: string | null }, now: Date): void {
     this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('fence', json(?)), ?)
       ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.fence', json(?))`).run(run, JSON.stringify(fence), now.toISOString(), JSON.stringify(fence));
   }
@@ -19106,7 +19106,7 @@ export class Store {
     return runNetworkFromValue(parsed);
   }
 
-  runFence(run: number): { method: string; paths: number } | null {
+  runFence(run: number): { method: string; paths: number; policy?: 1 | 2; digest?: string; helper?: string | null } | null {
     const row = this.db.prepare("SELECT json_extract(tools_json, '$.fence') AS fence FROM run_tool WHERE run = ?").get(run);
     if (row === undefined || row["fence"] === null) return null;
     const read = readStoreColumn("run_tool.tools_json.fence", row["fence"]);

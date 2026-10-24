@@ -1064,6 +1064,32 @@ describe("checkout Git preflight", () => {
     return repo;
   }
 
+  test("the attempt pins its fence: stamped on the run, and a tool server started late gets the launch's decisions, not a setting changed meanwhile (C11)", async () => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    let broker: { unwrapped?: () => string | null; wrap?: () => unknown } = {};
+    vi.mocked(projectTools.prepareRunTools).mockImplementation(async (_store, _run, _provider, options) => {
+      broker = options.broker as typeof broker;
+      return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
+    });
+    try {
+      registerBuilder(store);
+      if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, sandbox: { policy: 2, readDeny: [], machLookup: [], unlock: [] } });
+      expect(store.runFence(runId)).toMatchObject({ policy: 2, digest: expect.stringMatching(/^[0-9a-f]{32}$/) });
+      // Unconfined agents were refused when it launched: a server started later is refused that way too, however the
+      // setting changes meanwhile.
+      const before = broker.unwrapped?.() ?? null;
+      store.setUnfencedAgentsAllowed(true, "alex", T0);
+      expect(broker.unwrapped?.() ?? null).toBe(before);
+      expect(before).toMatch(/can't confine the tool's server/);
+    } finally { store.close(); }
+  });
+
   test("a build's fence takes its approval's read denies and the project's current ones too (adding a deny only narrows)", async () => {
     const store = openStore(join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");

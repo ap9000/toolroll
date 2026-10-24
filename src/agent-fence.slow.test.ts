@@ -505,7 +505,7 @@ describe("the agent fence", () => {
       expect(filesystem).toContain(`"${worktree}"="write"`);
       expect(filesystem).toContain(`"${join(dir, "custom-pool")}"="deny"`);
       expect(filesystem).not.toContain("[!");
-      expect(store.runFence(codexRun)).toEqual({ method: "codex-profile", paths: expect.any(Number) });
+      expect(store.runFence(codexRun)).toMatchObject({ method: "codex-profile", paths: expect.any(Number) });
       const claudeRun = open("t-claude", "claude");
       let wrap: readonly string[] | undefined;
       await invokeAgent(store, claudeRun, { provider: "claude", model: null }, ask, { keyHome: home, clock: () => T0, runner: async (file, args, options) => { seen.push({ file, args }); wrap = options?.fence; return OK; } });
@@ -516,9 +516,9 @@ describe("the agent fence", () => {
       expect(claude.args[claude.args.indexOf("--add-dir") + 1]).toBe(worktree);
       if (macosFenceAvailable()) {
         expect(wrap).toContain(join(state, "up-login.txt"));
-        expect(store.runFence(claudeRun)).toEqual({ method: "macos-sandbox", paths: expect.any(Number) });
+        expect(store.runFence(claudeRun)).toMatchObject({ method: "macos-sandbox", paths: expect.any(Number) });
       } else {
-        expect(store.runFence(claudeRun)).toEqual({ method: "claude-rules", paths: expect.any(Number) });
+        expect(store.runFence(claudeRun)).toMatchObject({ method: "claude-rules", paths: expect.any(Number) });
       }
     });
   });
