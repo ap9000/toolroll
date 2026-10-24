@@ -1,5 +1,5 @@
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
-import { checkAccessOf, type CheckAccess } from "./check-access.js";
+import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
 import { PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
@@ -22489,10 +22489,14 @@ export class Store {
     return row === undefined ? null : { by: String(row["updated_by"]), at: String(row["updated_at"]) };
   }
 
-  /** A project's check access changed: saved, and in the ledger as before → after (who may is the caller's to prove). */
-  setProjectCheckAccess(repo: string, level: CheckAccess, by: string, now: Date): { before: CheckAccess; after: CheckAccess } {
+  /** A project's check access changed: saved, and in the ledger as before → after. `may` is what the caller proved:
+   * "widen" only after an instance operator's password typed now; anything else may only narrow. The level is read again
+   * and compared in the same transaction as the write, so a change made while the caller was proving itself can't turn
+   * a narrowing into a widening. Refused: null, nothing written. */
+  setProjectCheckAccess(repo: string, level: CheckAccess, by: string, now: Date, authority: { may: "narrow" | "widen" }): { before: CheckAccess; after: CheckAccess } | null {
     return this.transact(() => {
       const before = this.projectCheckAccess(repo);
+      if (widerThan(level, before) && authority.may !== "widen") return null;
       this.db.prepare(`INSERT INTO project_check_access (repo, level, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT (repo) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, level, now.toISOString(), by);
       const after = this.projectCheckAccess(repo);

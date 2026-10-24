@@ -12118,7 +12118,9 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   } else if (acting === null || proved === null || !proved.ok || !credentialProof(proved.method) || !context.store.accountCanAccess(acting.name, repo)) {
     return fail(context.write, context.json, command, "refused", "An approver for this project narrows what its checks reach, with their password: pass --as and --token.", EXIT.refused);
   }
-  const changed = context.store.setProjectCheckAccess(repo, wanted, acting!.name, context.clock());
+  // The level is compared again inside the write: a change made while the password was asked for can't widen it here.
+  const changed = context.store.setProjectCheckAccess(repo, wanted, acting!.name, context.clock(), { may: widening ? "widen" : "narrow" });
+  if (changed === null) return fail(context.write, context.json, command, "refused", "The project's check access changed meanwhile, and this would now widen it: an instance operator widens it, with their password typed now.", EXIT.refused);
   return succeed(context.write, context.json, command, { repo, before: changed.before, checkAccess: changed.after }, () => [
     ...words(changed.after),
     "Scopes written from now on use this; scopes already approved keep what they were approved with.",

@@ -48,7 +48,7 @@ test("levels: unknown or damaged values read as sandboxed; the narrowest of seve
 test("a project is sandboxed until changed; a damaged row never reads wider; the ledger keeps before → after", () => {
   expect(store.projectCheckAccess(REPO)).toBe("sandboxed");
   expect(store.projectCheckAccessChange(REPO)).toBeNull();
-  expect(store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date())).toEqual({ before: "sandboxed", after: "unsandboxed" });
+  expect(store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" })).toEqual({ before: "sandboxed", after: "unsandboxed" });
   expect(store.projectCheckAccessChange(REPO)?.by).toBe("alex");
   const ledger = store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE action = 'check access'").all();
   expect(ledger.map(row => `${String(row["actor"])}: ${String(row["detail"])}`)).toEqual(["alex: sandboxed → unsandboxed"]);
@@ -85,7 +85,20 @@ test("the CLI: shows the level; only an instance operator with a password widens
 });
 
 test("the CLI says what a wider level means before anyone relies on it", async () => {
-  store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date());
+  store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
   expect(await run(["--repo", REPO])).toBe(EXIT.ok);
   expect(lines.join("\n")).toMatch(/model and GitHub sign-ins[\s\S]*can read your Claude, Codex and GitHub sign-ins/);
 });
+
+test("the write compares again: a narrowing authority never widens, whatever changed while it was proved", () => {
+  // An operator widened to unsandboxed; an approver's pending narrowing to sign-ins still narrows.
+  expect(store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" })).toEqual({ before: "sandboxed", after: "unsandboxed" });
+  expect(store.setProjectCheckAccess(REPO, "sign-ins", "sam", new Date(), { may: "narrow" })).toEqual({ before: "unsandboxed", after: "sign-ins" });
+  // Meanwhile someone narrowed to sandboxed: the same narrowing authority asking for sign-ins would now widen. Refused.
+  expect(store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" })).toEqual({ before: "sign-ins", after: "sandboxed" });
+  expect(store.setProjectCheckAccess(REPO, "sign-ins", "sam", new Date(), { may: "narrow" })).toBeNull();
+  expect(store.projectCheckAccess(REPO)).toBe("sandboxed");
+  // The same level again is no widening.
+  expect(store.setProjectCheckAccess(REPO, "sandboxed", "sam", new Date(), { may: "narrow" })).toEqual({ before: "sandboxed", after: "sandboxed" });
+});
+
