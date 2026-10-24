@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { agentFence, codexFenceArgv, macosFenceAvailable, macosFenced } from "./agent-fence.js";
 import { claimInstance, instanceRunDir, openInstanceSocket, readInstance, runDirProblem } from "./console-instance.js";
 import { openStore, type Store } from "./store.js";
+import { shortTempDir } from "../test/short-temp.js";
 
 const BUILD = "9.9.9-test";
 /** What a fenced build tries: read the database, then ask the socket for hello, a secret, and a sign-in. */
@@ -41,7 +42,7 @@ const ask = request => new Promise(resolve => {
 
 describe.skipIf(!macosFenceAvailable())("a fenced build and the console's socket", () => {
   let dir: string, store: Store | null = null, close: (() => void) | null = null;
-  beforeEach(() => { dir = realpathSync(mkdtempSync(join("/tmp", "so-cif-"))); });
+  beforeEach(() => { dir = shortTempDir("so-cif-"); });
   afterEach(() => { close?.(); close = null; store?.close(); store = null; rmSync(dir, { recursive: true, force: true }); });
 
   test("the run folder is made, owner-only, before a build could make it, and fenced even before any console starts", () => {

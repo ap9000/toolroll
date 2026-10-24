@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
 import { loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
 let spawn: PtySpawn | null = null;
@@ -110,7 +111,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(late.seen.out).toContain("history-line-2999");
   });
 
-  test("close ends the whole process group, and says so", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("close ends the whole process group, and says so", async () => {
     const started = await host.start(ALEX, repo, "shell");
     const { seen, viewer } = watcher();
     host.attach(started.id, viewer);
@@ -126,7 +128,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(host.list("someone-else")).toHaveLength(0);
   });
 
-  test("a program that ignores SIGHUP is killed after the grace", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a program that ignores SIGHUP is killed after the grace", async () => {
     const started = await host.start(ALEX, repo, "shell");
     const { seen, viewer } = watcher();
     host.attach(started.id, viewer);
@@ -154,7 +157,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
 
   const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
-  test("a program that ends on its own takes its jobs with it, so its worktree can go (round 2, finding 2)", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a program that ends on its own takes its jobs with it, so its worktree can go (round 2, finding 2)", async () => {
     const started = await host.start(ALEX, repo, "shell");
     const { seen, viewer } = watcher();
     host.attach(started.id, viewer);
@@ -167,7 +171,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     await host.remove(started.id);
   });
 
-  test("a child started during the close is caught too (round 2, finding 3)", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a child started during the close is caught too (round 2, finding 3)", async () => {
     const started = await host.start(ALEX, repo, "shell");
     const late = join(dir, "late.txt");
     const { seen, viewer } = watcher();
@@ -215,7 +220,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     } finally { native.kill(); }
   });
 
-  test("a start is reserved first, refused while an update owns admission, and released after its sweep (round 2, finding 7)", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a start is reserved first, refused while an update owns admission, and released after its sweep (round 2, finding 7)", async () => {
     const calls: string[] = [];
     let paused = true;
     const ledger: TerminalLedger = { reserve: id => { if (paused) throw new Error("Toolroll is updating."); calls.push(`reserve:${id.length}`); }, running: () => { calls.push("running"); }, release: (_id, cleanup) => { calls.push(`release:${cleanup}`); } };
@@ -250,7 +256,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect([...membersOf(table, { leader: P4, tty: null, known: new Map([[P2, "a different start"]]), exitedAt: null }).keys()]).toEqual([P4]);
   });
 
-  test("someone else working in the worktree is never signalled; it keeps the worktree until they leave (round 3)", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("someone else working in the worktree is never signalled; it keeps the worktree until they leave (round 3)", async () => {
     const started = await host.start(ALEX, repo, "shell");
     const outsider = spawnChild("/bin/sleep", ["30"], { cwd: started.worktree, stdio: "ignore" });
     try {
@@ -266,7 +273,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(existsSync(started.worktree)).toBe(false);
   });
 
-  test("a process seen in the worktree must exit, not just leave the folder, before removal (round 4)", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a process seen in the worktree must exit, not just leave the folder, before removal (round 4)", async () => {
     const started = await host.start(ALEX, repo, "shell");
     // It starts in the worktree, then moves out while it keeps running.
     const mover = spawnChild("/bin/sh", ["-c", "sleep 0.8; cd /; exec sleep 30"], { cwd: started.worktree, stdio: "ignore" });
@@ -289,7 +297,8 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     await expect(unsure.remove(started.id)).rejects.toThrow(/may still be running/);
   });
 
-  test("remove drops an ended session and its worktree, keeps the branch", async () => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("remove drops an ended session and its worktree, keeps the branch", async () => {
     const started = await host.start(ALEX, repo, "shell");
     await expect(host.remove(started.id)).rejects.toThrow(/Close the terminal/);
     await host.close(started.id);

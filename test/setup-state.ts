@@ -1,5 +1,5 @@
 import { afterAll, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { freshStoreOpener } from "./fresh-store.js";
@@ -15,6 +15,10 @@ const before = {
   TOOLROLL_NO_UPDATE_CHECK: process.env.TOOLROLL_NO_UPDATE_CHECK,
   TOOLROLL_STORAGE_SWEEP: process.env.TOOLROLL_STORAGE_SWEEP,
   TOOLROLL_SECRET_STORE: process.env.TOOLROLL_SECRET_STORE,
+  HOME: process.env.HOME,
+  USERPROFILE: process.env.USERPROFILE,
+  CODEX_HOME: process.env.CODEX_HOME,
+  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
 };
 // Both names: the new one is read first, and neither may name the live store.
 process.env.TOOLROLL_DB = join(state, "orders.db");
@@ -24,6 +28,14 @@ process.env.XDG_CONFIG_HOME = join(state, "config");
 process.env.TOOLROLL_NO_UPDATE_CHECK = "1";
 // No worker pass a test runs sweeps the machine's temp folders or processes; the sweep's own tests turn it on.
 process.env.TOOLROLL_STORAGE_SWEEP = "off";
+// No test reads the person's own home: their Codex and Claude sign-ins, settings and sessions stay theirs (and the
+// plane's check fence hides them anyway). A test that wants one makes it in this home.
+process.env.TOOLROLL_TEST_OUTER_HOME ??= process.env.HOME ?? "";
+mkdirSync(join(state, "home"));
+process.env.HOME = join(state, "home");
+process.env.USERPROFILE = join(state, "home");
+delete process.env.CODEX_HOME;
+delete process.env.CLAUDE_CONFIG_DIR;
 // No test reads or writes the developer's own keychain: tool secrets stay in files unless a test picks a keychain of its own.
 process.env.TOOLROLL_SECRET_STORE = "files";
 // Toolroll's folder for secrets, as a started Toolroll has one: this file's state folder, never the developer's.

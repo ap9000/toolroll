@@ -378,8 +378,8 @@ export function chatHeading(copy: string, projectCount: number, showProjectToggl
 
 /** A deliberately small rich-text grammar for model copy. The reply is shaped first (the lead's voice, enforced:
  * no headers, at most three bold anchors, labelled links, no internal ids unless `asked` wanted them); input is
- * escaped before tags are introduced: bullets, numbered steps, bold, inline code and labelled http(s) links are
- * presentation only—never executable HTML. */
+ * escaped before tags are introduced: bullets, numbered steps, bold, inline code, fenced code blocks and labelled
+ * http(s) links are presentation only—never executable HTML. */
 export function renderChatText(raw: string, asked?: string): Html {
   const inline = replyHtmlInline;
   const text = shapeReply(raw, { appOrigin: requestContext.getStore()?.appOrigins ?? null, ...(asked === undefined ? {} : { asked }) });
@@ -398,7 +398,22 @@ export function renderChatText(raw: string, asked?: string): Html {
     out.push(list.tag === "ul" ? html`<ul>${list.items}</ul>` : html`<ol>${list.items}</ol>`);
     list = null;
   };
+  // A fenced block (shaping leaves it exactly as written) is shown as written: escaped, never parsed.
+  let fence: { lang: string; lines: string[] } | null = null;
+  const closeFence = (): void => {
+    const open = fence as { lang: string; lines: string[] } | null;
+    if (open === null) return;
+    out.push(html`<pre class="chat-code"${open.lang === "" ? "" : html` data-lang="${open.lang}"`}><code>${open.lines.join("\n")}</code></pre>`);
+    fence = null;
+  };
   for (const line of lines) {
+    const open = fence as { lang: string; lines: string[] } | null;
+    if (open !== null) {
+      if (/^\s{0,3}```\s*$/.test(line)) closeFence(); else open.lines.push(line);
+      continue;
+    }
+    const fenceMark = /^\s{0,3}```\s*([A-Za-z0-9_+.#-]{0,24})\s*$/.exec(line);
+    if (fenceMark !== null) { flushParagraph(); closeList(); fence = { lang: fenceMark[1]!, lines: [] }; continue; }
     const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
     const numbered = /^\s*(\d{1,9})[.)]\s+(.+)$/.exec(line);
     if (bullet !== null || numbered !== null) {
@@ -415,8 +430,27 @@ export function renderChatText(raw: string, asked?: string): Html {
       paragraph.push(line);
     }
   }
-  flushParagraph(); closeList();
+  // An unclosed fence still shows its lines as code: the reply may have been cut.
+  flushParagraph(); closeList(); closeFence();
   return html`<div class="chat-copy">${out}</div>`;
+}
+
+/** A line comment from the chat Workbench (src/browser/line-steer.tsx steerMessage): On "<file, as a JSON string>":<line>
+ * [ (removed line)] (run #<n>): <comment>, then a blank line and "> <the line>" (just ">" for a blank line, once the
+ * chat POST has trimmed the message), always last.
+ * The words the lead reads stay exactly as sent; the thread shows them in three parts: a small reference line, the quoted
+ * code as written, and the comment. Null for any other message, which keeps its own plain rendering. Everything is
+ * escaped by the html template. */
+export function steerCommentHtml(text: string): Html | null {
+  const steer = /^On ("(?:[^"\\\n]|\\.){1,1200}"):(\d{1,9})( \(removed line\))? \(run #(\d{1,12})\): ([\s\S]+)\n\n>(?: ([^\n]*))?$/.exec(text);
+  if (steer === null) return null;
+  // A blank line's quote ("> ") reaches the store as ">": the chat POST trims the message (src/server/chat.ts).
+  const [, quoted, line, removed, run, comment, code = ""] = steer;
+  let path: unknown;
+  try { path = JSON.parse(quoted!); } catch { return null; }
+  if (typeof path !== "string" || path === "" || /[\u0000-\u001f]/.test(path) || comment!.trim() === "") return null;
+  return html`<div class="chat-steer" data-steer-comment><p class="chat-steer-ref">${path}:${line}${removed === undefined ? "" : " · removed line"} · run #${run}</p>${
+    code === "" ? "" : html`<pre class="chat-steer-code"><code>${code}</code></pre>`}<p class="chat-steer-note" style="white-space:pre-wrap">${comment}</p></div>`;
 }
 
 export function chatActivity(activity: string | null): Html {
@@ -1037,7 +1071,7 @@ export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "pro
   return rows.messages.map(message => ({
     id: message.id, role: message.role, text: message.text,
     html: htmlString(message.role === 'operator'
-      ? (() => { const queued = rows.queue?.get(message.id); return html`${message.text === "" ? "" : html`<p>${message.text}</p>`}${queued === undefined ? "" : queuedStateHtml(queued, back)}`; })()
+      ? (() => { const queued = rows.queue?.get(message.id); return html`${message.text === "" ? "" : steerCommentHtml(message.text) ?? html`<p>${message.text}</p>`}${queued === undefined ? "" : queuedStateHtml(queued, back)}`; })()
       : html`${renderChatText(message.text, askedBy.get(message.id))}${asked(message.turn)}`),
     activity: message.activity, createdAt: message.createdAt,
     ...(() => {
@@ -1118,7 +1152,7 @@ export function leadThreadHtml(data: LeadThreadRows & { csrf: string; now: Date;
       asked = message.text;
       // A message that waits its turn (the lead queue) says so, with Remove while it still waits — as in the React thread.
       const queued = data.queue?.get(message.id);
-      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}">${message.text === "" ? "" : html`<p style="white-space:pre-wrap">${message.text}</p>`}${
+      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}">${message.text === "" ? "" : steerCommentHtml(message.text) ?? html`<p style="white-space:pre-wrap">${message.text}</p>`}${
         queued === undefined ? "" : queuedStateHtml(queued, returnTo)}</div>`);
       continue;
     }

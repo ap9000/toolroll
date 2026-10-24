@@ -789,6 +789,9 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
     // Denied whole above, granted back narrowly here (a later rule wins): an entry made after launch beside it stays denied.
     ...(grants.readable.length === 0 ? [] : [`(allow file-read* file-test-existence ${paths("subpath", grants.readable)})`]),
+    // Each readable copy's own folder can be listed, never read: bundlers such as esbuild find node_modules by listing
+    // its parent, which a lookup alone refuses (the Linux and Codex fences list it as read-only already).
+    ...(grants.readable.length === 0 ? [] : [`(allow file-read-data ${paths("literal", [...new Set(grants.readable.map(one => dirname(one)))])})`]),
     ...(folders?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [folders.own])})`]),
     '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
     "(deny process-info-pidinfo)",

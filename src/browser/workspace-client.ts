@@ -216,3 +216,16 @@ export async function sendMessage(workspace: BrowserWorkspace, message: PendingM
   // A native 303 may have followed through to HTML. It is not a receipt.
   return { refused: false, message: null };
 }
+
+/** Whether a message the server answered without refusing or queuing it has its receipt yet: a non-refusal is not a
+ * receipt (a native redirect, an error page and a 202 all look alike). Asks `refresh` until the draft no longer holds
+ * that request as pending (only the receipt clears it there), at most `tries` times. */
+export async function awaitReceipt(pendingRequest: () => string | null, request: string, refresh: () => Promise<void>,
+  tries = 15, wait: (ms: number) => Promise<void> = ms => new Promise(done => setTimeout(done, ms))): Promise<boolean> {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (pendingRequest() !== request) return true;
+    await wait(attempt === 0 ? 300 : 1000);
+    await refresh();
+  }
+  return pendingRequest() !== request;
+}

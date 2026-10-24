@@ -24,7 +24,7 @@ import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
@@ -675,6 +675,9 @@ await journey("task", SCRIPTED, "Send it back asking for more than the plan allo
 });
 
 await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
+  // Carrying on resumes Claude's saved session, which Claude keeps in the person's home; inside the plane's macOS check
+  // fence that home is read-only, so the first run's session is never saved. It runs everywhere else.
+  if (insideFence()) throw new Skip("inside the plane's macOS check fence Claude can't save the session a resumed build needs");
   const id = "round";
   cli(["task", "add", "Add a round2 function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add round2(x) to src/math.js (round to 2 decimal places) with a test in test/math.test.js. Whether an exact half rounds up or to the nearest even digit is the operator's call and is not decided yet: before writing any code, stop and ask the operator with two options (half up, half to even), then build what they choose.", "--acceptance", "round2 follows the operator's answer, with a test|check", ...auth]);
@@ -2068,6 +2071,9 @@ async function freshInstall(name, { claude, crewModels = false }) {
       const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: { ...process.env, HOME: home } });
       for (const phase of ["plan", "build", "repair", "review"]) toolroll("config", "set", phase, "--provider", "claude", "--model", "sonnet");
       toolroll("verify", "set", "--repo", realpathSync(shop), "--command", "npm test", "--timeout-seconds", "120", "--yes");
+      // Inside the plane's macOS check fence, as the world itself does (e2e-kit insideFence): this throwaway install's
+      // agents run inside the check's own sandbox.
+      if (insideFence()) toolroll("config", "unconfined-agents", "allow");
     }
     return install;
   } catch (error) {
@@ -2244,6 +2250,77 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   const phone = await on.locator("[data-phone-card]").innerText();
   if (!/Pair Telegram/.test(phone) || !/Tailscale/.test(phone)) throw new Error(`the phone card: ${phone}`);
   await bothSizes(on, "4-phone");
+  // The Workbench: the result's change beside the chat; a comment on one of its lines goes to the lead as the
+  // conversation's next message, naming the file, the line and the run.
+  const built = freshRows(install.db, `SELECT r.id AS id FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${install.task.id.replace(/'/g, "''")}' AND r.role = 'builder' AND r.outcome IS NOT NULL ORDER BY r.id DESC LIMIT 1`)[0]?.id;
+  if (built === undefined) throw new Error("the first task has no finished build to comment on");
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
+  const linePin = on.locator("[data-workspace-result] [data-diff-line] button.pick-line").first();
+  await waitFor(linePin, "a line of the result's change", { timeoutMs: 30_000, state: "attached" });
+  await bothSizes(on, "5-workbench");
+  const path = await linePin.getAttribute("data-path"), line = await linePin.getAttribute("data-line");
+  const before = await on.locator("[data-workspace-chat] [data-message-id]").count();
+  // The lead's answer to the comment: a scripted world answers every turn it starts.
+  // It reads, drafts a follow-up as a card to confirm, and shows the test it means (a code block): the whole thread.
+  script({ role: "lead", when: [/Keep this, but name the edge case in a comment\./], answer: { delayMs: 4_000, steps: [
+    { text: "Reading the line.", calls: [{ name: "get_capabilities" }] },
+    { text: "Drafting the follow-up.", calls: [{ name: "propose_task", arguments: { repo: "r1", title: "Name the edge case in subtract", goal: "Add a comment above subtract(a, b) naming the negative-result edge case, with a test for it.",
+      acceptance: [{ id: "c1", statement: "subtract(2, 5) returns -3, with a test", evidence: ["check"] }], planning: "auto" } }] },
+    { text: "Here's the test I mean:\n\n```js\ntest('subtracts below zero', () => {\n  assert.equal(subtract(2, 5), -3);\n});\n```\n\nConfirm the card and the planner picks it up.", calls: [] },
+  ] } });
+  await linePin.click();
+  const steer = on.locator(`[data-diff-steer][data-diff-line="${line}"]`);
+  await waitFor(steer, "the comment form under that line");
+  if (await on.locator("#comment-form textarea[name=note]:focus").count() !== 0) throw new Error("the pin opened the request form instead of the comment under the line");
+  await steer.locator("textarea").fill("Keep this, but name the edge case in a comment.");
+  await settle(on);
+  await on.screenshot({ path: join(w.out, "onboarding-5-workbench-comment-1440.png") });
+  // Sent from a phone, with Return, as a person would: the sheet holds the same row, and the cursor goes back to the pin.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  await steer.scrollIntoViewIfNeeded();
+  if (await on.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) > 1) throw new Error("the comment row scrolls the phone sideways");
+  await on.screenshot({ path: join(w.out, "onboarding-5-workbench-comment-390.png") });
+  await steer.locator("textarea").press("Enter");
+  await waitFor(on.locator("[data-steer-sent]"), "the comment to say it went to the lead");
+  if (!await on.evaluate(() => document.activeElement?.matches("button.pick-line") ?? false)) throw new Error("after sending, the cursor didn't go back to the line's pin");
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  // The thread shows it in parts: where (file, line, run), the quoted line, and the words.
+  const steered = [`${path}:${line}`, `run #${built}`, "Keep this, but name the edge case in a comment."];
+  await until("the comment in the chat as the next message", async () => {
+    const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id] [data-steer-comment]').allInnerTexts();
+    return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
+  }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
+  const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
+  if (!sent.some(text => text.startsWith(`On ${JSON.stringify(path)}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
+  // The thread itself, while the lead works (its steps) and once it has answered (a code block and a card to confirm).
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
+  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
+  await bothSizes(on, "chat-thread-live");
+  await waitFor(on.locator('[data-workspace-chat] [data-message-id] pre.chat-code').first(), "the lead's reply with its code block", { timeoutMs: 60_000 });
+  await waitFor(on.locator('[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you').first(), "the card waiting on you", { timeoutMs: 30_000 });
+  await bothSizes(on, "chat-thread");
+  // On a phone the task opens as a sheet; put it away to show the thread itself.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  const backToChat = on.locator(".so-supporting-panel--detail .so-phone-back").first();
+  if (await backToChat.isVisible()) await backToChat.click();
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 0) throw new Error("the chat stays out of reach after the sheet is put away");
+  await on.screenshot({ path: join(w.out, "onboarding-chat-thread-phone-chat-390.png") });
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
+  await waitFor(on.locator("[data-workspace-result] [data-diff-line]").first(), "the result again", { timeoutMs: 30_000, state: "attached" });
+  // On a phone the result is a sheet over the chat; the chat under it takes no taps or tab stops until it's put away.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 1) throw new Error("the chat under the phone's result sheet can still be reached");
+  if (!await on.locator("[data-workspace-detail].so-supporting-panel--detail").isVisible()) throw new Error("the result sheet isn't showing on a phone");
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 0) throw new Error("the chat stays out of reach on a desk");
   return { result: ended };
 });
 

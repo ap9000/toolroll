@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.68 — 2026-10-23
+
+- **The lead chat is redesigned.** Your messages sit in grey bubbles and the
+  lead's replies read as plain text, with code blocks. Its work folds into one
+  "Worked …" line, live steps show a spinner and then a check, and anything
+  waiting on you carries a "Needs you" chip. The message box is one row that
+  grows as you type, with a send arrow (Queue while a reply runs).
+- **Comment on a line of a change.** In a result's Changes tab, a pin on any
+  line opens a one-line comment. Enter sends it to the lead as its next
+  message, naming the file, line and run and quoting the line. The thread
+  shows it as a reference, the quoted line, and your words. On a phone the
+  result opens as a sheet over the chat.
+- **A fenced check can build bundles from the shared dependencies.** On a Mac
+  the sandbox let a build look up the linked copy's folder but not list it,
+  so esbuild couldn't find node_modules ("could not resolve react"). That one
+  folder may now be listed; nothing in it is readable beyond node_modules.
+  The console's own browser build also resolves through the checkout's links.
+- The release check passes inside the plane's macOS check sandbox: tests that
+  need to create a sandbox or watch other processes skip there and still run
+  in CI, and the browser journeys' throwaway planes run their agents inside
+  the check's own sandbox.
+- A Claude build no longer refuses to start when a sandbox around Toolroll
+  hides your Claude settings file: it signs in from the keychain as before,
+  and a sign-in that needed the file still fails quickly and says so.
+- The test suite reads its own home and temp folders, never yours, so it runs
+  the same on your machine and inside a check's sandbox. Tests that need a
+  socket path shorter than any folder the sandbox allows, and the one browser
+  journey that resumes a saved Claude session, skip inside the sandbox and
+  still run in CI.
+- `toolroll release` no longer stops at merge when GitHub has already deleted
+  the merged branch: it looks a few times, 2 seconds apart, before calling the
+  delete a failure (0.9.66 and 0.9.67 both stopped there).
+- Leaner code, with every feature kept (about 5,600 fewer lines). The
+  deprecated team and native session commands are gone, and `chat` and
+  `brief` without `--local` refuse when a central profile is saved.
+
 ## 0.9.67 — 2026-10-23
 
 - **A project's checks read their own dependencies again.** 0.9.66 began

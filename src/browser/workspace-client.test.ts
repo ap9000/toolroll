@@ -2,11 +2,11 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BrowserWorkspace } from "../browser-workspace.js";
 import { CommandMenu, CrewRows, GuardedHtml, useWorkspace } from "./app.js";
 import {
-  carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
+  awaitReceipt, carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
 } from "./workspace-client.js";
 
@@ -407,4 +407,69 @@ test("command shortcut opens outside editors and stays absent on sensitive pages
   await act(async () => root!.render(createElement(CommandMenu, { workspace: { ...workspace, sensitive: true } })));
   expect(document.querySelector("[data-workspace-command]")).toBeNull();
   expect(node.textContent).toBe("");
+});
+
+describe("a comment's delivery is only confirmed by its receipt", () => {
+  const noWait = async () => {};
+  test("the receipt clears the pending request: delivered", async () => {
+    let pending: string | null = "r1";
+    let reads = 0;
+    const ok = await awaitReceipt(() => pending, "r1", async () => { reads += 1; if (reads === 2) pending = null; }, 15, noWait);
+    expect(ok).toBe(true);
+    expect(reads).toBe(2);
+  });
+  test("no receipt (an error page, a 202 that never lands): not delivered, after a bounded wait", async () => {
+    let reads = 0;
+    const ok = await awaitReceipt(() => "r1", "r1", async () => { reads += 1; }, 5, noWait);
+    expect(ok).toBe(false);
+    expect(reads).toBe(5);
+  });
+  test("another request pending is not this one's receipt", async () => {
+    expect(await awaitReceipt(() => "r2", "r1", async () => {}, 3, noWait)).toBe(true);
+  });
+});
+
+describe("the controller's steer (a line comment) through the real send path", () => {
+  const steerOnce = async (answer: (body: URLSearchParams) => Response, reads: (asked: string | null) => Response) => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    let asked: string | null = null;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method === "POST") { const body = new URLSearchParams(String(init.body)); asked = body.get("request"); return answer(body); }
+      return reads(asked);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const probe = await workspaceProbe();
+    let said: string | null | undefined;
+    await act(async () => { const pending = probe.current().steer('On "a.ts":1 (run #9): Please.\n\n> x'); await vi.advanceTimersByTimeAsync(30_000); said = await pending; });
+    return { said, probe };
+  };
+  const withReceipt = (asked: string | null, received: boolean) => { const one = fixture(); one.receipt = asked === null ? null : { request: asked, received }; return new Response(JSON.stringify(one), { headers: { etag: `"r-${asked}-${received}"` } }); };
+
+  test("an error page is not a delivery", async () => {
+    const { said } = await steerOnce(() => new Response("<html>boom</html>", { status: 500, headers: { "content-type": "text/html" } }), asked => withReceipt(asked, false));
+    expect(said).toContain("isn't confirmed");
+  });
+  test("an answer whose receipt never says received is not a delivery", async () => {
+    const { said } = await steerOnce(() => new Response(null, { status: 202 }), asked => withReceipt(asked, false));
+    expect(said).toContain("isn't confirmed");
+  });
+  test("the exact receipt is a delivery", async () => {
+    const { said, probe } = await steerOnce(() => new Response(null, { status: 202 }), asked => withReceipt(asked, true));
+    expect(said).toBeNull();
+    expect(probe.current().draft.pending).toBeNull();
+  });
+  test("the lead queue's acknowledgement is a delivery", async () => {
+    const { said } = await steerOnce(body => json({ ok: true, queued: true, request: body.get("request") }), asked => withReceipt(asked, false));
+    expect(said).toBeNull();
+  });
+  test("words in the composer are never replaced by a comment", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => tagged()));
+    const probe = await workspaceProbe();
+    await act(async () => { probe.current().edit("half a thought"); });
+    let said: string | null | undefined;
+    await act(async () => { said = await probe.current().steer('On "a.ts":1 (run #9): x\n\n> y'); });
+    expect(said).toContain("Send or clear");
+    expect(probe.current().draft.text).toBe("half a thought");
+  });
 });

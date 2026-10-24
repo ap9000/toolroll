@@ -17,13 +17,15 @@ import { askSocket, claimInstance, recordLiveness, clearInstance, httpProof, INS
 import { createDecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
+import { shortTempDir } from "../test/short-temp.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const BUILD = "9.9.9-test";
 let dir: string, state: string, databaseFile: string, store: Store, run: string;
 const closers: (() => Promise<void> | void)[] = [];
 beforeEach(() => {
   // A short base: a Unix socket path is limited to ~104 bytes on macOS.
-  dir = realpathSync(mkdtempSync(join("/tmp", "so-ci-")));
+  dir = shortTempDir("so-ci-");
   state = join(dir, "s");
   mkdirSync(state, { mode: 0o700 });
   databaseFile = join(state, "orders.db");
@@ -92,7 +94,8 @@ describe("the proofs", () => {
 });
 
 describe("the discovery socket", () => {
-  test("answers hello with public facts and the socket proof; refuses every other verb; changes nothing", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("answers hello with public facts and the socket proof; refuses every other verb; changes nothing", async () => {
     const { port, secret, name } = await start();
     const before = readInstance(store);
     const c = "1".repeat(64);
@@ -105,7 +108,8 @@ describe("the discovery socket", () => {
     expect(readInstance(store)).toEqual(before);
   });
 
-  test("the run folder must be private, and is never changed to make it so: checked before anything is made", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("the run folder must be private, and is never changed to make it so: checked before anything is made", async () => {
     expect(prepareRunDir(run)).toBeNull();
     expect(lstatSync(run).mode & 0o777).toBe(0o700);
     for (const mode of [0o755, 0o750, 0o777]) {
@@ -128,7 +132,8 @@ describe("the discovery socket", () => {
     expect(socketPathProblem(join(`/tmp/${"x".repeat(120)}`, "0123456789abcdef.sock"))).toContain("too long");
   });
 
-  test("a stale socket (nobody listening) is nothing running and is left alone; a socket that isn't a socket is refused", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("a stale socket (nobody listening) is nothing running and is left alone; a socket that isn't a socket is refused", async () => {
     const { name } = await start();
     await closers.pop()!();
     // A console killed outright leaves its socket file; nobody answers.
@@ -141,7 +146,8 @@ describe("the discovery socket", () => {
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
   });
 
-  test("each start binds its own socket; a second start on the same database (even by another spelling) never takes a live first one's record", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("each start binds its own socket; a second start on the same database (even by another spelling) never takes a live first one's record", async () => {
     const first = await start();
     const alias = join(dir, "alias");
     mkdirSync(alias, { mode: 0o700 });
@@ -194,7 +200,8 @@ describe("taking the record", () => {
 });
 
 describe("attaching", () => {
-  test("a live console reached directly passes both proofs", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("a live console reached directly passes both proofs", async () => {
     const { port } = await start();
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: true, url: `http://127.0.0.1:${port}`, port, pid: process.pid, build: BUILD });
   });
@@ -212,7 +219,8 @@ describe("attaching", () => {
     expect((await fetch(`http://127.0.0.1:${port}${INSTANCE_PATH}?c=${c}&c=${c}`)).status).toBe(400);
   });
 
-  test("another build refuses, naming the restart", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("another build refuses, naming the restart", async () => {
     await start();
     expect(await proveLiveConsole(databaseFile, store, "1.0.0")).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining("toolroll up") });
   });
@@ -227,7 +235,8 @@ describe("attaching", () => {
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toMatchObject({ ok: false, state: "refused" });
   });
 
-  test("a stale record with a replayed hello, a recycled pid and a replacement listener on the recorded port is refused", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("a stale record with a replayed hello, a recycled pid and a replacement listener on the recorded port is refused", async () => {
     const replacement = createHttpServer((_request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ proof: "f".repeat(64) })); });
     const port = await listen(replacement, "127.0.0.1");
     closers.push(() => closeServer(replacement));
@@ -242,7 +251,8 @@ describe("attaching", () => {
     expect(await proveLiveConsole(databaseFile, store, BUILD, { challenge: () => "3".repeat(64) })).toMatchObject({ ok: false, state: "refused", message: expect.stringContaining(`127.0.0.1:${port}`) });
   });
 
-  test.skipIf(!ipv6)("a genuine console reached through an IPv4-to-IPv6 relay is refused on both-channel verification", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE || !ipv6)("a genuine console reached through an IPv4-to-IPv6 relay is refused on both-channel verification", async () => {
     const { port, secret } = await start("::1");
     const piped: { destroy: () => void }[] = [];
     const relay = createTcpServer(inbound => { const outbound = tcpConnect(port, "::1"); piped.push(inbound, outbound); inbound.pipe(outbound).pipe(inbound); inbound.on("error", () => outbound.destroy()); outbound.on("error", () => inbound.destroy()); });
@@ -255,7 +265,8 @@ describe("attaching", () => {
     expect(Date.now() - started).toBeLessThan(2_500);
   });
 
-  test("a socket the system won't show (not 'not found') can't be checked: refused, never 'nothing running'", async () => {
+  // Inside the plane's macOS check fence every folder a check may write is too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
+  test.skipIf(INSIDE_FENCE)("a socket the system won't show (not 'not found') can't be checked: refused, never 'nothing running'", async () => {
     const { name } = await start();
     void name;
     chmodSync(run, 0o000);

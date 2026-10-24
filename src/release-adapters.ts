@@ -163,6 +163,10 @@ export type AdapterOptions = {
   sleep?: (ms: number) => Promise<void>;
 };
 
+/** How many times, and how far apart, a merged branch's deletion is looked for after the push lost a race. */
+export const BRANCH_GONE_LOOKS = 5;
+export const BRANCH_GONE_PAUSE_MS = 2_000;
+
 export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const run = options.run ?? exec;
   const get = options.fetch ?? fetch;
@@ -170,6 +174,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const tap = options.tap ?? "ap9000/homebrew-toolroll";
   const formula = options.formula ?? "Formula/toolroll.rb";
   const git = (...args: string[]) => run("git", ["-C", checkout, ...args]);
+  const pause = options.sleep ?? ((ms: number) => new Promise<void>(done => setTimeout(done, ms)));
   const gh = (...args: string[]) => run("gh", args);
   const ghJson = async (what: string, ...args: string[]) => JSON.parse(await must(gh(...args), what)) as unknown;
   const toolroll = async (...args: string[]): Promise<Json> => {
@@ -225,9 +230,13 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         if (current !== head) throw new Error(`${branch} moved after merging; its new head was not deleted.`);
         const pushed = await git("push", `--force-with-lease=${ref}:${head}`, "origin", `:${ref}`);
         if (pushed.code === 0) return;
-        // GitHub may delete a merged branch itself between the look and the push; gone is what was wanted.
-        const after = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
-        if (after === null) return;
+        // GitHub may delete a merged branch itself between the look and the push; gone is what was wanted. Its refs can
+        // lag the deletion by a few seconds, so look a few times before calling it a failure.
+        for (let look = 0; look < BRANCH_GONE_LOOKS; look++) {
+          if (look > 0) await pause(BRANCH_GONE_PAUSE_MS);
+          const after = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
+          if (after === null) return;
+        }
         throw new Error(`deleting merged branch ${branch} failed: ${pushed.stderr.trim() || `exit ${pushed.code}`}`);
       },
       async tree(sha) { return (await must(git("rev-parse", `${sha}^{tree}`), `git rev-parse ${sha.slice(0, 7)}^{tree}`)).trim(); },

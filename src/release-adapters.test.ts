@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { installUpdateGate } from "./desktop-update-gate.js";
-import { bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec } from "./release-adapters.js";
+import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec } from "./release-adapters.js";
 import { openStore, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -265,10 +265,24 @@ describe("the release adapters", () => {
       const head = looks === 1 ? SHA : after;
       return { code: 0, stderr: "", stdout: head === null ? "" : `${head}\trefs/heads/release-me\n` };
     };
-    const deletion = releaseAdapters({ checkout: "/rv", run }).repo.deleteBranch("release-me", SHA);
+    const paused: number[] = [];
+    const deletion = releaseAdapters({ checkout: "/rv", run, sleep: async ms => { paused.push(ms); } }).repo.deleteBranch("release-me", SHA);
     if (outcome === "resolves") await deletion;
     else await expect(deletion).rejects.toThrow(/deleting merged branch release-me failed: error: unable to delete/);
-    expect(looks).toBe(2);
+    expect(looks).toBe(outcome === "resolves" ? 2 : 1 + BRANCH_GONE_LOOKS);
+    expect(paused).toEqual(outcome === "resolves" ? [] : Array(BRANCH_GONE_LOOKS - 1).fill(BRANCH_GONE_PAUSE_MS));
+  });
+
+  test("a branch GitHub deleted itself, whose ref lags a few seconds, counts as deleted", async () => {
+    // Releases 0.9.66 and 0.9.67 both stopped here: the push lost the race, and the next look still saw the old ref.
+    let looks = 0;
+    const run: Exec = async (_command, args) => {
+      if (args.includes("push")) return { code: 1, stderr: "! [remote rejected] release-me (cannot lock ref 'refs/heads/release-me': unable to resolve reference)", stdout: "" };
+      looks += 1;
+      return { code: 0, stderr: "", stdout: looks <= 3 ? `${SHA}\trefs/heads/release-me\n` : "" };
+    };
+    await releaseAdapters({ checkout: "/rv", run, sleep: async () => {} }).repo.deleteBranch("release-me", SHA);
+    expect(looks).toBe(4);
   });
 
   test.each([
