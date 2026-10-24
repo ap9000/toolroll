@@ -47,21 +47,30 @@ function checks(job: Job, id: string): { name: string; runner: string }[] {
 
 const running = (event: Event) => workflows.filter(one => triggered(one, event)).flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => checks(job, id)));
 const names = (event: Event) => running(event).map(one => one.name).sort();
+/** Checks a pull request also runs that never fail it and that no release waits for (youiyoux.yml). */
+const ADVISORY_PR_CHECKS = ["youiyoux · UI drift"];
+const onPullRequest = [...REQUIRED_PR_CHECKS, ...ADVISORY_PR_CHECKS].sort();
 
 describe("the CI workflows", () => {
   test("a pull request runs Ubuntu on Node 22 and 24 plus the Linux and Windows containment jobs, and no macOS", () => {
     // No branch or path filter may omit required checks on a PR (including documentation-only changes).
     expect(workflows.find(one => one.file === "ci.yml")?.on["pull_request"]).toBeNull();
     const pr: Event = { kind: "pull_request", paths: ["src/release.ts"] };
-    expect(names(pr)).toEqual([...REQUIRED_PR_CHECKS].sort());
+    expect(names(pr)).toEqual(onPullRequest);
     expect(running(pr).filter(one => /macos/.test(one.runner))).toEqual([]);
     expect(running(pr).filter(one => /ubuntu/.test(one.runner) && /^node /.test(one.name)).map(one => one.name).sort()).toEqual(["node 22 · ubuntu-latest", "node 24 · ubuntu-latest"]);
-    expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual([...REQUIRED_PR_CHECKS].sort());
+    expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual(onPullRequest);
     expect(running(pr).find(one => one.name === "Windows Job Object containment")?.runner).toBe("windows-latest");
     expect(running(pr).find(one => one.name === "linux native containment · delegated cgroup v2")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
     const windows = names({ kind: "pull_request", paths: ["src/containment.ts"] });
-    expect(windows.filter(name => !(REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual(["Windows Job Object containment · c2 × ${{ inputs.runs || 20 }}"]);
+    expect(windows.filter(name => !onPullRequest.includes(name))).toEqual(["Windows Job Object containment · c2 × ${{ inputs.runs || 20 }}"]);
+  });
+
+  test("the youiyoux UI notes are advisory: never a required check, and never strict, so they cannot fail a pull request", () => {
+    expect(ADVISORY_PR_CHECKS.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    const steps = workflows.find(one => one.file === "youiyoux.yml")!.jobs["ui"]!.steps ?? [];
+    expect(steps.filter(step => /\bcheck --diff\b/.test(step.run ?? "")).map(step => /--strict\b/.test(step.run!))).toEqual([false]);
   });
 
   test("a failed or skipped macOS leg prevents npm publication through the tag workflow dependency", () => {
