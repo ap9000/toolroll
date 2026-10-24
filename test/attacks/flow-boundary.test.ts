@@ -6,11 +6,12 @@
  * three; where nothing can confine it, nothing runs and the card says so; a flow nothing sealed at v2 keeps the v1
  * home-configuration denies. The legitimate path beside it: the script reads its input and writes its own folder.
  */
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { checkLaunchRoot } from "../../src/agent-fence.js";
+import { checkLaunchRoot, codexFenceArgv, fenceFor, linuxFenced, macosFenced, macosFenceProfile, runFolders, sealedScratch, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
+import { nativeSeccomp } from "../seccomp-fixture.js";
 import { CONTAINMENT_REFUSED_CODE, run as exec } from "../../src/exec.js";
 import { flowLaunch } from "../../src/flow-code.js";
 import { saveScript } from "../../src/flow-scripts.js";
@@ -19,14 +20,14 @@ import { addFlowTriggerTo, checkFlowTriggerNow, type TriggerIo } from "../../src
 import { flowFromSteps } from "../../src/flows.js";
 import { addApprover } from "../../src/scope.js";
 import { openStore, type Store } from "../../src/store.js";
-import { marker, needs, repository, osFence, useScratch, write } from "./harness.js";
+import { git, marker, needs, repository, osFence, useScratch, write } from "./harness.js";
 
 const T0 = new Date("2026-10-24T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 const scratch = useScratch("flow-boundary");
 
 let root: string, state: string, repo: string, pool: string, store: Store, otherRun: string;
-const canary: Record<"state" | "run" | "pool", { path: string; secret: string }> = {} as never;
+const canary: Record<"state" | "run" | "pool" | "scratch", { path: string; secret: string }> = {} as never;
 beforeEach(() => {
   root = scratch();
   // Toolroll's own state folder (a dedicated name, fenced whole), its checkout pool inside it, and a project beside.
@@ -40,6 +41,8 @@ beforeEach(() => {
   const plant = (label: string, path: string) => ({ path: write(path, marker(label)), secret: "" });
   canary.state = plant("flow-state", join(state, "up-login.txt"));
   canary.pool = plant("flow-pool", join(pool, "other-project", "task-1-0123abcd", "secret.txt"));
+  // Another flow's scratch folder in the pool (its inputs and outputs): never readable, whatever the policy.
+  canary.scratch = plant("flow-scratch", join(pool, "flow-checks", "flow-check-99-1", "output.txt"));
   // Another launch's private folder, where the run folders live (a check's on a Mac is /private/tmp).
   otherRun = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
   canary.run = plant("flow-run", join(otherRun, "broker-token"));
@@ -53,7 +56,7 @@ const probe = () => [...Object.entries(canary).map(([name, one]) => `if cat ${JS
   `if echo planted >> ${JSON.stringify(canary.pool.path)} 2>/dev/null; then echo pool-write:written; else echo pool-write:denied; fi`].join("\n");
 /** A flow made now runs under fence policy v2: another task's checkout is read (agents can work together), never
  * written; Toolroll's state and other runs' folders stay unreadable. */
-const EXPECTED: Record<string, "read" | "denied"> = { state: "denied", run: "denied", pool: "read" };
+const EXPECTED: Record<string, "read" | "denied"> = { state: "denied", run: "denied", pool: "read", scratch: "denied" };
 const stepIo = (extra: Partial<StepIo> = {}): StepIo => ({ gh: vi.fn(), git: exec, shell: exec, fetch: vi.fn() as unknown as typeof fetch, dir: state, scratch: join(pool, "flow-checks"), base: "main", home: join(root, "home"), ...extra });
 const flowOf = (steps: Parameters<typeof flowFromSteps>[0]) => store.createFlow({ repo, name: "Upkeep", definitionJson: JSON.stringify(flowFromSteps(steps, null)), by: "alex" }, T0);
 const save = (name: string, body: string) => { const saved = saveScript(store, repo, { name, about: "Probes", body, timeoutMinutes: 1 }, "alex", T0); if (!saved.ok) throw new Error(saved.message); };
@@ -69,14 +72,14 @@ describe("attack: a flow reaching past the agents' fence", () => {
     await runFlowSteps(store, repo, at(1), stepIo());
     const output = store.getFlowCard(card)!.outputs["peek"] ?? store.getFlowCard(card)!.note ?? "";
     for (const name of Object.keys(canary)) {
-      expect(output).toContain(`setup-${name}:${EXPECTED[name]}`);
+      expect(output, output).toContain(`setup-${name}:${EXPECTED[name]}`);
       expect(output).toContain(`\n${name}:${EXPECTED[name]}`);
     }
     expect(output).toContain("setup-pool-write:denied");
     expect(output).toContain("\npool-write:denied");
     expect(output).toContain("input:read");
     expect(output).toContain("folder:written");
-    for (const one of [canary.state, canary.run]) expect(output).not.toContain(one.secret);
+    for (const one of [canary.state, canary.run, canary.scratch]) expect(output).not.toContain(one.secret);
     // Positive control: unsandboxed, the same reads succeed (the canaries are real, readable files).
     for (const one of Object.values(canary)) expect(execFileSync("cat", [one.path], { encoding: "utf8" })).toBe(one.secret);
   });
@@ -92,7 +95,56 @@ describe("attack: a flow reaching past the agents' fence", () => {
     expect(checked, checked.said).toMatchObject({ ok: true });
     const titles = store.flowCards(flow, true).map(one => one.title).sort();
     // Its folder isn't in the pool: the pool stays inside the fenced state folder for it, unreadable.
-    expect(titles).toEqual(["input:read", "pool-write:denied", "pool:denied", "run:denied", "state:denied"]);
+    expect(titles).toEqual(["input:read", "pool-write:denied", "pool:denied", "run:denied", "scratch:denied", "state:denied"]);
+  });
+
+  test("native: a build under v2 reads a sibling task's checkout, never a flow's scratch folder in the pool", async ctx => {
+    needs(ctx, osFence());
+    const worktree = join(pool, "shop", "task-2-89abcdef");
+    git(repo, "worktree", "add", "-q", "-b", "t2", worktree);
+    const binding = trustedWorktreeBinding(repo, worktree, [pool]);
+    const home = join(root, "home");
+    const launch = fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
+      boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }) });
+    const script = [canary.pool.path, canary.scratch.path].map(path => `if cat ${JSON.stringify(path)} >/dev/null 2>&1; then echo read; else echo denied; fi`).join("\n");
+    const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
+      : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
+    expect(execFileSync(wrapped.file, wrapped.args, { cwd: worktree, encoding: "utf8" }).trim().split("\n")).toEqual(["read", "denied"]);
+  });
+
+  test("a scratch folder made after the launch, or planted as a link, is denied too (never only when it was there at launch)", async ctx => {
+    rmSync(join(pool, "flow-checks"), { recursive: true, force: true });
+    const worktree = join(pool, "shop", "task-2-89abcdef");
+    git(repo, "worktree", "add", "-q", "-b", "t2", worktree);
+    const binding = trustedWorktreeBinding(repo, worktree, [pool]);
+    const home = join(root, "home");
+    const launch = fenceFor("build", { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
+      boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }) });
+    // Named whether there or not (on Linux, where only what exists can be masked, made first, owner-only).
+    expect(launch.fenceGrants.pool?.sealed).toContain(join(realpathSync(pool), "flow-checks"));
+    expect(macosFenceProfile(launch.fence, launch.fenceGrants)).toContain(`(deny file-read* file-write* (subpath "${join(realpathSync(pool), "flow-checks")}"))`);
+    expect(codexFenceArgv(launch.fence, false, launch.fenceGrants).join(" ")).toContain(`"${join(realpathSync(pool), "flow-checks")}"="deny"`);
+    if (process.platform === "linux") expect(statSync(join(pool, "flow-checks")).mode & 0o777).toBe(0o700);
+    // A link at the name: denied by name and where it leads.
+    const elsewhere = join(root, "elsewhere-scratch");
+    mkdirSync(elsewhere);
+    const linkedPool = join(root, "pool-2");
+    mkdirSync(linkedPool);
+    symlinkSync(elsewhere, join(linkedPool, "flow-checks"));
+    expect(sealedScratch([linkedPool], [])).toEqual([join(realpathSync(linkedPool), "flow-checks"), realpathSync(elsewhere)].sort());
+    needs(ctx, osFence());
+    const late = join(pool, "flow-checks", "flow-check-7-1", "output.txt");
+    const script = `sleep 1; if cat ${JSON.stringify(late)} >/dev/null 2>&1; then echo read; else echo denied; fi`;
+    const wrapped = process.platform === "darwin" ? macosFenced("/bin/sh", ["-c", script], launch.fence, launch.fenceGrants)
+      : linuxFenced("/bin/sh", ["-c", script], launch.fence, { ...launch.fenceGrants, seccomp: nativeSeccomp()! });
+    const child = spawn(wrapped.file, wrapped.args, { cwd: worktree, stdio: ["ignore", "pipe", "inherit"] });
+    let out = "";
+    child.stdout.on("data", chunk => { out += chunk; });
+    // Made after the launch started.
+    write(late, marker("late-scratch"));
+    await new Promise(done => child.on("close", done));
+    expect(out.trim()).toBe("denied");
+    expect(execFileSync("cat", [late], { encoding: "utf8" })).toMatch(/^synthetic-attack-/);
   });
 
   test("where nothing can confine it, neither setup nor script runs, and the card and the trigger say why", async () => {

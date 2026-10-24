@@ -574,7 +574,10 @@ export const NO_GRANTS: FenceGrants = { readOnly: [], readable: [], lookup: [] }
  */
 export type CheckoutPool = { deny: string[]; own: string | null; lookup: string[]; gitPaths?: string[];
   /** Policy v2 (owner Q-C): other tasks' checkouts are read, never written (agents can work together); v1 denies both. */
-  readable?: true };
+  readable?: true;
+  /** Folders inside the pool that stay denied whole whatever the policy (flows' scratch folders hold their inputs and
+   * outputs), this launch's own folder given back. */
+  sealed?: string[] };
 
 /**
  * The pool deny for one launch. `roots` come from the plane's own records (the pool beside the database, and the one
@@ -739,7 +742,10 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   if (pool !== undefined) {
     const held = codexPool(pool);
     for (const path of held.read) access.set(path, "read");
-    for (const path of held.deny) access.set(path, pool.readable === true ? "read" : "deny");
+    for (const path of held.deny) access.set(path, pool.readable === true && !(pool.sealed ?? []).some(one => path === one || inside(path, one)) ? "read" : "deny");
+    // A sealed folder (flows' scratch) is denied whole, but on the way to this launch's own folder (Codex can't deny an
+    // ancestor and still reach inside it: its other entries are denied one by one, by codexPool, from the same split).
+    for (const sealed of pool.sealed ?? []) if (!(pool.own !== null && (pool.own === sealed || inside(pool.own, sealed)))) access.set(sealed, "deny");
     for (const path of held.write) access.set(path, "write");
   }
   // Denies are keyed where they resolve; the console's run folder is also denied by its
@@ -905,6 +911,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
       ...(grants.writes.subpaths.length === 0 ? [] : [`(deny file-write* ${paths("literal", grants.writes.subpaths)})`]),
     ]),
     ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny ${pool.readable === true ? "" : "file-read* "}file-write* ${paths("subpath", pool.deny)})`]),
+    ...(pool?.sealed === undefined || pool.sealed.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.sealed)})`]),
     ...(pool?.own == null ? [] : [
       `(allow file-read* file-write* ${paths("subpath", [pool.own])})`,
       `(deny file-write* ${paths("literal", [pool.own])})`,
@@ -1185,7 +1192,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // An unlocked exact file, given back writable inside a protected folder bound read-only above (only if it exists:
   // a new one is the watch's to allow), as every backend gives it.
   protectedNames.push(...grantableUnlocks(fence, grants).filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]));
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...own, ...[...fence, ...grants.readDenyAbove ?? []].filter(present).flatMap(masks), ...kept, ...services, ...protectedNames, ...signIns, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...(grants.pool?.sealed ?? []).filter(present).flatMap(mask), ...own, ...[...fence, ...grants.readDenyAbove ?? []].filter(present).flatMap(masks), ...kept, ...services, ...protectedNames, ...signIns, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
 }
 
 /**
@@ -1432,6 +1439,8 @@ export type FenceContext = {
   provider?: string;
   /** The fence policy it runs under: v2 reads other tasks' checkouts (never writes them). */
   policy?: FencePolicy;
+  /** Scratch folders (a flow's) that stay denied whole inside the pool, whatever the policy. */
+  scratchRoots?: readonly string[];
 };
 
 /** A launch's sealed sandbox terms (builder.ts launchSandboxOf): its policy version, read denies, mach services and
@@ -1472,7 +1481,9 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(seccomp === null ? {} : { seccomp }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
-    ...(ctx.policy === 2 && base.pool !== undefined ? { pool: { ...base.pool, readable: true as const } } : {}),
+    ...(base.pool === undefined ? {} : { pool: { ...base.pool, ...(ctx.policy === 2 ? { readable: true as const } : {}),
+      // Flows' scratch folders in the pool (and any the caller names) stay denied whole, at every policy version.
+      sealed: sealedScratch(ctx.poolRoots, ctx.scratchRoots ?? []) } }),
     ...(absentDenies.length === 0 ? {} : process.platform === "linux"
       ? { readDenyAbove: readDenyMasks(absentDenies, [ctx.home ?? homedir(), ...(ctx.worktree === null ? [] : [ctx.worktree])]) }
       : { homeNames: [...new Set([...made.homeNames ?? [], ...absentDenies])].sort() }),
@@ -1783,6 +1794,25 @@ export function readDenyMasks(absent: readonly string[], keep: readonly string[]
     const at = real(folder);
     if (kept.some(one => one === at || inside(one, at))) continue;
     out.add(at);
+  }
+  return [...out].sort();
+}
+
+/** The flows' scratch folders inside the checkout pools (`flow-checks` beside the checkouts) and any a caller names, each
+ * denied by name whether or not it is there yet (a later one must never land inside a readable pool), and where it is
+ * a link, where it leads too. On Linux, where only a path that exists can be masked, a missing one is made first
+ * (owner-only, Toolroll's own name) so the mask is always there. */
+export function sealedScratch(poolRoots: readonly (string | null)[], named: readonly string[], platform: NodeJS.Platform = process.platform): string[] {
+  const out = new Set<string>();
+  const roots = poolRoots.filter((root): root is string => root !== null);
+  for (const path of [...roots.map(root => join(real(root), "flow-checks")), ...named.map(one => join(real(dirname(one)), basename(one)))]) {
+    let held: import("node:fs").Stats | null = null;
+    try { held = lstatSync(path); } catch { held = null; }
+    if (held === null && platform === "linux") {
+      try { mkdirSync(path, { mode: 0o700 }); held = lstatSync(path); } catch { held = null; }
+    }
+    out.add(path);
+    if (held?.isSymbolicLink() === true) { try { out.add(realpathSync(path)); } catch { /* dangling: denied by name */ } }
   }
   return [...out].sort();
 }
