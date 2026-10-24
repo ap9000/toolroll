@@ -54,27 +54,22 @@ const save = async (cookie: string, fields: Record<string, string>) => {
   return { status: answer.status, said: decodeURIComponent(answer.headers.get("location") ?? "") || ((text: string) => text.slice(text.indexOf("Request refused</h1>") + 20).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200))(await answer.text()) };
 };
 
-test("the section says the level and shows each wider level's warning before anyone chooses it", async () => {
+test("the section says the level and shows the wider level's warning before anyone chooses it; sign-ins is shown off, with why", async () => {
   const html = await page(await signIn("alex"));
   expect(html, html.slice(-3000)).toContain(`id="check-access"`);
   expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed</strong></p>");
-  // Each wider level's warning sits once, under its own option (shown while it is chosen).
-  expect(html).toMatch(/data-check-access-warning="sign-ins">This project(?:'|&#39;)s checks can read your Claude, Codex and GitHub sign-ins/);
+  expect(html).toMatch(/<input type="radio" name="level" value="sign-ins" disabled> Sandboxed, with model and GitHub sign-ins<\/label><p class="meta">Not available yet: sign-ins can(?:'|&#39;)t be shared with checks safely\. Choose Sandboxed or Not sandboxed\.<\/p>/);
+  expect(html).not.toContain('data-check-access-warning="sign-ins"');
   expect(html).toMatch(/data-check-access-warning="unsandboxed">This project(?:'|&#39;)s checks get your full access/);
   expect(html).toContain("Flow script steps always run sandboxed. Tasks already approved keep their level.");
 });
 
-test("an instance operator widens it with a password typed now; a wrong one changes nothing; the sign-ins name the hosts they'd need", async () => {
+test("an instance operator widens it with a password typed now; a wrong one changes nothing", async () => {
   const alex = await signIn("alex");
-  expect((await save(alex, { level: "sign-ins", password: "wrong" })).said).toMatch(/Enter your Toolroll password/);
+  expect((await save(alex, { level: "unsandboxed", password: "wrong" })).said).toMatch(/Enter your Toolroll password/);
   expect(store.projectCheckAccess(repo)).toBe("sandboxed");
-  expect((await save(alex, { level: "sign-ins", password: tokens["alex"]! })).said).toMatch(/Saved/);
-  expect(store.projectCheckAccess(repo)).toBe("sign-ins");
-  // Never added to the network: the page says which hosts and where to add them, as a change of its own.
-  expect(store.projectNetwork(repo).hosts).toEqual([]);
-  const shown = await page(alex);
-  expect(shown).toMatch(/data-sign-in-hosts>8 sign-in hosts aren(?:'|&#39;)t allowed yet · <a href="#network">Add them<\/a>/);
-  expect(shown).toMatch(/<summary>Show hosts<\/summary><p class="tool-name">api\.anthropic\.com, /);
+  expect((await save(alex, { level: "unsandboxed", password: tokens["alex"]! })).said).toMatch(/Saved/);
+  expect(store.projectCheckAccess(repo)).toBe("unsandboxed");
 });
 
 test("an approver limited to this project can't change it here (the settings area needs instance access): nothing changes", async () => {
@@ -86,14 +81,9 @@ test("an approver limited to this project can't change it here (the settings are
   // (Narrowing is theirs through the CLI, project check-access: check-access.test.ts.)
 });
 
-test("sign-ins with an open network takes a second, explicit yes", async () => {
+test("with sign-ins off, an open network asks for no sign-ins confirmation", async () => {
   store.setProjectNetwork(repo, { mode: "open", hosts: [], loopback: "proxy-only" }, "alex", NOW);
-  const alex = await signIn("alex");
-  expect(await page(alex)).toContain('name="confirm-open"');
-  expect((await save(alex, { level: "sign-ins", password: tokens["alex"]! })).said).toMatch(/confirm that its checks could send your sign-ins to any host/);
-  expect(store.projectCheckAccess(repo)).toBe("sandboxed");
-  expect((await save(alex, { level: "sign-ins", "confirm-open": "yes", password: tokens["alex"]! })).said).toMatch(/Saved/);
-  expect(store.projectCheckAccess(repo)).toBe("sign-ins");
+  expect(await page(await signIn("alex"))).not.toContain('name="confirm-open"');
 });
 
 test("widening takes a password typed now on both roads: an identity-provider re-check never widens", async () => {
@@ -116,39 +106,30 @@ test("on a machine that can't sandbox checks at all, the section says so before 
   expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(options\.fenceAvailable\?\.\(\) \?\? \(macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\)\)\) && store\.unfencedAgentsAllowed\(\)/);
 });
 
-test("on Linux the sign-ins choice is shown disabled with the reason, and a save of it is refused before the password: nothing changes", async () => {
-  await serveAs("linux");
-  const alex = await signIn("alex");
-  const html = await page(alex);
-  expect(html).toMatch(/<input type="radio" name="level" value="sign-ins" disabled> Sandboxed, with model and GitHub sign-ins<\/label><p class="meta">Not available on Linux yet: sign-ins can(?:'|&#39;)t be shared with checks safely there\. Choose Sandboxed or Not sandboxed\.<\/p>/);
-  expect(html).not.toContain('data-check-access-warning="sign-ins"');
-  // The other levels stay choosable.
-  expect(html).toMatch(/value="unsandboxed">/);
-  // A form that sends it anyway (with the right password) changes nothing, and nothing reaches the ledger.
-  expect((await save(alex, { level: "sign-ins", password: tokens["alex"]! })).said).toMatch(/Not available on Linux yet: sign-ins can't be shared with checks safely there\. Choose Sandboxed or Not sandboxed\. Nothing changed\./);
-  expect(store.projectCheckAccess(repo)).toBe("sandboxed");
+test("on every platform a save of sign-ins is refused before the password: nothing changes", async () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    await serveAs(platform);
+    const alex = await signIn("alex");
+    // A form that sends it anyway (with the right password) changes nothing, and nothing reaches the ledger.
+    expect((await save(alex, { level: "sign-ins", "confirm-open": "yes", password: tokens["alex"]! })).said).toMatch(/Not available yet: sign-ins can't be shared with checks safely\. Choose Sandboxed or Not sandboxed\. Nothing changed\./);
+    expect(store.projectCheckAccess(repo)).toBe("sandboxed");
+  }
   expect(store.handle.prepare("SELECT 1 FROM action_ledger WHERE action = 'check access'").all()).toEqual([]);
-  // Not sandboxed is as it was.
-  expect((await save(alex, { level: "unsandboxed", password: tokens["alex"]! })).said).toMatch(/Saved/);
-  expect(store.projectCheckAccess(repo)).toBe("unsandboxed");
 });
 
-test("on Linux a sign-ins level already saved (a database from a Mac) shows as Sandboxed and says why; on a Mac it shows as saved", async () => {
+test("a sign-ins level already saved (before this, or another database) shows as Sandboxed and says why", async () => {
   store.setProjectCheckAccess(repo, "sign-ins", "alex", NOW, { may: "widen" });
-  await serveAs("linux");
-  const linux = await page(await signIn("alex"));
-  expect(linux).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed</strong></p>");
-  expect(linux).toMatch(/data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but on Linux checks run sandboxed: sign-ins can(?:'|&#39;)t be shared with checks safely there yet\./);
-  expect(linux).not.toContain("data-sign-in-hosts");
-  expect(linux).toMatch(/value="sandboxed" checked>/);
-  await serveAs("darwin");
-  const mac = await page(await signIn("alex"));
-  expect(mac).toContain("<p><strong>Sandboxed, with model and GitHub sign-ins</strong></p>");
-  expect(mac).not.toContain("data-sign-ins-unavailable");
-  expect(mac).toMatch(/value="sign-ins" checked>/);
+  for (const platform of ["darwin", "linux"] as const) {
+    await serveAs(platform);
+    const html = await page(await signIn("alex"));
+    expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed</strong></p>");
+    expect(html).toMatch(/data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but checks run sandboxed: sign-ins can(?:'|&#39;)t be shared with checks safely yet\./);
+    expect(html).not.toContain("data-sign-in-hosts");
+    expect(html).toMatch(/value="sandboxed" checked>/);
+  }
 });
 
-test("with no OS sandbox here and unconfined running allowed, the page says Not sandboxed first: never that Linux runs it sandboxed", async () => {
+test("with no OS sandbox here and unconfined running allowed, the page says Not sandboxed first: never that it runs sandboxed", async () => {
   store.setProjectCheckAccess(repo, "sign-ins", "alex", NOW, { may: "widen" });
   store.setUnfencedAgentsAllowed(true, "alex", NOW);
   await serveAs("linux", () => false);

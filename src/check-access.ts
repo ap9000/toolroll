@@ -66,16 +66,19 @@ export function checkNetworkOf(sealed: NetworkProfile, provider: string, project
   return { ...sealed, hosts: sealed.hosts.filter(host => !agent.has(host)) };
 }
 
-/** Linux, for now (0.9.69): no `sign-ins`. Reading a sign-in file there resolves its parent folders by path (Node has no
- * openat), and a Claude build on Linux can write ~/.claude, so a build could swap a parent folder for a link between the
- * checks and the read. Until that read is race-free, checks on Linux never get sign-ins: setting the level is refused,
- * and a level saved or sealed elsewhere (a database copied from a Mac) runs sandboxed. macOS keeps it: only Codex's
- * files are read that way there, and no build can write ~/.codex. */
-export const signInsAvailable = (platform: NodeJS.Platform = process.platform): boolean => platform !== "linux";
+/** Off everywhere, for now (0.9.69): no `sign-ins`. Reading a sign-in file resolves its parent folders by path (Node
+ * has no openat), and each review round found another way a build or a check could swap a folder on that path between
+ * the checks and the read (on Linux a Claude build can write ~/.claude outright). Until that read is race-free, no
+ * check gets sign-ins: setting the level is refused, a level saved or sealed before (or copied in from another
+ * database) runs sandboxed, a scope seals sandboxed, and the sign-ins launch refuses first thing. The code behind it
+ * (signInGrants, readGrantedFile, the copies, the network fence) stays, guarded, for when such a reader exists; flip
+ * SIGN_INS_READY then (Linux stays off until its copies are race-free too). */
+export const SIGN_INS_READY = false;
+export const signInsAvailable = (platform: NodeJS.Platform = process.platform): boolean => SIGN_INS_READY && platform !== "linux";
 
 /** Why sign-ins can't be chosen here, said plainly (null: they can). */
 export const signInsUnavailableWords = (platform: NodeJS.Platform = process.platform): string | null => signInsAvailable(platform) ? null
-  : "Not available on Linux yet: sign-ins can't be shared with checks safely there. Choose Sandboxed or Not sandboxed.";
+  : "Not available yet: sign-ins can't be shared with checks safely. Choose Sandboxed or Not sandboxed.";
 
 /** The level checks actually get on this platform: `sign-ins` where it isn't available is `sandboxed` (narrower, never
  * wider). Everything that seals, launches or stamps a check's level goes through this. */

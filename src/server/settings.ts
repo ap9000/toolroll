@@ -2266,7 +2266,7 @@ ${modeWords(terms)
     const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#check-access");
     const wanted = body.get("level");
     if (!isCheckAccess(wanted)) return back("problem", "Choose how far checks reach. Nothing changed.");
-    // Not on Linux yet (check-access.ts signInsAvailable): refused before the password, whatever the form sent.
+    // Not available yet (check-access.ts signInsAvailable): refused before the password, whatever the form sent.
     const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(options.platform ?? process.platform) : null;
     if (unavailable !== null) return back("problem", `${unavailable} Nothing changed.`);
     const widening = widerThan(wanted, store.projectCheckAccess(repo));

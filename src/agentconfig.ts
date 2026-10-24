@@ -241,7 +241,7 @@ export function resolveScopeProfile(
   const network = resolveNetwork(provider, repo === null ? PROJECT_NETWORK_DEFAULT : store.projectNetwork(repo), repo === null ? [] : repositoryEcosystems(repo));
   // Where the build may write (writes-mode.ts): the project's setting, sealed likewise.
   const writes = repo === null ? WRITES_DEFAULT : store.projectWrites(repo);
-  // How far its checks reach (check-access.ts): the project's setting as this platform can give it (sign-ins on Linux
+  // How far its checks reach (check-access.ts): the project's setting as checks can get it (sign-ins, off for now,
   // seal as sandboxed: an approval never claims what its checks won't get), sealed only when wider than sandboxed.
   const checkAccess: CheckAccess = repo === null ? "sandboxed" : checkAccessHere(store.projectCheckAccess(repo), platform);
   return { ok: true, profile: { ...profile, network, writes, ...(checkAccess === "sandboxed" ? {} : { checkAccess }) }, provenance: { resolvedFrom: build.source, repairFrom } };

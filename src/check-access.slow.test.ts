@@ -10,13 +10,15 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { claudeProjectFolder, linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { run } from "./exec.js";
 import { fencedCheckoutCommands } from "./invoke.js";
+import { signInsAvailable } from "./check-access.js";
 import { openStore, type Store } from "./store.js";
 import { outsideTempDir } from "../test/short-temp.js";
 
 const FENCED = macosFenceAvailable() || linuxFenceAvailable();
-/** Sign-ins aren't available on Linux yet (check-access.ts signInsAvailable): there a sign-ins check runs nothing. */
-const SIGN_INS = process.platform !== "linux";
-const LINUX_REFUSAL = /Sign-ins can't be shared with checks on Linux yet, so nothing ran\./;
+/** Sign-ins are off for now (check-access.ts signInsAvailable): a sign-ins check runs nothing. The grant tests below
+ * stay for when a race-free reader turns them back on. */
+const SIGN_INS = signInsAvailable();
+const REFUSAL = /Sign-ins can't be shared with checks yet, so nothing ran\./;
 /** A sign-ins check's network, as its caller proves it: here, its registries only (none for this project). */
 const NOWHERE = { version: 1 as const, mode: "allowlist" as const, hosts: [], loopback: "proxy-only" as const };
 let dir: string, home: string, repo: string, checkout: string, store: Store;
@@ -141,12 +143,12 @@ describe.skipIf(!FENCED || process.platform !== "darwin")("a check's short launc
   });
 });
 
-describe.skipIf(!FENCED || SIGN_INS)("Linux: a sign-ins check runs nothing, in the real fence", () => {
+describe.skipIf(!FENCED || SIGN_INS)("sign-ins off: a sign-ins check runs nothing, in the real fence", () => {
   test("no sign-in file is read, copied or granted: the command never starts", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins", NOWHERE)("/bin/sh", ["-c", probe()], { cwd: checkout });
     expect(result.stdout).toBe("");
     expect(result.code).toBe(1);
-    expect(result.stderr).toMatch(LINUX_REFUSAL);
+    expect(result.stderr).toMatch(REFUSAL);
     // The fence may make the (owner-only) copies folder; nothing was copied into it.
     const copies = join(dir, "toolroll", "sign-in-copies");
     expect(readdirSync(join(dir, "toolroll")).includes("sign-in-copies") ? readdirSync(copies) : []).toEqual([]);
@@ -182,7 +184,7 @@ describe.skipIf(!FENCED)("the sign-in copies folder (Linux checks' copies, fence
       }
       for (const level of ["sandboxed", "sign-ins"] as const) {
         const result = await fencedCheckoutCommands(other, repo, checkout, run, undefined, level, NOWHERE)("/bin/sh", ["-c", reads("copy", join(sibling, "0"))], { cwd: checkout });
-        if (level === "sign-ins" && !SIGN_INS) { expect(result.stdout, result.stderr).toBe(""); expect(result.stderr).toMatch(LINUX_REFUSAL); continue; }
+        if (level === "sign-ins" && !SIGN_INS) { expect(result.stdout, result.stderr).toBe(""); expect(result.stderr).toMatch(REFUSAL); continue; }
         expect(result.stdout.trim(), `${level}: ${result.stderr}`).toBe("copy-refused");
       }
     } finally { other.close(); }

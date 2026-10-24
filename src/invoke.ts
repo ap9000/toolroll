@@ -1246,9 +1246,9 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
  * unless all of it is.
  */
 export async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[], platform: NodeJS.Platform = process.platform): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
-  // The belt (check-access.ts signInsAvailable): on Linux no sign-in file is read, copied or granted, whatever level
+  // The belt (check-access.ts signInsAvailable, off for now): no sign-in file is read, copied or granted, whatever level
   // reached this far. Its callers already run such a check sandboxed; anything else that asks runs nothing.
-  if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks on Linux yet, so nothing ran." };
+  if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks yet, so nothing ran." };
   const home = homedir();
   const grants = signInGrants(home, checkout);
   const cleanup: string[] = [];
@@ -1261,7 +1261,7 @@ export async function signInsLaunch(store: Store, own: string, temp: string, che
   }
   // On Linux every granted file is bound from a copy of its own, made the same way (bubblewrap binds a source path, and
   // a link swapped in after validation must never be what it binds). A Mac's sandbox checks the real path itself.
-  // Not reached for now: the belt above refuses on Linux until reading these files is race-free there.
+  // Not reached for now: the belt above refuses until reading these files is race-free.
   if (process.platform === "linux") {
     const copies: Record<string, string> = {};
     // Under Toolroll's own state folder, which every fence denies whole (a launch's folder in a shared /tmp isn't masked
@@ -1323,7 +1323,7 @@ export function actualCheckAccess(store: Store, access: CheckAccess): CheckAcces
  * sandboxed.
  */
 export function checkoutLaunchOf(store: Store, repo: string, runIds: readonly number[], platform: NodeJS.Platform = process.platform): { access: CheckAccess; network: NetworkProfile | undefined } {
-  // As this platform can give it: sign-ins on Linux (a stamp or setting from a Mac's database) run sandboxed.
+  // As checks can get it: sign-ins (off for now; a stamp or setting from before, or another database) run sandboxed.
   const access = checkAccessHere(narrowestAccess([store.projectCheckAccess(repo), ...runIds.map(id => store.runCheckAccess(id))]), platform);
   if (access !== "sign-ins") return { access, network: undefined };
   const sealed = runIds.map(id => store.runCheckNetwork(id));

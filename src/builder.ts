@@ -507,8 +507,8 @@ function commandRunner(store: Store, runId: number, profile: ExecutionProfile, i
   return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined);
 }
 
-/** A build's checks' level and network: its approval's level as this platform can give it (sign-ins sealed elsewhere
- * run sandboxed on Linux, and the run is stamped with that, what actually ran), and under sign-ins the network its
+/** A build's checks' level and network: its approval's level as this platform can give it (sign-ins sealed before
+ * run sandboxed while sign-ins are off, and the run is stamped with that, what actually ran), and under sign-ins the network its
  * approval sealed less its agent's own provider hosts (never its checks'). */
 export function checkLaunchOf(store: Store, runId: number, profile: ExecutionProfile, platform: NodeJS.Platform = process.platform): { access: CheckAccess; network: NetworkProfile | null } {
   const access = checkAccessHere(profile.checkAccess ?? CHECK_ACCESS_DEFAULT, platform);

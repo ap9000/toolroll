@@ -12118,20 +12118,20 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   const current = context.store.projectCheckAccess(repo);
   const platform = context.platform ?? process.platform;
   // How it actually runs here: with no OS fence and unconfined running allowed, without a sandbox whatever is saved; on
-  // Linux a saved sign-ins level (a database copied from a Mac) runs sandboxed. Said, never hidden.
+  // a saved sign-ins level (off for now) runs sandboxed. Said, never hidden.
   const fenced = context.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable());
   const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed() });
   const here = runsAs(current);
   const words = (one: CheckAccess): string[] => {
     if (runsAs(one) === "unsandboxed" && one !== "unsandboxed") return [`${repo}: saved as ${checkAccessWords(one)}, but this machine can't sandbox checks, so they run without a sandbox.`];
-    if (runsAs(one) !== one) return [`${repo}: saved with model and GitHub sign-ins, but on Linux its checks run sandboxed: sign-ins can't be shared with checks safely there yet.`];
+    if (runsAs(one) !== one) return [`${repo}: saved with model and GitHub sign-ins, but its checks run sandboxed: sign-ins can't be shared with checks safely yet.`];
     const missing = one === "sign-ins" ? signInHostsMissing(context.store.projectNetwork(repo)) : [];
     return [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]]),
       // Never added for it: the operator widens the network separately, with their own password.
       ...(missing.length === 0 ? [] : [`Model sign-ins need these hosts in this project's network allowlist: ${missing.join(", ")}. Add them with: toolroll project network --repo ${repo} --allow ${missing.join(",")}`])];
   };
   if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current, ...(here === current ? {} : { runsAs: here }), ...(here === "sign-ins" ? { missingHosts: signInHostsMissing(context.store.projectNetwork(repo)) } : {}) }, () => words(current));
-  // Not on Linux yet (check-access.ts signInsAvailable): refused before any password is asked for, nothing written.
+  // Not available yet (check-access.ts signInsAvailable): refused before any password is asked for, nothing written.
   const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(platform) : null;
   if (unavailable !== null) return fail(context.write, context.json, command, "refused", unavailable, EXIT.refused);
   const widening = widerThan(wanted, current);

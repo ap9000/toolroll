@@ -60,7 +60,7 @@ export type ProjectSettingsView = {
   checkAccess?: { setting: CheckAccess; changed: { by: string; at: string } | null; canNarrow: boolean; canWiden: boolean;
     /** This machine can't sandbox checks at all, and an operator allowed them to run anyway: every level runs unsandboxed. */
     unconfinedHere?: boolean;
-    /** Why sign-ins can't be chosen on this machine (Linux, for now), or null: they can. */
+    /** Why sign-ins can't be chosen (off for now), or null: they can. */
     signInsUnavailable?: string | null };
 };
 
@@ -89,7 +89,7 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const access = view.checkAccess;
   if (access === undefined) return "";
   const saved = access.setting;
-  // Sign-ins aren't available here (Linux, for now): a saved sign-ins level runs sandboxed, and the page says so.
+  // Sign-ins aren't available (off for now): a saved sign-ins level runs sandboxed, and the page says so.
   const unavailable = access.signInsUnavailable ?? null;
   const setting: CheckAccess = unavailable !== null && saved === "sign-ins" ? "sandboxed" : saved;
   const network = view.network?.setting ?? null;
@@ -101,7 +101,7 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${new Date(access.changed.at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</p>`;
   // Said before anything else: on a machine with no OS sandbox, every level runs without one.
   const unconfined = access.unconfinedHere === true ? html`<p class="meta warning-line" data-unconfined-here>This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.</p>` : "";
-  const runsSandboxed = setting !== saved && access.unconfinedHere !== true ? html`<p class="meta warning-line" data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but on Linux checks run sandboxed: sign-ins can't be shared with checks safely there yet.</p>` : "";
+  const runsSandboxed = setting !== saved && access.unconfinedHere !== true ? html`<p class="meta warning-line" data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but checks run sandboxed: sign-ins can't be shared with checks safely yet.</p>` : "";
   // No OS sandbox here, and unconfined running allowed: checks run without a sandbox whatever is saved, and that is
   // what the page says first (never "sandboxed"); the saved level is named under it.
   const head = access.unconfinedHere === true

@@ -1177,7 +1177,7 @@ export function readGrantedFile(path: string, seams: { afterOpen?: () => void } 
 }
 
 /**
- * The sign-in copies folder in a state folder (check-access.ts; Linux checks only, and off on Linux for now), or null:
+ * The sign-in copies folder in a state folder (check-access.ts; Linux checks only, and sign-ins are off for now), or null:
  * only the real folder Toolroll made there, owned by this user, mode 0700, reached through no link. Anything else (a
  * link planted at that name, someone else's folder, one others may open) is never used: nothing is copied into it.
  */
