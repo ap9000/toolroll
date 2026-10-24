@@ -52,10 +52,11 @@ const save = async (cookie: string, fields: Record<string, string>) => {
 test("the section says the level and shows each wider level's warning before anyone chooses it", async () => {
   const html = await page(await signIn("alex"));
   expect(html, html.slice(-3000)).toContain(`id="check-access"`);
-  expect(html).toContain("Checks run <strong>sandboxed</strong>");
-  expect(html).toMatch(/data-check-access-warning="sign-ins"><strong>Warning:<\/strong> This project(?:'|&#39;)s checks can read your Claude, Codex and GitHub sign-ins/);
-  expect(html).toMatch(/data-check-access-warning="unsandboxed"><strong>Warning:<\/strong> This project(?:'|&#39;)s checks get your full access/);
-  expect(html).toContain("Flow script steps always run sandboxed.");
+  expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Sandboxed</strong></p>");
+  // Each wider level's warning sits once, under its own option (shown while it is chosen).
+  expect(html).toMatch(/data-check-access-warning="sign-ins">This project(?:'|&#39;)s checks can read your Claude, Codex and GitHub sign-ins/);
+  expect(html).toMatch(/data-check-access-warning="unsandboxed">This project(?:'|&#39;)s checks get your full access/);
+  expect(html).toContain("Flow script steps always run sandboxed. Tasks already approved keep their level.");
 });
 
 test("an instance operator widens it with a password typed now; a wrong one changes nothing; the sign-ins name the hosts they'd need", async () => {
@@ -66,7 +67,9 @@ test("an instance operator widens it with a password typed now; a wrong one chan
   expect(store.projectCheckAccess(repo)).toBe("sign-ins");
   // Never added to the network: the page says which hosts and where to add them, as a change of its own.
   expect(store.projectNetwork(repo).hosts).toEqual([]);
-  expect(await page(alex)).toMatch(/data-sign-in-hosts>Model sign-ins need these hosts in this project's network allowlist: <span class="tool-name">api\.anthropic\.com, .*<a href="#network">Add them under Network<\/a>/);
+  const shown = await page(alex);
+  expect(shown).toMatch(/data-sign-in-hosts>8 sign-in hosts aren(?:'|&#39;)t allowed yet · <a href="#network">Add them<\/a>/);
+  expect(shown).toMatch(/<summary>Show hosts<\/summary><p class="tool-name">api\.anthropic\.com, /);
 });
 
 test("an approver limited to this project can't change it here (the settings area needs instance access): nothing changes", async () => {
@@ -86,4 +89,15 @@ test("sign-ins with an open network takes a second, explicit yes", async () => {
   expect(store.projectCheckAccess(repo)).toBe("sandboxed");
   expect((await save(alex, { level: "sign-ins", "confirm-open": "yes", password: tokens["alex"]! })).said).toMatch(/Saved/);
   expect(store.projectCheckAccess(repo)).toBe("sign-ins");
+});
+
+test("widening takes a password typed now on both roads: an identity-provider re-check never widens", async () => {
+  // A live re-check needs a provider session; the rule is pinned where each road decides (as passwordless-credentials does).
+  const { readFileSync } = await import("node:fs");
+  const settings = readFileSync("src/server/settings.ts", "utf8");
+  const cli = readFileSync("src/operate.ts", "utf8");
+  expect(settings).toMatch(/if \(widening && \(proved\.method !== "password-now" \|\| !store\.isInstanceOperator\(who\.name\)\)\)/);
+  expect(cli).toMatch(/proved\.method !== "password-now" \|\| !context\.store\.isInstanceOperator\(acting\.name\)/);
+  // And the write itself refuses a widening by anyone but an instance operator, whatever was claimed.
+  expect(store.setProjectCheckAccess(repo, "unsandboxed", "sam", NOW, { may: "widen" })).toBeNull();
 });

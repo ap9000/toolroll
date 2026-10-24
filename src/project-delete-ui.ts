@@ -27,6 +27,18 @@ export const PROJECT_DELETE_CSS = `.project-settings,.project-delete{max-width:7
   // A radio or checkbox choice sits beside its words, at its natural size, not as a full-width grid row.
   `.project-settings .build-access label.check{display:flex;align-items:center;gap:8px;min-height:44px;font:var(--so-typography-body);font-weight:500}` +
   `.project-settings .build-access label.check input{width:auto;min-height:0;margin:0;flex:none}.project-settings .build-access form .meta{margin:-8px 0 0 26px}` +
+  // Check access: a warning shows only under the option chosen; the folds draw the console's own chevron (as a diff's).
+  `.project-settings .check-access-setting .option .warning{display:none;color:var(--so-ink)}.project-settings .check-access-setting .option:has(input:checked) .warning{display:block}` +
+  `.project-settings .check-access-setting form{margin-top:0;gap:10px}.project-settings .check-access-setting .option{display:grid;gap:2px}` +
+  `.project-settings .check-access-setting .option .meta{margin:0 0 0 26px}.project-settings .check-access-setting label.check{min-height:36px}` +
+  `.project-settings .check-access-setting details > summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:40px;padding:0}` +
+  `.project-settings .check-access-setting details > summary::-webkit-details-marker{display:none}.project-settings .check-access-setting details > summary::marker{content:""}` +
+  `.project-settings .check-access-setting details > summary::before{content:"";flex:none;width:.35rem;height:.35rem;border-right:1.5px solid var(--so-muted);border-bottom:1.5px solid var(--so-muted);transform:rotate(-45deg);transition:transform .15s ease}` +
+  `.project-settings .check-access-setting details[open] > summary::before{transform:rotate(45deg) translateY(-.1rem)}` +
+  // Show hosts: a quiet fold in the line, not a card.
+  `.project-settings .check-access-setting details.hosts{border:0;background:none;padding:0;margin:0}.project-settings .check-access-setting details.hosts > summary{min-height:32px;font-size:.8125rem}` +
+  `.project-settings .check-access-setting details.hosts .tool-name{margin:0 0 4px;font-size:.75rem}` +
+  `.project-settings .check-access-setting button.primary{background:var(--so-signal);color:var(--so-on-signal);border-color:var(--so-signal)}` +
   `.project-settings .build-access a.manage-tools:hover{background:var(--so-raised)}.project-settings .build-access a.manage-tools:focus-visible,.project-settings .build-access summary:focus-visible{outline:2px solid var(--so-ink);outline-offset:2px}`;
 
 export type ProjectSettingsView = {
@@ -66,40 +78,36 @@ function writesHtml(view: ProjectSettingsView): Html | "" {
   return html`<section class="build-access writes-setting" id="writes" aria-labelledby="writes-title"><h2 id="writes-title">Where builds write</h2>${said}<details><summary>Change</summary>${form}</details></section>`;
 }
 
-/** Check access (check-access.ts): how far the project's checks reach, said plainly, each wider level's warning shown
- * before anyone chooses it. An instance operator widens it with a password typed now; an approver narrows it. */
+/** Check access (check-access.ts): how far the project's checks reach, said once. Collapsed: the level, what it means
+ * when it isn't the default, and who changed it. Inside Change: a line per level, and each wider level's warning under it
+ * only while it is chosen. An instance operator widens it with a password typed now; an approver narrows it. */
 function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const access = view.checkAccess;
   if (access === undefined) return "";
   const { setting } = access;
   const network = view.network?.setting ?? null;
-  const said = setting === "sandboxed"
-    ? html`<p>Checks run <strong>sandboxed</strong>: they can't read your sign-ins and credentials (Claude, Codex, GitHub, SSH, cloud logins), Toolroll's own folders or other projects.</p>`
-    : setting === "sign-ins"
-      ? html`<p>Checks run <strong>sandboxed, with model and GitHub sign-ins</strong>.</p><p class="meta">${CHECK_ACCESS_WARNINGS["sign-ins"]}</p>`
-      : html`<p>Checks run <strong>without a sandbox</strong>.</p><p class="meta">${CHECK_ACCESS_WARNINGS.unsandboxed}</p>`;
-  // The sign-ins never widen the network: say which hosts they'd need, and where to add them, as a change of its own.
+  const names: Record<CheckAccess, string> = { sandboxed: "Sandboxed", "sign-ins": "Sandboxed, with model and GitHub sign-ins", unsandboxed: "Not sandboxed" };
+  const meaning: Record<CheckAccess, string | null> = { sandboxed: null, "sign-ins": "Checks can read your Claude, Codex and GitHub sign-ins.", unsandboxed: "Checks run with your full access to this machine and to Toolroll." };
+  // The sign-ins never widen the network: how many hosts they'd still need, and where to add them (a change of its own).
   const missing = setting === "sign-ins" && network !== null ? signInHostsMissing(network) : [];
-  const hosts = missing.length === 0 ? "" : html`<p class="meta" data-sign-in-hosts>Model sign-ins need these hosts in this project's network allowlist: <span class="tool-name">${missing.join(", ")}</span>. <a href="#network">Add them under Network</a>.</p>`;
-  const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${access.changed.at.slice(0, 10)}.</p>`;
-  const scope = html`<p class="meta">Flow script steps always run sandboxed. Tasks scoped from now on use this; tasks already approved keep what they were approved with.</p>`;
-  const head = html`<h2 id="check-access-title">Check access</h2>${said}${hosts}${changed}`;
-  if (!access.canNarrow && !access.canWiden) return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}<p class="meta">An approver for this project can narrow this; an instance operator can widen it.</p></section>`;
-  const option = (value: CheckAccess, label: string, detail: string, warning: string | null) => {
+  const hosts = missing.length === 0 ? "" : html`<p class="meta" data-sign-in-hosts>${missing.length} sign-in ${missing.length === 1 ? "host isn't" : "hosts aren't"} allowed yet · <a href="#network">Add them</a></p><details class="hosts"><summary>Show hosts</summary><p class="tool-name">${missing.join(", ")}</p></details>`;
+  const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${new Date(access.changed.at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</p>`;
+  const head = html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${hosts}${changed}`;
+  if (!access.canNarrow && !access.canWiden) return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}</section>`;
+  const option = (value: CheckAccess, detail: string, warning: string | null) => {
     const allowed = value === setting || access.canWiden || value === "sandboxed";
-    return html`<label class="check"><input type="radio" name="level" value="${value}"${setting === value ? html` checked` : ""}${allowed ? "" : html` disabled`}> ${label}</label><p class="meta">${detail}</p>${warning === null ? "" : html`<p class="meta" data-check-access-warning="${value}"><strong>Warning:</strong> ${warning}</p>`}`;
+    return html`<div class="option"><label class="check"><input type="radio" name="level" value="${value}"${setting === value ? html` checked` : ""}${allowed ? "" : html` disabled`}> ${names[value]}</label><p class="meta">${detail}</p>${warning === null ? "" : html`<p class="meta warning" data-check-access-warning="${value}">${warning}</p>`}</div>`;
   };
   const open = network?.mode === "open";
   const form = postForm("/settings/project/check-access", html`
-    ${option("sandboxed", "Sandboxed (recommended)", "Checks can't read your sign-ins and credentials, Toolroll's own folders or other projects. Where builds write applies to them too.", null)}
-    ${option("sign-ins", "Sandboxed, with model and GitHub sign-ins", `As sandboxed, except checks can also read your Claude, Codex and GitHub sign-ins (no other credentials), and reach only this project's network: ${open ? "any host" : network === null || network.hosts.length === 0 ? "its registries only" : `its registries and ${network.hosts.join(", ")}`}.`, CHECK_ACCESS_WARNINGS["sign-ins"])}
-    ${option("unsandboxed", "Not sandboxed", "For a project whose checks must create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
-    ${open ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> This project's network is open: with sign-ins, its checks could send your sign-ins to any host. I understand.</label>` : ""}
-    ${access.canWiden ? "" : html`<p class="meta">Only an instance operator can widen this.</p>`}
-    ${scope}
+    ${option("sandboxed", "No sign-ins, credentials, Toolroll folders or other projects.", null)}
+    ${option("sign-ins", `Also your Claude, Codex and GitHub sign-ins, on this project's network (${open ? "any host" : network === null || network.hosts.length === 0 ? "registries only" : `registries and ${network.hosts.length} ${network.hosts.length === 1 ? "host" : "hosts"}`}).`, CHECK_ACCESS_WARNINGS["sign-ins"])}
+    ${option("unsandboxed", "For projects whose checks create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
+    ${open ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> The network is open: with sign-ins, checks could send them to any host</label>` : ""}
     ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
-    <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
-  return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}<details><summary>Change</summary>${form}</details></section>`;
+    <button type="submit" class="primary">Save</button>
+    <p class="meta">${access.canWiden ? "" : "Only an instance operator can widen this. "}Flow script steps always run sandboxed. Tasks already approved keep their level.</p>`, { hidden: { repo: view.repo } });
+  return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}<details class="change"><summary>Change</summary>${form}</details></section>`;
 }
 
 /** Network: what the project's builds may reach, said plainly; an approver changes it with their password. */

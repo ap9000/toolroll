@@ -490,6 +490,22 @@ describe("the builder's gates", () => {
     expect(result).toMatchObject({ ok: true, committed: true });
   });
 
+  test("the dispatch stamps the run's check level and its checks' own network, before any command runs (check-access.ts)", async () => {
+    claimIt();
+    store.setProjectCheckAccess("/code/thing", "sign-ins", "alex", T0, { may: "widen" });
+    approveScope();
+    expect(store.getScope("t-1")?.profile?.checkAccess).toBe("sign-ins");
+    const asked = request();
+    const result = await build(store, asked);
+    expect(result).toMatchObject({ ok: true });
+    const runId = asked.runId as number;
+    expect(store.runCheckAccess(runId)).toBe("sign-ins");
+    // Its checks' network is the sealed one less the agent's own provider hosts.
+    const network = store.runCheckNetwork(runId);
+    expect(network).not.toBeNull();
+    expect(network!.hosts).not.toContain("api.anthropic.com");
+  });
+
   test("the approved worktree setup runs before the agent; failure blocks the spawn; success is cached (M5.7)", async () => {
     claimIt();
     approveScope();
