@@ -317,14 +317,21 @@ export const CHECK_LAUNCH_ROOT_MACOS = "/private/tmp";
 /** The folder a check's launch folder is made in: on a Mac the short one, elsewhere the system temp folder (unchanged). */
 export const checkLaunchRoot = (): string => process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? CHECK_LAUNCH_ROOT_MACOS : tmpdir();
 
-/** Every other launch's private folder there now. */
+/** Every other launch's private folder in the system temp folder now, each only as the real folder it is (a link planted
+ * there is never followed, nor fenced in its target's place) and this user's own. A shared root (`also`, /private/tmp on
+ * a Mac) is never listed: anyone may plant entries there, so it is fenced by name pattern alone. */
 function otherRunFolders(folders: RunFolders): string[] {
-  return [folders.root, ...(folders.also ?? [])].flatMap(root => {
-    let entries: string[] = [];
-    try { entries = readdirSync(root); } catch { entries = []; }
-    return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(root, entry)).filter(path => path !== folders.own);
+  let entries: string[] = [];
+  try { entries = readdirSync(folders.root); } catch { entries = []; }
+  const uid = process.getuid?.();
+  return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(folders.root, entry)).filter(path => {
+    if (path === folders.own) return false;
+    try { const held = lstatSync(path); return held.isDirectory() && !held.isSymbolicLink() && (uid === undefined || held.uid === uid); } catch { return false; }
   });
 }
+
+/** Every root launch folders are made under (the system temp folder, and on a Mac the short shared one). */
+export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(folders.also ?? [])];
 
 /**
  * What a fence gives back beside its denied paths. Each is narrow and none
@@ -625,8 +632,8 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   // Codex's harness reads its own launch files outside the command sandbox.
   // Deny the namespace, including folders created after this policy was built.
   if (grants.runFolders !== undefined) {
-    for (const prefix of RUN_FOLDER_PREFIXES) {
-      deny.push(join(grants.runFolders.root, `${prefix}*`), join(grants.runFolders.root, `${prefix}*`, "**"));
+    for (const root of runRoots(grants.runFolders)) {
+      for (const prefix of RUN_FOLDER_PREFIXES) deny.push(join(root, `${prefix}*`), join(root, `${prefix}*`, "**"));
     }
   }
   // Launch folders can already be in the base fence when invoke appends them.
@@ -780,7 +787,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
   const paths = (filter: "subpath" | "literal", list: readonly string[]) => list.map(path => `(${filter} ${seatbelt(path)})`).join(" ");
   const folders = grants.runFolders;
   const pool = grants.pool;
-  const above = ownedAncestors([...fence, ...grants.readOnly, ...pool?.deny ?? []], [folders?.root ?? real(tmpdir())]);
+  const above = ownedAncestors([...fence, ...grants.readOnly, ...pool?.deny ?? []], folders === undefined ? [real(tmpdir())] : runRoots(folders));
   return [
     "(version 1)",
     "(allow default)",
@@ -800,7 +807,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ...(pool === undefined || pool.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", pool.lookup)})`]),
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),
-    ...(folders === undefined ? [] : [folders.root, ...(folders.also ?? [])].map(root => `(deny file-read* file-write* (regex #"^${seatbeltRegex(root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`)),
+    ...(folders === undefined ? [] : runRoots(folders).map(root => `(deny file-read* file-write* (regex #"^${seatbeltRegex(root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`)),
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
     // Denied whole above, granted back narrowly here (a later rule wins): an entry made after launch beside it stays denied.
     ...(grants.readable.length === 0 ? [] : [`(allow file-read* file-test-existence ${paths("subpath", grants.readable)})`]),
@@ -907,7 +914,7 @@ const SECRET_SEGMENT = SPLIT_SECRET_PATTERNS.map(patternTest);
 function linuxGrants(fence: readonly string[], grants: FenceGrants): string[] {
   const folders = grants.runFolders;
   const launchFolder = (path: string) => folders !== undefined && path !== folders.own && !(folders.own != null && inside(path, folders.own))
-    && [folders.root, ...(folders.also ?? [])].some(root => inside(path, root) && RUN_FOLDER_PREFIXES.some(prefix => relative(root, path).split(sep)[0]!.startsWith(prefix)));
+    && runRoots(folders).some(root => inside(path, root) && RUN_FOLDER_PREFIXES.some(prefix => relative(root, path).split(sep)[0]!.startsWith(prefix)));
   const secretBelow = (path: string) => fence.some(one => inside(path, one) && relative(one, path).split(sep).some(segment => SECRET_SEGMENT.some(test => test.test(segment))));
   const ok = (path: string, readOnlyGrant: boolean) => existsSync(path) && !fence.includes(path) && !launchFolder(path) && !secretBelow(path)
     && !(readOnlyGrant && fence.some(one => inside(path, one)));
