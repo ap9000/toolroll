@@ -1092,32 +1092,58 @@ export function protectedChanges(changed: readonly string[]): string[] {
   const files = PROTECTED_FILES.map(one => one.toLowerCase());
   return changed.filter(path => {
     const lower = `/${path.toLowerCase()}`;
-    return files.some(name => lower.endsWith(`/${name}`)) || PROTECTED_DIRS.some(dir => lower.includes(`/${dir.toLowerCase()}/`));
+    // A protected folder's own name too (a link committed as `pkg/.vscode`), not only what is in it.
+    return files.some(name => lower.endsWith(`/${name}`)) || PROTECTED_DIRS.some(dir => lower.includes(`/${dir.toLowerCase()}/`) || lower.endsWith(`/${dir.toLowerCase()}`));
   });
 }
 
-/** The home folder's own persistence points beyond the protected names (login items, systemd user units, Git's, gh's
- * and pip's configuration). */
-export const HOME_PERSISTENCE: readonly string[] = ["Library/LaunchAgents", ".config/systemd/user", ".config/git", ".config/gh", ".config/pip", ".pip"];
-/** The sign-in folders and files at home no launch but their own agent's may write. */
+/** The home folder's own persistence points beyond the protected names (login items, systemd user units and autostart,
+ * Git's, gh's, pip's and fish's configuration, the shells' other startup files, SSH and GnuPG, and the folders on a
+ * login PATH). Under `.config/` each also stands under $XDG_CONFIG_HOME. */
+export const HOME_PERSISTENCE: readonly string[] = ["Library/LaunchAgents", ".config/systemd/user", ".config/autostart", ".config/git", ".config/gh", ".config/pip",
+  ".config/fish", ".pip", ".zshenv", ".zlogin", ".bash_login", ".ssh", ".gnupg", ".local/bin", "bin"];
+/** The sign-in folders and files at home no launch writes, but an agent its own exact sign-in files (OWN_SIGN_INS). */
 const HOME_SIGN_INS: readonly string[] = [".codex", ".claude.json", ".claude/.credentials.json"];
+/** The exact sign-in files an agent's own launch still writes (Claude's account and credentials). Codex's harness
+ * refreshes its sign-in outside the sandbox, so its commands write none. Configuration and persistence names stay
+ * denied for every agent. */
+const OWN_SIGN_INS: Readonly<Record<string, readonly string[]>> = { claude: [".claude.json", ".claude/.credentials.json"] };
+/** On Linux the runtime holds a name that isn't there by putting an empty one there for the launch's length. These
+ * would change what the person's own tools do meanwhile (an empty `.bash_profile` hides `.profile`, an empty settings
+ * file doesn't parse), so an absent one is left to the handoff and the next launch. */
+const LINUX_ABSENT_UNSAFE: readonly string[] = [".bash_profile", ".bash_login", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude.json"];
+
+/** `path` as it resolves now: through every link above it (and at it), however much of it exists. */
+function resolvedPath(path: string): string {
+  let head = path;
+  const rest: string[] = [];
+  while (head !== dirname(head)) {
+    try { return join(realpathSync(head), ...rest.reverse()); } catch { rest.push(basename(head)); head = dirname(head); }
+  }
+  return path;
+}
 
 /**
  * What no launch writes, whatever its writes, as static write denies for the sandbox runtime (whose own protected names
- * are anchored at the launch's folder only): the home folder's protected names (shell profiles, Git and tool
- * configuration), its persistence points and sign-ins (less the launch's own agent's), and the bound repository's own
- * Git config, hooks and submodules (a linked worktree reaches them through its `.git` file). On Linux only those that
- * exist: the runtime would make an empty one on the host for the launch's length, and an empty shell profile changes
- * the person's own logins meanwhile.
+ * are anchored at the launch's folder only) and Codex's profile: the home folder's protected names (shell profiles, Git
+ * and tool configuration), its persistence points and sign-ins (but the launch's own agent's exact sign-in files), and
+ * the bound repository's own Git config, hooks and submodules (a linked worktree reaches them through its `.git`
+ * file). Each by its name and by where it leads now (a linked ~/.config or LaunchAgents is denied at both ends). On
+ * Linux a name that isn't there is held too (the runtime puts an empty one there for the launch's length), but those
+ * an empty one would change for the person (LINUX_ABSENT_UNSAFE).
  */
-export function homeWriteDenies(home: string, binding: WorktreeBinding | null, provider: string | null, platform: NodeJS.Platform = process.platform): string[] {
+export function homeWriteDenies(home: string, binding: WorktreeBinding | null, provider: string | null, platform: NodeJS.Platform = process.platform,
+  env: Readonly<Record<string, string | undefined>> = process.env): string[] {
   const base = real(home);
-  const own = new Set(PROVIDER_HOME[provider ?? ""] ?? []);
-  const theirs = (name: string) => !own.has(name) && !own.has(name.split("/")[0]!);
-  const names = [...PROTECTED_FILES.filter(name => !name.startsWith(".git/")), ...PROTECTED_DIRS.filter(name => !name.startsWith(".git/")), ...HOME_PERSISTENCE, ...HOME_SIGN_INS].filter(theirs);
-  const paths = [...names.map(name => join(base, name)),
-    ...(binding === null ? [] : ["config", "hooks", "modules"].map(name => join(real(join(binding.main, ".git")), name)))];
-  return [...new Set(paths)].filter(path => platform === "darwin" || existsSync(path)).sort();
+  const own = new Set(OWN_SIGN_INS[provider ?? ""] ?? []);
+  const names = [...new Set([...PROTECTED_FILES.filter(name => !name.startsWith(".git/")), ...PROTECTED_DIRS.filter(name => !name.startsWith(".git/")), ...HOME_PERSISTENCE, ...HOME_SIGN_INS])]
+    .filter(name => !own.has(name));
+  const xdg = env["XDG_CONFIG_HOME"];
+  const roots = (name: string): string[] => [join(base, name), ...(name.startsWith(".config/") && xdg !== undefined && isAbsolute(xdg) ? [join(xdg, name.slice(".config/".length))] : [])];
+  const held = (name: string, path: string) => platform !== "linux" || existsSync(path) || !LINUX_ABSENT_UNSAFE.includes(name);
+  const paths = names.flatMap(name => roots(name).filter(path => held(name, path)));
+  const git = binding === null ? [] : ["config", "hooks", "modules"].map(name => join(real(join(binding.main, ".git")), name));
+  return [...new Set([...paths, ...git].flatMap(path => [path, resolvedPath(path)]))].sort();
 }
 
 /** A tool server's grants from its build's: never the agent's network or write allowlist (a server keeps its own state
