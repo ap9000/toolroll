@@ -10,6 +10,7 @@ import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmod
 import { tmpdir } from "node:os";
 import { resetAttestationCache } from "./attest.js";
 import { dirname, join } from "node:path";
+import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { invokeAgent as invokeGateway, type InvokeResult } from "./invoke.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
@@ -1062,6 +1063,24 @@ describe("checkout Git preflight", () => {
     store.saveWorktree({ path: tree, repo, branch: "probe", runner: null, taskRef: null, createdAt: T0.toISOString(), leasedAt: null, releasedAt: null, verified: true });
     return repo;
   }
+
+  test("a build's fence takes its approval's read denies and the project's current ones too (adding a deny only narrows)", async () => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    const repo = bindCheckout(store, tree);
+    try {
+      registerBuilder(store);
+      if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+      store.setAccountProjects("alex", [repo], "alex", T0);
+      store.setProjectSandbox(repo, { readDeny: ["~/.aws"], machLookup: [], writeUnlock: [] }, "alex", T0);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      vi.mocked(fencing.fenceFor).mockClear();
+      await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, sandbox: { policy: 2, readDeny: ["~/.ssh"], machLookup: [], unlock: [] } });
+      expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({ readDeny: [join(providerHome, ".ssh"), join(providerHome, ".aws")] }));
+    } finally { store.close(); }
+  });
 
   test("a run that makes a protected name its sandbox couldn't refuse (Linux, Codex) fails, saying which (sandbox parity C8)", async () => {
     const store = openStore(join(providerHome, "orders.db"));

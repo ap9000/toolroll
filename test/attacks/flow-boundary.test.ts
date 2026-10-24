@@ -47,14 +47,19 @@ beforeEach(() => {
 });
 afterEach(() => { store.close(); rmSync(otherRun, { recursive: true, force: true }); });
 
-/** A probe that reports, per canary, whether it could be read: `<name>:read` or `<name>:denied`. */
-const probe = () => Object.entries(canary).map(([name, one]) => `if cat ${JSON.stringify(one.path)} >/dev/null 2>&1; then echo ${name}:read; else echo ${name}:denied; fi`).join("\n");
+/** A probe that reports, per canary, whether it could be read: `<name>:read` or `<name>:denied`; and whether the other
+ * pool checkout could be written (`pool-write:written` or `pool-write:denied`). */
+const probe = () => [...Object.entries(canary).map(([name, one]) => `if cat ${JSON.stringify(one.path)} >/dev/null 2>&1; then echo ${name}:read; else echo ${name}:denied; fi`),
+  `if echo planted >> ${JSON.stringify(canary.pool.path)} 2>/dev/null; then echo pool-write:written; else echo pool-write:denied; fi`].join("\n");
+/** A flow made now runs under fence policy v2: another task's checkout is read (agents can work together), never
+ * written; Toolroll's state and other runs' folders stay unreadable. */
+const EXPECTED: Record<string, "read" | "denied"> = { state: "denied", run: "denied", pool: "read" };
 const stepIo = (extra: Partial<StepIo> = {}): StepIo => ({ gh: vi.fn(), git: exec, shell: exec, fetch: vi.fn() as unknown as typeof fetch, dir: state, scratch: join(pool, "flow-checks"), base: "main", home: join(root, "home"), ...extra });
 const flowOf = (steps: Parameters<typeof flowFromSteps>[0]) => store.createFlow({ repo, name: "Upkeep", definitionJson: JSON.stringify(flowFromSteps(steps, null)), by: "alex" }, T0);
 const save = (name: string, body: string) => { const saved = saveScript(store, repo, { name, about: "Probes", body, timeoutMinutes: 1 }, "alex", T0); if (!saved.ok) throw new Error(saved.message); };
 
 describe("attack: a flow reaching past the agents' fence", () => {
-  test("setup and a script in a copy of the card's work can't read the state, another run's folder or another pool checkout; the script still reads its input and writes its folder", async ctx => {
+  test("setup and a script in a copy of the card's work can't read the state or another run's folder, nor write another pool checkout; the script still reads its input and writes its folder", async ctx => {
     needs(ctx, osFence());
     // The approved setup records what it could read, inside the copy (its own folder, which it may write).
     store.setWorktreeSetup({ repo, command: `{ ${probe().replace(/\n/g, "; ")}; } > setup-result.txt`, timeoutMs: 60_000, approvedBy: "alex" }, T0);
@@ -64,19 +69,21 @@ describe("attack: a flow reaching past the agents' fence", () => {
     await runFlowSteps(store, repo, at(1), stepIo());
     const output = store.getFlowCard(card)!.outputs["peek"] ?? store.getFlowCard(card)!.note ?? "";
     for (const name of Object.keys(canary)) {
-      expect(output).toContain(`setup-${name}:denied`);
-      expect(output).toContain(`\n${name}:denied`);
+      expect(output).toContain(`setup-${name}:${EXPECTED[name]}`);
+      expect(output).toContain(`\n${name}:${EXPECTED[name]}`);
     }
+    expect(output).toContain("setup-pool-write:denied");
+    expect(output).toContain("\npool-write:denied");
     expect(output).toContain("input:read");
     expect(output).toContain("folder:written");
-    for (const one of Object.values(canary)) expect(output).not.toContain(one.secret);
+    for (const one of [canary.state, canary.run]) expect(output).not.toContain(one.secret);
     // Positive control: unsandboxed, the same reads succeed (the canaries are real, readable files).
     for (const one of Object.values(canary)) expect(execFileSync("cat", [one.path], { encoding: "utf8" })).toBe(one.secret);
   });
 
   test("a schedule's script (no checkout) can't read them either", async ctx => {
     needs(ctx, osFence());
-    save("issues", [probe(), 'grep -q trigger "$FLOW_INPUT" && echo input:read'].join("\n").replace(/echo ([\w:]+)/g, 'echo "{\\"title\\": \\"$1\\", \\"key\\": \\"$1\\"}"'));
+    save("issues", [probe(), 'grep -q trigger "$FLOW_INPUT" && echo input:read'].join("\n").replace(/echo ([\w:-]+)/g, 'echo "{\\"title\\": \\"$1\\", \\"key\\": \\"$1\\"}"'));
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }]);
     const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "every 2 hours", script: "issues" }, "alex", T0, state);
     if (!made.ok) throw new Error(made.message);
@@ -84,7 +91,8 @@ describe("attack: a flow reaching past the agents' fence", () => {
     const checked = await checkFlowTriggerNow(store, store.flowTriggers(flow)[0]!, at(3), tio);
     expect(checked, checked.said).toMatchObject({ ok: true });
     const titles = store.flowCards(flow, true).map(one => one.title).sort();
-    expect(titles).toEqual(["input:read", "pool:denied", "run:denied", "state:denied"]);
+    // Its folder isn't in the pool: the pool stays inside the fenced state folder for it, unreadable.
+    expect(titles).toEqual(["input:read", "pool-write:denied", "pool:denied", "run:denied", "state:denied"]);
   });
 
   test("where nothing can confine it, neither setup nor script runs, and the card and the trigger say why", async () => {

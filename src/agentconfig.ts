@@ -23,6 +23,7 @@
 import { PROJECT_NETWORK_DEFAULT, repositoryEcosystems, resolveNetwork } from "./egress.js";
 import { WRITES_DEFAULT } from "./writes-mode.js";
 import { checkAccessHere, type CheckAccess } from "./check-access.js";
+import { PROJECT_SANDBOX_DEFAULT } from "./project-sandbox.js";
 import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId } from "./provider.js";
 import type { Store, TaskRef } from "./store.js";
 import { ACP_LIMITS, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
@@ -244,7 +245,12 @@ export function resolveScopeProfile(
   // How far its checks reach (check-access.ts): the project's setting as checks can get it (sign-ins, off for now,
   // seal as sandboxed: an approval never claims what its checks won't get), sealed only when wider than sandboxed.
   const checkAccess: CheckAccess = repo === null ? "sandboxed" : checkAccessHere(store.projectCheckAccess(repo), platform);
-  return { ok: true, profile: { ...profile, network, writes, ...(checkAccess === "sandboxed" ? {} : { checkAccess }) }, provenance: { resolvedFrom: build.source, repairFrom } };
+  // The fence policy (sandbox parity, docs/plans/sandbox-parity.md §1.5): every new scope is v2; and the project's
+  // sandbox settings (project-sandbox.ts), sealed when it lists any.
+  const sandbox = repo === null ? PROJECT_SANDBOX_DEFAULT : store.projectSandbox(repo);
+  return { ok: true, profile: { ...profile, network, writes, ...(checkAccess === "sandboxed" ? {} : { checkAccess }), fencePolicy: 2,
+    ...(sandbox.readDeny.length === 0 ? {} : { readDeny: [...sandbox.readDeny] }), ...(sandbox.machLookup.length === 0 ? {} : { machLookup: [...sandbox.machLookup] }),
+    ...(sandbox.writeUnlock.length === 0 ? {} : { writeUnlock: [...sandbox.writeUnlock] }) }, provenance: { resolvedFrom: build.source, repairFrom } };
 }
 
 // ---- route candidates (v47, phase routing) --------------------------------

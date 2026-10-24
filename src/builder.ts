@@ -56,7 +56,7 @@ import { witnessedRunner } from "./process-custody.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
-import { protectedChanges } from "./agent-fence.js";
+import { launchSandboxOf, protectedChanges } from "./agent-fence.js";
 import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
@@ -505,7 +505,7 @@ function commandRunner(store: Store, runId: number, profile: ExecutionProfile, i
   // it first) so a later check of its result never runs wider; under sign-ins, behind its checks' own network.
   const { access, network } = checkLaunchOf(store, runId, profile);
   store.stampRunCheckAccess(runId, access, network);
-  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined, profile.writeUnlock ?? []);
+  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined, launchSandboxOf(profile));
 }
 
 /** A build's checks' level and network: its approval's level as this platform can give it (sign-ins sealed before
@@ -527,6 +527,7 @@ export function checkLaunchOf(store: Store, runId: number, profile: ExecutionPro
 export function launchWritesOf(profile: ExecutionProfile): WritesMode {
   return profile.writes ?? "anywhere";
 }
+
 
 export function proveApprovedProfile(
   scope: Scope | null,
@@ -1625,7 +1626,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
-        writes: launchWritesOf(effective.profile), unlock: effective.profile.writeUnlock ?? [],
+        writes: launchWritesOf(effective.profile), sandbox: launchSandboxOf(effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -3059,7 +3060,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
-        writes: launchWritesOf(effective.profile), unlock: effective.profile.writeUnlock ?? [],
+        writes: launchWritesOf(effective.profile), sandbox: launchSandboxOf(effective.profile),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3303,7 +3304,7 @@ async function ingestPark(args: {
           ? watchdogsOf(args.profile, args.profile.repairTimeoutSeconds * 1000, true)
           : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
-        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile), unlock: args.profile.writeUnlock ?? [] }),
+        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile), sandbox: launchSandboxOf(args.profile) }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,

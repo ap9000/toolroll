@@ -465,6 +465,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     access: projectAccessOf(repo),
     network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    sandbox: { setting: store.projectSandbox(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     checkAccess: {
       setting: store.projectCheckAccess(repo), changed: store.projectCheckAccessChange(repo),
       canNarrow: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo),

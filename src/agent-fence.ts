@@ -52,6 +52,7 @@ import { readMonitoring } from "./monitoring-settings.js";
 import { existingFolders } from "./names.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
 import type { LoopbackMode } from "./egress.js";
+import type { ExecutionProfile } from "./scope.js";
 import { installSeccompHelper, verifySeccompHelper, type SeccompHelper } from "./seccomp-helper.js";
 
 /** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
@@ -401,6 +402,8 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   mandatory?: MandatoryDenies;
   /** Linux: the seccomp helper every workload runs through (seccomp-helper.ts); none means no Linux fence. */
   seccomp?: SeccompHelper;
+  /** Linux: folders masked whole because a read deny inside them names nothing yet (readDenyMasks). */
+  readDenyAbove?: string[];
   /** An agent harness itself runs inside this sandbox, not only its commands (invoke.ts: a Claude, Gemini or ACP build):
    * no task port, even within the sandbox (macosFenceProfile). */
   agentInside?: true;
@@ -583,7 +586,9 @@ export const NO_GRANTS: FenceGrants = { readOnly: [], readable: [], lookup: [] }
  * drops a path at or above the checkout, so the deny lives here and each sandbox gives back, right after it, only
  * `own` (this build's checkout, read and written) and `lookup` (the folders between, looked up, never listed).
  */
-export type CheckoutPool = { deny: string[]; own: string | null; lookup: string[]; gitPaths?: string[] };
+export type CheckoutPool = { deny: string[]; own: string | null; lookup: string[]; gitPaths?: string[];
+  /** Policy v2 (owner Q-C): other tasks' checkouts are read, never written (agents can work together); v1 denies both. */
+  readable?: true };
 
 /**
  * The pool deny for one launch. `roots` come from the plane's own records (the pool beside the database, and the one
@@ -748,7 +753,7 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   if (pool !== undefined) {
     const held = codexPool(pool);
     for (const path of held.read) access.set(path, "read");
-    for (const path of held.deny) access.set(path, "deny");
+    for (const path of held.deny) access.set(path, pool.readable === true ? "read" : "deny");
     for (const path of held.write) access.set(path, "write");
   }
   // Denies are keyed where they resolve; the console's run folder and the sign-in copies folder are also denied by their
@@ -913,7 +918,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
       // A granted folder itself can't be renamed, removed or replaced (by a link to anywhere, say): only what is in it.
       ...(grants.writes.subpaths.length === 0 ? [] : [`(deny file-write* ${paths("literal", grants.writes.subpaths)})`]),
     ]),
-    ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", pool.deny)})`]),
+    ...(pool === undefined || pool.deny.length === 0 ? [] : [`(deny ${pool.readable === true ? "" : "file-read* "}file-write* ${paths("subpath", pool.deny)})`]),
     ...(pool?.own == null ? [] : [
       `(allow file-read* file-write* ${paths("subpath", [pool.own])})`,
       `(deny file-write* ${paths("literal", [pool.own])})`,
@@ -1005,9 +1010,9 @@ export function macosNetworkRules(network: NetworkFence | undefined): string[] {
 /** A project's sealed mach services (Anthropic's sandbox runtime `allowMachLookup`): a name, or a prefix ending `*`.
  * Only a name of reverse-DNS shape is ever emitted; a confined network's delegation denies still come after these. */
 function machLookupRules(names: readonly string[]): string[] {
-  const valid = names.filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]*\*?$/.test(name) && name.length <= 200);
+  const valid = names.filter(name => /^[A-Za-z0-9][A-Za-z0-9._@-]*(\.\*)?$/.test(name) && name.length <= 200);
   if (valid.length === 0) return [];
-  return [`(allow mach-lookup ${valid.map(name => name.endsWith("*") ? `(global-name-prefix ${seatbelt(name.slice(0, -1))})` : `(global-name ${seatbelt(name)})`).join(" ")})`];
+  return [`(allow mach-lookup ${valid.map(name => name.endsWith(".*") ? `(global-name-prefix ${seatbelt(name.slice(0, -1))})` : `(global-name ${seatbelt(name)})`).join(" ")})`];
 }
 
 /**
@@ -1124,6 +1129,9 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   if (seccomp === undefined || !verifySeccompHelper(seccomp)) throw new LinuxFenceUnavailable("This machine's seccomp helper is missing or isn't the one Toolroll shipped, so nothing was started.");
   const network = grants.network?.mode === "allowlist" ? grants.network : null;
   if (network !== null && network.bridge === undefined) throw new Error("A confined network on Linux needs its bridge");
+  // A fenced path gone by now (another launch's folder, removed as it finished) has nothing to hide, and a mask over
+  // it would fail the whole launch; one made later is the late-folder residual a private /tmp closes.
+  const present = (path: string) => { try { lstatSync(path); return true; } catch { return false; } };
   const mask = (path: string) => {
     let folder = true;
     try { folder = statSync(path).isDirectory(); } catch { folder = true; }
@@ -1131,6 +1139,8 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   };
   const pool = grants.pool?.deny ?? [];
   const own = grants.pool?.own != null && existsSync(grants.pool.own) ? ["--bind", grants.pool.own, grants.pool.own] : [];
+  // Policy v2: the pool read, never written (each root bound read-only, the own checkout bound back writable after it).
+  const poolMask = (path: string) => grants.pool?.readable === true ? (existsSync(path) ? ["--ro-bind", path, path] : []) : mask(path);
   const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
   // A sign-ins check's exact files, bound back over the masks (validated when granted: signInGrants).
   const signIns = grants.signIns === undefined ? [] : [
@@ -1185,7 +1195,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // An unlocked exact file, given back writable inside a protected folder bound read-only above (only if it exists:
   // a new one is the watch's to allow), as every backend gives it.
   protectedNames.push(...grantableUnlocks(fence, grants).filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]));
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...protectedNames, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...own, ...[...fence, ...grants.readDenyAbove ?? []].filter(present).flatMap(mask), ...kept, ...signIns, ...services, ...protectedNames, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
 }
 
 /**
@@ -1448,7 +1458,24 @@ export type FenceContext = {
   seccomp?: SeccompHelper | null;
   /** The exact protected files its approval unlocked (validUnlock), relative to the checkout. */
   unlock?: readonly string[];
+  /** What it may not read beside the fence, as absolute paths (project-sandbox.ts readDenyPath): denied whole. */
+  readDeny?: readonly string[];
+  /** macOS services it may also reach (project-sandbox.ts). */
+  machLookup?: readonly string[];
+  /** The fence policy it runs under: v2 reads other tasks' checkouts (never writes them). */
+  policy?: FencePolicy;
 };
+
+/** A launch's sealed sandbox terms (builder.ts launchSandboxOf): its policy version, read denies, mach services and
+ * unlocked files. A launch with none sealed is v1 with none of them. */
+export type LaunchSandbox = { policy: FencePolicy; readDeny: readonly string[]; machLookup: readonly string[]; unlock: readonly string[] };
+export const LEGACY_SANDBOX: LaunchSandbox = { policy: 1, readDeny: [], machLookup: [], unlock: [] };
+
+/** A build's sandbox terms, exactly as its approval sealed them: an approval from before 0.9.70 is policy v1 (the home
+ * configuration denied) with nothing listed. */
+export function launchSandboxOf(profile: ExecutionProfile): LaunchSandbox {
+  return { policy: profile.fencePolicy ?? 1, readDeny: profile.readDeny ?? [], machLookup: profile.machLookup ?? [], unlock: profile.writeUnlock ?? [] };
+}
 
 /** A launch's whole fence: its denied paths, what it gives back, and that it runs inside the OS fence or not at all.
  * Spread into RunOptions as is. */
@@ -1458,7 +1485,11 @@ export type LaunchFence = { kind: FenceKind; fence: string[]; fenceGrants: Fence
  * `confinement: "required"`, so the spawn road refuses it where no OS fence applies rather than running it bare. */
 export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   const home = ctx.home === undefined ? {} : { home: ctx.home };
-  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: ctx.extra ?? [] });
+  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: [...ctx.extra ?? [], ...ctx.readDeny ?? []] });
+  // A read deny that names nothing yet is never dropped: denied by name (macOS, as the home configuration is: nothing may
+  // create it either); bubblewrap, which masks only what exists, masks its nearest existing folder instead when that
+  // folder is not the home folder, the checkout, or one above either (readDenyMasks).
+  const absentDenies = (ctx.readDeny ?? []).filter(path => { try { lstatSync(path); return false; } catch { return true; } });
   const made = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
   // Toolroll's own install and the Node that runs it, never written by anything it launches (C8, Q4): replacing the
   // fence's own code would switch the fence off.
@@ -1472,6 +1503,11 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...base.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(seccomp === null ? {} : { seccomp }),
+    ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
+    ...(ctx.policy === 2 && base.pool !== undefined ? { pool: { ...base.pool, readable: true as const } } : {}),
+    ...(absentDenies.length === 0 ? {} : process.platform === "linux"
+      ? { readDenyAbove: readDenyMasks(absentDenies, [ctx.home ?? homedir(), ...(ctx.worktree === null ? [] : [ctx.worktree])]) }
+      : { homeNames: [...new Set([...made.homeNames ?? [], ...absentDenies])].sort() }),
     // Every launch that runs a project's code gets the mandatory write denies; a tool server is the operator's own.
     ...(kind === "tool-server" ? {} : { mandatory: mandatoryWriteDenies({ worktree: ctx.worktree, home: ctx.home ?? homedir(), binding: ctx.binding, unlock: ctx.unlock ?? [],
       quarantine: ctx.databaseFile === null || ctx.databaseFile === "" || ctx.databaseFile === ":memory:" ? null : join(dirname(real(ctx.databaseFile)), "quarantine") }) }),
@@ -1612,7 +1648,8 @@ export function protectedBelow(anchor: string, budget = 200_000, depth = 32): { 
     if (left <= 0) { complete = false; return; }
     if (level > depth) { complete = false; return; }
     let entries: import("node:fs").Dirent[] = [];
-    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { complete = false; return; }
+    // A folder gone meanwhile (a temp folder churning) has nothing to hide; one that can't be read is unseen.
+    try { entries = readdirSync(folder, { withFileTypes: true }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") complete = false; return; }
     for (const entry of entries) {
       if (--left <= 0) { complete = false; return; }
       const path = join(folder, entry.name);
@@ -1754,4 +1791,23 @@ export async function withProtectedWatch<T extends { code: number | null; stderr
     ...(moved.length === 0 ? [] : [`Moved to Toolroll's quarantine folder (${folder}): ${named(moved)}.`]),
     ...(left.length === 0 ? [] : [`Left in place: ${named(left)}. If you didn't make ${left.length === 1 ? "it" : "them"} yourself, remove ${left.length === 1 ? "it" : "them"}.`])].join(" ");
   return { ...result, code: result.code === 0 ? 1 : result.code, stderr: `${result.stderr}\n${said}\n` };
+}
+
+/**
+ * bubblewrap's half of a read deny that names nothing yet: its nearest existing folder, masked whole, so whatever is made
+ * there during the launch stays out of sight. Never the home folder, the checkout, or a folder above either (that would
+ * hide the build's own work): such an entry is the documented residual (a path made later beside them, in a shared
+ * place, is readable until the next launch).
+ */
+export function readDenyMasks(absent: readonly string[], keep: readonly string[]): string[] {
+  const kept = keep.map(real);
+  const out = new Set<string>();
+  for (const path of absent) {
+    let folder = dirname(path);
+    while (folder !== dirname(folder)) { try { lstatSync(folder); break; } catch { folder = dirname(folder); } }
+    const at = real(folder);
+    if (kept.some(one => one === at || inside(one, at))) continue;
+    out.add(at);
+  }
+  return [...out].sort();
 }

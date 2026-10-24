@@ -4,6 +4,7 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
+import type { ProjectSandbox } from "./project-sandbox.js";
 import type { ProjectNetwork } from "./egress.js";
 import type { WritesMode } from "./writes-mode.js";
 import { CHECK_ACCESS_WARNINGS, signInHostsMissing, type CheckAccess } from "./check-access.js";
@@ -55,6 +56,9 @@ export type ProjectSettingsView = {
   network?: { setting: ProjectNetwork; canChange: boolean };
   /** Where its builds may write (writes-mode.ts), and whether this person may change it. */
   writes?: { setting: WritesMode; canChange: boolean };
+  /** What its builds and checks may not read, and the macOS services and protected files they may still use
+   * (project-sandbox.ts), and whether this person may change it. */
+  sandbox?: { setting: ProjectSandbox; canChange: boolean };
   /** How far its checks reach (check-access.ts): the level, who changed it last, and whether this person may narrow it
    * (an approver for the project) or also widen it (an instance operator). */
   checkAccess?: { setting: CheckAccess; changed: { by: string; at: string } | null; canNarrow: boolean; canWiden: boolean;
@@ -81,6 +85,33 @@ function writesHtml(view: ProjectSettingsView): Html | "" {
     <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
   return html`<section class="build-access writes-setting" id="writes" aria-labelledby="writes-title"><h2 id="writes-title">Where builds write</h2>${said}<details><summary>Change</summary>${form}</details></section>`;
 }
+
+/** Home folder (project-sandbox.ts): what builds and checks can read there, said once; the paths they can't, and the
+ * advanced lists (macOS services, protected files), changed under Change with the approver's password. */
+function sandboxHtml(view: ProjectSandboxView): Html | "" {
+  const sandbox = view.sandbox;
+  if (sandbox === undefined) return "";
+  const { readDeny, machLookup, writeUnlock } = sandbox.setting;
+  const said = readDeny.length === 0
+    ? html`<p>Builds and checks can read your home folder, as in Anthropic's sandbox runtime. Toolroll's own folders and other tasks' work stay out of reach.</p>`
+    : html`<p>Builds and checks can read your home folder except <strong>${readDeny.length === 1 ? readDeny[0]! : `${readDeny.length} paths`}</strong>.</p>`;
+  const extra = machLookup.length + writeUnlock.length === 0 ? "" : html`<p class="meta">${[...(machLookup.length === 0 ? [] : [`${machLookup.length} macOS ${machLookup.length === 1 ? "service" : "services"} allowed`]), ...(writeUnlock.length === 0 ? [] : [`${writeUnlock.length} protected ${writeUnlock.length === 1 ? "file" : "files"} writable`])].join(" · ")}</p>`;
+  const head = html`<h2 id="sandbox-title">Home folder</h2>${said}${extra}`;
+  if (!sandbox.canChange) return html`<section class="build-access sandbox-setting" id="sandbox" aria-labelledby="sandbox-title">${head}<p class="meta">An approver for this project can change this.</p></section>`;
+  const form = postForm("/settings/project/sandbox", html`
+    <label>Paths builds can't read<textarea name="read-deny" rows="4" placeholder="~/.ssh&#10;~/.aws">${readDeny.join("\n")}</textarea></label>
+    <p class="meta">One per line: <code>~/…</code> or a full path.</p>
+    <details><summary>Advanced</summary>
+      <label>macOS services builds may also use<textarea name="mach" rows="2">${machLookup.join("\n")}</textarea></label>
+      <label>Protected files builds may still write<textarea name="unlock" rows="2" placeholder=".vscode/settings.json">${writeUnlock.join("\n")}</textarea></label>
+      <p class="meta">Exact files in the project, such as <code>.vscode/settings.json</code>. Hooks, shell profiles and tool settings stay protected otherwise.</p>
+    </details>
+    <p class="meta">Tasks scoped from now on use this; tasks already approved keep what they were approved with.</p>
+    ${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}
+    <button type="submit">Save</button>`, { hidden: { repo: view.repo } });
+  return html`<section class="build-access sandbox-setting" id="sandbox" aria-labelledby="sandbox-title">${head}<details><summary>Change</summary>${form}</details></section>`;
+}
+type ProjectSandboxView = Pick<ProjectSettingsView, "sandbox" | "repo">;
 
 /** Check access (check-access.ts): how far the project's checks reach, said once. Collapsed: the level, what it means
  * when it isn't the default, and who changed it. Inside Change: a line per level, and each wider level's warning under it
@@ -202,7 +233,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, notice: { said?: 
   const remote = html`<section class="build-access recorded-remote" aria-labelledby="recorded-remote-title"><h2 id="recorded-remote-title">Recorded remote</h2>${view.remoteUrl
     ? html`<p class="path">${view.remoteUrl}</p>`
     : html`<p>No remote recorded. Landed work waits for your review.</p>`}<details><summary>Change remote</summary><p>An owner or instance operator can run:</p><p class="path">toolroll repos add &lt;project&gt; --remote &lt;url&gt;</p></details></section>`;
-  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${writesHtml(view)}${checkAccessHtml(view)}${liveViewHtml(view)}`;
+  const head = html`${note(notice)}<p class="path">${view.repo}</p>${held}${remote}${buildsHtml(view)}${accessHtml(view)}${networkHtml(view)}${writesHtml(view)}${sandboxHtml(view)}${checkAccessHtml(view)}${liveViewHtml(view)}`;
   if (!view.canDelete) return html`<section class="project-settings">${head}<p class="meta">An instance operator can delete a project.</p></section>`;
   const body = view.running.length > 0
     ? html`<p class="problem">Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.</p>`

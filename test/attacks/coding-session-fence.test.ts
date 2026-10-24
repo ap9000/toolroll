@@ -41,7 +41,7 @@ beforeEach(() => {
 });
 
 describe("attack: a coding session reaching past its worktree", () => {
-  test("its profile denies the state and another session's worktree, and writes its own worktree; without it both are read", ctx => {
+  test("its profile denies the state, reads but never writes another session's worktree, and writes its own; without it the state is read", ctx => {
     needs(ctx, codexSandbox());
     const made = codingSessionPermissions(store, sessions)({ repo, worktree: own });
     if (!("config" in made)) throw new Error(JSON.stringify(made));
@@ -50,15 +50,18 @@ describe("attack: a coding session reaching past its worktree", () => {
       ...Object.entries({ state: join(root, "toolroll", "up-login.txt"), sibling: join(sibling, "notes.txt") })
         .map(([name, path]) => `if cat ${JSON.stringify(path)}; then echo ${name}:read; else echo ${name}:denied; fi`),
       "echo made > own-file.txt && echo own:written",
+      `if echo planted >> ${JSON.stringify(join(sibling, "notes.txt"))} 2>/dev/null; then echo sibling:written; else echo sibling:unwritten; fi`,
     ].join("\n");
     const home = join(root, "codex-home");
     mkdirSync(home);
     const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: join(root, "home"), CODEX_HOME: home };
     const fenced = spawnSync("codex", ["sandbox", ...configArgv(made.config), "-P", "standing-orders", "--", "/bin/sh", "-c", script], { cwd: own, encoding: "utf8", env, timeout: 60_000 });
     expect(fenced.stdout, fenced.stderr).toContain("state:denied");
-    expect(fenced.stdout).toContain("sibling:denied");
+    // Fence policy v2 (owner Q-C): another session's worktree is read, never written.
+    expect(fenced.stdout).toContain("sibling:read");
+    expect(fenced.stdout).toContain("sibling:unwritten");
     expect(fenced.stdout).toContain("own:written");
-    for (const secret of Object.values(secrets)) expect(fenced.stdout + fenced.stderr).not.toContain(secret);
+    expect(fenced.stdout + fenced.stderr).not.toContain(secrets["state"]);
     // Positive control: plain workspace-write (what sessions had) reads both.
     const plain = spawnSync("codex", ["sandbox", "-c", 'sandbox_mode="workspace-write"', "--", "/bin/sh", "-c", script], { cwd: own, encoding: "utf8", env, timeout: 60_000 });
     expect(plain.stdout, plain.stderr).toContain("state:read");

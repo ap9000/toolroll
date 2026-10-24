@@ -860,6 +860,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@41": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@93": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@94": 1,
+    // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
+    "src/server/settings.ts#createSettingsHandlers@1>projectSandbox@95": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -874,6 +876,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#projectNetworkCommand@143": 1,
     "src/operate.ts#projectWritesCommand@144": 1,
     "src/operate.ts#unconfinedAgentsCommand@145": 1,
+    // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).
+    "src/operate.ts#projectSandboxCommand@182": 1,
   },
   proveCredential: {
     "src/scope.ts#addApprover@31>store.transact(_)@1": 1,

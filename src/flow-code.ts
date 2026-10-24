@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 import type { Runner } from "./backend.js";
 import { buildCacheEnv, buildCacheFolder, checkLaunchRoot, fenceFor, linuxFenceAvailable, withProtectedWatch, macosFenceAvailable, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist, type FencePolicy, type LaunchFence } from "./agent-fence.js";
 import type { FlowScriptRow, Store } from "./store.js";
+import { readDenyPath } from "./project-sandbox.js";
 import { poolRootOf } from "./worktree.js";
 import { SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
@@ -194,7 +195,9 @@ export function flowLaunch(store: Store, options: { repo: string; folder: string
     const boundary = taskBoundary({ worktree: options.folder, provider: "command", home, binding, policy: options.policy ?? 1 });
     const cache = buildCacheFolder(options.repo, home);
     const allowed = store.projectWrites(options.repo) !== "workspace" ? null : writeAllowlist({ provider: "command", home, worktree: options.folder, binding, launchFolder: own, cache });
-    const fence = fenceFor("flow", { databaseFile, worktree: options.folder, home, boundary, binding, runFolders: runFolders(own), poolRoots, extra: allowed?.deny ?? [],
+    // The project's read denies apply to flows as to builds (read live: a flow seals no list, and these only narrow).
+    const readDeny = store.projectSandbox(options.repo).readDeny.map(one => readDenyPath(one, home));
+    const fence = fenceFor("flow", { databaseFile, worktree: options.folder, home, boundary, readDeny, policy: options.policy ?? 1, binding, runFolders: runFolders(own), poolRoots, extra: allowed?.deny ?? [],
       writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, network: { mode: "open" } });
     return { folder: own, env: { ...env, ...(allowed === null ? {} : buildCacheEnv(cache)) }, fence, dispose };
   } catch {

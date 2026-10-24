@@ -374,7 +374,7 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     const added = await io.git("git", ["-C", flow.repo, "worktree", "add", "--detach", path, commit ?? io.base], { timeoutMs: 120_000 });
     if (added.code !== 0) return { state: "retry", said: `Couldn't make a copy of${where}: ${added.stderr.trim().split("\n")[0]?.slice(0, 160) ?? "git refused"}.` };
   }
-  const launch = flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
+  const launch = flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, policy: store.flowFencePolicy(flow.id), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
     if (launch !== null && "problem" in launch) return { state: "failed", said: launch.problem };
     let log = "";

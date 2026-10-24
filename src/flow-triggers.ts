@@ -801,7 +801,7 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
   const before = pin === null ? null : await pin();
   let ran: CodeResult;
   // A full boundary around its clean folder, though it has no checkout (flow-code.ts flowLaunch).
-  const launch = flowLaunch(store, { repo: flow.repo, folder, scratch, copy: false, ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
+  const launch = flowLaunch(store, { repo: flow.repo, folder, scratch, copy: false, policy: store.flowFencePolicy(flow.id), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
     if (launch !== null && "problem" in launch) return done(false, launch.problem);
     ran = await runCode({ script, cwd: folder, root: flow.repo, scratch, shell: io.shell ?? io.gh,
