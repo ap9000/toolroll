@@ -371,6 +371,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("runner bind", "replace which repositories a worker may build in"),
   operator("runner capacity", "set how many tasks a worker runs at once; running work carries on, the new number applies at the next claim"),
   operator("project checks", "show or set a project's batch checks (--batch on|off, off by default): results that finish within 10 minutes share one full check on a temporary batch commit; nothing is merged into a real branch"),
+  operator("project check-access", "show or set how far a project's checks reach: sandboxed (the default), with model and GitHub sign-ins, or not sandboxed; an instance operator widens it with a password typed now"),
   operator("project concurrency", "set how many of a project's tasks build at once (default 2, never past the worker's capacity); running work carries on"),
   operator("coordinator mint", "mint the MCP filing credential — repo-bound, rate-limited, token shown once"),
   operator("coordinator revoke", "revoke an MCP filing credential"),
@@ -469,7 +470,7 @@ const REMOTE_STEP_UP: readonly string[] = [
   // A person's own API tokens: a password step-up on the server's machine, or the console. Never with a token.
   "tokens create", "tokens list", "tokens revoke", "tokens rotate",
   "mode show", "mode set", "mode revoke", "chat-approval on", "review on", "review off", "config set", "config clear",
-  "verify set", "verify clear", "verify level", "project checks", "project concurrency", "intake grant", "intake clear", "webhook primary",
+  "verify set", "verify clear", "verify level", "project checks", "project check-access", "project concurrency", "intake grant", "intake clear", "webhook primary",
 ];
 const REMOTE_YES: readonly string[] = [
   "status", "integrations", "ready", "gaps", "grants", "sync", "audit",

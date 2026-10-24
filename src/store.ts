@@ -1,4 +1,5 @@
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
+import { checkAccessOf, type CheckAccess } from "./check-access.js";
 import { PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
@@ -767,7 +768,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (confinement_setting, one row; off unless an instance operator turns it on).
 // v131 adds, and changes no saved row: where a project's builds may write (project_writes; agent-fence.ts, docs/plans/
 // agent-baseline-hardening.md arc 2) — only their workspace unless an approver chose anywhere.
-export const SCHEMA_VERSION = 131;
+// v132 adds, and changes no saved row: how far a project's checks reach beyond the check fence (project_check_access;
+// check-access.ts, docs/plans/check-access.md) — sandboxed unless an instance operator widened it.
+export const SCHEMA_VERSION = 132;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -905,7 +908,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1047,6 +1050,15 @@ export const PROJECT_WRITES_SCHEMA = `
 CREATE TABLE IF NOT EXISTS project_writes (
   repo        TEXT PRIMARY KEY,
   mode        TEXT NOT NULL CHECK (mode IN ('workspace', 'anywhere')),
+  updated_at  TEXT NOT NULL,
+  updated_by  TEXT NOT NULL
+);
+`;
+/** v132: how far a project's checks reach beyond the check fence (check-access.ts CheckAccess). */
+export const PROJECT_CHECK_ACCESS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS project_check_access (
+  repo        TEXT PRIMARY KEY,
+  level       TEXT NOT NULL CHECK (level IN ('sandboxed', 'sign-ins', 'unsandboxed')),
   updated_at  TEXT NOT NULL,
   updated_by  TEXT NOT NULL
 );
@@ -5027,6 +5039,8 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CONFINEMENT_SCHEMA);
   // v131: where a project's builds may write (a new table only).
   db.exec(PROJECT_WRITES_SCHEMA);
+  // v132: how far a project's checks reach beyond the check fence (a new table only).
+  db.exec(PROJECT_CHECK_ACCESS_SCHEMA);
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -22459,6 +22473,32 @@ export class Store {
     if (Number(blanked.changes) !== 1) return;
     this.db.prepare("UPDATE lead_queue SET context_json = NULL WHERE message = ?").run(message);
     this.db.prepare("DELETE FROM memory_search WHERE kind = 'conversation' AND ref = ?").run(`message:${message}`);
+  }
+
+  // ---- check access (v132, check-access.ts). Kept last in the class: the freshness tripwire pins method positions.
+
+  /** How far a project's checks reach beyond the check fence: its saved level, or sandboxed. */
+  projectCheckAccess(repo: string): CheckAccess {
+    // A damaged row reads as the narrowest level, never a wider one.
+    return checkAccessOf(this.db.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(repo)?.["level"]);
+  }
+
+  /** Who last changed a project's check access, and when (null: never changed). */
+  projectCheckAccessChange(repo: string): { by: string; at: string } | null {
+    const row = this.db.prepare("SELECT updated_by, updated_at FROM project_check_access WHERE repo = ?").get(repo);
+    return row === undefined ? null : { by: String(row["updated_by"]), at: String(row["updated_at"]) };
+  }
+
+  /** A project's check access changed: saved, and in the ledger as before → after (who may is the caller's to prove). */
+  setProjectCheckAccess(repo: string, level: CheckAccess, by: string, now: Date): { before: CheckAccess; after: CheckAccess } {
+    return this.transact(() => {
+      const before = this.projectCheckAccess(repo);
+      this.db.prepare(`INSERT INTO project_check_access (repo, level, updated_at, updated_by) VALUES (?, ?, ?, ?)
+        ON CONFLICT (repo) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, level, now.toISOString(), by);
+      const after = this.projectCheckAccess(repo);
+      this.recordPolicy(by, repo, "check access", before, after, now);
+      return { before, after };
+    });
   }
 }
 
