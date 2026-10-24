@@ -140,7 +140,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
     const database = real(options.databaseFile);
     const state = dirname(database);
-    for (const suffix of ["", "-wal", "-shm", "-journal"]) if (existsSync(database + suffix)) fence.add(database + suffix);
+    // By name, there or not (a journal made later is denied too wherever a fence denies by name: Seatbelt and Codex).
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) fence.add(database + suffix);
     // The console's run folder (its discovery sockets, console-instance.ts) beside the database, wherever that is: no
     // build may add, rename or remove anything in it while a console listens there. It is made (owner-only) before any
     // build starts if it isn't there yet, so a build can never be the one to create it — and the fence always has a
@@ -184,9 +185,9 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // v104: the folder the audit stream writes to holds the whole instance's history.
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
     const stream = readMonitoring(dirname(real(options.databaseFile))).folder?.path;
-    if (stream !== undefined && existsSync(stream)) fence.add(real(stream));
+    if (stream !== undefined) fence.add(real(stream));
   }
-  for (const path of options.extra ?? []) if (existsSync(path)) fence.add(real(path));
+  for (const path of options.extra ?? []) fence.add(real(path));
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   // Listed for every backend (Codex and Seatbelt deny them by name as well as by pattern); a Linux fence masks Toolroll's
   // own launch-folder roots whole instead of each of these (linuxFenced), so none can vanish from under a mask.

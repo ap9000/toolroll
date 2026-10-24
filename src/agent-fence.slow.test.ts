@@ -236,6 +236,8 @@ describe("the agent fence", () => {
     expect(fence).toEqual([
       join(home, ".standing-orders"),
       join(state, "backups"), join(state, "bridge-secrets"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
+      // The journal and shared memory by name, there or not.
+      join(state, "orders.db-journal"), join(state, "orders.db-shm"),
       join(state, "repos.json"), join(state, ".toolroll-run"), join(state, "runner-token"), join(state, "up-login.txt"),
     ].sort());
     expect(fence.some(path => worktree.startsWith(path))).toBe(false);
@@ -249,7 +251,7 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "bridge-secrets"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
+    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "bridge-secrets"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
     // No database file: only ~/.standing-orders.
     expect(agentFence({ databaseFile: null, worktree: null, home })).toEqual([join(home, ".standing-orders")]);
   });
