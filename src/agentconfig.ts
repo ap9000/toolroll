@@ -22,6 +22,7 @@
 
 import { PROJECT_NETWORK_DEFAULT, repositoryEcosystems, resolveNetwork } from "./egress.js";
 import { WRITES_DEFAULT } from "./writes-mode.js";
+import { checkAccessHere, type CheckAccess } from "./check-access.js";
 import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId } from "./provider.js";
 import type { Store, TaskRef } from "./store.js";
 import { ACP_LIMITS, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
@@ -140,6 +141,7 @@ export function resolveScopeProfile(
   repo: string | null,
   ref: Pick<TaskRef, "agentProvider" | "agentModel"> | undefined,
   flags: PhaseFlags & { repairModel?: string | undefined; permissionMode?: UnattendedPermissionMode | undefined },
+  platform: NodeJS.Platform = process.platform,
 ): ProfileResolution {
   const build = resolvePhaseAgent(store, "build", repo, flags, ref);
   if (!build.ok) return { ok: false, reason: "unknown-provider", problem: build.problem };
@@ -239,7 +241,10 @@ export function resolveScopeProfile(
   const network = resolveNetwork(provider, repo === null ? PROJECT_NETWORK_DEFAULT : store.projectNetwork(repo), repo === null ? [] : repositoryEcosystems(repo));
   // Where the build may write (writes-mode.ts): the project's setting, sealed likewise.
   const writes = repo === null ? WRITES_DEFAULT : store.projectWrites(repo);
-  return { ok: true, profile: { ...profile, network, writes }, provenance: { resolvedFrom: build.source, repairFrom } };
+  // How far its checks reach (check-access.ts): the project's setting as checks can get it (sign-ins, off for now,
+  // seal as sandboxed: an approval never claims what its checks won't get), sealed only when wider than sandboxed.
+  const checkAccess: CheckAccess = repo === null ? "sandboxed" : checkAccessHere(store.projectCheckAccess(repo), platform);
+  return { ok: true, profile: { ...profile, network, writes, ...(checkAccess === "sandboxed" ? {} : { checkAccess }) }, provenance: { resolvedFrom: build.source, repairFrom } };
 }
 
 // ---- route candidates (v47, phase routing) --------------------------------

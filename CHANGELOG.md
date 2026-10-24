@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.69 — 2026-10-23
+
+- **Choose how far a project's checks reach.** Settings → Project has a new
+  Check access section, and `toolroll project check-access --repo <p>` shows
+  or sets the same thing. **Sandboxed** (the default) runs a project's setup
+  and check commands in the plane's fence, as before. **Not sandboxed** runs
+  them with your full access, as before 0.9.66: for a project whose checks
+  must create sandboxes themselves, such as Toolroll's own.
+- Widening takes an instance operator with their password typed now (a
+  remembered sign-in or a single sign-on recheck doesn't count). Any approver
+  for the project can narrow it back. Each change is in the ledger.
+- The level is part of what you approve. A scope seals it, the approval card
+  says "Checks: not sandboxed", and tasks already approved keep the level
+  they were approved with. Each run records the level its checks actually ran
+  at, and the result page says when they ran without a sandbox. Later checks
+  of a saved result never run wider than that run did. A mode, a grant or a
+  chat confirmation can't approve a wider level; only a person's password can.
+- **A third level, "Sandboxed, with model and GitHub sign-ins", is built but
+  off.** It would let a check read your Claude, Codex and GitHub sign-in files.
+  Reading those files safely needs a way to open a file that a running build
+  can't redirect partway (Node can't do that yet), so the option is shown
+  disabled with the reason. Choosing it is refused, and a level saved before
+  runs sandboxed and says so.
+- **The fence holds your home configuration by name.** `~/.codex`,
+  `~/.config/gh`, `~/.ssh` and the rest are denied whether or not they exist
+  when a build starts, so a build can't create one or swap it for a link
+  later. The folders above them can't be renamed or made during a build.
+- A check's temporary folder on a Mac is now short (under `/private/tmp`), so
+  tests that open a unix socket there work inside the fence. Other launches'
+  folders stay out of reach.
+- With no OS sandbox on the machine and unconfined running allowed, the
+  settings page and `project check-access` say checks run without a sandbox,
+  whatever level is saved.
+
 ## 0.9.68 — 2026-10-23
 
 - **The lead chat is redesigned.** Your messages sit in grey bubbles and the

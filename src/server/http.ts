@@ -67,6 +67,8 @@ export type ServeOptions = {
   leadByDefault?: boolean;
   /** Test seam: the operating system the sign-in command is written for. */
   platform?: NodeJS.Platform;
+  /** Test seam: whether this machine has an OS fence (macOS sandbox or bubblewrap) for checks. */
+  fenceAvailable?: () => boolean;
   /** Extra Host values this server answers as (a Tailscale name, a LAN ip:port). */
   allowedHosts?: readonly string[];
   /**

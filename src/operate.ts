@@ -118,6 +118,8 @@ import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
+import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
+import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
@@ -355,6 +357,10 @@ export type OperateOptions = {
   flowStepIo?: Partial<StepIo>;
   /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
   flowEveryMs?: number;
+  /** Injected by tests: the operating system this runs on (check access: no sign-ins on Linux yet). */
+  platform?: NodeJS.Platform;
+  /** Injected by tests: whether this machine has an OS fence for checks (macOS sandbox or bubblewrap). */
+  fenceAvailable?: () => boolean;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   /** Injected by tests: how `integrations` checks reach services (fetch, gh, sign-in checks, mail servers). */
@@ -399,6 +405,9 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         where the project's builds may write: only their checkout, caches and temp
                                         (workspace, the default), or anywhere outside Toolroll's fenced folders;
                                         an approver changes it (new scopes seal it; approved ones keep theirs)
+  toolroll project check-access --repo <p> [sandboxed|sign-ins|unsandboxed]
+                                        how far the project's checks reach: sandboxed (the default), with model
+                                        and GitHub sign-ins, or not sandboxed; an instance operator widens it
   toolroll config unconfined-agents [allow|refuse]
                                         whether builds run where this machine can't confine them (instance operator)
   toolroll project concurrency [<n>] --repo <p>
@@ -1081,6 +1090,8 @@ async function dispatchOn(
       ...(options.flowTriggerIo === undefined ? {} : { flowTriggerIo: options.flowTriggerIo }),
       ...(options.flowStepIo === undefined ? {} : { flowStepIo: options.flowStepIo }),
       ...(options.flowEveryMs === undefined ? {} : { flowEveryMs: options.flowEveryMs }),
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
+      ...(options.fenceAvailable === undefined ? {} : { fenceAvailable: options.fenceAvailable }),
       ...(options.flowFetch === undefined ? {} : { flowFetch: options.flowFetch }),
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
@@ -1241,6 +1252,10 @@ type Context = {
   flowStepIo?: Partial<StepIo>;
   /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
   flowEveryMs?: number;
+  /** Injected by tests: the operating system this runs on (default process.platform). */
+  platform?: NodeJS.Platform;
+  /** Injected by tests: whether this machine has an OS fence for checks (default: probed). */
+  fenceAvailable?: () => boolean;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   integrationIo?: Partial<IntegrationIo>;
@@ -1397,6 +1412,7 @@ async function dispatch(
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
       if (positional[0] === "network") return projectNetworkCommand(positional, flags, context);
       if (positional[0] === "writes") return projectWritesCommand(positional, flags, context);
+      if (positional[0] === "check-access") return projectCheckAccessCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
@@ -12081,4 +12097,59 @@ export function ownValueFlags(command: string, argv: readonly string[]): Readonl
   if (command === "flows") return FLOWS_VALUE_FLAGS;
   if (command === "project" && argv.find(arg => !arg.startsWith("-")) === "network") return PROJECT_NETWORK_VALUE_FLAGS;
   return undefined;
+}
+
+// Last in the file, so the password tripwire's function positions (password-freshness.test.ts) stay as reviewed.
+/**
+ * `project check-access --repo <p> [sandboxed|sign-ins|unsandboxed]` (check-access.ts): how far the project's setup
+ * and check commands reach beyond the check fence. Widening is an instance operator's act with a password typed now
+ * (never a remembered sign-in or a single sign-on recheck); any approver for the project may narrow it back to
+ * sandboxed. New scopes seal it; approved ones keep theirs. The ledger keeps before → after.
+ */
+async function projectCheckAccessCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project check-access";
+  const allowed = new Set(["repo", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project check-access option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = positional[1];
+  if (positional.length > 2 || repoFlag === undefined || (wanted !== undefined && !isCheckAccess(wanted))) return fail(context.write, context.json, command, "usage", "Use project check-access --repo <project path> [sandboxed | sign-ins | unsandboxed].", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const current = context.store.projectCheckAccess(repo);
+  const platform = context.platform ?? process.platform;
+  // How it actually runs here: with no OS fence and unconfined running allowed, without a sandbox whatever is saved; on
+  // a saved sign-ins level (off for now) runs sandboxed. Said, never hidden.
+  const fenced = context.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable());
+  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed() });
+  const here = runsAs(current);
+  const words = (one: CheckAccess): string[] => {
+    if (runsAs(one) === "unsandboxed" && one !== "unsandboxed") return [`${repo}: saved as ${checkAccessWords(one)}, but this machine can't sandbox checks, so they run without a sandbox.`];
+    if (runsAs(one) !== one) return [`${repo}: saved with model and GitHub sign-ins, but its checks run sandboxed: sign-ins can't be shared with checks safely yet.`];
+    const missing = one === "sign-ins" ? signInHostsMissing(context.store.projectNetwork(repo)) : [];
+    return [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]]),
+      // Never added for it: the operator widens the network separately, with their own password.
+      ...(missing.length === 0 ? [] : [`Model sign-ins need these hosts in this project's network allowlist: ${missing.join(", ")}. Add them with: toolroll project network --repo ${repo} --allow ${missing.join(",")}`])];
+  };
+  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current, ...(here === current ? {} : { runsAs: here }), ...(here === "sign-ins" ? { missingHosts: signInHostsMissing(context.store.projectNetwork(repo)) } : {}) }, () => words(current));
+  // Not available yet (check-access.ts signInsAvailable): refused before any password is asked for, nothing written.
+  const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(platform) : null;
+  if (unavailable !== null) return fail(context.write, context.json, command, "refused", unavailable, EXIT.refused);
+  const widening = widerThan(wanted, current);
+  const acting = await askCredentials(flags, context);
+  const proved = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
+  if (widening) {
+    // Wider reach exposes the operator's own sign-ins or machine: an instance operator, with a password typed for this.
+    if (acting === null || proved === null || !proved.ok || proved.method !== "password-now" || !context.store.isInstanceOperator(acting.name)) {
+      return fail(context.write, context.json, command, "refused", "An instance operator widens what a project's checks reach, with their password typed now: pass --as and --token.", EXIT.refused);
+    }
+  } else if (acting === null || proved === null || !proved.ok || !credentialProof(proved.method) || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project narrows what its checks reach, with their password: pass --as and --token.", EXIT.refused);
+  }
+  // The level is compared again inside the write: a change made while the password was asked for can't widen it here.
+  const changed = context.store.setProjectCheckAccess(repo, wanted, acting!.name, context.clock(), { may: widening ? "widen" : "narrow" });
+  if (changed === null) return fail(context.write, context.json, command, "refused", "The project's check access changed meanwhile, and this would now widen it: an instance operator widens it, with their password typed now.", EXIT.refused);
+  return succeed(context.write, context.json, command, { repo, before: changed.before, checkAccess: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep what they were approved with.",
+  ]);
 }

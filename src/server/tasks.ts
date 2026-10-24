@@ -2875,6 +2875,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now); } catch { return null; } })(),
       // What its network was and what its proxy saw (egress.ts), display only.
       network: store.runNetwork(run.id),
+      // How far its checks reached (check-access.ts), display only.
+      checkAccess: store.runCheckAccess(run.id),
       reviewRetry: store.reviewRetryStateOf(run.id),
       review: reviewFactsFor(run.id),
       notes: store.notesForRun(run.id),

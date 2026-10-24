@@ -4414,6 +4414,14 @@ $ contract --commands --json → 0
       "remote": "step-up"
     },
     {
+      "invocation": "project check-access",
+      "synopsis": "show or set how far a project's checks reach: sandboxed (the default), with model and GitHub sign-ins, or not sandboxed; an instance operator widens it with a password typed now",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "step-up"
+    },
+    {
       "invocation": "project concurrency",
       "synopsis": "set how many of a project's tasks build at once (default 2, never past the worker's capacity); running work carries on",
       "audience": "operator",

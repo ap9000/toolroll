@@ -44,7 +44,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -54,6 +54,9 @@ import type { LoopbackMode } from "./egress.js";
 
 /** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
 export const BRIDGE_DIR = "bridge-secrets";
+/** Where a Linux sign-ins check's copies of its sign-in files live while it runs (check-access.ts): one folder per launch,
+ * `c-<pid>-…`, beside the database; fenced from every build by name, like the bridges. */
+export const SIGN_IN_COPIES_DIR = "sign-in-copies";
 
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
@@ -131,6 +134,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   let runFolder: string | null = null;
   /** The bridges' folder, likewise. */
   let bridgeFolder: string | null = null;
+  /** The sign-in copies folder, likewise. */
+  let copiesFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -153,6 +158,15 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // refuses a root that isn't a private folder: egress-bridge.ts).
     bridgeFolder = bridges;
     fence.add(bridges);
+    // The sign-in copies (check-access.ts): made before any build starts and fenced from every build, by its own name as
+    // well as where it leads (as the bridges and the run folder are), whether or not the state folder is Toolroll's own.
+    // A Linux check binds its own copy from outside its sandbox, so nothing here is granted back. Never swept: a copy a
+    // launch that died left behind stays in this fenced, private folder (walking a folder a build might swap is the
+    // greater risk); a root that isn't Toolroll's private folder is never used (signInCopiesRoot).
+    const copies = join(state, SIGN_IN_COPIES_DIR);
+    try { lstatSync(copies); } catch { try { mkdirSync(copies, { mode: 0o700 }); } catch { /* fenced below either way */ } }
+    copiesFolder = copies;
+    fence.add(copies);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
@@ -186,11 +200,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder || path === copiesFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder || path === copiesFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -220,7 +234,10 @@ const CLAUDE_FILE_TOOL_HOME = [".claude.json", join(".claude", ".credentials.jso
 
 /** The task's boundary: `shell` joins the OS fence; `fileTools` only Claude's file-tool deny rules; `readOnly` and
  * `lookup` are other tasks' git metadata and checkout roots (see FenceGrants). */
-export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileTools: string[]; readOnly: string[]; lookup: string[] };
+export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileTools: string[]; readOnly: string[]; lookup: string[];
+  /** Every home configuration name the launch may not reach, by name, whether or not it exists now (macOS: Seatbelt
+   * denies a path that isn't there yet, so a build can't create it, or later replace it with a link). */
+  homeNames?: string[] };
 
 /**
  * Everything outside a task's own folders that a build could otherwise
@@ -294,25 +311,48 @@ export function taskBoundary(options: { worktree: string; provider: string; home
     }
   }
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
-  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
+  // By name too, present or not: a build started while ~/.codex is absent must never make it (and later swap it for a
+  // link while a sign-ins check reads through it). Only Seatbelt uses these (macosFenceProfile); bubblewrap can only
+  // mask what exists, and Codex's own sandbox takes existing paths.
+  const homeNames = HOME_CONFIGURATION.filter(name => !own.has(name)).map(name => join(home, name)).sort();
+  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames };
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
-export type RunFolders = { root: string; own: string | null };
+/** Where launches keep their private folders: `root` (the system temp folder) and, on a Mac, `also` the short shared one
+ * a check's launch folder is made in (/private/tmp, so its unix sockets fit); `own` is this launch's. */
+export type RunFolders = { root: string; own: string | null; also?: string[] };
 /** The prefixes of every launch's private folders: its tools' config, a Codex build's own home, and a Linux build's
  * network bridge (egress-bridge.ts). */
 export const RUN_FOLDER_PREFIXES = ["so-tools-", "so-codex-", "so-net-", "so-cmd-"] as const;
 
-export function runFolders(own: string | null, root: string = tmpdir()): RunFolders {
-  return { root: real(root), own: own === null ? null : real(own) };
+export function runFolders(own: string | null, root?: string): RunFolders {
+  // The system's own roots (not one a caller names): on a Mac, checks' launch folders are under the short one too.
+  const also = root === undefined && process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? [CHECK_LAUNCH_ROOT_MACOS] : [];
+  return { root: real(root ?? tmpdir()), own: own === null ? null : real(own), ...(also.length === 0 ? {} : { also }) };
 }
 
-/** Every other launch's private folder there now. */
+/** Where a check's launch folder is made on a Mac: a short shared folder, so its TMPDIR leaves room for a unix socket
+ * path (about 104 bytes); every other launch folder there is denied by pattern, as under the system temp folder. */
+export const CHECK_LAUNCH_ROOT_MACOS = "/private/tmp";
+/** The folder a check's launch folder is made in: on a Mac the short one, elsewhere the system temp folder (unchanged). */
+export const checkLaunchRoot = (): string => process.platform === "darwin" && existsSync(CHECK_LAUNCH_ROOT_MACOS) ? CHECK_LAUNCH_ROOT_MACOS : tmpdir();
+
+/** Every other launch's private folder in the system temp folder now, each only as the real folder it is (a link planted
+ * there is never followed, nor fenced in its target's place) and this user's own. A shared root (`also`, /private/tmp on
+ * a Mac) is never listed: anyone may plant entries there, so it is fenced by name pattern alone. */
 function otherRunFolders(folders: RunFolders): string[] {
   let entries: string[] = [];
   try { entries = readdirSync(folders.root); } catch { entries = []; }
-  return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(folders.root, entry)).filter(path => path !== folders.own);
+  const uid = process.getuid?.();
+  return entries.filter(entry => RUN_FOLDER_PREFIXES.some(prefix => entry.startsWith(prefix))).map(entry => join(folders.root, entry)).filter(path => {
+    if (path === folders.own) return false;
+    try { const held = lstatSync(path); return held.isDirectory() && !held.isSymbolicLink() && (uid === undefined || held.uid === uid); } catch { return false; }
+  });
 }
+
+/** Every root launch folders are made under (the system temp folder, and on a Mac the short shared one). */
+export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(folders.also ?? [])];
 
 /**
  * What a fence gives back beside its denied paths. Each is narrow and none
@@ -325,7 +365,12 @@ function otherRunFolders(folders: RunFolders): string[] {
  * `pool` denies the plane's checkout pools whole and gives this build's own
  * checkout back (CheckoutPool).
  */
-export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist };
+export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
+  /** macOS: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
+  homeNames?: string[];
+  /** A `sign-ins` check's exact sign-in files (read) and its checkout's own Claude transcript folder (written):
+   * check-access.ts, signInGrants. Bound back over the home fence by path, never a pattern or a parent folder. */
+  signIns?: SignInGrants };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -562,6 +607,7 @@ export function fenceGrants(options: { databaseFile: string | null; worktree: st
   }
   const pool = options.poolRoots === undefined ? undefined : checkoutPool({ roots: options.poolRoots, worktree: options.worktree, binding: options.binding ?? null, ...(options.home === undefined ? {} : { home: options.home }) });
   return { readOnly: [...options.boundary?.readOnly ?? []], readable, lookup: [...new Set(lookup)].sort(), ...(options.runFolders === undefined ? {} : { runFolders: options.runFolders }),
+    ...(options.boundary?.homeNames === undefined || options.boundary.homeNames.length === 0 ? {} : { homeNames: [...options.boundary.homeNames] }),
     ...(pool === undefined || pool.deny.length === 0 ? {} : { pool }) };
 }
 
@@ -610,8 +656,8 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
   // Codex's harness reads its own launch files outside the command sandbox.
   // Deny the namespace, including folders created after this policy was built.
   if (grants.runFolders !== undefined) {
-    for (const prefix of RUN_FOLDER_PREFIXES) {
-      deny.push(join(grants.runFolders.root, `${prefix}*`), join(grants.runFolders.root, `${prefix}*`, "**"));
+    for (const root of runRoots(grants.runFolders)) {
+      for (const prefix of RUN_FOLDER_PREFIXES) deny.push(join(root, `${prefix}*`), join(root, `${prefix}*`, "**"));
     }
   }
   // Launch folders can already be in the base fence when invoke appends them.
@@ -635,9 +681,9 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
     for (const path of held.deny) access.set(path, "deny");
     for (const path of held.write) access.set(path, "write");
   }
-  // Denies are keyed where they resolve; the console's run folder is also denied by its own pathname, so a link there
-  // stays unreplaceable, not only its target.
-  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
+  // Denies are keyed where they resolve; the console's run folder and the sign-in copies folder are also denied by their
+  // own pathname, so a link there stays unreplaceable, not only its target.
+  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR || basename(path) === SIGN_IN_COPIES_DIR) access.set(path, "deny"); }
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
     "-c", 'default_permissions="standing-orders"',
@@ -765,7 +811,15 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
   const paths = (filter: "subpath" | "literal", list: readonly string[]) => list.map(path => `(${filter} ${seatbelt(path)})`).join(" ");
   const folders = grants.runFolders;
   const pool = grants.pool;
-  const above = ownedAncestors([...fence, ...grants.readOnly, ...pool?.deny ?? []], [folders?.root ?? real(tmpdir())]);
+  const homeNames = grants.homeNames ?? [];
+  const above = ownedAncestors([...fence, ...grants.readOnly, ...homeNames, ...pool?.deny ?? []], folders === undefined ? [real(tmpdir())] : runRoots(folders));
+  // A home name's folder that isn't there yet (~/.config for ~/.config/gh): made by the build, it could be a link to
+  // anywhere and carry the name out of its deny, so nothing may make it while the build runs.
+  const missingAbove = [...new Set(homeNames.flatMap(name => {
+    const out: string[] = [];
+    for (let folder = dirname(name); folder !== dirname(folder) && !existsSync(folder); folder = dirname(folder)) out.push(folder);
+    return out;
+  }))].sort();
   return [
     "(version 1)",
     "(allow default)",
@@ -784,15 +838,29 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ]),
     ...(pool === undefined || pool.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", pool.lookup)})`]),
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
+    // The home configuration by name, there or not: nothing may create, read, replace or write one (the sign-ins grants
+    // after this give back only their exact files).
+    ...(homeNames.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", homeNames)})`]),
+    ...(missingAbove.length === 0 ? [] : [`(deny file-write* ${paths("literal", missingAbove)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),
-    ...(folders === undefined ? [] : [`(deny file-read* file-write* (regex #"^${seatbeltRegex(folders.root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`]),
+    ...(folders === undefined ? [] : runRoots(folders).map(root => `(deny file-read* file-write* (regex #"^${seatbeltRegex(root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`)),
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
     // Denied whole above, granted back narrowly here (a later rule wins): an entry made after launch beside it stays denied.
     ...(grants.readable.length === 0 ? [] : [`(allow file-read* file-test-existence ${paths("subpath", grants.readable)})`]),
+    // A sign-ins check (check-access.ts): its exact sign-in files read, its own transcript folder written; nothing else
+    // of the home configuration comes back.
+    ...(grants.signIns === undefined || grants.signIns.read.length === 0 ? [] : [`(allow file-read* ${paths("literal", grants.signIns.read)})`]),
+    // Its own transcript folder: only the session files directly in it (a session can be resumed). Nothing else there —
+    // never memory/ or any folder Claude would load into a later real session — comes back.
+    ...(grants.signIns === undefined || grants.signIns.transcripts.length === 0 ? [] : [
+      `(allow file-read-data file-read-metadata ${paths("literal", grants.signIns.transcripts)})`,
+      `(allow file-read* file-write* ${grants.signIns.transcripts.map(folder => `(regex #"^${seatbeltRegex(folder)}/[^/]+\\.jsonl$")`).join(" ")})`,
+    ]),
     // Each readable copy's own folder can be listed, never read: bundlers such as esbuild find node_modules by listing
     // its parent, which a lookup alone refuses (the Linux and Codex fences list it as read-only already).
     ...(grants.readable.length === 0 ? [] : [`(allow file-read-data ${paths("literal", [...new Set(grants.readable.map(one => dirname(one)))])})`]),
-    ...(folders?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [folders.own])})`]),
+    // Its own launch folder: what is in it, never the folder itself (it can't be renamed, removed or replaced by a link).
+    ...(folders?.own == null ? [] : [`(allow file-read* file-write* ${paths("subpath", [folders.own])})`, `(deny file-write* ${paths("literal", [folders.own])})`]),
     '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
     "(deny process-info-pidinfo)",
     "(allow process-info-pidinfo (target same-sandbox))",
@@ -881,8 +949,8 @@ const SECRET_SEGMENT = SPLIT_SECRET_PATTERNS.map(patternTest);
  */
 function linuxGrants(fence: readonly string[], grants: FenceGrants): string[] {
   const folders = grants.runFolders;
-  const launchFolder = (path: string) => folders !== undefined && inside(path, folders.root) && path !== folders.own && !(folders.own != null && inside(path, folders.own))
-    && RUN_FOLDER_PREFIXES.some(prefix => relative(folders.root, path).split(sep)[0]!.startsWith(prefix));
+  const launchFolder = (path: string) => folders !== undefined && path !== folders.own && !(folders.own != null && inside(path, folders.own))
+    && runRoots(folders).some(root => inside(path, root) && RUN_FOLDER_PREFIXES.some(prefix => relative(root, path).split(sep)[0]!.startsWith(prefix)));
   const secretBelow = (path: string) => fence.some(one => inside(path, one) && relative(one, path).split(sep).some(segment => SECRET_SEGMENT.some(test => test.test(segment))));
   const ok = (path: string, readOnlyGrant: boolean) => existsSync(path) && !fence.includes(path) && !launchFolder(path) && !secretBelow(path)
     && !(readOnlyGrant && fence.some(one => inside(path, one)));
@@ -904,6 +972,14 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const pool = grants.pool?.deny ?? [];
   const own = grants.pool?.own != null && existsSync(grants.pool.own) ? ["--bind", grants.pool.own, grants.pool.own] : [];
   const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
+  // A sign-ins check's exact files, bound back over the masks (validated when granted: signInGrants).
+  const signIns = grants.signIns === undefined ? [] : [
+    // Each from the launch's own copy (made from the validated, opened file), never the path itself: a link swapped in
+    // after validation is never followed by the bind. A file with no copy isn't granted.
+    ...grants.signIns.read.flatMap(path => { const copy = grants.signIns!.copies?.[path]; return copy !== undefined && existsSync(copy) ? ["--ro-bind", copy, path] : []; }),
+    // Bubblewrap can't bind by pattern: a session transcript folder is never given back writable on Linux (a check
+    // there can't resume a Claude session; it can't plant anything a later session loads either).
+  ];
   // A confined network: a network and a process view of its own, the host's sockets out of reach (a socket in a
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
   const isolated = network === null ? [] : [
@@ -928,7 +1004,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...services, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container
@@ -1016,4 +1092,100 @@ export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string
 /** FENCE_SUMMARY as README's markdown table. */
 export function fenceSummaryMarkdown(): string {
   return ["| | Auto | Full access |", "|---|---|---|", ...FENCE_SUMMARY.map(row => `| ${row.agent} | ${row.auto} | ${row.full} |`)].join("\n");
+}
+
+/** What a `sign-ins` check reads and writes beyond its fence (check-access.ts). */
+export type SignInGrants = { read: string[]; transcripts: string[]; copies?: Record<string, string> };
+
+/** The sign-in files a `sign-ins` check reads, by fixed name under the person's home (never from the environment, so no
+ * caller's CLAUDE_CONFIG_DIR or GH_CONFIG_DIR points a grant at .ssh): Claude's account and settings (and, on Linux,
+ * its credentials file; on a Mac they are in the keychain), and gh's hosts and config. Codex reads copies in a folder
+ * of the launch's own (invoke.ts), so nothing of ~/.codex is granted. */
+const SIGN_IN_FILES = (platform: NodeJS.Platform): string[] => [
+  ".claude.json", join(".claude", "settings.json"), ...(platform === "linux" ? [join(".claude", ".credentials.json")] : []),
+  join(".config", "gh", "hosts.yml"), join(".config", "gh", "config.yml"),
+];
+
+/**
+ * A `sign-ins` check's grants: each sign-in file only as the real regular file it is (never a link, nor reached
+ * through one), and on a Mac the checkout's own Claude transcript folder (made when absent, only as the real folder it
+ * is), whose session files alone are written so a session the check starts can be resumed. Nothing else under
+ * ~/.claude, ~/.codex or ~/.config is granted.
+ */
+export function signInGrants(home: string, checkout: string, platform: NodeJS.Platform = process.platform): SignInGrants {
+  const base = real(home);
+  const read = SIGN_IN_FILES(platform).map(name => join(base, name)).filter(path => {
+    try {
+      const held = lstatSync(path);
+      // One name only: a hard link made to another file (Toolroll's database, say) would be read through this grant.
+      return held.isFile() && !held.isSymbolicLink() && held.nlink === 1 && realpathSync(path) === path;
+    } catch { return false; }
+  });
+  const transcript = claudeProjectFolder(base, real(checkout));
+  // A transcript folder Claude would name by prefix (a very long checkout path) isn't granted: never a prefix of others.
+  const folder = transcript.byPrefix || !existsSync(join(base, ".claude")) ? null : grantFolder(transcript.path);
+  return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder] };
+}
+
+/**
+ * A sign-in file's bytes, read only as the real regular file it is: its folder reached through no link (its real path
+ * is its own), and the file itself opened without following a link and checked as a regular file through what was
+ * opened, so a link swapped in at the file's own name is never read. Null for anything else.
+ *
+ * Its folders are still resolved by name (Node has no openat), so a folder above it swapped for a link between the
+ * checks and the open would be followed. That is detected after the fact: every folder from / down to the file's own
+ * is looked at (no link, the same device and inode) before the open and again after it, the file's real path is
+ * checked again, and the name must still be the very file that was opened. Any difference reads nothing.
+ *
+ * Residual risk: a swap made and undone entirely between the two looks isn't seen. On a Mac every build's and check's
+ * fence denies the home configuration names (~/.codex among them) by name, present or not, so no build or sandboxed
+ * check can make that swap; only a check the operator set to Not sandboxed, or the person themselves, still could.
+ * `afterOpen` is for tests: it runs between the open and the second look.
+ */
+export function readGrantedFile(path: string, seams: { afterOpen?: () => void } = {}): Buffer | null {
+  const folder = dirname(path);
+  const chain: string[] = [];
+  for (let at = folder; ; at = dirname(at)) { chain.push(at); if (at === dirname(at)) break; }
+  const look = (): { dev: number; ino: number }[] | null => {
+    const held: { dev: number; ino: number }[] = [];
+    for (const at of chain) {
+      const one = lstatSync(at);
+      if (one.isSymbolicLink() || !one.isDirectory()) return null;
+      held.push({ dev: one.dev, ino: one.ino });
+    }
+    return held;
+  };
+  const same = (a: { dev: number; ino: number }[], b: { dev: number; ino: number }[]) => a.length === b.length && a.every((one, index) => one.dev === b[index]!.dev && one.ino === b[index]!.ino);
+  try {
+    const before = look();
+    if (before === null || realpathSync(folder) !== folder) return null;
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const held = fstatSync(fd);
+      if (!held.isFile() || held.nlink !== 1) return null;
+      seams.afterOpen?.();
+      const after = look();
+      if (after === null || !same(before, after) || realpathSync(folder) !== folder) return null;
+      const named = lstatSync(path);
+      if (named.isSymbolicLink() || named.dev !== held.dev || named.ino !== held.ino) return null;
+      const bytes = readFileSync(fd);
+      // And once more after the read: what was read must still be what the checked name holds.
+      const last = look();
+      return last !== null && same(before, last) ? bytes : null;
+    } finally { closeSync(fd); }
+  } catch { return null; }
+}
+
+/**
+ * The sign-in copies folder in a state folder (check-access.ts; Linux checks only, and sign-ins are off for now), or null:
+ * only the real folder Toolroll made there, owned by this user, mode 0700, reached through no link. Anything else (a
+ * link planted at that name, someone else's folder, one others may open) is never used: nothing is copied into it.
+ */
+export function signInCopiesRoot(state: string, uid: number | undefined = process.getuid?.()): string | null {
+  const root = join(state, SIGN_IN_COPIES_DIR);
+  try {
+    const held = lstatSync(root);
+    if (held.isSymbolicLink() || !held.isDirectory() || (uid !== undefined && held.uid !== uid) || (held.mode & 0o777) !== 0o700) return null;
+    return grantFolder(root, false) === root ? root : null;
+  } catch { return null; }
 }

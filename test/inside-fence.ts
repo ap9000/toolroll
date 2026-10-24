@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 /**
  * Whether these tests run inside a macOS sandbox: the release check runs inside the plane's check fence, and macOS
@@ -16,3 +17,10 @@ export const INSIDE_FENCE: boolean = (() => {
     return true;
   }
 })();
+
+/**
+ * Whether this run's temp folder leaves too little room for a unix socket test (about 104 bytes in all): inside an older
+ * plane's check fence, whose launch folder is deep. Since 0.9.69 a check's launch folder on a Mac is short
+ * (/private/tmp/so-cmd-…), so socket tests run inside a fence too.
+ */
+export const SOCKETS_TOO_DEEP: boolean = INSIDE_FENCE && realpathSync(tmpdir()).length > 49;
