@@ -44,9 +44,10 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readMonitoring } from "./monitoring-settings.js";
 import { existingFolders } from "./names.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
@@ -395,6 +396,9 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
   /** macOS: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
   homeNames?: string[];
+  /** The names no build writes, wherever they are (mandatoryWriteDenies): a checkout's and the home folder's
+   * configuration that runs code for the next person or tool to open it, less the exact files an approval unlocked. */
+  mandatory?: MandatoryDenies;
   /** Linux: the seccomp helper every workload runs through (seccomp-helper.ts); none means no Linux fence. */
   seccomp?: SeccompHelper;
   /** An agent harness itself runs inside this sandbox, not only its commands (invoke.ts: a Claude, Gemini or ACP build):
@@ -749,6 +753,18 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   }
   // Denies are keyed where they resolve; the console's run folder and the sign-in copies folder are also denied by their
   // own pathname, so a link there stays unreplaceable, not only its target.
+  // The mandatory write denies (C8), as Codex takes them: each protected name that exists now, read and never written
+  // (Codex can't deny writes by pattern; the handoff refuses a result that wrote a new one).
+  // Never a path inside a denied one: Codex lets the more specific path win, so a read there would bring it back.
+  const deniedPaths = deny.filter(one => !one.includes("*")).map(real);
+  for (const path of grants.mandatory?.existing ?? []) {
+    if (!existsSync(path)) continue;
+    const at = real(path);
+    if (access.get(at) === "deny" || deniedPaths.some(one => at === one || inside(at, one))) continue;
+    access.set(at, "read");
+  }
+  // An unlocked exact file, as every backend gives it (grantableUnlocks), where Codex writes at all.
+  if (grants.writes !== undefined || fullAccess) for (const path of grantableUnlocks(fence, grants)) if (existsSync(path)) access.set(path, "write");
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR || basename(path) === SIGN_IN_COPIES_DIR) access.set(path, "deny"); }
   return access;
 }
@@ -943,6 +959,9 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     // the egress proxy and the scout's browser run outside it.
     ...(grants.agentInside === true ? ["(deny mach-priv-task-port)"] : []),
     ...(above.length === 0 ? [] : [`(deny file-write* ${paths("literal", above)})`]),
+    // The mandatory write denies, after every grant (C8): nothing above can give one back; then only the exact files an
+    // approval unlocked.
+    ...macosMandatoryRules(grants.mandatory, grantableUnlocks(fence, grants)),
     ...macosNetworkRules(grants.network),
     // Never, whatever came before: nothing may script another application or ask Launch Services to open anything.
     "(deny appleevent-send)",
@@ -1153,7 +1172,51 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", ...filtered];
   // The helper bound read-only at its own path (inside the masked state folder), and its own switches never inherited.
   const helper = ["--ro-bind", seccomp.helper, seccomp.helper, ...SECCOMP_HELPER_ENV.flatMap(name => ["--unsetenv", name])];
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
+  // The mandatory write denies (C8): each protected name that exists now, bound read-only over everything above. One
+  // made after launch can't be bound (no placeholder mounts: their shared lifecycle is Phase 2's); the handoff refuses
+  // a result that wrote one instead (builder.ts).
+  // A checkout too large to see whole can't have every protected name bound: no Linux fence for it (fail closed).
+  if (grants.mandatory !== undefined && !grants.mandatory.complete) throw new LinuxFenceUnavailable("This checkout is too large to find every file builds may not write, so nothing was started.");
+  // Never anything inside a masked path (bubblewrap binds from the original root: that would bring it back).
+  const ownCheckout = grants.pool?.own == null ? null : real(grants.pool.own);
+  const under = (path: string, list: readonly string[]) => list.map(real).some(one => path === one || inside(path, one));
+  const masked = (path: string) => under(path, fence) || (under(path, pool) && !(ownCheckout !== null && (path === ownCheckout || inside(path, ownCheckout))));
+  const protectedNames = linuxProtectedBinds(grants, masked);
+  // An unlocked exact file, given back writable inside a protected folder bound read-only above (only if it exists:
+  // a new one is the watch's to allow), as every backend gives it.
+  protectedNames.push(...grantableUnlocks(fence, grants).filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]));
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...protectedNames, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
+}
+
+/**
+ * bubblewrap's half of the mandatory write denies: each protected name that exists as itself, bound read-only at its
+ * own path (never one inside a masked path). A name that is a link, or reached through one, can't be masked by a mount
+ * (a mount follows the link to its target), so: where it points somewhere this build can't write anyway, nothing more
+ * is needed; where it points to a regular file or folder inside the checkout, that target is bound read-only; anything
+ * else (a target the build could write elsewhere, a dangling link it could fill) refuses the launch, naming it.
+ */
+function linuxProtectedBinds(grants: FenceGrants, masked: (path: string) => boolean): string[] {
+  const mandatory = grants.mandatory;
+  if (mandatory === undefined) return [];
+  const writes = grants.writes;
+  const writable = (path: string) => !masked(path) && (writes === undefined || [...writes.subpaths, ...writes.prefixes.map(one => one.path)].some(one => path === real(one) || inside(path, real(one))));
+  const binds = new Set<string>();
+  for (const name of mandatory.existing) {
+    let held: import("node:fs").Stats;
+    try { held = lstatSync(name); } catch { continue; }
+    let at: string | null;
+    try { at = realpathSync(name); } catch { at = null; }
+    if (!held.isSymbolicLink() && at === name) { if (!masked(name)) binds.add(name); continue; }
+    // A link, or a name reached through one. Where it leads (or would, dangling):
+    let leads: string;
+    try { leads = at ?? resolve(dirname(name), readlinkSync(name)); } catch { leads = name; }
+    if (!writable(leads)) continue;
+    let kind: import("node:fs").Stats | null = null;
+    try { kind = at === null ? null : statSync(at); } catch { kind = null; }
+    if (at !== null && kind !== null && (kind.isFile() || kind.isDirectory()) && mandatory.anchors.some(anchor => inside(at!, anchor))) { binds.add(at); continue; }
+    throw new LinuxFenceUnavailable(`${name} leads to ${leads}, which this build could write, and a sandbox can't hold a name that is a link. Nothing was started: replace the link with the file itself, or move what it points to inside the project.`);
+  }
+  return [...binds].sort().flatMap(path => ["--ro-bind", path, path]);
 }
 
 /** The seccomp helper's own switches (vendor/seccomp-src/apply-seccomp.c): never passed through from a launch's
@@ -1383,6 +1446,8 @@ export type FenceContext = {
   network?: NetworkFence;
   /** Linux: the seccomp helper (tests only; default: installed from this package into the state folder). */
   seccomp?: SeccompHelper | null;
+  /** The exact protected files its approval unlocked (validUnlock), relative to the checkout. */
+  unlock?: readonly string[];
 };
 
 /** A launch's whole fence: its denied paths, what it gives back, and that it runs inside the OS fence or not at all.
@@ -1394,7 +1459,10 @@ export type LaunchFence = { kind: FenceKind; fence: string[]; fenceGrants: Fence
 export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   const home = ctx.home === undefined ? {} : { home: ctx.home };
   const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: ctx.extra ?? [] });
-  const base = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
+  const made = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
+  // Toolroll's own install and the Node that runs it, never written by anything it launches (C8, Q4): replacing the
+  // fence's own code would switch the fence off.
+  const base = { ...made, readOnly: [...new Set([...made.readOnly, ...toolrollInstall(ctx.worktree, ctx.home ?? homedir())])].sort() };
   const written = ctx.writes ?? null;
   // Linux: the seccomp helper in the state folder, from this package (seccomp-helper.ts).
   const seccomp = ctx.seccomp !== undefined ? ctx.seccomp
@@ -1404,6 +1472,286 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...base.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(seccomp === null ? {} : { seccomp }),
+    // Every launch that runs a project's code gets the mandatory write denies; a tool server is the operator's own.
+    ...(kind === "tool-server" ? {} : { mandatory: mandatoryWriteDenies({ worktree: ctx.worktree, home: ctx.home ?? homedir(), binding: ctx.binding, unlock: ctx.unlock ?? [],
+      quarantine: ctx.databaseFile === null || ctx.databaseFile === "" || ctx.databaseFile === ":memory:" ? null : join(dirname(real(ctx.databaseFile)), "quarantine") }) }),
   };
   return { kind, fence, fenceGrants: grants, confinement: "required" };
+}
+
+/**
+ * The mandatory write denies (docs/plans/sandbox-parity.md C8): names that run code or reconfigure tools for whoever
+ * opens the project or the home folder next. Anthropic's sandbox runtime's DANGEROUS_FILES and dangerous directories
+ * (@anthropic-ai/sandbox-runtime c66fb77 src/sandbox/sandbox-utils.ts, Apache-2.0; see THIRD_PARTY_NOTICES.md), plus,
+ * by the owner's decision (Q-B), `.envrc` and Claude's settings files, and the package managers' user configuration a
+ * Toolroll process outside every fence trusts when it runs them (`.npmrc`, `.yarnrc*`).
+ */
+export const PROTECTED_FILES: readonly string[] = [".gitconfig", ".gitmodules", ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile", ".ripgreprc", ".mcp.json",
+  ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".claude/settings.json", ".claude/settings.local.json"];
+/** Folders protected whole, wherever they are (srt's, with Git's hooks). */
+export const PROTECTED_DIRS: readonly string[] = [".vscode", ".idea", ".claude/commands", ".claude/agents", ".git/hooks"];
+/** Git's own settings in any repository (srt's `.git/config`). */
+const PROTECTED_GIT_FILES: readonly string[] = [".git/config"];
+/** The home folder's own persistence points beyond those names (owner Q-B, and the tools a Toolroll process runs). */
+export const HOME_PERSISTENCE: readonly string[] = ["Library/LaunchAgents", ".config/systemd/user", ".config/git", ".config/gh", ".config/pip", ".pip"];
+
+/** What a launch may not write by name: patterns for Seatbelt, the names that exist now for bubblewrap and Codex, and
+ * the exact files an approval unlocked. */
+export type MandatoryDenies = { anchors: string[]; home: string | null; existing: string[]; git: string[]; unlock: string[];
+  /** Whether the walk below the checkout saw all of it (protectedBelow); bubblewrap and Codex launches refuse when not. */
+  complete: boolean;
+  /** Where names a launch made anyway are moved (inside Toolroll's fenced state folder), or null: left, and said. */
+  quarantine: string | null };
+
+/** A relative path with every letter matched in either case (APFS and most macOS volumes ignore case). */
+const caseless = (relative: string): string => relative.split("").map(ch => /[a-z]/i.test(ch) ? `[${ch.toLowerCase()}${ch.toUpperCase()}]` : seatbeltRegex(ch)).join("");
+
+/**
+ * The mandatory write denies for a launch: anchored at its checkout (any depth below it) and at the home folder (its
+ * shell and tool configuration and HOME_PERSISTENCE), and at the bound repository's own Git data (its config and
+ * hooks, which the build's linked worktree reaches through `.git`). `unlock` is the approval's exact list of files,
+ * relative to the checkout, a build may still write; anything else in a protected folder stays denied.
+ */
+export function mandatoryWriteDenies(options: { worktree: string | null; home: string; binding: WorktreeBinding | null; unlock?: readonly string[]; quarantine?: string | null }): MandatoryDenies {
+  const home = real(options.home);
+  const anchors = [...(options.worktree === null ? [] : [real(options.worktree)])];
+  const existing = new Set<string>();
+  for (const anchor of anchors) for (const name of [...PROTECTED_FILES, ...PROTECTED_DIRS, ...PROTECTED_GIT_FILES]) existing.add(join(anchor, name));
+  // Below the checkout's top level too, for bubblewrap and Codex (which bind or list existing paths): a walk that must
+  // see the whole checkout (but node_modules, whose packages' own files no tool reads as configuration), or the launch
+  // is refused on those backends. A name made during the run is the watch's (withProtectedWatch).
+  let complete = true;
+  for (const anchor of anchors) { const below = protectedBelow(anchor); complete &&= below.complete; for (const path of below.found) existing.add(path); }
+  for (const name of [...PROTECTED_FILES, ...PROTECTED_DIRS, ...HOME_PERSISTENCE]) existing.add(join(home, name));
+  const git: string[] = [];
+  if (options.binding !== null) {
+    const common = real(join(options.binding.main, ".git"));
+    // Submodules keep their own config and hooks under the common folder's modules/.
+    git.push(join(common, "config"), join(common, "hooks"), join(common, "modules"), join(real(options.binding.gitdir), "config"));
+  }
+  const unlock = (options.unlock ?? []).filter(validUnlock);
+  // Only an unlocked name that is itself, here and now: no link at it or above it inside the checkout, no second name
+  // for another file (a hard link). Anything else stays denied (unlockSafe, checked again right before a bind).
+  const unlocked = new Set(anchors.flatMap(anchor => unlock.map(one => join(anchor, one)).filter(path => unlockSafe(anchor, path))));
+  return { anchors, home, existing: [...new Set([...existing, ...git])].filter(path => !unlocked.has(path)).sort(), git: git.sort(), unlock: [...unlocked].sort(),
+    complete, quarantine: options.quarantine ?? null };
+}
+
+/** An unlock entry: an exact relative file inside the checkout, one of the protected names or inside one of the
+ * protected folders; never `..`, an absolute path, a pattern, or Git's own data. */
+export function validUnlock(one: string): boolean {
+  if (one === "" || one.length > 300 || isAbsolute(one) || one.includes("\0") || /[*?[\]{}]/.test(one)) return false;
+  const parts = one.split("/");
+  if (parts.some(part => part === "" || part === "." || part === "..") || parts.includes(".git")) return false;
+  const tail = parts.join("/");
+  return PROTECTED_FILES.some(name => tail === name || tail.endsWith(`/${name}`)) || PROTECTED_DIRS.some(dir => !dir.startsWith(".git") && (`/${tail}`).includes(`/${dir}/`));
+}
+
+/** Seatbelt's half: every protected name below each anchor (any depth, either case), at home, and the existing Git
+ * data, denied to write; then the unlocked exact files given back. */
+function macosMandatoryRules(mandatory: MandatoryDenies | undefined, unlockable: readonly string[]): string[] {
+  if (mandatory === undefined) return [];
+  const regexes: string[] = [];
+  for (const anchor of mandatory.anchors) {
+    const at = seatbeltRegex(anchor);
+    regexes.push(`^${at}/(.*/)?(${[...PROTECTED_FILES, ...PROTECTED_GIT_FILES].map(caseless).join("|")})$`);
+    regexes.push(`^${at}/(.*/)?(${PROTECTED_DIRS.map(caseless).join("|")})(/|$)`);
+  }
+  if (mandatory.home !== null) {
+    const at = seatbeltRegex(mandatory.home);
+    regexes.push(`^${at}/(${PROTECTED_FILES.map(caseless).join("|")})$`);
+    regexes.push(`^${at}/(${[...PROTECTED_DIRS, ...HOME_PERSISTENCE].map(caseless).join("|")})(/|$)`);
+  }
+  const literal = mandatory.git;
+  return [
+    `(deny file-write* ${[...regexes.map(one => `(regex #"${one}")`), ...literal.map(path => `(subpath ${seatbelt(path)})`)].join(" ")})`,
+    ...(unlockable.length === 0 ? [] : [`(allow file-write* ${unlockable.map(path => `(literal ${seatbelt(path)})`).join(" ")})`]),
+  ];
+}
+
+/**
+ * The handoff's half (builder.ts): which of a result's changed paths (relative to its checkout) are protected names it
+ * wasn't unlocked for. On Linux a name made after launch couldn't be bound read-only, and Codex can't deny by pattern,
+ * so a result that wrote one is refused here instead; on a Mac it can't have been written at all.
+ */
+export function protectedChanges(changed: readonly string[], unlock: readonly string[] = []): string[] {
+  const unlocked = new Set(unlock.filter(validUnlock));
+  const files = new Set([...PROTECTED_FILES, ...PROTECTED_GIT_FILES].map(one => one.toLowerCase()));
+  return changed.filter(path => {
+    if (unlocked.has(path)) return false;
+    const lower = `/${path.toLowerCase()}`;
+    return [...files].some(name => lower.endsWith(`/${name}`)) || PROTECTED_DIRS.some(dir => lower.includes(`/${dir.toLowerCase()}/`));
+  });
+}
+
+/**
+ * Toolroll's own install as no launch may write it (C8, owner Q4): this package's folder (its compiled code, its
+ * helpers and their manifest), and the Node running it with the folder it lives in (its npm and global packages beside
+ * it), as the real folders they are. Never a folder that holds the launch's own checkout, the home folder or one above
+ * it, and nothing the user doesn't own (root's folders are out of a build's reach already).
+ */
+export function toolrollInstall(worktree: string | null, home: string): string[] {
+  const own = worktree === null ? null : real(worktree);
+  const uid = process.getuid?.();
+  const ours = (path: string) => { try { return uid === undefined || statSync(path).uid === uid; } catch { return false; } };
+  const candidates = [resolve(dirname(fileURLToPath(import.meta.url)), ".."), dirname(dirname(real(process.execPath))), real(process.execPath)].map(real);
+  const homeReal = real(home);
+  return [...new Set(candidates)].filter(path => path !== dirname(path) && path !== homeReal && !inside(homeReal, path)
+    && !(own !== null && (own === path || inside(own, path))) && ours(path)).sort();
+}
+
+/** The protected names that exist below `anchor` (not at its top level), found by a walk that never follows a link or
+ * enters node_modules; `complete` false when it ran past its budget or depth (a checkout too large to see whole). */
+export function protectedBelow(anchor: string, budget = 200_000, depth = 32): { found: string[]; complete: boolean } {
+  const found: string[] = [];
+  const files = new Set(PROTECTED_FILES.filter(name => !name.includes("/")).map(name => name.toLowerCase()));
+  const tails = [...PROTECTED_FILES.filter(name => name.includes("/")), ...PROTECTED_DIRS, ...PROTECTED_GIT_FILES].map(name => name.toLowerCase());
+  let left = budget;
+  let complete = true;
+  const walk = (folder: string, level: number): void => {
+    if (left <= 0) { complete = false; return; }
+    if (level > depth) { complete = false; return; }
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { complete = false; return; }
+    for (const entry of entries) {
+      if (--left <= 0) { complete = false; return; }
+      const path = join(folder, entry.name);
+      const rel = `/${relative(anchor, path).toLowerCase()}`;
+      if (level > 0 && (files.has(entry.name.toLowerCase()) || tails.some(tail => rel.endsWith(`/${tail}`)))) { found.push(path); continue; }
+      if (entry.isDirectory() && !entry.isSymbolicLink() && entry.name !== "node_modules") walk(path, level + 1);
+    }
+  };
+  walk(anchor, 0);
+  return { found, complete };
+}
+
+/**
+ * The unlocked exact files a launch may really write, the same answer for every backend: each by its own safe name
+ * (unlockSafe), never equal to or inside a fenced, read-only or pooled path (but its own checkout), and only where its
+ * writes reach (inside its write allowlist, when it has one).
+ */
+export function grantableUnlocks(fence: readonly string[], grants: FenceGrants): string[] {
+  const mandatory = grants.mandatory;
+  if (mandatory === undefined) return [];
+  const within = (path: string, list: readonly string[]) => list.some(one => path === real(one) || inside(path, real(one)));
+  const pool = grants.pool;
+  return mandatory.unlock.filter(path => mandatory.anchors.some(anchor => unlockSafe(anchor, path))
+    && !within(path, fence) && !within(path, grants.readOnly)
+    && !(pool !== undefined && within(path, pool.deny) && !(pool.own !== null && (path === pool.own || inside(path, real(pool.own)))))
+    && (grants.writes === undefined || within(path, grants.writes.subpaths)));
+}
+
+/**
+ * Whether an unlocked file may be given back writable: `path` lies inside the (real) `anchor`, every folder from the
+ * anchor down to it is a real folder (never a link a build planted to carry the grant elsewhere), and the file itself
+ * is absent (its folder then real) or a regular file with one name only (never a link, never a hard link to a file
+ * elsewhere, such as ~/.zshrc). Its real path is its lexical path.
+ */
+export function unlockSafe(anchor: string, path: string): boolean {
+  const rel = relative(anchor, path);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
+  let at = anchor;
+  const parts = rel.split(sep);
+  for (const [index, part] of parts.entries()) {
+    at = join(at, part);
+    let held: import("node:fs").Stats;
+    // Nothing there yet (the rest can't be either): nothing to follow. A link made there later is followed by the
+    // sandbox to its target's own path, which this grant doesn't name.
+    try { held = lstatSync(at); } catch { return true; }
+    if (held.isSymbolicLink()) return false;
+    if (index < parts.length - 1 ? !held.isDirectory() : !(held.isFile() && held.nlink === 1)) return false;
+  }
+  try { return realpathSync(path) === path; } catch { return false; }
+}
+
+/** What a launch began with (see protectedSnapshot): the protected names absent then, those found below the checkout,
+ * and each protected name that is a link: where it pointed, and what was there (dev:ino, or dangling). */
+export type ProtectedSnapshot = { mandatory: MandatoryDenies; absent: string[]; below: Set<string>; complete: boolean; links: Map<string, string> };
+
+/** A link's state: what it says, and the identity of what it leads to. */
+function linkState(path: string): string | null {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return null;
+    let target = "dangling";
+    try { const held = statSync(path); target = `${held.dev}:${held.ino}`; } catch { /* dangling */ }
+    return `${readlinkSync(path)}\0${target}`;
+  } catch { return null; }
+}
+
+/**
+ * The protected names a launch could still change (C8): every candidate name in the checkout and at home that doesn't
+ * exist right before it, those already below the checkout, and each one that is a link. What existed as itself is bound
+ * or listed read-only, so it can't change. The same reading after the launch finds what it made (withProtectedWatch).
+ * On a Mac, Seatbelt refuses the write itself.
+ */
+export function protectedSnapshot(mandatory: MandatoryDenies): ProtectedSnapshot {
+  const there = (path: string) => { try { lstatSync(path); return true; } catch { return false; } };
+  const git = new Set(mandatory.git);
+  const absent = mandatory.existing.filter(path => !git.has(path) && !there(path));
+  let complete = true;
+  const below = new Set(mandatory.anchors.flatMap(anchor => { const walked = protectedBelow(anchor); complete &&= walked.complete; return walked.found; }));
+  const links = new Map<string, string>();
+  for (const path of [...mandatory.existing, ...below]) { const state = linkState(path); if (state !== null) links.set(path, state); }
+  return { mandatory, absent, below, complete, links };
+}
+
+/** The protected names a launch made or changed: absent before and there now, newly found below the checkout, or a
+ * link at a protected name changed (what it says, or what it leads to). A checkout that can't be read whole, before or
+ * after, counts as changed (fail closed). */
+export function protectedDrift(before: ProtectedSnapshot): string[] {
+  const unlocked = new Set(before.mandatory.unlock);
+  const made = before.absent.filter(path => { try { lstatSync(path); return true; } catch { return false; } });
+  let complete = before.complete;
+  const below = before.mandatory.anchors.flatMap(anchor => { const walked = protectedBelow(anchor); complete &&= walked.complete; return walked.found; }).filter(path => !before.below.has(path));
+  const relinked = [...before.links].filter(([path, was]) => linkState(path) !== was).map(([path]) => path);
+  const unseen = complete ? [] : before.mandatory.anchors.map(anchor => `${anchor} (couldn't be read whole)`);
+  return [...new Set([...made, ...below, ...relinked, ...unseen])].filter(path => !unlocked.has(path)).sort();
+}
+
+/** Whether a made name may be moved: inside the real anchor, every folder from the anchor to it a real folder (the name
+ * itself may be a link: rename moves the link), its folder's real path its lexical one. */
+function movable(anchor: string, path: string): boolean {
+  const rel = relative(anchor, path);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
+  let at = anchor;
+  const parts = rel.split(sep);
+  for (const part of parts.slice(0, -1)) {
+    at = join(at, part);
+    try { const held = lstatSync(at); if (held.isSymbolicLink() || !held.isDirectory()) return false; } catch { return false; }
+  }
+  try { return realpathSync(dirname(path)) === dirname(path); } catch { return false; }
+}
+
+/**
+ * Runs `launch` under the protected-name watch (C8), the one wrapper every fenced launch form goes through (an agent,
+ * its setup and check commands, a saved result's checks, a flow's setup and script): what it made where its sandbox
+ * couldn't refuse it (a name absent at launch, on Linux or under Codex) fails it, and is moved out of the way into
+ * Toolroll's quarantine folder — by rename, which moves a link as the link, never what it points at — and said, when it
+ * is inside the checkout. One at home is left and said (it could be the person's own, made meanwhile). With no
+ * mandatory denies, `launch` runs as it is.
+ */
+export async function withProtectedWatch<T extends { code: number | null; stderr: string }>(grants: FenceGrants | undefined, launch: () => Promise<T>): Promise<T> {
+  const mandatory = grants?.mandatory;
+  if (mandatory === undefined) return launch();
+  const before = protectedSnapshot(mandatory);
+  const result = await launch();
+  const planted = protectedDrift(before);
+  if (planted.length === 0) return result;
+  const moved: string[] = [], left: string[] = [];
+  const folder = mandatory.quarantine === null ? null : join(mandatory.quarantine, `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`);
+  for (const [index, path] of planted.entries()) {
+    // Only what is there now, as itself; a re-pointed link is moved too (it is the planted thing). Only inside the
+    // checkout, the build's own ground: a name at home could be the person's own, made meanwhile, and is never moved.
+    try {
+      if (folder === null || !mandatory.anchors.some(anchor => movable(anchor, path))) throw new Error("not moved");
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+      renameSync(path, join(folder, `${index}-${basename(path)}`));
+      moved.push(path);
+    } catch { left.push(path); }
+  }
+  const named = (list: readonly string[]) => `${list.slice(0, 3).join(", ")}${list.length > 3 ? ` and ${list.length - 3} more` : ""}`;
+  const said = [`It wrote ${named(planted)}, which builds may not write (they run code or change tools for whoever opens them next), so its result is not used.`,
+    ...(moved.length === 0 ? [] : [`Moved to Toolroll's quarantine folder (${folder}): ${named(moved)}.`]),
+    ...(left.length === 0 ? [] : [`Left in place: ${named(left)}. If you didn't make ${left.length === 1 ? "it" : "them"} yourself, remove ${left.length === 1 ? "it" : "them"}.`])].join(" ");
+  return { ...result, code: result.code === 0 ? 1 : result.code, stderr: `${result.stderr}\n${said}\n` };
 }

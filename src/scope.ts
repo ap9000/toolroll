@@ -43,6 +43,9 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { networkFromValue, networkWords, type NetworkProfile } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { checkAccessWords, isCheckAccess, type CheckAccess } from "./check-access.js";
+import { validUnlock } from "./agent-fence.js";
+/** At most this many unlocked protected files in one approval. */
+export const MAX_WRITE_UNLOCK = 50;
 import { z } from "zod";
 import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
@@ -169,6 +172,9 @@ export type ClaudeProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
+  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
+   * write; sealed only when the project unlocked some. */
+  writeUnlock?: string[];
 };
 
 export type CodexShapedProfile = {
@@ -192,6 +198,9 @@ export type CodexShapedProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
+  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
+   * write; sealed only when the project unlocked some. */
+  writeUnlock?: string[];
 };
 
 export type GeminiProfile = {
@@ -217,6 +226,9 @@ export type GeminiProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
+  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
+   * write; sealed only when the project unlocked some. */
+  writeUnlock?: string[];
 };
 
 /**
@@ -243,6 +255,9 @@ export type AcpProfile = {
   writes?: WritesMode;
   /** How far its checks reach beyond the check fence (check-access.ts), sealed when wider than sandboxed; absent: sandboxed. */
   checkAccess?: Exclude<CheckAccess, "sandboxed">;
+  /** The exact protected files (agent-fence.ts mandatoryWriteDenies), relative to the checkout, its builds may still
+   * write; sealed only when the project unlocked some. */
+  writeUnlock?: string[];
 };
 
 export type ExecutionProfile = ClaudeProfile | CodexShapedProfile | GeminiProfile | AcpProfile;
@@ -479,10 +494,15 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   const sealedAccess = p["checkAccess"];
   if (sealedAccess !== undefined && (sealedAccess === "sandboxed" || !isCheckAccess(sealedAccess))) return null;
   const checkAccess = sealedAccess as Exclude<CheckAccess, "sandboxed"> | undefined;
-  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }), ...(checkAccess === undefined ? {} : { checkAccess }) };
+  // Unlocked protected files: present only as a non-empty, sorted list of distinct valid entries.
+  const unlock = p["writeUnlock"];
+  if (unlock !== undefined && !(Array.isArray(unlock) && unlock.length > 0 && unlock.length <= MAX_WRITE_UNLOCK && unlock.every(one => typeof one === "string" && validUnlock(one))
+    && unlock.every((one, at) => at === 0 || unlock[at - 1] < one))) return null;
+  const writeUnlock = unlock as string[] | undefined;
+  const withNetwork = { ...(network === undefined ? {} : { network }), ...(writes === undefined ? {} : { writes }), ...(checkAccess === undefined ? {} : { checkAccess }), ...(writeUnlock === undefined ? {} : { writeUnlock: [...writeUnlock] }) };
   if (p["provider"] === "claude") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes", "checkAccess"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permissionArgv"], ["timeoutKind", "network", "writes", "checkAccess", "writeUnlock"]) &&
       str(p["model"]) &&
       (p["permissionArgv"] === "auto" || p["permissionArgv"] === "acceptEdits" || p["permissionArgv"] === "bypassPermissions") &&
       num(p["maxTurns"]) && num(p["repairMaxTurns"]) &&
@@ -506,7 +526,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "codex" || p["provider"] === "openrouter") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes", "checkAccess"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "sandboxMode"], ["timeoutKind", "network", "writes", "checkAccess", "writeUnlock"]) &&
       str(p["model"]) &&
       (p["sandboxMode"] === "workspace-write" || p["sandboxMode"] === "danger-full-access") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -530,7 +550,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (p["provider"] === "gemini") {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes", "checkAccess"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "approvalArgv"], ["timeoutKind", "network", "writes", "checkAccess", "writeUnlock"]) &&
       str(p["model"]) &&
       (p["approvalArgv"] === "auto_edit" || p["approvalArgv"] === "yolo") &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&
@@ -554,7 +574,7 @@ export function profileFromJson(json: string | null): ExecutionProfile | null {
   }
   if (typeof p["provider"] === "string" && isAcpProvider(p["provider"])) {
     if (
-      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes", "checkAccess"]) &&
+      exactKeys(p, [...PROVIDER_KEYS, "permission", "idleTimeoutSeconds", "repairIdleTimeoutSeconds"], ["network", "writes", "checkAccess", "writeUnlock"]) &&
       str(p["model"]) &&
       p["permission"] === "full" &&
       p["maxTurns"] === "unsupported" && p["repairMaxTurns"] === "unsupported" &&

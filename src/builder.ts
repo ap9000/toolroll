@@ -56,6 +56,7 @@ import { witnessedRunner } from "./process-custody.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
+import { protectedChanges } from "./agent-fence.js";
 import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
@@ -504,7 +505,7 @@ function commandRunner(store: Store, runId: number, profile: ExecutionProfile, i
   // it first) so a later check of its result never runs wider; under sign-ins, behind its checks' own network.
   const { access, network } = checkLaunchOf(store, runId, profile);
   store.stampRunCheckAccess(runId, access, network);
-  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined);
+  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined, profile.writeUnlock ?? []);
 }
 
 /** A build's checks' level and network: its approval's level as this platform can give it (sign-ins sealed before
@@ -1624,7 +1625,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
-        writes: launchWritesOf(effective.profile),
+        writes: launchWritesOf(effective.profile), unlock: effective.profile.writeUnlock ?? [],
         ...(agent === undefined ? {} : { runner: agent }),
         onSpawn: (pid: number) => { spawned = true; request.onProviderSpawn?.(pid); },
         onStreamEvent: (event: Record<string, unknown>) => liveLog.observe(event),
@@ -3058,7 +3059,7 @@ async function resumeUnhandedWork(captured: CapturedBuild, sessionId: string | u
         ...watchdogsOf(effective.profile, effective.timeoutMs),
         omitEnv: AGENT_ENV_DENYLIST,
         network: launchNetworkOf(store, request.taskRef, effective.profile),
-        writes: launchWritesOf(effective.profile),
+        writes: launchWritesOf(effective.profile), unlock: effective.profile.writeUnlock ?? [],
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3302,7 +3303,7 @@ async function ingestPark(args: {
           ? watchdogsOf(args.profile, args.profile.repairTimeoutSeconds * 1000, true)
           : { timeoutMs: args.profile !== undefined ? args.profile.repairTimeoutSeconds * 1000 : REPAIR_TIMEOUT_MS }),
         omitEnv: AGENT_ENV_DENYLIST,
-        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile) }),
+        ...(args.profile === undefined ? {} : { network: launchNetworkOf(store, request.taskRef, args.profile), writes: launchWritesOf(args.profile), unlock: args.profile.writeUnlock ?? [] }),
         ...(agent === undefined ? {} : { runner: agent }),
         ...(request.onProviderSpawn === undefined ? {} : { onSpawn: request.onProviderSpawn }),
         clock,
@@ -3915,6 +3916,16 @@ async function commit(
       summary = `${summary}\n\n${stripped.notice}`;
       if (!stripped.staged) return { ok: true, committed: false, branch, summary };
     }
+  }
+
+  // The mandatory write denies' backstop (sandbox parity C8): a result that wrote a protected name (a hook, editor or
+  // tool settings, a shell profile) its approval didn't unlock is refused, however it got written: on Linux a name made
+  // after launch can't be bound read-only, and Codex can't deny by pattern. The checkout is kept; nothing is committed.
+  const staged = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", "-z"], { cwd: worktree });
+  if (staged.code !== 0) return { ok: false, reason: "commit-failure", message: firstLine(staged.stderr) };
+  const forbidden = protectedChanges(staged.stdout.split("\0").filter(one => one !== ""), scope.approvedProfile?.writeUnlock ?? []);
+  if (forbidden.length > 0) {
+    return { ok: false, reason: "commit-failure", message: `The result changes ${forbidden.slice(0, 3).join(", ")}${forbidden.length > 3 ? ` and ${forbidden.length - 3} more` : ""}, which builds may not write (they run code or change tools for whoever opens the project next). Nothing was committed; the work is kept in ${worktree}. An approver can unlock an exact file for the project.` };
   }
 
   // Setup can create untracked files as well as edit tracked manifests.

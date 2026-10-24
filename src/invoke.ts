@@ -39,7 +39,7 @@ import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
 import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInCopiesRoot, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
-import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, withProtectedWatch, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
@@ -193,7 +193,7 @@ export async function invokeAgent(
   runId: number,
   spec: AgentSpec,
   invocation: Omit<Invocation, "model">,
-  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork; writes?: WritesMode },
+  options: RunOptions & { runner?: ProviderRunner; clock?: () => Date; versionProbe?: VersionProbe; keyHome?: string; accumulateUsage?: boolean; network?: LaunchNetwork; writes?: WritesMode; unlock?: readonly string[] },
 ): Promise<InvokeResult> {
   const clock = options.clock ?? (() => new Date());
   if (options.accumulateUsage && (invocation.phase !== "review" || invocation.resumeSession === null)) {
@@ -349,6 +349,7 @@ export async function invokeAgent(
     acpCheck: _acpCheck,
     network: launchNetwork,
     writes: launchWrites,
+    unlock: launchUnlock,
     ...runOptions
   } = options;
   // The live setting is read STRICTLY (atomic authority closure): a
@@ -452,7 +453,7 @@ export async function invokeAgent(
   // tool servers outside its command sandbox, so its own launch folder is
   // fenced too; Claude reads its config from there, inside the sandbox.
   const ownTools = tools?.privateDir === undefined ? null : realpathSync(tools.privateDir);
-  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT);
+  const fenceOf = invocation.phase === "review" ? { fence: [], fileTools: [], grants: NO_GRANTS, gitPaths: [], cache: undefined, problem: undefined } : runFence(store, runId, spec.provider, options.keyHome, codexHarness ? null : ownTools, launchWrites ?? WRITES_DEFAULT, launchUnlock ?? []);
   if (fenceOf.problem !== undefined) {
     tools?.cleanup();
     codexHome?.cleanup();
@@ -473,6 +474,13 @@ export async function invokeAgent(
   const buildInvocation = { ...resolvedInvocation, ...(tools === null ? {} : { toolArgv: tools.argv, fence, fenceGrants: grants, fileToolFence: fenceOf.fileTools }), ...(workspace === null ? {} : { workspace }), ...(inherited === undefined ? {} : { inherited }) };
   const launchArgv = tools === null ? argv : adapter.argv(buildInvocation);
   const fenced = fenceLaunch(spec.provider, fence);
+  // A checkout too large to see whole can't have its protected names listed for Codex's profile: refused (C8).
+  if (codexHarness && grants.mandatory !== undefined && !grants.mandatory.complete) {
+    tools?.cleanup();
+    codexHome?.cleanup();
+    removeAgentDatabase(isolatedDb.dir);
+    return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null, diagnostic: "This checkout is too large to find every file builds may not write, so nothing was started." };
+  }
   // An ACP agent runs only inside the OS fence: nothing else holds it (it may run commands without asking).
   if (isAcpProvider(spec.provider) && fenced.method !== "macos-sandbox" && fenced.method !== "linux-bubblewrap") {
     tools?.cleanup();
@@ -778,9 +786,10 @@ export async function invokeAgent(
     // handle registered under its owner tag — the exact-attempt road,
     // never the global sweep. Settlement then reads the same row.
     // An ACP agent starts through its attested launch (the pinned interpreter for a script), never a PATH lookup.
-    result = await underStopWatch(store, runId, () => acpLaunch !== null
+    // Under the protected-name watch (agent-fence.ts withProtectedWatch): a name its sandbox couldn't refuse fails it.
+    result = await withProtectedWatch(fence.length > 0 ? grants : undefined, () => underStopWatch(store, runId, () => acpLaunch !== null
       ? spawn(acpLaunch.file, [...acpLaunch.prefix, ...launchArgv], launchOptions)
-      : spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions));
+      : spawn(attested !== null ? attested.executable : adapter.binary, launchArgv, launchOptions)));
   } finally {
     removeAgentDatabase(isolatedDb.dir);
     tools?.cleanup();
@@ -1028,7 +1037,7 @@ function linkedFor(store: Store, worktree: string | null): { repo: string; setup
 /** The paths this run's agent may not reach: the state folder around the live database (but not its own worktree),
  * ~/.toolroll (or its older name), its task boundary and other launches' private folders; what the fence gives back
  * (FenceGrants); and what only Claude's file tools refuse. */
-function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
+function runFence(store: Store, runId: number, provider: AgentSpec["provider"] | "command", keyHome: string | undefined, ownTools: string | null, writes: WritesMode = WRITES_DEFAULT, unlock: readonly string[] = []): { fence: string[]; fileTools: string[]; grants: FenceGrants; gitPaths?: string[]; cache?: string; problem?: string } {
   try {
     // A plane always has a database file; an in-memory store (a test) has nothing to fence.
     const databaseFile = store.databaseFile();
@@ -1049,7 +1058,7 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
     // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
     const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots,
-      extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly } });
+      extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, unlock });
     return {
       fence: launch.fence,
       fileTools: boundary?.fileTools ?? [],
@@ -1071,7 +1080,7 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
  * (a checkout whose binding no longer proves) runs nothing.
  */
 export function fencedCommands(store: Store, runId: number, writes: WritesMode, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable(),
-  access: CheckAccess = CHECK_ACCESS_DEFAULT, network?: NetworkProfile): Runner {
+  access: CheckAccess = CHECK_ACCESS_DEFAULT, network?: NetworkProfile, unlock: readonly string[] = []): Runner {
   // An injected runner (tests) starts no real command, as an injected agent starts no real agent (invokeAgent).
   if (inner !== runCommand) return inner;
   return async (file, args, options) => {
@@ -1087,7 +1096,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
       mkdirSync(temp, { mode: 0o700 });
       // Not sandboxed (check-access.ts): the project's checks are trusted by the whole instance, as before 0.9.66.
       if (access === "unsandboxed") return await inner(file, args, { ...options, env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp } });
-      const fenced = runFence(store, runId, "command", undefined, own, writes);
+      const fenced = runFence(store, runId, "command", undefined, own, writes, unlock);
       if (fenced.problem !== undefined) return { code: 1, stdout: "", stderr: `${fenced.problem}\n`, timedOut: false, notFound: false };
       if (fenced.fence.length === 0) return inner(file, args, options);
       // A self-hosted check's own database (child-database.ts) is the command's to write too.
@@ -1100,14 +1109,14 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
         : await signInsLaunch(store, own, temp, checkout, network, fenced.gitPaths ?? []);
       if (signIns !== null && "problem" in signIns) return { code: 1, stdout: "", stderr: `${signIns.problem}\n`, timedOut: false, notFound: false };
       try {
-        return await inner(file, args, {
+        return await withProtectedWatch(grants, () => inner(file, args, {
           ...options,
           fence: fenced.fence,
           fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
           confinement: "required",
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
-        });
+        }));
       } finally {
         await signIns?.close();
       }
@@ -1159,14 +1168,14 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
         : await signInsLaunch(store, own, temp, checkout, network, [binding.gitdir, join(binding.main, ".git")]);
       if (signIns !== null && "problem" in signIns) return { code: 1, stdout: "", stderr: `${signIns.problem}\n`, timedOut: false, notFound: false };
       try {
-        return await inner(file, args, {
+        return await withProtectedWatch(grants, () => inner(file, args, {
           ...options,
           fence: launch.fence,
           fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
           confinement: launch.confinement,
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
-        });
+        }));
       } finally {
         await signIns?.close();
       }
