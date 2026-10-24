@@ -1,6 +1,6 @@
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
-import { PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
+import { networkFromValue, PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type NetworkProfile, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
 import { reclaimDatabase } from "./database-reclaim.js";
@@ -5043,6 +5043,7 @@ function initializeStore(db: Database, file: string): Store {
   // at (run.sandbox_access; saved rows read NULL: sandboxed).
   db.exec(PROJECT_CHECK_ACCESS_SCHEMA);
   addColumn(db, "run", "sandbox_access", "TEXT");
+  addColumn(db, "run", "sandbox_network", "TEXT");
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -22502,8 +22503,15 @@ export class Store {
 
   /** The level a run's setup and checks ran at (its sealed approval's, or unsandboxed where no OS fence exists). Its
    * follow-up and batch checks never run wider than this. */
-  stampRunCheckAccess(runId: number, level: CheckAccess): void {
-    this.db.prepare("UPDATE run SET sandbox_access = ? WHERE id = ?").run(level, runId);
+  stampRunCheckAccess(runId: number, level: CheckAccess, network: NetworkProfile | null = null): void {
+    this.db.prepare("UPDATE run SET sandbox_access = ?, sandbox_network = ? WHERE id = ?").run(level, network === null ? null : JSON.stringify(network), runId);
+  }
+
+  /** The network a run's sign-ins checks ran under (null: none sealed; such a run's later checks run sandboxed). */
+  runCheckNetwork(runId: number): NetworkProfile | null {
+    const text = this.db.prepare("SELECT sandbox_network FROM run WHERE id = ?").get(runId)?.["sandbox_network"];
+    if (typeof text !== "string") return null;
+    try { return networkFromValue(JSON.parse(text)); } catch { return null; }
   }
 
   /** The level a run's checks ran at: missing or unreadable reads as sandboxed. */
@@ -22518,7 +22526,11 @@ export class Store {
   setProjectCheckAccess(repo: string, level: CheckAccess, by: string, now: Date, authority: { may: "narrow" | "widen" }): { before: CheckAccess; after: CheckAccess } | null {
     return this.transact(() => {
       const before = this.projectCheckAccess(repo);
-      if (widerThan(level, before) && authority.may !== "widen") return null;
+      // Who is acting is proved again here too: an account revoked, demoted or moved off the project while its password
+      // was being checked changes nothing.
+      const account = this.accountOf(by);
+      if (account === null || account.revokedAt !== null || account.role !== "approver" || !this.accountCanAccess(by, repo)) return null;
+      if (widerThan(level, before) && (authority.may !== "widen" || !this.isInstanceOperator(by))) return null;
       this.db.prepare(`INSERT INTO project_check_access (repo, level, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT (repo) DO UPDATE SET level = excluded.level, updated_at = excluded.updated_at, updated_by = excluded.updated_by`).run(repo, level, now.toISOString(), by);
       const after = this.projectCheckAccess(repo);

@@ -74,7 +74,7 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const { setting } = access;
   const network = view.network?.setting ?? null;
   const said = setting === "sandboxed"
-    ? html`<p>Checks run <strong>sandboxed</strong>: no sign-ins, credentials, other projects or Toolroll's own folders.</p>`
+    ? html`<p>Checks run <strong>sandboxed</strong>: they can't read your sign-ins and credentials (Claude, Codex, GitHub, SSH, cloud logins), Toolroll's own folders or other projects.</p>`
     : setting === "sign-ins"
       ? html`<p>Checks run <strong>sandboxed, with model and GitHub sign-ins</strong>.</p><p class="meta">${CHECK_ACCESS_WARNINGS["sign-ins"]}</p>`
       : html`<p>Checks run <strong>without a sandbox</strong>.</p><p class="meta">${CHECK_ACCESS_WARNINGS.unsandboxed}</p>`;
@@ -91,8 +91,8 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   };
   const open = network?.mode === "open";
   const form = postForm("/settings/project/check-access", html`
-    ${option("sandboxed", "Sandboxed (recommended)", "Checks read no sign-ins or credentials and reach nothing of yours outside the project.", null)}
-    ${option("sign-ins", "Sandboxed, with model and GitHub sign-ins", `Checks can read your Claude, Codex and GitHub sign-ins and nothing else of your home folder, under this project's network: ${open ? "any host" : network === null || network.hosts.length === 0 ? "its registries only" : `its registries and ${network.hosts.join(", ")}`}.`, CHECK_ACCESS_WARNINGS["sign-ins"])}
+    ${option("sandboxed", "Sandboxed (recommended)", "Checks can't read your sign-ins and credentials, Toolroll's own folders or other projects. Where builds write applies to them too.", null)}
+    ${option("sign-ins", "Sandboxed, with model and GitHub sign-ins", `As sandboxed, except checks can also read your Claude, Codex and GitHub sign-ins (no other credentials), and reach only this project's network: ${open ? "any host" : network === null || network.hosts.length === 0 ? "its registries only" : `its registries and ${network.hosts.join(", ")}`}.`, CHECK_ACCESS_WARNINGS["sign-ins"])}
     ${option("unsandboxed", "Not sandboxed", "For a project whose checks must create sandboxes themselves, such as Toolroll's own.", CHECK_ACCESS_WARNINGS.unsandboxed)}
     ${open ? html`<label class="check"><input type="checkbox" name="confirm-open" value="yes"> This project's network is open: with sign-ins, its checks could send your sign-ins to any host. I understand.</label>` : ""}
     ${access.canWiden ? "" : html`<p class="meta">Only an instance operator can widen this.</p>`}

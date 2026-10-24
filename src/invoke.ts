@@ -32,13 +32,13 @@ import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
 import { childDatabaseEnv, isolatedChildDatabase, removeChildDatabase as removeAgentDatabase } from "./child-database.js";
 import { RunSignInError, noToolsArgs, prepareRunTools, type ToolContainment, type ToolLaunchArgs } from "./project-tools.js";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
-import { BRIDGE_DIR, checkLaunchRoot, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
-import { CHECK_ACCESS_DEFAULT, type CheckAccess } from "./check-access.js";
+import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
+import { CHECK_ACCESS_DEFAULT, narrowestAccess, narrowestNetwork, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
@@ -1095,7 +1095,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
       const grants: FenceGrants = checkData === null ? fenced.grants : { ...fenced.grants, writes: { ...fenced.grants.writes!, subpaths: [...fenced.grants.writes!.subpaths, checkData] } };
       const checkout = store.getRun(runId)?.worktree ?? null;
       const signIns = access !== "sign-ins" ? null : checkout === null ? { problem: "The check's checkout is unknown, so its sign-ins can't be granted." }
-        : await signInsLaunch(store, own, temp, checkout, network ?? { version: 1, mode: "allowlist", hosts: [], loopback: "proxy-only" });
+        : network === undefined ? { problem: "A check with sign-ins has no network sealed for it, so nothing ran." }
+        : await signInsLaunch(store, own, temp, checkout, network, fenced.gitPaths ?? []);
       if (signIns !== null && "problem" in signIns) return { code: 1, stdout: "", stderr: `${signIns.problem}\n`, timedOut: false, notFound: false };
       try {
         return await inner(file, args, {
@@ -1121,7 +1122,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
  * database writable. Where nothing can confine them, they run only when an instance operator allowed unconfined agents.
  */
 export function fencedCheckoutCommands(store: Store, repo: string, checkout: string, inner: Runner, available: () => boolean = () => macosFenceAvailable() || linuxFenceAvailable(),
-  access: CheckAccess = CHECK_ACCESS_DEFAULT): Runner {
+  access: CheckAccess = CHECK_ACCESS_DEFAULT, network?: NetworkProfile): Runner {
   if (inner !== runCommand) return inner;
   return async (file, args, options) => {
     if (!available()) {
@@ -1150,9 +1151,10 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
       const base = fenceGrants({ databaseFile, worktree: checkout, boundary, runFolders: folders, linked: linkedFor(store, checkout), binding, poolRoots });
       const grants: FenceGrants = allowed === null ? base
         : { ...base, readOnly: [...new Set([...base.readOnly, ...allowed.readOnly])].sort(), writes: { ...allowed.writes, subpaths: [...allowed.writes.subpaths, ...(checkData === null ? [] : [checkData])] } };
-      // With sign-ins, under the project's network as it stands (its own hosts and the registries it uses).
-      const signIns = access !== "sign-ins" ? null
-        : await signInsLaunch(store, own, temp, checkout, resolveNetwork("command", store.projectNetwork(repo), repositoryEcosystems(repo)));
+      // With sign-ins, under the network its caller proved for it (the narrowest of its results' sealed check networks and
+      // the project's current one): none given, nothing runs.
+      const signIns = access !== "sign-ins" ? null : network === undefined ? { problem: "A check with sign-ins has no network sealed for it, so nothing ran." }
+        : await signInsLaunch(store, own, temp, checkout, network, [binding.gitdir, join(binding.main, ".git")]);
       if (signIns !== null && "problem" in signIns) return { code: 1, stdout: "", stderr: `${signIns.problem}\n`, timedOut: false, notFound: false };
       try {
         return await inner(file, args, {
@@ -1242,18 +1244,31 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
  * open, or its allowlist through a proxy of its own (on Linux, carried in by a bridge). Nothing about it is started
  * unless all of it is.
  */
-async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
+async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[]): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
   const home = homedir();
   const grants = signInGrants(home, checkout);
+  // Codex's files are copied, each read only as the real file it is (readGrantedFile: no link, here or above it).
   const codex = join(own, "codex");
   mkdirSync(codex, { mode: 0o700 });
   for (const name of ["config.toml", "auth.json"]) {
-    const from = join(codexHomeDir({}, home), name);
-    try {
-      const held = lstatSync(from);
-      if (!held.isFile() || held.isSymbolicLink()) continue;
-      writeFileSync(join(codex, name), readFileSync(from), { mode: 0o600 });
-    } catch { /* a Codex not signed in here: nothing to copy */ }
+    const bytes = readGrantedFile(join(realpathSync(home), ".codex", name));
+    if (bytes !== null) writeFileSync(join(codex, name), bytes, { mode: 0o600 });
+  }
+  // On Linux every granted file is bound from a copy of its own, made the same way (bubblewrap binds a source path, and
+  // a link swapped in after validation must never be what it binds). A Mac's sandbox checks the real path itself.
+  if (process.platform === "linux") {
+    const copies: Record<string, string> = {};
+    const folder = join(own, "sign-ins");
+    mkdirSync(folder, { mode: 0o700 });
+    grants.read.forEach((path, index) => {
+      const bytes = readGrantedFile(path);
+      if (bytes === null) return;
+      const copy = join(folder, String(index));
+      writeFileSync(copy, bytes, { mode: 0o600 });
+      copies[path] = copy;
+    });
+    grants.read = grants.read.filter(path => copies[path] !== undefined);
+    grants.copies = copies;
   }
   let egress: EgressProxy | null = null;
   let bridge: EgressBridge | null = null;
@@ -1270,11 +1285,50 @@ async function signInsLaunch(store: Store, own: string, temp: string, checkout: 
       const fenced = database === null || database === "" || database === ":memory:" ? undefined : join(dirname(realpathSync(database)), BRIDGE_DIR);
       bridge = await startEgressBridge([egress.port], fenced !== undefined && bridgeFits(fenced) ? fenced : undefined);
       network.bridge = { folder: realpathSync(bridge.folder), forwarder: realpathSync(bridge.forwarder), node: process.execPath };
-      network.keep = [realpathSync(checkout), own];
+      // Its private /tmp gives back its checkout, its launch folder and its checkout's own Git data (as a build's does).
+      network.keep = [realpathSync(checkout), own, ...gitPaths.filter(path => existsSync(path))];
     }
     return { grants, network, env: { ...env, ...proxyEnv(egress, policy.loopback) }, close };
   } catch (error) {
     await close();
     return { problem: `The check's network could not be set up, so nothing ran: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+/** How a check at `access` actually runs here: unsandboxed where no OS fence exists (and an operator allowed that), else
+ * as asked. Recorded on every check's receipt, so a check that ran without a sandbox is never shown as sandboxed. */
+export function actualCheckAccess(store: Store, access: CheckAccess): CheckAccess {
+  return macosFenceAvailable() || linuxFenceAvailable() || !store.unfencedAgentsAllowed() ? access : "unsandboxed";
+}
+
+/**
+ * A check of saved results, in their own checkout (batch-checks.ts, result-follow-ups.ts), worked out right before each
+ * command: never wider than any of those results' own checks ran, nor than the project allows now; under sign-ins, the
+ * narrowest of their sealed check networks and the project's current one. A result with no sealed network runs it
+ * sandboxed.
+ */
+export function checkoutLaunchOf(store: Store, repo: string, runIds: readonly number[]): { access: CheckAccess; network: NetworkProfile | undefined } {
+  const access = narrowestAccess([store.projectCheckAccess(repo), ...runIds.map(id => store.runCheckAccess(id))]);
+  if (access !== "sign-ins") return { access, network: undefined };
+  const sealed = runIds.map(id => store.runCheckNetwork(id));
+  if (sealed.length === 0 || sealed.some(one => one === null)) return { access: CHECK_ACCESS_DEFAULT, network: undefined };
+  const live = resolveNetwork("command", store.projectNetwork(repo), repositoryEcosystems(repo));
+  return { access, network: sealed.reduce<NetworkProfile>((low, one) => narrowestNetwork(low, one!), live) };
+}
+
+/** The widest level a check's commands actually ran at (what its receipt says). */
+export const widestRan = (levels: readonly CheckAccess[]): CheckAccess => levels.includes("unsandboxed") ? "unsandboxed" : levels.includes("sign-ins") ? "sign-ins" : CHECK_ACCESS_DEFAULT;
+
+/** A check log's line for how its commands ran, when wider than sandboxed (shown with the log). */
+export const ranAtLine = (level: CheckAccess): string | null => level === "sandboxed" ? null
+  : `=== Check access ===\n${level === "unsandboxed" ? "These commands ran without a sandbox." : "These commands ran sandboxed, with model and GitHub sign-ins."}`;
+
+/** A saved result's check command runner (batch-checks.ts, result-follow-ups.ts): its level and network worked out right
+ * now (checkoutLaunchOf), and how it actually runs recorded in `ranAt`. */
+export function checkoutRunner(store: Store, repo: string, checkout: string, inner: Runner, runIds: readonly number[], ranAt: CheckAccess[]): Runner {
+  return (file, args, options) => {
+    const launch = checkoutLaunchOf(store, repo, runIds);
+    ranAt.push(actualCheckAccess(store, launch.access));
+    return fencedCheckoutCommands(store, repo, checkout, inner, undefined, launch.access, launch.network)(file, args, options);
+  };
 }

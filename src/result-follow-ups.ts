@@ -9,8 +9,8 @@
  *
  * Add tests files a small task, unapproved like any other filing, to write
  * tests for that change. */
-import { narrowestAccess } from "./check-access.js";
-import { fencedCheckoutCommands } from "./invoke.js";
+import type { CheckAccess } from "./check-access.js";
+import { checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -201,6 +201,8 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
   const folder = mkdtempSync(join(deps.scratch ?? tmpdir(), "toolroll-checks-"));
   const checkout = join(folder, "checkout");
   const log: string[] = [];
+  // How each command actually ran (check-access.ts): the widest is on the receipt and in the log.
+  const ranAt: CheckAccess[] = [];
   const bound = (text: string) => { const hits = scanForSecrets(text); return boundStreamHeadTail(hits.length > 0 ? redactSecretLines(text, hits) : text, 24 * 1024); };
   const note = (label: string, command: string, result: ExecResult) =>
     log.push(`=== ${label} ===\n$ ${command}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""})\n\n--- stdout ---\n${bound(result.stdout)}\n\n--- stderr ---\n${bound(result.stderr)}`);
@@ -212,12 +214,11 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
       result = { ran: false, failure: "The commit couldn't be checked out. It may have been removed from this computer." };
     } else {
       const setup = store.liveWorktreeSetup(target.repo);
-      // Never wider than the result's own checks ran, nor than the project allows now (check-access.ts).
-      const access = narrowestAccess([store.projectCheckAccess(target.repo), store.runCheckAccess(runId)]);
+      // Worked out again right before each command (check-access.ts): a narrowing meanwhile applies to the next one.
       let ready = true;
       if (setup !== null) {
         const shell = approvedCommandShell(setup.command);
-        const prepared = await runWithIsolatedDatabase(fencedCheckoutCommands(store, target.repo, checkout, runner, undefined, access), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], ranAt), shell.file, shell.args, { cwd: checkout, timeoutMs: setup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note("Approved project setup", setup.command, prepared);
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) { ready = false; result = { ran: false, failure: "The project's setup failed, so the check didn't run." }; }
       }
@@ -228,7 +229,7 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
           result = { ran: false, failure: "The approved check changed before it started." };
         } else {
           const shell = approvedCommandShell(live.command);
-          const ran = await runWithIsolatedDatabase(fencedCheckoutCommands(store, target.repo, checkout, runner, undefined, access), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+          const ran = await runWithIsolatedDatabase(checkoutRunner(store, target.repo, checkout, runner, [runId], ranAt), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
           note(`${CHECK_LEVEL_WORDS[target.level]} check`, live.command, ran);
           result = ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code };
         }
@@ -239,10 +240,12 @@ export async function runFollowUpCheck(store: Store, root: string, request: numb
     rmSync(folder, { recursive: true, force: true });
   }
   const at = now();
+  const ranLine = ranAtLine(widestRan(ranAt));
+  if (ranLine !== null) log.push(ranLine);
   const text = log.length === 0 ? "No command started." : log.join("\n\n");
   const logId = storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.log`, Buffer.from(text, "utf8"), FOLLOW_UP_LOG, at, { captureStatus: "ok" });
   const logArtifact = store.getArtifact(logId)!;
-  const receipt = JSON.stringify({ version: 1, request, run: runId, head: target.head, tested: target.head, level: target.level,
+  const receipt = JSON.stringify({ version: 1, request, run: runId, head: target.head, tested: target.head, level: target.level, checkAccess: widestRan(ranAt),
     command: { repo: target.command.repo, command: target.command.command, digest: target.command.digest, approvedBy: target.command.approvedBy },
     result, log: { artifactId: logArtifact.id, sha256: logArtifact.sha256, bytesStored: logArtifact.bytesStored, truncated: logArtifact.truncated } }, null, 1);
   storeEvidence(store, root, runId, "structured-output", `follow-up-check-${request}.json`, Buffer.from(receipt, "utf8"), FOLLOW_UP_RECEIPT, at, { captureStatus: "ok" });

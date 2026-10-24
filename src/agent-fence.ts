@@ -44,7 +44,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -938,7 +938,9 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
   // A sign-ins check's exact files, bound back over the masks (validated when granted: signInGrants).
   const signIns = grants.signIns === undefined ? [] : [
-    ...grants.signIns.read.filter(path => existsSync(path)).flatMap(path => ["--ro-bind", path, path]),
+    // Each from the launch's own copy (made from the validated, opened file), never the path itself: a link swapped in
+    // after validation is never followed by the bind. A file with no copy isn't granted.
+    ...grants.signIns.read.flatMap(path => { const copy = grants.signIns!.copies?.[path]; return copy !== undefined && existsSync(copy) ? ["--ro-bind", copy, path] : []; }),
     // Bubblewrap can't bind by pattern: a session transcript folder is never given back writable on Linux (a check
     // there can't resume a Claude session; it can't plant anything a later session loads either).
   ];
@@ -1057,7 +1059,7 @@ export function fenceSummaryMarkdown(): string {
 }
 
 /** What a `sign-ins` check reads and writes beyond its fence (check-access.ts). */
-export type SignInGrants = { read: string[]; transcripts: string[] };
+export type SignInGrants = { read: string[]; transcripts: string[]; copies?: Record<string, string> };
 
 /** The sign-in files a `sign-ins` check reads, by fixed name under the person's home (never from the environment, so no
  * caller's CLAUDE_CONFIG_DIR or GH_CONFIG_DIR points a grant at .ssh): Claude's account and settings (and, on Linux,
@@ -1086,4 +1088,20 @@ export function signInGrants(home: string, checkout: string, platform: NodeJS.Pl
   // A transcript folder Claude would name by prefix (a very long checkout path) isn't granted: never a prefix of others.
   const folder = transcript.byPrefix || !existsSync(join(base, ".claude")) ? null : grantFolder(transcript.path);
   return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder] };
+}
+
+/**
+ * A sign-in file's bytes, read only as the real regular file it is: its folder reached through no link (its real path
+ * is its own), and the file itself opened without following a link and checked as a regular file through what was
+ * opened, so a link swapped in between the checks is never read. Null for anything else.
+ */
+export function readGrantedFile(path: string): Buffer | null {
+  try {
+    if (realpathSync(dirname(path)) !== dirname(path)) return null;
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (!fstatSync(fd).isFile()) return null;
+      return readFileSync(fd);
+    } finally { closeSync(fd); }
+  } catch { return null; }
 }

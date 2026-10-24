@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, describeScope, propose } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
-import { checkAccessOf, narrowestAccess, signInHostsMissing, widerThan } from "./check-access.js";
+import { checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, widerThan } from "./check-access.js";
+import { checkoutLaunchOf, checkoutRunner, ranAtLine, widestRan } from "./invoke.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, lines: string[];
@@ -164,4 +165,49 @@ test("sign-ins never widens the network: the CLI names the hosts the sign-ins ne
   store.setProjectNetwork(REPO, { mode: "open", hosts: [], loopback: "proxy-only" }, "alex", new Date());
   expect(await run(["--repo", REPO])).toBe(EXIT.ok);
   expect(lines.join("\n")).not.toMatch(/need these hosts/);
+});
+
+describe("review round: authority, networks and per-command levels", () => {
+  test("the write proves who is acting again: an operator demoted (or an approver moved off the project) meanwhile changes nothing", () => {
+    // sam is project-limited: never an operator, so a widen claimed for sam is refused inside the write.
+    expect(store.setProjectCheckAccess(REPO, "unsandboxed", "sam", new Date(), { may: "widen" })).toBeNull();
+    expect(store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" })).not.toBeNull();
+    // Moved off the project: sam can't narrow it any more either.
+    expect(store.setAccountProjects("sam", ["/elsewhere"], "alex", new Date())).toEqual({ ok: true });
+    expect(store.setProjectCheckAccess(REPO, "sandboxed", "sam", new Date(), { may: "narrow" })).toBeNull();
+    expect(store.projectCheckAccess(REPO)).toBe("unsandboxed");
+  });
+
+  test("a build's checks never get its agent's provider hosts; two networks narrow to what both allow", () => {
+    const sealed = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "registry.npmjs.org", "api.stripe.com"], loopback: "proxy-only" as const };
+    expect(checkNetworkOf(sealed, "claude").hosts).toEqual(["registry.npmjs.org", "api.stripe.com"]);
+    expect(narrowestNetwork({ ...sealed, hosts: ["*.stripe.com", "registry.npmjs.org"] }, { ...sealed, hosts: ["api.stripe.com", "github.com"] }).hosts).toEqual(["api.stripe.com"]);
+    expect(narrowestNetwork({ version: 1, mode: "open", hosts: [], loopback: "any" }, sealed)).toMatchObject({ mode: "allowlist", hosts: sealed.hosts, loopback: "proxy-only" });
+  });
+
+  test("a saved result's checks: worked out again before each command, never wider than the run or the project now; recorded as they ran", async () => {
+    store.createTask({ id: "t-saved", title: "t" }, new Date());
+    const ref = store.refFor("built-in", "t-saved").id;
+    const runId = store.startRun({ taskRef: ref, leaseId: "l", runner: "r", branch: "b", worktree: "/w", route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: new Date() });
+    const net = { version: 1 as const, mode: "allowlist" as const, hosts: ["api.stripe.com"], loopback: "proxy-only" as const };
+    store.stampRunCheckAccess(runId, "sign-ins", net);
+    store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" });
+    expect(checkoutLaunchOf(store, REPO, [runId])).toMatchObject({ access: "sign-ins" });
+    // The project's own network allows nothing extra: the result's sealed host isn't reachable.
+    expect(checkoutLaunchOf(store, REPO, [runId]).network?.hosts).toEqual([]);
+    // A run with sign-ins but no sealed network runs its checks sandboxed.
+    store.stampRunCheckAccess(runId, "sign-ins", null);
+    expect(checkoutLaunchOf(store, REPO, [runId]).access).toBe("sandboxed");
+    store.stampRunCheckAccess(runId, "sign-ins", net);
+    // The runner re-reads before each command: a narrowing between two commands applies to the second.
+    const ranAt: Parameters<typeof checkoutRunner>[5] = [];
+    const runner = checkoutRunner(store, REPO, "/w", async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false }), [runId], ranAt);
+    await runner("/bin/true", [], {});
+    store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
+    await runner("/bin/true", [], {});
+    expect(ranAt).toEqual(["sign-ins", "sandboxed"]);
+    expect(widestRan(ranAt)).toBe("sign-ins");
+    expect(ranAtLine("unsandboxed")).toMatch(/These commands ran without a sandbox/);
+    expect(ranAtLine("sandboxed")).toBeNull();
+  });
 });

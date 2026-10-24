@@ -1,5 +1,5 @@
-import { legacyNetwork, repositoryEcosystems } from "./egress.js";
-import { CHECK_ACCESS_DEFAULT } from "./check-access.js";
+import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
+import { CHECK_ACCESS_DEFAULT, checkNetworkOf, type CheckAccess } from "./check-access.js";
 import { checkoutGit } from "./teardown-git.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
@@ -500,13 +500,23 @@ function buildCheckoutGit(given: Runner, worktree: string, mainCheckout: string 
 /** A run's setup and check commands, in its build's fence, writing where the approval this build runs under sealed
  * (never the scope as it may since have been rewritten; invoke.ts fencedCommands). */
 function commandRunner(store: Store, runId: number, profile: ExecutionProfile, inner: Runner): Runner {
-  // How far its checks reach (check-access.ts): what its approval sealed, stamped on the run so a later check of its
-  // result never runs wider; under sign-ins, behind the network its approval sealed.
+  // How far its checks reach (check-access.ts): what its approval sealed, stamped on the run (again: the dispatch stamped
+  // it first) so a later check of its result never runs wider; under sign-ins, behind its checks' own network.
+  const { access, network } = checkLaunchOf(store, runId, profile);
+  store.stampRunCheckAccess(runId, access, network);
+  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, network ?? undefined);
+}
+
+/** A build's checks' level and network: its approval's level, and under sign-ins the network its approval sealed less
+ * its agent's own provider hosts (never its checks'). */
+function checkLaunchOf(store: Store, runId: number, profile: ExecutionProfile): { access: CheckAccess; network: NetworkProfile | null } {
   const access = profile.checkAccess ?? CHECK_ACCESS_DEFAULT;
-  store.stampRunCheckAccess(runId, access);
+  if (access !== "sign-ins") return { access, network: null };
   const taskRef = store.getRun(runId)?.taskRef;
   const sealed = taskRef === undefined ? undefined : launchNetworkOf(store, taskRef, profile);
-  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, sealed !== undefined && "policy" in sealed ? sealed.policy : undefined);
+  // No sealed network to narrow from: its checks run sandboxed.
+  if (sealed === undefined || !("policy" in sealed)) return { access: CHECK_ACCESS_DEFAULT, network: null };
+  return { access, network: checkNetworkOf(sealed.policy, profile.provider) };
 }
 
 /** Where a build may write (writes-mode.ts): what its approval sealed, or — sealed before write allowlists — anywhere
@@ -695,6 +705,9 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // resume below can match on them honestly.
   const provenScopeDigest = scope?.approvedDigest ?? "";
   const provenProfileDigest = profileDigestOf(effective.profile);
+  // Its checks' level and network, stamped now with the proof: a batched result that runs no command here still
+  // carries what its approval allows its checks (check-access.ts).
+  { const launch = checkLaunchOf(store, request.runId, effective.profile); store.stampRunCheckAccess(request.runId, launch.access, launch.network); }
   store.stampRun(request.runId, {
     scopeDigest: provenScopeDigest,
     profileDigest: provenProfileDigest,

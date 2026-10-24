@@ -57,11 +57,29 @@ test("macOS: the files come back by exact path after the home fence, the transcr
 
 test("Linux: each file bound back read-only after the masks; no transcript folder", () => {
   const grants = signInGrants(home, checkout, "linux");
-  const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".config", "gh")], { ...NO_GRANTS, signIns: grants });
+  const credentialsPath = join(home, ".claude", ".credentials.json");
+  const copy = join(dir, "copy-0");
+  writeFileSync(copy, "x");
+  // Bound from the launch's own copy, never the path (a link swapped in after validation is never what is bound).
+  const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".config", "gh")], { ...NO_GRANTS, signIns: { ...grants, copies: { [credentialsPath]: copy } } });
   const mask = args.indexOf(join(home, ".claude"));
-  const credentials = args.indexOf(join(home, ".claude", ".credentials.json"));
-  expect(args[credentials - 1]).toBe("--ro-bind");
-  expect(args[credentials + 1]).toBe(join(home, ".claude", ".credentials.json"));
-  expect(credentials).toBeGreaterThan(mask);
+  const bound = args.indexOf(copy);
+  expect(args[bound - 1]).toBe("--ro-bind");
+  expect(args[bound + 1]).toBe(credentialsPath);
+  expect(bound).toBeGreaterThan(mask);
+  // A file with no copy isn't bound at all.
+  expect(args).not.toContain(join(home, ".config", "gh", "hosts.yml"));
   expect(args).not.toContain(claudeProjectFolder(home, checkout).path);
+});
+
+test("a sign-in file is read only as the real file it is: never through a link, nor a linked folder above it", async () => {
+  const { readGrantedFile } = await import("./agent-fence.js");
+  expect(readGrantedFile(join(home, ".claude", "settings.json"))?.toString()).toBe("x");
+  symlinkSync(join(home, ".ssh", "id"), join(home, ".claude", "linked.json"));
+  expect(readGrantedFile(join(home, ".claude", "linked.json"))).toBeNull();
+  mkdirSync(join(dir, "elsewhere"));
+  writeFileSync(join(dir, "elsewhere", "auth.json"), "stolen");
+  rmSync(join(home, ".codex"), { recursive: true });
+  symlinkSync(join(dir, "elsewhere"), join(home, ".codex"));
+  expect(readGrantedFile(join(home, ".codex", "auth.json"))).toBeNull();
 });

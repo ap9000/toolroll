@@ -6,7 +6,7 @@
  * operator's act with a password typed now; any approver for the project may narrow it back.
  */
 
-import { PROVIDER_HOSTS, type ProjectNetwork } from "./egress.js";
+import { PROVIDER_HOSTS, type NetworkProfile, type ProjectNetwork } from "./egress.js";
 
 export const CHECK_ACCESS_LEVELS = ["sandboxed", "sign-ins", "unsandboxed"] as const;
 export type CheckAccess = typeof CHECK_ACCESS_LEVELS[number];
@@ -43,4 +43,24 @@ export function signInHostsMissing(network: ProjectNetwork): string[] {
   if (network.mode === "open") return [];
   const covered = (host: string) => network.hosts.some(one => one === host || (one.startsWith("*.") && host.endsWith(one.slice(1))));
   return SIGN_IN_HOSTS.filter(host => !covered(host));
+}
+
+/** The narrower of two networks: every host both allow (a wildcard allows what it covers), local services only if both
+ * do, open only if both are. A check never reaches what either its sealed network or the project's current one refuses. */
+export function narrowestNetwork(a: NetworkProfile, b: NetworkProfile): NetworkProfile {
+  const loopback = a.loopback === "any" && b.loopback === "any" ? "any" : "proxy-only";
+  if (a.mode === "open" && b.mode === "open") return { version: 1, mode: "open", hosts: [], loopback };
+  if (a.mode === "open") return { ...b, loopback };
+  if (b.mode === "open") return { ...a, loopback };
+  const covers = (list: readonly string[], host: string) => list.some(one => one === host || (one.startsWith("*.") && (host.endsWith(one.slice(1)) || host === one)));
+  const hosts = [...new Set([...a.hosts.filter(host => covers(b.hosts, host)), ...b.hosts.filter(host => covers(a.hosts, host))])].sort();
+  return { version: 1, mode: "allowlist", hosts, loopback };
+}
+
+/** A build's checks' own network: what its approval sealed, less its agent's provider hosts (those are the agent's, never
+ * its checks'); narrower if a project host happens to be one of them. */
+export function checkNetworkOf(sealed: NetworkProfile, provider: string): NetworkProfile {
+  if (sealed.mode === "open") return sealed;
+  const agent = new Set(PROVIDER_HOSTS[provider] ?? []);
+  return { ...sealed, hosts: sealed.hosts.filter(host => !agent.has(host)) };
 }
