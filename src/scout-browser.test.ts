@@ -1,21 +1,22 @@
 /**
- * The scout's real browser (run 2356, review 828): the worker starts the catalog's pinned Playwright outside the
- * agent fence, Chrome's own sandbox on, behind the scout's public-web-only proxy; a client inside the fence (as the
- * scout is) reaches it only by its loopback address, opens a public page and saves a screenshot in the image folder.
- * Skipped, with the reason, on a machine without Chrome, npx or the web, or when this test itself runs inside a
- * sandbox (Chrome's sandbox can't start there; that is the failure the preflight reports).
+ * The scout's real browser (run 2356, review 828): the worker starts the pinned Playwright, installed in Toolroll's
+ * helpers folder with its own Chrome for Testing, outside the agent fence under its launch contract (sandbox parity
+ * C4), Chrome's own sandbox on, behind the scout's public-web-only proxy; a client inside the fence (as the scout is)
+ * reaches it only by its loopback address, opens a public page and saves a screenshot in the image folder. The helper
+ * is installed once into a test-only folder in the system temp folder and reused. Skipped, with the reason, on a
+ * machine without npm or the web, or when this test itself runs inside a sandbox (Chrome's sandbox can't start there;
+ * that is the failure the preflight reports).
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { catalogTool } from "./project-tools.js";
 import { readReportImage, scoutBrowserLaunch, scoutProxyEnv } from "./scout.js";
 import { startScoutProxy, type ScoutProxy } from "./scout-net.js";
 import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, SANDBOX_EXEC } from "./agent-fence.js";
-import { startScoutBrowser, type BrowserLaunch, type ScoutBrowserServer } from "./scout-browser.js";
+import { SCOUT_BROWSER_ENV, scoutBrowserTool, startContractedBrowser, startScoutBrowser, type BrowserLaunch, type ScoutBrowserServer } from "./scout-browser.js";
 
 describe("a browser that can't start", () => {
   let folder = "";
@@ -40,12 +41,9 @@ describe("a browser that can't start", () => {
   });
 });
 
-const CHROME = process.platform === "darwin" ? "/Applications/Google Chrome.app" : null;
 const online = await lookup("example.com").then(() => true, () => false);
 const why =
-  spawnSync("npx", ["--version"], { stdio: "ignore" }).status !== 0 ? "npx is not installed"
-  : process.platform === "darwin" && !existsSync(CHROME!) ? "Google Chrome is not installed"
-  : process.platform !== "darwin" && spawnSync("which", ["google-chrome"], { stdio: "ignore" }).status !== 0 ? "Google Chrome is not installed"
+  spawnSync("npm", ["--version"], { stdio: "ignore" }).status !== 0 ? "npm is not installed"
   : !online ? "this machine can't reach the web"
   : process.platform === "darwin" && existsSync(SANDBOX_EXEC) && !macosFenceAvailable() ? "this test runs inside a sandbox, where Chrome's own sandbox can't start; run it from an unsandboxed shell"
   : null;
@@ -70,11 +68,19 @@ describe.skipIf(why !== null)(`the scout's real browser${why === null ? "" : ` (
   });
 
   test("starts outside the fence and passes its preflight through the proxy within a minute", async () => {
-    const launch = scoutBrowserLaunch(catalogTool("playwright"), folder, proxy.url);
-    if (launch === null) throw new Error("the catalog has no Playwright entry");
+    // A test-only helpers folder, kept between runs (the pinned tool and its Chrome are a large download).
+    const helpers = join(tmpdir(), `toolroll-test-scout-helpers-${process.getuid?.() ?? "user"}`);
+    mkdirSync(helpers, { recursive: true, mode: 0o700 });
+    chmodSync(helpers, 0o700);
+    const launch = scoutBrowserLaunch(scoutBrowserTool(helpers), folder, proxy.url);
+    if (launch === null) throw new Error("no browser launch");
     expect(launch.args).not.toContain("--no-sandbox");
+    const env = { ...Object.fromEntries(SCOUT_BROWSER_ENV.filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]])), ...scoutProxyEnv(proxy.url) };
+    const contract = { helpers, proxy: proxy.url };
+    // The first run installs the pinned helper (its own time limit), then the start is held to its minute.
+    await startContractedBrowser({ command: "/bin/false", args: [] }, { env, folder, contract });
     const at = Date.now();
-    const started = await startScoutBrowser(launch, { env: { ...process.env, ...scoutProxyEnv(proxy.url) }, folder });
+    const started = await startContractedBrowser(launch, { env, folder, contract });
     expect(started).toMatchObject({ ok: true, server: { url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/) } });
     expect(Date.now() - at).toBeLessThan(65_000);
     server = started.ok ? started.server : null;

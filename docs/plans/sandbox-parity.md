@@ -140,6 +140,7 @@ The release lane runs on a macOS runner and a Linux runner that have the prerequ
 - Refuse to start if any of those don't hold.
 - *Tests:* a build-writable executable path is refused; the run stamp says "browser: Chrome's sandbox".
 - **Flag:** this can't be "fenced by Toolroll" without switching Chrome's sandbox off. Owner Q-A.
+- *As built (0.9.70):* the npx launch and the system Google Chrome were both build-writable under `writes: anywhere` (the npm cache, `/Applications`), so the pinned `@playwright/mcp@0.0.82` and its own Chrome for Testing are installed once into `<state>/helpers/scout-browser-0.0.82` (inside the state folder every fence denies) and run by Toolroll's own Node with `--browser chromium`; the contract requires exactly the expected argv and an environment allowlist. The run records `browser: Chrome's sandbox` (run_tool `$.browser`).
 
 **C5. macOS deny-default baseline.**
 - Replace `(allow default)` (af:825) with srt's prologue (mac:1083–1250):

@@ -22538,6 +22538,24 @@ export class Store {
       return { before, after };
     });
   }
+
+  // ---- sandbox parity (docs/plans/sandbox-parity.md). Kept last in the class: the freshness tripwire pins positions.
+
+  /** The scout's browser ran outside Toolroll's fence under its launch contract (scout-browser.ts): which exception. */
+  recordRunBrowser(run: number, browser: { containment: string; tool: string }, now: Date): void {
+    const json = JSON.stringify(browser);
+    this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('browser', json(?)), ?)
+      ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.browser', json(?))`).run(run, json, now.toISOString(), json);
+  }
+
+  runBrowser(run: number): { containment: string; tool: string } | null {
+    const row = this.db.prepare("SELECT json_extract(tools_json, '$.browser') AS browser FROM run_tool WHERE run = ?").get(run);
+    if (row === undefined || row["browser"] === null) return null;
+    try {
+      const parsed = JSON.parse(String(row["browser"])) as { containment?: unknown; tool?: unknown };
+      return typeof parsed.containment === "string" && typeof parsed.tool === "string" ? { containment: parsed.containment, tool: parsed.tool } : null;
+    } catch { return null; }
+  }
 }
 
 /** A stored count or id that must be a whole, non-negative number — a
