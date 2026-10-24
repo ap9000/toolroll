@@ -5039,8 +5039,10 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(CONFINEMENT_SCHEMA);
   // v131: where a project's builds may write (a new table only).
   db.exec(PROJECT_WRITES_SCHEMA);
-  // v132: how far a project's checks reach beyond the check fence (a new table only).
+  // v132: how far a project's checks reach beyond the check fence (a new table), and the level each build's checks ran
+  // at (run.sandbox_access; saved rows read NULL: sandboxed).
   db.exec(PROJECT_CHECK_ACCESS_SCHEMA);
+  addColumn(db, "run", "sandbox_access", "TEXT");
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -8165,6 +8167,15 @@ export class Store {
             .prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND proposed_via IN ('mate','coordinator','scout')")
             .get(taskId);
           if (writtenByLead !== undefined) return false;
+          // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
+          // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
+          const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
+          let sealedAccess: unknown;
+          try {
+            const stored = typeof profileText === "string" ? JSON.parse(profileText) as { profile?: Record<string, unknown> | null } | null : null;
+            sealedAccess = stored?.profile?.["checkAccess"];
+          } catch { sealedAccess = "unreadable"; }
+          if (sealedAccess !== undefined) return false;
         }
         // SEPARATION OF DUTIES (v102), enforced in the primitive so no road
         // around it exists: a project's rules can refuse the requester, and
@@ -22487,6 +22498,17 @@ export class Store {
   projectCheckAccessChange(repo: string): { by: string; at: string } | null {
     const row = this.db.prepare("SELECT updated_by, updated_at FROM project_check_access WHERE repo = ?").get(repo);
     return row === undefined ? null : { by: String(row["updated_by"]), at: String(row["updated_at"]) };
+  }
+
+  /** The level a run's setup and checks ran at (its sealed approval's, or unsandboxed where no OS fence exists). Its
+   * follow-up and batch checks never run wider than this. */
+  stampRunCheckAccess(runId: number, level: CheckAccess): void {
+    this.db.prepare("UPDATE run SET sandbox_access = ? WHERE id = ?").run(level, runId);
+  }
+
+  /** The level a run's checks ran at: missing or unreadable reads as sandboxed. */
+  runCheckAccess(runId: number): CheckAccess {
+    return checkAccessOf(this.db.prepare("SELECT sandbox_access FROM run WHERE id = ?").get(runId)?.["sandbox_access"]);
   }
 
   /** A project's check access changed: saved, and in the ledger as before → after. `may` is what the caller proved:

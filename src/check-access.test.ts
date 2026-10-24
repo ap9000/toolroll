@@ -1,10 +1,10 @@
 /** Check access per project (v132, check-access.ts): stored narrow by default, widened only by an instance operator. */
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover } from "./scope.js";
+import { addApprover, describeScope, propose } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
 import { checkAccessOf, narrowestAccess, widerThan } from "./check-access.js";
 
@@ -102,3 +102,52 @@ test("the write compares again: a narrowing authority never widens, whatever cha
   expect(store.setProjectCheckAccess(REPO, "sandboxed", "sam", new Date(), { may: "narrow" })).toEqual({ before: "sandboxed", after: "sandboxed" });
 });
 
+
+describe("sealing (v132): the level is part of what is approved", () => {
+  const file = (id: string) => {
+    store.createTask({ id, title: id }, new Date());
+    store.placeTask(store.lookupRef(id)!.id, REPO);
+    for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", new Date());
+    return propose(store, { taskId: id, goal: "Do the thing", touches: ["a.ts"], acceptance: [{ id: "c1", statement: "It works", how: null, evidence: ["manual-review"] }], now: new Date() });
+  };
+
+  test("a scope seals a wider level, changes its digest for it, and says it; sandboxed seals nothing", () => {
+    const narrow = file("t-narrow");
+    expect(narrow.profile?.checkAccess).toBeUndefined();
+    store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" });
+    const wide = file("t-wide");
+    expect(wide.profile?.checkAccess).toBe("unsandboxed");
+    expect(describeScope(wide).join("\n")).toMatch(/checks\s+not sandboxed/);
+    expect(describeScope(narrow).join("\n")).not.toMatch(/checks\s/);
+    // The same words under the other level are another digest: an approval of one is never an approval of the other.
+    store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
+    const again = propose(store, { taskId: "t-wide", goal: "Do the thing", touches: ["a.ts"], acceptance: [{ id: "c1", statement: "It works", how: null, evidence: ["manual-review"] }], now: new Date() });
+    expect(again.profile?.checkAccess).toBeUndefined();
+    expect(again.digest).not.toBe(wide.digest);
+  });
+
+  test("a scope wider than sandboxed seals only on a person's password: never a mode, a grant, a chat confirmation", () => {
+    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+    file("t-auto");
+    for (const kind of ["mode", "grant", "chat"] as const) expect(store.sealScopeApproval("t-auto", "alex", new Date(), {}, { kind, modeDigest: "d" }, "person")).toBe(false);
+    expect(store.getScope("t-auto")?.approvedAt).toBeNull();
+    expect(store.sealScopeApproval("t-auto", "alex", new Date())).toBe(true);
+    // A sandboxed scope keeps every road it had.
+    store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
+    file("t-mode");
+    expect(store.sealScopeApproval("t-mode", "mode standard", new Date(), {}, { kind: "mode", modeDigest: "d" })).toBe(true);
+  });
+
+  test("a run's stamp: sandboxed until stamped; a check of its result never runs wider than it or than the project now", () => {
+    store.createTask({ id: "t-run", title: "t-run" }, new Date());
+    const ref = store.refFor("built-in", "t-run").id;
+    const runId = store.startRun({ taskRef: ref, leaseId: "l", runner: "r", branch: "b", worktree: "/w", route: { routeDigest: "legacy", phase: "build", provider: "claude", model: null, chosen: "legacy" }, now: new Date() });
+    expect(store.runCheckAccess(runId)).toBe("sandboxed");
+    store.stampRunCheckAccess(runId, "unsandboxed");
+    expect(store.runCheckAccess(runId)).toBe("unsandboxed");
+    // A damaged stamp is sandboxed.
+    store.handle.prepare("UPDATE run SET sandbox_access = 'everything' WHERE id = ?").run(runId);
+    expect(store.runCheckAccess(runId)).toBe("sandboxed");
+    expect(narrowestAccess([store.projectCheckAccess(REPO), "unsandboxed"])).toBe("sandboxed");
+  });
+});

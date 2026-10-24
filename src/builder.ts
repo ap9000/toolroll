@@ -1,4 +1,5 @@
 import { legacyNetwork, repositoryEcosystems } from "./egress.js";
+import { CHECK_ACCESS_DEFAULT } from "./check-access.js";
 import { checkoutGit } from "./teardown-git.js";
 import type { WritesMode } from "./writes-mode.js";
 import type { LaunchNetwork } from "./invoke.js";
@@ -499,7 +500,13 @@ function buildCheckoutGit(given: Runner, worktree: string, mainCheckout: string 
 /** A run's setup and check commands, in its build's fence, writing where the approval this build runs under sealed
  * (never the scope as it may since have been rewritten; invoke.ts fencedCommands). */
 function commandRunner(store: Store, runId: number, profile: ExecutionProfile, inner: Runner): Runner {
-  return fencedCommands(store, runId, launchWritesOf(profile), inner);
+  // How far its checks reach (check-access.ts): what its approval sealed, stamped on the run so a later check of its
+  // result never runs wider; under sign-ins, behind the network its approval sealed.
+  const access = profile.checkAccess ?? CHECK_ACCESS_DEFAULT;
+  store.stampRunCheckAccess(runId, access);
+  const taskRef = store.getRun(runId)?.taskRef;
+  const sealed = taskRef === undefined ? undefined : launchNetworkOf(store, taskRef, profile);
+  return fencedCommands(store, runId, launchWritesOf(profile), inner, undefined, access, sealed !== undefined && "policy" in sealed ? sealed.policy : undefined);
 }
 
 /** Where a build may write (writes-mode.ts): what its approval sealed, or — sealed before write allowlists — anywhere

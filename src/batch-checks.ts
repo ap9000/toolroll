@@ -18,6 +18,7 @@
  * The queue is the follow-up check ledger (result-follow-ups.ts), with `batch` requests: the same
  * claim, receipts, abandoned-check reading, status projection and Merge gate. The policy is an
  * append-only ledger entry, like the check level. */
+import { narrowestAccess } from "./check-access.js";
 import { fencedCheckoutCommands } from "./invoke.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,7 +70,8 @@ export async function runBatchChecks(store: Store, root: string, deps: CheckRunD
     if (run.role !== "builder" || run.outcome !== "built" || run.headRevision !== one.head) { finish("The result stopped or changed before its batch check."); continue; }
     const live = store.liveVerifyCommand(ref.repo);
     if (live === null || live.digest !== one.digest) { finish("The approved check changed while it waited. Run checks to check it now."); continue; }
-    const key = `${ref.repo}\u0000${one.digest}`;
+    // A cohort shares one check level: results whose own checks ran at different levels are checked apart (check-access.ts).
+    const key = `${ref.repo}\u0000${one.digest}\u0000${store.runCheckAccess(one.runId)}`;
     cohorts.set(key, [...(cohorts.get(key) ?? []), { request: one.request, runId: one.runId, task: ref.externalId, head: one.head, base: one.base ?? null, at: one.at }]);
   }
   for (const [key, members] of cohorts) {
@@ -153,17 +155,19 @@ async function checkCohort(store: Store, root: string, repo: string, cohort: Mem
       if (deps.shouldStop?.() === true) return { conflict: false, tested, outcome: { ran: false, failure: "Stopped before the check started." }, setupFailed: false };
       // The approvals are re-read before every spawn: a revoked or changed command never runs.
       const liveSetup = store.liveWorktreeSetup(repo);
+      // Never wider than any member's own checks ran, nor than the project allows now (check-access.ts).
+      const access = narrowestAccess([store.projectCheckAccess(repo), ...set.map(one => store.runCheckAccess(one.runId))]);
       if ((liveSetup?.digest ?? null) !== (setup?.digest ?? null)) return { conflict: false, tested, outcome: { ran: false, failure: "The project's approved setup changed before the check started." }, setupFailed: false };
       if (liveSetup !== null) {
         const shell = approvedCommandShell(liveSetup.command);
-        const prepared = await runWithIsolatedDatabase(fencedCheckoutCommands(store, repo, checkout, runner), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+        const prepared = await runWithIsolatedDatabase(fencedCheckoutCommands(store, repo, checkout, runner, undefined, access), shell.file, shell.args, { cwd: checkout, timeoutMs: liveSetup.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
         note(set, section(`${label} · approved project setup on ${tested.slice(0, 7)}`, liveSetup.command, prepared));
         if (prepared.code !== 0 || prepared.timedOut || prepared.notFound) return { conflict: false, tested, outcome: { ran: false, failure: "The project's setup failed, so the check didn't run." }, setupFailed: true };
       }
       const live = store.liveVerifyCommand(repo);
       if (live === null || live.digest !== command.digest) return { conflict: false, tested, outcome: { ran: false, failure: "The approved check changed before it started." }, setupFailed: false };
       const shell = approvedCommandShell(live.command);
-      const ran = await runWithIsolatedDatabase(fencedCheckoutCommands(store, repo, checkout, runner), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
+      const ran = await runWithIsolatedDatabase(fencedCheckoutCommands(store, repo, checkout, runner, undefined, access), shell.file, shell.args, { cwd: checkout, timeoutMs: live.timeoutMs, processGroup: true, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST });
       note(set, section(`${label} · full check on ${tested.slice(0, 7)}`, live.command, ran));
       return { conflict: false, tested, setupFailed: false,
         outcome: ran.timedOut ? { ran: false, failure: "The check ran out of time." } : ran.notFound ? { ran: false, failure: "The check couldn't start." } : { ran: true, exitCode: ran.code } };

@@ -1074,9 +1074,10 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
   // An injected runner (tests) starts no real command, as an injected agent starts no real agent (invokeAgent).
   if (inner !== runCommand) return inner;
   return async (file, args, options) => {
-    // As a build itself: where nothing can confine them, they run only when an instance operator allowed unconfined agents.
+    // As a build itself: where nothing can confine them, they run only when an instance operator allowed unconfined agents
+    // (and the run says so: its checks ran without a sandbox, whatever was sealed).
     if (!available()) {
-      if (store.unfencedAgentsAllowed()) return inner(file, args, options);
+      if (store.unfencedAgentsAllowed()) { store.stampRunCheckAccess(runId, "unsandboxed"); return inner(file, args, options); }
       return { code: 1, stdout: "", stderr: "This machine can't confine the build's commands (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
     }
     const own = realpathSync(mkdtempSync(join(tmpdir(), "so-cmd-")));
