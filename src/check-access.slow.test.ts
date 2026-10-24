@@ -188,47 +188,25 @@ describe.skipIf(!FENCED)("the sign-in copies folder (Linux checks' copies, fence
     } finally { other.close(); }
   });
 
-  test("a copy a launch left behind when it died is swept; a live launch's copy stays", async () => {
-    const { sweepSignInCopies } = await import("./agent-fence.js");
-    const folder = join(dir, "copies");
-    mkdirSync(folder, { mode: 0o700 });
-    mkdirSync(join(folder, "c-999999-dead", "inner"), { recursive: true });
-    writeFileSync(join(folder, "c-999999-dead", "inner", "0"), "token");
-    mkdirSync(join(folder, `c-${process.pid}-live`));
-    sweepSignInCopies(folder);
-    expect(readdirSync(folder)).toEqual([`c-${process.pid}-live`]);
-  });
+  // No sweep (Codex review): walking a folder a build might swap is the greater risk; a copy a launch that died left
+  // behind stays in this fenced, private folder (check-access-fence.test.ts: a linked root is never touched).
 
-  test("the sweep follows no link: a linked root is ignored; a planted link entry is unlinked and its target survives", async () => {
-    const { sweepSignInCopies } = await import("./agent-fence.js");
-    const target = join(dir, "precious");
-    mkdirSync(join(target, "c-999999-x"), { recursive: true });
-    writeFileSync(join(target, "c-999999-x", "keep"), "keep");
-    // A linked sweep root: nothing in its target is touched.
-    symlinkSync(target, join(dir, "linked-copies"));
-    sweepSignInCopies(join(dir, "linked-copies"));
-    expect(readdirSync(join(target, "c-999999-x"))).toEqual(["keep"]);
-    // A link planted as an entry (and one planted inside a dead copy): unlinked, never followed.
-    const folder = join(dir, "copies2");
-    mkdirSync(folder, { mode: 0o700 });
-    symlinkSync(join(target, "c-999999-x"), join(folder, "c-999998-planted"));
-    mkdirSync(join(folder, "c-999997-dead"));
-    symlinkSync(target, join(folder, "c-999997-dead", "out"));
-    sweepSignInCopies(folder);
-    expect(readdirSync(folder)).toEqual([]);
-    expect(readdirSync(join(target, "c-999999-x"))).toEqual(["keep"]);
-  });
+});
 
-  test("an entry someone else owns is left alone", async () => {
-    const { sweepSignInCopies } = await import("./agent-fence.js");
-    const { lstatSync: real } = await import("node:fs");
-    const folder = join(dir, "copies3");
-    mkdirSync(folder, { mode: 0o700 });
-    mkdirSync(join(folder, "c-999999-theirs"));
-    const uid = process.getuid!();
-    const look = (path: string) => { const held = real(path); return path.endsWith("c-999999-theirs") ? Object.assign(Object.create(Object.getPrototypeOf(held)), held, { uid: uid + 1 }) : held; };
-    sweepSignInCopies(folder, look, uid);
-    expect(readdirSync(folder)).toEqual(["c-999999-theirs"]);
+describe.skipIf(!FENCED || process.platform !== "darwin")("the home configuration by name, in the real macOS fence", () => {
+  test("with ~/.codex (and ~/.config/gh) absent at launch, a sandboxed check can't create them, as a folder or as a link", async () => {
+    rmSync(join(home, ".codex"), { recursive: true });
+    rmSync(join(home, ".config", "gh"), { recursive: true });
+    // Writes anywhere (the case the review found): the rest of the home folder stays writable, these names never.
+    store.setProjectWrites(repo, "anywhere", "alex", new Date());
+    const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sandboxed")("/bin/sh", ["-c", [
+      `mkdir ${JSON.stringify(join(home, ".other"))} 2>/dev/null && echo made || echo refused`,
+      `mkdir ${JSON.stringify(join(home, ".codex"))} 2>/dev/null && echo made || echo refused`,
+      `ln -s ${JSON.stringify(join(home, ".ssh"))} ${JSON.stringify(join(home, ".codex"))} 2>/dev/null && echo linked || echo refused`,
+      `mkdir -p ${JSON.stringify(join(home, ".config", "gh"))} 2>/dev/null && echo made || echo refused`,
+    ].join("\n")], { cwd: checkout });
+    expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["made", "refused", "refused", "refused"]);
+    expect(readdirSync(home)).not.toContain(".codex");
+    expect(readdirSync(join(home, ".config"))).not.toContain("gh");
   });
-
 });

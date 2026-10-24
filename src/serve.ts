@@ -468,7 +468,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       setting: store.projectCheckAccess(repo), changed: store.projectCheckAccessChange(repo),
       canNarrow: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo),
       canWiden: who.via === "cookie" && !store.isDemo() && store.isInstanceOperator(who.name),
-      unconfinedHere: !(macosFenceAvailable() || linuxFenceAvailable()) && store.unfencedAgentsAllowed(),
+      unconfinedHere: !(options.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable())) && store.unfencedAgentsAllowed(),
       signInsUnavailable: signInsUnavailableWords(options.platform ?? process.platform),
     },
     liveView: (() => {

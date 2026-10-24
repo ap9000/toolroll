@@ -37,7 +37,7 @@ import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
-import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
+import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInCopiesRoot, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
@@ -1268,10 +1268,11 @@ export async function signInsLaunch(store: Store, own: string, temp: string, che
     // from a launch already running): bubblewrap binds from the original root, so only this check sees them.
     const database = store.databaseFile();
     if (database === null || database === "" || database === ":memory:") return { problem: "A check with sign-ins needs Toolroll's state folder, so nothing ran." };
-    const parent = join(dirname(realpathSync(database)), SIGN_IN_COPIES_DIR);
-    try { mkdirSync(parent, { mode: 0o700 }); } catch { /* there already: checked next */ }
-    // Only the real, private folder Toolroll made: never a link planted where it should be.
-    if (grantFolder(parent, false) === null || (lstatSync(parent).mode & 0o077) !== 0) return { problem: "The sign-in copies folder isn't a private folder of Toolroll's, so nothing ran." };
+    const state = dirname(realpathSync(database));
+    try { mkdirSync(join(state, SIGN_IN_COPIES_DIR), { mode: 0o700 }); } catch { /* there already: checked next */ }
+    // Only the real, private folder Toolroll made (this user's, 0700, no link): never a link planted where it should be.
+    const parent = signInCopiesRoot(state);
+    if (parent === null) return { problem: "The sign-in copies folder isn't a private folder of Toolroll's, so nothing ran." };
     const folder = mkdtempSync(join(parent, `c-${process.pid}-`));
     cleanup.push(folder);
     grants.read.forEach((path, index) => {

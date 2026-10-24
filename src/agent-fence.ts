@@ -44,7 +44,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
@@ -134,6 +134,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   let runFolder: string | null = null;
   /** The bridges' folder, likewise. */
   let bridgeFolder: string | null = null;
+  /** The sign-in copies folder, likewise. */
+  let copiesFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -156,12 +158,14 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // refuses a root that isn't a private folder: egress-bridge.ts).
     bridgeFolder = bridges;
     fence.add(bridges);
-    // The sign-in copies (check-access.ts): made before any build starts, fenced from every build by name whether or not
-    // the state folder is Toolroll's own, and swept of what a launch that has since died left behind. A Linux check
-    // binds its own copy from outside its sandbox, so nothing here is granted back.
+    // The sign-in copies (check-access.ts): made before any build starts and fenced from every build, by its own name as
+    // well as where it leads (as the bridges and the run folder are), whether or not the state folder is Toolroll's own.
+    // A Linux check binds its own copy from outside its sandbox, so nothing here is granted back. Never swept: a copy a
+    // launch that died left behind stays in this fenced, private folder (walking a folder a build might swap is the
+    // greater risk); a root that isn't Toolroll's private folder is never used (signInCopiesRoot).
     const copies = join(state, SIGN_IN_COPIES_DIR);
     try { lstatSync(copies); } catch { try { mkdirSync(copies, { mode: 0o700 }); } catch { /* fenced below either way */ } }
-    sweepSignInCopies(copies);
+    copiesFolder = copies;
     fence.add(copies);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
@@ -196,11 +200,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder || path === copiesFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder || path === copiesFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -230,7 +234,10 @@ const CLAUDE_FILE_TOOL_HOME = [".claude.json", join(".claude", ".credentials.jso
 
 /** The task's boundary: `shell` joins the OS fence; `fileTools` only Claude's file-tool deny rules; `readOnly` and
  * `lookup` are other tasks' git metadata and checkout roots (see FenceGrants). */
-export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileTools: string[]; readOnly: string[]; lookup: string[] };
+export type TaskBoundary = { protectedShell?: string[]; shell: string[]; fileTools: string[]; readOnly: string[]; lookup: string[];
+  /** Every home configuration name the launch may not reach, by name, whether or not it exists now (macOS: Seatbelt
+   * denies a path that isn't there yet, so a build can't create it, or later replace it with a link). */
+  homeNames?: string[] };
 
 /**
  * Everything outside a task's own folders that a build could otherwise
@@ -304,7 +311,11 @@ export function taskBoundary(options: { worktree: string; provider: string; home
     }
   }
   const fileTools = options.provider === "claude" ? present(CLAUDE_FILE_TOOL_HOME).filter(path => !shell.has(path)) : [];
-  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort() };
+  // By name too, present or not: a build started while ~/.codex is absent must never make it (and later swap it for a
+  // link while a sign-ins check reads through it). Only Seatbelt uses these (macosFenceProfile); bubblewrap can only
+  // mask what exists, and Codex's own sandbox takes existing paths.
+  const homeNames = HOME_CONFIGURATION.filter(name => !own.has(name)).map(name => join(home, name)).sort();
+  return { protectedShell, shell: [...shell].sort(), fileTools: fileTools.sort(), readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames };
 }
 
 /** Where launches keep their private folders (the system temp folder), and this launch's own tool folder. */
@@ -355,6 +366,8 @@ export const runRoots = (folders: RunFolders): string[] => [folders.root, ...(fo
  * checkout back (CheckoutPool).
  */
 export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: string[]; runFolders?: RunFolders; pool?: CheckoutPool; network?: NetworkFence; writes?: WriteAllowlist;
+  /** macOS: the home configuration names denied by name, present or not (TaskBoundary.homeNames). */
+  homeNames?: string[];
   /** A `sign-ins` check's exact sign-in files (read) and its checkout's own Claude transcript folder (written):
    * check-access.ts, signInGrants. Bound back over the home fence by path, never a pattern or a parent folder. */
   signIns?: SignInGrants };
@@ -594,6 +607,7 @@ export function fenceGrants(options: { databaseFile: string | null; worktree: st
   }
   const pool = options.poolRoots === undefined ? undefined : checkoutPool({ roots: options.poolRoots, worktree: options.worktree, binding: options.binding ?? null, ...(options.home === undefined ? {} : { home: options.home }) });
   return { readOnly: [...options.boundary?.readOnly ?? []], readable, lookup: [...new Set(lookup)].sort(), ...(options.runFolders === undefined ? {} : { runFolders: options.runFolders }),
+    ...(options.boundary?.homeNames === undefined || options.boundary.homeNames.length === 0 ? {} : { homeNames: [...options.boundary.homeNames] }),
     ...(pool === undefined || pool.deny.length === 0 ? {} : { pool }) };
 }
 
@@ -667,9 +681,9 @@ export function codexFenceArgv(fence: readonly string[], fullAccess: boolean, gr
     for (const path of held.deny) access.set(path, "deny");
     for (const path of held.write) access.set(path, "write");
   }
-  // Denies are keyed where they resolve; the console's run folder is also denied by its own pathname, so a link there
-  // stays unreplaceable, not only its target.
-  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
+  // Denies are keyed where they resolve; the console's run folder and the sign-in copies folder are also denied by their
+  // own pathname, so a link there stays unreplaceable, not only its target.
+  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR || basename(path) === SIGN_IN_COPIES_DIR) access.set(path, "deny"); }
   const filesystem = [...access].map(([path, mode]) => `${toml(path)}=${toml(mode)}`);
   return [
     "-c", 'default_permissions="standing-orders"',
@@ -816,6 +830,9 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     ]),
     ...(pool === undefined || pool.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", pool.lookup)})`]),
     ...(fence.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", fence)})`]),
+    // The home configuration by name, there or not: nothing may create, read, replace or write one (the sign-ins grants
+    // after this give back only their exact files).
+    ...(grants.homeNames === undefined || grants.homeNames.length === 0 ? [] : [`(deny file-read* file-write* ${paths("subpath", grants.homeNames)})`]),
     ...(grants.readOnly.length === 0 ? [] : [`(deny file-write* ${paths("subpath", grants.readOnly)})`]),
     ...(folders === undefined ? [] : runRoots(folders).map(root => `(deny file-read* file-write* (regex #"^${seatbeltRegex(root)}/(${RUN_FOLDER_PREFIXES.map(seatbeltRegex).join("|")})"))`)),
     ...(grants.lookup.length === 0 ? [] : [`(allow file-read-metadata ${paths("literal", grants.lookup)})`]),
@@ -1104,62 +1121,62 @@ export function signInGrants(home: string, checkout: string, platform: NodeJS.Pl
 /**
  * A sign-in file's bytes, read only as the real regular file it is: its folder reached through no link (its real path
  * is its own), and the file itself opened without following a link and checked as a regular file through what was
- * opened, so a link swapped in between the checks is never read. Null for anything else.
+ * opened, so a link swapped in at the file's own name is never read. Null for anything else.
+ *
+ * Its folders are still resolved by name (Node has no openat), so a folder above it swapped for a link between the
+ * checks and the open would be followed. That is detected after the fact: every folder from / down to the file's own
+ * is looked at (no link, the same device and inode) before the open and again after it, the file's real path is
+ * checked again, and the name must still be the very file that was opened. Any difference reads nothing.
+ *
+ * Residual risk: a swap made and undone entirely between the two looks isn't seen. On a Mac every build's and check's
+ * fence denies the home configuration names (~/.codex among them) by name, present or not, so no build or sandboxed
+ * check can make that swap; only a check the operator set to Not sandboxed, or the person themselves, still could.
+ * `afterOpen` is for tests: it runs between the open and the second look.
  */
-export function readGrantedFile(path: string): Buffer | null {
+export function readGrantedFile(path: string, seams: { afterOpen?: () => void } = {}): Buffer | null {
+  const folder = dirname(path);
+  const chain: string[] = [];
+  for (let at = folder; ; at = dirname(at)) { chain.push(at); if (at === dirname(at)) break; }
+  const look = (): { dev: number; ino: number }[] | null => {
+    const held: { dev: number; ino: number }[] = [];
+    for (const at of chain) {
+      const one = lstatSync(at);
+      if (one.isSymbolicLink() || !one.isDirectory()) return null;
+      held.push({ dev: one.dev, ino: one.ino });
+    }
+    return held;
+  };
+  const same = (a: { dev: number; ino: number }[], b: { dev: number; ino: number }[]) => a.length === b.length && a.every((one, index) => one.dev === b[index]!.dev && one.ino === b[index]!.ino);
   try {
-    if (realpathSync(dirname(path)) !== dirname(path)) return null;
+    const before = look();
+    if (before === null || realpathSync(folder) !== folder) return null;
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const held = fstatSync(fd);
       if (!held.isFile() || held.nlink !== 1) return null;
-      return readFileSync(fd);
+      seams.afterOpen?.();
+      const after = look();
+      if (after === null || !same(before, after) || realpathSync(folder) !== folder) return null;
+      const named = lstatSync(path);
+      if (named.isSymbolicLink() || named.dev !== held.dev || named.ino !== held.ino) return null;
+      const bytes = readFileSync(fd);
+      // And once more after the read: what was read must still be what the checked name holds.
+      const last = look();
+      return last !== null && same(before, last) ? bytes : null;
     } finally { closeSync(fd); }
   } catch { return null; }
 }
 
 /**
- * Remove the sign-in copies a launch left behind when its process is gone (a crash): `c-<pid>-…`, never another live
- * one's. Only in the real, private folder Toolroll made (as a check makes its copy there), and never through a link:
- * a link planted as an entry is unlinked, not followed; a copy is removed by walking it with lstat, unlinking files
- * and links, each folder removed only while it is still the folder that was looked at.
+ * The sign-in copies folder in a state folder (check-access.ts; Linux checks only, and off on Linux for now), or null:
+ * only the real folder Toolroll made there, owned by this user, mode 0700, reached through no link. Anything else (a
+ * link planted at that name, someone else's folder, one others may open) is never used: nothing is copied into it.
  */
-export function sweepSignInCopies(folder: string, look: (path: string) => import("node:fs").Stats = lstatSync, uid: number | undefined = process.getuid?.()): void {
-  if (grantFolder(folder, false) === null) return;
-  let root: import("node:fs").Stats;
-  try { root = look(folder); } catch { return; }
-  if (!root.isDirectory() || root.isSymbolicLink() || (uid !== undefined && root.uid !== uid) || (root.mode & 0o077) !== 0) return;
-  let entries: string[] = [];
-  try { entries = readdirSync(folder); } catch { return; }
-  for (const entry of entries) {
-    const match = /^c-(\d+)-/.exec(entry);
-    if (match === null) continue;
-    const path = join(folder, entry);
-    let held: import("node:fs").Stats;
-    try { held = look(path); } catch { continue; }
-    if (held.isSymbolicLink()) { try { unlinkSync(path); } catch { /* gone */ } continue; }
-    if (!held.isDirectory() || (uid !== undefined && held.uid !== uid)) continue;
-    const pid = Number(match[1]);
-    let alive = true;
-    try { process.kill(pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code === "EPERM"; }
-    if (!alive) removeWithoutFollowing(path, held, look);
-  }
-}
-
-/** Remove a folder and what is in it, following no link: every child looked at with lstat, files and links unlinked,
- * each folder removed only while it is still the one first seen (device and inode). */
-function removeWithoutFollowing(path: string, seen: import("node:fs").Stats, look: (path: string) => import("node:fs").Stats): void {
-  let children: string[] = [];
-  try { children = readdirSync(path); } catch { return; }
-  for (const child of children) {
-    const at = join(path, child);
-    let held: import("node:fs").Stats;
-    try { held = look(at); } catch { continue; }
-    if (held.isDirectory() && !held.isSymbolicLink()) removeWithoutFollowing(at, held, look);
-    else { try { unlinkSync(at); } catch { /* gone */ } }
-  }
+export function signInCopiesRoot(state: string, uid: number | undefined = process.getuid?.()): string | null {
+  const root = join(state, SIGN_IN_COPIES_DIR);
   try {
-    const now = look(path);
-    if (now.isDirectory() && !now.isSymbolicLink() && now.dev === seen.dev && now.ino === seen.ino) rmdirSync(path);
-  } catch { /* gone or changed: left alone */ }
+    const held = lstatSync(root);
+    if (held.isSymbolicLink() || !held.isDirectory() || (uid !== undefined && held.uid !== uid) || (held.mode & 0o777) !== 0o700) return null;
+    return grantFolder(root, false) === root ? root : null;
+  } catch { return null; }
 }

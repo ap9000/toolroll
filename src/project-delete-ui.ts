@@ -101,8 +101,12 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const changed = access.changed === null ? "" : html`<p class="meta">Changed by ${access.changed.by}, ${new Date(access.changed.at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</p>`;
   // Said before anything else: on a machine with no OS sandbox, every level runs without one.
   const unconfined = access.unconfinedHere === true ? html`<p class="meta warning-line" data-unconfined-here>This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.</p>` : "";
-  const runsSandboxed = setting !== saved ? html`<p class="meta warning-line" data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but on Linux checks run sandboxed: sign-ins can't be shared with checks safely there yet.</p>` : "";
-  const head = html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${runsSandboxed}${unconfined}${hosts}${changed}`;
+  const runsSandboxed = setting !== saved && access.unconfinedHere !== true ? html`<p class="meta warning-line" data-sign-ins-unavailable>Saved with model and GitHub sign-ins, but on Linux checks run sandboxed: sign-ins can't be shared with checks safely there yet.</p>` : "";
+  // No OS sandbox here, and unconfined running allowed: checks run without a sandbox whatever is saved, and that is
+  // what the page says first (never "sandboxed"); the saved level is named under it.
+  const head = access.unconfinedHere === true
+    ? html`<h2 id="check-access-title">Check access</h2><p><strong>${names.unsandboxed}</strong></p>${saved === "unsandboxed" ? "" : html`<p class="meta" data-saved-level>Saved as ${names[saved]}.</p>`}${unconfined}${changed}`
+    : html`<h2 id="check-access-title">Check access</h2><p><strong>${names[setting]}</strong></p>${meaning[setting] === null ? "" : html`<p class="meta">${meaning[setting]}</p>`}${runsSandboxed}${hosts}${changed}`;
   if (!access.canNarrow && !access.canWiden) return html`<section class="build-access check-access-setting" id="check-access" aria-labelledby="check-access-title">${head}</section>`;
   const option = (value: CheckAccess, detail: string, warning: string | null) => {
     const allowed = (value === setting || access.canWiden || value === "sandboxed") && !(value === "sign-ins" && unavailable !== null);

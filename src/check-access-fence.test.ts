@@ -93,3 +93,87 @@ test("a sign-in file with a second name (a hard link to something else) is never
   expect(signInGrants(home, checkout, "darwin").read).not.toContain(join(home, ".config", "gh", "hosts.yml"));
   expect(readGrantedFile(join(home, ".config", "gh", "hosts.yml"))).toBeNull();
 });
+
+test("the home configuration is denied by name on a Mac, there or not: a build started while ~/.codex is absent can't make it", async () => {
+  const { fenceGrants, taskBoundary } = await import("./agent-fence.js");
+  rmSync(join(home, ".codex"), { recursive: true });
+  const boundary = taskBoundary({ worktree: checkout, provider: "command", home });
+  expect(boundary.homeNames).toContain(join(home, ".codex"));
+  expect(boundary.homeNames).toContain(join(home, ".config", "gh"));
+  // A provider's own home stays its own (Claude keeps ~/.claude), the rest is still denied by name.
+  const claude = taskBoundary({ worktree: checkout, provider: "claude", home });
+  expect(claude.homeNames).not.toContain(join(home, ".claude"));
+  expect(claude.homeNames).toContain(join(home, ".codex"));
+  const grants = fenceGrants({ databaseFile: null, worktree: checkout, boundary });
+  const profile = macosFenceProfile([], grants);
+  expect(profile).toMatch(new RegExp(`\\(deny file-read\\* file-write\\* [^\\n]*\\(subpath "${join(home, ".codex").replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}"\\)`));
+  // The sign-ins grants still come after it (a later Seatbelt rule wins), so exactly their files are read.
+  const withSignIns = macosFenceProfile([], { ...grants, signIns: signInGrants(home, checkout, "darwin") });
+  expect(withSignIns.indexOf("(allow file-read* (literal")).toBeGreaterThan(withSignIns.indexOf(`(subpath "${join(home, ".codex")}")`));
+  // Bubblewrap and Codex's sandbox never see a path that isn't there.
+  expect(linuxFenced("/bin/true", [], [], grants).args).not.toContain(join(home, ".codex"));
+});
+
+test("a sign-in file's folders are looked at again after the open: one swapped meanwhile reads nothing", async () => {
+  const { readGrantedFile } = await import("./agent-fence.js");
+  const { renameSync } = await import("node:fs");
+  const path = join(home, ".codex", "auth.json");
+  expect(readGrantedFile(path, { afterOpen: () => {} })?.toString()).toBe("x");
+  // Between the open and the second look, the folder is replaced by another folder holding the same name.
+  expect(readGrantedFile(path, { afterOpen: () => {
+    renameSync(join(home, ".codex"), join(home, ".codex-was"));
+    mkdirSync(join(home, ".codex"));
+    writeFileSync(path, "other");
+  } })).toBeNull();
+  // Or by a link to a folder elsewhere.
+  rmSync(join(home, ".codex"), { recursive: true });
+  renameSync(join(home, ".codex-was"), join(home, ".codex"));
+  mkdirSync(join(dir, "elsewhere"));
+  writeFileSync(join(dir, "elsewhere", "auth.json"), "stolen");
+  expect(readGrantedFile(path, { afterOpen: () => {
+    renameSync(join(home, ".codex"), join(home, ".codex-was"));
+    symlinkSync(join(dir, "elsewhere"), join(home, ".codex"));
+  } })).toBeNull();
+  // A folder above it (the home itself) swapped likewise.
+  rmSync(join(home, ".codex"));
+  renameSync(join(home, ".codex-was"), join(home, ".codex"));
+  expect(readGrantedFile(path, { afterOpen: () => {
+    renameSync(home, join(dir, "home-was"));
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(path, "other");
+  } })).toBeNull();
+});
+
+test("the sign-in copies folder is used only as Toolroll's own private folder: never a link, nor one others may open", async () => {
+  const { chmodSync } = await import("node:fs");
+  const { signInCopiesRoot, SIGN_IN_COPIES_DIR } = await import("./agent-fence.js");
+  const state = join(dir, "state");
+  mkdirSync(state);
+  expect(signInCopiesRoot(state)).toBeNull();
+  mkdirSync(join(state, SIGN_IN_COPIES_DIR), { mode: 0o700 });
+  chmodSync(join(state, SIGN_IN_COPIES_DIR), 0o700);
+  expect(signInCopiesRoot(state)).toBe(join(state, SIGN_IN_COPIES_DIR));
+  chmodSync(join(state, SIGN_IN_COPIES_DIR), 0o755);
+  expect(signInCopiesRoot(state)).toBeNull();
+  rmSync(join(state, SIGN_IN_COPIES_DIR), { recursive: true });
+  mkdirSync(join(dir, "target"), { mode: 0o700 });
+  symlinkSync(join(dir, "target"), join(state, SIGN_IN_COPIES_DIR));
+  expect(signInCopiesRoot(state)).toBeNull();
+});
+
+test("a sign-in copies folder that is a link: fenced by its own name and its target, and nothing in it is ever swept", async () => {
+  const { readdirSync } = await import("node:fs");
+  const { agentFence, codexFenceArgv, SIGN_IN_COPIES_DIR } = await import("./agent-fence.js");
+  const state = join(dir, "state");
+  mkdirSync(state);
+  const target = join(dir, "precious");
+  mkdirSync(join(target, "c-999999-dead"), { recursive: true });
+  writeFileSync(join(target, "c-999999-dead", "keep"), "keep");
+  symlinkSync(target, join(state, SIGN_IN_COPIES_DIR));
+  const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: checkout, home });
+  expect(fence).toContain(join(state, SIGN_IN_COPIES_DIR));
+  expect(fence).toContain(target);
+  expect(readdirSync(join(target, "c-999999-dead"))).toEqual(["keep"]);
+  // Codex's sandbox denies it by its own name as well.
+  expect(codexFenceArgv(fence, false).join(" ")).toContain(`"${join(state, SIGN_IN_COPIES_DIR)}"="deny"`);
+});

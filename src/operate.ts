@@ -118,7 +118,8 @@ import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
-import { CHECK_ACCESS_WARNINGS, checkAccessHere, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
+import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
+import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
@@ -358,6 +359,8 @@ export type OperateOptions = {
   flowEveryMs?: number;
   /** Injected by tests: the operating system this runs on (check access: no sign-ins on Linux yet). */
   platform?: NodeJS.Platform;
+  /** Injected by tests: whether this machine has an OS fence for checks (macOS sandbox or bubblewrap). */
+  fenceAvailable?: () => boolean;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   /** Injected by tests: how `integrations` checks reach services (fetch, gh, sign-in checks, mail servers). */
@@ -1088,6 +1091,7 @@ async function dispatchOn(
       ...(options.flowStepIo === undefined ? {} : { flowStepIo: options.flowStepIo }),
       ...(options.flowEveryMs === undefined ? {} : { flowEveryMs: options.flowEveryMs }),
       ...(options.platform === undefined ? {} : { platform: options.platform }),
+      ...(options.fenceAvailable === undefined ? {} : { fenceAvailable: options.fenceAvailable }),
       ...(options.flowFetch === undefined ? {} : { flowFetch: options.flowFetch }),
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
@@ -1250,6 +1254,8 @@ type Context = {
   flowEveryMs?: number;
   /** Injected by tests: the operating system this runs on (default process.platform). */
   platform?: NodeJS.Platform;
+  /** Injected by tests: whether this machine has an OS fence for checks (default: probed). */
+  fenceAvailable?: () => boolean;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   integrationIo?: Partial<IntegrationIo>;
@@ -12111,10 +12117,14 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const current = context.store.projectCheckAccess(repo);
   const platform = context.platform ?? process.platform;
-  // On Linux a saved sign-ins level (a database copied from a Mac) runs sandboxed: said, never hidden.
-  const here = checkAccessHere(current, platform);
+  // How it actually runs here: with no OS fence and unconfined running allowed, without a sandbox whatever is saved; on
+  // Linux a saved sign-ins level (a database copied from a Mac) runs sandboxed. Said, never hidden.
+  const fenced = context.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable());
+  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed() });
+  const here = runsAs(current);
   const words = (one: CheckAccess): string[] => {
-    if (checkAccessHere(one, platform) !== one) return [`${repo}: saved with model and GitHub sign-ins, but on Linux its checks run sandboxed: sign-ins can't be shared with checks safely there yet.`];
+    if (runsAs(one) === "unsandboxed" && one !== "unsandboxed") return [`${repo}: saved as ${checkAccessWords(one)}, but this machine can't sandbox checks, so they run without a sandbox.`];
+    if (runsAs(one) !== one) return [`${repo}: saved with model and GitHub sign-ins, but on Linux its checks run sandboxed: sign-ins can't be shared with checks safely there yet.`];
     const missing = one === "sign-ins" ? signInHostsMissing(context.store.projectNetwork(repo)) : [];
     return [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]]),
       // Never added for it: the operator widens the network separately, with their own password.

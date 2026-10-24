@@ -34,7 +34,7 @@ beforeEach(() => {
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 // A Mac unless a test says Linux (sign-ins aren't available there yet): the same answers on every CI machine.
-const run = (argv: string[], platform: NodeJS.Platform = "darwin") => { lines = []; return runOperate("project", ["check-access", ...argv], line => lines.push(line), { databaseFile: db, platform }); };
+const run = (argv: string[], platform: NodeJS.Platform = "darwin", fenceAvailable: () => boolean = () => true) => { lines = []; return runOperate("project", ["check-access", ...argv], line => lines.push(line), { databaseFile: db, platform, fenceAvailable }); };
 const payload = () => JSON.parse(lines.join("\n"));
 const as = (name: string) => ["--as", name, "--token", tokens[name]!];
 
@@ -315,5 +315,26 @@ describe("Linux: no sign-ins yet (a sign-in file's folders are resolved by path 
     // Nothing was made: no private Codex home, no sign-in copies folder beside the database.
     expect(readdirSync(own)).toEqual(["tmp"]);
     expect(existsSync(join(dir, "sign-in-copies"))).toBe(false);
+  });
+
+  test("with no OS sandbox here and unconfined running allowed, the CLI says checks run without one: never sandboxed", async () => {
+    store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+    const none = () => false;
+    // Unconfined running not allowed: nothing runs unsandboxed, so the Linux answer stands.
+    expect(await run(["--repo", REPO, "--json"], "linux", none)).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ checkAccess: "sign-ins", runsAs: "sandboxed" });
+    store.setUnfencedAgentsAllowed(true, "alex", new Date());
+    expect(await run(["--repo", REPO, "--json"], "linux", none)).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ checkAccess: "sign-ins", runsAs: "unsandboxed" });
+    expect(await run(["--repo", REPO], "linux", none)).toBe(EXIT.ok);
+    expect(lines.join("\n")).toMatch(/this machine can't sandbox checks, so they run without a sandbox/);
+    expect(lines.join("\n")).not.toMatch(/run sandboxed/);
+    // A sandboxed project on a Mac with no sandbox likewise.
+    store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
+    expect(await run(["--repo", REPO, "--json"], "darwin", none)).toBe(EXIT.ok);
+    expect(payload()).toMatchObject({ checkAccess: "sandboxed", runsAs: "unsandboxed" });
+    // With a fence, nothing extra is said.
+    expect(await run(["--repo", REPO, "--json"], "darwin")).toBe(EXIT.ok);
+    expect(payload().runsAs).toBeUndefined();
   });
 });

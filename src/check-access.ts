@@ -81,3 +81,10 @@ export const signInsUnavailableWords = (platform: NodeJS.Platform = process.plat
  * wider). Everything that seals, launches or stamps a check's level goes through this. */
 export const checkAccessHere = (level: CheckAccess, platform: NodeJS.Platform = process.platform): CheckAccess =>
   level === "sign-ins" && !signInsAvailable(platform) ? CHECK_ACCESS_DEFAULT : level;
+
+/** How a project's checks actually run here, as the settings page and `project check-access` say it: with no OS fence
+ * on this machine and unconfined running allowed by an operator, without a sandbox whatever is saved (never said to be
+ * sandboxed); otherwise the saved level as this platform can give it. */
+export function checkAccessRunsAs(level: CheckAccess, here: { platform: NodeJS.Platform; fenced: boolean; unconfinedAllowed: boolean }): CheckAccess {
+  return !here.fenced && here.unconfinedAllowed ? "unsandboxed" : checkAccessHere(level, here.platform);
+}

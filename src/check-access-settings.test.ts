@@ -31,9 +31,9 @@ beforeEach(async () => {
   await serveAs("darwin");
 });
 /** The console as it runs on `platform` (a Mac unless a test says Linux, where sign-ins aren't available yet). */
-async function serveAs(platform: NodeJS.Platform): Promise<void> {
+async function serveAs(platform: NodeJS.Platform, fenceAvailable: () => boolean = () => true): Promise<void> {
   if (server !== undefined && server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
-  server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, platform });
+  server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, platform, fenceAvailable });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address !== "object") throw new Error("listen");
@@ -113,7 +113,7 @@ test("on a machine that can't sandbox checks at all, the section says so before 
   // The words the section shows when no OS sandbox exists (rendered in the page; the flag comes from serve.ts).
   const ui = (await import("node:fs")).readFileSync("src/project-delete-ui.ts", "utf8");
   expect(ui).toContain("This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.");
-  expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\)\) && store\.unfencedAgentsAllowed\(\)/);
+  expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(options\.fenceAvailable\?\.\(\) \?\? \(macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\)\)\) && store\.unfencedAgentsAllowed\(\)/);
 });
 
 test("on Linux the sign-ins choice is shown disabled with the reason, and a save of it is refused before the password: nothing changes", async () => {
@@ -146,4 +146,15 @@ test("on Linux a sign-ins level already saved (a database from a Mac) shows as S
   expect(mac).toContain("<p><strong>Sandboxed, with model and GitHub sign-ins</strong></p>");
   expect(mac).not.toContain("data-sign-ins-unavailable");
   expect(mac).toMatch(/value="sign-ins" checked>/);
+});
+
+test("with no OS sandbox here and unconfined running allowed, the page says Not sandboxed first: never that Linux runs it sandboxed", async () => {
+  store.setProjectCheckAccess(repo, "sign-ins", "alex", NOW, { may: "widen" });
+  store.setUnfencedAgentsAllowed(true, "alex", NOW);
+  await serveAs("linux", () => false);
+  const html = await page(await signIn("alex"));
+  expect(html).toContain("<h2 id=\"check-access-title\">Check access</h2><p><strong>Not sandboxed</strong></p><p class=\"meta\" data-saved-level>Saved as Sandboxed, with model and GitHub sign-ins.</p>");
+  expect(html).toContain("data-unconfined-here");
+  expect(html).not.toContain("data-sign-ins-unavailable");
+  expect(html).not.toMatch(/checks run sandboxed/);
 });
