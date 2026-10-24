@@ -6,6 +6,8 @@
  * operator's act with a password typed now; any approver for the project may narrow it back.
  */
 
+import { PROVIDER_HOSTS, type ProjectNetwork } from "./egress.js";
+
 export const CHECK_ACCESS_LEVELS = ["sandboxed", "sign-ins", "unsandboxed"] as const;
 export type CheckAccess = typeof CHECK_ACCESS_LEVELS[number];
 export const CHECK_ACCESS_DEFAULT: CheckAccess = "sandboxed";
@@ -31,3 +33,14 @@ export const CHECK_ACCESS_WARNINGS: Readonly<Record<Exclude<CheckAccess, "sandbo
   "sign-ins": "This project's checks can read your Claude, Codex and GitHub sign-ins. Its tests could use or send those credentials anywhere its network setting allows. Only choose this for projects you trust.",
   unsandboxed: "This project's checks get your full access to this machine and to Toolroll itself, including its database and every sign-in. Only for a project whose checks must create sandboxes themselves, such as Toolroll's own.",
 };
+
+/** The services whose sign-ins a `sign-ins` check reads: Claude's and Codex's own hosts (egress.ts), and GitHub's. */
+export const SIGN_IN_HOSTS: readonly string[] = [...PROVIDER_HOSTS["claude"]!, ...PROVIDER_HOSTS["codex"]!, "github.com", "api.github.com"];
+
+/** Which of those a project's network doesn't allow (an open network allows all). The check's network is never widened
+ * for them: the operator adds them, as a network change of its own. */
+export function signInHostsMissing(network: ProjectNetwork): string[] {
+  if (network.mode === "open") return [];
+  const covered = (host: string) => network.hosts.some(one => one === host || (one.startsWith("*.") && host.endsWith(one.slice(1))));
+  return SIGN_IN_HOSTS.filter(host => !covered(host));
+}

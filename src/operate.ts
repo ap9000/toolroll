@@ -118,7 +118,7 @@ import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
 import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
-import { CHECK_ACCESS_WARNINGS, checkAccessWords, isCheckAccess, widerThan, type CheckAccess } from "./check-access.js";
+import { CHECK_ACCESS_WARNINGS, checkAccessWords, isCheckAccess, signInHostsMissing, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
@@ -12105,8 +12105,13 @@ async function projectCheckAccessCommand(positional: readonly string[], flags: M
   const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const current = context.store.projectCheckAccess(repo);
-  const words = (one: CheckAccess): string[] => [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]])];
-  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current }, () => words(current));
+  const words = (one: CheckAccess): string[] => {
+    const missing = one === "sign-ins" ? signInHostsMissing(context.store.projectNetwork(repo)) : [];
+    return [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]]),
+      // Never added for it: the operator widens the network separately, with their own password.
+      ...(missing.length === 0 ? [] : [`Model sign-ins need these hosts in this project's network allowlist: ${missing.join(", ")}. Add them with: toolroll project network --repo ${repo} --allow ${missing.join(",")}`])];
+  };
+  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current, ...(current === "sign-ins" ? { missingHosts: signInHostsMissing(context.store.projectNetwork(repo)) } : {}) }, () => words(current));
   const widening = widerThan(wanted, current);
   const acting = await askCredentials(flags, context);
   const proved = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);

@@ -795,7 +795,12 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     // A sign-ins check (check-access.ts): its exact sign-in files read, its own transcript folder written; nothing else
     // of the home configuration comes back.
     ...(grants.signIns === undefined || grants.signIns.read.length === 0 ? [] : [`(allow file-read* ${paths("literal", grants.signIns.read)})`]),
-    ...(grants.signIns === undefined || grants.signIns.write.length === 0 ? [] : [`(allow file-read* file-write* ${paths("subpath", grants.signIns.write)})`]),
+    // Its own transcript folder: only the session files directly in it (a session can be resumed). Nothing else there —
+    // never memory/ or any folder Claude would load into a later real session — comes back.
+    ...(grants.signIns === undefined || grants.signIns.transcripts.length === 0 ? [] : [
+      `(allow file-read-data file-read-metadata ${paths("literal", grants.signIns.transcripts)})`,
+      `(allow file-read* file-write* ${grants.signIns.transcripts.map(folder => `(regex #"^${seatbeltRegex(folder)}/[^/]+\\.jsonl$")`).join(" ")})`,
+    ]),
     // Each readable copy's own folder can be listed, never read: bundlers such as esbuild find node_modules by listing
     // its parent, which a lookup alone refuses (the Linux and Codex fences list it as read-only already).
     ...(grants.readable.length === 0 ? [] : [`(allow file-read-data ${paths("literal", [...new Set(grants.readable.map(one => dirname(one)))])})`]),
@@ -914,7 +919,8 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // A sign-ins check's exact files, bound back over the masks (validated when granted: signInGrants).
   const signIns = grants.signIns === undefined ? [] : [
     ...grants.signIns.read.filter(path => existsSync(path)).flatMap(path => ["--ro-bind", path, path]),
-    ...grants.signIns.write.filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]),
+    // Bubblewrap can't bind by pattern: a session transcript folder is never given back writable on Linux (a check
+    // there can't resume a Claude session; it can't plant anything a later session loads either).
   ];
   // A confined network: a network and a process view of its own, the host's sockets out of reach (a socket in a
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
@@ -1031,7 +1037,7 @@ export function fenceSummaryMarkdown(): string {
 }
 
 /** What a `sign-ins` check reads and writes beyond its fence (check-access.ts). */
-export type SignInGrants = { read: string[]; write: string[] };
+export type SignInGrants = { read: string[]; transcripts: string[] };
 
 /** The sign-in files a `sign-ins` check reads, by fixed name under the person's home (never from the environment, so no
  * caller's CLAUDE_CONFIG_DIR or GH_CONFIG_DIR points a grant at .ssh): Claude's account and settings (and, on Linux,
@@ -1044,8 +1050,9 @@ const SIGN_IN_FILES = (platform: NodeJS.Platform): string[] => [
 
 /**
  * A `sign-ins` check's grants: each sign-in file only as the real regular file it is (never a link, nor reached
- * through one), and the checkout's own Claude transcript folder, made when absent and only as the real folder it is,
- * so a session the check starts can be resumed. Nothing else under ~/.claude, ~/.codex or ~/.config is granted.
+ * through one), and on a Mac the checkout's own Claude transcript folder (made when absent, only as the real folder it
+ * is), whose session files alone are written so a session the check starts can be resumed. Nothing else under
+ * ~/.claude, ~/.codex or ~/.config is granted.
  */
 export function signInGrants(home: string, checkout: string, platform: NodeJS.Platform = process.platform): SignInGrants {
   const base = real(home);
@@ -1058,5 +1065,5 @@ export function signInGrants(home: string, checkout: string, platform: NodeJS.Pl
   const transcript = claudeProjectFolder(base, real(checkout));
   // A transcript folder Claude would name by prefix (a very long checkout path) isn't granted: never a prefix of others.
   const folder = transcript.byPrefix || !existsSync(join(base, ".claude")) ? null : grantFolder(transcript.path);
-  return { read, write: folder === null ? [] : [folder] };
+  return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder] };
 }

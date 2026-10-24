@@ -62,6 +62,9 @@ const probe = () => [
   reads("ssh", join(home, ".ssh", "id_test")),
   reads("aws", join(home, ".aws", "credentials")),
   `touch ${JSON.stringify(join(claudeProjectFolder(home, checkout).path, "t.jsonl"))} 2>/dev/null && echo transcript-written || echo transcript-refused`,
+  // Never anything a later real session would load: memory/, another file, a folder.
+  `mkdir -p ${JSON.stringify(join(claudeProjectFolder(home, checkout).path, "memory"))} 2>/dev/null; echo x > ${JSON.stringify(join(claudeProjectFolder(home, checkout).path, "memory", "x.md"))} 2>/dev/null && echo memory-written || echo memory-refused`,
+  `echo x > ${JSON.stringify(join(claudeProjectFolder(home, checkout).path, "CLAUDE.md"))} 2>/dev/null && echo other-written || echo other-refused`,
   `echo "gh=$GH_CONFIG_DIR"`,
 ].join("\n");
 
@@ -70,7 +73,8 @@ describe.skipIf(!FENCED)("check access in the fence", () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins")("/bin/sh", ["-c", probe()], { cwd: checkout, env: { GH_CONFIG_DIR: join(home, ".ssh") } });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual([
       "claude-account-read", "claude-settings-read", "claude-history-refused", "other-transcript-refused", "gh-hosts-read",
-      "codex-direct-refused", "codex-own-copy", "ssh-refused", "aws-refused", "transcript-written",
+      "codex-direct-refused", "codex-own-copy", "ssh-refused", "aws-refused",
+      ...(process.platform === "darwin" ? ["transcript-written"] : ["transcript-refused"]), "memory-refused", "other-refused",
       // A caller's GH_CONFIG_DIR never points the check (or its grant) elsewhere.
       `gh=${join(home, ".config", "gh")}`,
     ]);
@@ -78,9 +82,9 @@ describe.skipIf(!FENCED)("check access in the fence", () => {
 
   test("sandboxed: none of the home configuration", async () => {
     const result = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sandboxed")("/bin/sh", ["-c", probe()], { cwd: checkout });
-    expect(result.stdout.trim().split("\n").slice(0, 10), result.stderr).toEqual([
+    expect(result.stdout.trim().split("\n").slice(0, 12), result.stderr).toEqual([
       "claude-account-refused", "claude-settings-refused", "claude-history-refused", "other-transcript-refused", "gh-hosts-refused",
-      "codex-direct-refused", "codex-none", "ssh-refused", "aws-refused", "transcript-refused",
+      "codex-direct-refused", "codex-none", "ssh-refused", "aws-refused", "transcript-refused", "memory-refused", "other-refused",
     ]);
   });
 
@@ -99,5 +103,18 @@ describe.skipIf(!FENCED)("check access in the fence", () => {
     expect(open.stdout.trim().split("\n"), open.stderr).toEqual(["ssh-read", "nested-ok"]);
     const fenced = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sandboxed")("/bin/sh", ["-c", reads("ssh", join(home, ".ssh", "id_test"))], { cwd: checkout });
     expect(fenced.stdout.trim(), fenced.stderr).toBe("ssh-refused");
+  });
+});
+
+const online = (() => { try { execFileSync("curl", ["-sS", "-o", "/dev/null", "--max-time", "5", "https://api.github.com"], { stdio: "ignore" }); return true; } catch { return false; } })();
+
+describe.skipIf(!FENCED || !online)("a sign-ins check's network is exactly the project's", () => {
+  const reach = `curl -sS -o /dev/null --max-time 10 https://api.github.com 2>/dev/null && echo github-reached || echo github-refused`;
+  test("the services the sign-ins are for aren't reachable until the operator adds their hosts", async () => {
+    const before = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins")("/bin/sh", ["-c", reach], { cwd: checkout });
+    expect(before.stdout.trim(), before.stderr).toBe("github-refused");
+    store.setProjectNetwork(repo, { mode: "allowlist", hosts: ["api.github.com"], loopback: "proxy-only" }, "alex", new Date());
+    const after = await fencedCheckoutCommands(store, repo, checkout, run, undefined, "sign-ins")("/bin/sh", ["-c", reach], { cwd: checkout });
+    expect(after.stdout.trim(), after.stderr).toBe("github-reached");
   });
 });

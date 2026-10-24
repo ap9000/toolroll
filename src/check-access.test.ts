@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, describeScope, propose } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
-import { checkAccessOf, narrowestAccess, widerThan } from "./check-access.js";
+import { checkAccessOf, narrowestAccess, signInHostsMissing, widerThan } from "./check-access.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, lines: string[];
@@ -150,4 +150,18 @@ describe("sealing (v132): the level is part of what is approved", () => {
     expect(store.runCheckAccess(runId)).toBe("sandboxed");
     expect(narrowestAccess([store.projectCheckAccess(REPO), "unsandboxed"])).toBe("sandboxed");
   });
+});
+
+test("sign-ins never widens the network: the CLI names the hosts the sign-ins need and the separate command that adds them", async () => {
+  expect(signInHostsMissing({ mode: "open", hosts: [], loopback: "proxy-only" })).toEqual([]);
+  expect(signInHostsMissing({ mode: "allowlist", hosts: ["*.anthropic.com", "api.github.com"], loopback: "proxy-only" })).toEqual(
+    ["platform.claude.com", "api.openai.com", "chatgpt.com", "auth.openai.com", "github.com"]);
+  store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
+  expect(await run(["--repo", REPO])).toBe(EXIT.ok);
+  expect(lines.join("\n")).toMatch(/Model sign-ins need these hosts in this project's network allowlist: api\.anthropic\.com, .*github\.com, api\.github\.com\. Add them with: toolroll project network --repo \/repo\/main --allow api\.anthropic\.com,/);
+  // The setting itself never changed the network.
+  expect(store.projectNetwork(REPO)).toEqual({ mode: "allowlist", hosts: [], loopback: "proxy-only" });
+  store.setProjectNetwork(REPO, { mode: "open", hosts: [], loopback: "proxy-only" }, "alex", new Date());
+  expect(await run(["--repo", REPO])).toBe(EXIT.ok);
+  expect(lines.join("\n")).not.toMatch(/need these hosts/);
 });

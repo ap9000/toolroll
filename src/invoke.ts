@@ -41,7 +41,7 @@ import { BRIDGE_DIR, signInGrants, type NetworkFence, type SignInGrants } from "
 import { CHECK_ACCESS_DEFAULT, type CheckAccess } from "./check-access.js";
 import { agentFence, buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceGrants, fencedGitEnv, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
-import { PROVIDER_HOSTS, proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
+import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { bridgeFits, startEgressBridge, type EgressBridge } from "./egress-bridge.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
@@ -1234,8 +1234,6 @@ function plainLines(stdout: string): string {
 /** What a `sign-ins` check never inherits: a caller's choice of Claude's config folder (Claude's keychain sign-in is
  * keyed to its default one; check-access.ts). gh's and Codex's are set to the granted ones instead. */
 const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
-/** The services whose sign-ins a `sign-ins` check reads: Claude's and Codex's own hosts (egress.ts), and GitHub's. */
-const SIGN_IN_HOSTS: readonly string[] = [...PROVIDER_HOSTS["claude"]!, ...PROVIDER_HOSTS["codex"]!, "github.com", "api.github.com"];
 
 /**
  * A `sign-ins` check's launch (check-access.ts): its exact sign-in files and its own transcript folder
@@ -1263,8 +1261,9 @@ async function signInsLaunch(store: Store, own: string, temp: string, checkout: 
   try {
     const env: Record<string, string> = { CODEX_HOME: codex, GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config") };
     if (policy.mode === "open") return { grants, network: { mode: "open" }, env, close };
-    // The sign-ins are given so the check can reach those services: their own hosts come with them.
-    egress = await startEgressProxy({ hosts: [...new Set([...policy.hosts, ...SIGN_IN_HOSTS])].sort() });
+    // Exactly the project's network: the services the sign-ins are for are reached only if the operator allowed their
+    // hosts (check-access.ts signInHostsMissing says which are missing; never added here).
+    egress = await startEgressProxy({ hosts: policy.hosts });
     const network: NetworkFence = { mode: "allowlist", proxyPort: egress.port, brokerPorts: [], loopback: policy.loopback, socketRoots: [temp, realpathSync(checkout)] };
     if (linuxFenceAvailable()) {
       const database = store.databaseFile();

@@ -21,7 +21,9 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 test("the grants: fixed sign-in files (Claude's credentials file on Linux only), never Codex's, and the checkout's own transcript folder", () => {
   const mac = signInGrants(home, checkout, "darwin");
   expect(mac.read).toEqual([join(home, ".claude.json"), join(home, ".claude", "settings.json"), join(home, ".config", "gh", "hosts.yml"), join(home, ".config", "gh", "config.yml")]);
-  expect(mac.write).toEqual([claudeProjectFolder(home, checkout).path]);
+  expect(mac.transcripts).toEqual([claudeProjectFolder(home, checkout).path]);
+  // Bubblewrap can't bind by pattern: no transcript folder on Linux.
+  expect(signInGrants(home, checkout, "linux").transcripts).toEqual([]);
   expect(signInGrants(home, checkout, "linux").read).toContain(join(home, ".claude", ".credentials.json"));
 });
 
@@ -35,7 +37,7 @@ test("a link anywhere on the way grants nothing: a linked file, or a linked fold
   symlinkSync(join(dir, "elsewhere"), join(home, ".claude"));
   const grants = signInGrants(home, checkout, "darwin");
   expect(grants.read).not.toContain(join(home, ".claude", "settings.json"));
-  expect(grants.write).toEqual([]);
+  expect(grants.transcripts).toEqual([]);
 });
 
 test("macOS: the files come back by exact path after the home fence, the transcript folder writable; nothing without the grant", () => {
@@ -45,12 +47,15 @@ test("macOS: the files come back by exact path after the home fence, the transcr
   const allow = profile.indexOf(`(allow file-read* (literal "${join(home, ".claude.json")}")`);
   expect(deny).toBeGreaterThan(-1);
   expect(allow).toBeGreaterThan(deny);
-  expect(profile).toContain(`(allow file-read* file-write* (subpath "${claudeProjectFolder(home, checkout).path}"))`);
+  // Only the session files directly in its transcript folder: never the folder whole, never memory/ or a subfolder.
+  const escaped = claudeProjectFolder(home, checkout).path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  expect(profile).toContain(`(allow file-read* file-write* (regex #"^${escaped}/[^/]+\\.jsonl$"))`);
+  expect(profile).not.toContain(`(subpath "${claudeProjectFolder(home, checkout).path}")`);
   expect(profile).not.toContain(join(home, ".ssh", "id"));
   expect(macosFenceProfile([join(home, ".claude")], NO_GRANTS)).not.toContain(".claude.json");
 });
 
-test("Linux: each file bound back read-only and the transcript folder writable, after the masks", () => {
+test("Linux: each file bound back read-only after the masks; no transcript folder", () => {
   const grants = signInGrants(home, checkout, "linux");
   const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".config", "gh")], { ...NO_GRANTS, signIns: grants });
   const mask = args.indexOf(join(home, ".claude"));
@@ -58,6 +63,5 @@ test("Linux: each file bound back read-only and the transcript folder writable, 
   expect(args[credentials - 1]).toBe("--ro-bind");
   expect(args[credentials + 1]).toBe(join(home, ".claude", ".credentials.json"));
   expect(credentials).toBeGreaterThan(mask);
-  const transcript = args.lastIndexOf(claudeProjectFolder(home, checkout).path);
-  expect(args[transcript - 2]).toBe("--bind");
+  expect(args).not.toContain(claudeProjectFolder(home, checkout).path);
 });
