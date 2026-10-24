@@ -57,9 +57,6 @@ import { installSeccompHelper, verifySeccompHelper, type SeccompHelper } from ".
 
 /** Beside the database: where Linux builds' network bridges are made (its name reads as secret wherever it is). */
 export const BRIDGE_DIR = "bridge-secrets";
-/** Where a Linux sign-ins check's copies of its sign-in files live while it runs (check-access.ts): one folder per launch,
- * `c-<pid>-…`, beside the database; fenced from every build by name, like the bridges. */
-export const SIGN_IN_COPIES_DIR = "sign-in-copies";
 
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
@@ -137,8 +134,6 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   let runFolder: string | null = null;
   /** The bridges' folder, likewise. */
   let bridgeFolder: string | null = null;
-  /** The sign-in copies folder, likewise. */
-  let copiesFolder: string | null = null;
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -161,15 +156,6 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // refuses a root that isn't a private folder: egress-bridge.ts).
     bridgeFolder = bridges;
     fence.add(bridges);
-    // The sign-in copies (check-access.ts): made before any build starts and fenced from every build, by its own name as
-    // well as where it leads (as the bridges and the run folder are), whether or not the state folder is Toolroll's own.
-    // A Linux check binds its own copy from outside its sandbox, so nothing here is granted back. Never swept: a copy a
-    // launch that died left behind stays in this fenced, private folder (walking a folder a build might swap is the
-    // greater risk); a root that isn't Toolroll's private folder is never used (signInCopiesRoot).
-    const copies = join(state, SIGN_IN_COPIES_DIR);
-    try { lstatSync(copies); } catch { try { mkdirSync(copies, { mode: 0o700 }); } catch { /* fenced below either way */ } }
-    copiesFolder = copies;
-    fence.add(copies);
     runFolder = join(state, INSTANCE_DIR);
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
@@ -203,11 +189,11 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   if (options.runFolders !== undefined) for (const path of otherRunFolders(options.runFolders)) fence.add(path);
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder || path === copiesFolder ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]));
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder || path === copiesFolder ? [path, real(path)] : [real(path)]))].filter(path => {
+  return [...new Set([...fence].flatMap(path => path === runFolder || path === bridgeFolder ? [path, real(path)] : [real(path)]))].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -756,7 +742,7 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
     for (const path of held.deny) access.set(path, pool.readable === true ? "read" : "deny");
     for (const path of held.write) access.set(path, "write");
   }
-  // Denies are keyed where they resolve; the console's run folder and the sign-in copies folder are also denied by their
+  // Denies are keyed where they resolve; the console's run folder is also denied by its
   // own pathname, so a link there stays unreplaceable, not only its target.
   // The mandatory write denies (C8), as Codex takes them: each protected name that exists now, read and never written
   // (Codex can't deny writes by pattern; the handoff refuses a result that wrote a new one).
@@ -770,7 +756,7 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   }
   // An unlocked exact file, as every backend gives it (grantableUnlocks), where Codex writes at all.
   if (grants.writes !== undefined || fullAccess) for (const path of grantableUnlocks(fence, grants)) if (existsSync(path)) access.set(path, "write");
-  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR || basename(path) === SIGN_IN_COPIES_DIR) access.set(path, "deny"); }
+  for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
   return access;
 }
 
@@ -904,7 +890,7 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     // sysctl and iokit allowlists), then reads and writes as below. Apple Events and Launch Services are never allowed.
     "(deny default)",
     ...MACOS_BASELINE,
-    ...machLookupRules(grants.machLookup ?? []),
+    ...machLookupRules([...grants.machLookup ?? [], ...grants.signIns?.mach ?? []]),
     "(allow file-read*)",
     ...(grants.writes === undefined ? ["(allow file-write*)"] : []),
     // Directory metadata, as the sandbox runtime allows it (owner Q7): realpath can walk through a denied folder's
@@ -967,6 +953,10 @@ export function macosFenceProfile(fence: readonly string[], grants: FenceGrants 
     // The mandatory write denies, after every grant (C8): nothing above can give one back; then only the exact files an
     // approval unlocked.
     ...macosMandatoryRules(grants.mandatory, grantableUnlocks(fence, grants)),
+    // A sign-ins check's Codex session and log folders, written (never its config.toml), each held as the folder it is:
+    // after the mandatory denies, which hold ~/.codex itself.
+    ...(grants.signIns === undefined || grants.signIns.writes.length === 0 ? [] : [
+      `(allow file-read* file-write* ${paths("subpath", grants.signIns.writes)})`, `(deny file-write* ${paths("literal", grants.signIns.writes)})`]),
     ...macosNetworkRules(grants.network),
     // Never, whatever came before: nothing may script another application or ask Launch Services to open anything.
     "(deny appleevent-send)",
@@ -1143,13 +1133,13 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const poolMask = (path: string) => grants.pool?.readable === true ? (existsSync(path) ? ["--ro-bind", path, path] : []) : mask(path);
   const kept = linuxGrants([...fence, ...pool], grants).flatMap(path => ["--ro-bind", path, path]);
   // A sign-ins check's exact files, bound back over the masks (validated when granted: signInGrants).
-  const signIns = grants.signIns === undefined ? [] : [
-    // Each from the launch's own copy (made from the validated, opened file), never the path itself: a link swapped in
-    // after validation is never followed by the bind. A file with no copy isn't granted.
-    ...grants.signIns.read.flatMap(path => { const copy = grants.signIns!.copies?.[path]; return copy !== undefined && existsSync(copy) ? ["--ro-bind", copy, path] : []; }),
-    // Bubblewrap can't bind by pattern: a session transcript folder is never given back writable on Linux (a check
-    // there can't resume a Claude session; it can't plant anything a later session loads either).
-  ];
+  // A sign-ins check (check-access.ts): its exact sign-in files are never bound from a path (which a link swapped in
+  // could redirect). Each fenced folder that holds one is masked entry by entry instead, every sibling on the way, so
+  // the file itself stays where it is and the kernel resolves it inside this view (a link there into Toolroll's state
+  // meets a mask). Codex's session and log folders come back writable, each still the folder it was when granted.
+  const pierced = grants.signIns?.read ?? [];
+  const masks = (path: string): string[] => pierced.includes(path) ? [] : pierced.some(file => inside(file, path)) ? siblingMasks(path, pierced, mask) : mask(path);
+  const signIns = (grants.signIns?.writes ?? []).filter(folder => grantFolder(folder, false) === folder).flatMap(folder => ["--bind", folder, folder]);
   // A confined network: a network and a process view of its own, the host's sockets out of reach (a socket in a
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
   const isolated = network === null ? [] : [
@@ -1195,7 +1185,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // An unlocked exact file, given back writable inside a protected folder bound read-only above (only if it exists:
   // a new one is the watch's to allow), as every backend gives it.
   protectedNames.push(...grantableUnlocks(fence, grants).filter(path => existsSync(path)).flatMap(path => ["--bind", path, path]));
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...own, ...[...fence, ...grants.readDenyAbove ?? []].filter(present).flatMap(mask), ...kept, ...signIns, ...services, ...protectedNames, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(poolMask), ...own, ...[...fence, ...grants.readDenyAbove ?? []].filter(present).flatMap(masks), ...kept, ...services, ...protectedNames, ...signIns, ...isolated, ...helper, ...always, "--die-with-parent", "--", ...command] };
 }
 
 /**
@@ -1323,101 +1313,77 @@ export function fenceSummaryMarkdown(): string {
   return ["| | Auto | Full access |", "|---|---|---|", ...FENCE_SUMMARY.map(row => `| ${row.agent} | ${row.auto} | ${row.full} |`)].join("\n");
 }
 
-/** What a `sign-ins` check reads and writes beyond its fence (check-access.ts). */
-export type SignInGrants = { read: string[]; transcripts: string[]; copies?: Record<string, string> };
+/** What a `sign-ins` check reads and writes beyond its fence (check-access.ts): its exact sign-in files, its own Claude
+ * transcript folder (macOS) and Codex's session and log folders. */
+export type SignInGrants = { read: string[]; transcripts: string[]; writes: string[];
+  /** macOS services the sign-ins need: certificate checking (trustd), without which gh (Go) can't verify GitHub's TLS
+   * and calls its own token invalid. Measured with gh 2.x on macOS 26. */
+  mach: string[] };
 
 /** The sign-in files a `sign-ins` check reads, by fixed name under the person's home (never from the environment, so no
  * caller's CLAUDE_CONFIG_DIR or GH_CONFIG_DIR points a grant at .ssh): Claude's account and settings (and, on Linux,
- * its credentials file; on a Mac they are in the keychain), and gh's hosts and config. Codex reads copies in a folder
- * of the launch's own (invoke.ts), so nothing of ~/.codex is granted. */
+ * its credentials file; on a Mac they are in the keychain), gh's hosts and config, and Codex's config and sign-in. */
 const SIGN_IN_FILES = (platform: NodeJS.Platform): string[] => [
   ".claude.json", join(".claude", "settings.json"), ...(platform === "linux" ? [join(".claude", ".credentials.json")] : []),
-  join(".config", "gh", "hosts.yml"), join(".config", "gh", "config.yml"),
+  join(".config", "gh", "hosts.yml"), join(".config", "gh", "config.yml"), join(".codex", "config.toml"), join(".codex", "auth.json"),
 ];
 
 /**
- * A `sign-ins` check's grants: each sign-in file only as the real regular file it is (never a link, nor reached
- * through one), and on a Mac the checkout's own Claude transcript folder (made when absent, only as the real folder it
- * is), whose session files alone are written so a session the check starts can be resumed. Nothing else under
- * ~/.claude, ~/.codex or ~/.config is granted.
+ * A `sign-ins` check's grants (sandbox parity C10, srt-style): each sign-in file by its name, read by the check itself
+ * through its sandbox. Nothing privileged reads or copies one: the sandbox resolves the name in its own view, so a link
+ * planted there into Toolroll's state leads to a denied path (Seatbelt checks the resolved file; bubblewrap resolves
+ * inside its mount namespace, where the state is masked). On a Mac, the checkout's own Claude transcript folder (made
+ * when absent, only as the real folder it is), whose session files alone are written; and Codex's session and log
+ * folders (when ~/.codex is there), never its config.
  */
 export function signInGrants(home: string, checkout: string, platform: NodeJS.Platform = process.platform): SignInGrants {
   const base = real(home);
-  const read = SIGN_IN_FILES(platform).map(name => join(base, name)).filter(path => {
-    try {
-      const held = lstatSync(path);
-      // One name only: a hard link made to another file (Toolroll's database, say) would be read through this grant.
-      return held.isFile() && !held.isSymbolicLink() && held.nlink === 1 && realpathSync(path) === path;
-    } catch { return false; }
-  });
+  // Read by name, but only a name that is itself now: every folder from the home folder down a real one, the file a
+  // regular file with one name (never a link, never a hard link to something else). The sandbox resolves it again.
+  const read = SIGN_IN_FILES(platform).map(name => join(base, name)).filter(path => signInIsItself(base, path));
   const transcript = claudeProjectFolder(base, real(checkout));
   // A transcript folder Claude would name by prefix (a very long checkout path) isn't granted: never a prefix of others.
   const folder = transcript.byPrefix || !existsSync(join(base, ".claude")) ? null : grantFolder(transcript.path);
-  return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder] };
+  const codex = join(base, ".codex");
+  const writes = grantFolder(codex, false) === null ? [] : ["sessions", "log"].map(name => grantFolder(join(codex, name))).filter((path): path is string => path !== null);
+  return { read, transcripts: folder === null || platform !== "darwin" ? [] : [folder], writes, mach: platform === "darwin" ? ["com.apple.trustd.agent"] : [] };
 }
 
-/**
- * A sign-in file's bytes, read only as the real regular file it is: its folder reached through no link (its real path
- * is its own), and the file itself opened without following a link and checked as a regular file through what was
- * opened, so a link swapped in at the file's own name is never read. Null for anything else.
- *
- * Its folders are still resolved by name (Node has no openat), so a folder above it swapped for a link between the
- * checks and the open would be followed. That is detected after the fact: every folder from / down to the file's own
- * is looked at (no link, the same device and inode) before the open and again after it, the file's real path is
- * checked again, and the name must still be the very file that was opened. Any difference reads nothing.
- *
- * Residual risk: a swap made and undone entirely between the two looks isn't seen. On a Mac every build's and check's
- * fence denies the home configuration names (~/.codex among them) by name, present or not, so no build or sandboxed
- * check can make that swap; only a check the operator set to Not sandboxed, or the person themselves, still could.
- * `afterOpen` is for tests: it runs between the open and the second look.
- */
-export function readGrantedFile(path: string, seams: { afterOpen?: () => void } = {}): Buffer | null {
-  const folder = dirname(path);
-  const chain: string[] = [];
-  for (let at = folder; ; at = dirname(at)) { chain.push(at); if (at === dirname(at)) break; }
-  const look = (): { dev: number; ino: number }[] | null => {
-    const held: { dev: number; ino: number }[] = [];
-    for (const at of chain) {
-      const one = lstatSync(at);
-      if (one.isSymbolicLink() || !one.isDirectory()) return null;
-      held.push({ dev: one.dev, ino: one.ino });
-    }
-    return held;
-  };
-  const same = (a: { dev: number; ino: number }[], b: { dev: number; ino: number }[]) => a.length === b.length && a.every((one, index) => one.dev === b[index]!.dev && one.ino === b[index]!.ino);
-  try {
-    const before = look();
-    if (before === null || realpathSync(folder) !== folder) return null;
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+/** Whether a sign-in file is itself, now: every folder from the (real) home folder down a real folder, the file a
+ * regular file with one name (never a link, never a hard link to something else). Checked when granted and again right
+ * before the launch (invoke.ts); the sandbox resolves the name a third time. */
+export function signInIsItself(base: string, path: string): boolean {
+  let at = base;
+  const parts = relative(base, path).split(sep);
+  if (parts.length === 0 || parts[0] === ".." || isAbsolute(relative(base, path))) return false;
+  for (const [index, part] of parts.entries()) {
+    at = join(at, part);
     try {
-      const held = fstatSync(fd);
-      if (!held.isFile() || held.nlink !== 1) return null;
-      seams.afterOpen?.();
-      const after = look();
-      if (after === null || !same(before, after) || realpathSync(folder) !== folder) return null;
-      const named = lstatSync(path);
-      if (named.isSymbolicLink() || named.dev !== held.dev || named.ino !== held.ino) return null;
-      const bytes = readFileSync(fd);
-      // And once more after the read: what was read must still be what the checked name holds.
-      const last = look();
-      return last !== null && same(before, last) ? bytes : null;
-    } finally { closeSync(fd); }
-  } catch { return null; }
+      const held = lstatSync(at);
+      if (held.isSymbolicLink() || (index < parts.length - 1 ? !held.isDirectory() : !(held.isFile() && held.nlink === 1))) return false;
+    } catch { return false; }
+  }
+  return true;
 }
 
-/**
- * The sign-in copies folder in a state folder (check-access.ts; Linux checks only, and sign-ins are off for now), or null:
- * only the real folder Toolroll made there, owned by this user, mode 0700, reached through no link. Anything else (a
- * link planted at that name, someone else's folder, one others may open) is never used: nothing is copied into it.
- */
-export function signInCopiesRoot(state: string, uid: number | undefined = process.getuid?.()): string | null {
-  const root = join(state, SIGN_IN_COPIES_DIR);
-  try {
-    const held = lstatSync(root);
-    if (held.isSymbolicLink() || !held.isDirectory() || (uid !== undefined && held.uid !== uid) || (held.mode & 0o777) !== 0o700) return null;
-    return grantFolder(root, false) === root ? root : null;
-  } catch { return null; }
+/** bubblewrap's mask of `path` with `keep` (files inside it) left where they are: each entry not on the way to one is
+ * masked, and each on the way is opened up the same way, a level at a time. Fails closed: a folder that can't be listed,
+ * or isn't a real folder, is masked whole. */
+function siblingMasks(path: string, keep: readonly string[], mask: (path: string) => string[]): string[] {
+  let held: import("node:fs").Stats;
+  try { held = lstatSync(path); } catch { return mask(path); }
+  if (held.isSymbolicLink() || !held.isDirectory()) return keep.includes(path) ? [] : mask(path);
+  let entries: string[];
+  try { entries = readdirSync(path); } catch { return mask(path); }
+  return entries.flatMap(entry => {
+    const child = join(path, entry);
+    if (keep.includes(child)) return [];
+    // A link can't be masked by a mount (it follows the link); what it leads to is held by the fence where it lands.
+    try { if (lstatSync(child).isSymbolicLink()) return []; } catch { return []; }
+    return keep.some(file => inside(file, child)) ? siblingMasks(child, keep, mask) : mask(child);
+  });
 }
+
 
 /**
  * Which fence policy a launch runs under (docs/plans/sandbox-parity.md §1.5). v1: the fence as approvals sealed before
@@ -1462,6 +1428,8 @@ export type FenceContext = {
   readDeny?: readonly string[];
   /** macOS services it may also reach (project-sandbox.ts). */
   machLookup?: readonly string[];
+  /** The agent the launch runs, whose own sign-in files stay its to write (PROVIDER_HOME). */
+  provider?: string;
   /** The fence policy it runs under: v2 reads other tasks' checkouts (never writes them). */
   policy?: FencePolicy;
 };
@@ -1509,7 +1477,7 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
       ? { readDenyAbove: readDenyMasks(absentDenies, [ctx.home ?? homedir(), ...(ctx.worktree === null ? [] : [ctx.worktree])]) }
       : { homeNames: [...new Set([...made.homeNames ?? [], ...absentDenies])].sort() }),
     // Every launch that runs a project's code gets the mandatory write denies; a tool server is the operator's own.
-    ...(kind === "tool-server" ? {} : { mandatory: mandatoryWriteDenies({ worktree: ctx.worktree, home: ctx.home ?? homedir(), binding: ctx.binding, unlock: ctx.unlock ?? [],
+    ...(kind === "tool-server" ? {} : { mandatory: mandatoryWriteDenies({ worktree: ctx.worktree, home: ctx.home ?? homedir(), binding: ctx.binding, unlock: ctx.unlock ?? [], ...(ctx.provider === undefined ? {} : { provider: ctx.provider }),
       quarantine: ctx.databaseFile === null || ctx.databaseFile === "" || ctx.databaseFile === ":memory:" ? null : join(dirname(real(ctx.databaseFile)), "quarantine") }) }),
   };
   return { kind, fence, fenceGrants: grants, confinement: "required" };
@@ -1530,10 +1498,15 @@ export const PROTECTED_DIRS: readonly string[] = [".vscode", ".idea", ".claude/c
 const PROTECTED_GIT_FILES: readonly string[] = [".git/config"];
 /** The home folder's own persistence points beyond those names (owner Q-B, and the tools a Toolroll process runs). */
 export const HOME_PERSISTENCE: readonly string[] = ["Library/LaunchAgents", ".config/systemd/user", ".config/git", ".config/gh", ".config/pip", ".pip"];
+/** The sign-in folders and files at home no launch but their own agent's may write (C10): so nothing can plant a name
+ * there (a hard link, say) for a sign-ins check to be granted. Claude's own builds keep writing ~/.claude.json. */
+const HOME_SIGN_INS: readonly string[] = [".codex", ".claude.json", ".claude/.credentials.json"];
 
 /** What a launch may not write by name: patterns for Seatbelt, the names that exist now for bubblewrap and Codex, and
  * the exact files an approval unlocked. */
 export type MandatoryDenies = { anchors: string[]; home: string | null; existing: string[]; git: string[]; unlock: string[];
+  /** HOME_SIGN_INS less this launch's own agent's (PROVIDER_HOME). */
+  homeSignIns: string[];
   /** Whether the walk below the checkout saw all of it (protectedBelow); bubblewrap and Codex launches refuse when not. */
   complete: boolean;
   /** Where names a launch made anyway are moved (inside Toolroll's fenced state folder), or null: left, and said. */
@@ -1548,7 +1521,9 @@ const caseless = (relative: string): string => relative.split("").map(ch => /[a-
  * hooks, which the build's linked worktree reaches through `.git`). `unlock` is the approval's exact list of files,
  * relative to the checkout, a build may still write; anything else in a protected folder stays denied.
  */
-export function mandatoryWriteDenies(options: { worktree: string | null; home: string; binding: WorktreeBinding | null; unlock?: readonly string[]; quarantine?: string | null }): MandatoryDenies {
+export function mandatoryWriteDenies(options: { worktree: string | null; home: string; binding: WorktreeBinding | null; unlock?: readonly string[]; quarantine?: string | null; provider?: string }): MandatoryDenies {
+  const own = new Set(PROVIDER_HOME[options.provider ?? ""] ?? []);
+  const homeSignIns = HOME_SIGN_INS.filter(name => !own.has(name) && !own.has(name.split("/")[0]!));
   const home = real(options.home);
   const anchors = [...(options.worktree === null ? [] : [real(options.worktree)])];
   const existing = new Set<string>();
@@ -1558,7 +1533,7 @@ export function mandatoryWriteDenies(options: { worktree: string | null; home: s
   // is refused on those backends. A name made during the run is the watch's (withProtectedWatch).
   let complete = true;
   for (const anchor of anchors) { const below = protectedBelow(anchor); complete &&= below.complete; for (const path of below.found) existing.add(path); }
-  for (const name of [...PROTECTED_FILES, ...PROTECTED_DIRS, ...HOME_PERSISTENCE]) existing.add(join(home, name));
+  for (const name of [...PROTECTED_FILES, ...PROTECTED_DIRS, ...HOME_PERSISTENCE, ...homeSignIns]) existing.add(join(home, name));
   const git: string[] = [];
   if (options.binding !== null) {
     const common = real(join(options.binding.main, ".git"));
@@ -1570,7 +1545,7 @@ export function mandatoryWriteDenies(options: { worktree: string | null; home: s
   // for another file (a hard link). Anything else stays denied (unlockSafe, checked again right before a bind).
   const unlocked = new Set(anchors.flatMap(anchor => unlock.map(one => join(anchor, one)).filter(path => unlockSafe(anchor, path))));
   return { anchors, home, existing: [...new Set([...existing, ...git])].filter(path => !unlocked.has(path)).sort(), git: git.sort(), unlock: [...unlocked].sort(),
-    complete, quarantine: options.quarantine ?? null };
+    complete, quarantine: options.quarantine ?? null, homeSignIns };
 }
 
 /** An unlock entry: an exact relative file inside the checkout, one of the protected names or inside one of the
@@ -1596,7 +1571,7 @@ function macosMandatoryRules(mandatory: MandatoryDenies | undefined, unlockable:
   if (mandatory.home !== null) {
     const at = seatbeltRegex(mandatory.home);
     regexes.push(`^${at}/(${PROTECTED_FILES.map(caseless).join("|")})$`);
-    regexes.push(`^${at}/(${[...PROTECTED_DIRS, ...HOME_PERSISTENCE].map(caseless).join("|")})(/|$)`);
+    regexes.push(`^${at}/(${[...PROTECTED_DIRS, ...HOME_PERSISTENCE, ...mandatory.homeSignIns].map(caseless).join("|")})(/|$)`);
   }
   const literal = mandatory.git;
   return [

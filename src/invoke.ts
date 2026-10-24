@@ -37,7 +37,7 @@ import { homedir, tmpdir } from "node:os";
 import type { Runner } from "./worktree.js";
 import { dirname, join } from "node:path";
 import { poolRootOf } from "./worktree.js";
-import { BRIDGE_DIR, checkLaunchRoot, readGrantedFile, SIGN_IN_COPIES_DIR, signInCopiesRoot, signInGrants, type NetworkFence, type SignInGrants } from "./agent-fence.js";
+import { BRIDGE_DIR, checkLaunchRoot, signInGrants, signInIsItself, type NetworkFence, type SignInGrants } from "./agent-fence.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
 import { readDenyPath } from "./project-sandbox.js";
 import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, withProtectedWatch, linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
@@ -1059,7 +1059,7 @@ function runFence(store: Store, runId: number, provider: AgentSpec["provider"] |
     // Every plane checkout pool is denied around this one: the plane's own beside the database, and the one this
     // checkout was recorded in (a --pool elsewhere), so another project's worktree, present at launch, is out of reach. Native wrappers also cover later creations.
     const launch = fenceFor(provider === "command" ? "command" : "build", { databaseFile, worktree, ...home, boundary, binding, runFolders: folders, poolRoots,
-      extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, unlock: sandbox.unlock, policy: sandbox.policy,
+      extra: allowed?.deny ?? [], linked: linkedFor(store, worktree), writes: allowed === null ? null : { writes: allowed.writes, readOnly: allowed.readOnly }, unlock: sandbox.unlock, provider, policy: sandbox.policy,
       // The sealed read denies, and whatever the project lists now too (adding a deny only narrows).
       readDeny: [...new Set([...sandbox.readDeny, ...(row === null ? [] : store.projectSandbox(row.repo).readDeny)])].map(one => readDenyPath(one, keyHome ?? homedir())), machLookup: sandbox.machLookup });
     return {
@@ -1115,7 +1115,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
         return await withProtectedWatch(grants, () => inner(file, args, {
           ...options,
           fence: fenced.fence,
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
+          // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network },
           confinement: "required",
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1175,7 +1176,8 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
         return await withProtectedWatch(grants, () => inner(file, args, {
           ...options,
           fence: launch.fence,
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: signIns.grants, network: signIns.network },
+          // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network },
           confinement: launch.confinement,
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1255,57 +1257,21 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
 
 
 /**
- * A `sign-ins` check's launch (check-access.ts): its exact sign-in files and its own transcript folder
- * (agent-fence.ts signInGrants), Codex's config and sign-in copied into a home of the launch's own (private, gone with
- * the launch; ~/.codex itself stays fenced), gh pointed at its own folder, and the network the check runs under:
- * open, or its allowlist through a proxy of its own (on Linux, carried in by a bridge). Nothing about it is started
- * unless all of it is.
+ * A `sign-ins` check's launch (check-access.ts, sandbox parity C10): its exact sign-in files, read by the check itself
+ * through its sandbox (agent-fence.ts signInGrants: nothing privileged reads or copies one), its own transcript folder
+ * and Codex's session and log folders; Codex, gh and XDG pointed at the real folders; and the network the check runs
+ * under: open, or its allowlist through a proxy of its own (on Linux, carried in by a bridge). Nothing about it is
+ * started unless all of it is.
  */
 export async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[], platform: NodeJS.Platform = process.platform): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
-  // The belt (check-access.ts signInsAvailable, off for now): no sign-in file is read, copied or granted, whatever level
-  // reached this far. Its callers already run such a check sandboxed; anything else that asks runs nothing.
-  if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks yet, so nothing ran." };
+  if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks here, so nothing ran." };
   const home = homedir();
-  const grants = signInGrants(home, checkout);
-  const cleanup: string[] = [];
-  // Codex's files are copied, each read only as the real file it is (readGrantedFile: no link, here or above it).
-  const codex = join(own, "codex");
-  mkdirSync(codex, { mode: 0o700 });
-  for (const name of ["config.toml", "auth.json"]) {
-    const bytes = readGrantedFile(join(realpathSync(home), ".codex", name));
-    if (bytes !== null) writeFileSync(join(codex, name), bytes, { mode: 0o600 });
-  }
-  // On Linux every granted file is bound from a copy of its own, made the same way (bubblewrap binds a source path, and
-  // a link swapped in after validation must never be what it binds). A Mac's sandbox checks the real path itself.
-  // Not reached for now: the belt above refuses until reading these files is race-free.
-  if (process.platform === "linux") {
-    const copies: Record<string, string> = {};
-    // Under Toolroll's own state folder, which every fence denies whole (a launch's folder in a shared /tmp isn't masked
-    // from a launch already running): bubblewrap binds from the original root, so only this check sees them.
-    const database = store.databaseFile();
-    if (database === null || database === "" || database === ":memory:") return { problem: "A check with sign-ins needs Toolroll's state folder, so nothing ran." };
-    const state = dirname(realpathSync(database));
-    try { mkdirSync(join(state, SIGN_IN_COPIES_DIR), { mode: 0o700 }); } catch { /* there already: checked next */ }
-    // Only the real, private folder Toolroll made (this user's, 0700, no link): never a link planted where it should be.
-    const parent = signInCopiesRoot(state);
-    if (parent === null) return { problem: "The sign-in copies folder isn't a private folder of Toolroll's, so nothing ran." };
-    const folder = mkdtempSync(join(parent, `c-${process.pid}-`));
-    cleanup.push(folder);
-    grants.read.forEach((path, index) => {
-      const bytes = readGrantedFile(path);
-      if (bytes === null) return;
-      const copy = join(folder, String(index));
-      writeFileSync(copy, bytes, { mode: 0o600 });
-      copies[path] = copy;
-    });
-    grants.read = grants.read.filter(path => copies[path] !== undefined);
-    grants.copies = copies;
-  }
+  const grants = signInGrants(home, checkout, platform);
   let egress: EgressProxy | null = null;
   let bridge: EgressBridge | null = null;
-  const close = async () => { await egress?.close(); await bridge?.close(); for (const one of cleanup) rmSync(one, { recursive: true, force: true }); };
+  const close = async () => { await egress?.close(); await bridge?.close(); };
   try {
-    const env: Record<string, string> = { CODEX_HOME: codex, GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config") };
+    const env: Record<string, string> = { CODEX_HOME: join(home, ".codex"), GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config") };
     if (policy.mode === "open") return { grants, network: { mode: "open" }, env, close };
     // Exactly the project's network: the services the sign-ins are for are reached only if the operator allowed their
     // hosts (check-access.ts signInHostsMissing says which are missing; never added here).

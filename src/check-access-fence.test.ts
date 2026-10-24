@@ -19,26 +19,45 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-test("the grants: fixed sign-in files (Claude's credentials file on Linux only), never Codex's, and the checkout's own transcript folder", () => {
+test("the grants: fixed sign-in files by name (Claude's credentials file on Linux only, Codex's config and sign-in), the checkout's own transcript folder, Codex's session and log folders", () => {
   const mac = signInGrants(home, checkout, "darwin");
-  expect(mac.read).toEqual([join(home, ".claude.json"), join(home, ".claude", "settings.json"), join(home, ".config", "gh", "hosts.yml"), join(home, ".config", "gh", "config.yml")]);
+  // Those that are there (this home has no ~/.codex/config.toml).
+  expect(mac.read).toEqual([join(home, ".claude.json"), join(home, ".claude", "settings.json"), join(home, ".config", "gh", "hosts.yml"), join(home, ".config", "gh", "config.yml"),
+    join(home, ".codex", "auth.json")]);
   expect(mac.transcripts).toEqual([claudeProjectFolder(home, checkout).path]);
+  expect(mac.writes).toEqual([join(home, ".codex", "sessions"), join(home, ".codex", "log")]);
   // Bubblewrap can't bind by pattern: no transcript folder on Linux.
   expect(signInGrants(home, checkout, "linux").transcripts).toEqual([]);
   expect(signInGrants(home, checkout, "linux").read).toContain(join(home, ".claude", ".credentials.json"));
 });
 
-test("a link anywhere on the way grants nothing: a linked file, or a linked folder above it", () => {
+test("only a name that is itself is granted: never a link, a hard link to something else, or one under a linked folder (the sandbox resolves it again)", async () => {
+  const { linkSync } = await import("node:fs");
   rmSync(join(home, ".config", "gh", "hosts.yml"));
   symlinkSync(join(home, ".ssh", "id"), join(home, ".config", "gh", "hosts.yml"));
   expect(signInGrants(home, checkout, "darwin").read).not.toContain(join(home, ".config", "gh", "hosts.yml"));
-  rmSync(join(home, ".claude"), { recursive: true });
+  // A hard link to Toolroll's database (a second name for it) is never granted.
+  writeFileSync(join(dir, "orders.db"), "secret");
+  rmSync(join(home, ".config", "gh", "config.yml"));
+  linkSync(join(dir, "orders.db"), join(home, ".config", "gh", "config.yml"));
+  expect(signInGrants(home, checkout, "darwin").read).not.toContain(join(home, ".config", "gh", "config.yml"));
+  // Under a linked folder: neither its files nor Codex's session folders.
+  rmSync(join(home, ".codex"), { recursive: true });
   mkdirSync(join(dir, "elsewhere"));
-  writeFileSync(join(dir, "elsewhere", "settings.json"), "x");
-  symlinkSync(join(dir, "elsewhere"), join(home, ".claude"));
+  writeFileSync(join(dir, "elsewhere", "auth.json"), "stolen");
+  symlinkSync(join(dir, "elsewhere"), join(home, ".codex"));
   const grants = signInGrants(home, checkout, "darwin");
-  expect(grants.read).not.toContain(join(home, ".claude", "settings.json"));
-  expect(grants.transcripts).toEqual([]);
+  expect(grants.read).not.toContain(join(home, ".codex", "auth.json"));
+  expect(grants.writes).toEqual([]);
+  expect(grants.read).toContain(join(home, ".claude.json"));
+});
+
+test("no launch but its own agent's may write the sign-in folders and files, so nothing can be planted there", async () => {
+  const { mandatoryWriteDenies } = await import("./agent-fence.js");
+  const build = mandatoryWriteDenies({ worktree: checkout, home, binding: null, provider: "command" });
+  expect(build.homeSignIns).toEqual([".codex", ".claude.json", ".claude/.credentials.json"]);
+  expect(build.existing).toEqual(expect.arrayContaining([join(home, ".codex"), join(home, ".claude.json"), join(home, ".config", "gh")]));
+  expect(mandatoryWriteDenies({ worktree: checkout, home, binding: null, provider: "claude" }).homeSignIns).toEqual([".codex"]);
 });
 
 test("macOS: the files come back by exact path after the home fence, the transcript folder writable; nothing without the grant", () => {
@@ -56,43 +75,20 @@ test("macOS: the files come back by exact path after the home fence, the transcr
   expect(macosFenceProfile([join(home, ".claude")], NO_GRANTS)).not.toContain(".claude.json");
 });
 
-test("Linux: each file bound back read-only after the masks; no transcript folder", () => {
+test("Linux: a fenced folder that holds a sign-in file is masked entry by entry, the file left where it is; nothing bound from its path", () => {
   const grants = signInGrants(home, checkout, "linux");
-  const credentialsPath = join(home, ".claude", ".credentials.json");
-  const copy = join(dir, "copy-0");
-  writeFileSync(copy, "x");
-  // Bound from the launch's own copy, never the path (a link swapped in after validation is never what is bound).
-  const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".config", "gh")], { ...NO_GRANTS, seccomp: argsOnlySeccomp(), signIns: { ...grants, copies: { [credentialsPath]: copy } } });
-  const mask = args.indexOf(join(home, ".claude"));
-  const bound = args.indexOf(copy);
-  expect(args[bound - 1]).toBe("--ro-bind");
-  expect(args[bound + 1]).toBe(credentialsPath);
-  expect(bound).toBeGreaterThan(mask);
-  // A file with no copy isn't bound at all.
-  expect(args).not.toContain(join(home, ".config", "gh", "hosts.yml"));
-  expect(args).not.toContain(claudeProjectFolder(home, checkout).path);
-});
-
-test("a sign-in file is read only as the real file it is: never through a link, nor a linked folder above it", async () => {
-  const { readGrantedFile } = await import("./agent-fence.js");
-  expect(readGrantedFile(join(home, ".claude", "settings.json"))?.toString()).toBe("x");
-  symlinkSync(join(home, ".ssh", "id"), join(home, ".claude", "linked.json"));
-  expect(readGrantedFile(join(home, ".claude", "linked.json"))).toBeNull();
-  mkdirSync(join(dir, "elsewhere"));
-  writeFileSync(join(dir, "elsewhere", "auth.json"), "stolen");
-  rmSync(join(home, ".codex"), { recursive: true });
-  symlinkSync(join(dir, "elsewhere"), join(home, ".codex"));
-  expect(readGrantedFile(join(home, ".codex", "auth.json"))).toBeNull();
-});
-
-test("a sign-in file with a second name (a hard link to something else) is never granted or read", async () => {
-  const { linkSync } = await import("node:fs");
-  const { readGrantedFile } = await import("./agent-fence.js");
-  rmSync(join(home, ".config", "gh", "hosts.yml"));
-  writeFileSync(join(dir, "database"), "secret");
-  linkSync(join(dir, "database"), join(home, ".config", "gh", "hosts.yml"));
-  expect(signInGrants(home, checkout, "darwin").read).not.toContain(join(home, ".config", "gh", "hosts.yml"));
-  expect(readGrantedFile(join(home, ".config", "gh", "hosts.yml"))).toBeNull();
+  writeFileSync(join(home, ".claude", "history.jsonl"), "private");
+  mkdirSync(join(home, ".claude", "projects"), { recursive: true });
+  const { args } = linuxFenced("/bin/true", [], [join(home, ".claude"), join(home, ".ssh")], { ...NO_GRANTS, seccomp: argsOnlySeccomp(), signIns: grants });
+  // The folder isn't masked whole; its other entries are, each by name; the sign-in files are never named at all.
+  expect(args).not.toContain(join(home, ".claude"));
+  expect(args).toContain(join(home, ".claude", "history.jsonl"));
+  expect(args[args.indexOf(join(home, ".claude", "projects")) - 1]).toBe("--tmpfs");
+  for (const file of grants.read) expect(args).not.toContain(file);
+  // Codex's session and log folders, written.
+  expect(args.flatMap((arg, at) => arg === "--bind" ? [args[at + 1]] : [])).toEqual(expect.arrayContaining(grants.writes));
+  // A folder with no sign-in file is masked whole as before.
+  expect(args[args.indexOf(join(home, ".ssh")) - 1]).toBe("--tmpfs");
 });
 
 test("the home configuration is denied by name on a Mac, there or not: a build started while ~/.codex is absent can't make it", async () => {
@@ -126,68 +122,4 @@ test("a home name's folders can't be swapped on a Mac: ~/.config is held when th
   const gone = macosFenceProfile([], fenceGrants({ databaseFile: null, worktree: checkout, boundary: taskBoundary({ worktree: checkout, provider: "command", home }) }));
   expect(literalDeny(gone, join(home, ".config"))).toBe(true);
   expect(literalDeny(gone, join(home, ".docker")) || existsSync(join(home, ".docker"))).toBe(true);
-});
-
-test("a sign-in file's folders are looked at again after the open: one swapped meanwhile reads nothing", async () => {
-  const { readGrantedFile } = await import("./agent-fence.js");
-  const { renameSync } = await import("node:fs");
-  const path = join(home, ".codex", "auth.json");
-  expect(readGrantedFile(path, { afterOpen: () => {} })?.toString()).toBe("x");
-  // Between the open and the second look, the folder is replaced by another folder holding the same name.
-  expect(readGrantedFile(path, { afterOpen: () => {
-    renameSync(join(home, ".codex"), join(home, ".codex-was"));
-    mkdirSync(join(home, ".codex"));
-    writeFileSync(path, "other");
-  } })).toBeNull();
-  // Or by a link to a folder elsewhere.
-  rmSync(join(home, ".codex"), { recursive: true });
-  renameSync(join(home, ".codex-was"), join(home, ".codex"));
-  mkdirSync(join(dir, "elsewhere"));
-  writeFileSync(join(dir, "elsewhere", "auth.json"), "stolen");
-  expect(readGrantedFile(path, { afterOpen: () => {
-    renameSync(join(home, ".codex"), join(home, ".codex-was"));
-    symlinkSync(join(dir, "elsewhere"), join(home, ".codex"));
-  } })).toBeNull();
-  // A folder above it (the home itself) swapped likewise.
-  rmSync(join(home, ".codex"));
-  renameSync(join(home, ".codex-was"), join(home, ".codex"));
-  expect(readGrantedFile(path, { afterOpen: () => {
-    renameSync(home, join(dir, "home-was"));
-    mkdirSync(join(home, ".codex"), { recursive: true });
-    writeFileSync(path, "other");
-  } })).toBeNull();
-});
-
-test("the sign-in copies folder is used only as Toolroll's own private folder: never a link, nor one others may open", async () => {
-  const { chmodSync } = await import("node:fs");
-  const { signInCopiesRoot, SIGN_IN_COPIES_DIR } = await import("./agent-fence.js");
-  const state = join(dir, "state");
-  mkdirSync(state);
-  expect(signInCopiesRoot(state)).toBeNull();
-  mkdirSync(join(state, SIGN_IN_COPIES_DIR), { mode: 0o700 });
-  chmodSync(join(state, SIGN_IN_COPIES_DIR), 0o700);
-  expect(signInCopiesRoot(state)).toBe(join(state, SIGN_IN_COPIES_DIR));
-  chmodSync(join(state, SIGN_IN_COPIES_DIR), 0o755);
-  expect(signInCopiesRoot(state)).toBeNull();
-  rmSync(join(state, SIGN_IN_COPIES_DIR), { recursive: true });
-  mkdirSync(join(dir, "target"), { mode: 0o700 });
-  symlinkSync(join(dir, "target"), join(state, SIGN_IN_COPIES_DIR));
-  expect(signInCopiesRoot(state)).toBeNull();
-});
-
-test("a sign-in copies folder that is a link: fenced by its own name and its target, and nothing in it is ever swept", async () => {
-  const { readdirSync } = await import("node:fs");
-  const { agentFence, codexFenceArgv, SIGN_IN_COPIES_DIR } = await import("./agent-fence.js");
-  const state = join(dir, "state");
-  mkdirSync(state);
-  const target = join(dir, "precious");
-  mkdirSync(join(target, "c-999999-dead"), { recursive: true });
-  writeFileSync(join(target, "c-999999-dead", "keep"), "keep");
-  symlinkSync(target, join(state, SIGN_IN_COPIES_DIR));
-  const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: checkout, home });
-  expect(fence).toContain(join(state, SIGN_IN_COPIES_DIR));
-  expect(fence).toContain(target);
-  expect(readdirSync(join(target, "c-999999-dead"))).toEqual(["keep"]);
-  // Codex's sandbox denies it by its own name as well.
-  expect(codexFenceArgv(fence, false).join(" ")).toContain(`"${join(state, SIGN_IN_COPIES_DIR)}"="deny"`);
 });
