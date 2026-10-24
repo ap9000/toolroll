@@ -681,6 +681,13 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
     for (const sealed of pool.sealed ?? []) if (!(pool.own !== null && (pool.own === sealed || inside(pool.own, sealed)))) access.set(sealed, "deny");
     for (const path of held.write) access.set(path, "write");
   }
+  // What no launch writes (homeWriteDenies): read-only, where Codex writes at all (Full access, or an allowlist).
+  // Never inside a denied path: Codex lets the more specific path win, so a read there would bring it back.
+  const deniedPaths = deny.filter(one => !one.includes("*")).map(real);
+  for (const path of grants.writeDenies ?? []) {
+    if (access.get(path) === "deny" || deniedPaths.some(one => path === one || inside(path, one))) continue;
+    access.set(path, "read");
+  }
   // Denies are keyed where they resolve; the console's run folder is also denied by its
   // own pathname, so a link there stays unreplaceable, not only its target.
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
@@ -1111,4 +1118,16 @@ export function homeWriteDenies(home: string, binding: WorktreeBinding | null, p
   const paths = [...names.map(name => join(base, name)),
     ...(binding === null ? [] : ["config", "hooks", "modules"].map(name => join(real(join(binding.main, ".git")), name)))];
   return [...new Set(paths)].filter(path => platform === "darwin" || existsSync(path)).sort();
+}
+
+/** A tool server's grants from its build's: never the agent's network or write allowlist (a server keeps its own state
+ * where it always has), and never the build's own checkout or launch folder read back (nothing a build wrote loads in a
+ * process that holds a tool's secrets). */
+export function serverGrantsOf(grants: FenceGrants): FenceGrants {
+  const { network: _agentOnly, writes: _agentWrites, ...rest } = grants;
+  return {
+    ...rest,
+    ...(rest.pool === undefined ? {} : { pool: { ...rest.pool, own: null } }),
+    ...(rest.runFolders === undefined ? {} : { runFolders: { ...rest.runFolders, own: null } }),
+  };
 }

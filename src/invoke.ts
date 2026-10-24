@@ -43,7 +43,7 @@ import { CHECK_ACCESS_DEFAULT, checkAccessHere, narrowestAccess, narrowestNetwor
 import { readDenyPath } from "./project-sandbox.js";
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
-import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
+import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
 import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
@@ -500,7 +500,7 @@ export async function invokeAgent(
   if (fence.length > 0) {
     // A tool server keeps its own reach (it holds its tool's secrets, not the agent's code): never the agent's network,
     // nor its write allowlist (a server keeps its own state where it always has).
-    const serverGrants = (): FenceGrants => { const { network: _agentOnly, writes: _agentWrites, ...rest } = grants; return rest; };
+    const serverGrants = (): FenceGrants => serverGrantsOf(grants);
     // Nor read what the build wrote: however its arguments are spelled, no byte of the checkout or caches can load.
     const serverDenies = [...fence, ...serverUntrusted.filter(path => existsSync(path)).map(path => realpathSync(path))];
     // Pinned: the server fence this attempt launched with, a copy, whatever changes later (C11).
@@ -1319,7 +1319,7 @@ export function checkoutRunner(store: Store, repo: string, checkout: string, inn
 /**
  * A saved result's checks' sandbox terms (sandbox parity C9), never wider than any of those results' own approvals nor
  * the project now: v2 only when every result's approval sealed v2; every read deny any of them sealed or the project
- * lists now; mach services and unlocked files only those all of them sealed and the project still lists. A result with
+ * lists now; mach services only those all of them sealed and the project still lists. A result with
  * no readable approval counts as v1 with nothing listed.
  */
 export function checkoutSandboxOf(store: Store, repo: string, runIds: readonly number[]): LaunchSandbox {
