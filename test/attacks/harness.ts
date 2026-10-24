@@ -18,7 +18,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, test, type TestContext } from "vitest";
-import { agentFence, codexFenceArgv, fenceGrants, HARDENED_GIT_ARGS, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, SANDBOX_EXEC, taskBoundary, trustedWorktreeBinding, type FenceGrants } from "../../src/agent-fence.js";
+import { agentFence, codexFenceArgv, fenceGrants, HARDENED_GIT_ARGS, linuxFenceAvailable, macosFenceAvailable, macosFenced, NO_GRANTS, runFolders, SANDBOX_EXEC, taskBoundary, trustedWorktreeBinding, type FenceGrants } from "../../src/agent-fence.js";
 import { poolRootOf } from "../../src/worktree.js";
 // Every attack file imports this harness, and this harness every guard (scripts/quick-check.mjs SECURITY_CRITICAL),
 // so a Quick command that follows imports (`vitest related <changed files>`) runs the whole suite when one changes.
@@ -113,6 +113,13 @@ export function seatbelt(): Probe {
   const ran = spawnSync(SANDBOX_EXEC, ["-p", "(version 1)(allow default)", "/usr/bin/true"], { encoding: "utf8", timeout: 5_000 });
   const why = /Operation not permitted/.test(ran.stderr ?? "") ? "this process is already inside a sandbox, and Seatbelt can't nest" : "sandbox-exec is missing";
   return seatbeltProbe = { available: false, note: `Seatbelt checks skipped: ${why}` };
+}
+
+/** Toolroll's own OS fence, as any launch gets it: Seatbelt on a Mac, bubblewrap on Linux. */
+export function osFence(): Probe {
+  if (process.platform === "darwin") return seatbelt();
+  if (process.platform === "linux") return linuxFenceAvailable() ? { available: true, note: "" } : { available: false, note: "OS fence checks skipped: bubblewrap can't make its namespaces here" };
+  return { available: false, note: "OS fence checks skipped: no macOS sandbox or bubblewrap on this platform" };
 }
 
 let codexProbe: Probe | null = null;

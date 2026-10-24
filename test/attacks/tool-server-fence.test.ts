@@ -14,7 +14,7 @@ import { flowFromSteps } from "../../src/flows.js";
 import { addToolTo, testToolOf, validateToolSpec } from "../../src/project-tools.js";
 import { addApprover } from "../../src/scope.js";
 import { openStore, type Store } from "../../src/store.js";
-import { marker, needs, seatbelt, useScratch, write } from "./harness.js";
+import { marker, needs, osFence, useScratch, write } from "./harness.js";
 
 const T0 = new Date("2026-10-24T09:00:00.000Z");
 const scratch = useScratch("tool-server");
@@ -50,7 +50,7 @@ beforeEach(() => {
 
 describe("attack: a tool server outside a build reading Toolroll's state", () => {
   test("discovery (the Test button) starts it in the server fence: the state is unreadable to it, readable without it", async ctx => {
-    needs(ctx, seatbelt());
+    needs(ctx, osFence());
     const fenced = await testToolOf(store, repo, "probe", T0, { home });
     expect(fenced).toMatchObject({ ok: true, tools: ["denied"] });
     // Positive control: the same server, where an operator allowed unconfined agents and nothing can fence, reads it.
@@ -65,7 +65,7 @@ describe("attack: a tool server outside a build reading Toolroll's state", () =>
     const refused = await useTool(store, stage, card, repo, { toolHome: home, fenceAvailable: () => false });
     expect(refused).toMatchObject({ state: "retry" });
     expect(refused.said).toMatch(/can't confine the tool's server/);
-    needs(ctx, seatbelt());
+    needs(ctx, osFence());
     expect(await useTool(store, stage, card, repo, { toolHome: home })).toMatchObject({ state: "passed", output: "denied" });
   });
 

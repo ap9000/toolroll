@@ -1063,9 +1063,10 @@ export function macosFenced(file: string, args: readonly string[], fence: readon
   return { file: SANDBOX_EXEC, args: ["-p", macosFenceProfile(fence, grants), file, ...args] };
 }
 
-/** Whether bubblewrap runs here (checked once): installed, and allowed to make its namespace. */
+/** Whether bubblewrap runs here (checked once): installed, and allowed to make the namespaces every Linux fence has (a
+ * session and a process view of its own): a machine that can't is no Linux fence at all, never a weaker one. */
 let bubblewrapWorks: boolean | null = null;
-export function linuxFenceAvailable(platform: NodeJS.Platform = process.platform, probe: () => boolean = () => spawnSync("bwrap", ["--dev-bind", "/", "/", "--", "true"], { timeout: 5_000, stdio: "ignore" }).status === 0): boolean {
+export function linuxFenceAvailable(platform: NodeJS.Platform = process.platform, probe: () => boolean = () => spawnSync("bwrap", ["--dev-bind", "/", "/", "--new-session", "--unshare-pid", "--proc", "/proc", "--", "true"], { timeout: 5_000, stdio: "ignore" }).status === 0): boolean {
   if (platform !== "linux") return false;
   if (bubblewrapWorks === null) { try { bubblewrapWorks = probe(); } catch { bubblewrapWorks = false; } }
   return bubblewrapWorks;
@@ -1117,10 +1118,14 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   // A confined network: a network and a process view of its own, the host's sockets out of reach (a socket in a
   // mounted folder is not network, so they are masked), and the run's proxy and broker carried in by the forwarder.
   const isolated = network === null ? [] : [
-    "--unshare-net", "--unshare-pid", "--proc", "/proc",
+    "--unshare-net",
     ...linuxHostSockets(undefined, undefined, undefined, grants.writes !== undefined).flatMap(mask),
     "--ro-bind", network.bridge!.folder, network.bridge!.folder,
   ];
+  // Every Linux fence, whatever its network (sandbox parity C6, as Anthropic's sandbox runtime always does): a session of
+  // its own (no controlling terminal, so nothing can be pushed into the operator's with TIOCSTI), and a process view of
+  // its own (the host's processes, and their /proc, out of sight).
+  const always = ["--new-session", "--unshare-pid", "--proc", "/proc"];
   // A confined build gets a /tmp of its own (other programs' sockets, other runs' folders and anything planted there
   // all out of sight at once), with only its own folders there given back; every mask and grant below still applies.
   // A workspace build (arc 2) sees the whole filesystem read-only, a /dev of its own and a /tmp of its own, with only
@@ -1138,7 +1143,7 @@ export function linuxFenced(file: string, args: readonly string[], fence: readon
   const services = writes === undefined || network !== null ? [] : linuxHostSockets(undefined, undefined, undefined, true).flatMap(mask);
   const command = network === null ? [file, ...args]
     : [network.bridge!.node, network.bridge!.forwarder, network.bridge!.folder, ...[network.proxyPort, ...network.brokerPorts].map(String), "--", file, ...args];
-  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, "--die-with-parent", "--", ...command] };
+  return { file: "bwrap", args: [...root, ...privateTmp, ...writable, ...pool.flatMap(mask), ...own, ...fence.flatMap(mask), ...kept, ...signIns, ...services, ...isolated, ...always, "--die-with-parent", "--", ...command] };
 }
 
 /** The host's own sockets a process in a mounted filesystem could still talk to (D-Bus, the display, container

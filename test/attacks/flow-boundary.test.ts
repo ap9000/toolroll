@@ -19,7 +19,7 @@ import { addFlowTriggerTo, checkFlowTriggerNow, type TriggerIo } from "../../src
 import { flowFromSteps } from "../../src/flows.js";
 import { addApprover } from "../../src/scope.js";
 import { openStore, type Store } from "../../src/store.js";
-import { marker, needs, repository, seatbelt, useScratch, write } from "./harness.js";
+import { marker, needs, repository, osFence, useScratch, write } from "./harness.js";
 
 const T0 = new Date("2026-10-24T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -55,7 +55,7 @@ const save = (name: string, body: string) => { const saved = saveScript(store, r
 
 describe("attack: a flow reaching past the agents' fence", () => {
   test("setup and a script in a copy of the card's work can't read the state, another run's folder or another pool checkout; the script still reads its input and writes its folder", async ctx => {
-    needs(ctx, seatbelt());
+    needs(ctx, osFence());
     // The approved setup records what it could read, inside the copy (its own folder, which it may write).
     store.setWorktreeSetup({ repo, command: `{ ${probe().replace(/\n/g, "; ")}; } > setup-result.txt`, timeoutMs: 60_000, approvedBy: "alex" }, T0);
     save("peek", ['sed "s/^/setup-/" setup-result.txt', probe(), 'grep -q Probe "$FLOW_INPUT" && echo input:read', "echo made > own-file && echo folder:written"].join("\n"));
@@ -75,7 +75,7 @@ describe("attack: a flow reaching past the agents' fence", () => {
   });
 
   test("a schedule's script (no checkout) can't read them either", async ctx => {
-    needs(ctx, seatbelt());
+    needs(ctx, osFence());
     save("issues", [probe(), 'grep -q trigger "$FLOW_INPUT" && echo input:read'].join("\n").replace(/echo ([\w:]+)/g, 'echo "{\\"title\\": \\"$1\\", \\"key\\": \\"$1\\"}"'));
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }]);
     const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "schedule", schedule: "every 2 hours", script: "issues" }, "alex", T0, state);
@@ -113,7 +113,7 @@ describe("attack: a flow reaching past the agents' fence", () => {
     if (launch === null || "problem" in launch) throw new Error("no launch");
     try {
       expect(launch.fence!.fence).toContain(realpathSync(join(home, ".ssh")));
-      needs(ctx, seatbelt());
+      needs(ctx, osFence());
       const read = await exec("/bin/cat", [key], { cwd: folder, ...launch.fence! });
       expect(read.code).not.toBe(0);
       // Positive control: unsandboxed, the key is a readable file.

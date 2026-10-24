@@ -530,7 +530,7 @@ describe("the Linux fence (v88)", () => {
       const folder = join(root, "keys"), file = join(root, "up-login.txt");
       mkdirSync(folder);
       writeFileSync(file, "alex secret");
-      expect(linuxFenced("claude", ["-p", "hi"], [folder, file])).toEqual({ file: "bwrap", args: ["--dev-bind", "/", "/", "--tmpfs", folder, "--ro-bind", "/dev/null", file, "--die-with-parent", "--", "claude", "-p", "hi"] });
+      expect(linuxFenced("claude", ["-p", "hi"], [folder, file])).toEqual({ file: "bwrap", args: ["--dev-bind", "/", "/", "--tmpfs", folder, "--ro-bind", "/dev/null", file, "--new-session", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "--", "claude", "-p", "hi"] });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
