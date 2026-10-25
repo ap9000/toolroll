@@ -400,7 +400,7 @@ describe("toolroll release", () => {
     });
 
     // The gate's early look, before anyone is asked to approve: only an already failed required check stops there.
-    const STILL_RUNNING = "are still running", UNREADABLE = "Couldn't read the pull request checks";
+    const STILL_RUNNING = "haven't started or are still running", UNREADABLE = "Couldn't read the pull request checks";
     const early: [string, (w: ReturnType<typeof world>) => void, { stop: boolean; line: string | null }][] = [
       ["a failed required check stops before filing or approval", w => { w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]); }, { stop: true, line: null }],
       ["a cancelled required check stops before filing or approval", w => { w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "cancelled" }]); }, { stop: true, line: null }],
@@ -433,6 +433,17 @@ describe("toolroll release", () => {
       expect(outcome).toMatchObject({ ok: true });
       const said = w.s.said.join("\n");
       for (const one of [STILL_RUNNING, UNREADABLE]) expect(said.includes(one), one).toBe(one === line);
+    });
+
+    test("a gate whose filed task lost its answer resumes with that task even after a check failed", async () => {
+      const dir = stateDir();
+      const { s, adapters } = world({ crashAfter: "fileGate" });
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "gate" });
+      s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
+      const outcome = await runRelease(options(dir), adapters);
+      expect(outcome).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
+      expect(outcome.ok === false && outcome.message).not.toContain("Nothing was filed");
+      expect(s.calls.filter(one => one === "fileGate")).toHaveLength(1);
     });
 
     test("a release resumed past the gate doesn't look again before ci", async () => {

@@ -5,9 +5,9 @@
  *
  *   gate → approval → check → complete → quiet → deploy → link → ci → merge → tree → tag → publish → homebrew → done
  *
- * gate first looks at the pull request's required checks on that commit: one that already failed stops the release
- * before anything is filed (pending checks, or GitHub not answering, only get a line; ci stays the authority). It then
- * files a prepared-candidate task pinned to the branch's exact commit, with the full release check. approval
+ * gate, before filing a task for that commit, looks at the pull request's required checks on it: one that already
+ * failed stops the release before anything is filed (pending checks, or GitHub not answering, only get a line; ci
+ * stays the authority; a task already filed is not looked at again). It then files a prepared-candidate task pinned to the branch's exact commit, with the full release check. approval
  * waits for an active approver's yes to that exact scope (never a mode's, an AI's or the lead's). check requires a Full
  * result of that commit: a failed check stops the release and stays visible, nothing reruns it. complete marks that
  * exact result Complete through the task's own authorization. quiet waits until nothing builds. deploy runs the
@@ -562,6 +562,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
           if (existing.exists && j.freshTask === true && j.intents.gate === undefined) throw new Stop("approval", `Task ${j.task.id} appeared before this release filed it; rerun with --new.`);
           if (existing.exists) {
+            // Filed already (a resume after a lost answer): the task stands, and the ci step judges its checks.
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;
           } else {
@@ -926,5 +927,5 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal): Promis
   if (verdict.state === "failed") {
     throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. Nothing was filed or sent for approval. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
   }
-  if (verdict.state === "pending") adapters.say(`  Pull request checks on ${sha} are still running; the ci step waits for them later.`);
+  if (verdict.state === "pending") adapters.say(`  Pull request checks on ${sha} haven't started or are still running; the ci step waits for them later.`);
 }
