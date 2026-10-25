@@ -1110,8 +1110,9 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
           ...options,
           fence: fenced.fence,
           // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
-          // With sign-ins, the keychain too: Claude Code keeps its macOS sign-in there (the project's explicit grant).
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network, keychain: true },
+          // With sign-ins, the keychain too (Claude Code keeps its macOS sign-in there), only while a person still set it.
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network,
+            ...(signInsKeychain(store, checkout === null ? null : store.getWorktree(checkout)?.repo ?? null) ? { keychain: true as const } : {}) },
           confinement: "required",
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1172,8 +1173,9 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
           ...options,
           fence: launch.fence,
           // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
-          // With sign-ins, the keychain too: Claude Code keeps its macOS sign-in there (the project's explicit grant).
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network, keychain: true },
+          // With sign-ins, the keychain too (Claude Code keeps its macOS sign-in there), only while a person still set it.
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network,
+            ...(signInsKeychain(store, repo) ? { keychain: true as const } : {}) },
           confinement: launch.confinement,
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1259,6 +1261,19 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
  * under: open, or its allowlist through a proxy of its own (on Linux, relayed in by the sandbox runtime). Nothing about it is
  * started unless all of it is.
  */
+/**
+ * Whether a check with sign-ins also reaches the keychain (macOS securityd: any item every program may read, not only
+ * the sign-ins). Only while the project's sign-ins level stands as a person set it: widening to sign-ins takes an
+ * instance operator's password typed now (operate.ts project check-access, Settings → Project → Check access), and the
+ * one who set it must still be an approver for the project and an instance operator now. Anything else: no keychain.
+ */
+export function signInsKeychain(store: Store, repo: string | null): boolean {
+  if (repo === null || store.projectCheckAccess(repo) !== "sign-ins") return false;
+  const change = store.projectCheckAccessChange(repo);
+  const account = change === null ? null : store.accountOf(change.by);
+  return account !== null && account.revokedAt === null && account.role === "approver" && store.accountCanAccess(change!.by, repo) && store.isInstanceOperator(change!.by);
+}
+
 export async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[], platform: NodeJS.Platform = process.platform): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
   if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks here, so nothing ran." };
   const home = homedir();

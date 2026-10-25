@@ -129,8 +129,10 @@ Known limits:
   access list lets any program read it; items that ask, or that name their
   programs, stay closed. Toolroll denies those services to everything else
   it sandboxes: a build's setup and check commands, a project's checks,
-  flows and tool servers. A check a project gave **sign-ins** keeps them,
-  since Claude Code's sign-in is there.
+  flows and tool servers. A check a project gave **sign-ins** keeps them
+  (Claude Code's sign-in is there), and so reaches those keychain items too,
+  not only the sign-ins; the sign-ins warning says so. Only while that level
+  stands as an instance operator set it, with their password typed then.
 - Every sandboxed launch on a Mac can open terminals of its own and no
   other, can't type into a terminal (TIOCSTI), and starts in a session of
   its own, so it has no terminal of whoever started Toolroll. A program

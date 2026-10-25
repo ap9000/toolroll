@@ -17,7 +17,8 @@
   build's setup and check commands, a project's checks, flows and tool
   servers are now denied it. A build's agent keeps it (Claude Code signs in
   from the keychain), and so does a check whose project gave it
-  **sign-ins**.
+  **sign-ins**, while the instance operator who chose that still is one. The
+  sign-ins choice now says it includes Keychain access.
 
 ## 0.9.70 — 2026-10-24
 
