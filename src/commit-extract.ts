@@ -21,6 +21,11 @@ export type Extraction = { ok: true; files: number } | { ok: false; message: str
 
 const MAX_BYTES = 1024 * 1024 * 1024;
 
+/** What one extraction may hold, all checked before anything is written: the bytes written (every path, a blob shared
+ * by many paths counted once per path), the files, the tree entries walked and how deep the trees nest. */
+export type ExtractionLimits = { bytes: number; files: number; entries: number; depth: number };
+export const EXTRACTION_LIMITS: ExtractionLimits = Object.freeze({ bytes: MAX_BYTES, files: 50_000, entries: 200_000, depth: 64 });
+
 /** A tree path that stays where it says: relative, no empty, `.` or `..` part, no backslash or control character. */
 export function normalizedTreePath(path: string): boolean {
   if (path === "" || path.startsWith("/") || /[\u0000-\u001f\\]/.test(path)) return false;
@@ -50,7 +55,7 @@ export function parseTree(bytes: Buffer, idBytes: number): TreeEntry[] | null {
  * records) into `dest`, an empty folder this process made. Every object on the way — the commit, each tree, each
  * blob — is hashed here and must be the id that names it: Git's own answer about an id is never taken on trust, so a
  * corrupted or replaced object in a store a build could write to refuses the extraction. */
-export function extractCommit(gitDir: string, sha: string, dest: string): Extraction {
+export function extractCommit(gitDir: string, sha: string, dest: string, limits: ExtractionLimits = EXTRACTION_LIMITS): Extraction {
   const refuse = (message: string): Extraction => ({ ok: false, message });
   const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
   const git = (args: readonly string[], input?: Buffer) =>
@@ -96,7 +101,9 @@ export function extractCommit(gitDir: string, sha: string, dest: string): Extrac
   // Walk the trees from their verified bytes, level by level; collect every file.
   const files: { mode: "100644" | "100755"; id: string; path: string }[] = [];
   let level: { id: string; prefix: string }[] = [{ id: treeLine[1]!, prefix: "" }];
+  let depth = 0, walked = 0;
   while (level.length > 0) {
+    if (++depth > limits.depth) return refuse(`The commit's folders nest deeper than ${limits.depth}.`);
     const trees = read(level.map(one => one.id));
     if (typeof trees === "string") return refuse(`The approved commit couldn't be verified: ${trees}.`);
     const next: { id: string; prefix: string }[] = [];
@@ -105,13 +112,18 @@ export function extractCommit(gitDir: string, sha: string, dest: string): Extrac
       if (tree.type !== "tree") return refuse(`The approved commit's tree ${id.slice(0, 12)} isn't a tree.`);
       const entries = parseTree(tree.bytes, hexLength / 2);
       if (entries === null) return refuse(`The approved commit's tree ${id.slice(0, 12)} couldn't be read.`);
+      walked += entries.length;
+      if (walked > limits.entries) return refuse(`The commit's trees hold more than ${limits.entries} entries.`);
       for (const entry of entries) {
         const path = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
         if (entry.name.includes("/") || !normalizedTreePath(path)) return refuse(`The commit holds a path that isn't normalized (${JSON.stringify(path)}).`);
         if (entry.mode === "40000") next.push({ id: entry.id, prefix: path });
         else if (entry.mode === "120000") return refuse(`The commit holds a symlink (${path}); a deployment never runs one.`);
         else if (entry.mode === "160000") return refuse(`The commit holds a submodule (${path}); a deployment never runs one.`);
-        else if (entry.mode === "100644" || entry.mode === "100755") files.push({ mode: entry.mode, id: entry.id, path });
+        else if (entry.mode === "100644" || entry.mode === "100755") {
+          files.push({ mode: entry.mode, id: entry.id, path });
+          if (files.length > limits.files) return refuse(`The commit holds more than ${limits.files} files.`);
+        }
         else return refuse(`The commit holds an entry that isn't a plain file (${path}).`);
       }
     }
@@ -121,6 +133,12 @@ export function extractCommit(gitDir: string, sha: string, dest: string): Extrac
 
   const blobs = read([...new Set(files.map(one => one.id))]);
   if (typeof blobs === "string") return refuse(`The approved commit couldn't be verified: ${blobs}.`);
+  // What would be written, every path counted (a blob shared by many paths is written once per path).
+  let total = 0;
+  for (const file of files) {
+    total += blobs.get(file.id)!.bytes.length;
+    if (total > limits.bytes) return refuse(`The commit's files come to more than ${limits.bytes} bytes.`);
+  }
   const root = realpathSync(dest);
   for (const file of files) {
     const blob = blobs.get(file.id)!;

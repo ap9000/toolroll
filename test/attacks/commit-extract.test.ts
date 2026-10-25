@@ -90,6 +90,31 @@ describe("attack: the repository changes what the release extracts", () => {
     expect(readdirSync(out)).toEqual([]);
   });
 
+  test("every cap is checked before anything is written: bytes written (shared blobs counted per path), files, tree entries, depth", () => {
+    const dir = scratch();
+    const big = "x".repeat(1000);
+    // One blob behind many paths, two levels deep: 6 files, 6000 bytes written, 8 tree entries (2 folders + 6 files).
+    const p = project(dir, { "a/1.txt": big, "a/2.txt": big, "a/3.txt": big, "b/1.txt": big, "b/2.txt": big, "b/3.txt": big });
+    const roomy = { bytes: 6000, files: 6, entries: 8, depth: 2 };
+    const rows: [string, Partial<typeof roomy>, string | null][] = [
+      ["all within the caps", {}, null],
+      ["bytes written, a shared blob counted per path", { bytes: 5999 }, "more than 5999 bytes"],
+      ["files", { files: 5 }, "more than 5 files"],
+      ["tree entries", { entries: 7 }, "more than 7 entries"],
+      ["tree depth", { depth: 1 }, "deeper than 1"],
+    ];
+    for (const [name, change, refusal] of rows) {
+      const out = join(dir, `out-${name.replace(/\W+/g, "-")}`);
+      mkdirSync(out);
+      const result = extractCommit(p.gitDir, p.head, out, { ...roomy, ...change });
+      if (refusal === null) expect(result, name).toEqual({ ok: true, files: 6 });
+      else {
+        expect(result, name).toMatchObject({ ok: false, message: expect.stringContaining(refusal) });
+        expect(readdirSync(out), name).toEqual([]);
+      }
+    }
+  });
+
   test("tree paths are normalized or refused", () => {
     for (const path of ["scripts/deploy-browser.mjs", "a/b.c", ".gitattributes"]) expect(normalizedTreePath(path), path).toBe(true);
     for (const path of ["", "/abs", "../up", "a/../b", "a//b", "./a", "a/.", "a\\b", "a\u0000b", "a\nb"]) expect(normalizedTreePath(path), JSON.stringify(path)).toBe(false);
