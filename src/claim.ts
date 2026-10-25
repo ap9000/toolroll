@@ -243,7 +243,7 @@ function acquireLocked(
         return {
           ok: false as const,
           reason: "mode-ended" as const,
-          message: "the operating mode that approved this has ended — the approval falls back to a person",
+          message: "the approval it was sealed with no longer stands (an ended mode or flow grant, or an approval that wasn't a person's) — a person approves it again",
         };
       }
       // A LEAD SWEEP'S LIMIT, inside this write transaction so two runners can't both take the last slot: at most

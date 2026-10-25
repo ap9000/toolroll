@@ -74,7 +74,7 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { approvalOf, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { APPROVAL_BASES, approvalOf, machineActing, personProof, quarantinedAuthor, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
   canonicalOverridesJson, canonicalRouteJson, isRiskLevel, isTaskSize, headroomFrom, makesNoPlan, legOf, overridesFromJson, phaseOfRole, recommendRoute, routeDigestOf, routeFromJson, routeProblems, routeStampProblem, ROUTE_ERA, type ExactSpec, type ProviderRoom, type CandidateTier, PROVIDER_ID_LIST, type TaskSize, type TaskSizing, type PhaseRoute, type PublicationAuthority, type RouteStamp, type ReadinessLookup, type ReadinessObservation, type ReadinessState, type RouteEvidenceKind, type RouteOverride,
@@ -94,6 +94,7 @@ import type { QualityMode } from "./quality.js";
 import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
+import { authorityStandsSql } from "./approval-authority.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
@@ -775,7 +776,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v133 adds, and changes no saved row: a project's sandbox settings (project_sandbox; project-sandbox.ts,
 // docs/plans/sandbox-parity.md C9) — what its builds may not read, the macOS services and protected files they may — and
 // the fence policy a flow was made under (flow.fence_policy; saved flows read NULL: v1, the home configuration denied).
-export const SCHEMA_VERSION = 133;
+// v134 adds, and changes no saved row: who gave each yes (docs/plans/approval-policy.md) — a protected-work vote's proof
+// (scope_approval_vote.proof) and a flow decision's authority (flow_event.authority), each NULL on saved rows: no proof
+// on record. Saved approvals a machine credential gave are read for what they are (approval-authority.ts), not rewritten.
+export const SCHEMA_VERSION = 134;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -913,7 +917,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1032,6 +1036,12 @@ export const V129_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
     cache_read_tokens: { definition: "INTEGER CHECK (cache_read_tokens IS NULL OR cache_read_tokens >= 0)", saved: "NULL" },
     cache_write_tokens: { definition: "INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0)", saved: "NULL" },
   },
+});
+/** v134 (approval policy): how each protected-work vote was proved, and who decided a flow card at a decision zone.
+ * Saved rows read NULL: no proof or authority on record, which never counts as a person. */
+export const V134_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  scope_approval_vote: { proof: { definition: "TEXT", saved: "NULL" } },
+  flow_event: { authority: { definition: "TEXT", saved: "NULL" } },
 });
 /** v130: a project's network (an approver's setting, egress.ts ProjectNetwork as JSON) and the installation's choice
  * whether an agent may run where no OS confinement exists (one row; 0 until an instance operator turns it on). */
@@ -5165,6 +5175,10 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   convertChatTables(db);
   // v118: every machine credential into the one credential table, after every older step gave the old tables their last shape.
   mergeCredentialsForV118(db);
+  // v134: a vote's proof and a flow decision's authority (V134_ADDED_COLUMNS: saved rows read NULL, no proof on record).
+  for (const [table, columns] of Object.entries(V134_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -7886,10 +7900,12 @@ export class Store {
       permissionMode?: UnattendedPermissionMode;
       qualityMode?: QualityMode;
       posture?: "escalated";
-      proposedVia?: "mate" | "coordinator" | "scout" | null;
+      proposedVia?: ScopeAuthor | null;
     } = {},
   ): void {
     this.once(mutation, "saveScope", () => this.transact(() => {
+      // The text's current author mark, read before this write (approval policy §1.4).
+      const prior = this.db.prepare("SELECT proposed_via FROM task_scope WHERE task_id = ?").get(scope.taskId);
       // THE filing invariant (foundations findings 5/13/19): every scope
       // row leaves this method either RESOLVED (working profile stamped,
       // digest recomputed to bind it, version 2) or UNRESOLVED with its
@@ -8131,8 +8147,11 @@ export class Store {
           scope.candidate ?? null,
         );
       // Who wrote THIS text (mate arc, ruling 2): set per write, so a human
-      // rewrite clears the lead's mark and a mate rewrite sets it.
-      this.db.prepare("UPDATE task_scope SET proposed_via = ? WHERE task_id = ?").run(options.proposedVia ?? null, scope.taskId);
+      // rewrite clears the lead's mark and a mate rewrite sets it — but only a
+      // person's write clears one (approval policy §1.4): the lead (its token)
+      // or a remote API run keeps any mark already there and never erases a
+      // quarantine by refiling, and the lead's own text is marked `lead`.
+      this.db.prepare("UPDATE task_scope SET proposed_via = ? WHERE task_id = ?").run(provenanceAfter(prior?.["proposed_via"], options.proposedVia ?? null), scope.taskId);
       return null;
     }));
   }
@@ -8150,7 +8169,7 @@ export class Store {
       const row = this.db.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(taskId);
       if (row === undefined) return null;
       const scope = readScope(row);
-      const proposedVia = row["proposed_via"] === null || row["proposed_via"] === undefined ? null : (String(row["proposed_via"]) as "mate" | "coordinator" | "scout");
+      const proposedVia = row["proposed_via"] === null || row["proposed_via"] === undefined ? null : (String(row["proposed_via"]) as ScopeAuthor);
       const draft = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, qualityMode: scope.qualityMode ?? "default" };
       this.saveScope(
         { ...scope, proposedAt: now.toISOString(), digest: digestOf(draft) },
@@ -8166,9 +8185,13 @@ export class Store {
    * approved profile — one UPDATE, no re-resolution, so what is sealed is
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
-  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant"; modeDigest: string }, approverKind?: ApproverKind): boolean {
+  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule"; modeDigest: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
+        // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
+        // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
+        // road it came by.
+        if (basis === undefined && machineActing()) return false;
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
         // v6, round-3 f1): mode coverage never admits a coordinator-filed
         // task — console, CLI `task scope`, and direct callers alike hit
@@ -8265,12 +8288,14 @@ export class Store {
                   taskRef: Number(ref["id"]), kind: "scope-approved", identity: `t${Number(ref["id"])}`,
                   subject: "Scope approved",
                   body: basis === undefined
-                    ? `Approved by ${currentActor()?.lead === true ? "the lead" : lifecycleWords(by, 40)}. A connected worker can take it next.`
+                    ? `Approved by ${lifecycleWords(by, 40)}. A connected worker can take it next.`
                     : basis.kind === "chat"
                       ? `Approved by ${lifecycleWords(by, 40)} in chat. A connected worker can take it next.`
                       : basis.kind === "grant"
                         ? "Approved automatically: its flow runs on its own. A connected worker can take it next."
-                        : "Approved automatically under the operating mode. A connected worker can take it next.",
+                        : basis.kind === "schedule"
+                          ? "Approved by its standing order. A connected worker can take it next."
+                          : "Approved automatically under the operating mode. A connected worker can take it next.",
                   link: chatControlHref("task", taskId),
                 },
                 now,
@@ -8309,19 +8334,15 @@ export class Store {
    * scopes answer true: this belt only ever REMOVES mode authority.
    */
   modeApprovalLive(taskRef: number, now: Date): boolean {
-    // A flow's "runs on its own" grant (flow-unattended.ts) is held to the same belt.
+    // Approval policy §1.5: an allowlist over the seal that exists. No seal claims no authority (a pre-approval
+    // planner, a scope-free check — the role gates decide those); a seal stands only on an authority that still does
+    // (approval-authority.ts), so a lead seal, a null basis or a word this code doesn't write is dead here.
     const dead = this.db
       .prepare(
         `SELECT 1 AS dead FROM task_scope
           JOIN task_ref ON task_ref.id = ? AND task_ref.backend = 'built-in' AND task_scope.task_id = task_ref.external_id
          WHERE task_scope.approved_at IS NOT NULL
-           AND ((task_scope.approval_basis = 'mode'
-           AND NOT EXISTS (SELECT 1 FROM operating_mode om
-                            JOIN approver signer ON signer.name = om.signed_by
-                           WHERE om.repo = task_ref.repo AND om.revoked_at IS NULL
-                             AND om.absolute_expiry > ? AND om.digest = task_scope.mode_digest
-                             AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", "task_ref.repo")}))
-             OR (task_scope.approval_basis = 'grant' AND NOT ${grantStandsSql("task_scope.mode_digest", "?", "task_ref.repo")}))`,
+           AND NOT ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
       )
       .get(taskRef, now.toISOString(), now.toISOString());
     return dead === undefined;
@@ -8811,7 +8832,8 @@ export class Store {
     // Only people who can still approve here count: a vote from an account since revoked, demoted or moved off the project doesn't.
     const standing = (name: string) => { const account = this.accountOf(name); return account !== null && account.revokedAt === null && account.role === "approver" && this.accountCanAccess(name, repo); };
     const digest = scope === undefined ? "" : String(scope["digest"]);
-    const voters = new Set(this.db.prepare("SELECT approver FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, digest).map(row => String(row["approver"])).filter(standing));
+    // Only a person's vote counts (approval policy §1.3): a machine's, or one with no recorded proof, is history only.
+    const voters = new Set(this.db.prepare("SELECT approver, proof FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, digest).filter(row => personVote(this.db, taskId, digest, row)).map(row => String(row["approver"])).filter(standing));
     const already = voters.has(by);
     voters.add(by);
     for (const name of requesters) voters.delete(name);
@@ -8832,7 +8854,7 @@ export class Store {
     const scope = this.db.prepare("SELECT approved_by, approved_digest FROM task_scope WHERE task_id = ?").get(taskId);
     const approvedDigest = scope?.["approved_digest"] == null ? "" : String(scope["approved_digest"]);
     const standing = (name: string) => { const account = this.accountOf(name); return account !== null && account.revokedAt === null && account.role === "approver" && this.accountCanAccess(name, repo); };
-    const voters = new Set(this.db.prepare("SELECT approver FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, approvedDigest).map(row => String(row["approver"])).filter(standing));
+    const voters = new Set(this.db.prepare("SELECT approver, proof FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, approvedDigest).filter(row => personVote(this.db, taskId, approvedDigest, row)).map(row => String(row["approver"])).filter(standing));
     // Whoever asked for the work never counts as the second pair of eyes on it, whatever the requester rule says.
     const requesters = this.requestersOf(taskId);
     for (const name of requesters) voters.delete(name);
@@ -8845,8 +8867,12 @@ export class Store {
   }
 
   /** One person's yes to these exact bytes (protected work counts two). */
-  recordApprovalVote(taskId: string, digest: string, by: string, now: Date): void {
-    const fresh = this.db.prepare("INSERT OR IGNORE INTO scope_approval_vote (task_id, digest, approver, at) VALUES (?,?,?,?)").run(taskId, digest, by, now.toISOString());
+  recordApprovalVote(taskId: string, digest: string, by: string, now: Date, proof: string): void {
+    // How this yes was proved rides with it (approval policy §1.3): the counters count only a person's.
+    // A person's yes replaces a row a machine credential left for the same person and bytes (or one with no proof).
+    const fresh = this.db.prepare(`INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES (?,?,?,?,?)
+      ON CONFLICT (task_id, digest, approver) DO UPDATE SET at = excluded.at, proof = excluded.proof
+      WHERE COALESCE(scope_approval_vote.proof, '') NOT IN ('password-now','sso-now','fresh-password','fresh-sso','session','cli-login','chat','passkey')`).run(taskId, digest, by, now.toISOString(), proof);
     if (fresh.changes > 0) {
       const repo = this.db.prepare("SELECT repo FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId)?.["repo"];
       this.recordAction({ at: now.toISOString(), actor: by, repo: repo == null ? null : String(repo), taskId, runId: null, action: "approval recorded", outcome: "recorded", source: "work", detail: `digest ${digest.slice(0, 12)}` });
@@ -18255,14 +18281,17 @@ export class Store {
   /** Move a card to a zone (a fresh entry: its step runs again), with the history line. `expectEntry` makes a stale move a no-op. */
   moveFlowCard(id: number, move: { to: string; outcome: FlowEventOutcome; actor: string; note?: string | null; task?: string | null; expectEntry?: number;
     /** v91: said in the card's history only; the card's note ({{note}}) is left as it is. */
-    historyNote?: string }, now: Date): boolean {
+    historyNote?: string;
+    /** v134: who decided a decision move (approval policy §1.7): a person, a subagent, or a machine credential. Only a
+     * person's approval lets a Pull request zone merge. Absent on other moves. */
+    authority?: FlowDecisionAuthority }, now: Date): boolean {
     return this.transact(() => {
       const card = this.getFlowCard(id);
       if (card === null || card.state !== "active" || (move.expectEntry !== undefined && card.entry !== move.expectEntry)) return false;
       const stamp = now.toISOString();
       this.db.prepare("UPDATE flow_card SET stage = ?, entry = entry + 1, task = ?, waiting = NULL, note = COALESCE(?, note), updated_at = ? WHERE id = ?")
         .run(move.to, move.task ?? null, move.note ?? null, stamp, id);
-      this.db.prepare("INSERT INTO flow_event (card, from_stage, to_stage, outcome, actor, note, at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, card.stage, move.to, move.outcome, move.actor, move.historyNote ?? move.note ?? null, stamp);
+      this.db.prepare("INSERT INTO flow_event (card, from_stage, to_stage, outcome, actor, note, at, authority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(id, card.stage, move.to, move.outcome, move.actor, move.historyNote ?? move.note ?? null, stamp, move.authority ?? null);
       return true;
     });
   }
@@ -18291,10 +18320,12 @@ export class Store {
     });
   }
 
-  flowEvents(card: number): { fromStage: string | null; toStage: string; outcome: FlowEventOutcome; actor: string; note: string | null; at: string }[] {
+  flowEvents(card: number): { fromStage: string | null; toStage: string; outcome: FlowEventOutcome; actor: string; note: string | null; at: string; authority: FlowDecisionAuthority | null }[] {
     return this.db.prepare("SELECT * FROM flow_event WHERE card = ? ORDER BY id").all(card).map(row => ({
       fromStage: row["from_stage"] === null ? null : String(row["from_stage"]), toStage: String(row["to_stage"]), outcome: String(row["outcome"]) as FlowEventOutcome,
       actor: String(row["actor"]), note: row["note"] === null ? null : String(row["note"]), at: String(row["at"]),
+      // A word this code doesn't write (or a move from before v134) is no recorded authority.
+      authority: FLOW_DECISION_AUTHORITIES.find(one => one === row["authority"]) ?? null,
     }));
   }
 
@@ -23649,7 +23680,7 @@ export function scopeTermsProblem(row: Record<string, unknown>): string | null {
   // null for a person) is corruption, never a value that slips past the
   // quarantine because it is not literally 'mate'.
   const via = row["proposed_via"];
-  if (via !== null && via !== undefined && via !== "mate" && via !== "coordinator" && via !== "scout") return "the proposed-via marker is not one this code writes";
+  if (via !== null && via !== undefined && via !== "mate" && via !== "coordinator" && via !== "scout" && via !== "lead") return "the proposed-via marker is not one this code writes";
   const era = row["route_era"];
   if (era !== null && era !== undefined && (typeof era !== "number" || !Number.isSafeInteger(era) || era < 1 || era > ROUTE_ERA)) return "the route era is not one this code writes";
   for (const column of ["digest", "proposed_at"]) {
@@ -23671,10 +23702,11 @@ function readScope(row: Record<string, unknown>): Scope {
     proposedAt: String(row["proposed_at"]),
     digest: String(row["digest"]),
     budgetMicrousd: row["budget_microusd"] === null || row["budget_microusd"] === undefined ? null : Number(row["budget_microusd"]),
+    // Only the authorities this code writes; any other stored word reads as `unknown`, which no reader treats as a yes.
     approvalBasis:
       row["approval_basis"] === null || row["approval_basis"] === undefined
         ? null
-        : (String(row["approval_basis"]) as "password" | "mode" | "chat" | "grant"),
+        : APPROVAL_BASES.find(one => one === row["approval_basis"]) ?? "unknown",
     modeDigest: row["mode_digest"] === null || row["mode_digest"] === undefined ? null : String(row["mode_digest"]),
     approvedAt: row["approved_at"] === null ? null : String(row["approved_at"]),
     approvedBy: row["approved_by"] === null ? null : String(row["approved_by"]),
@@ -23705,7 +23737,7 @@ function readScope(row: Record<string, unknown>): Scope {
       row["approved_route_json"] === null || row["approved_route_json"] === undefined ? null : String(row["approved_route_json"]),
     routeEra: row["route_era"] === null || row["route_era"] === undefined ? null : Number(row["route_era"]),
     candidate: typeof row["candidate"] === "string" && row["candidate"] !== "" ? row["candidate"] : null,
-    proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" ? row["proposed_via"] : null,
+    proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" || row["proposed_via"] === "lead" ? row["proposed_via"] : null,
   };
 }
 
@@ -23884,4 +23916,31 @@ function readAcpCheck(row: Record<string, unknown>): AcpCheckRequest {
     step1Passed: Number(row["step1_passed"]) === 1, step2Passed: Number(row["step2_passed"]) === 1, result: text("result"), finishedAt: text("finished_at"),
     settledAt: text("settled_at"),
   };
+}
+
+/**
+ * Who wrote a scope's text after this write (docs/plans/approval-policy.md §1.4), from trusted context only. A person's
+ * write sets what the caller says (null for their own words), as always. A machine's write — the lead's token or a
+ * remote API run — never clears or downgrades a mark: a quarantined author (a chat proposal, a scout, a coordinator)
+ * stays, and otherwise the lead's write is marked `lead` (a remote run's keeps whatever was there).
+ */
+export function provenanceAfter(prior: unknown, requested: ScopeAuthor | null): ScopeAuthor | null {
+  if (!machineActing()) return requested;
+  const was = prior === "mate" || prior === "coordinator" || prior === "scout" || prior === "lead" ? prior : null;
+  if (quarantinedAuthor(was)) return was;
+  if (quarantinedAuthor(requested)) return requested;
+  return currentActor()?.lead === true ? "lead" : (requested ?? was);
+}
+
+/** Who decided a flow card at a decision zone (v134, approval policy §1.7). */
+export type FlowDecisionAuthority = "person" | "subagent" | "lead" | "remote";
+export const FLOW_DECISION_AUTHORITIES: readonly FlowDecisionAuthority[] = ["person", "subagent", "lead", "remote"];
+
+/** Whether a protected-work vote is a person's (approval policy §1.3): the proof stored with it, or for a vote from
+ * before votes kept one, the approver's own proof row for those bytes. None on record is no person. */
+function personVote(db: Database, taskId: string, digest: string, row: Record<string, unknown>): boolean {
+  if (typeof row["proof"] === "string") return personProof(row["proof"]);
+  const proof = db.prepare(`SELECT outcome FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ?
+      AND (detail LIKE '% · digest ' || ? OR detail LIKE '%"digest":"' || ? || '"%') ORDER BY id DESC LIMIT 1`).get(taskId, String(row["approver"]), digest, digest);
+  return personProof(proof === undefined ? null : String(proof["outcome"]));
 }

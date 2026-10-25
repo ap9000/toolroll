@@ -854,12 +854,14 @@ export function approvalProofWords(proof: { method: string; at: string } | null 
   if (proof.method === "fresh-sso") return ` (sign-in remembered from ${whenText(proof.at)})`;
   if (proof.method === "session") return " (passwordless: your signed-in session)";
   if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
+  if (proof.method === "chat") return " (from your paired chat)";
   return "";
 }
 const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
 
 export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
+  if (reason === "machine-proof") return "not approved: only a person can approve this. Approve it on the task page or from your paired chat";
   if (reason === "unrouted") return "not approved: this scope predates agent routing and its old approval no longer stands — edit and re-file the scope so it is routed under today’s agents, then approve it";
   if (reason === "profile-unresolved") return "not approved: the scope cannot name an exact agent for every role — fix the agent setup and re-file it";
   if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";

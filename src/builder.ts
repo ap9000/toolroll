@@ -681,7 +681,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     return {
       ok: false,
       reason: "mode-ended",
-      message: `${taskId}'s approval was signed by an operating mode that has ended — the approval falls back to a person`,
+      message: `${taskId}'s approval no longer stands (an ended mode or flow grant, or an approval that wasn't a person's) — a person approves it again`,
     };
   }
 

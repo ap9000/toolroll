@@ -5229,6 +5229,10 @@ $ task show t-readme --json → 0
     "approved": false,
     "reason": "never-proposed"
   },
+  "personApproval": {
+    "ok": false,
+    "why": "not approved yet"
+  },
   "route": {
     "kind": "unreadable",
     "source": null,

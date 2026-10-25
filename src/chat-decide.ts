@@ -29,6 +29,7 @@ import { pullRequestFollowOf } from "./pull-request-flow.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import type { Scope } from "./scope.js";
+import { APPROVAL_PROOF, approvalProofDetail, quarantinedAuthor } from "./scope.js";
 import type { Store } from "./store.js";
 import { phoneText } from "./telegram-status.js";
 
@@ -130,7 +131,7 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   const family = store.taskFamilyOf(taskId, [ref.repo], false);
   if (family === null || family.problem !== null || family.current.id !== taskId) return { ok: false, why: "A newer version of this task is current." };
   // What the mode's seal refuses anyway, said first: model- or coordinator-written terms, an unreadable route.
-  if (ref.coordinatorCid !== null || (scope.proposedVia ?? null) !== null) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
+  if (ref.coordinatorCid !== null || quarantinedAuthor(scope.proposedVia ?? null)) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
   if (scope.profileState === "unresolved" || scope.routeEra == null || (scope.termsProblem ?? null) !== null) return { ok: false, why: "This plan can't say exactly which agents run, so you approve it in Toolroll." };
   const yours = mode.source === "setting" ? "your chat approval setting" : "your mode";
   if (fullAccess(scope.profile) && !mode.limits.fullAccess) return { ok: false, why: `This plan asks for more access than ${yours} allows.` };
@@ -527,6 +528,11 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       if (!plan.ok) return notDone(plan.why);
       // The owner's own yes, sealed as theirs ("chat"), never as a mode's: it stands like the console's after the mode or setting ends.
       if (!store.sealScopeApproval(row.taskId, who.name, now, {}, { kind: "chat", modeDigest: plan.modeDigest })) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
+      // The person's proof beside the seal, bound to these exact words (approval policy §1.2): a paired-chat tap, never a
+      // password. Release, deploy and the protected counters read it as a person's.
+      const sealedDigest = store.getScope(row.taskId)?.approvedDigest ?? "";
+      store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: APPROVAL_PROOF, outcome: "chat",
+        source: "request", detail: approvalProofDetail(now.getTime(), store.accountOf(who.name)?.generation ?? 0, sealedDigest) });
       store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: "plan approved in chat", outcome: "approved",
         source: "request", detail: `via ${seat.channel} · chat binding #${seat.binding} · ${plan.source} ${plan.modeDigest}` });
       return done("✓ Approved. Work starts when a worker is free.");

@@ -824,7 +824,8 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
   test("route edits are refused under a live claim", () => {
     const { ref } = file("t-live");
     register(store, { name: "r", host: "h", repos: [REPO], now: T0, newToken: () => "tok-r" });
-    store.saveScope({ ...store.getScope("t-live")!, approvedAt: T0.toISOString(), approvedBy: "alex", approvedDigest: store.getScope("t-live")!.digest });
+    // A real seal (approval policy: a hand-written approval with no basis stands on nothing).
+    expect(store.sealScopeApproval("t-live", "alex", T0)).toBe(true);
     const taken = acquire(store, ref, "r", { token: "tok-r", now: T0 });
     expect(taken.ok).toBe(true);
     expect(store.editTaskRoute(ref, { by: "alex", authenticate: () => ({ ok: true }), size: { size: "large", risky: false } }, T0)).toMatchObject({ ok: false, reason: "live-claim" });

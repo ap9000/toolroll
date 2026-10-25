@@ -258,7 +258,7 @@ import {
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
 import { baseStandingWords, freshBaseFor, taskBaseOf } from "./task-base.js";
@@ -9578,6 +9578,8 @@ function showTask(positional: readonly string[], context: Context): number {
     claim: currentClaim(store, ref.id, now),
     scope,
     approval: approvalOf(scope),
+    // Whether a person gave that approval, with their proof (approval policy): what the release gate reads.
+    personApproval: personApprovalOf(store, id),
     route: taskRouteView(routed, readiness),
     // Fresh base: the commit this task's work starts from, and how far current main has moved past it.
     base,
@@ -10656,6 +10658,8 @@ function describeApproveFailure(reason: string, id: string): string {
   // v102: the project's approval rules.
   if (reason === "requester") return `you filed ${id}, and this project needs someone else to approve it`;
   if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a schedule or a subagent`;
+  // Approval policy, phase 1: the lead's token (or a remote API token) proves a credential, not a person.
+  if (reason === "machine-proof") return "only a person can approve this — approve it on the task page or from your paired chat";
   if (reason === "second-approver") return `your approval of ${id} is recorded; it is protected work, so a second person needs to approve it (toolroll task approve ${id} as them)`;
   if (reason === "no-approvers") {
     return "nobody can approve anything yet — `toolroll approver add <you>` mints the credential that lets a person say yes";

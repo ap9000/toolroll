@@ -770,8 +770,10 @@ export type Scope = SavedScopeTerms & {
   /** How the approval happened (v29): 'password' = the ceremony;
    * 'mode' = sealed by the signer's live mode (modeDigest names it);
    * 'chat' = the owner's own two taps in their paired chat, under their chat-approval setting or a signed term
-   * (modeDigest names that authority; the yes is the person's and doesn't lapse with it). */
-  approvalBasis?: "password" | "mode" | "chat" | "grant" | null;
+   * (modeDigest names that authority; the yes is the person's and doesn't lapse with it).
+   * 'schedule' = a standing order's firing (modeDigest names the order); 'lead' = the owner's lead (never a person);
+   * 'unknown' = a stored word this code doesn't write, which no reader treats as authority (approval-policy plan). */
+  approvalBasis?: ApprovalBasis | "unknown" | null;
   modeDigest?: string | null;
   /** v24 (optional so hand-built scopes in tests stay valid): the working
    * execution profile, its resolution state, and the immutable snapshot
@@ -820,9 +822,16 @@ export type Scope = SavedScopeTerms & {
   /** Who wrote the text (mate arc, ruling 2): a confirmed lead proposal,
    * the coordinator, a scout, or a person (null). Read raw and proved by
    * `termsProblem` — a word outside these is a stated problem, never a
-   * value that slips past the lead quarantine at a mode seal. */
-  proposedVia?: "mate" | "coordinator" | "scout" | null;
+   * value that slips past the lead quarantine at a mode seal. `lead`: the lead wrote it through its token (CLI); it is
+   * the lead's own text, not another machine's, so it isn't quarantined (`quarantinedAuthor`). */
+  proposedVia?: ScopeAuthor | null;
 };
+
+/** Who wrote a scope's text, when not a person (approval-policy plan §1.4). */
+export type ScopeAuthor = "mate" | "coordinator" | "scout" | "lead";
+/** The authorities a seal can stand on (approval-policy plan §1.5). Anything else stands on nothing. */
+export type ApprovalBasis = "password" | "mode" | "chat" | "grant" | "schedule" | "lead";
+export const APPROVAL_BASES: readonly ApprovalBasis[] = ["password", "mode", "chat", "grant", "schedule", "lead"];
 
 export type Approval =
   | { approved: true; at: string; by: string }
@@ -853,7 +862,7 @@ export type ScopeInput = {
   posture?: "escalated";
   /** Who wrote this text (mate arc, ruling 2): `mate` for a confirmed mate
    * proposal — mode coverage then never seals it; a human rewrite clears it. */
-  proposedVia?: "mate" | "coordinator" | null;
+  proposedVia?: ScopeAuthor | null;
   /** v39: the signed acceptance rubric. Absent digests exactly like `[]` —
    * see `Scope.acceptance`. `propose` itself never requires this to be
    * non-empty; the roads that call it do. */
@@ -1131,7 +1140,9 @@ export type ApproveResult =
   /** Sprint 8: the organisation policy stops these terms (a provider, a model, the permission ceiling); `message` says which. */
   | { ok: false; reason: "policy"; message: string }
   /** Cockpit B2: a remembered password can't approve these terms (protected, escalated, or a quarantined filing). */
-  | { ok: false; reason: "password-now" };
+  | { ok: false; reason: "password-now" }
+  /** Approval policy, phase 1: a machine credential (the lead's token, a remote API token) is not a person. */
+  | { ok: false; reason: "machine-proof" };
 
 /**
  * Whether this name-and-token pair is a person the store knows. Shared by
@@ -1476,6 +1487,9 @@ export function approve(
   return store.transact(() => {
     const authenticated = authenticateApprover(store, by, token, store.lookupRef(taskId)?.repo ?? null);
     if (!authenticated.ok) return authenticated;
+    // ONLY A PERSON APPROVES (docs/plans/approval-policy.md, phase 1): a lead token or a remote API token proves the
+    // credential, not a person at a ceremony. Refused before any vote or proof row is written.
+    if (!personProof(authenticated.method)) return { ok: false as const, reason: "machine-proof" as const };
 
     const scope = store.getScope(taskId);
     if (scope === null) return { ok: false as const, reason: "no-scope" as const };
@@ -1518,7 +1532,7 @@ export function approve(
     if (gate.verdict === "vote") {
       // The same person again adds nothing: no new vote, no proof row (and the approval roads refund a re-check).
       if (gate.already) return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: true };
-      store.recordApprovalVote(taskId, scope.digest, by, now);
+      store.recordApprovalVote(taskId, scope.digest, by, now, authenticated.method);
       proved();
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };
     }
@@ -1527,7 +1541,7 @@ export function approve(
     const refused: { result?: ApproveResult } = {};
     try {
       return store.savepoint(() => {
-        if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now);
+        if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now, authenticated.method);
         // SEAL, never re-resolve: the approval snapshots the stored working
         // profile — the exact bytes the digest the approver signed was bound
         // to. Routing saveScope here would re-run resolution and could sign a
@@ -1553,9 +1567,9 @@ export const approvalProofDetail = (at: number, generation: number, digest: stri
 export function approvalProofOf(store: Store, taskId: string, by: string, digest: string): { method: string; at: string } | null {
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? ORDER BY id DESC LIMIT 50").all(taskId, APPROVAL_PROOF, by);
   for (const row of rows) {
-    const parts = typeof row["detail"] === "string" ? row["detail"].split(" · ") : [];
-    if (parts.length !== 3 || parts[2] !== `digest ${digest}` || Number.isNaN(Date.parse(parts[0]!))) continue;
-    return { method: String(row["outcome"]), at: parts[0]! };
+    const read = proofDetailOf(row["detail"]);
+    if (read === null || read.digest !== digest) continue;
+    return { method: String(row["outcome"]), at: read.at };
   }
   return null;
 }
@@ -1568,7 +1582,7 @@ export function freshlyApprovable(store: Store, taskId: string, scope: Scope, si
   const ref = store.handle.prepare("SELECT coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
   if (ref === undefined || ref["coordinator_cid"] != null) return false;
   const via = store.handle.prepare("SELECT proposed_via FROM task_scope WHERE task_id = ?").get(taskId)?.["proposed_via"];
-  return !(via === "mate" || via === "coordinator" || via === "scout");
+  return !quarantinedAuthor(typeof via === "string" ? via : null);
 }
 
 /**
@@ -1585,6 +1599,12 @@ export function approvalOf(scope: Scope | null): Approval {
     return { approved: false, reason: "none" };
   }
   if (scope.approvedDigest !== scope.digest) return { approved: false, reason: "changed" };
+  // A seal stands on a known authority (approval-policy plan §1.5): null (a fixture, or a row from before the basis
+  // column) or a word this code doesn't write is no approval. Hand-built scopes that leave the field
+  // out entirely are type-level fixtures, read as the person's ceremony they model.
+  if (scope.approvalBasis !== undefined && (scope.approvalBasis === null || !(APPROVAL_BASES as readonly string[]).includes(scope.approvalBasis))) {
+    return { approved: false, reason: "none" };
+  }
   return { approved: true, at: scope.approvedAt, by: scope.approvedBy };
 }
 
@@ -1751,3 +1771,51 @@ function describeApproval(approval: Approval): string {
   }
   return "no — nothing will build this until somebody agrees to it";
 }
+
+// ---- Only a person approves (docs/plans/approval-policy.md, phase 1). Kept last: the freshness tripwire pins places.
+
+export { personProof } from "./person-proof.js";
+import { personProof } from "./person-proof.js";
+
+/** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
+export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
+
+/** A proof row's detail, either form: the legacy text (`<at> · generation <n> · digest <d>`) or the versioned record
+ * (`{"v":1,"at":…,"digest":…}`, more fields allowed). Any other shape is no proof. */
+export function proofDetailOf(detail: unknown): { at: string; digest: string } | null {
+  if (typeof detail !== "string") return null;
+  if (detail.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(detail) as Record<string, unknown>;
+      if (parsed === null || typeof parsed !== "object" || parsed["v"] !== 1 || typeof parsed["at"] !== "string" || typeof parsed["digest"] !== "string") return null;
+      if (Number.isNaN(Date.parse(parsed["at"])) || parsed["digest"] === "") return null;
+      return { at: parsed["at"], digest: parsed["digest"] };
+    } catch { return null; }
+  }
+  const parts = detail.split(" · ");
+  if (parts.length !== 3 || !parts[2]!.startsWith("digest ") || !/^generation \d+$/.test(parts[1]!) || Number.isNaN(Date.parse(parts[0]!))) return null;
+  return { at: parts[0]!, digest: parts[2]!.slice("digest ".length) };
+}
+
+/**
+ * A person's approval of this task as it stands: approved, on the current digest, by the ceremony (`password`) or a
+ * paired-chat tap (`chat`), with a person's proof recorded for that approver and those exact bytes. Release, deploy
+ * and the protected-work counters ask this; a lead, a mode, a grant, a schedule or an approval with no proof is not
+ * a person's.
+ */
+export function personApprovalOf(store: Store, taskId: string): { ok: true; by: string; at: string; method: string } | { ok: false; why: string } {
+  const scope = store.getScope(taskId);
+  if (scope === null || scope.approvedAt === null || scope.approvedBy === null || scope.approvedDigest === null) return { ok: false, why: "not approved yet" };
+  if (scope.approvedDigest !== scope.digest) return { ok: false, why: "the approval is for different scope text" };
+  const basis = scope.approvalBasis ?? null;
+  if (basis === "lead") return { ok: false, why: "approved by the lead, not by a person" };
+  if (basis !== "password" && basis !== "chat") return { ok: false, why: `approved by ${basis === null ? "an unknown road" : basis === "grant" ? "a flow" : basis}, not by a person` };
+  const proof = approvalProofOf(store, taskId, scope.approvedBy, scope.approvedDigest);
+  if (proof === null) return { ok: false, why: "no record shows a person approved these exact words; approve it again" };
+  if (!personProof(proof.method)) return { ok: false, why: proof.method === "lead-token" ? "approved by the lead, not by a person" : "approved with a machine credential, not by a person" };
+  return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: proof.method };
+}
+
+/** Text another machine wrote (a confirmed chat proposal, a coordinator, a scout): no mode, grant, remembered password
+ * or chat tap seals it. The lead's own CLI text (`lead`) is not quarantined. */
+export const quarantinedAuthor = (via: string | null | undefined): boolean => via === "mate" || via === "coordinator" || via === "scout";

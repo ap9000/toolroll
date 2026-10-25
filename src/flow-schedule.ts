@@ -207,7 +207,16 @@ export function fileStandingOrder(store: Store, input: { flowId: number; repo: s
   const { order, repo } = input;
   const blocker = store.standingOrderBlocker(input.trigger, order.routine, now);
   if (blocker !== null) return { made: "skipped", note: `Skipped: the last one (${blocker.taskId}, ${blocker.state}) hasn't finished.` };
-  const approval = standingApproval(order, repo, input.schedule);
+  const standing = standingApproval(order, repo, input.schedule);
+  // The carried approval stands only while its approver still can approve here (approval policy §1.6): a demoted
+  // person, one off the project, or an approval that names nobody files an ordinary proposal instead.
+  const approverStands = standing.live && standing.by !== null && (() => {
+    const account = store.accountOf(standing.by!);
+    return account !== null && account.revokedAt === null && account.role === "approver" && store.accountCanAccess(standing.by!, repo);
+  })();
+  const approval: StandingApproval = standing.live && !approverStands
+    ? { live: false, problem: standing.by === null ? "it names no approver" : "its approver can no longer approve in this project", acceptance: standing.acceptance }
+    : standing;
   if (approval.acceptance === null) return { made: "skipped", note: "Skipped: its success checks can't be read. Set the flow up again." };
   if (order.costCeilingUsd !== null) {
     const ceiling = `$${order.costCeilingUsd.toFixed(2)}`;
@@ -245,7 +254,8 @@ export function fileStandingOrder(store: Store, input: { flowId: number; repo: s
     {},
     { profile: approval.profile, route: approval.route },
   );
-  const sealed = store.sealScopeApproval(taskId, approval.by ?? "schedule", now, {}, undefined, "automation");
+  // Its own authority (approval policy §1.6): the standing order's carried approval, never a person's ceremony.
+  const sealed = store.sealScopeApproval(taskId, approval.by!, now, {}, { kind: "schedule", modeDigest: order.approval!.digest }, "automation");
   const sealedRoute = sealed ? store.sealedRouteOf(taskId) : null;
   if (!sealed || sealedRoute === null || !sealedRoute.ok || routeDigestOf(sealedRoute.route) !== routeDigestOf(approval.route)) {
     throw new StandingOrderRefused(!sealed ? "the approval couldn't be sealed" : sealedRoute !== null && !sealedRoute.ok ? sealedRoute.detail : "the sealed agents aren't the approved ones");
