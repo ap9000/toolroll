@@ -11,7 +11,8 @@
  * Toolroll passes it (srtTermsOf): Toolroll's own state and database denied to read and write; the build's own
  * checkout writable; other tasks' checkouts read, never written; the project's read-deny list; under policy v1 (an
  * approval sealed before 0.9.70) the home configuration denied by name; a sign-ins check's exact files read again; the
- * run's proxy as its only way out when its network is confined.
+ * run's proxy as its only way out when its network is confined. On macOS every launch also gets a pseudo-terminal of its
+ * own and no other terminal, and a project check's launch Chromium's own services (sandbox-runtime.ts, static rules).
  *
  * Codex (every platform) fences its own agent's commands with its own sandbox: a permission profile with the same
  * denies (codexFenceArgv). Claude also gets Read/Edit deny rules for its own file tools.
@@ -344,6 +345,9 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   homeNames?: string[];
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
   machLookup?: string[];
+  /** macOS: a project check's launch, whose Chromium may start (sandbox-runtime.ts SEATBELT_CHROMIUM). Only fenceFor
+   * sets it, only for kind "check". */
+  browser?: true;
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
   signIns?: SignInGrants;
   /** Never written, wherever the launch writes (homeWriteDenies): what runs for the operator next or signs them in. */
@@ -871,6 +875,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
     readConfig,
     writeConfig: { allowOnly: [...new Set(allowOnly)].sort(), denyWithinAllow: [...denyWrite].sort() },
     allowMachLookup: [...grants.machLookup ?? [], ...grants.signIns?.mach ?? []],
+    ...(grants.browser === true ? { browser: true } : {}),
     network: network === undefined || network.mode === "open" ? { kind: "open" } : {
       kind: "proxy", httpPort: network.proxyPort, ...(network.brokerPorts[0] === undefined ? {} : { socksPort: network.brokerPorts[0] }),
       ...(network.token === undefined ? {} : { token: network.token }), localServices: network.loopback === "any", unixSockets: [...network.socketRoots],
@@ -1037,6 +1042,8 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
+    // A project's checks may drive a browser (Playwright's Chromium); builds, flows and tool servers don't get it.
+    ...(kind === "check" ? { browser: true as const } : {}),
     // Under a write allowlist these are out of reach already; where the launch writes anywhere, they are denied by name.
     writeDenies: homeWriteDenies(ctx.home ?? homedir(), ctx.binding, ctx.provider ?? null),
     ...(made.pool === undefined ? {} : { pool: { ...made.pool, ...(ctx.policy === 2 ? { readable: true as const } : {}),

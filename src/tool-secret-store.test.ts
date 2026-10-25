@@ -28,9 +28,14 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { T0 } from "../test/serve-kit.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 import { connectedSpec } from "./mcp-connect.js";
 
-const MAC = process.platform === "darwin" && existsSync("/usr/bin/security");
+// A keychain of the test's own, never the developer's. Inside a sandbox (the release check runs inside the plane's check
+// fence) Security.framework refuses every keychain file, a throwaway one too: it reads the sandbox's sysctl
+// (security.mac.sandbox.*), is denied, and takes itself for a sandboxed app. Opening that to checks would open the
+// operator's login keychain with it, so these run where nothing fences them (CI, a developer's shell) and skip inside.
+const MAC = process.platform === "darwin" && existsSync("/usr/bin/security") && !INSIDE_FENCE;
 /** A canary long enough to need several keychain chunks, starting with "-" so a chunk could pass for an option. */
 const CANARY = `-canary-${"k3y".repeat(2_600)}-end`;
 const REPO = "/repo/shop";
