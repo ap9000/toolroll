@@ -35,7 +35,7 @@ The audit found the hole is wider than approval:
   recorded as `password`.
 
 What is truthful today: the proof row (`action_ledger`, `approval proved`, outcome `lead-token`) and `task_act`
-(`act = 'approved'`, `lead = 1`, plus its "lead for <owner>" ledger line). The migration uses both.
+(`act = 'approved'`, `lead = 1`, plus its "lead for <owner>" ledger line). The belts read both (1.8).
 
 ## Alex's decision
 
@@ -96,12 +96,11 @@ writes it; it is never a password proof. Chat merges (`mergeInChat`) already rec
 - `scope_approval_vote` gains a `proof` column. `recordApprovalVote` writes the method; `approve()` already refuses
   machine proofs, so new votes are always a person's.
 - Both counters (`approvalGate`, `protectedResultProblem`) count only votes with `personProof(proof)`.
-- Migration fills `proof` from the matching proof row (task, approver, digest). Votes with a machine proof, and votes
-  with no matching proof row (ambiguous), are kept as history but never counted.
-- Reassessment, in the same migration: every sealed protected scope whose counted votes fall below two is
-  - **queued with no live claim** → the seal is cleared and the task gets "Approval needs renewing";
-  - **claimed, running or finished** → history kept; the vote counter at completion now asks for a second person,
-    and deploy and release need a person approval anyway.
+- A saved vote with no stored proof reads the matching proof row (task, approver, digest). Votes with a machine proof,
+  and votes with no matching proof row (ambiguous), are kept as history but never counted.
+- Reassessment (as built, 1.8): nothing is rewritten. The counters read each saved vote's proof (stored, or the
+  approver's proof row), so a protected scope that loses its second person stops counting as two-person approved: its
+  completion asks for a second person, and release and deploy need a person approval anyway.
 
 ### 1.4 Provenance can't be erased
 
@@ -146,8 +145,8 @@ requested plan and no approval; a builder needs `scopeApprovedForDispatch`). A s
 unknown or dead is refused at claim. The builder's last check requires `approvalOf` approved *and* the belt, so a
 build never runs on null or unknown authority.
 
-**Legacy null.** A sealed row with a null basis comes from before the basis column, when only the password ceremony
-sealed. The migration sets it to `password`. After that, null is never written and reads as no authority.
+**Legacy null.** A sealed row with a null basis stands on nothing (as built: no migration rewrites it to `password`;
+the column predates every supported database, so such a row is a fixture or corruption, and a person re-approves).
 
 **Legacy `password` without a proof row** (from before proof rows): stays `password` and keeps dispatching
 (grandfathered, as today), but is not a person approval for release, deploy or vote counting. Release tasks are filed
@@ -194,16 +193,23 @@ complete`.
   without a mark are ambiguous and do not count; a person can complete an already-complete result again to record
   their mark, which releases the hold.
 
-### 1.8 Existing data (one migration)
+### 1.8 Existing data (as built: read for what it was, nothing rewritten)
 
-1. Null basis on sealed rows → `password` (1.5).
-2. `password` seals whose own proof row is `lead-token` or `remote-token`, or whose `task_act` row says `approved`
-   with `lead = 1` for that seal → `lead`, with the owner's lead credential as reference when it can be matched,
-   otherwise `unknown-credential` (never stands).
-3. Schedule seals → `schedule` (1.6).
-4. Vote proofs and the protected reassessment (1.3).
-5. Queued, unclaimed tasks that end up `lead` (or lose their second vote) are unsealed with the normal notice;
-   running and finished work keeps its history.
+The first draft rewrote saved approvals in a migration. As built, schema v134 only adds two nullable columns
+(`scope_approval_vote.proof`, `flow_event.authority`), so `toolroll update` runs it in place, and saved rows are
+classified when they are read:
+
+1. A `password` or `chat` seal whose newest proof row for that approver and those bytes is `lead-token` or
+   `remote-token`, or whose task act says the lead approved it at that instant, doesn't stand at dispatch, claim or
+   build (`approval-authority.ts notMachineSealSql`), and is never a person's approval (`personApprovalOf`). The task
+   reads "Needs your approval"; a person's new yes stands, because its proof row is newer.
+2. A vote with no stored proof is a person's only if the approver's own proof row for those bytes says so; a person's
+   new yes replaces a machine's row for the same person and bytes.
+3. A standing order's old seals stay `password` with no proof row: grandfathered for dispatch, never a person.
+4. A completion with no `proof person` mark never stands as the second person; a person can complete again.
+5. A flow decision with no recorded authority never lets a Pull request zone merge.
+
+Nothing is unsealed in place and no notice is sent: the belts refuse instead, as they do for an ended mode.
 
 ## Phase 2 — the setting: People and the lead
 
@@ -315,8 +321,7 @@ Phase 1:
    dispatch query and the work index. Rows: password, chat, live/dead mode, live/dead grant, schedule, lead, null,
    `bogus`. Null and `bogus` never stand anywhere.
 6. **Votes**: a machine vote plus a later person's vote does not seal protected work; a sealed protected scope with a
-   machine first vote is reassessed by the migration (queued → unsealed; running → completion asks for a second
-   person).
+   machine first vote no longer counts it (completion asks for a second person).
 7. **Provenance**: a lead refile of a scout, coordinator or mate scope keeps the mark; a person's refile resets it.
 8. **Proof contract**: `personProof` is exhaustive at type level and false for unknown runtime strings.
 9. **Migration**: seeded old database covering null basis, lead-token proof, `task_act` lead, a schedule firing,
