@@ -74,6 +74,7 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
+import { liveReleaseOf } from "./scope.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
@@ -95,6 +96,7 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
+import { releasePolicyDigest, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
@@ -8026,11 +8028,13 @@ export class Store {
       qualityMode?: QualityMode;
       posture?: "escalated";
       proposedVia?: ScopeAuthor | null;
+      /** v135: release terms (release-once.md); undefined keeps the ones the scope carries, null removes them. */
+      releaseTerms?: ReleaseTerms | null;
     } = {},
   ): void {
     this.once(mutation, "saveScope", () => this.transact(() => {
       // The text's current author mark, read before this write (approval policy §1.4).
-      const prior = this.db.prepare("SELECT proposed_via FROM task_scope WHERE task_id = ?").get(scope.taskId);
+      const prior = this.db.prepare("SELECT proposed_via, release_terms_json FROM task_scope WHERE task_id = ?").get(scope.taskId);
       // THE filing invariant (foundations findings 5/13/19): every scope
       // row leaves this method either RESOLVED (working profile stamped,
       // digest recomputed to bind it, version 2) or UNRESOLVED with its
@@ -8189,6 +8193,9 @@ export class Store {
       // keeps its terms, and approval refuses them in words.
       const lowered = (one: ExecutionProfile): ExecutionProfile => { const verdict = underCeiling(orgPolicy, one); return verdict.ok ? verdict.profile : one; };
       if (profile !== null) profile = lowered(profile);
+      // v135: release terms the caller names, else the ones this scope already carries (a refile keeps them bound).
+      const priorTerms = storedReleaseTerms(prior?.["release_terms_json"]);
+      const releaseTerms = options.releaseTerms !== undefined ? options.releaseTerms : priorTerms.ok ? priorTerms.terms : null;
       const digestInput = {
         goal: scope.goal,
         outOfScope: scope.outOfScope,
@@ -8197,6 +8204,7 @@ export class Store {
         acceptance: scope.acceptance,
         qualityMode,
         candidate: scope.candidate ?? null,
+        releaseTerms,
       };
       // EVERY route filed since v47 binds into the digest — routine-shaped
       // ones included — so approval freezes exactly which agent runs each
@@ -8228,8 +8236,8 @@ export class Store {
           `INSERT INTO task_scope
              (task_id, goal, out_of_scope, touches, budget_microusd, proposed_at, digest, approved_at, approved_by, approved_digest,
               profile_json, profile_state, unresolved_reason, digest_version, profile_provenance, proposed_chain_json, acceptance_json, quality_mode,
-              risk_level, proposed_route_json, route_era, candidate)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              risk_level, proposed_route_json, route_era, candidate, release_terms_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (task_id) DO UPDATE SET
              goal = excluded.goal, out_of_scope = excluded.out_of_scope,
              touches = excluded.touches, budget_microusd = excluded.budget_microusd,
@@ -8241,7 +8249,7 @@ export class Store {
              profile_provenance = excluded.profile_provenance, proposed_chain_json = excluded.proposed_chain_json,
              acceptance_json = excluded.acceptance_json, quality_mode = excluded.quality_mode,
              risk_level = excluded.risk_level, proposed_route_json = excluded.proposed_route_json, route_era = excluded.route_era,
-             candidate = excluded.candidate`,
+             candidate = excluded.candidate, release_terms_json = excluded.release_terms_json`,
         )
         .run(
           scope.taskId,
@@ -8270,6 +8278,7 @@ export class Store {
           // The durable era: every row this method writes is a routed row.
           ROUTE_ERA,
           scope.candidate ?? null,
+          releaseTerms === null ? null : serializeReleaseTerms(releaseTerms),
         );
       // Who wrote THIS text (mate arc, ruling 2): set per write, so a human
       // rewrite clears the lead's mark and a mate rewrite sets it — but only a
@@ -8317,6 +8326,8 @@ export class Store {
         // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
         // road it came by.
         if (basis === undefined && machineActing()) return false;
+        // `carried` is written by the carry transaction alone (carryReleaseApproval), never through a seal.
+        if ((basis as { kind: string } | undefined)?.kind === "carried") return false;
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
         // v6, round-3 f1): mode coverage never admits a coordinator-filed
         // task — console, CLI `task scope`, and direct callers alike hit
@@ -8374,6 +8385,12 @@ export class Store {
         const authority = scopeAuthorityOf(readScope(working), { authMode: provider => readAuthModeStrict(provider) });
         if (!authority.ok) return false;
         if (routeProblems(authority.route).length > 0) return false;
+        // RELEASE TERMS (release-once.md): only a person's own yes (the ceremony or a paired-chat tap) seals them, and
+        // that yes opens the release's authority record in this same transaction — or the seal doesn't stand.
+        const terms = storedReleaseTerms(working["release_terms_json"]);
+        if (!terms.ok) return false;
+        if (terms.terms !== null && basis !== undefined && basis.kind !== "chat") return false;
+        if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db
           .prepare(
             `UPDATE task_scope
@@ -8391,6 +8408,9 @@ export class Store {
               WHERE task_id = ?`,
           )
           .run(now.toISOString(), by, basis === undefined ? "password" : basis.kind, basis === undefined ? null : basis.modeDigest, taskId);
+        if (changed.changes > 0 && terms.ok && terms.terms !== null) {
+          if (openReleaseAuthority(this, { taskId, digest: String(working["digest"]), terms: terms.terms, by, now }) === null) throw new ReleaseSealRefused();
+        }
         if (changed.changes > 0) {
           // The project's tools this yes saw (v80): a later addition needs a later yes.
           this.sealProjectTools(taskId, String(working["digest"]), now);
@@ -8469,8 +8489,13 @@ export class Store {
          WHERE task_scope.approved_at IS NOT NULL
            AND NOT ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
       )
-      .get(taskRef, now.toISOString(), now.toISOString());
-    return dead === undefined;
+      .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
+    if (dead !== undefined) return false;
+    // A release task (release-once.md): the whole live-release predicate, beyond what the SQL can say.
+    const external = this.db.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
+    if (external === undefined) return true;
+    const live = liveReleaseOf(this, String(external["external_id"]), "dispatch", now);
+    return !live.applies || live.ok;
   }
 
   // ---- approvers ----------------------------------------------------------
@@ -13571,7 +13596,7 @@ export class Store {
     if (route === null) {
       return { ok: false, reason: "unreadable", detail: scope.approvedRouteJson == null ? "the approval sealed no agent route — re-file the scope and approve it again" : "the approval's sealed agent route cannot be read — re-file the scope and approve it again" };
     }
-    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default" };
+    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null };
     const chain = scope.approvalKind === "chain" ? chainFromJson(scope.approvedChainJson ?? null) : null;
     const target = chain !== null ? { chain } : (scope.approvedProfile ?? null);
     if (target === null) return { ok: false, reason: "unreadable", detail: "the approval sealed no agent profile — re-file the scope and approve it again" };
@@ -23826,6 +23851,11 @@ export function scopeTermsProblem(row: Record<string, unknown>): string | null {
   for (const column of ["digest", "proposed_at"]) {
     if (typeof row[column] !== "string") return `${column.replace("_", " ")} is not stored as text`;
   }
+  // v135: release terms read back exactly, or the row states why (a reader that didn't select them skips this).
+  if ("release_terms_json" in row) {
+    const terms = storedReleaseTerms(row["release_terms_json"]);
+    if (!terms.ok) return terms.problem;
+  }
   for (const column of ["approved_at", "approved_by", "approved_digest", "profile_json", "approved_profile_json", "proposed_chain_json", "approved_chain_json", "proposed_route_json", "approved_route_json", "unresolved_reason"]) {
     if (row[column] !== null && row[column] !== undefined && typeof row[column] !== "string") return `${column.replace(/_/g, " ")} is not stored as text`;
   }
@@ -23877,6 +23907,7 @@ function readScope(row: Record<string, unknown>): Scope {
       row["approved_route_json"] === null || row["approved_route_json"] === undefined ? null : String(row["approved_route_json"]),
     routeEra: row["route_era"] === null || row["route_era"] === undefined ? null : Number(row["route_era"]),
     candidate: typeof row["candidate"] === "string" && row["candidate"] !== "" ? row["candidate"] : null,
+    releaseTerms: (() => { const read = storedReleaseTerms(row["release_terms_json"]); return read.ok ? read.terms : null; })(),
     proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" || row["proposed_via"] === "lead" ? row["proposed_via"] : null,
   };
 }
@@ -24141,3 +24172,220 @@ export function checkAttemptOf(store: Store, run: number): CheckAttempt | null {
   const row = store.handle.prepare("SELECT * FROM release_check_attempt WHERE run = ?").get(run);
   return row === undefined ? null : readCheckAttempt(row);
 }
+
+/** Release terms as this code writes them: the contract's own reading of them, serialized. */
+export function serializeReleaseTerms(terms: ReleaseTerms): string {
+  const read = readReleaseTerms(terms);
+  if (!read.ok) throw new Error(`The release terms don't match their contract: ${read.issues[0]?.line ?? "invalid"}`);
+  return JSON.stringify(read.value);
+}
+
+// ---- one approval per release: the authority record (release-once.md, part 1) --------------------------------------
+
+export {
+  LIVE_RELEASE_STATES, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseAuthorityOfTask, releaseCarries,
+  releaseCarryTo, releaseOperation, releaseOperations, releaseSealProblem,
+  type ReleaseAuthority, type ReleaseCarry, type ReleaseOperation, type ReleaseState,
+} from "./release-authority.js";
+import {
+  LIVE_RELEASE_STATES, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
+  type ReleaseCarry, type ReleaseOperation,
+} from "./release-authority.js";
+
+/**
+ * Open a release's authority for a person's seal of its terms (inside the seal's transaction): the next generation,
+ * superseding the live one. False when it can't (releaseSealProblem), which refuses the seal.
+ */
+export function openReleaseAuthority(store: Store, input: { taskId: string; digest: string; terms: ReleaseTerms; by: string; now: Date }): number | null {
+  const { terms, now } = input;
+  if (releaseSealProblem(store, terms) !== null) return null;
+  const live = newestReleaseGeneration(store, terms.repo, terms.packageVersion, terms.pr);
+  if (live !== null && LIVE_RELEASE_STATES.includes(live.state)) {
+    store.handle.prepare("UPDATE release_authority SET state = 'superseded', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
+      .run(now.toISOString(), input.by, live.id, live.rev);
+  }
+  const policyJson = JSON.stringify(terms.policy);
+  const result = store.handle.prepare(`INSERT INTO release_authority (repo, generation, previous, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree,
+      artifact_digest, tip_sha, tip_task, policy_json, policy_digest, verify_command, verify_digest, access_digest, state, rev, lease_epoch, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'open', 0, 0, ?, ?)`).run(
+    terms.repo, (live?.generation ?? 0) + 1, live?.id ?? null, terms.packageVersion, terms.pr, terms.branch, terms.base, input.taskId, input.digest, terms.approvedSha, terms.approvedTree,
+    terms.approvedSha, input.taskId, policyJson, releasePolicyDigest(terms.policy), terms.grant.id, terms.grant.digest, terms.access, terms.expiresAt, now.toISOString());
+  const id = Number(result.lastInsertRowid);
+  store.recordAction({ at: now.toISOString(), actor: input.by, repo: terms.repo, taskId: input.taskId, runId: null, action: "release approved", outcome: "open", source: "work",
+    detail: `release ${id} · generation ${(live?.generation ?? 0) + 1} · ${terms.packageVersion} · pull request #${terms.pr} · ${terms.approvedSha}` });
+  return id;
+}
+
+/** Seal the anchor's artifact digest once (the person's seal authorized building that approved commit). */
+export function sealAnchorArtifact(store: Store, id: number, digest: string, now: Date): boolean {
+  return store.transact(() => {
+    const changed = store.handle.prepare("UPDATE release_authority SET artifact_digest = ?, rev = rev + 1 WHERE id = ? AND artifact_digest IS NULL AND state = 'open'").run(digest, id);
+    if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: releaseAuthority(store, id)?.repo ?? null, taskId: releaseAuthority(store, id)?.anchorTask ?? null, runId: null,
+      action: "release artifact sealed", outcome: "ok", source: "work", detail: `release ${id} · ${digest}` });
+    return Number(changed.changes) === 1;
+  });
+}
+
+/** Take (or keep) a release's lease. A takeover by another owner raises the epoch, which fences every operation the
+ * old owner reserved. */
+export function takeReleaseLease(store: Store, id: number, owner: string, now: Date, ttlMs = 10 * 60_000): { ok: true; epoch: number } | { ok: false; why: string } {
+  return store.transact(() => {
+    const authority = releaseAuthority(store, id);
+    if (authority === null) return { ok: false as const, why: `No release ${id}.` };
+    const held = authority.leaseOwner !== null && authority.leaseOwner !== owner && authority.leaseExpires !== null && authority.leaseExpires > now.toISOString();
+    if (held) return { ok: false as const, why: `Release ${id} is being run by ${authority.leaseOwner} until ${authority.leaseExpires}.` };
+    const epoch = authority.leaseOwner === owner && authority.leaseExpires !== null && authority.leaseExpires > now.toISOString() ? authority.leaseEpoch : authority.leaseEpoch + 1;
+    const changed = store.handle.prepare("UPDATE release_authority SET lease_owner = ?, lease_epoch = ?, lease_expires = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
+      .run(owner, epoch, new Date(now.getTime() + ttlMs).toISOString(), id, authority.rev);
+    return Number(changed.changes) === 1 ? { ok: true as const, epoch } : { ok: false as const, why: "The release changed while taking its lease; try again." };
+  });
+}
+
+/** Renew a lease this owner still holds at this epoch. */
+export function renewReleaseLease(store: Store, id: number, owner: string, epoch: number, now: Date, ttlMs = 10 * 60_000): boolean {
+  const changed = store.handle.prepare("UPDATE release_authority SET lease_expires = ? WHERE id = ? AND lease_owner = ? AND lease_epoch = ? AND lease_expires > ?")
+    .run(new Date(now.getTime() + ttlMs).toISOString(), id, owner, epoch, now.toISOString());
+  return Number(changed.changes) === 1;
+}
+
+/**
+ * Reserve a deploy or a merge of the release tip (the freeze happens here, in the store): a deploy moves `open` to
+ * `deploying` (or, already deploying, reserves a new attempt of the same frozen candidate); a merge moves `deploying`
+ * to `merge-reserved`. `epoch` null is a direct deploy by a person: it takes the current epoch, and only while no
+ * coordinator holds a live lease. Refused while any earlier operation is unsettled.
+ */
+export function reserveRelease(store: Store, input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number | null; operationId: string; now: Date }):
+  { ok: true; operation: ReleaseOperation } | { ok: false; why: string } {
+  return store.transact(() => {
+    const a = releaseAuthority(store, input.authority);
+    if (a === null) return { ok: false as const, why: `No release ${input.authority}.` };
+    const at = input.now.toISOString();
+    if (a.expiresAt <= at && a.state === "open") return { ok: false as const, why: "The release approval expired." };
+    if (a.tipTask !== input.taskId || a.tipSha !== input.candidate) return { ok: false as const, why: `Task ${input.taskId} is not the release's current commit.` };
+    const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
+    if (input.epoch === null ? leased : input.epoch !== a.leaseEpoch || !leased) return { ok: false as const, why: input.epoch === null ? `A release coordinator (${a.leaseOwner}) holds this release; let it deploy.` : "This coordinator no longer holds the release's lease." };
+    const outstanding = outstandingReleaseOperations(store, a.id);
+    if (outstanding.length > 0) return { ok: false as const, why: `An earlier ${outstanding[0]!.kind} (${outstanding[0]!.id}) hasn't been settled yet.` };
+    const next = input.kind === "deploy"
+      ? a.state === "open" || a.state === "deploying" ? "deploying" : null
+      : a.state === "deploying" || a.state === "merge-reserved" ? "merge-reserved" : null;
+    if (next === null) return { ok: false as const, why: `The release is ${a.state}, so it can't ${input.kind}.` };
+    const changed = store.handle.prepare("UPDATE release_authority SET state = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(next, a.id, a.rev);
+    if (Number(changed.changes) !== 1) return { ok: false as const, why: "The release changed while reserving; try again." };
+    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?)")
+      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, at);
+    store.recordAction({ at, actor: "toolroll", repo: a.repo, taskId: input.taskId, runId: null, action: `release ${input.kind} reserved`, outcome: next, source: "work", detail: `release ${a.id} · operation ${input.operationId} · epoch ${a.leaseEpoch}` });
+    return { ok: true as const, operation: releaseOperation(store, input.operationId)! };
+  });
+}
+
+/** The external call's own fence: `reserved` → `running` only at the epoch that reserved it, while that epoch still
+ * holds the lease (a direct deploy's epoch is checked as reserved). False: the call must not start. */
+export function runReleaseOperation(store: Store, id: string, epoch: number, now: Date): boolean {
+  return store.transact(() => {
+    const op = releaseOperation(store, id);
+    const a = op === null ? null : releaseAuthority(store, op.authority);
+    if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
+    const changed = store.handle.prepare("UPDATE release_operation SET state = 'running' WHERE id = ? AND state = 'reserved' AND epoch = ?").run(id, epoch);
+    if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
+    return Number(changed.changes) === 1;
+  });
+}
+
+/** Settle an operation: `succeeded`, `failed` or `unknown` (reconciled later). A merge that succeeded ends the release
+ * as `merged`; one that failed puts it back to `deploying`. */
+export function finishReleaseOperation(store: Store, id: string, outcome: "succeeded" | "failed" | "unknown", facts: { externalRef?: string | null; detail?: string | null }, now: Date): boolean {
+  return store.transact(() => {
+    const op = releaseOperation(store, id);
+    if (op === null || op.state === "succeeded" || op.state === "failed") return false;
+    store.handle.prepare("UPDATE release_operation SET state = ?, external_ref = COALESCE(?, external_ref), detail = ?, finished_at = ? WHERE id = ?")
+      .run(outcome, facts.externalRef ?? null, facts.detail ?? null, outcome === "unknown" ? null : now.toISOString(), id);
+    const a = releaseAuthority(store, op.authority)!;
+    if (op.kind === "merge" && outcome === "succeeded") store.handle.prepare("UPDATE release_authority SET state = 'merged', ended_at = ?, ended_by = 'toolroll', rev = rev + 1 WHERE id = ?").run(now.toISOString(), a.id);
+    if (op.kind === "merge" && outcome === "failed" && a.state === "merge-reserved") store.handle.prepare("UPDATE release_authority SET state = 'deploying', rev = rev + 1 WHERE id = ?").run(a.id);
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} ${outcome}`, outcome, source: "work", detail: `operation ${id}${facts.detail ? ` · ${facts.detail}` : ""}` });
+    return true;
+  });
+}
+
+/** Stop carrying later commits: any active approver, any time before the merge starts. */
+export function revokeRelease(store: Store, id: number, by: string, now: Date): { ok: true } | { ok: false; why: string } {
+  return store.transact(() => {
+    const a = releaseAuthority(store, id);
+    if (a === null) return { ok: false as const, why: `No release ${id}.` };
+    if (a.state === "merge-reserved" || a.state === "merged") return { ok: false as const, why: "The merge already started, so the release can't be stopped now." };
+    if (!LIVE_RELEASE_STATES.includes(a.state)) return { ok: false as const, why: `The release is already ${a.state}.` };
+    store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(now.toISOString(), by, id, a.rev);
+    store.recordAction({ at: now.toISOString(), actor: by, repo: a.repo, taskId: a.anchorTask, runId: null, action: "release revoked", outcome: "revoked", source: "work", detail: `release ${id}` });
+    return { ok: true as const };
+  });
+}
+
+/** Write the carry, in the one transaction that re-proves every mutable fact first (release-carry.ts proveCarry). */
+export type CarryWrite = {
+  authority: number; expectRev: number; expectTip: string; to: string; toTree: string; requestId: string; artifactDigest: string;
+  commits: ReleaseCarry["commits"]; changedLines: number; files: number; churn: number; runtime: string; taskId: string; title: string;
+};
+
+/**
+ * THE carry transaction (release-carry.ts proveCarry step 4), one BEGIN IMMEDIATE: every mutable fact is proved again
+ * — the authority's `rev` and tip, its state and expiry and the whole live-release predicate (liveReleaseOf), the
+ * anchor's sealed artifact digest equal to the candidate's, and whatever `recheck` re-reads (the policy, grant and
+ * check access as they are now) — then it writes the carried task and its scope (the anchor's approved terms, profile,
+ * route and acceptance verbatim, with candidate `to`), its seal (basis `carried`, reference `<authority>:<carry>`), the
+ * carry row, the new tip with `rev + 1`, and the ledger row. A carry already written for (authority, `to`) is returned
+ * as it is.
+ */
+export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, recheck: () => string | null): { ok: true; taskId: string; carry: ReleaseCarry } | { ok: false; why: string } {
+  return store.transact(() => {
+    const a = releaseAuthority(store, w.authority);
+    if (a === null) return { ok: false as const, why: `No release ${w.authority}.` };
+    const already = releaseCarryTo(store, a.id, w.to);
+    if (already !== null) return { ok: true as const, taskId: already.taskId, carry: already };
+    if (a.rev !== w.expectRev) return { ok: false as const, why: "The release changed since this carry was checked; check it again." };
+    if (a.tipSha !== w.expectTip) return { ok: false as const, why: "The release's current commit moved since this carry was checked." };
+    const live = liveReleaseOf(store, a.tipTask, "dispatch", now);
+    if (!live.applies || !live.ok) return { ok: false as const, why: live.applies && !live.ok ? `The release approval doesn't stand: ${live.why}.` : "The release's current commit isn't part of it." };
+    if (a.artifactDigest === null || a.artifactDigest !== w.artifactDigest) return { ok: false as const, why: "The production build differs from the approved one." };
+    const problem = recheck();
+    if (problem !== null) return { ok: false as const, why: problem };
+    if (store.getTask(w.taskId) !== null) return { ok: false as const, why: `A task ${w.taskId} already exists.` };
+    const anchorRow = store.handle.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(a.anchorTask);
+    if (anchorRow === undefined) return { ok: false as const, why: "The approved release task has no scope." };
+    const anchor = readScope(anchorRow);
+    const route = routeFromJson(anchor.approvedRouteJson ?? null);
+    if (anchor.approvedProfile == null || route === null || anchor.releaseTerms == null) return { ok: false as const, why: "The approved release scope can't be read exactly." };
+    const fields = { goal: anchor.goal, outOfScope: anchor.outOfScope, touches: anchor.touches, budgetMicrousd: anchor.budgetMicrousd, acceptance: anchor.acceptance,
+      qualityMode: anchor.qualityMode ?? "default", candidate: w.to, releaseTerms: anchor.releaseTerms };
+    const digest = digestOf(fields, anchor.approvedProfile, route);
+    store.createTask({ id: w.taskId, title: w.title }, now);
+    const ref = store.refFor(BUILT_IN, w.taskId, "ours");
+    if (store.placeTask(ref.id, a.repo, {}, now) !== true) return { ok: false as const, why: "The carried task couldn't be placed in the project." };
+    // Its checks, as the anchor's: the Full release check.
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: w.taskId, runId: null, action: "task checks chosen", outcome: "full", source: "request", detail: "Checks for this task: Full" });
+    const carryId = Number(store.handle.prepare(`INSERT INTO release_carry (authority, task_id, scope_digest, request_id, from_sha, to_sha, to_tree, artifact_digest, commits_json, changed_lines, files, churn, runtime, proved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(a.id, w.taskId, digest, w.requestId, a.approvedSha, w.to, w.toTree, w.artifactDigest, JSON.stringify(w.commits),
+      w.changedLines, w.files, w.churn, w.runtime, now.toISOString()).lastInsertRowid);
+    // The anchor's approved row, copied; only the candidate, the digest and the seal differ. Nobody but this
+    // transaction writes basis `carried` (sealScopeApproval refuses it from every caller).
+    store.handle.prepare(`INSERT INTO task_scope (task_id, goal, out_of_scope, touches, budget_microusd, proposed_at, digest, approved_at, approved_by, approved_digest,
+        profile_json, profile_state, unresolved_reason, approved_profile_json, digest_version, profile_provenance, proposed_chain_json, approved_chain_json, acceptance_json,
+        quality_mode, risk_level, approval_basis, mode_digest, approval_kind, proposed_route_json, approved_route_json, route_era, candidate, proposed_via, release_terms_json)
+      SELECT ?, goal, out_of_scope, touches, budget_microusd, ?, ?, ?, approved_by, ?,
+        approved_profile_json, 'resolved', NULL, approved_profile_json, digest_version, profile_provenance, NULL, NULL, acceptance_json,
+        quality_mode, risk_level, 'carried', ?, 'profile', approved_route_json, approved_route_json, route_era, ?, proposed_via, release_terms_json
+      FROM task_scope WHERE task_id = ?`).run(w.taskId, now.toISOString(), digest, now.toISOString(), digest, `${a.id}:${carryId}`, w.to, a.anchorTask);
+    const moved = store.handle.prepare("UPDATE release_authority SET tip_sha = ?, tip_task = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(w.to, w.taskId, a.id, a.rev);
+    if (Number(moved.changes) !== 1) throw new Error("The release changed under its own transaction.");
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: w.taskId, runId: null, action: "release carried", outcome: "carried", source: "work",
+      detail: `release ${a.id} · carry ${carryId} · ${a.tipSha} → ${w.to} · ${w.files} files · ${w.changedLines} lines · request ${w.requestId}` });
+    // One quiet task notification, no push.
+    store.enqueueNotification({ dedupeKey: `release-carried:${a.id}:${carryId}`, kind: "release-carried", subject: `Carried to ${w.to.slice(0, 7)}`,
+      body: `Release ${a.version} now ships ${w.to.slice(0, 7)} (${w.files} file${w.files === 1 ? "" : "s"}, ${w.changedLines} line${w.changedLines === 1 ? "" : "s"}) under ${anchor.approvedBy ?? "the"} release approval.`,
+      link: chatControlHref("task", w.taskId), source: { taskRef: ref.id } }, now);
+    return { ok: true as const, taskId: w.taskId, carry: releaseCarryTo(store, a.id, w.to)! };
+  });
+}
+
+/** Thrown inside a seal whose release authority can't open: the whole seal rolls back. */
+export class ReleaseSealRefused extends Error {}

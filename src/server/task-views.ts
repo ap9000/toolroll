@@ -1,3 +1,5 @@
+import { releaseViewOf } from "../release-view.js";
+import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
@@ -530,6 +532,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         base: taskBaseOf(runtime.store, taskId),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
+        release: ref === null ? null : releaseViewOf(runtime.store, ref.externalId, now, authority => releaseObligationsOf(runtime.store, runtime.evidenceRoot, authority)),
+        canStopRelease: who.role === "approver" && who.via === "cookie",
         approvalProof: (() => {
           // The proof of the approval shown: its approver, its exact sealed digest (approvedDigest === digest when approved).
           const scope = ref === null ? null : runtime.store.getScope(ref.externalId);

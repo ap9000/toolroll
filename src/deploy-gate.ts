@@ -6,7 +6,7 @@
  * same checks for the deployment script, proven again there with the installed runtime's modules.)
  */
 import { assignmentOf } from "./assignment.js";
-import { personApprovalOf } from "./scope.js";
+import { liveReleaseOf, personApprovalOf } from "./scope.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
 
@@ -25,7 +25,13 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
     store.runsFor(run.taskRef).find(one => one.id < input.runId && one.role === "builder" && one.outcome === "built")?.headRevision === head;
   if (run.role !== "builder" || !(run.outcome === "built" || regated)) return refuse(`Run ${input.runId} is not a built candidate at ${head.slice(0, 7)}.`);
   if (scope === null || scope.approvedDigest !== scope.digest || scope.digest !== run.scopeDigest) return refuse("The run's signed scope is no longer the approved one.");
-  const person = personApprovalOf(store, ref.externalId);
+  // One approval per release (release-once.md): a release's task deploys only while its authority stands for it — the
+  // live predicate proves the anchor's person approval (a carried commit's own seal is never a person's). Any other task
+  // needs a person's approval of its own.
+  const release = liveReleaseOf(store, ref.externalId, "deploy", input.now);
+  if (release.applies && !release.ok) return refuse(`This release can't deploy: ${release.why}.`);
+  const anchorPerson = release.applies && release.ok ? personApprovalOf(store, release.authority.anchorTask) : null;
+  const person = anchorPerson ?? personApprovalOf(store, ref.externalId);
   if (!person.ok) return refuse(`A person has to approve this candidate's scope: ${person.why}.`);
   const evidence = verificationEvidence(store, input.evidenceRoot, input.runId);
   if (!evidence.ok || evidence.bytes === null) return refuse(`Native check unavailable: ${evidence.ok ? "no receipt" : evidence.problem}.`);

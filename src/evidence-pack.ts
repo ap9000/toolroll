@@ -41,7 +41,7 @@ export type EvidencePack = {
     scope: {
       goal: string; outOfScope: string | null; touches: string[]; acceptance: { id: string; statement: string }[];
       budgetUsd: number | null; digest: string;
-      approved: { by: string; at: string; digest: string; basis: "person" | "lead" | "mode" | "flow" | "schedule" | "unknown"; current: boolean } | null;
+      approved: { by: string; at: string; digest: string; basis: "person" | "lead" | "mode" | "flow" | "schedule" | "carried" | "unknown"; current: boolean } | null;
       writtenBy: { digest: string; author: string; at: string }[];
       approvals: { digest: string; approver: string; at: string }[];
     } | null;
@@ -260,7 +260,7 @@ export function evidencePackHtml(pack: EvidencePack): Html {
         ...(scope.touches.length ? [["Touches", joinHtml(scope.touches, ", ")] as [string, Html]] : []),
         ...(scope.acceptance.length ? [["Acceptance", html`<ol class="criteria">${scope.acceptance.map(one => html`<li>${one.statement}</li>`)}</ol>`] as [string, Html]] : []),
         ...(scope.writtenBy.length ? [["Scope written by", joinHtml([...new Set(scope.writtenBy.map(one => one.author))], ", ")] as [string, Html]] : []),
-        ["Approved", approved === null ? html`Not approved` : html`${approved.by}${approved.basis === "mode" ? " (operating mode)" : approved.basis === "flow" ? " (flow runs on its own)" : approved.basis === "lead" ? " (the lead, not a person)" : approved.basis === "schedule" ? " (standing order)" : approved.basis === "unknown" ? " (no person's proof on record)" : ""} · ${when(approved.at)}${approved.current ? "" : " · the scope changed after this"}`] as [string, Html],
+        ["Approved", approved === null ? html`Not approved` : html`${approved.by}${approved.basis === "mode" ? " (operating mode)" : approved.basis === "flow" ? " (flow runs on its own)" : approved.basis === "lead" ? " (the lead, not a person)" : approved.basis === "schedule" ? " (standing order)" : approved.basis === "carried" ? " (carried from their release approval)" : approved.basis === "unknown" ? " (no person's proof on record)" : ""} · ${when(approved.at)}${approved.current ? "" : " · the scope changed after this"}`] as [string, Html],
         ...(approvals.length > 1 ? [["Approvals", joinHtml(approvals.map(one => html`${one.approver} · ${when(one.at)}`), html`<br>`)] as [string, Html]] : []),
         ["Scope digest", short(scope.digest)] as [string, Html],
       ]),
@@ -315,10 +315,12 @@ export function standaloneEvidenceHtml(pack: EvidencePack): string {
 }
 
 /** Who approved, in the pack's words (approval policy §1.5): `person` only when a person's proof stands behind it. */
-function approvalBasisWord(store: Store, taskId: string, basis: string | null, by: string, digest: string): "person" | "lead" | "mode" | "flow" | "schedule" | "unknown" {
+function approvalBasisWord(store: Store, taskId: string, basis: string | null, by: string, digest: string): "person" | "lead" | "mode" | "flow" | "schedule" | "carried" | "unknown" {
   if (basis === "mode") return "mode";
   if (basis === "grant") return "flow";
   if (basis === "schedule") return "schedule";
+  // A later release commit carried under a person's release approval (release-once.md): never a person's own yes.
+  if (basis === "carried") return "carried";
   if (basis === "lead") return "lead";
   if (basis === "password" || basis === "chat") return personProof(approvalProofOf(store, taskId, by, digest)?.method) ? "person" : "unknown";
   return "unknown";

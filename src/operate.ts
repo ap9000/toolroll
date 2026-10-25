@@ -57,6 +57,8 @@ import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-trigger
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
+import { releaseTermsFor } from "./release-carry.js";
+import type { ReleaseTerms } from "./contracts/release-terms.js";
 import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
@@ -843,8 +845,12 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "request",
   // project sandbox (sandbox parity C9): read denies and macOS services.
   "read-deny", "mach",
+  // task scope --release <version>:<pr>:<branch>: a release scope's terms (release-once.md).
+  "release",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  // task scope --release ... --no-carry: every later commit asks again.
+  "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
   "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
@@ -10305,6 +10311,21 @@ async function scopeTask(
   // runs the gate and the review; no agent is dispatched for it.
   const candidateGiven = text(flags, "candidate");
   if (candidateGiven !== undefined && !isCommitSha(candidateGiven)) return fail(write, json, "task scope", "usage", "--candidate is the full 40-character commit hash the machine will check out", EXIT.usage);
+  // A release scope's terms (release-once.md), filled in from the plane's own records: `--release
+  // <version>:<pull request>:<branch>` with the candidate. Terms that can't be made (the checks run outside the
+  // sandbox, say) file the scope without them: every later commit then asks again, as before.
+  const releaseGiven = text(flags, "release");
+  let releaseTerms: ReleaseTerms | undefined;
+  let releaseNote: string | null = null;
+  if (releaseGiven !== undefined) {
+    const spec = /^(\d+\.\d+\.\d+):([1-9][0-9]*):([A-Za-z0-9._/-]+)$/.exec(releaseGiven);
+    if (spec === null || candidateGiven === undefined) return fail(write, json, "task scope", "usage", "--release takes <version>:<pull request>:<branch>, with --candidate <commit>", EXIT.usage);
+    const repo = store.lookupRef(id)?.repo ?? null;
+    if (repo === null) return fail(write, json, "task scope", "usage", "a release scope's task has to be placed in its project first", EXIT.usage);
+    const made = releaseTermsFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven, now, noCarry: flags.get("no-carry") === true });
+    if (made.ok) releaseTerms = made.terms;
+    else releaseNote = `Later commits on this release will each ask for approval: ${made.why}.`;
+  }
   if (acceptanceParse.criteria.length === 0) return fail(write, json, "task scope", "acceptance-required", "--acceptance named no valid criteria", EXIT.usage);
 
   const touches = (text(flags, "touches") ?? "").split(",").map(one => one.trim()).filter(Boolean);
@@ -10380,6 +10401,7 @@ async function scopeTask(
         : null;
     const proposed = propose(store, {
       ...(candidateGiven === undefined ? {} : { candidate: candidateGiven }),
+      ...(releaseTerms === undefined ? {} : { releaseTerms }),
       taskId: id,
       goal,
       outOfScope: text(flags, "not") ?? null,
@@ -10429,7 +10451,8 @@ async function scopeTask(
 
   // A changed scope on a planning task plans again (v119): say so once, instead of leaving the old plan implied.
   const replanned = (store.lookupRef(id)?.planningGeneration ?? 0) > generationBefore;
-  return succeed(write, json, "task scope", { scope, ...(replanned ? { planningRestarted: true } : {}) }, () => [
+  return succeed(write, json, "task scope", { scope, ...(replanned ? { planningRestarted: true } : {}), ...(releaseNote === null ? {} : { releaseNote }) }, () => [
+    ...(releaseNote === null ? [] : [releaseNote]),
     replanned
       ? `Scope written for ${id}. The scope changed, so planning starts again; nothing builds until somebody approves the new plan.`
       : `Scope written for ${id}. Nothing will build it until somebody approves it.`,

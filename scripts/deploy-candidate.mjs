@@ -19,9 +19,18 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
   // ones included, proves the candidate through here. The answer comes from the INSTALLED runtime's scope.js when it
   // has one, else from the plane's own records read here; never from the candidate being deployed, which would decide
   // its own authorization.
+  // One approval per release (docs/plans/release-once.md): a task that belongs to a release authority deploys only
+  // while the live-release predicate accepts it, read by the INSTALLED runtime; one too old to read release authority
+  // refuses every such task rather than reinterpret what it can't read. The predicate proves the anchor's person
+  // approval; a carried commit's own seal is never a person's.
+  const release = typeof installedScope?.liveReleaseOf === 'function'
+    ? installedScope.liveReleaseOf(store, ref.externalId, 'deploy', now)
+    : releaseFromRecords(store, ref.externalId);
+  requireFact(release?.applies === false || release?.ok === true, `This release can't deploy: ${release?.why ?? 'its release record cannot be read'}.`);
+  const approvedTask = release?.applies === true ? release.authority.anchorTask : ref.externalId;
   const person = typeof installedScope?.personApprovalOf === 'function'
-    ? installedScope.personApprovalOf(store, ref.externalId)
-    : personApprovalFromRecords(store, ref.externalId);
+    ? installedScope.personApprovalOf(store, approvedTask)
+    : personApprovalFromRecords(store, approvedTask);
   requireFact(person?.ok === true, `A person has to approve this candidate's scope: ${person?.why ?? 'its approval cannot be read'}.`);
   const evidence = verificationEvidence(store, evidenceRoot, runId);
   requireFact(evidence.ok && evidence.bytes, `Native check unavailable: ${evidence.problem ?? 'no receipt'}.`);
@@ -46,6 +55,18 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
     proofVerdict: store.proofVerdictFor(runId)?.verdict ?? null,
     acceptance: store.proofAcceptance(runId), criteria: scope.acceptance.length,
     worktree: run.worktree, gate };
+}
+
+/**
+ * For an installed runtime that predates release authority (src/scope.ts liveReleaseOf): a task the plane's records
+ * tie to a release authority is refused with "update Toolroll first"; any other task isn't a release's.
+ */
+export function releaseFromRecords(store, taskId) {
+  const db = store.handle;
+  const table = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'release_authority'").get();
+  if (table === undefined) return { applies: false };
+  const belongs = db.prepare("SELECT 1 AS hit FROM release_authority WHERE anchor_task = ? UNION ALL SELECT 1 FROM release_carry WHERE task_id = ? LIMIT 1").get(taskId, taskId);
+  return belongs === undefined ? { applies: false } : { applies: true, ok: false, why: 'it belongs to a release this Toolroll can\'t read; update Toolroll first' };
 }
 
 /** The proofs a person gives (src/person-proof.ts), for a plane whose installed runtime predates personApprovalOf. */

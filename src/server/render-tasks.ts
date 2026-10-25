@@ -1,5 +1,7 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
 import { networkWords } from "../egress.js";
+import type { ReleaseView } from "../release-view.js";
+import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
 import { writesWords } from "../writes-mode.js";
 import { checkAccessWords } from "../check-access.js";
 import { sandboxTermsWords } from "../project-sandbox.js";
@@ -855,6 +857,7 @@ export function approvalProofWords(proof: { method: string; at: string } | null 
   if (proof.method === "session") return " (passwordless: your signed-in session)";
   if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
   if (proof.method === "chat") return " (from your paired chat)";
+  if (proof.method === "carried") return " (carried from the release approval)";
   return "";
 }
 const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -1471,6 +1474,9 @@ export function taskBodyParts(data: {
   approvalFresh?: string | null;
   /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
   approvalProof?: { method: string; at: string } | null;
+  /** One approval per release (release-once.md): the release this task belongs to, and whether this reader may stop it. */
+  release?: ReleaseView | null;
+  canStopRelease?: boolean;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -1902,7 +1908,10 @@ export function taskBodyParts(data: {
           scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Touches</strong> ${scope.touches.join(", ")}</p>`,
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
-          approval.approved
+          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
+          approval.approved && data.release?.kind === "carried"
+            ? html`<p class="meta scope-seal">Carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a> · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
+            : approval.approved
             ? html`<p class="meta scope-seal">Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
             : html`<p class="meta"><span class="seal">signs ${shortDigest(scope.digest)}</span> — approval binds to this exact wording</p><p class="meta">Not approved${approval.reason === "changed" ? " — approved once, then rewritten" : ""}</p>`,
           html`</div>`,
@@ -2224,6 +2233,8 @@ export function taskBodyParts(data: {
   const scopeRow =
     scope === null
       ? prop("scope", "none yet")
+      : approval.approved && data.release?.kind === "carried"
+        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a>`)
       : approval.approved
         ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)}`)
         : prop("scope", approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved");
@@ -2239,8 +2250,10 @@ export function taskBodyParts(data: {
     facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/board?view=order" }] });
   }
   facts.push(scope === null ? { label: "Scope", parts: ["none yet"] }
+    : approval.approved && data.release?.kind === "carried" ? { label: "Approved scope", parts: [`Carried from ${data.release.approver ?? "a person"}'s release approval · `, { label: `Release ${data.release.version}`, href: taskHref(data.release.anchorTask) }] }
     : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
     : { label: "Scope", parts: [approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved"] });
+  if (data.release?.kind === "anchor") facts.push({ label: "Release", parts: [`Approved for release ${data.release.version}`, ...(data.release.landed.length === 0 ? [] : [` · later commits: ${data.release.landed.map(one => one.sha.slice(0, 7)).join(", ")}`]), ...(data.release.carrying ? [] : [` · later commits ask again`])] });
   facts.push({ label: "Publishes as", parts: [publishesAs] });
   // v102: who asked for it, and what the project's approval rules need.
   if (data.filer != null) facts.push({ label: "Filed by", parts: [data.filer.name === null ? "automation" : data.filer.kind === "coordinator" ? `${data.filer.name}, through a coordinator` : data.filer.name] });
@@ -2568,7 +2581,7 @@ export function taskBodyParts(data: {
       "scope",
       // The recipe road rides with the scope it reuses (UI polish
       // 2026-09-13), off the title-to-action path.
-      joinHtml([html`<h2>Scope</h2>`, scopeCard, data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
+      joinHtml([html`<h2>Scope</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
       scopeDraft !== undefined || (data.plan !== "requested" && approveForm === "" && !(scope === null && canPlan)),
     ),
     dependencyChoiceNeeded ? "" : section("waits for", waitsForCard, (data.waitsFor ?? []).length > 0, (data.waitsFor ?? []).length),
@@ -2973,4 +2986,25 @@ export function decisionPage(
 export function taskOf(store: Store, decision: Decision): string {
   const run = store.getRun(decision.run);
   return run === null ? "?" : store.externalIdFor(run.taskRef) ?? "?";
+}
+
+/** A release task's own card (release-once.md, "What people see"): the release it's approved for, the later commits
+ * carried under it (on demand), what a later check must run again, the last nightly check of main, and one action to
+ * stop carrying. A carried task says whose approval it was carried from. */
+export function releaseCardHtml(taskId: string, release: ReleaseView | null, canStop: boolean): Html {
+  if (release === null) return html``;
+  if (release.kind === "carried") return html`<div class="card" id="release"><p><strong>Carried from ${release.approver ?? "a person"}'s release approval</strong></p><p class="meta"><a href="${taskHref(release.anchorTask)}">Release ${release.version}</a> · pull request #${release.pr}</p></div>`;
+  const until = new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(release.expiresAt));
+  const landed = release.landed.length === 0 ? html`<p class="meta">No later commits yet.</p>`
+    : html`<ul>${joinHtml(release.landed.map(one => html`<li><a href="${taskHref(one.task)}">${one.sha.slice(0, 7)}</a> · ${one.files.map(file => `${file.path} (+${file.added} −${file.deleted})`).join(", ")}</li>`), "")}</ul>`;
+  return joinHtml([
+    html`<div class="card" id="release">`,
+    html`<p><strong>Approved for release ${release.version}</strong></p>`,
+    html`<p class="meta">${release.carrying ? `Later commits on pull request #${release.pr} that only change tests, docs or the changelog ship without asking again, until it merges or ${until}.` : `Later commits ask for approval again: ${release.why ?? `the release is ${release.state}`}.`}</p>`,
+    html`<details><summary>Later commits (${release.landed.length})</summary>${landed}</details>`,
+    release.obligations.length === 0 ? "" : html`<details><summary>Still to pass (${release.obligations.length})</summary><ul>${joinHtml(release.obligations.map(one => html`<li>${one}</li>`), "")}</ul></details>`,
+    release.nightly === null ? "" : html`<p class="meta">Nightly check of main: ${release.nightly.outcome ?? "running"} at ${release.nightly.sha.slice(0, 7)}${release.openMainFailures > 0 ? ` · ${release.openMainFailures} open failure${release.openMainFailures === 1 ? "" : "s"}` : ""}</p>`,
+    release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Stop carrying later commits</button>`, { attrs: { class: "inline" } }) : "",
+    html`</div>`,
+  ], "\n");
 }

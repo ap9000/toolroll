@@ -303,6 +303,46 @@ const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, pr
 });
 recover = recoverJournal;
 
+/**
+ * The release deploy this run is part of (the installed runtime's store, release-once.md), or null for a task that
+ * belongs to no release. Under `toolroll release` the coordinator reserved and started the operation and names it with
+ * --operation; run by a person, this run reserves its own (a resumed phase reserves only when nothing is unsettled).
+ */
+let releaseOperation = null;
+function reserveReleaseDeploy(taskId) {
+  const mod = oldRt.store;
+  if (typeof mod.releaseAuthorityOfTask !== "function") return null;
+  const db = openDeploymentDatabase(database);
+  try {
+    const store = new mod.Store(db);
+    const found = mod.releaseAuthorityOfTask(store, taskId);
+    if (found === null) return null;
+    const scope = store.getScope(taskId);
+    const candidate = scope?.candidate ?? null;
+    requireTrue(candidate !== null, "The release task names no candidate.");
+    const named = flag("operation");
+    if (named !== undefined) {
+      const op = mod.releaseOperation(store, named);
+      requireTrue(op !== null && op.authority === found.authority.id && op.kind === "deploy" && op.candidate === candidate && op.state === "running",
+        `Operation ${named} isn't this release's running deploy.`);
+      return { id: named, own: false };
+    }
+    const id = randomUUID();
+    const reserved = mod.reserveRelease(store, { authority: found.authority.id, kind: "deploy", taskId, candidate, epoch: null, operationId: id, now: new Date() });
+    requireTrue(reserved.ok, `The release can't deploy now: ${reserved.ok ? "" : reserved.why}`);
+    requireTrue(mod.runReleaseOperation(store, id, reserved.operation.epoch, new Date()), "The release's deploy couldn't start: its lease moved.");
+    say(`Release ${found.authority.version}: deploy operation ${id} (resume a phase with --operation ${id}).`);
+    return { id, own: true };
+  } finally { db.close(); }
+}
+/** Settle a deploy operation this run reserved itself (the coordinator settles its own). */
+function settleReleaseDeploy(outcome, detail) {
+  if (releaseOperation === null || !releaseOperation.own || typeof oldRt.store.finishReleaseOperation !== "function") return;
+  const db = openDeploymentDatabase(database);
+  try { oldRt.store.finishReleaseOperation(new oldRt.store.Store(db), releaseOperation.id, outcome, { detail }, new Date()); }
+  finally { db.close(); }
+}
+
 // Every entry point — the whole run or one resumed phase — proves the
 // candidate against the plane's records first. Nothing is staged, and no
 // service is touched, until its approved check passed and its exact result is complete.
@@ -317,19 +357,25 @@ try {
   }
   const proven = early ?? (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
   say(`Candidate ${short} — task ${proven.taskId}, run ${runId}, checks passed, marked complete by ${proven.completion.actor}.`);
+  // One approval per release (docs/plans/release-once.md): a release's deploy freezes its candidate in the store before
+  // anything is staged — `open` → `deploying`, atomically — so a direct run can't skip the freeze.
+  releaseOperation = reserveReleaseDeploy(proven.taskId);
   say(`Installed runtime: ${priorDist}`);
   say(`Staging directory: ${stageDir}`);
   if (phaseWanted === "all") {
     if (!has("yes")) { say("Add --yes to drain the plane, back up the database, and swap the service."); process.exit(0); }
     const staged = stage(); await prepare(staged); await rehearse(); await swap(); await finish();
+    settleReleaseDeploy("succeeded", null);
   } else {
     if (phaseWanted !== "stage") requireTrue(flag("stage"), `--phase ${phaseWanted} resumes a staging directory: pass --stage <dir>.`);
     if (phaseWanted === "stage") say(stage());
     else if (phaseWanted === "prepare") await prepare({ packageSha256: sha(readFileSync(join(stageDir, readdirSync(stageDir).find(f => f.endsWith(".tgz"))))) });
     else await phases[phaseWanted]();
+    if (phaseWanted === "finish") settleReleaseDeploy("succeeded", null);
   }
 
 } catch (error) {
   console.error(`✗ ${error.message}`);
+  try { settleReleaseDeploy("failed", String(error.message).slice(0, 500)); } catch { /* the coordinator reconciles it */ }
   process.exitCode ||= 1;
 }

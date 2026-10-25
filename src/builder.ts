@@ -570,6 +570,7 @@ export function proveApprovedProfile(
               budgetMicrousd: scope.budgetMicrousd,
               acceptance: scope.acceptance, candidate: scope.candidate ?? null,
               qualityMode: scope.qualityMode ?? "default",
+              releaseTerms: scope.releaseTerms ?? null,
             },
             snapshot,
             // v47: the SEALED route is part of the signed bytes whenever it
@@ -577,7 +578,7 @@ export function proveApprovedProfile(
             // the seal's own snapshot, never from mutable configuration.
             routeFromJson(scope.approvedRouteJson ?? null),
           )
-        : digestOf({ goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null });
+        : digestOf({ goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, releaseTerms: scope.releaseTerms ?? null });
     if (rederived !== scope.approvedDigest) {
       return { ok: false, message: "the approval record does not verify against the stored terms — re-approve (stale-approval)" };
     }

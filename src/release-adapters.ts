@@ -19,7 +19,13 @@ import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullReq
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
-import { databasePath, Store, type Database } from "./store.js";
+import {
+  databasePath, finishReleaseOperation, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
+  Store, takeReleaseLease, type Database,
+} from "./store.js";
+import { liveReleaseOf } from "./scope.js";
+import { proveCarry, type BuildRunner } from "./release-carry.js";
+import { randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { extractCommit } from "./commit-extract.js";
 
@@ -252,7 +258,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     } finally { rmSync(extracted.dir, { recursive: true, force: true }); }
   };
 
+  const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()));
+
   return {
+    ...(existsSync(database) ? { release } : {}),
     now: options.now ?? (() => new Date()),
     sleep: options.sleep ?? sleep,
     say: options.say ?? (line => process.stdout.write(`${line}\n`)),
@@ -320,7 +329,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async fileGate(input) {
         const added = await toolroll("task", "add", input.title, "--id", input.taskId, "--repo", input.checkout, "--checks", "full");
         if (added["ok"] !== true) throw new Error(`task add: ${refused(added)}`);
-        const scoped = await toolroll("task", "scope", input.taskId, "--candidate", input.candidate, "--goal", input.goal, "--acceptance", input.acceptance);
+        const scoped = await toolroll("task", "scope", input.taskId, "--candidate", input.candidate, "--goal", input.goal, "--acceptance", input.acceptance,
+          ...(input.release === undefined ? [] : ["--release", `${input.release.version}:${input.release.pr}:${input.release.branch}`, ...(input.release.noCarry ? ["--no-carry"] : [])]));
         if (scoped["ok"] !== true) throw new Error(`task scope: ${refused(scoped)}`);
         const digest = gateStateOf(await toolroll("task", "show", input.taskId)).scopeDigest;
         if (digest === null) throw new Error(`task ${input.taskId} has no scope after filing it`);
@@ -345,7 +355,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
           return { running: Object.values(work).reduce((total, count) => total + count, 0), tasks };
         } finally { db.close(); }
       },
-      async deploy({ run: runId, worktree, stage }) {
+      async deploy({ run: runId, worktree, stage, operation }) {
         // Approval policy §1.7: this runtime proves the candidate FIRST — a person approved it, its exact result passed
         // the approved check and is complete, and the checkout is exactly that commit — before anything from the
         // candidate's checkout runs. The candidate's own script never decides its own deployment.
@@ -353,7 +363,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         if (!proven.ok) return stopped(stage, proven.message);
         // The approved commit's own deployment, extracted by this runtime: drain, backup, rehearsal, swap, health. Its
         // last JSON line names the runtime it installed; the CLI names are moved to it by the release's link step.
-        const result = await deployScript(worktree, stage, runId, proven, ["--yes"]);
+        const result = await deployScript(worktree, stage, runId, proven, ["--yes", ...(operation === undefined ? [] : ["--operation", operation])]);
         const runtime = deployedRuntime(result.stdout);
         if (result.code !== 0 || runtime === null) return stopped(stage, tail(result));
         return { ok: true, runtime };
@@ -396,8 +406,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // Oldest first, so a rerun's attempt is the last one listed for its name.
         return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]) }));
       },
-      async merge(repo, pr, head) {
-        const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`));
+      async merge(repo, pr, head, message) {
+        // The squash commit's message lists every commit that landed after the approval (release-once.md).
+        const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
+          ...(message === undefined ? [] : ["-f", `commit_message=${message}`])));
         if (typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
         return merged["sha"];
       },
@@ -537,4 +549,46 @@ function personAnswerOf(value: unknown): { person?: { ok: true; method: string }
   const read = object(value);
   if (read["ok"] === true && typeof read["method"] === "string") return { person: { ok: true, method: read["method"] } };
   return { person: { ok: false, why: typeof read["why"] === "string" ? read["why"] : "the plane's answer about who approved it can't be read" } };
+}
+
+/**
+ * The release's authority record through a store (release-once.md): what `toolroll release` reads and writes for its
+ * lease, its carries and its operations. `open` hands a store for each call and `done` lets it go.
+ */
+export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner): NonNullable<ReleaseAdapters["release"]> {
+  const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
+  return {
+    async authority(taskId) {
+      return withStore(store => {
+        const found = releaseAuthorityOfTask(store, taskId);
+        if (found === null) return null;
+        const a = found.authority;
+        return { id: a.id, generation: a.generation, state: a.state, tipSha: a.tipSha, tipTask: a.tipTask, version: a.version, pr: a.pr,
+          landed: releaseCarries(store, a.id).flatMap(carry => carry.commits) };
+      });
+    },
+    async live(taskId, action) {
+      return withStore(store => { const live = liveReleaseOf(store, taskId, action, now()); return live.applies ? { applies: true, ok: live.ok, why: live.ok ? null : live.why } : { applies: false, ok: false, why: null }; });
+    },
+    async lease(authority, owner) { return withStore(store => takeReleaseLease(store, authority, owner, now())); },
+    async renew(authority, owner, epoch) { return withStore(store => renewReleaseLease(store, authority, owner, epoch, now())); },
+    async carry(authority, to, requestId, epoch) {
+      const store = open();
+      try {
+        const result = await proveCarry(store, { authority, to, requestId, epoch, now: now(), ...(runner === undefined ? {} : { runner }) });
+        return result.ok ? { ok: true, taskId: result.taskId } : { ok: false, message: result.message };
+      } finally { done(store); }
+    },
+    async reserve(input) {
+      return withStore(store => {
+        const result = reserveRelease(store, { ...input, operationId: randomUUID(), now: now() });
+        return result.ok ? { ok: true as const, operation: result.operation.id } : result;
+      });
+    },
+    async start(operation, epoch) { return withStore(store => runReleaseOperation(store, operation, epoch, now())); },
+    async finish(operation, outcome, facts = {}) { withStore(store => finishReleaseOperation(store, operation, outcome, facts, now())); },
+    async operations(authority) {
+      return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef })));
+    },
+  };
 }

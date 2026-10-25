@@ -825,13 +825,19 @@ export type Scope = SavedScopeTerms & {
    * value that slips past the lead quarantine at a mode seal. `lead`: the lead wrote it through its token (CLI); it is
    * the lead's own text, not another machine's, so it isn't quarantined (`quarantinedAuthor`). */
   proposedVia?: ScopeAuthor | null;
+  /** v135 (docs/plans/release-once.md): a release scope's terms — repository, version, pull request, approved commit,
+   * carry policy, grant, check access, expiry. Part of the digest when present; a person's seal of them opens the
+   * release's authority record. */
+  releaseTerms?: ReleaseTerms | null;
 };
 
 /** Who wrote a scope's text, when not a person (approval-policy plan §1.4). */
 export type ScopeAuthor = "mate" | "coordinator" | "scout" | "lead";
 /** The authorities a seal can stand on (approval-policy plan §1.5). Anything else stands on nothing. */
-export type ApprovalBasis = "password" | "mode" | "chat" | "grant" | "schedule" | "lead";
-export const APPROVAL_BASES: readonly ApprovalBasis[] = ["password", "mode", "chat", "grant", "schedule", "lead"];
+/** `carried`: a later commit of a release carried under a person's release approval (release-once.md); only the carry
+ * transaction ever writes it. */
+export type ApprovalBasis = "password" | "mode" | "chat" | "grant" | "schedule" | "lead" | "carried";
+export const APPROVAL_BASES: readonly ApprovalBasis[] = ["password", "mode", "chat", "grant", "schedule", "lead", "carried"];
 
 export type Approval =
   | { approved: true; at: string; by: string }
@@ -867,6 +873,9 @@ export type ScopeInput = {
    * see `Scope.acceptance`. `propose` itself never requires this to be
    * non-empty; the roads that call it do. */
   acceptance?: readonly AcceptanceCriterion[];
+  /** v135: release terms (release-carry.ts releaseTermsFor), from the plane's own records. Undefined keeps any terms
+   * the scope already carries; null removes them. */
+  releaseTerms?: ReleaseTerms | null;
   now: Date;
   mutation?: Mutation;
 };
@@ -891,6 +900,8 @@ export function digestOf(
     /** v69: a prepared commit, folded in only when present so every earlier
      * digest is untouched. */
     candidate?: string | null;
+    /** v135: release terms, folded in only when present. */
+    releaseTerms?: ReleaseTerms | null;
   },
   // The execution target: a single profile (legacy v24), OR an explicit
   // fallback chain (v30). BOTH fold through the SAME outer `profileDigest`
@@ -931,6 +942,7 @@ export function digestOf(
         // like an absent v41 field. Strict is an explicit signed promise.
         ...(scope.qualityMode === "strict" ? { qualityMode: "strict" } : {}),
         ...(scope.candidate ? { candidate: scope.candidate } : {}),
+        ...(scope.releaseTerms == null ? {} : { releaseTerms: releaseTermsDigest(scope.releaseTerms) }),
         // The single outer key, whichever target produced its inner value:
         // absent => the golden and every profileless approval are untouched;
         // a legacy profile => its exact profileDigestOf; an explicit chain
@@ -989,6 +1001,7 @@ function proposeLocked(store: Store, input: ScopeInput): Scope {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(input.qualityMode === undefined ? {} : { qualityMode: input.qualityMode }),
     ...(posture === undefined ? {} : { posture }),
+    ...(input.releaseTerms === undefined ? {} : { releaseTerms: input.releaseTerms }),
     proposedVia,
   });
   // The store may have RECOMPUTED the digest to bind the resolved profile
@@ -1518,6 +1531,9 @@ export function approve(
     // permission ceiling, are refused in words that name the rule.
     const policy = store.scopePolicyRefusal(taskId);
     if (policy !== null) return { ok: false as const, reason: "policy" as const, message: policy };
+    // A release scope's yes opens its authority record (release-once.md); say first why it can't.
+    const releaseProblem = scope.releaseTerms == null ? null : releaseSealProblem(store, scope.releaseTerms);
+    if (releaseProblem !== null) return { ok: false as const, reason: "policy" as const, message: releaseProblem };
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict === "refuse") return { ok: false as const, reason: gate.reason };
     // A remembered password (cockpit B2) approves only everyday work: one approver, standard permissions, terms a
@@ -1698,7 +1714,7 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   const parity = routeParityProblem(route, profile, { riskLevel: scope.riskLevel ?? "routine", qualityMode: scope.qualityMode ?? "default" });
   if (parity !== null) return { ok: false, reason: "parity", problem: parity };
   const digest = digestOf(
-    { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default" },
+    { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null },
     profile,
     route,
   );
@@ -1761,9 +1777,32 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     ...(scope.profile?.checkAccess === undefined ? [] : [`  checks       ${checkAccessWords(scope.profile.checkAccess)}`]),
     // Its sandbox terms (project-sandbox.ts), part of what the yes agrees to: what it reads, and any widening.
     ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`])])(sandboxTermsWords(scope.profile))),
+    ...releaseTermsWords(scope.releaseTerms ?? null),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];
+}
+
+/** The approval sheet's release lines (release-once.md): the release in one sentence, then what asks again. */
+export function releaseTermsSentence(terms: ReleaseTerms): string {
+  if (!terms.policy.carry) return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Every later commit asks for your approval again.`;
+  return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Later commits on this pull request that only change tests, docs or the changelog ship without asking you again, until it merges or for 3 days. You'll see each one in the release summary.`;
+}
+/** What asks again, in full: the terms behind the sentence. */
+export function releaseAsksAgainWords(terms: ReleaseTerms): string[] {
+  const p = terms.policy;
+  return [
+    "A later commit asks again when it changes anything but unit tests, the journey scripts, docs under docs/, the README or the changelog;",
+    "when it touches AGENTS.md, CLAUDE.md, SECURITY.md, agent or CI settings, the test harness, helpers or fixtures;",
+    `when it deletes, renames or changes the mode of a file, adds a binary, a symlink or a submodule; when it changes the production build;`,
+    `when more than ${p.limits.lines} lines or ${p.limits.files} files change after this approval, or ${p.limits.churn} lines of churn;`,
+    ...(p.protectProject ? ["when it changes anything: this project is protected;"] : p.protectedPaths.length === 0 ? [] : [`when it changes a protected path: ${p.protectedPaths.join(", ")};`]),
+    `and always once the deploy starts. Repository ${terms.repo}, branch ${terms.branch} into ${terms.base}, check grant ${terms.grant.id}, checks in the sandbox, until ${terms.expiresAt}.`,
+  ];
+}
+function releaseTermsWords(terms: ReleaseTerms | null): string[] {
+  if (terms === null) return [];
+  return [`  release      ${releaseTermsSentence(terms)}`, ...(terms.policy.carry ? releaseAsksAgainWords(terms).map(line => `               ${line}`) : [])];
 }
 
 function describeApproval(approval: Approval): string {
@@ -1778,6 +1817,8 @@ function describeApproval(approval: Approval): string {
 
 export { personProof } from "./person-proof.js";
 import { personProof } from "./person-proof.js";
+import { releaseTermsDigest, type ReleaseTerms } from "./contracts/release-terms.js";
+import { newestReleaseGeneration, releaseAuthorityOfTask, releaseSealProblem, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
 /** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
 export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
@@ -1845,3 +1886,80 @@ export function sealOriginOf(store: Store, taskId: string, by: string, digest: s
 /** Text another machine wrote (a confirmed chat proposal, a coordinator, a scout): no mode, grant, remembered password
  * or chat tap seals it. The lead's own CLI text (`lead`) is not quarantined. */
 export const quarantinedAuthor = (via: string | null | undefined): boolean => via === "mate" || via === "coordinator" || via === "scout";
+
+// ------------------------------------------------------------------------------------------------------------------
+// One approval per release (docs/plans/release-once.md): the ONE reader of release authority.
+
+/** What a release task is about to do. */
+export type ReleaseAction = "dispatch" | "deploy" | "merge" | "complete";
+export type LiveRelease =
+  | { applies: false }
+  | { applies: true; ok: true; authority: ReleaseAuthority; carry: ReleaseCarry | null }
+  | { applies: true; ok: false; why: string; authority: ReleaseAuthority | null };
+
+/** Which states each action may start from (deploy and merge also resume their own reservation). */
+const RELEASE_ACTION_STATES: Record<ReleaseAction, readonly string[]> = {
+  dispatch: ["open"], complete: ["open"], deploy: ["open", "deploying"], merge: ["deploying", "merge-reserved"],
+};
+
+/**
+ * Whether a task that belongs to a release authority may do `action` now. It applies to EVERY such task, whether its
+ * seal is the person's own or `carried`, and requires all of: the authority's current generation (never superseded,
+ * revoked or expired before it started); a state that fits the action; the task is the authority's current tip; the
+ * anchor's seal is a person's (personApprovalOf, unchanged) on the exact sealed anchor digest; the anchor's approver is
+ * still an active approver with access to the project; for a carried task, a carry row for exactly this task, scope
+ * digest, candidate and generation; the release check grant and check access as sealed (access only ever the fence);
+ * a sealed policy this runtime knows; and, for deploy and merge, no open main-check failure blocking a composed check.
+ * A task that belongs to no release reads `applies: false` — the ordinary rules decide it.
+ */
+export function liveReleaseOf(store: Store, taskId: string, action: ReleaseAction, now: Date = new Date()): LiveRelease {
+  const found = releaseAuthorityOfTask(store, taskId);
+  if (found === null) return { applies: false };
+  const { authority: a, carry } = found;
+  const refuse = (why: string): LiveRelease => ({ applies: true, ok: false, why, authority: a });
+  const newest = newestReleaseGeneration(store, a.repo, a.version, a.pr);
+  if (newest === null || newest.id !== a.id) return refuse("a newer approval of this release replaced this one");
+  if (a.state === "superseded") return refuse("a newer approval of this release replaced this one");
+  if (a.state === "revoked") return refuse(`${a.endedBy ?? "an approver"} stopped carrying commits for this release`);
+  if (a.state === "expired" || (a.state === "open" && a.expiresAt <= now.toISOString())) return refuse("the release approval expired");
+  if (a.state === "merged") return refuse("the release was already merged");
+  if (!RELEASE_ACTION_STATES[action].includes(a.state)) return refuse(a.state === "open" ? "the release hasn't started deploying" : `the release is already ${a.state === "deploying" ? "deploying" : "merging"}`);
+  if (a.tipTask !== taskId) return refuse("this is not the release's current commit");
+  const anchor = store.getScope(a.anchorTask);
+  const person = personApprovalOf(store, a.anchorTask);
+  if (!person.ok) return refuse(`the release approval no longer stands: ${person.why}`);
+  if (anchor === null || anchor.approvedDigest !== a.anchorDigest || anchor.digest !== a.anchorDigest) return refuse("the release approval is for different words");
+  const account = store.accountOf(person.by);
+  if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(person.by, a.repo)) return refuse(`${person.by} can no longer approve in this project`);
+  const scope = store.getScope(taskId);
+  if (scope === null || scope.approvedDigest !== scope.digest) return refuse("this task's approved words changed");
+  if (carry !== null) {
+    if (carry.authority !== a.id || scope.approvalBasis !== "carried" || carry.scopeDigest !== scope.digest || carry.toSha !== scope.candidate || scope.modeDigest !== `${a.id}:${carry.id}`) {
+      return refuse("this commit's carry doesn't match its record");
+    }
+  } else if (scope.candidate !== a.approvedSha) return refuse("this task isn't the approved commit");
+  const grant = store.liveVerifyCommand(a.repo);
+  if (grant === null || grant.id !== a.verifyCommand || grant.digest !== a.verifyDigest) return refuse("the release check command changed since the approval");
+  if (a.accessDigest !== "sandboxed" || store.projectCheckAccess(a.repo) !== "sandboxed") return refuse("the project's checks no longer run in the sandbox");
+  if (a.policy === null) return refuse("this Toolroll doesn't know the release's carry rules; update Toolroll first");
+  if (action === "deploy" || action === "merge") {
+    const debt = mainDebtProblem(store, a.repo, taskId);
+    if (debt !== null) return refuse(debt);
+  }
+  return { applies: true, ok: true, authority: a, carry };
+}
+
+/**
+ * Open main-check failures (the nightly full check, part 3) block the deploy and the merge of a release whose gate
+ * check was composed from a targeted run: a full pass is needed first. Null when nothing blocks.
+ */
+export function mainDebtProblem(store: Store, repo: string, taskId: string): string | null {
+  const open = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM main_check_failure WHERE repo = ? AND cleared_at IS NULL").get(repo)?.["n"] ?? 0);
+  if (open === 0) return null;
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const newest = store.handle.prepare(`SELECT a.mode FROM run r JOIN release_check_attempt a ON a.run = r.id
+      WHERE r.task_ref = ? AND r.role = 'builder' ORDER BY r.id DESC LIMIT 1`).get(ref.id);
+  if (newest === undefined || newest["mode"] !== "targeted") return null;
+  return `the nightly full check on main has ${open} open failure${open === 1 ? "" : "s"}, so a check made from a re-run of what failed can't deploy; a full check has to pass first`;
+}

@@ -678,3 +678,257 @@ describe("toolroll release", () => {
     test("the branch has an open pull request at its head", () => refusedWith(s => { s.pr.head = OTHER; }, "drift"));
   });
 });
+
+// ------------------------------------------------------------------ one approval per release (release-once.md)
+
+const NEXT = "f".repeat(40), TREE2 = "9".repeat(40), DIGEST2 = "scope-digest-2";
+
+/** The world with a release authority: a person's yes to the gate opens it, a carry moves its tip to a new task whose
+ * scope is sealed `carried`, and the store's deploy and merge reservations, lease and operations are scripted. */
+function releaseWorld(options: { carryRefused?: string } = {}) {
+  const w = world();
+  const { s, adapters } = w;
+  const rel = {
+    id: 1, generation: 1, state: "open", tipSha: SHA, tipTask: "", tasks: new Set<string>(), landed: [] as { sha: string; files: { path: string; added: number; deleted: number }[] }[],
+    epoch: 0, owner: null as string | null, ops: new Map<string, { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null }>(),
+    /** Override what the live predicate says. */
+    live: null as null | ((taskId: string, action: string) => { applies: boolean; ok: boolean; why: string | null }),
+    /** Override what authority() answers. */
+    view: null as null | ((taskId: string) => unknown),
+    carries: [] as string[], merges: [] as (string | undefined)[], finished: [] as string[],
+  };
+  const approvedTask = () => s.gate.approval !== null && s.gate.approval.basis === "password";
+  adapters.github.merge = async (_repo, _pr, head, message) => {
+    if (head !== s.pr.head) throw new Error("Head branch was modified");
+    s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
+    s.trees.set(MERGE, s.trees.get(head)!);
+    s.calls.push("merge");
+    rel.merges.push(message);
+    return MERGE;
+  };
+  adapters.release = {
+    async authority(taskId) {
+      if (rel.view !== null) return rel.view(taskId) as never;
+      if (!rel.tasks.has(taskId) && !(taskId === s.gateId && approvedTask())) return null;
+      if (rel.tipTask === "") { rel.tipTask = taskId; rel.tasks.add(taskId); }
+      return { id: rel.id, generation: rel.generation, state: rel.state, tipSha: rel.tipSha, tipTask: rel.tipTask, version: "0.9.52", pr: 170, landed: [...rel.landed] };
+    },
+    async live(taskId, action) {
+      if (rel.live !== null) return rel.live(taskId, action);
+      if (!rel.tasks.has(taskId)) return { applies: false, ok: false, why: null };
+      const states: Record<string, string[]> = { dispatch: ["open"], complete: ["open"], deploy: ["open", "deploying"], merge: ["deploying", "merge-reserved"] };
+      if (rel.state === "revoked") return { applies: true, ok: false, why: "alex stopped carrying commits for this release" };
+      if (rel.tipTask !== taskId) return { applies: true, ok: false, why: "this is not the release's current commit" };
+      if (!states[action]!.includes(rel.state)) return { applies: true, ok: false, why: `the release is ${rel.state}` };
+      return { applies: true, ok: true, why: null };
+    },
+    async lease(_id, owner) { if (rel.owner !== owner) { rel.epoch += 1; rel.owner = owner; } return { ok: true, epoch: rel.epoch }; },
+    async renew(_id, owner, epoch) { return rel.owner === owner && rel.epoch === epoch; },
+    async carry(_id, to) {
+      rel.carries.push(to);
+      if (options.carryRefused !== undefined) return { ok: false, message: options.carryRefused };
+      const task = gateTaskId("0.9.52", to);
+      rel.tasks.add(task); rel.tipTask = task; rel.tipSha = to;
+      rel.landed.push({ sha: to, files: [{ path: "src/a.test.ts", added: 3, deleted: 1 }] });
+      s.gateId = task;
+      s.gate = { exists: true, candidate: to, scopeDigest: DIGEST2, approval: { by: "alex", at: new Date(s.now).toISOString(), digest: DIGEST2, basis: "carried", role: "approver", active: true }, result: null, failed: null, completion: null };
+      return { ok: true, taskId: task };
+    },
+    async reserve(input) {
+      if (input.epoch !== rel.epoch) return { ok: false, why: "This coordinator no longer holds the release's lease." };
+      if (input.taskId !== rel.tipTask) return { ok: false, why: "not the release's current commit" };
+      const next = input.kind === "deploy" ? (rel.state === "open" || rel.state === "deploying" ? "deploying" : null) : (rel.state === "deploying" ? "merge-reserved" : null);
+      if (next === null) return { ok: false, why: `The release is ${rel.state}, so it can't ${input.kind}.` };
+      rel.state = next;
+      const id = `${input.kind}-${rel.ops.size + 1}`;
+      rel.ops.set(id, { id, kind: input.kind, state: "reserved", candidate: input.candidate, externalRef: null });
+      return { ok: true, operation: id };
+    },
+    async start(id, epoch) { const op = rel.ops.get(id)!; if (op.state !== "reserved" || epoch !== rel.epoch) return false; op.state = "running"; return true; },
+    async finish(id, outcome, facts = {}) {
+      const op = rel.ops.get(id)!; op.state = outcome; op.externalRef = facts.externalRef ?? op.externalRef; rel.finished.push(`${id}:${outcome}`);
+      if (op.kind === "merge" && outcome === "succeeded") rel.state = "merged";
+      if (op.kind === "merge" && outcome === "failed") rel.state = "deploying";
+    },
+    async operations() { return [...rel.ops.values()]; },
+  };
+  return { ...w, rel };
+}
+
+/** Move the branch and its pull request to `head` (a test-only commit with its own tree and passing checks). */
+const moveTo = (s: ReturnType<typeof world>["s"], head: string) => {
+  s.branchHead = head;
+  s.pr = { ...s.pr, head };
+  s.trees.set(head, TREE2);
+  s.checks.set(head, passing(REQUIRED_PR_CHECKS));
+};
+
+describe("toolroll release: one approval per release", () => {
+  test.each(["approval", "check", "complete", "quiet"] as const)("a head move during the %s wait restarts from check for the new tip; nothing from the old step runs afterwards", async during => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    let moved = false;
+    const move = () => { if (!moved) { moved = true; moveTo(s, NEXT); } };
+    if (during === "approval") {
+      // Approved first, then moved before the coordinator saw the yes: the restart files nothing new for a person.
+      s.onSleep.unshift(state => { if (state.gate.approval !== null && !moved) move(); });
+    } else if (during === "check") s.onSleep.unshift(state => { if (state.gate.approval !== null && state.gate.result === null && rel.tasks.size > 0) move(); });
+    else if (during === "complete") {
+      const complete = adapters.toolroll.complete;
+      adapters.toolroll.complete = async (task, receipt) => { if (!moved) { move(); throw new Error("interrupted before completing"); } return complete(task, receipt); };
+    } else {
+      s.running = 1;
+      s.onSleep.unshift(state => { if (state.gate.completion !== null && !moved) { move(); state.running = 0; } });
+    }
+    let outcome = await runRelease(options(dir), adapters);
+    if (!outcome.ok && outcome.reason === "error") outcome = await runRelease(options(dir), adapters);
+    expect(outcome, JSON.stringify(outcome.ok ? null : outcome.message)).toMatchObject({ ok: true });
+    const journal = readJournal(journalFile(dir, "toolroll/simplify-release"))!;
+    expect(journal.candidate).toEqual({ sha: NEXT, tree: TREE2 });
+    expect(journal.merge?.sha).toBe(MERGE);
+    expect(s.pr.head).toBe(NEXT);
+    // The old candidate never deployed or merged: one deploy, of the new tip.
+    expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+    expect([...rel.ops.values()].map(op => `${op.kind}:${op.candidate.slice(0, 1)}:${op.state}`)).toEqual(["deploy:f:succeeded", "merge:f:succeeded"]);
+    // The summary and the merge message list the commit that landed after the approval.
+    expect(journal.landed).toEqual([{ sha: NEXT, files: [{ path: "src/a.test.ts", added: 3, deleted: 1 }] }]);
+    expect(rel.merges.at(-1)).toContain(`${NEXT.slice(0, 7)}: src/a.test.ts (+3 −1)`);
+    expect(s.said.join("\n")).toContain("Landed after the approval (1 commit)");
+  });
+
+  test("an old candidate's failed check, with the head already moved: the release restarts for the new tip instead of stopping", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    let failed = false;
+    s.onSleep.unshift(state => {
+      if (!failed && state.gate.approval?.basis === "password" && state.gate.result === null) {
+        failed = true;
+        state.gate.result = { run: 2756, head: SHA, check: "failed", level: "full", receipt: "r-old", worktree: "/w" };
+        moveTo(state, NEXT);
+      }
+    });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))?.candidate.sha).toBe(NEXT);
+  });
+
+  test("a refused carry files the new head's gate the ordinary way and stops at approval", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld({ carryRefused: "src/serve.ts isn't a test, a doc or the changelog" });
+    let moved = false, approvals = 0;
+    s.onSleep = [state => {
+      if (state.gate.approval === null && state.gate.exists && approvals++ === 0) state.gate.approval = { by: "alex", at: new Date(state.now).toISOString(), digest: DIGEST, basis: "password", role: "approver", active: true, person: { ok: true, method: "password-now" } };
+      else if (!moved && rel.tasks.size > 0) { moved = true; moveTo(state, NEXT); }
+    }];
+    const outcome = await runRelease(options(dir, { limits: { approval: 30 } }), adapters);
+    expect(outcome).toMatchObject({ ok: false, step: "approval", reason: "timeout" });
+    expect(rel.carries).toEqual([NEXT]);
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ candidate: { sha: NEXT }, task: { id: gateTaskId("0.9.52", NEXT) }, authority: null });
+    expect(s.calls.filter(one => one === "fileGate")).toHaveLength(2);
+  });
+
+  test.each(["deploy", "ci"] as const)("a head move during %s (after the deploy reservation) stops the release; the new commit needs a person and A is never merged", async during => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    if (during === "deploy") {
+      const deploy = adapters.toolroll.deploy;
+      adapters.toolroll.deploy = async input => { const result = await deploy(input); moveTo(s, NEXT); return result; };
+    } else s.checks.set(SHA, []);
+    if (during === "ci") s.onSleep.push(state => { if (rel.state === "deploying" && state.branchHead === SHA) moveTo(state, NEXT); });
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: false, reason: "drift" });
+    expect(s.calls).not.toContain("merge");
+    expect(rel.carries).toEqual([]);
+  });
+
+  test("a revoke during the CI wait: the merge reservation refuses and nothing merges", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    s.checks.set(SHA, []);
+    s.onSleep.push(state => { if (rel.state === "deploying") { rel.state = "revoked"; state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); } });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "merge", reason: "release" });
+    expect(s.calls).not.toContain("merge");
+  });
+
+  test.each([
+    ["retargeted to another base", (s: ReturnType<typeof world>["s"]) => { s.pr = { ...s.pr, base: "release-branch" }; }],
+    ["closed and reopened as a new pull request", (s: ReturnType<typeof world>["s"]) => { s.pr = { ...s.pr, number: 171 }; }],
+    ["the head branch renamed", (s: ReturnType<typeof world>["s"]) => { s.branchHead = null; s.pr = { ...s.pr, state: "closed" }; }],
+  ])("attack 14, PR identity: %s stops the release at the next identity check", async (_name, change) => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    s.onSleep.unshift(state => { if (rel.tasks.size > 0 && state.gate.result === null) change(state); });
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: false, reason: "drift" });
+    expect(s.calls).not.toContain("deploy");
+  });
+
+  describe("security review: a carried gate stands only on a live release predicate that applies and accepts it", () => {
+    test.each([
+      ["the authority row is missing", (rel: ReturnType<typeof releaseWorld>["rel"]) => { rel.live = () => ({ applies: false, ok: false, why: null }); }],
+      ["it belongs to a different task", (rel: ReturnType<typeof releaseWorld>["rel"]) => { rel.tipTask = "release-0.9.52-0000000"; }],
+      ["the generation was revoked", (rel: ReturnType<typeof releaseWorld>["rel"]) => { rel.state = "revoked"; }],
+      ["the generation expired", (rel: ReturnType<typeof releaseWorld>["rel"]) => { rel.live = (_task, _action) => ({ applies: true, ok: false, why: "the release approval expired" }); }],
+      ["the tip moved", (rel: ReturnType<typeof releaseWorld>["rel"]) => { rel.tipSha = "1".repeat(40); rel.tipTask = gateTaskId("0.9.52", "1".repeat(40)); }],
+    ])("%s: the release stops before anything deploys", async (_name, spoil) => {
+      const dir = stateDir();
+      const { s, adapters, rel } = releaseWorld();
+      // Carried to NEXT during the check wait, then the authority is spoiled before the carried result is acted on.
+      let moved = false;
+      s.onSleep.unshift(state => {
+        if (!moved && state.gate.approval !== null && state.gate.result === null && rel.tasks.size > 0) { moved = true; moveTo(state, NEXT); }
+        else if (moved && state.gate.approval?.basis === "carried" && state.gate.result === null) spoil(rel);
+      });
+      const outcome = await runRelease(options(dir), adapters);
+      expect(outcome.ok).toBe(false);
+      expect(s.calls).not.toContain("deploy");
+      expect(s.calls).not.toContain("complete");
+    });
+  });
+
+  describe("attack 11: every outcome of a deploy or merge is recovered", () => {
+    /** A release stopped at `step` with one operation in `state`; resuming reconciles it before anything new. */
+    const resumed = async (kind: "deploy" | "merge", state: "reserved" | "running" | "unknown", world: (w: ReturnType<typeof releaseWorld>) => void) => {
+      const dir = stateDir();
+      const w = releaseWorld();
+      // Run to CI, then stop: the authority is held, the deploy done.
+      w.s.checks.set(SHA, []);
+      const first = await runRelease(options(dir, { limits: { ci: 1 } }), w.adapters);
+      expect(first).toMatchObject({ ok: false, step: "ci" });
+      w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+      const op = { id: `${kind}-x`, kind, state, candidate: SHA, externalRef: null };
+      w.rel.ops.set(op.id, op);
+      if (kind === "merge") w.rel.state = "merge-reserved";
+      world(w);
+      const second = await runRelease(options(dir), w.adapters);
+      return { w, second, op: w.rel.ops.get(op.id)! };
+    };
+    test("deploy, reserved and never started: failed", async () => {
+      const { op } = await resumed("deploy", "reserved", () => {});
+      expect(op.state).toBe("failed");
+    });
+    test("deploy, outcome unknown with the services on the candidate (the answer lost): succeeded", async () => {
+      const { op } = await resumed("deploy", "unknown", () => {});
+      expect(op.state).toBe("succeeded");
+    });
+    test("deploy, outcome unknown with the services elsewhere: recovered, failed", async () => {
+      const { op } = await resumed("deploy", "running", w => { w.s.installed = { ...w.s.installed, services: [OLD] }; });
+      expect(op.state).toBe("failed");
+    });
+    test("merge, reserved and the PR still open at the same head: failed, back to deploying, then merged once", async () => {
+      const { op, second, w } = await resumed("merge", "reserved", () => {});
+      expect(op.state).toBe("failed");
+      expect(second).toMatchObject({ ok: true });
+      expect(w.s.calls.filter(one => one === "merge")).toHaveLength(1);
+    });
+    test("merge, outcome unknown and the PR merged from the gated head (the answer lost): succeeded, never merged twice", async () => {
+      const { op, w } = await resumed("merge", "unknown", w => { w.s.pr = { ...w.s.pr, state: "merged", mergeCommit: MERGE }; w.s.trees.set(MERGE, TREE); });
+      expect(op).toMatchObject({ state: "succeeded", externalRef: MERGE });
+      expect(w.s.calls).not.toContain("merge");
+    });
+    test("merge, outcome unknown and the PR closed some other way: the release stops for a person", async () => {
+      const { op, second } = await resumed("merge", "unknown", w => { w.s.pr = { ...w.s.pr, state: "closed" }; });
+      expect(op.state).toBe("unknown");
+      expect(second).toMatchObject({ ok: false, reason: "merge-unknown" });
+    });
+  });
+});

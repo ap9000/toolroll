@@ -22,6 +22,8 @@ function fixture(runs: Run[], receipts: Record<number, object | null>, readiness
     liveVerifyCommand: () => ({ command: COMMAND }),
     proofVerdictFor: () => null,
     proofAcceptance: () => null,
+    // A plane with no release tables: no task belongs to a release.
+    handle: { prepare: () => ({ get: () => undefined }) },
   };
   const deps = {
     verificationEvidence: (_store: unknown, _root: string, runId: number) => {

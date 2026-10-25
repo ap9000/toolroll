@@ -17,17 +17,42 @@ import { accountReachesSql } from "./project-access.js";
 const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey')";
 
 /** SQL over a `task_scope` alias and a repo expression: whether that row's approval authority stands at `now` (an SQL
- * expression, used exactly twice, as the mode and grant clauses always have). It never asks whether the row is approved.
+ * expression, used exactly three times: the mode and grant clauses, and the release's expiry). It never asks whether the row is approved.
  * COALESCE: a NULL basis would make the OR chain NULL, and NOT NULL reads as "not dead"; NULL stands on nothing. */
 export const authorityStandsSql = (scope: string, repo: string, now: string): string =>
-  `COALESCE(((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)}
+  `COALESCE((((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)}
         AND (${personSealSql(scope)} OR NOT ${automationSql(scope)} OR ${approverStandsSql(scope, repo)}))
+    OR (${scope}.approval_basis = 'carried' AND ${carrySealSql(scope)})
     OR (${scope}.approval_basis = 'mode' AND EXISTS (SELECT 1 FROM operating_mode om
           JOIN approver signer ON signer.name = om.signed_by
          WHERE om.repo = ${repo} AND om.revoked_at IS NULL AND om.absolute_expiry > ${now} AND om.digest = ${scope}.mode_digest
            AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", repo)}))
     OR (${scope}.approval_basis = 'grant' AND ${grantStandsSql(`${scope}.mode_digest`, now, repo)})
-    OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)})), 0)`;
+    OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)}))
+    AND ${releaseStandsSql(scope, now)}), 0)`;
+
+/** SQL: a `carried` seal stands only on its own carry row — this task, this approved digest, this candidate, and the
+ * reference `<authority>:<carry>` the carry transaction wrote (release-once.md). */
+export const carrySealSql = (scope: string): string =>
+  `EXISTS (SELECT 1 FROM release_carry rc2 JOIN release_authority ra2 ON ra2.id = rc2.authority
+      WHERE rc2.task_id = ${scope}.task_id AND rc2.scope_digest = ${scope}.approved_digest AND rc2.to_sha = ${scope}.candidate
+        AND ${scope}.mode_digest = ra2.id || ':' || rc2.id)`;
+
+/**
+ * SQL: a task that belongs to a release authority (its anchor, or a carried commit) dispatches only as the current
+ * generation's tip while the release is open and unexpired, with the anchor's approver still an active approver who
+ * can reach the project and the anchor's approval on its exact sealed digest. A task that belongs to no release passes.
+ * The claim and build belts read the whole predicate (scope.ts liveReleaseOf) besides.
+ */
+export const releaseStandsSql = (scope: string, now: string): string =>
+  `((NOT EXISTS (SELECT 1 FROM release_authority rx WHERE rx.anchor_task = ${scope}.task_id)
+      AND NOT EXISTS (SELECT 1 FROM release_carry cx WHERE cx.task_id = ${scope}.task_id))
+    OR EXISTS (SELECT 1 FROM release_authority ra WHERE ra.tip_task = ${scope}.task_id AND ra.state = 'open' AND ra.expires_at > ${now}
+        AND (ra.anchor_task = ${scope}.task_id OR EXISTS (SELECT 1 FROM release_carry rc WHERE rc.authority = ra.id AND rc.task_id = ${scope}.task_id))
+        AND NOT EXISTS (SELECT 1 FROM release_authority rn WHERE rn.repo = ra.repo AND rn.version = ra.version AND rn.pr = ra.pr AND rn.generation > ra.generation)
+        AND EXISTS (SELECT 1 FROM task_scope an JOIN approver ap ON ap.name = an.approved_by
+            WHERE an.task_id = ra.anchor_task AND an.approved_digest = ra.anchor_digest AND an.digest = ra.anchor_digest
+              AND ap.revoked_at IS NULL AND ap.role = 'approver' AND ${accountReachesSql("ap", "ra.repo")})))`;
 
 /** SQL: a machine made this seal — any proof at the seal's instant that isn't a person's (whatever its detail says,
  * parsed or not: fail closed), or the lead's own approval act then. */

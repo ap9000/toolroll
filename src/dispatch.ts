@@ -191,7 +191,7 @@ export function scopeApprovedForDispatch(store: Store, taskRef: number, now: Dat
        WHERE task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL
          AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
     )
-    .get(taskRef, now.toISOString(), now.toISOString());
+    .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
   return row !== undefined;
 }
 
