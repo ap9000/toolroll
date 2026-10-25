@@ -1,0 +1,90 @@
+/**
+ * Attack: change what the release extracts and runs, through the repository rather than the worktree — a filter
+ * driver in the project's local Git config, export-subst or a filter named in `$GIT_DIR/info/attributes`, a symlink in
+ * the commit that points out of the extracted tree — or through a hostile package name the deployment script would use
+ * as a path. Guard: commit-extract.ts reads blobs byte for byte (ls-tree + cat-file, no conversion), refuses config
+ * that names a command, and refuses symlinks, submodules and unnormalized paths; deploy-browser.mjs under the release
+ * reads its package name from the extracted commit and accepts only a plain name.
+ */
+import { spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { describe, expect, test } from "vitest";
+import { extractCommit, normalizedTreePath } from "../../src/commit-extract.js";
+import { git, marker, useScratch } from "./harness.js";
+
+const ROOT = resolve(import.meta.dirname, "../..");
+
+describe("attack: the repository changes what the release extracts", () => {
+  const scratch = useScratch("commit-extract");
+  /** A project whose commit holds `files`; returns its .git and head. */
+  const project = (dir: string, files: Record<string, string>) => {
+    const repo = join(dir, "project");
+    for (const [path, text] of Object.entries(files)) { mkdirSync(join(repo, path, ".."), { recursive: true }); writeFileSync(join(repo, path), text); }
+    git(repo, "init", "-q");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "approved");
+    return { repo, gitDir: join(repo, ".git"), head: git(repo, "rev-parse", "HEAD") };
+  };
+  const into = (dir: string) => { const out = join(dir, "out"); mkdirSync(out); return out; };
+
+  test("a filter driver in the project's local config refuses the extraction; nothing runs", () => {
+    const dir = scratch(), ran = join(dir, "filter-ran");
+    const p = project(dir, { "scripts/deploy-browser.mjs": "console.log('approved');\n", ".gitattributes": "*.mjs filter=evil\n" });
+    git(p.repo, "config", "filter.evil.smudge", `sh -c 'touch ${ran}; cat'`);
+    const out = into(dir);
+    expect(extractCommit(p.gitDir, p.head, out)).toMatchObject({ ok: false, message: expect.stringContaining("filter.evil.smudge") });
+    expect(existsSync(ran)).toBe(false);
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  test("export-subst or a filter named in info/attributes changes no byte", () => {
+    const dir = scratch();
+    const text = "// built from $Format:%H$\nconsole.log('approved');\n";
+    const p = project(dir, { "scripts/deploy-browser.mjs": text });
+    writeFileSync(join(p.gitDir, "info", "attributes"), "* export-subst\n*.mjs filter=other\n");
+    const out = into(dir);
+    expect(extractCommit(p.gitDir, p.head, out)).toEqual({ ok: true, files: 1 });
+    expect(readFileSync(join(out, "scripts", "deploy-browser.mjs"), "utf8")).toBe(text);
+  });
+
+  test("a symlink in the commit that points out of the tree refuses the extraction", () => {
+    const dir = scratch(), secret = marker("symlink");
+    writeFileSync(join(dir, "outside.mjs"), `console.log(${JSON.stringify(secret)});\n`);
+    const repo = join(dir, "project");
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    symlinkSync(join(dir, "outside.mjs"), join(repo, "scripts", "deploy-browser.mjs"));
+    git(repo, "init", "-q");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "link");
+    const out = into(dir);
+    expect(extractCommit(join(repo, ".git"), git(repo, "rev-parse", "HEAD"), out)).toMatchObject({ ok: false, message: expect.stringContaining("symlink") });
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  test("tree paths are normalized or refused", () => {
+    for (const path of ["scripts/deploy-browser.mjs", "a/b.c", ".gitattributes"]) expect(normalizedTreePath(path), path).toBe(true);
+    for (const path of ["", "/abs", "../up", "a/../b", "a//b", "./a", "a/.", "a\\b", "a\u0000b", "a\nb"]) expect(normalizedTreePath(path), JSON.stringify(path)).toBe(false);
+  });
+
+  test("under the release the package name comes from the extracted commit and must be a plain name", () => {
+    const dir = scratch();
+    const extraction = join(dir, "extraction"), worktree = join(dir, "worktree");
+    mkdirSync(join(extraction, "scripts"), { recursive: true });
+    for (const file of readdirSync(join(ROOT, "scripts")).filter(one => /^deploy-.*\.mjs$/.test(one))) cpSync(join(ROOT, "scripts", file), join(extraction, "scripts", file));
+    mkdirSync(worktree);
+    const runScript = () => spawnSync(process.execPath, [join(extraction, "scripts", "deploy-browser.mjs"), "--run", "1", "--source", worktree, "--git-dir", join(dir, "none"),
+      "--head", "a".repeat(40), "--plist", join(dir, "no.plist")], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", HOME: dir } });
+    // A hostile name in the worktree is never read: the extraction's plain name is, and the script goes on (to stop later).
+    writeFileSync(join(worktree, "package.json"), JSON.stringify({ name: "../../../evil" }));
+    writeFileSync(join(extraction, "package.json"), JSON.stringify({ name: "toolroll" }));
+    const fine = runScript();
+    expect(fine.stderr).not.toContain("isn't a plain package name");
+    expect(fine.status).not.toBe(0);
+    // A hostile name in the commit itself stops the script before it reads anything else.
+    for (const name of ["../../evil", "@scope/../x", "a/b/c", "@a/b/c", "/abs", ""]) {
+      writeFileSync(join(extraction, "package.json"), JSON.stringify({ name }));
+      expect(runScript().stderr, name).toContain("isn't a plain package name");
+    }
+  });
+});

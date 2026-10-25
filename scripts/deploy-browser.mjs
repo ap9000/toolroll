@@ -40,8 +40,19 @@ const phaseWanted = flag("phase", "all");
 // New names first; an install made under the older name keeps being found (nothing is moved).
 const named = (paths) => paths.find(one => existsSync(one)) ?? paths[0];
 const source = resolve(flag("source", dirname(dirname(fileURLToPath(import.meta.url)))));
-// The staged runtime installs the candidate under its own package name (toolroll; standing-orders before the rename).
-const packageName = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).name;
+// Under `toolroll release` (it passes --git-dir) this script runs from the release's own extraction of the approved
+// commit, and everything it takes from the commit comes from there; run by hand, from the checkout it lives in.
+const releaseMode = flag("git-dir") !== undefined;
+const approvedRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const packageRoot = releaseMode ? approvedRoot : source;
+// npm reads no user or global config of the person's or the checkout's.
+const NPM_ENV = { ...process.env, NODE_OPTIONS: "", npm_config_userconfig: "/dev/null", npm_config_globalconfig: "/dev/null" };
+// The staged runtime installs the candidate under its own package name (toolroll; standing-orders before the rename):
+// one optional scope, then a plain name, never a path.
+const packageName = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).name;
+if (typeof packageName !== "string" || !/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName) || packageName.includes("..")) {
+  throw Error("The candidate's package name isn't a plain package name.");
+}
 const label = flag("label", basename(named(["com.toolroll.browser", "com.standing-orders.browser"].map(one => join(homedir(), "Library", "LaunchAgents", `${one}.plist`))), ".plist"));
 const plist = flag("plist", join(homedir(), "Library", "LaunchAgents", `${label}.plist`));
 const uid = userInfo().uid;
@@ -141,7 +152,7 @@ const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTy
 function stage() {
   // Run by hand, the checkout must be clean; under the release every packed byte is proven against the commit itself.
   if (gitDirGiven === undefined) requireTrue(!execFileSync("git", [...SAFE_GIT, "-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
-  requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
+  if (!releaseMode) requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
   // Spotlight leaves staged runtimes alone (src/never-index.ts).
   try { writeFileSync(join(dirname(stageDir), ".metadata_never_index"), "", { flag: "a" }); } catch { /* only Spotlight minds */ }
@@ -149,13 +160,15 @@ function stage() {
   // clean, lockfile-verified install of the candidate commit — nothing from
   // the worktree's mutable node_modules.
   // No lifecycle scripts: packing must not run anything from the checkout.
-  const packed = execFileSync("npm", ["pack", "--silent", "--ignore-scripts", "--pack-destination", stageDir], { cwd: source, encoding: "utf8" }).trim().split("\n").pop();
+  // Under the release: packed from the clean build of the extracted commit, never from the checkout.
+  const packFrom = releaseMode ? cleanBuildOf(candidateHead).scratch : source;
+  const packed = execFileSync("npm", ["pack", "--silent", "--ignore-scripts", "--pack-destination", stageDir], { cwd: packFrom, encoding: "utf8", env: NPM_ENV }).trim().split("\n").pop();
   const runtime = join(stageDir, "runtime");
   const self = join(runtime, "node_modules", packageName);
   mkdirSync(self, { recursive: true });
   execFileSync("tar", ["-xzf", join(stageDir, packed), "--strip-components=1", "-C", self]);
   // npm pack normalises package.json; the runtime carries the checkout's exact bytes.
-  copyFileSync(join(source, "package.json"), join(self, "package.json"));
+  copyFileSync(join(packageRoot, "package.json"), join(self, "package.json"));
   writeFileSync(join(runtime, "package.json"), JSON.stringify({ name: `${packageName}-installed`, private: true, candidate: candidateHead, dependencies: { [packageName]: `file:../${packed}` } }, null, 2));
   const built = cleanBuildOf(candidateHead);
   for (const dep of built.dependencies) cpSync(join(built.scratch, dep), join(runtime, dep), { recursive: true, dereference: true, errorOnExist: false });
@@ -164,7 +177,7 @@ function stage() {
 }
 
 /** Relative paths of every production dependency the checkout resolved. */
-const productionDependencies = root => execFileSync("npm", ["ls", "--omit=dev", "--all", "--parseable"], { cwd: root, encoding: "utf8" }).trim().split("\n")
+const productionDependencies = root => execFileSync("npm", ["ls", "--omit=dev", "--all", "--parseable"], { cwd: root, encoding: "utf8", env: NPM_ENV }).trim().split("\n")
   .filter(p => p.startsWith(join(root, "node_modules") + "/")).map(p => p.slice(root.length + 1)).sort();
 
 /** The staged runtime is the verified candidate COMMIT, byte for byte — not
@@ -185,9 +198,15 @@ function cleanBuildOf(commit) {
   // symlinked form matched no dependency, staging none and proving "none" equal to "none".
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "so-deploy-")));
   requireTrue(/^[0-9a-f]{40}$/.test(commit), "The candidate commit isn't a full SHA.");
-  const archive = execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
-  execFileSync("tar", ["-x", "-C", scratch], { input: archive });
-  const env = { ...process.env, NODE_OPTIONS: "" };
+  if (releaseMode) {
+    // The release already wrote the commit's files, byte for byte, with no filter or attribute applied.
+    requireTrue(commit === candidateHead, "The extraction is of the approved commit only.");
+    cpSync(approvedRoot, scratch, { recursive: true, verbatimSymlinks: true });
+  } else {
+    const archive = execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
+    execFileSync("tar", ["-x", "-C", scratch], { input: archive });
+  }
+  const env = NPM_ENV;
   execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
   execFileSync("npm", ["run", "build", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
   const files = list(join(scratch, "dist"));
@@ -226,8 +245,10 @@ function proveStaged() {
   requireTrue(JSON.stringify(built.files) === JSON.stringify(list(nextDist)), "Staged dist inventory differs from a clean build of the candidate commit.");
   for (const f of built.files) requireTrue(built.bytes.get(f).equals(readFileSync(join(nextDist, f))), `Staged file differs from a clean build of the candidate commit: ${f}`);
   for (const f of list(self).filter(f => !f.startsWith("dist/"))) {
-    const blob = spawnSync("git", [...SAFE_GIT, ...REPO_GIT, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV });
-    requireTrue(blob.status === 0 && blob.stdout.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
+    const expected = releaseMode
+      ? (existsSync(join(approvedRoot, f)) ? readFileSync(join(approvedRoot, f)) : null)
+      : (() => { const blob = spawnSync("git", [...SAFE_GIT, ...REPO_GIT, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV }); return blob.status === 0 ? blob.stdout : null; })();
+    requireTrue(expected !== null && expected.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
   }
   const staged = stagedPackages(join(runtime, "node_modules"), "node_modules").filter(dep => dep !== `node_modules/${stagedName}`).sort();
   requireTrue(JSON.stringify(staged) === JSON.stringify(built.dependencies), `Staged dependency inventory differs from the lockfile install: ${JSON.stringify({ staged: staged.length, lockfile: built.dependencies.length })}`);
@@ -271,7 +292,7 @@ async function rehearse() {
  * launchd service or a `toolroll` (or older `standing-orders`) command runs from, the one before it (the way back),
  * the newest, one whose deploy or update is still under way for a week, and one holding a kept-aside database. */
 async function pruneStaged(keep) {
-  const { pruneStagedRuntimes, runtimesInUse } = await load(join(source, "dist"), "staged-runtimes.js");
+  const { pruneStagedRuntimes, runtimesInUse } = await load(releaseMode ? nextDist : join(source, "dist"), "staged-runtimes.js");
   return pruneStagedRuntimes(stateDir, new Date(), { inUse: () => runtimesInUse(keep.filter(Boolean)) }).removed;
 }
 

@@ -233,7 +233,13 @@ Implementation review (round 3) tightened this:
   approved commit itself (`git archive <sha>` from the project's own Git directory as Toolroll records it, never the
   worktree's `.git` pointer; no replacement objects, lazy fetch, global/system config or hooks) into a fresh folder and
   runs the deployment script (and its recovery) from there, with `--head`/`--git-dir` so the script's own git reads
-  use the same trusted directory. `npm pack` runs without lifecycle scripts. A flow's latest decision of
+  use the same trusted directory. `npm pack` runs without lifecycle scripts.
+- Round 5: the extraction is no-conversion (`src/commit-extract.ts`: `ls-tree -r -z` + `cat-file --batch`, written by
+  Toolroll, regular files only at 644/755), after refusing project config that names a command or includes a file
+  (teardown-git.ts `commandSetting`); symlinks, submodules and unnormalized paths refuse it. node runs the script by its
+  real path inside the extraction. Under the release, deploy-browser.mjs takes package.json and the package name
+  (validated as a plain name) from the extraction, packs from the clean build of it, compares packed files with it,
+  and runs npm with no user or global config. A flow's latest decision of
   any kind governs (a send-back takes an earlier yes back). Chat approval and `task wait` read approval the way
   dispatch does. A scope whose approval kind is left out is not approved.
 

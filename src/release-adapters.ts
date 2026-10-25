@@ -21,7 +21,7 @@ import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import { databasePath, Store, type Database } from "./store.js";
 import { deploymentGate } from "./deploy-gate.js";
-import { checkoutGitEnv, HARDENED_GIT_ARGS } from "./agent-fence.js";
+import { extractCommit } from "./commit-extract.js";
 
 export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
@@ -216,28 +216,22 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     } catch { return null; } finally { db.close(); }
   };
   /**
-   * The approved commit, extracted by this runtime into a fresh folder it owns: `git archive <full sha>` from the
-   * PROJECT's own Git directory as Toolroll records it (realpath, a real directory — never the candidate worktree's
-   * `.git` pointer or anything in that worktree), with no replacement objects, no lazy fetch, no global or system
-   * config, no hooks or fsmonitor. The deployment script runs from here, so neither a changed, flagged, swapped or
-   * untracked file in the worktree nor its Git pointer can change what runs.
+   * The approved commit, written by this runtime into a fresh folder it owns (commit-extract.ts): every regular file of
+   * that full SHA, read byte for byte from the PROJECT's own Git directory as Toolroll records it (realpath, a real
+   * directory — never the candidate worktree's `.git` pointer or anything in that worktree), with no filter, attribute,
+   * replacement object, lazy fetch, hook or outside config, and no symlink or submodule. The deployment script runs
+   * from here, so nothing changed, flagged, swapped or untracked in the worktree, nor its Git pointer, changes what runs.
    */
   const extractApproved = async (repo: string, head: string): Promise<{ ok: true; dir: string; gitDir: string } | { ok: false; message: string }> => {
-    if (!/^[0-9a-f]{40}$/.test(head)) return { ok: false, message: `The approved commit ${head} isn't a full SHA.` };
     let gitDir: string;
     try {
       const named = join(realpathSync(repo), ".git");
       if (!lstatSync(named).isDirectory()) return { ok: false, message: `${repo}'s Git directory isn't a plain directory, so the approved commit can't be read from it.` };
       gitDir = realpathSync(named);
     } catch { return { ok: false, message: `${repo} has no Git directory to read the approved commit from.` }; }
-    const dir = mkdtempSync(join(resolved(tmpdir()), "toolroll-deployer-"));
-    const tar = join(dir, "..", `${basename(dir)}.tar`);
-    const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
-    const archived = await run("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "-c", "core.attributesFile=/dev/null", "archive", "--format=tar", "-o", tar, head], { env });
-    if (archived.code !== 0) { rmSync(dir, { recursive: true, force: true }); rmSync(tar, { force: true }); return { ok: false, message: `The approved commit ${head.slice(0, 7)} couldn't be read from ${repo}: ${tail(archived)}` }; }
-    const unpacked = await run("tar", ["-x", "-f", tar, "-C", dir], { env: cleanEnv() });
-    rmSync(tar, { force: true });
-    if (unpacked.code !== 0) { rmSync(dir, { recursive: true, force: true }); return { ok: false, message: `The approved commit couldn't be unpacked: ${tail(unpacked)}` }; }
+    const dir = realpathSync(mkdtempSync(join(resolved(tmpdir()), "toolroll-deployer-")));
+    const extracted = extractCommit(gitDir, head, dir);
+    if (!extracted.ok) { rmSync(dir, { recursive: true, force: true }); return { ok: false, message: `The approved commit couldn't be prepared: ${extracted.message}` }; }
     return { ok: true, dir, gitDir };
   };
   /** The approved commit's own deployment script, from the pristine extraction; the worktree is only its --source. */
@@ -245,7 +239,13 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     const extracted = await extractApproved(commit.repo, commit.head);
     if (!extracted.ok) return { code: 1, stdout: "", stderr: extracted.message };
     try {
-      return await run(process.execPath, [join(extracted.dir, "scripts", "deploy-browser.mjs"), "--run", String(runId), "--stage", stage, "--source", worktree,
+      // The script node runs is the extraction's own regular file, by its real path inside the folder.
+      let script: string;
+      try {
+        script = realpathSync(join(extracted.dir, "scripts", "deploy-browser.mjs"));
+        if (!script.startsWith(extracted.dir + "/") || !lstatSync(script).isFile()) throw new Error("outside");
+      } catch { return { code: 1, stdout: "", stderr: "The approved commit has no deployment script of its own." }; }
+      return await run(process.execPath, [script, "--run", String(runId), "--stage", stage, "--source", worktree,
         "--head", commit.head, "--git-dir", extracted.gitDir, ...extra], {
         cwd: extracted.dir, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000,
       });
