@@ -12,6 +12,11 @@
   your project's read-deny list, and the run's proxy as the only way out.
   `toolroll doctor` and Settings → Project → Home folder name the engine and
   its version. Codex builds keep Codex's own sandbox with the same rules.
+- **Checks that start Chrome don't run sandboxed on macOS yet.** The sandbox
+  runtime has no setting for the service Chromium registers at startup, so a
+  Playwright or browser check fails inside it. Until a follow-up adds that one
+  rule, set such a project's check access to **Not sandboxed** in
+  Settings → Project → Check access.
 - **Your home folder is readable to new scopes, as in the sandbox runtime.**
   A project hides what it wants back with Settings → Project → **Home
   folder**, or `toolroll project sandbox --repo <p> --read-deny "~/.ssh"`.
