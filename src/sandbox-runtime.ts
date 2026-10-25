@@ -47,8 +47,8 @@ export type SrtTerms = {
   readConfig: FsReadRestrictionConfig;
   writeConfig: FsWriteRestrictionConfig;
   allowMachLookup: string[];
-  /** macOS: the launch may reach the keychain's services (securityd). Only a build's agent and a check with sign-ins:
-   * every other launch is denied them (SEATBELT_NO_KEYCHAIN). */
+  /** macOS: the launch may reach the keychain's services (securityd). Only a build's agent: every other launch is
+   * denied them (SEATBELT_NO_KEYCHAIN). */
   keychain?: boolean;
   /** macOS: a project check's launch, whose Chromium may register and reach its own service (SEATBELT_CHROMIUM). */
   browser?: boolean;
@@ -126,7 +126,7 @@ export const SEATBELT_NO_OTHER_TERMINAL = [
 ].join("\n");
 
 /**
- * Last in every launch's profile but a build agent's and a check with sign-ins: the keychain's services. The runtime's
+ * Last in every launch's profile but a build agent's: the keychain's services. The runtime's
  * baseline lets every sandboxed process ask securityd, so it reads the login keychain's items whose access list lets
  * any program read them (anthropics/sandbox-runtime#755). Build agents keep it (Claude Code signs in from the keychain).
  */

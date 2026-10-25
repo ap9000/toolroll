@@ -11,6 +11,10 @@
   a headless browser check can go back to **Sandboxed** in Settings → Project
   → Check access. Chrome for Testing (`channel: "chromium"`, headed runs)
   still needs **Not sandboxed**.
+- **Checks with sign-ins no longer reach your keychain.** Toolroll reads
+  Claude Code's and gh's sign-ins from the keychain itself, outside the
+  sandbox, and hands the check just those tokens in its environment. A check
+  gets Claude's current access token and can't renew it.
 - **A wrong password on an approval says "That password didn't match."**
   instead of "not approved: not-an-approver". Someone who isn't an approver
   gets the same answer.

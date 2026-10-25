@@ -25,6 +25,7 @@ import { classifyTerminal } from "./exhaustion.js";
 import { liftAuthPause } from "./provider-auth.js";
 import { attestProvider, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
+import { spawnSync } from "node:child_process";
 import { currentContainment } from "./containment.js";
 import type { Store } from "./store.js";
 import type { RunOptions } from "./exec.js";
@@ -1110,8 +1111,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
           ...options,
           fence: fenced.fence,
           // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
-          // With sign-ins, the keychain too: Claude Code keeps its macOS sign-in there (the project's explicit grant).
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network, keychain: true },
+          // Never the keychain: the sign-ins kept there come in the environment, read outside (keychainSignIns).
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network },
           confinement: "required",
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1172,8 +1173,8 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
           ...options,
           fence: launch.fence,
           // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
-          // With sign-ins, the keychain too: Claude Code keeps its macOS sign-in there (the project's explicit grant).
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network, keychain: true },
+          // Never the keychain: the sign-ins kept there come in the environment, read outside (keychainSignIns).
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network },
           confinement: launch.confinement,
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1259,14 +1260,54 @@ const SIGN_INS_OMITTED_ENV: readonly string[] = ["CLAUDE_CONFIG_DIR"];
  * under: open, or its allowlist through a proxy of its own (on Linux, relayed in by the sandbox runtime). Nothing about it is
  * started unless all of it is.
  */
-export async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[], platform: NodeJS.Platform = process.platform): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
+/**
+ * macOS: the sign-ins a check with sign-ins needs that live in the keychain, not in files: Claude Code's
+ * ("Claude Code-credentials", its current access token as CLAUDE_CODE_OAUTH_TOKEN) and gh's ("gh:github.com", as
+ * GH_TOKEN). Read here, by Toolroll, outside the sandbox, and handed to the check in its environment, so the check never
+ * reaches securityd (sandbox-runtime.ts SEATBELT_NO_KEYCHAIN) and nothing else in the keychain. The check can't renew
+ * Claude's token: one that has expired fails its sign-in. A value that isn't a plain token is left out.
+ */
+export const KEYCHAIN_SIGN_INS: readonly { service: string; env: string; token(secret: string): string | null }[] = [
+  { service: "Claude Code-credentials", env: "CLAUDE_CODE_OAUTH_TOKEN", token: secret => {
+    try { const token = (JSON.parse(secret) as { claudeAiOauth?: { accessToken?: unknown } }).claudeAiOauth?.accessToken; return typeof token === "string" ? token : null; } catch { return null; }
+  } },
+  // go-keyring (gh's) may keep it base64-encoded behind a prefix.
+  { service: "gh:github.com", env: "GH_TOKEN", token: secret => secret.startsWith("go-keyring-base64:") ? Buffer.from(secret.slice("go-keyring-base64:".length), "base64").toString("utf8") : secret },
+];
+const PLAIN_TOKEN = /^[A-Za-z0-9._~+/=-]{8,4096}$/;
+
+/** One keychain item's secret by its service, read with the system's `security` (null: none, or it can't be read). A
+ * keychain file may be named (tests: a throwaway one); never the item's value in an argument. */
+export function readKeychainSecret(service: string, keychain?: string): string | null {
+  const read = spawnSync("/usr/bin/security", ["find-generic-password", "-s", service, "-w", ...keychain === undefined ? [] : [keychain]],
+    { encoding: "utf8", timeout: 10_000, env: { PATH: "/usr/bin:/bin", HOME: homedir() }, stdio: ["ignore", "pipe", "ignore"] });
+  return read.status === 0 && typeof read.stdout === "string" ? read.stdout.replace(/\n$/, "") : null;
+}
+
+/** The keychain's sign-ins as a check's environment (macOS only; elsewhere, for anything missing, and where Toolroll
+ * keeps nothing in the keychain (TOOLROLL_SECRET_STORE=files: the test suite), nothing). */
+export function keychainSignIns(platform: NodeJS.Platform = process.platform, read?: (service: string) => string | null): Record<string, string> {
+  if (platform !== "darwin") return {};
+  if (read === undefined && process.env["TOOLROLL_SECRET_STORE"] === "files") return {};
+  read ??= service => readKeychainSecret(service);
+  const env: Record<string, string> = {};
+  for (const one of KEYCHAIN_SIGN_INS) {
+    const secret = read(one.service);
+    const token = secret === null ? null : one.token(secret);
+    if (token !== null && PLAIN_TOKEN.test(token)) env[one.env] = token;
+  }
+  return env;
+}
+
+export async function signInsLaunch(store: Store, own: string, temp: string, checkout: string, policy: NetworkProfile, gitPaths: readonly string[], platform: NodeJS.Platform = process.platform,
+  keychain: () => Record<string, string> = () => keychainSignIns(platform)): Promise<{ grants: SignInGrants; network: NetworkFence; env: Record<string, string>; close(): Promise<void> } | { problem: string }> {
   if (!signInsAvailable(platform)) return { problem: "Sign-ins can't be shared with checks here, so nothing ran." };
   const home = homedir();
   const grants = signInGrants(home, checkout, platform);
   let egress: EgressProxy | null = null;
   const close = async () => { await egress?.close(); };
   try {
-    const env: Record<string, string> = { CODEX_HOME: join(home, ".codex"), GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config") };
+    const env: Record<string, string> = { CODEX_HOME: join(home, ".codex"), GH_CONFIG_DIR: join(home, ".config", "gh"), XDG_CONFIG_HOME: join(home, ".config"), ...keychain() };
     if (policy.mode === "open") return { grants, network: { mode: "open" }, env, close };
     // Exactly the project's network: the services the sign-ins are for are reached only if the operator allowed their
     // hosts (check-access.ts signInHostsMissing says which are missing; never added here).
