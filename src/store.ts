@@ -779,7 +779,12 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v134 adds, and changes no saved row: who gave each yes (docs/plans/approval-policy.md) — a protected-work vote's proof
 // (scope_approval_vote.proof) and a flow decision's authority (flow_event.authority), each NULL on saved rows: no proof
 // on record. Saved approvals a machine credential gave are read for what they are (approval-authority.ts), not rewritten.
-export const SCHEMA_VERSION = 134;
+// v135 adds, and changes no saved row: one approval per release (docs/plans/release-once.md) — a release's authority
+// record, its carried commits and its deploy and merge operations (release_authority, release_carry,
+// release_operation), each release check attempt's intended mode, sealed before it runs (release_check_attempt), the
+// nightly full check on main and its open failures (nightly_check, main_check_failure), and a scope's release terms
+// (task_scope.release_terms_json; saved rows read NULL: no release terms).
+export const SCHEMA_VERSION = 135;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -917,7 +922,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1043,6 +1048,121 @@ export const V134_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
   scope_approval_vote: { proof: { definition: "TEXT", saved: "NULL" } },
   flow_event: { authority: { definition: "TEXT", saved: "NULL" } },
 });
+/** v135 (docs/plans/release-once.md): a scope's release terms, part of its digest when present. Saved rows read NULL. */
+export const V135_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_scope: { release_terms_json: { definition: "TEXT", saved: "NULL" } },
+});
+/**
+ * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
+ * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
+ * epoch goes up on every takeover. `release_carry` records each later commit carried under it, `release_operation` each
+ * deploy or merge that can't be undone. `release_check_attempt` seals a check's intended mode, inventory and context
+ * before it runs. `main_check_failure` keeps one row per item the nightly full check on main found failing, until a
+ * qualifying full pass clears that exact item; `nightly_check` records each nightly firing.
+ */
+export const RELEASE_ONCE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS release_authority (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo            TEXT NOT NULL,
+  generation      INTEGER NOT NULL,
+  previous        INTEGER REFERENCES release_authority(id),
+  version         TEXT NOT NULL,
+  pr              INTEGER NOT NULL,
+  branch          TEXT NOT NULL,
+  base            TEXT NOT NULL,
+  anchor_task     TEXT NOT NULL,
+  anchor_digest   TEXT NOT NULL,
+  approved_sha    TEXT NOT NULL,
+  approved_tree   TEXT NOT NULL,
+  artifact_digest TEXT,
+  tip_sha         TEXT NOT NULL,
+  tip_task        TEXT NOT NULL,
+  policy_json     TEXT NOT NULL,
+  policy_digest   TEXT NOT NULL,
+  verify_command  INTEGER NOT NULL,
+  verify_digest   TEXT NOT NULL,
+  access_digest   TEXT NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ('open','deploying','merge-reserved','merged','revoked','expired','superseded')),
+  rev             INTEGER NOT NULL DEFAULT 0,
+  lease_owner     TEXT,
+  lease_epoch     INTEGER NOT NULL DEFAULT 0,
+  lease_expires   TEXT,
+  expires_at      TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  ended_at        TEXT,
+  ended_by        TEXT,
+  UNIQUE (repo, version, pr, generation)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS release_authority_live ON release_authority (repo, version, pr)
+  WHERE state IN ('open','deploying','merge-reserved');
+CREATE INDEX IF NOT EXISTS release_authority_anchor ON release_authority (anchor_task);
+CREATE TABLE IF NOT EXISTS release_carry (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  authority       INTEGER NOT NULL REFERENCES release_authority(id),
+  task_id         TEXT NOT NULL UNIQUE,
+  scope_digest    TEXT NOT NULL,
+  request_id      TEXT NOT NULL,
+  from_sha        TEXT NOT NULL,
+  to_sha          TEXT NOT NULL,
+  to_tree         TEXT NOT NULL,
+  artifact_digest TEXT NOT NULL,
+  commits_json    TEXT NOT NULL,
+  changed_lines   INTEGER NOT NULL,
+  files           INTEGER NOT NULL,
+  churn           INTEGER NOT NULL,
+  runtime         TEXT NOT NULL,
+  proved_at       TEXT NOT NULL,
+  UNIQUE (authority, to_sha)
+);
+CREATE TABLE IF NOT EXISTS release_operation (
+  id              TEXT PRIMARY KEY,
+  authority       INTEGER NOT NULL REFERENCES release_authority(id),
+  kind            TEXT NOT NULL CHECK (kind IN ('deploy','merge')),
+  task_id         TEXT NOT NULL,
+  candidate       TEXT NOT NULL,
+  epoch           INTEGER NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ('reserved','running','succeeded','failed','unknown')),
+  external_ref    TEXT,
+  reserved_at     TEXT NOT NULL,
+  finished_at     TEXT,
+  detail          TEXT
+);
+CREATE INDEX IF NOT EXISTS release_operation_open ON release_operation (authority, state);
+CREATE TABLE IF NOT EXISTS release_check_attempt (
+  run              INTEGER PRIMARY KEY REFERENCES run(id),
+  authority        INTEGER REFERENCES release_authority(id),
+  mode             TEXT NOT NULL CHECK (mode IN ('full','targeted')),
+  base_run         INTEGER REFERENCES run(id),
+  plan_digest      TEXT,
+  snapshot_digest  TEXT,
+  inventory_digest TEXT NOT NULL,
+  context_digest   TEXT NOT NULL,
+  nonce_hash       TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  settled_at       TEXT
+);
+CREATE TABLE IF NOT EXISTS main_check_failure (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo            TEXT NOT NULL,
+  sha             TEXT NOT NULL,
+  run             INTEGER NOT NULL,
+  item            TEXT NOT NULL,
+  opened_at       TEXT NOT NULL,
+  cleared_by_run  INTEGER,
+  cleared_at      TEXT,
+  UNIQUE (repo, run, item)
+);
+CREATE INDEX IF NOT EXISTS main_check_failure_open ON main_check_failure (repo) WHERE cleared_at IS NULL;
+CREATE TABLE IF NOT EXISTS nightly_check (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo            TEXT NOT NULL,
+  sha             TEXT NOT NULL,
+  task            TEXT,
+  run             INTEGER,
+  outcome         TEXT,
+  at              TEXT NOT NULL
+);
+`;
 /** v130: a project's network (an approver's setting, egress.ts ProjectNetwork as JSON) and the installation's choice
  * whether an agent may run where no OS confinement exists (one row; 0 until an instance operator turns it on). */
 export const CONFINEMENT_SCHEMA = `
@@ -5177,6 +5297,11 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   mergeCredentialsForV118(db);
   // v134: a vote's proof and a flow decision's authority (V134_ADDED_COLUMNS: saved rows read NULL, no proof on record).
   for (const [table, columns] of Object.entries(V134_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
+  // v135: one approval per release (new tables only) and a scope's release terms (V135_ADDED_COLUMNS: saved rows NULL).
+  db.exec(RELEASE_ONCE_SCHEMA);
+  for (const [table, columns] of Object.entries(V135_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
@@ -23973,4 +24098,46 @@ function sealedAs(store: Store, scope: Scope): Scope {
   if (origin.origin === "machine") return { ...scope, approvalBasis: origin.lead ? "lead" : "unknown" };
   if (origin.origin === "automation") return { ...scope, approvalBasis: "schedule" };
   return scope;
+}
+
+// ------------------------------------------------------------------------------------------------------------------
+// One approval per release (docs/plans/release-once.md, schema v135). Free functions over the store, kept together at
+// the end of this file.
+
+/** A release check attempt, sealed before its command runs (release_check_attempt). */
+export type CheckAttempt = {
+  run: number;
+  authority: number | null;
+  mode: "full" | "targeted";
+  baseRun: number | null;
+  planDigest: string | null;
+  snapshotDigest: string | null;
+  inventoryDigest: string;
+  contextDigest: string;
+  nonceHash: string;
+  createdAt: string;
+  settledAt: string | null;
+};
+
+function readCheckAttempt(row: Record<string, unknown>): CheckAttempt {
+  const text = (key: string) => row[key] == null ? null : String(row[key]);
+  return {
+    run: Number(row["run"]), authority: row["authority"] == null ? null : Number(row["authority"]),
+    mode: row["mode"] === "targeted" ? "targeted" : "full", baseRun: row["base_run"] == null ? null : Number(row["base_run"]),
+    planDigest: text("plan_digest"), snapshotDigest: text("snapshot_digest"), inventoryDigest: String(row["inventory_digest"]),
+    contextDigest: String(row["context_digest"]), nonceHash: String(row["nonce_hash"]), createdAt: String(row["created_at"]), settledAt: text("settled_at"),
+  };
+}
+
+/** Seal a check attempt before its command is spawned. Once written it never changes (bar its settled mark). */
+export function recordCheckAttempt(store: Store, attempt: Omit<CheckAttempt, "createdAt" | "settledAt">, now: Date): void {
+  store.handle.prepare(`INSERT INTO release_check_attempt (run, authority, mode, base_run, plan_digest, snapshot_digest, inventory_digest, context_digest, nonce_hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(attempt.run, attempt.authority, attempt.mode, attempt.baseRun, attempt.planDigest, attempt.snapshotDigest,
+    attempt.inventoryDigest, attempt.contextDigest, attempt.nonceHash, now.toISOString());
+}
+
+/** A run's sealed check attempt, or null. */
+export function checkAttemptOf(store: Store, run: number): CheckAttempt | null {
+  const row = store.handle.prepare("SELECT * FROM release_check_attempt WHERE run = ?").get(run);
+  return row === undefined ? null : readCheckAttempt(row);
 }

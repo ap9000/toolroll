@@ -11,6 +11,7 @@ import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
+import { prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
 import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
 import { flowGoalCuts } from "./flow-engine.js";
@@ -2599,6 +2600,8 @@ async function settleProof(
   const batched = repo !== null && chosenCheck !== null && batchesFullCheck(store, repo, chosenCheck.level, configured);
   const gateCommand = batched ? null : configured;
   let verifyCommand: VerifyCommandFacts;
+  let checkAttempt: PreparedAttempt | null = null;
+  const verification: { last: ExecResult | null } = { last: null };
   const checkLog: string[] = [];
   const checkOutcomes: string[] = [];
   const checkSuites: RunCheckSuite[] = [];
@@ -2637,6 +2640,11 @@ async function settleProof(
   } else {
     const verifyRunner = request.verify ?? run;
     const verifyShell = approvedCommandShell(configured.command);
+    // A Full check of a prepared candidate (a release gate, the nightly check): its attempt is sealed before the command
+    // runs — intended mode, nonce, inventory, context — and the handshake goes on its stdin (check-report.ts).
+    checkAttempt = repo !== null && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.candidate ?? null) !== null
+      ? prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access: checkLaunchOf(store, runId, captured.effective.profile).access }, now())
+      : null;
     const checkProgress = new CheckProgressTracker(snapshot => {
       store.saveCheckProgress(runId, snapshot, now());
     });
@@ -2655,6 +2663,7 @@ async function settleProof(
         },
         envAllowlist: SETUP_ENV_ALLOWLIST,
         omitEnv: SETUP_ENV_DENYLIST,
+        ...(checkAttempt === null ? {} : { stdin: checkAttempt.stdin }),
         onStdout: chunk => { streamed.stdout = true; checkProgress.feed(chunk, "stdout"); },
         onStderr: chunk => { streamed.stderr = true; checkProgress.feed(chunk, "stderr"); },
       }));
@@ -2665,6 +2674,7 @@ async function settleProof(
       checkOutcomes.push(attemptOutcome(label, result));
       noteCheckSuite(label, result);
       checkLog.push(attemptLog(label, configured.command, result));
+      verification.last = result;
       return result;
     };
     // A checkout still linking a shared copy that no longer matches its
@@ -2812,6 +2822,11 @@ async function settleProof(
       }
     }
     checkProgress.finish();
+    // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
+    const last = verification.last;
+    if (checkAttempt !== null && last !== null && !last.notFound) {
+      sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
+    }
   }
   if (configured !== null && checkLog.length > 0) {
     const summary = `=== Attempt summary ===\n${checkOutcomes.length === 0 ? "No command started." : checkOutcomes.map(one => `- ${one}`).join("\n")}`;

@@ -59,6 +59,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { limiter } from "./provider-gate.mjs";
 import { runSuite, removeOnExit } from "./suite-lifecycle.mjs";
+import { result } from "./check-results.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
@@ -604,6 +605,12 @@ async function main() {
   console.log(`Upgrade path: ${versions.join(", ")} → ${candidateVersion} (${candidate})`);
   removeOnExit(work, { keep: args.includes("--keep") });
   let failed = 0;
+  // The release check's inventory of versions, before any runs (check-results.mjs: only to its own pipe).
+  result({ kind: "upgrade-inventory", versions });
+  // A release check keeps going past a failure (docs/plans/release-once.md: no fail-fast on release runs); run by hand,
+  // the first failure still stops the rest.
+  const keepGoing = process.env.TOOLROLL_CHECK_KEEP_GOING === "1";
+  const finished = new Set();
   try {
     const tarball = pack(candidate, work);
     toolsDir(work); // Shared immutable tools, made before workers can race to create them.
@@ -615,12 +622,15 @@ async function main() {
       const one = await runSuite({ command: process.execPath,
         args: [SELF, "--path", JSON.stringify({ version, candidate, candidateDist, candidateVersion, tarball, work })],
         signal: abort.signal,
-        onExit: code => { if (code !== 0 && !abort.signal.aborted) { console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: exit ${code}`); abort.abort(); } },
+        onExit: code => { if (code !== 0 && !abort.signal.aborted) { console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: exit ${code}`); if (!keepGoing) abort.abort(); } },
       });
       console.log(one.output.toString());
       if (one.code !== 0) { failed++; console.log(`✗ ${version} → ${candidateVersion}: exit ${one.code}; ${Math.round(one.ms / 1000)} s`); }
+      if (!one.cancelled) { finished.add(version); result({ kind: "upgrade-version", version, state: one.code === 0 ? "passed" : "failed" }); }
     })));
   } finally {
+    for (const version of versions) if (!finished.has(version)) result({ kind: "upgrade-version", version, state: "not-run" });
+    result({ kind: "upgrade-end" });
     if (args.includes("--keep")) console.log(`kept: ${work}`); else rmSync(work, { recursive: true, force: true });
   }
   console.log(failed === 0 ? `upgrade path: ${versions.length} of ${versions.length} versions updated with no manual step` : `upgrade path: ${failed} of ${versions.length} versions failed`);

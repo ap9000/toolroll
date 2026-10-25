@@ -6,6 +6,12 @@
  * The first hard failure stops other parts. Every selected part still must pass.
  *
  * node scripts/release-check.mjs [--full] [--real] [--base <ref>] [--plan]
+ *
+ * Run by the plane (docs/plans/release-once.md), the check reads `{"nonce","mode","plan","watch"}` from its stdin and
+ * then: keeps going past a failure (no fail-fast on release runs: cancel, the part timeout, the process-exit checks and
+ * "a failed build starts no journeys" stay), reads every result only from the fd-3 pipes of the harness processes it
+ * starts (never from a file on disk; their children get no stdin and no fd 3), runs a targeted plan exactly when given
+ * one, and prints its report as its LAST stdout line: `TOOLROLL_CHECK_REPORT <json>`, carrying the nonce.
  */
 import { execFileSync } from "node:child_process";
 import { availableParallelism, loadavg, tmpdir } from "node:os";
@@ -14,6 +20,7 @@ import { basename, dirname, join } from "node:path";
 import { gateWords, openGate } from "./provider-gate.mjs";
 import { passedCandidateCI, macUnitFiles } from "./release-check-ci.mjs";
 import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
+import { createHash } from "node:crypto";
 
 const args = process.argv.slice(2);
 const full = args.includes("--full") || process.env.TOOLROLL_FULL_CHECK === "1";
@@ -146,8 +153,20 @@ export function upgradeChanges(base, readGit) {
   } catch { return null; }
 }
 
-/** Scripted failures are final; real-model runs retain their normal retry policy. */
-export function journeyEnv(kind, gate, env = process.env) {
+/** Scripted failures are final; real-model runs retain their normal retry policy. `keepGoing` (a release run): a failed
+ * group or journey stops nothing else, and a scripted failure is still never retried. */
+export function journeyEnv(kind, gate, env = process.env, keepGoing = false) {
+  if (keepGoing) return kind === "real" ? {
+    TOOLROLL_RELEASE_FAIL_FAST: undefined,
+    TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: undefined,
+    TOOLROLL_CHECK_KEEP_GOING: "1",
+    TOOLROLL_CHECK_GATE: gate.dir,
+  } : {
+    TOOLROLL_RELEASE_FAIL_FAST: undefined,
+    TOOLROLL_RELEASE_NO_RETRY: "1",
+    TOOLROLL_CHECK_KEEP_GOING: "1",
+    TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: env.TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS || "90",
+  };
   return kind === "real" ? {
     TOOLROLL_RELEASE_FAIL_FAST: undefined,
     TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: undefined,
@@ -156,6 +175,106 @@ export function journeyEnv(kind, gate, env = process.env) {
     TOOLROLL_RELEASE_FAIL_FAST: "1",
     TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS: env.TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS || "90",
   };
+}
+
+/**
+ * The plane's handshake, read whole from stdin (bounded in size and time): `{"nonce","mode","plan","watch"}`. Null when
+ * stdin is a terminal or empty, or what it holds isn't a handshake — a person's own run, which reports nothing.
+ */
+export async function readHandshake(input = process.stdin, { timeoutMs = 10_000, maxBytes = 1024 * 1024 } = {}) {
+  if (input.isTTY) return null;
+  const text = await new Promise(resolve => {
+    const chunks = [];
+    let size = 0, done = false;
+    const finish = value => { if (done) return; done = true; clearTimeout(timer); resolve(value); };
+    const timer = setTimeout(() => { finish(null); try { input.destroy(); } catch { /* gone */ } }, timeoutMs);
+    timer.unref?.();
+    input.on("data", chunk => { size += chunk.length; if (size > maxBytes) { finish(null); try { input.destroy(); } catch { /* gone */ } } else chunks.push(chunk); });
+    input.on("end", () => finish(Buffer.concat(chunks).toString("utf8")));
+    input.on("error", () => finish(null));
+  });
+  return parseHandshake(text);
+}
+
+/** A handshake from its text, checked: a 64-hex nonce, a mode, a plan (an object, targeted only) and a watch list. */
+export function parseHandshake(text) {
+  if (typeof text !== "string" || text.trim() === "") return null;
+  let value;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  if (typeof value.nonce !== "string" || !/^[0-9a-f]{64}$/.test(value.nonce)) return null;
+  if (value.mode !== "full" && value.mode !== "targeted") return null;
+  const plan = value.plan ?? null;
+  if (value.mode === "targeted" ? plan === null || typeof plan !== "object" || Array.isArray(plan) : plan !== null) return null;
+  const watch = Array.isArray(value.watch) ? value.watch.filter(one => typeof one === "string") : [];
+  if (plan !== null) {
+    const lists = ["units", "sanity", "versions", "parts", "required"];
+    if (lists.some(key => !Array.isArray(plan[key]) || plan[key].some(one => typeof one !== "string"))) return null;
+    if (!Array.isArray(plan.groups) || plan.groups.some(one => one === null || typeof one !== "object" || typeof one.script !== "string" || typeof one.kind !== "string" || !Array.isArray(one.groups))) return null;
+  }
+  return { nonce: value.nonce, mode: value.mode, plan, watch, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+}
+
+/** A unit file from the identities the plane asks about (`unit:<file>::<name>`, `file:<file>`). */
+const fileOfIdentity = identity => /^unit:(.+?)::/.exec(identity)?.[1] ?? /^file:(.+)$/.exec(identity)?.[1] ?? null;
+
+/**
+ * The report from what the harness processes said on their pipes: every part, the unit suite (each file, and the
+ * identities that failed, were skipped, passed on a retry or were asked about), each journey run and the upgrade path.
+ */
+export function buildReport({ handshake, exitCode, parts, unitLines, reusedFromCI, journeyRuns, upgradeLines }) {
+  const watched = new Set([...(handshake.watch ?? []), ...(handshake.plan?.required ?? [])]);
+  const watchedFiles = new Set([...watched].map(fileOfIdentity).filter(one => one !== null));
+  const units = unitLines === null ? null : (() => {
+    const files = new Map(), identities = new Map();
+    let finished = false, runErrors = 0;
+    for (const line of unitLines) {
+      if (line.kind === "unit-file" && typeof line.file === "string") files.set(line.file, { file: line.file, state: ["passed", "failed", "skipped"].includes(line.state) ? line.state : "failed",
+        passed: Number(line.passed) || 0, failed: Number(line.failed) || 0, skipped: Number(line.skipped) || 0, flaky: line.flaky === true });
+      else if (line.kind === "unit-case" && typeof line.file === "string" && typeof line.name === "string" && ["passed", "failed", "skipped"].includes(line.state)) {
+        const id = `unit:${line.file}::${line.name}`;
+        if (line.state !== "passed" || line.flaky === true || watchedFiles.has(line.file) || watched.has(id)) {
+          // A name twice in one file (a test.each with the same title) keeps its worst outcome.
+          const before = identities.get(id);
+          if (before === undefined || before.state === "passed" || (before.state === "skipped" && line.state === "failed")) identities.set(id, { file: line.file, name: line.name, state: line.state, flaky: line.flaky === true });
+        }
+      } else if (line.kind === "unit-end") { finished = true; runErrors = Number(line.errors) || 0; }
+    }
+    return { reusedFromCI, finished, runErrors, files: [...files.values()].sort((a, b) => a.file < b.file ? -1 : 1), identities: [...identities.values()] };
+  })();
+  const journeys = journeyRuns.map(run => {
+    const groups = new Map();
+    let finished = false;
+    for (const line of run.lines) {
+      if (line.kind === "journey-inventory" && Array.isArray(line.groups)) {
+        for (const group of line.groups) if (typeof group === "string" && !groups.has(group)) groups.set(group, { group, state: "not-run", retried: false, unattributed: false, journeys: [] });
+      } else if (line.kind === "journey-group" && typeof line.group === "string") groups.set(line.group, { group: line.group, state: ["passed", "failed", "not-run"].includes(line.state) ? line.state : "failed",
+        retried: line.retried === true, unattributed: line.unattributed === true,
+        journeys: Array.isArray(line.results) ? line.results.filter(one => typeof one?.name === "string" && ["passed", "failed", "skipped"].includes(one.state)).map(one => ({ name: one.name, state: one.state })) : [] });
+      else if (line.kind === "journey-end") finished = true;
+    }
+    return { script: run.script, kind: run.kind, finished, groups: [...groups.values()] };
+  });
+  const upgrades = upgradeLines === null ? null : (() => {
+    const versions = new Map();
+    let finished = false;
+    for (const line of upgradeLines) {
+      if (line.kind === "upgrade-inventory" && Array.isArray(line.versions)) {
+        for (const version of line.versions) if (typeof version === "string" && !versions.has(version)) versions.set(version, { version, state: "not-run" });
+      }
+      if (line.kind === "upgrade-version" && typeof line.version === "string") versions.set(line.version, { version: line.version, state: ["passed", "failed", "not-run"].includes(line.state) ? line.state : "failed" });
+      if (line.kind === "upgrade-end") finished = true;
+    }
+    return { finished, versions: [...versions.values()] };
+  })();
+  return { version: 1, nonce: handshake.nonce, mode: handshake.mode, planDigest: handshake.planDigest ?? null, exitCode, parts, units, journeys, upgrades };
+}
+
+/** The report's line: the last thing the check prints. Null when it would be over 256 KiB (no report is better than a
+ * cut one). */
+export function reportLine(report) {
+  const line = `TOOLROLL_CHECK_REPORT ${JSON.stringify(report)}`;
+  return Buffer.byteLength(line) > 256 * 1024 ? null : line;
 }
 
 /**
@@ -200,19 +319,22 @@ export function loadWords(samples, cores, budget) {
 
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
-export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000 } = {}) {
+export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFast = true } = {}) {
   const abort = new AbortController();
   let failure = null;
+  // `failFast` false (a release run, docs/plans/release-once.md): the first failure is still said and kept, and every
+  // other part runs on; the part timeout and cancel still stop what they own.
   const fail = (label, detail) => {
     if (failure !== null) return;
     failure = `${label}: ${detail}`;
-    console.error(`Release check failed: ${failure}; stopping other parts`);
-    abort.abort();
+    console.error(`Release check failed: ${failure}${failFast ? "; stopping other parts" : "; the other parts keep running"}`);
+    if (failFast) abort.abort();
   };
-  const run = (label, command, argv, env = {}) => {
+  const run = (label, command, argv, env = {}, onResult = null) => {
     let partial = "";
     return runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env },
       signal: abort.signal, prefix: `so-check-${label}-`, timeoutMs, graceMs, tempRoot: partTempRoot(label),
+      ...(onResult === null ? {} : { onResult }),
       onExit: code => { if (code !== 0) fail(label, `exit ${code}`); },
       onData: chunk => {
         const lines = (partial + chunk).split("\n"); partial = lines.pop();
@@ -221,7 +343,7 @@ export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000 } = {}) 
     }).then(one => {
       const log = join(dir, `${label}.log`);
       writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} timed out and was stopped\n`)]) : one.output);
-      return { label, code: one.code, log, ms: one.ms };
+      return { label, code: one.code, log, ms: one.ms, timedOut: one.timedOut === true, cancelled: one.cancelled === true };
     });
   };
   return { run, signal: abort.signal, failure: () => failure };
@@ -280,6 +402,15 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     && existsSync(join("scripts", "upgrade-path.mjs"));
   console.log(`Release check against ${base === null ? "nothing (no reachable v* release tag)" : base} (${changed.length} changed files): ${plan.why}${upgrade ? full ? "; the upgrade path from every release since 0.5.0" : "; upgrade path: last five release tags, baseline and 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
+  // The plane's handshake (docs/plans/release-once.md): a release run keeps going past failures, reports on its pipes and
+  // prints its report last. A targeted one runs exactly its plan. A person's own run reads none and behaves as before.
+  const handshake = await readHandshake();
+  const releaseRun = handshake !== null;
+  const targeted = handshake?.mode === "targeted" ? handshake.plan : null;
+  if (targeted !== null) {
+    console.log(`Targeted check (from run ${targeted.base}): ${targeted.units.length} unit files, ${targeted.sanity.length} sanity files, ` +
+      `${targeted.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${targeted.versions.length} upgrade versions${targeted.parts.length > 0 ? `; whole parts: ${targeted.parts.join(", ")}` : ""}.`);
+  }
 
   // A busy machine first gets up to five minutes to quieten (said, never silently): the check's own load comes on top.
   // TOOLROLL_CHECK_CORES / TOOLROLL_CHECK_LOAD stand in for the machine (tests make the budget exact with them).
@@ -295,15 +426,20 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const sampler = setInterval(() => samples.push(loadNow()), 15_000);
   sampler.unref();
   console.log(loadWords(samples, cores, budget));
-  // Each journey run: a script, scripted or real-model, in every group with journeys of that kind.
+  // Each journey run: a script, scripted or real-model, in every group with journeys of that kind. A targeted check runs
+  // a whole part again only when its plan says so, and otherwise just the groups it names.
+  const plannedGroups = (script, kind) => targeted?.groups.filter(one => one.script === script && one.kind === kind).flatMap(one => one.groups) ?? [];
   const journeyRuns = !scripts ? [] : [
     ["flows", "scripted", plan.checks], ["app", "scripted", plan.checks], ["flows-real", "real", plan.real], ["app-real", "real", plan.real],
-  ].filter(([, , runs]) => runs).map(([label, kind]) => {
+  ].map(([label, kind, runs]) => {
     const script = label.replace(/-real$/, "");
-    return { label, kind, argv: [`scripts/${script}-e2e.mjs`, ...(script === "app" ? ["--skip-build"] : []), "--journeys", kind, "--at-once", String(budget.lanes[script])] };
-  });
+    const whole = targeted === null ? runs : targeted.parts.includes(label);
+    const groups = targeted === null || whole ? null : plannedGroups(script, kind);
+    if (!whole && (groups === null || groups.length === 0)) return null;
+    return { label, kind, script, argv: [`scripts/${script}-e2e.mjs`, ...(script === "app" ? ["--skip-build"] : []), "--journeys", kind, "--at-once", String(budget.lanes[script]), ...(groups === null ? [] : ["--run-groups", groups.join(",")])] };
+  }).filter(one => one !== null);
   // The logs and the build's outcome; removed when the check ends, however it ends.
-  const ci = plan.checks ? passedCandidateCI({ full, git }) : { passed: false, why: "no unit suite selected" };
+  const ci = targeted !== null ? { passed: false, why: "a targeted check runs its own units" } : plan.checks ? passedCandidateCI({ full, git }) : { passed: false, why: "no unit suite selected" };
   let localUnits = [];
   if (ci.passed && process.platform === "darwin") {
     try { localUnits = macUnitFiles(); if (localUnits.length === 0) throw Error("no macOS tests found"); }
@@ -311,13 +447,21 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   }
   console.log(`Units: ${ci.passed ? "reuse CI; macOS tests still run locally" : "local"} (${ci.why}).`);
   const dir = makeTempRoot("release-check-");
-  const parts = partRunner(dir), run = parts.run;
+  const parts = partRunner(dir, { failFast: !releaseRun }), run = parts.run;
   // One provider gate for both real-model runners (they find it in TOOLROLL_CHECK_GATE); scripted runs take none.
   let gate = null;
   if (journeyRuns.some(each => each.kind === "real")) {
     mkdirSync(join(dir, "gate"));
     try { gate = openGate({ dir: join(dir, "gate"), reserve: true, env: { TOOLROLL_CHECK_PROVIDERS: process.env.TOOLROLL_CHECK_PROVIDERS || "4" } }); } catch (error) { console.error(error.message); process.exit(2); }
   }
+  // Results, from each harness process's fd-3 pipe only (never a file): the Vitest main process, each journey runner
+  // and the upgrade path.
+  const unitLines = [], upgradeLines = [], journeyLines = new Map(journeyRuns.map(one => [one.label, []]));
+  // The unit suite through Vitest itself, so its main process can hold the pipe (npm hands a script no fd 3). A checkout
+  // without Vitest or the reporter (another project's) runs its own `test:all`, which reports nothing.
+  const direct = existsSync(join("node_modules", "vitest", "vitest.mjs")) && existsSync(join("test", "release-reporter.ts"));
+  const unitFiles = targeted === null ? localUnits : targeted.parts.includes("unit") ? [] : [...new Set([...targeted.units, ...targeted.sanity])];
+  const unitsRun = targeted === null ? plan.checks && (!ci.passed || localUnits.length > 0) : targeted.parts.includes("unit") || unitFiles.length > 0;
   // The unit tests' setup (test/ensure-build.ts) waits for this file: the build's outcome.
   const built = join(dir, "build-outcome");
   const typecheck = run("typecheck", "npm", ["run", "typecheck"]);
@@ -327,8 +471,9 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     renameSync(`${built}.part`, built);
     return one;
   });
-  const units = plan.checks && (!ci.passed || localUnits.length > 0)
-    ? [run("unit", "npm", ["run", "test:all", "--", "--run", "--reporter=dot", `--maxWorkers=${budget.unitWorkers}`, ...localUnits], { TOOLROLL_RELEASE_BUILD: built })] : [];
+  const units = !unitsRun ? [] : direct
+    ? [run("unit", process.execPath, [join("node_modules", "vitest", "vitest.mjs"), "run", "--reporter=dot", "--reporter=./test/release-reporter.ts", `--maxWorkers=${budget.unitWorkers}`, ...unitFiles], { TOOLROLL_RELEASE_BUILD: built }, line => unitLines.push(line))]
+    : [run("unit", "npm", ["run", "test:all", "--", "--run", "--reporter=dot", `--maxWorkers=${budget.unitWorkers}`, ...unitFiles], { TOOLROLL_RELEASE_BUILD: built })];
   // The journeys need the built console; they don't start when the build (or a typecheck already done) failed.
   let typed = null, held = false;
   typecheck.then(one => { typed = one; });
@@ -337,7 +482,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (budget.sequential) { await typecheck; await Promise.all(units); }
     held = journeyRuns.length > 0 && (parts.signal.aborted || one.code !== 0 || (typed !== null && typed.code !== 0));
     if (held) return [];
-    const journey = each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)], journeyEnv(each.kind, gate));
+    const journey = each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)],
+      journeyEnv(each.kind, gate, process.env, releaseRun), line => journeyLines.get(each.label).push(line));
     // Two waves: the scripted journeys (and the units beside them) first, then the real-model ones, which wait mostly on
     // the provider and need the least of the machine.
     return Promise.all(journeyRuns.filter(each => each.kind === "scripted").map(journey)).then(async scripted => {
@@ -346,22 +492,26 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       return [...scripted, ...await Promise.all(journeyRuns.filter(each => each.kind === "real").map(journey))];
     });
   });
-  // The upgrade path packs the built candidate: it starts once the build passed.
+  // The upgrade path packs the built candidate: it starts once the build passed. A targeted check runs only the
+  // versions its plan names, or the whole part again.
+  const upgradeArgs = targeted === null ? (full ? ["--full"] : []) : targeted.parts.includes("upgrade") ? [] : ["--versions", targeted.versions.join(",")];
+  const upgradeSelected = existsSync(join("scripts", "upgrade-path.mjs")) && (targeted === null ? upgrade : targeted.parts.includes("upgrade") || targeted.versions.length > 0);
   let upgradeHeld = false;
   const upgraded = build.then(async one => {
     // …and the upgrade path waits for the journeys.
     if (budget.sequential) await journeys;
-    upgradeHeld = upgrade && (parts.signal.aborted || one.code !== 0);
-    return upgrade && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs", ...(full ? ["--full"] : [])], { TOOLROLL_UPGRADE_WORKERS: String(budget.upgradeWorkers) })] : [];
+    upgradeHeld = upgradeSelected && (parts.signal.aborted || one.code !== 0);
+    return upgradeSelected && !upgradeHeld ? [run("upgrade", process.execPath, ["scripts/upgrade-path.mjs", ...upgradeArgs],
+      { TOOLROLL_UPGRADE_WORKERS: String(budget.upgradeWorkers), ...(releaseRun ? { TOOLROLL_CHECK_KEEP_GOING: "1" } : {}) }, line => upgradeLines.push(line))] : [];
   }).then(list => Promise.all(list));
   const first = await Promise.all([typecheck, build]);
   const results = [...await Promise.all(units), ...await journeys, ...await upgraded];
   for (const one of [...first, ...results]) { console.log(`== ${one.label}`); console.log(readFileSync(one.log, "utf8")); }
   console.log("== summary");
-  console.log(`plan: ${plan.why}`);
+  console.log(`plan: ${targeted === null ? plan.why : `targeted from run ${targeted.base}`}`);
   if (parts.failure()) console.log(`failed: ${parts.failure()}`);
   if (ci.passed) console.log(`unit suite reused: ${ci.why}; ${localUnits.length} macOS files run locally`);
-  if (!upgrade) console.log("upgrade path not run: no store, migration or schema changes");
+  if (!upgradeSelected) console.log(targeted === null ? "upgrade path not run: no store, migration or schema changes" : "upgrade path not run: the targeted plan names none");
   for (const one of first.filter(each => each.code !== 0)) console.log(`${one.label}: exit ${one.code}`);
   for (const one of results) {
     console.log(`${one.label}: exit ${one.code}`);
@@ -376,5 +526,23 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   console.log(loadWords(samples, cores, budget));
   console.log(`took: ${[...first, ...results].map(one => `${one.label} ${took(one.ms)}`).join(", ")}; whole check ${took(Date.now() - started)}`);
   if (gate !== null) { console.log(gateWords(gate.facts())); gate.close(); }
-  process.exitCode = parts.failure() !== null || [...first, ...results].some(one => one.code !== 0) ? 1 : 0;
+  const exitCode = parts.failure() !== null || [...first, ...results].some(one => one.code !== 0) ? 1 : 0;
+  process.exitCode = exitCode;
+  if (handshake !== null) {
+    // Every part, selected or not, with what it did; then the report as the very last line.
+    const byLabel = new Map([...first, ...results].map(one => [one.label, one]));
+    const selected = new Set(["typecheck", "build", ...(unitsRun ? ["unit"] : []), ...journeyRuns.map(one => one.label), ...(upgradeSelected ? ["upgrade"] : [])]);
+    const reportParts = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"].map(part => {
+      const one = byLabel.get(part);
+      return { part, selected: selected.has(part), ran: one !== undefined && !one.cancelled, code: one === undefined || one.cancelled ? null : Math.min(255, Math.max(0, one.code)), timedOut: one?.timedOut === true };
+    });
+    const ranJourneys = journeyRuns.filter(one => byLabel.has(one.label) && !byLabel.get(one.label).cancelled);
+    const report = buildReport({ handshake, exitCode, parts: reportParts,
+      unitLines: byLabel.has("unit") && direct ? unitLines : null, reusedFromCI: ci.passed,
+      journeyRuns: ranJourneys.map(one => ({ script: one.script, kind: one.kind, lines: journeyLines.get(one.label) })),
+      upgradeLines: byLabel.has("upgrade") ? upgradeLines : null });
+    const line = reportLine(report);
+    if (line === null) console.log("The check's report is over 256 KiB, so none is given.");
+    else process.stdout.write(`${line}\n`);
+  }
 }

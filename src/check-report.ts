@@ -1,0 +1,227 @@
+/**
+ * The release check's structured report, on the plane's side (docs/plans/release-once.md, part 2 and rollout phase A).
+ *
+ * Before a Full check of a prepared candidate runs, the builder seals a `release_check_attempt` row: the intended mode
+ * (`full`, or `targeted` with its plan and obligation snapshot), the hash of a fresh nonce, the inventory the check must
+ * account for (the unit files, from the verified tree and Vitest's include globs, and the parts selected) and the
+ * execution context. It then writes `{"nonce","mode","plan","watch"}` on the check's stdin and closes it.
+ *
+ * After the check, the report is the last `TOOLROLL_CHECK_REPORT <json>` line of its output that carries that nonce
+ * (a line a test prints, or one a leftover process writes, has no nonce and is ignored). It is read strictly and sealed
+ * as `check-report.json`, beside `check-inventory.json` (what was sealed, and the groups and versions the check
+ * declared). A run with no valid report still passes or fails as before; it just can't be the base of a targeted check.
+ *
+ * Coverage trusts test code (the trust decision in the plan). Nothing here decides who may release or deploy.
+ */
+import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
+import { join, posix } from "node:path";
+import { readVerifiedCommit, verifiedBlobs, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
+import {
+  CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, readCheckReport,
+  type CheckContext, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
+} from "./contracts/release-check.js";
+import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
+import { checkAttemptOf, recordCheckAttempt, type Store, type VerifyCommand } from "./store.js";
+
+/** The sealed artifacts' capture labels: what a reader looks for, by exact name. */
+export const CHECK_REPORT_CAPTURE = "release check report v1";
+export const CHECK_INVENTORY_CAPTURE = "release check inventory v1";
+export const TARGETED_PLAN_CAPTURE = "release check targeted plan v1";
+export const OBLIGATION_SNAPSHOT_CAPTURE = "release check obligation snapshot v1";
+/** How large a sealed check artifact may be (the report's own bound). */
+export const CHECK_ARTIFACT_CAP = CHECK_REPORT_MAX_BYTES;
+
+/** The release check's harness: the orchestrator, its runners and helpers, Vitest's configuration and setup, and the
+ * reporter. With every `test/` or `scripts/` file they import (harnessClosure), these never carry and are part of the
+ * execution context. */
+export const HARNESS_FILES: readonly string[] = Object.freeze([
+  "scripts/release-check.mjs", "scripts/release-check-ci.mjs", "scripts/suite-lifecycle.mjs", "scripts/provider-gate.mjs",
+  "scripts/e2e-parallel.mjs", "scripts/e2e-kit.mjs", "scripts/upgrade-path.mjs", "scripts/check-results.mjs",
+  "vitest.config.ts", "test/attacks/vitest.config.ts",
+  "test/setup-state.ts", "test/fresh-store.ts", "test/temp-root.ts", "test/ensure-build.ts", "test/release-reporter.ts",
+]);
+
+/** Vitest's include globs (vitest.config.ts), as the plane reads them: a change to that file is a harness change. */
+export const UNIT_INCLUDE: readonly RegExp[] = Object.freeze([/^src\/.+\.test\.ts$/, /^test\/attacks\/.+\.test\.ts$/]);
+export const isUnitFile = (path: string): boolean => UNIT_INCLUDE.some(one => one.test(path));
+
+/** The project's own Git directory as Toolroll records it: `<realpath(repo)>/.git`, a real directory. */
+export function projectGitDir(repo: string): string | null {
+  try {
+    const named = join(realpathSync(repo), ".git");
+    return lstatSync(named).isDirectory() ? realpathSync(named) : null;
+  } catch { return null; }
+}
+
+const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
+/** A digest of a payload, over its canonical JSON. */
+export const payloadDigest = (value: unknown): string => sha256(JSON.stringify(value));
+
+/** Relative import specifiers of a script or module (static imports, re-exports and literal dynamic imports). */
+export function importsOf(source: string): string[] {
+  const found = new Set<string>();
+  for (const match of source.matchAll(/(?:^|[\s;])(?:import|export)\s[^'"`;]*?from\s*["'](\.{1,2}\/[^"']+)["']|(?:^|[\s;(=])import\s*\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)|(?:^|[\s;])import\s*["'](\.{1,2}\/[^"']+)["']/gm)) {
+    const spec = match[1] ?? match[2] ?? match[3];
+    if (spec !== undefined) found.add(spec);
+  }
+  return [...found];
+}
+
+/** The harness and every `test/` or `scripts/` file it imports, transitively, as the tree holds them. */
+export function harnessClosure(paths: ReadonlySet<string>, read: (path: string) => string | null, harness: readonly string[] = HARNESS_FILES): string[] {
+  const closure = new Set<string>();
+  const pending = harness.filter(one => paths.has(one));
+  while (pending.length > 0) {
+    const file = pending.pop()!;
+    if (closure.has(file)) continue;
+    closure.add(file);
+    const text = read(file);
+    if (text === null) continue;
+    for (const spec of importsOf(text)) {
+      const resolved = posix.normalize(posix.join(posix.dirname(file), spec));
+      const candidates = [resolved, resolved.replace(/\.js$/, ".ts"), resolved.replace(/\.mjs$/, ".mts"), `${resolved}.ts`, `${resolved}.mjs`, `${resolved}.js`];
+      const hit = candidates.find(one => paths.has(one));
+      if (hit !== undefined && /^(test|scripts)\//.test(hit) && !closure.has(hit)) pending.push(hit);
+    }
+  }
+  return [...closure].sort();
+}
+
+/** What the plane reads from a commit for a check: its tree's entries, its unit files and its harness. */
+export type TreeFacts = { tree: string; entries: VerifiedEntry[]; units: string[]; harness: string[]; harnessDigest: string; lockfile: string | null };
+
+/** The tree facts of `sha`, from objects hashed here (never the checkout). Null with why when they can't be read. */
+export function treeFactsOf(gitDir: string, sha: string): { ok: true; facts: TreeFacts } | { ok: false; problem: string } {
+  const commit = readVerifiedCommit(gitDir, sha);
+  if (!commit.ok) return { ok: false, problem: commit.message };
+  const entries = verifiedTreeEntries(gitDir, commit.value.tree);
+  if (!entries.ok) return { ok: false, problem: entries.message };
+  const paths = new Set(entries.value.map(one => one.path));
+  const scriptLike = entries.value.filter(one => /^(test|scripts)\/.+\.(ts|mjs|js|cjs|mts)$/.test(one.path) || one.path === "vitest.config.ts").map(one => one.path);
+  const blobs = verifiedBlobs(gitDir, commit.value.tree, scriptLike);
+  if (!blobs.ok) return { ok: false, problem: blobs.message };
+  const harness = harnessClosure(paths, path => blobs.value.get(path)?.bytes.toString("utf8") ?? null);
+  const ids = new Map(entries.value.map(one => [one.path, one.id]));
+  return { ok: true, facts: {
+    tree: commit.value.tree,
+    entries: entries.value,
+    units: entries.value.filter(one => (one.mode === "100644" || one.mode === "100755") && isUnitFile(one.path)).map(one => one.path).sort(),
+    harness,
+    harnessDigest: payloadDigest(harness.map(path => [path, ids.get(path) ?? null])),
+    lockfile: ids.get("package-lock.json") ?? null,
+  } };
+}
+
+/** The execution context a check runs in: what must match for results to stand beside each other. The machine's load
+ * budget is left out: it changes how fast a check runs, never what passes (scripts/release-check.mjs checkBudget). */
+export function checkContextOf(facts: TreeFacts, command: VerifyCommand, access: string): CheckContext {
+  return { version: 1, node: process.version, platform: process.platform, arch: process.arch, lockfile: facts.lockfile, harness: facts.harnessDigest, grant: { id: command.id, digest: command.digest }, access };
+}
+
+/** The parts a full check selects, as far as the plane knows them before it runs. */
+export const FULL_PARTS: readonly (typeof CHECK_PARTS[number])[] = CHECK_PARTS;
+
+/** What a check must account for, sealed before it runs. */
+export function inventoryOf(facts: TreeFacts, plan: TargetedPlan | null): CheckInventory {
+  return { version: 1, units: plan === null ? facts.units : [...new Set([...plan.units, ...plan.sanity])].sort(), parts: plan === null ? [...FULL_PARTS] : ["typecheck", "build", ...plan.parts.filter(one => one !== "typecheck" && one !== "build")] };
+}
+
+/** A check about to run: its handshake (written on stdin, then closed) and the facts sealed with it. */
+export type PreparedAttempt = {
+  runId: number;
+  nonce: string;
+  stdin: string;
+  mode: "full" | "targeted";
+  inventory: CheckInventory;
+  context: CheckContext;
+  plan: TargetedPlan | null;
+  snapshot: ObligationSnapshot | null;
+};
+
+/**
+ * Seal a check's attempt row before its command is spawned: intended mode, nonce hash, inventory and context (and for a
+ * targeted check its plan and obligation snapshot, sealed as artifacts first). Null when the plane can't read the
+ * commit, which leaves the check running exactly as it always has, with no handshake.
+ */
+export function prepareCheckAttempt(store: Store, root: string, input: {
+  runId: number; repo: string; head: string; command: VerifyCommand; access: string;
+  authority?: number | null; plan?: TargetedPlan | null; snapshot?: ObligationSnapshot | null; watch?: readonly string[];
+}, now: Date): PreparedAttempt | null {
+  if (checkAttemptOf(store, input.runId) !== null) return null;
+  const gitDir = projectGitDir(input.repo);
+  if (gitDir === null) return null;
+  const read = treeFactsOf(gitDir, input.head);
+  if (!read.ok) return null;
+  const plan = input.plan ?? null, snapshot = input.snapshot ?? null;
+  const inventory = inventoryOf(read.facts, plan);
+  const context = checkContextOf(read.facts, input.command, input.access);
+  const nonce = randomBytes(32).toString("hex");
+  const mode = plan === null ? "full" as const : "targeted" as const;
+  if (plan !== null) sealJson(store, root, input.runId, "targeted-plan.json", plan, TARGETED_PLAN_CAPTURE, now);
+  if (snapshot !== null) sealJson(store, root, input.runId, "obligation-snapshot.json", snapshot, OBLIGATION_SNAPSHOT_CAPTURE, now);
+  recordCheckAttempt(store, {
+    run: input.runId, authority: input.authority ?? null, mode, baseRun: plan?.base ?? null,
+    planDigest: plan === null ? null : payloadDigest(plan), snapshotDigest: snapshot === null ? null : payloadDigest(snapshot),
+    inventoryDigest: payloadDigest(inventory), contextDigest: payloadDigest(context), nonceHash: sha256(nonce),
+  }, now);
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])] });
+  return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot };
+}
+
+/** Seal one JSON payload as a structured-output artifact under its capture label. */
+export function sealJson(store: Store, root: string, runId: number, name: string, value: unknown, capture: string, now: Date): number {
+  const bytes = Buffer.from(JSON.stringify(value), "utf8");
+  if (bytes.length > CHECK_ARTIFACT_CAP) throw new Error(`${name} is over ${CHECK_ARTIFACT_CAP} bytes`);
+  return storeEvidence(store, root, runId, "structured-output", name, bytes, capture, now, { captureStatus: "ok", cap: CHECK_ARTIFACT_CAP });
+}
+
+/**
+ * The check's report from its output: the LAST `TOOLROLL_CHECK_REPORT <json>` line carrying this nonce, at most 256 KiB,
+ * that matches the contract. Lines without the nonce (a test's print, a leftover process's write) are passed over.
+ */
+export function reportFromOutput(stdout: string, nonce: string): { ok: true; report: CheckReport; raw: string } | { ok: false; problem: string } {
+  const lines = stdout.split("\n");
+  for (let at = lines.length - 1; at >= 0; at--) {
+    const line = lines[at]!;
+    if (!line.startsWith(CHECK_REPORT_PREFIX)) continue;
+    if (Buffer.byteLength(line) > CHECK_REPORT_MAX_BYTES) continue;
+    const raw = line.slice(CHECK_REPORT_PREFIX.length);
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { continue; }
+    if (parsed === null || typeof parsed !== "object" || (parsed as Record<string, unknown>)["nonce"] !== nonce) continue;
+    const read = readCheckReport(parsed);
+    if (!read.ok) return { ok: false, problem: `The check's report doesn't match its contract: ${read.issues.slice(0, 3).map(one => one.line).join("; ")}` };
+    return { ok: true, report: read.value, raw };
+  }
+  return { ok: false, problem: "The check gave no report for this run." };
+}
+
+/**
+ * After the check: seal its report (when it gave a valid one) and the inventory artifact. `exitCode` is the check's own
+ * exit; a report that disagrees with it is no report. Returns the report, or null.
+ */
+export function sealCheckOutcome(store: Store, root: string, attempt: PreparedAttempt, output: { stdout: string; exitCode: number | null }, now: Date): CheckReport | null {
+  const read = reportFromOutput(output.stdout, attempt.nonce);
+  const report = read.ok && read.report.mode === attempt.mode && read.report.exitCode === output.exitCode &&
+    read.report.planDigest === (attempt.plan === null ? null : payloadDigest(attempt.plan)) ? read.report : null;
+  const declared = report === null ? { groups: [], versions: [] } : {
+    groups: report.journeys.map(one => ({ script: one.script, kind: one.kind, groups: one.groups.map(group => group.group) })),
+    versions: report.upgrades?.versions.map(one => one.version) ?? [],
+  };
+  const sealedInventory: SealedInventory = { version: 1, sealed: attempt.inventory, declared };
+  sealJson(store, root, attempt.runId, "check-inventory.json", sealedInventory, CHECK_INVENTORY_CAPTURE, now);
+  if (report !== null) sealJson(store, root, attempt.runId, "check-report.json", report, CHECK_REPORT_CAPTURE, now);
+  return report;
+}
+
+/** One sealed check artifact of a run, read back and verified, or null (missing, ambiguous, cut short or changed). */
+export function readSealedJson(store: Store, root: string, runId: number, capture: string): { value: unknown; digest: string } | null {
+  const found = store.artifactsFor(runId).filter(one => one.kind === "structured-output" && one.capture === capture);
+  if (found.length !== 1) return null;
+  const artifact = found[0]!;
+  if (artifact.truncated || artifact.redacted || artifact.captureStatus !== "ok") return null;
+  const read = readVerifiedArtifact(root, artifact);
+  if (!read.ok) return null;
+  try { return { value: JSON.parse(read.content.toString("utf8")), digest: artifact.sha256 }; } catch { return null; }
+}
